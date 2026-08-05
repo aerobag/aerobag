@@ -130,7 +130,9 @@ pub fn create_ui_session_json(
         now_epoch_ms(),
     )
     .map_err(|err| err.to_string())?;
-    serde_json::to_string(&result).map_err(|err| err.to_string())
+    let serialized = serde_json::to_string(&result).map_err(|err| err.to_string())?;
+    app_core::record_session_serialized_payload_bytes(result.handle, serialized.len());
+    Ok(serialized)
 }
 
 pub fn set_resource_policy_in_session_json(
@@ -651,7 +653,9 @@ pub fn select_raster_map_in_session_json(
 
 pub fn get_session_snapshot_paged_json(handle: u64) -> Result<String, String> {
     let outcome = app_core::get_session_snapshot(handle as u32).map_err(|err| err.to_string())?;
-    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+    let serialized = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;
+    app_core::record_session_serialized_payload_bytes(handle as u32, serialized.len());
+    Ok(serialized)
 }
 
 pub fn get_session_snapshot_at_epoch_ms_paged_json(
@@ -660,7 +664,9 @@ pub fn get_session_snapshot_at_epoch_ms_paged_json(
 ) -> Result<String, String> {
     let outcome = app_core::get_session_snapshot_at_epoch_ms(handle as u32, epoch_ms)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+    let serialized = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;
+    app_core::record_session_serialized_payload_bytes(handle as u32, serialized.len());
+    Ok(serialized)
 }
 
 pub fn maintain_nav_db_in_session_at_epoch_ms_json(

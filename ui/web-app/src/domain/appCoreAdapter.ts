@@ -1104,6 +1104,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const snapshotRefreshSchedulerHandle = await debugTiming("startup.session.create_snapshot_scheduler", () =>
       this.module.create_session_snapshot_refresh_scheduler(),
     );
+    let destroyPromise: Promise<void> | null = null;
     const runSessionOperation = <T>(
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
@@ -1865,11 +1866,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      destroy: async () => {
-        liveFeedSubscription?.close();
-        liveFeedSubscription = null;
-        this.module.destroy_session(handle);
-        await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle);
+      destroy: () => {
+        if (destroyPromise) {
+          return destroyPromise;
+        }
+        destroyPromise = (async () => {
+          liveFeedSubscription?.close();
+          liveFeedSubscription = null;
+          await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle);
+          this.module.destroy_session(handle);
+        })();
+        return destroyPromise;
       },
     };
   }

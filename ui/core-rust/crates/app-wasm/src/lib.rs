@@ -1728,7 +1728,9 @@ fn create_ui_session_json(
         now_epoch_ms as i64,
     )
     .map_err(|err| err.to_string())?;
-    serde_json::to_string(&result).map_err(|err| err.to_string())
+    let serialized = serde_json::to_string(&result).map_err(|err| err.to_string())?;
+    app_core::record_session_serialized_payload_bytes(result.handle, serialized.len());
+    Ok(serialized)
 }
 
 fn create_ui_session_profiled_json(
@@ -1756,11 +1758,14 @@ fn create_ui_session_profiled_json(
     )
     .map_err(|err| err.to_string())?;
     profiler.mark("app_core_create_ui_session_total");
+    let handle = result.handle;
     let envelope = ProfiledResult {
         result,
         timings: profiler.timings,
     };
-    serde_json::to_string(&envelope).map_err(|err| err.to_string())
+    let serialized = serde_json::to_string(&envelope).map_err(|err| err.to_string())?;
+    app_core::record_session_serialized_payload_bytes(handle, serialized.len());
+    Ok(serialized)
 }
 
 fn set_resource_policy_in_session_json(handle: u32, policy_json: &str) -> Result<String, String> {
@@ -2068,6 +2073,7 @@ fn get_session_snapshot_at_epoch_ms_paged_json(
     let serialize_started_at = now_ms();
     let serialized = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;
     let serialize_ms = now_ms() - serialize_started_at;
+    app_core::record_session_serialized_payload_bytes(handle, serialized.len());
     app_core::core_debug_log(
         "session.snapshot.wasm",
         &serde_json::json!({

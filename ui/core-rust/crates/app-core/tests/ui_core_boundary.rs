@@ -361,6 +361,39 @@ fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
 }
 
 #[test]
+fn durable_session_writes_are_owned_by_transaction_helpers() {
+    let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let source = strip_rust_tests(&source_text);
+    let persistence_write_occurrences = source
+        .match_indices("write_session_persistence_to_storage(")
+        .count();
+    assert_eq!(
+        persistence_write_occurrences, 2,
+        "durable settings writes must appear only in the two transaction executors"
+    );
+
+    for function in [
+        "perform_settings_action_in_session",
+        "accept_disclaimer_in_session",
+    ] {
+        assert!(
+            function_body(source, function).contains("run_session_model_transaction"),
+            "{function} must roll back its live model when projection or persistence fails"
+        );
+    }
+    assert!(
+        function_body(source, "configure_platform_capabilities_in_session")
+            .contains("run_session_model_transaction_without_persistence"),
+        "platform configuration must roll back when settings restore fails"
+    );
+    assert!(
+        function_body(source, "take_cloud_provider_request_in_session")
+            .contains("run_durable_session_model_value_transaction"),
+        "taking durable provider work must restore the request when persistence fails"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

@@ -3218,6 +3218,11 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let nextSession: UiSession | null = null;
+    const destroyNextSession = () => {
+      const session = nextSession;
+      nextSession = null;
+      void session?.destroy();
+    };
     if (!appCoreAdapter) {
       return;
     }
@@ -3228,9 +3233,17 @@ export default function App() {
         initialChartPageState.selected_airport_id,
         initialChartPageState.selected_chart_id,
       ));
+      nextSession = created;
+      if (cancelled) {
+        destroyNextSession();
+        return;
+      }
       markStartupProgress("session.initial_snapshot", "Using initial session snapshot");
       let createdSnapshot = debugTiming("startup.session.initial_snapshot", () => created.initialSnapshot());
       for (const flagId of Object.keys(initialDebugState) as DebugFlagId[]) {
+        if (cancelled) {
+          return;
+        }
         if (initialDebugState[flagId]) {
           createdSnapshot = await created.setDebugFlag(flagId, true);
         }
@@ -3239,21 +3252,21 @@ export default function App() {
         plan_id: createdSnapshot.app_ui_state.active_plan?.plan_id ?? null,
         app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
       });
-      nextSession = created;
-      if (!cancelled) {
-        markStartupProgress("session.ready", "Initial session ready");
-        setUiSession(created);
-        applySessionSnapshot(createdSnapshot, "session_create");
+      if (cancelled) {
+        return;
       }
+      markStartupProgress("session.ready", "Initial session ready");
+      setUiSession(created);
+      applySessionSnapshot(createdSnapshot, "session_create");
     }).catch((error) => {
-      console.error("failed to initialize web ui session", error);
       if (!cancelled) {
+        console.error("failed to initialize web ui session", error);
         reportStartupFatalError("session.create", error);
       }
     });
     return () => {
       cancelled = true;
-      void nextSession?.destroy();
+      destroyNextSession();
     };
   }, [adapterBackend, appCoreAdapter, applySessionSnapshot, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds, markStartupProgress, reportStartupFatalError]);
 

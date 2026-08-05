@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ops::{Deref, DerefMut},
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, MutexGuard, OnceLock,
     },
 };
@@ -259,6 +259,87 @@ pub struct UiSessionCreateTiming {
 struct UiSession {
     model: SessionModel,
     runtime: SessionRuntime,
+    diagnostics: Arc<SessionDiagnosticsCounters>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiSessionPhase {
+    Running,
+    Closing,
+    Closed,
+}
+
+impl UiSessionPhase {
+    const RUNNING: u8 = 0;
+    const CLOSING: u8 = 1;
+    const CLOSED: u8 = 2;
+
+    fn from_atomic(value: u8) -> Self {
+        match value {
+            Self::RUNNING => Self::Running,
+            Self::CLOSING => Self::Closing,
+            Self::CLOSED => Self::Closed,
+            _ => Self::Closed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSessionDiagnostics {
+    pub generation: u64,
+    pub phase: UiSessionPhase,
+    pub operation_count: u64,
+    pub registry_lock_wait_us: u64,
+    pub session_lock_wait_us: u64,
+    pub session_lock_hold_us: u64,
+    pub snapshot_projection_count: u64,
+    pub app_ui_projection_count: u64,
+    pub settings_projection_count: u64,
+    pub weather_projection_count: u64,
+    pub map_projection_count: u64,
+    pub last_session_payload_serialized_bytes: u64,
+    pub transaction_commit_count: u64,
+    pub transaction_rollback_count: u64,
+}
+
+#[derive(Debug, Default)]
+struct SessionDiagnosticsCounters {
+    operation_count: AtomicU64,
+    registry_lock_wait_us: AtomicU64,
+    session_lock_wait_us: AtomicU64,
+    session_lock_hold_us: AtomicU64,
+    snapshot_projection_count: AtomicU64,
+    app_ui_projection_count: AtomicU64,
+    settings_projection_count: AtomicU64,
+    weather_projection_count: AtomicU64,
+    map_projection_count: AtomicU64,
+    last_session_payload_serialized_bytes: AtomicU64,
+    transaction_commit_count: AtomicU64,
+    transaction_rollback_count: AtomicU64,
+}
+
+impl SessionDiagnosticsCounters {
+    fn snapshot(&self, generation: u64, phase: UiSessionPhase) -> UiSessionDiagnostics {
+        UiSessionDiagnostics {
+            generation,
+            phase,
+            operation_count: self.operation_count.load(Ordering::Relaxed),
+            registry_lock_wait_us: self.registry_lock_wait_us.load(Ordering::Relaxed),
+            session_lock_wait_us: self.session_lock_wait_us.load(Ordering::Relaxed),
+            session_lock_hold_us: self.session_lock_hold_us.load(Ordering::Relaxed),
+            snapshot_projection_count: self.snapshot_projection_count.load(Ordering::Relaxed),
+            app_ui_projection_count: self.app_ui_projection_count.load(Ordering::Relaxed),
+            settings_projection_count: self.settings_projection_count.load(Ordering::Relaxed),
+            weather_projection_count: self.weather_projection_count.load(Ordering::Relaxed),
+            map_projection_count: self.map_projection_count.load(Ordering::Relaxed),
+            last_session_payload_serialized_bytes: self
+                .last_session_payload_serialized_bytes
+                .load(Ordering::Relaxed),
+            transaction_commit_count: self.transaction_commit_count.load(Ordering::Relaxed),
+            transaction_rollback_count: self.transaction_rollback_count.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -617,16 +698,195 @@ pub struct GuidanceLegGeometry {
 }
 
 static NEXT_HANDLE: AtomicU32 = AtomicU32::new(1);
-static SESSIONS: OnceLock<Mutex<HashMap<u32, UiSession>>> = OnceLock::new();
+static NEXT_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+static SESSIONS: OnceLock<Mutex<HashMap<u32, Arc<SessionSlot>>>> = OnceLock::new();
 
-fn sessions() -> &'static Mutex<HashMap<u32, UiSession>> {
+struct SessionSlot {
+    handle: u32,
+    generation: u64,
+    phase: AtomicU8,
+    session: Mutex<UiSession>,
+    diagnostics: Arc<SessionDiagnosticsCounters>,
+}
+
+impl SessionSlot {
+    fn new(handle: u32, generation: u64, session: UiSession) -> Self {
+        let diagnostics = Arc::clone(&session.diagnostics);
+        Self {
+            handle,
+            generation,
+            phase: AtomicU8::new(UiSessionPhase::RUNNING),
+            session: Mutex::new(session),
+            diagnostics,
+        }
+    }
+
+    fn phase(&self) -> UiSessionPhase {
+        UiSessionPhase::from_atomic(self.phase.load(Ordering::Acquire))
+    }
+
+    #[track_caller]
+    fn lock_running(&self) -> AppResult<RunningSessionGuard<'_>> {
+        let operation = std::panic::Location::caller();
+        if self.phase() != UiSessionPhase::Running {
+            return Err(session_not_running_error(self.handle, self.phase()));
+        }
+        let wait_started_ms = crate::core_clock_ms();
+        let guard = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let wait_us = debug_elapsed_us(wait_started_ms);
+        self.diagnostics
+            .session_lock_wait_us
+            .fetch_add(wait_us, Ordering::Relaxed);
+        let phase = self.phase();
+        if phase != UiSessionPhase::Running {
+            return Err(session_not_running_error(self.handle, phase));
+        }
+        self.diagnostics
+            .operation_count
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(RunningSessionGuard {
+            slot: self,
+            guard,
+            operation_file: operation.file(),
+            operation_line: operation.line(),
+            hold_started_ms: crate::core_clock_ms(),
+            wait_us,
+        })
+    }
+
+    fn close(&self) {
+        if !self.begin_close() {
+            return;
+        }
+        self.finish_close();
+    }
+
+    fn begin_close(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                UiSessionPhase::RUNNING,
+                UiSessionPhase::CLOSING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn finish_close(&self) {
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        drop(session);
+        self.phase.store(UiSessionPhase::CLOSED, Ordering::Release);
+    }
+
+    fn diagnostics(&self) -> UiSessionDiagnostics {
+        self.diagnostics.snapshot(self.generation, self.phase())
+    }
+}
+
+struct RunningSessionGuard<'a> {
+    slot: &'a SessionSlot,
+    guard: MutexGuard<'a, UiSession>,
+    operation_file: &'static str,
+    operation_line: u32,
+    hold_started_ms: Option<f64>,
+    wait_us: u64,
+}
+
+impl Deref for RunningSessionGuard<'_> {
+    type Target = UiSession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl DerefMut for RunningSessionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for RunningSessionGuard<'_> {
+    fn drop(&mut self) {
+        let hold_us = debug_elapsed_us(self.hold_started_ms);
+        self.slot
+            .diagnostics
+            .session_lock_hold_us
+            .fetch_add(hold_us, Ordering::Relaxed);
+        crate::core_perf_debug_log("session.operation", || {
+            serde_json::json!({
+                "handle": self.slot.handle,
+                "generation": self.slot.generation,
+                "operation_file": self.operation_file,
+                "operation_line": self.operation_line,
+                "lock_wait_us": self.wait_us,
+                "lock_hold_us": hold_us,
+            })
+        });
+    }
+}
+
+fn sessions() -> &'static Mutex<HashMap<u32, Arc<SessionSlot>>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn lock_sessions() -> MutexGuard<'static, HashMap<u32, UiSession>> {
+fn lock_session_registry() -> MutexGuard<'static, HashMap<u32, Arc<SessionSlot>>> {
     sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn session_slot(handle: u32) -> AppResult<Arc<SessionSlot>> {
+    let wait_started_ms = crate::core_clock_ms();
+    let slot = lock_session_registry().get(&handle).cloned();
+    let wait_us = debug_elapsed_us(wait_started_ms);
+    let slot = slot.ok_or_else(|| invalid_session_handle_error(handle))?;
+    slot.diagnostics
+        .registry_lock_wait_us
+        .fetch_add(wait_us, Ordering::Relaxed);
+    Ok(slot)
+}
+
+fn invalid_session_handle_error(handle: u32) -> AppError {
+    AppError {
+        kind: AppErrorKind::Internal,
+        message: format!("invalid ui session handle: {handle}"),
+    }
+}
+
+fn session_not_running_error(handle: u32, phase: UiSessionPhase) -> AppError {
+    AppError {
+        kind: AppErrorKind::Internal,
+        message: format!("ui session handle {handle} is {phase:?}"),
+    }
+}
+
+fn debug_elapsed_us(started_ms: Option<f64>) -> u64 {
+    let Some(started_ms) = started_ms else {
+        return 0;
+    };
+    let Some(finished_ms) = crate::core_clock_ms() else {
+        return 0;
+    };
+    ((finished_ms - started_ms).max(0.0) * 1_000.0).round() as u64
+}
+
+pub fn session_diagnostics(handle: u32) -> AppResult<UiSessionDiagnostics> {
+    Ok(session_slot(handle)?.diagnostics())
+}
+
+pub fn record_session_serialized_payload_bytes(handle: u32, byte_count: usize) {
+    if let Ok(slot) = session_slot(handle) {
+        slot.diagnostics
+            .last_session_payload_serialized_bytes
+            .store(byte_count as u64, Ordering::Relaxed);
+    }
 }
 
 const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
@@ -827,8 +1087,9 @@ fn enqueue_session_resource_effect(
 }
 
 pub fn drain_session_resource_effects(handle: u32) -> AppResult<Vec<UiSessionResourceEffect>> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     Ok(std::mem::take(
         &mut session.runtime.pending_resource_effects,
     ))
@@ -3520,54 +3781,71 @@ fn create_ui_session_inner(
         next_cycle_product_freshness_check_epoch_ms: None,
     };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    lock_sessions().insert(
-        handle,
-        UiSession {
-            model: SessionModel {
-                session_revision: 0,
-                flight_plan_route_revision: 0,
-                nav_data_epoch: 0,
-                nav_db_advance_blocked: false,
-                app_state,
-                playback,
-                plan_preview: PlanPreviewState::default(),
-                bad_autopilot: BadAutopilotState::default(),
-                map_follow,
-                guidance_leg_geometry: Arc::new(guidance_leg_geometry),
-                map_overlay_config: Arc::new(map_overlay_config),
-                vector_manifest_loaded: false,
-                chart_page_state,
-                nav_kv_store_id: None,
-                nav_kv_store: None,
-                nav_db_artifact: None,
-                map_layer_state,
-                data_status_records,
-                hushed_status_ids,
-                data_status_state,
-                platform_capabilities,
-                settings_preferences,
-                settings_storage: None,
-                cloud,
-                debug_state,
-                resource_policy: CoreResourcePolicy::InstalledPackage,
-                installed_package_ids: BTreeSet::new(),
-                publication_resolver: Arc::new(PublicationResolver::with_resource_policy(
-                    "/packages",
-                    CoreResourcePolicy::InstalledPackage,
-                )),
-                cycle_product_freshness: CycleProductFreshnessState {
-                    dirty: true,
-                    ..CycleProductFreshnessState::default()
-                },
-                live_feeds: Arc::new(LiveFeedsState::default()),
-                live_feed_connection: LiveFeedConnectionSessionState::default(),
-                raster_map_catalog: None,
-                wall_clock_epoch_ms,
-                live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
-                altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
+    let generation = NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let diagnostics = Arc::new(SessionDiagnosticsCounters::default());
+    diagnostics
+        .snapshot_projection_count
+        .store(1, Ordering::Relaxed);
+    diagnostics
+        .app_ui_projection_count
+        .store(1, Ordering::Relaxed);
+    diagnostics
+        .settings_projection_count
+        .store(1, Ordering::Relaxed);
+    diagnostics
+        .weather_projection_count
+        .store(1, Ordering::Relaxed);
+    diagnostics.map_projection_count.store(1, Ordering::Relaxed);
+    let session = UiSession {
+        model: SessionModel {
+            session_revision: 0,
+            flight_plan_route_revision: 0,
+            nav_data_epoch: 0,
+            nav_db_advance_blocked: false,
+            app_state,
+            playback,
+            plan_preview: PlanPreviewState::default(),
+            bad_autopilot: BadAutopilotState::default(),
+            map_follow,
+            guidance_leg_geometry: Arc::new(guidance_leg_geometry),
+            map_overlay_config: Arc::new(map_overlay_config),
+            vector_manifest_loaded: false,
+            chart_page_state,
+            nav_kv_store_id: None,
+            nav_kv_store: None,
+            nav_db_artifact: None,
+            map_layer_state,
+            data_status_records,
+            hushed_status_ids,
+            data_status_state,
+            platform_capabilities,
+            settings_preferences,
+            settings_storage: None,
+            cloud,
+            debug_state,
+            resource_policy: CoreResourcePolicy::InstalledPackage,
+            installed_package_ids: BTreeSet::new(),
+            publication_resolver: Arc::new(PublicationResolver::with_resource_policy(
+                "/packages",
+                CoreResourcePolicy::InstalledPackage,
+            )),
+            cycle_product_freshness: CycleProductFreshnessState {
+                dirty: true,
+                ..CycleProductFreshnessState::default()
             },
-            runtime: SessionRuntime::default(),
+            live_feeds: Arc::new(LiveFeedsState::default()),
+            live_feed_connection: LiveFeedConnectionSessionState::default(),
+            raster_map_catalog: None,
+            wall_clock_epoch_ms,
+            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
+            altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
         },
+        runtime: SessionRuntime::default(),
+        diagnostics,
+    };
+    lock_session_registry().insert(
+        handle,
+        Arc::new(SessionSlot::new(handle, generation, session)),
     );
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_store_session");
@@ -3600,8 +3878,9 @@ pub fn set_map_layer_visibility_in_session(
     layer: MapLayerId,
     visible: bool,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
@@ -3629,8 +3908,9 @@ pub fn set_map_layer_visibility_in_session(
 }
 
 pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let selected_map_id = session
         .raster_map_catalog
         .as_ref()
@@ -3651,8 +3931,9 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
 pub fn resolve_nav_db_artifact_candidates_in_session(
     handle: u32,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     session
         .publication_resolver
         .resolve_nav_db_artifact_candidates()
@@ -3667,8 +3948,9 @@ pub fn resolve_chart_asset_resource_in_session(
     chart_id: &str,
     asset_kind: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let chart = match read_chart_asset_by_id(session_nav_kv_store(session)?, chart_id) {
         Ok(chart) => chart,
         Err(HadReadError::NeedPages(pages)) => {
@@ -3753,8 +4035,9 @@ pub fn resolve_chart_asset_resource_in_session(
 }
 
 pub fn resolve_metar_manifest_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     session
         .publication_resolver
         .resolve_family_resource("metars", "manifest.json")
@@ -3768,8 +4051,9 @@ pub fn set_resource_policy_in_session(
     handle: u32,
     policy: CoreResourcePolicy,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if session.resource_policy != policy {
         session.resource_policy = policy;
         Arc::make_mut(&mut session.publication_resolver).set_resource_policy(policy);
@@ -3782,8 +4066,9 @@ pub fn load_offline_package_library_cache_in_session(
     handle: u32,
     cache: OfflinePackagesLibraryCache,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, cache.fetched_at_epoch_ms);
     Arc::make_mut(&mut session.publication_resolver)
         .load_offline_library_cache(&cache)
@@ -3806,20 +4091,23 @@ pub fn configure_platform_capabilities_in_session(
             message: format!("unsupported platform local time zone {local_time_zone:?}"),
         })?;
     }
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    session.platform_capabilities = capabilities;
-    session.settings_storage = settings_storage;
-    load_session_persistence_from_storage(session)?;
-    let acs_default_base_url = session
-        .platform_capabilities
-        .cloud
-        .as_ref()
-        .and_then(|cloud| cloud.aerobag_cloud_base_url.clone());
-    session
-        .cloud
-        .set_acs_default_base_url(acs_default_base_url)?;
-    changed_session_snapshot_outcome(session)
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    run_session_model_transaction_without_persistence(session, move |session| {
+        session.platform_capabilities = capabilities;
+        session.settings_storage = settings_storage;
+        load_session_persistence_from_storage(session)?;
+        let acs_default_base_url = session
+            .platform_capabilities
+            .cloud
+            .as_ref()
+            .and_then(|cloud| cloud.aerobag_cloud_base_url.clone());
+        session
+            .cloud
+            .set_acs_default_base_url(acs_default_base_url)?;
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn complete_cloud_authorization_in_session(
@@ -3828,8 +4116,9 @@ pub fn complete_cloud_authorization_in_session(
     response: CloudAuthorizationResponse,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if session.platform_capabilities.cloud.is_none() {
         return Err(AppError {
             kind: AppErrorKind::InvalidCatalog,
@@ -3849,8 +4138,9 @@ pub fn take_cloud_authorization_request_in_session(
     handle: u32,
     now_epoch_ms: i64,
 ) -> AppResult<Option<CloudAuthorizationRequest>> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if session.platform_capabilities.cloud.is_none() {
         return Ok(None);
     }
@@ -3864,8 +4154,9 @@ pub fn perform_cloud_ui_action_in_session(
     fields: Vec<CloudUiFieldValue>,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if session.platform_capabilities.cloud.is_none() {
         return Err(AppError {
             kind: AppErrorKind::InvalidCatalog,
@@ -3896,8 +4187,9 @@ pub fn record_offline_package_preferences_in_session(
             kind: AppErrorKind::InvalidCatalog,
             message: format!("invalid offline-package preferences: {error}"),
         })?;
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     run_session_model_update(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         session
@@ -3911,24 +4203,28 @@ pub fn take_cloud_provider_request_in_session(
     handle: u32,
     now_epoch_ms: i64,
 ) -> AppResult<Option<CloudHttpRequest>> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if session.platform_capabilities.cloud.is_none() {
         return Ok(None);
     }
-    advance_session_wall_clock(session, now_epoch_ms);
-    let request = session.cloud.take_provider_request(now_epoch_ms)?;
-    if request.is_some() {
-        write_session_persistence_to_storage(session)?;
-    }
-    Ok(request)
+    run_durable_session_model_value_transaction(
+        session,
+        |session| {
+            advance_session_wall_clock(session, now_epoch_ms);
+            session.cloud.take_provider_request(now_epoch_ms)
+        },
+        Option::is_some,
+    )
 }
 
 pub fn cloud_event_stream_plan_in_session(
     handle: u32,
 ) -> AppResult<Option<crate::CloudEventStreamPlan>> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     Ok(session.cloud.event_stream_plan())
 }
 
@@ -3937,8 +4233,9 @@ pub fn report_cloud_event_stream_event_in_session(
     event: crate::CloudEventStreamEvent,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         session
@@ -3954,8 +4251,9 @@ pub fn complete_cloud_provider_request_in_session(
     response: CloudHttpResponse,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         let completion =
@@ -3987,6 +4285,63 @@ enum SessionModelTransactionError {
     Snapshot(SessionSnapshotProjectionError),
 }
 
+struct SessionModelTransactionCheckpoint {
+    model: SessionModel,
+    pending_effect_count: usize,
+}
+
+impl SessionModelTransactionCheckpoint {
+    fn capture(session: &UiSession) -> Self {
+        Self {
+            model: session.model.clone(),
+            pending_effect_count: session.runtime.pending_resource_effects.len(),
+        }
+    }
+
+    fn rollback(self, session: &mut UiSession) {
+        session.model = self.model;
+        session
+            .runtime
+            .pending_resource_effects
+            .truncate(self.pending_effect_count);
+        session
+            .diagnostics
+            .transaction_rollback_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn record_session_transaction_commit(session: &UiSession) {
+    session
+        .diagnostics
+        .transaction_commit_count
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+fn run_durable_session_model_value_transaction<T>(
+    session: &mut UiSession,
+    mutate: impl FnOnce(&mut UiSession) -> AppResult<T>,
+    should_write_persistence: impl FnOnce(&T) -> bool,
+) -> AppResult<T> {
+    let checkpoint = SessionModelTransactionCheckpoint::capture(session);
+    let result = mutate(session).and_then(|value| {
+        if should_write_persistence(&value) {
+            write_session_persistence_to_storage(session)?;
+        }
+        Ok(value)
+    });
+    match result {
+        Ok(value) => {
+            record_session_transaction_commit(session);
+            Ok(value)
+        }
+        Err(error) => {
+            checkpoint.rollback(session);
+            Err(error)
+        }
+    }
+}
+
 impl From<AppError> for SessionModelTransactionError {
     fn from(error: AppError) -> Self {
         Self::App(error)
@@ -4009,36 +4364,58 @@ fn run_session_model_transaction(
     session: &mut UiSession,
     mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
 ) -> AppResult<HadOperationOutcome> {
-    run_session_model_transaction_projecting(session, mutate, |session| {
-        let snapshot = try_snapshot_for_session(session)?;
-        serde_json::to_value(snapshot).map_err(|error| {
-            SessionModelTransactionError::App(AppError {
-                kind: AppErrorKind::Internal,
-                message: error.to_string(),
+    run_session_model_transaction_with_persistence(session, mutate, true)
+}
+
+fn run_session_model_transaction_without_persistence(
+    session: &mut UiSession,
+    mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
+) -> AppResult<HadOperationOutcome> {
+    run_session_model_transaction_with_persistence(session, mutate, false)
+}
+
+fn run_session_model_transaction_with_persistence(
+    session: &mut UiSession,
+    mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
+    write_persistence: bool,
+) -> AppResult<HadOperationOutcome> {
+    run_session_model_transaction_projecting(
+        session,
+        mutate,
+        |session| {
+            let snapshot = try_snapshot_for_session(session)?;
+            serde_json::to_value(snapshot).map_err(|error| {
+                SessionModelTransactionError::App(AppError {
+                    kind: AppErrorKind::Internal,
+                    message: error.to_string(),
+                })
             })
-        })
-    })
+        },
+        write_persistence,
+    )
 }
 
 fn run_session_model_update(
     session: &mut UiSession,
     mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
 ) -> AppResult<HadOperationOutcome> {
-    run_session_model_transaction_projecting(session, mutate, |_| Ok(serde_json::Value::Null))
+    run_session_model_transaction_projecting(session, mutate, |_| Ok(serde_json::Value::Null), true)
 }
 
 fn run_session_model_transaction_projecting(
     session: &mut UiSession,
     mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
     project: impl FnOnce(&mut UiSession) -> Result<serde_json::Value, SessionModelTransactionError>,
+    write_persistence: bool,
 ) -> AppResult<HadOperationOutcome> {
-    let prior_model = session.model.clone();
-    let prior_pending_effect_count = session.runtime.pending_resource_effects.len();
+    let checkpoint = SessionModelTransactionCheckpoint::capture(session);
     let result = (|| {
         let invalidations = mutate(session)?;
         advance_session_revision(session);
         let result = project(session)?;
-        write_session_persistence_to_storage(session)?;
+        if write_persistence {
+            write_session_persistence_to_storage(session)?;
+        }
         Ok::<_, SessionModelTransactionError>(HadOperationOutcome::complete_with_invalidations(
             result,
             invalidations,
@@ -4046,13 +4423,12 @@ fn run_session_model_transaction_projecting(
     })();
 
     match result {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            record_session_transaction_commit(session);
+            Ok(outcome)
+        }
         Err(error) => {
-            session.model = prior_model;
-            session
-                .runtime
-                .pending_resource_effects
-                .truncate(prior_pending_effect_count);
+            checkpoint.rollback(session);
             match error {
                 SessionModelTransactionError::App(error) => Err(error),
                 SessionModelTransactionError::Had(HadReadError::NeedPages(pages)) => {
@@ -4087,69 +4463,74 @@ pub fn perform_settings_action_in_session(
     handle: u32,
     action: UiSettingsAction,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    match action.action_id.as_str() {
-        DISPLAY_DIM_TIMEOUT_ACTION_ID => {
-            if session.platform_capabilities.display_policy.is_none() {
-                return Err(invalid_settings_action(&action.action_id));
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    run_session_model_transaction(session, move |session| {
+        match action.action_id.as_str() {
+            DISPLAY_DIM_TIMEOUT_ACTION_ID => {
+                if session.platform_capabilities.display_policy.is_none() {
+                    return Err(invalid_settings_action(&action.action_id).into());
+                }
+                let timeout =
+                    DisplayDimTimeout::from_value_id(&action.value_id).ok_or_else(|| {
+                        invalid_settings_action_value(&action.action_id, &action.value_id)
+                    })?;
+                session.settings_preferences.display_dim_timeout = timeout;
             }
-            let timeout = DisplayDimTimeout::from_value_id(&action.value_id).ok_or_else(|| {
-                invalid_settings_action_value(&action.action_id, &action.value_id)
-            })?;
-            session.settings_preferences.display_dim_timeout = timeout;
-            write_session_persistence_to_storage(session)?;
-        }
-        FLIGHT_DATA_VISIBILITY_ACTION_ID => {
-            if !crate::flight_data::is_flight_data_banner_cell_id(&action.value_id) {
-                return Err(invalid_settings_action_value(
-                    &action.action_id,
-                    &action.value_id,
-                ));
-            }
-            if !session
-                .settings_preferences
-                .disabled_flight_data_cell_ids
-                .remove(&action.value_id)
-            {
-                session
+            FLIGHT_DATA_VISIBILITY_ACTION_ID => {
+                if !crate::flight_data::is_flight_data_banner_cell_id(&action.value_id) {
+                    return Err(
+                        invalid_settings_action_value(&action.action_id, &action.value_id).into(),
+                    );
+                }
+                if !session
                     .settings_preferences
                     .disabled_flight_data_cell_ids
-                    .insert(action.value_id);
+                    .remove(&action.value_id)
+                {
+                    session
+                        .settings_preferences
+                        .disabled_flight_data_cell_ids
+                        .insert(action.value_id.clone());
+                }
             }
-            write_session_persistence_to_storage(session)?;
+            _ => return Err(invalid_settings_action(&action.action_id).into()),
         }
-        _ => return Err(invalid_settings_action(&action.action_id)),
-    }
-    changed_session_snapshot_outcome(session)
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn accept_disclaimer_in_session(
     handle: u32,
     agreement_id: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    if agreement_id != NO_WARRANTY_DISCLAIMER_AGREEMENT_ID {
-        return Err(AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!("unsupported disclaimer agreement id: {agreement_id}"),
-        });
-    }
-    session
-        .settings_preferences
-        .accepted_disclaimer_agreement_ids
-        .insert(agreement_id.to_string());
-    write_session_persistence_to_storage(session)?;
-    changed_session_snapshot_outcome(session)
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    run_session_model_transaction(session, |session| {
+        if agreement_id != NO_WARRANTY_DISCLAIMER_AGREEMENT_ID {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: format!("unsupported disclaimer agreement id: {agreement_id}"),
+            }
+            .into());
+        }
+        session
+            .settings_preferences
+            .accepted_disclaimer_agreement_ids
+            .insert(agreement_id.to_string());
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn set_installed_package_ids_in_session(
     handle: u32,
     package_ids: Vec<String>,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.installed_package_ids = package_ids.into_iter().collect();
     changed_session_snapshot_outcome(session)
 }
@@ -4165,8 +4546,9 @@ pub fn select_map_family_in_session(
     handle: u32,
     family_id: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let Some(catalog) = session.raster_map_catalog.as_mut() else {
         let catalog = match crate::had_ops::raster_map_catalog_from_nav_kv(
             session_nav_kv_store(session)?,
@@ -4189,8 +4571,9 @@ pub fn select_raster_map_in_session(
     handle: u32,
     selected_map_id: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let Some(catalog) = session.raster_map_catalog.as_mut() else {
         return Err(AppError {
             kind: AppErrorKind::Internal,
@@ -4218,8 +4601,9 @@ pub fn get_raster_tile_plan_in_session_at_epoch_ms(
     height_px: f64,
     epoch_ms: i64,
 ) -> AppResult<RasterTilePlan> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
@@ -4268,8 +4652,9 @@ pub fn get_raster_tile_plan_in_session_with_options_at_epoch_ms(
     options: crate::RasterTilePlanOptions,
     epoch_ms: i64,
 ) -> AppResult<RasterTilePlan> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let Some(catalog) = session.raster_map_catalog.as_ref() else {
         return Err(AppError {
@@ -4316,9 +4701,10 @@ pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
 ) -> AppResult<RasterTilePlan> {
     let total_started_at = crate::core_clock_ms();
     let lock_started_at = crate::core_clock_ms();
-    let mut sessions = lock_sessions();
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
     let lock_ms = elapsed_ms(lock_started_at);
-    let session = session_mut(&mut sessions, handle)?;
+    let session = &mut *session_guard;
     let advance_started_at = crate::core_clock_ms();
     advance_session_wall_clock(session, epoch_ms);
     let advance_ms = elapsed_ms(advance_started_at);
@@ -4434,8 +4820,9 @@ pub fn set_map_layer_enabled_in_session(
     layer: MapLayerId,
     enabled: bool,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
@@ -4453,8 +4840,9 @@ pub(crate) fn set_guidance_leg_geometry_in_session(
     handle: u32,
     geometries: Vec<GuidanceLegGeometry>,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     install_guidance_leg_geometry(session, geometries)?;
     changed_session_snapshot_outcome(session)
 }
@@ -4520,8 +4908,9 @@ fn self_contained_guidance_leg_geometry_for_plan(
 
 pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let started = crate::CoreDebugTimer::start();
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     match sync_guidance_geometry_for_session(session, &started) {
         Ok(()) => {
             crate::core_debug_log(
@@ -4624,8 +5013,9 @@ fn sync_guidance_geometry_for_session(
 }
 
 pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let Some(plan) = session.app_state.active_plan.clone() else {
         return Ok(HadOperationOutcome::complete(
             serde_json::to_value(crate::FlightPlanRouteProjection {
@@ -4666,8 +5056,9 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
 }
 
 pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let mut recent_airport_ids = vec![airport_id.to_string()];
     recent_airport_ids.extend(
@@ -4689,8 +5080,9 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<Had
 }
 
 pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     session.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
@@ -4712,8 +5104,9 @@ pub fn select_chart_reference_in_session(
     family_id: &str,
     suggested_chart_ids: &[String],
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     session.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
@@ -4731,8 +5124,9 @@ pub fn register_ownship_source_in_session(
     handle: u32,
     registration: crate::OwnshipSourceRegistration,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::RegisterOwnshipSource(registration),
@@ -4744,8 +5138,9 @@ pub fn update_ownship_source_status_in_session(
     handle: u32,
     update: crate::OwnshipSourceStatusUpdate,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     maybe_log_gps_capture_status(session, &update);
     session.app_state = state::reduce(
         &session.app_state,
@@ -4758,8 +5153,9 @@ pub fn push_situation_sample_in_session(
     handle: u32,
     sample: crate::SituationSample,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = apply_ownship_sample(session, sample)?;
     changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
 }
@@ -4826,8 +5222,9 @@ pub fn set_ownship_policy_in_session(
     handle: u32,
     policy: crate::OwnshipPolicy,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
     sync_adsb_ownship_status_record(session);
     changed_session_snapshot_outcome(session)
@@ -4837,8 +5234,9 @@ pub fn select_ownship_source_in_session(
     handle: u32,
     selection: crate::OwnshipSelectionCommand,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let terrain_key_before = ownship_terrain_refresh_key(session);
     let mut sequenced_guidance = false;
     let selected_source_kind = match &selection {
@@ -4882,8 +5280,9 @@ pub fn perform_ownship_text_action_in_session(
     value: &str,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     if action_id != crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID {
         return Err(AppError {
@@ -4930,8 +5329,9 @@ pub fn apply_situation_control_input_in_session(
     input: SituationControlInput,
     now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
     changed_session_snapshot_outcome(session)
 }
@@ -4941,8 +5341,9 @@ pub fn load_playback_trace_in_session(
     source_path: &str,
     trace_json: &str,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let playback_state = session
         .playback
         .load_trace_json(source_path.to_string(), trace_json)?;
@@ -4951,8 +5352,9 @@ pub fn load_playback_trace_in_session(
 }
 
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = session
         .playback
         .play(now_epoch_ms)
@@ -4964,8 +5366,9 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
 }
 
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = session
         .playback
         .pause(now_epoch_ms)
@@ -4981,8 +5384,9 @@ pub fn seek_playback_in_session(
     cursor_seconds: f64,
     now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = session
         .playback
         .seek(cursor_seconds, now_epoch_ms)
@@ -4998,8 +5402,9 @@ pub fn set_playback_rate_in_session(
     rate: f64,
     now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = session
         .playback
         .set_rate(rate, now_epoch_ms)
@@ -5011,8 +5416,9 @@ pub fn set_playback_rate_in_session(
 }
 
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = session
         .playback
         .tick(now_epoch_ms)
@@ -5027,8 +5433,9 @@ pub fn set_situation_in_session(
     handle: u32,
     situation: crate::Situation,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = apply_situation_to_ownship(
         session,
         DIRECT_SITUATION_SOURCE_ID,
@@ -5044,8 +5451,9 @@ pub fn tick_bad_autopilot_in_session(
     handle: u32,
     now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let motion = tick_bad_autopilot(session, now_epoch_ms)?;
     changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
@@ -5124,8 +5532,9 @@ pub fn perform_flight_plan_command_in_session(
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     {
-        let mut sessions = lock_sessions();
-        advance_session_wall_clock(session_mut(&mut sessions, handle)?, now_epoch_ms);
+        let slot = session_slot(handle)?;
+        let mut session = slot.lock_running()?;
+        advance_session_wall_clock(&mut session, now_epoch_ms);
     }
     match command {
         FlightPlanSessionCommand::InsertWaypointAtRow {
@@ -5213,8 +5622,9 @@ fn airport_info_in_session(
     airport_id: String,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let view = match crate::airport_info::airport_info(
         session_nav_kv_store(session)?,
         &airport_id,
@@ -5239,8 +5649,9 @@ fn airport_info_in_session(
 }
 
 fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let plan = session_plan(session)?;
     let compact = &session.chart_page_state;
     let derived = match chart_page_state(
@@ -5303,8 +5714,9 @@ fn planner_atmosphere_for_session(
 }
 
 fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let panel = match crate::had_ops::altitude_comparison_panel(
         session_nav_kv_store(session)?,
         session_plan(session)?,
@@ -5342,8 +5754,9 @@ fn perform_altitude_planner_action_in_session(
         });
     }
 
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
@@ -5388,8 +5801,9 @@ fn mutate_session_flight_plan(
     handle: u32,
     mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
     commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
@@ -5401,8 +5815,9 @@ pub fn perform_map_selection_action_in_session(
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     {
-        let mut sessions = lock_sessions();
-        advance_session_wall_clock(session_mut(&mut sessions, handle)?, now_epoch_ms);
+        let slot = session_slot(handle)?;
+        let mut session = slot.lock_running()?;
+        advance_session_wall_clock(&mut session, now_epoch_ms);
     }
     let action: MapSelectionSessionAction =
         serde_json::from_str(&action_json).map_err(|err| AppError {
@@ -5431,8 +5846,9 @@ fn insert_waypoint_best_position_for_session(
     handle: u32,
     waypoint: NavRef,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let store = session_nav_kv_store(session)?;
     let mutation = match insert_waypoint_best_position(store, &plan, waypoint) {
@@ -5458,8 +5874,9 @@ pub(crate) fn insert_waypoint_at_flight_plan_row_in_session(
     before: bool,
     waypoint: NavRef,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -5493,8 +5910,9 @@ pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     query: String,
     limit: usize,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -5546,8 +5964,9 @@ fn prepare_airway_presentation_at_flight_plan_row_in_session(
     row_uid: String,
     airway_name: String,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -5593,8 +6012,9 @@ fn describe_plate_procedure_loads_in_session(
     handle: u32,
     plate_id: String,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let plan = session_plan(session)?;
     let loads = match describe_plate_loads(session_nav_kv_store(session)?, &plan, &plate_id) {
         Ok(loads) => loads,
@@ -5622,8 +6042,9 @@ pub(crate) fn preview_flight_plan_entry_in_session(
     handle: u32,
     input: String,
 ) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let plan = session_plan(session)?;
     let store = session_nav_kv_store(session)?;
     match crate::had_ops::preview_flight_plan_entry(store, &plan, &input) {
@@ -5647,8 +6068,9 @@ pub(crate) fn append_flight_plan_entry_in_session(
     handle: u32,
     input: String,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let mutation = {
         let store = session_nav_kv_store(session)?;
@@ -5675,8 +6097,9 @@ pub(crate) fn insert_airway_at_flight_plan_row_in_session(
     row_uid: String,
     selection: AirwayPresentationSelection,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -5761,8 +6184,9 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
             "trace": trace,
         }),
     );
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     crate::core_debug_log(
@@ -5911,8 +6335,9 @@ pub(crate) fn load_plate_procedure_in_session(
         kind: AppErrorKind::InvalidFlightPlan,
         message: format!("invalid procedure load id: {err}"),
     })?;
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let mut plan = session_plan(session)?;
     let is_departure = command.kind == ProcedureKind::Sid;
     let airport_component_index = match &command.target {
@@ -6078,8 +6503,9 @@ fn activate_direct_to_nav_ref_in_session_outcome(
     handle: u32,
     target: NavRef,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let from_position = session
         .app_state
@@ -6098,8 +6524,9 @@ pub fn perform_status_action_in_session(
     handle: u32,
     action_id: String,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let command =
         parse_status_action_id(&action_id).ok_or_else(|| invalid_status_action(&action_id))?;
     match command {
@@ -6157,8 +6584,9 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
     row_uid: String,
     action_uid: String,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     let row = ui
@@ -6278,8 +6706,9 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
 }
 
 pub(crate) fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let next_plan = crate::restore_direct_to(&plan)?;
     commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
@@ -6299,8 +6728,9 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     store: &NavKvStore,
     open_result: Option<&NavDbOpenResult>,
 ) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.nav_kv_store_id = Some(store_id);
     session.nav_kv_store = Some(Arc::new(store.clone()));
     session.nav_db_artifact = open_result.map(AttachedNavDbArtifact::from);
@@ -6319,8 +6749,9 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     open_result: &NavDbOpenResult,
     installed_package_ids: Vec<String>,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let live = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let live = &mut *session_guard;
     if live.nav_db_advance_blocked {
         let active_artifact_filename = live
             .nav_db_artifact
@@ -6367,6 +6798,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let mut candidate = UiSession {
         model: live.model.clone(),
         runtime: std::mem::take(&mut live.runtime),
+        diagnostics: Arc::clone(&live.diagnostics),
     };
     candidate.nav_kv_store_id = Some(store_id);
     candidate.nav_kv_store = Some(Arc::new(store.clone()));
@@ -6535,8 +6967,9 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
     handle: u32,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     mark_cycle_product_freshness_dirty_if_deadline_due(session);
     sync_cycle_product_freshness_status_records_if_needed(session);
@@ -6614,8 +7047,15 @@ fn nav_db_maintenance_outcome(
 }
 
 pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, page_bytes: &[u8]) {
-    let mut sessions = lock_sessions();
-    for session in sessions.values_mut() {
+    let slots = lock_session_registry()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for slot in slots {
+        let Ok(mut session_guard) = slot.lock_running() else {
+            continue;
+        };
+        let session = &mut *session_guard;
         if session.nav_kv_store_id == Some(store_id) {
             if let Some(store) = session.nav_kv_store.as_mut() {
                 Arc::make_mut(store).insert_page(page_index, page_bytes.to_vec());
@@ -6632,8 +7072,15 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
 }
 
 pub fn debug_drop_nav_kv_pages_for_attached_sessions(store_id: u32) {
-    let mut sessions = lock_sessions();
-    for session in sessions.values_mut() {
+    let slots = lock_session_registry()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for slot in slots {
+        let Ok(mut session_guard) = slot.lock_running() else {
+            continue;
+        };
+        let session = &mut *session_guard;
         if session.nav_kv_store_id == Some(store_id) {
             if let Some(store) = session.nav_kv_store.as_mut() {
                 Arc::make_mut(store).clear_pages();
@@ -6646,8 +7093,9 @@ pub fn engage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.map_follow.engage(viewport);
     changed_session_snapshot_outcome(session)
 }
@@ -6656,8 +7104,9 @@ pub fn disengage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.map_follow.disengage(viewport);
     changed_session_snapshot_outcome(session)
 }
@@ -6668,8 +7117,9 @@ pub fn set_map_follow_offset_in_session(
     offset_x_px: f64,
     offset_y_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session
         .map_follow
         .set_anchor_offset(viewport, offset_x_px, offset_y_px);
@@ -6682,8 +7132,9 @@ pub fn sync_map_follow_in_session(
     width_px: f64,
     height_px: f64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let ownship = session.app_state.ownship.render.clone();
     session
         .map_follow
@@ -6700,8 +7151,9 @@ pub fn restore_chart_page_state_in_session(
     selected_chart_id: Option<&str>,
     suggested_chart_ids: &[String],
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     session.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
@@ -6720,8 +7172,9 @@ pub fn set_debug_flag_in_session(
     flag_id: DebugFlagId,
     enabled: bool,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     match flag_id {
         DebugFlagId::TileLabels => session.debug_state.tile_labels = enabled,
         DebugFlagId::NexradTileLabels => session.debug_state.nexrad_tile_labels = enabled,
@@ -6763,10 +7216,11 @@ pub fn get_session_snapshot_at_epoch_ms(
 ) -> AppResult<HadOperationOutcome> {
     let total_started_at = crate::core_clock_ms();
     let lock_started_at = crate::core_clock_ms();
-    let mut sessions = lock_sessions();
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
     let lock_ms = elapsed_ms(lock_started_at);
     let lookup_started_at = crate::core_clock_ms();
-    let session = session_mut(&mut sessions, handle)?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     sync_adsb_ownship_status_record(session);
     prepare_adsb_ownship_effect(session);
@@ -6800,8 +7254,9 @@ pub fn get_session_snapshot_at_epoch_ms(
 }
 
 pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     for tile in tiles {
         let aggregate = session
             .runtime
@@ -6825,8 +7280,9 @@ pub fn ingest_airspace_ref_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceReferenceTilePayload],
 ) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     for tile in tiles {
         session
             .runtime
@@ -6844,8 +7300,9 @@ pub fn ingest_airspace_features_in_session(
     handle: u32,
     features: &[AirspaceFeaturePayload],
 ) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     for feature in features {
         session
             .runtime
@@ -6859,8 +7316,9 @@ pub fn ingest_airspace_label_tiles_in_session(
     handle: u32,
     tiles: &[AirspaceLabelTilePayload],
 ) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     for tile in tiles {
         session
             .runtime
@@ -6889,31 +7347,35 @@ fn empty_vector_aggregate_tile(z: u32, x: u32, y: u32) -> VectorAggregateTilePay
 }
 
 pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.runtime.tfr_payload = Some(payload.clone());
     sync_live_feed_overlay_status_records(session);
     Ok(())
 }
 
 pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     session.runtime.taf_payload = Some(payload.clone());
     Ok(())
 }
 
 pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     Ok(session
         .live_feeds
         .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
 }
 
 pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if session.live_feed_current_refresh == LiveFeedCurrentRefreshState::Ingested {
         session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Idle;
         return Ok(session.live_feeds.complete_outcome_with_invalidations());
@@ -6925,8 +7387,9 @@ pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperati
 }
 
 pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str) -> AppResult<()> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let normalized = Arc::make_mut(&mut session.live_feeds).set_source_root_url(source_root_url)?;
     session.live_feed_connection.source_url = Some(normalized.clone());
     session.live_feed_connection.status_url = Some(crate::live_feed_status_url(&normalized)?);
@@ -6937,8 +7400,9 @@ pub fn live_feed_runtime_decision_in_session(
     handle: u32,
     input: LiveFeedRuntimeInput,
 ) -> AppResult<LiveFeedRuntimeDecision> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     Ok(crate::live_feed_runtime_decision(
         &mut session.live_feed_connection.runtime,
         input,
@@ -6957,8 +7421,9 @@ pub fn ingest_live_feed_sse_event_in_session_at_epoch_ms(
     event: &LiveFeedSseEvent,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     record_live_feed_connection_event(
         session,
         LiveFeedConnectionEvent {
@@ -6985,8 +7450,9 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
     events: &[LiveFeedSseEvent],
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     if !events.is_empty() {
         record_live_feed_connection_event(
             session,
@@ -7037,8 +7503,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
     epoch_ms: i64,
 ) -> AppResult<()> {
     if crate::adsb::AdsbSessionState::handles_resource(resource_id) {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         advance_session_wall_clock(session, epoch_ms);
         let received_epoch_ms = session.wall_clock_epoch_ms;
         match session
@@ -7084,8 +7551,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         return Ok(());
     }
     if let Some(src) = nexrad_tile_src_from_resource_id(resource_id) {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         session
             .runtime
             .nexrad_tile_cache
@@ -7093,8 +7561,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         return Ok(());
     }
     if LiveFeedsState::handles_resource(resource_id) {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         if resource_id == "live_feeds/current" {
             record_live_feed_connection_event(
                 session,
@@ -7136,20 +7605,23 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         return Ok(());
     }
     if resource_id.starts_with(LIVE_NAV_KV_RESOURCE_PREFIX) {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         ingest_live_forecast_atmosphere_resource(session, resource_id, bytes)?;
         return Ok(());
     }
     if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         ingest_live_obstacle_had_resource(session, resource_id, bytes)?;
         return Ok(());
     }
     if resource_id.starts_with("publication/") {
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         if resource_id == "publication/current_artifacts" {
             advance_session_wall_clock(session, epoch_ms);
             let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
@@ -7184,8 +7656,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                 }
             })?
         };
-        let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        let session = &mut *session_guard;
         session
             .runtime
             .agl_terrain_resource_ids_in_flight
@@ -7207,8 +7680,9 @@ pub fn report_live_feed_connection_event_in_session(
     event: LiveFeedConnectionEvent,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     record_live_feed_connection_event(session, event, epoch_ms);
     changed_session_snapshot_outcome(session)
 }
@@ -7288,8 +7762,9 @@ pub fn ingest_prepared_live_feed_resource_in_session(
         )) => Some(delta.mutations.len()),
         _ => None,
     };
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let mut next_live_feeds = (*session.live_feeds).clone();
     next_live_feeds.ingest_prepared_live_feed(resource_id, &envelope)?;
     if next_live_feeds.product_staged_version(&envelope_product) != Some(envelope_version.as_str())
@@ -7347,8 +7822,9 @@ pub fn install_live_feed_installed_state_in_session(
     handle: u32,
     installed: &crate::LiveFeedInstalledState,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     install_live_feed_installed_state(session, installed)?;
     changed_session_snapshot_outcome(session)
 }
@@ -7376,8 +7852,9 @@ pub fn install_prepared_live_feed_cache_product_in_session(
             ),
         });
     }
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     install_prepared_live_feed(session, envelope.payload)?;
     Arc::make_mut(&mut session.live_feeds).mark_durable_product_loaded(
         installed.product.clone(),
@@ -7578,8 +8055,9 @@ pub fn sync_live_feed_catalog_in_session(
     handle: u32,
     live_feeds: &crate::LiveFeedsState,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     Arc::make_mut(&mut session.live_feeds).merge_catalog_from(live_feeds);
     sync_live_feed_overlay_status_records(session);
     changed_session_snapshot_outcome(session)
@@ -7723,8 +8201,9 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     message: &str,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     if LiveFeedsState::handles_resource(resource_id) {
         let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
@@ -9386,9 +9865,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
 ) -> AppResult<HadOperationOutcome> {
     let total_started_at = crate::core_clock_ms();
     let lock_started_at = crate::core_clock_ms();
-    let mut sessions = lock_sessions();
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
     let lock_ms = elapsed_ms(lock_started_at);
-    let session = session_mut(&mut sessions, handle)?;
+    let session = &mut *session_guard;
     let advance_started_at = crate::core_clock_ms();
     advance_session_wall_clock(session, epoch_ms);
     let advance_ms = elapsed_ms(advance_started_at);
@@ -9719,8 +10199,9 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
     point_display_scale: f64,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     let selection = match materialize_map_selection_in_session(session, &metrics, click, None)? {
@@ -9746,8 +10227,9 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
     point_display_scale: f64,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let store = session_nav_kv_store(session)?;
     let position = match nav_ref_position(store, &nav_ref, None) {
@@ -10181,8 +10663,9 @@ pub fn get_scheduled_terrain_overlay_in_session_at_epoch_ms(
     in_flight_cache_keys: &BTreeSet<String>,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let freshness_invalidations = Vec::new();
     if !session.map_layer_state.terrain_warning.visible {
@@ -10367,8 +10850,9 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     height_px: f64,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let previous_nexrad_banner_value = nexrad_frame_age_banner_value(session);
     advance_session_wall_clock(session, epoch_ms);
     let mut freshness_invalidations = Vec::new();
@@ -10621,8 +11105,9 @@ fn nexrad_frame_age_values(frames: &[NexradFrameCandidate], epoch_ms: i64) -> Ve
 }
 
 pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     session
         .runtime
         .nexrad_tile_cache
@@ -10652,8 +11137,9 @@ const NEXRAD_TILE_RESOURCE_PREFIX: &str = "live_feeds/nexrad_tile/";
 
 pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> AppResult<HadOperationOutcome> {
     let resource = {
-        let sessions = lock_sessions();
-        let session = session_ref(&sessions, handle)?;
+        let slot = session_slot(handle)?;
+        let session_guard = slot.lock_running()?;
+        let session = &*session_guard;
         if nexrad_tile_bytes_loaded(session, src)? {
             return Ok(HadOperationOutcome::complete(serde_json::Value::Null));
         }
@@ -11189,8 +11675,9 @@ pub fn render_terrain_overlay_tile_in_session(
     tile_bytes: &[u8],
     aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let altitude_ft = aircraft_altitude_ft
         .filter(|altitude| altitude.is_finite())
         .or_else(|| ownship_terrain_altitude_ft(session))
@@ -11211,8 +11698,9 @@ pub fn render_terrain_overlay_tile_by_key_in_session(
     tile_key: &str,
     aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let altitude_ft = aircraft_altitude_ft
         .filter(|altitude| altitude.is_finite())
         .or_else(|| ownship_terrain_altitude_ft(session))
@@ -11251,8 +11739,9 @@ pub fn render_terrain_overlay_tiles_in_session(
     packed_tile_bytes: &[u8],
     aircraft_altitude_ft: Option<f64>,
 ) -> AppResult<Vec<u8>> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
     let altitude_ft = aircraft_altitude_ft
         .filter(|altitude| altitude.is_finite())
         .or_else(|| ownship_terrain_altitude_ft(session))
@@ -11303,7 +11792,10 @@ fn unpack_packed_terrain_tiles(packed_tile_bytes: &[u8]) -> Result<Vec<Vec<u8>>,
 }
 
 pub fn destroy_session(handle: u32) {
-    let _ = lock_sessions().remove(&handle);
+    let slot = lock_session_registry().remove(&handle);
+    if let Some(slot) = slot {
+        slot.close();
+    }
 }
 
 fn ownship_terrain_altitude_ft(session: &UiSession) -> Option<f64> {
@@ -11329,20 +11821,6 @@ fn ownship_overlay_context(session: &UiSession) -> Option<crate::ObstacleOverlay
         altitude_ft: kinematics
             .altitude_msl_ft
             .or(kinematics.pressure_altitude_ft),
-    })
-}
-
-fn session_ref(sessions: &HashMap<u32, UiSession>, handle: u32) -> AppResult<&UiSession> {
-    sessions.get(&handle).ok_or_else(|| AppError {
-        kind: AppErrorKind::Internal,
-        message: format!("invalid ui session handle: {handle}"),
-    })
-}
-
-fn session_mut(sessions: &mut HashMap<u32, UiSession>, handle: u32) -> AppResult<&mut UiSession> {
-    sessions.get_mut(&handle).ok_or_else(|| AppError {
-        kind: AppErrorKind::Internal,
-        message: format!("invalid ui session handle: {handle}"),
     })
 }
 
@@ -11527,6 +12005,9 @@ fn changed_session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOpe
     changed_session_snapshot_outcome_with_invalidations(session, Vec::new())
 }
 
+// Use this only after an infallible model commit. Snapshot paging is a continuation,
+// so NeedSnapshotResources retains the committed revision. Fallible mutations and
+// durable writes must use run_session_model_transaction instead.
 fn changed_session_snapshot_outcome_with_invalidations(
     session: &mut UiSession,
     mut invalidations: Vec<UiInvalidation>,
@@ -11606,6 +12087,10 @@ fn try_snapshot_for_session(
         return Err(SessionSnapshotProjectionError::NeedResources(resources));
     }
     let total_started_at = crate::core_clock_ms();
+    session
+        .diagnostics
+        .snapshot_projection_count
+        .fetch_add(1, Ordering::Relaxed);
     sync_cloud_status_record(session);
     if session.runtime.metar_payload.is_some() || session.runtime.taf_payload.is_some() {
         ensure_weather_station_airport_aliases_loaded(session)?;
@@ -11613,6 +12098,14 @@ fn try_snapshot_for_session(
     enqueue_ownship_agl_terrain_effect(session);
     let app_ui_started_at = crate::core_clock_ms();
     let mut app_ui_state = project_session_app_ui_state(session)?;
+    session
+        .diagnostics
+        .app_ui_projection_count
+        .fetch_add(1, Ordering::Relaxed);
+    session
+        .diagnostics
+        .weather_projection_count
+        .fetch_add(1, Ordering::Relaxed);
     let app_ui_ms = elapsed_ms(app_ui_started_at);
     let debug_started_at = crate::core_clock_ms();
     let debug_state = session.debug_state.clone();
@@ -11635,6 +12128,10 @@ fn try_snapshot_for_session(
     let data_status_page_state = project_data_status_page_state(session);
     let settings_page_state =
         project_settings_page_state(session, &app_ui_state.flight_data_banner);
+    session
+        .diagnostics
+        .settings_projection_count
+        .fetch_add(1, Ordering::Relaxed);
     let cloud_page_state = session.cloud.page_state_with_qr_scanner(
         session.wall_clock_epoch_ms,
         session
@@ -11664,6 +12161,10 @@ fn try_snapshot_for_session(
         .raster_map_catalog
         .as_deref()
         .and_then(crate::raster_map_ui_state);
+    session
+        .diagnostics
+        .map_projection_count
+        .fetch_add(1, Ordering::Relaxed);
     let raster_ms = elapsed_ms(raster_started_at);
     let total_ms = elapsed_ms(total_started_at);
     crate::core_perf_debug_log("session.snapshot.core", || {
@@ -11676,6 +12177,7 @@ fn try_snapshot_for_session(
             "map_follow_ms": map_follow_ms,
             "clone_ms": clone_ms,
             "raster_ms": raster_ms,
+            "projections": ["app_ui", "weather", "settings", "map"],
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
             "settings_page_rows": settings_page_state.rows.len(),
@@ -13803,9 +14305,34 @@ fn normalize_compact_airport_id(airport_id: Option<&str>) -> Option<String> {
 }
 
 #[cfg(test)]
+fn lock_sessions() -> MutexGuard<'static, HashMap<u32, Arc<SessionSlot>>> {
+    lock_session_registry()
+}
+
+#[cfg(test)]
+fn session_ref<'a>(
+    sessions: &'a HashMap<u32, Arc<SessionSlot>>,
+    handle: u32,
+) -> AppResult<RunningSessionGuard<'a>> {
+    sessions
+        .get(&handle)
+        .ok_or_else(|| invalid_session_handle_error(handle))?
+        .lock_running()
+}
+
+#[cfg(test)]
+fn session_mut<'a>(
+    sessions: &'a mut HashMap<u32, Arc<SessionSlot>>,
+    handle: u32,
+) -> AppResult<RunningSessionGuard<'a>> {
+    session_ref(sessions, handle)
+}
+
+#[cfg(test)]
 fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     commit_session_flight_plan_with_invalidations_outcome(session, plan)
 }
 
@@ -13956,6 +14483,7 @@ mod tests {
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             },
             runtime: SessionRuntime::default(),
+            diagnostics: Arc::new(SessionDiagnosticsCounters::default()),
         }
     }
 
@@ -14351,6 +14879,151 @@ mod tests {
             session.runtime.terrain_source_tile_cache["seed"].as_ptr(),
             terrain_bytes_address
         );
+    }
+
+    struct RejectingSettingsStorage;
+
+    impl SettingsStorage for RejectingSettingsStorage {
+        fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn write_settings(&self, _bytes: &[u8]) -> AppResult<()> {
+            Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: "injected settings write failure".to_string(),
+            })
+        }
+    }
+
+    struct RejectingSettingsReadStorage;
+
+    impl SettingsStorage for RejectingSettingsReadStorage {
+        fn read_settings(&self) -> AppResult<Option<Vec<u8>>> {
+            Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: "injected settings read failure".to_string(),
+            })
+        }
+
+        fn write_settings(&self, _bytes: &[u8]) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn model_transaction_rolls_back_model_and_queued_effects_when_persistence_fails() {
+        let mut session = isolated_test_session(None);
+        session.settings_storage = Some(Arc::new(RejectingSettingsStorage));
+        let prior_revision = session.session_revision;
+
+        let error = run_session_model_transaction(&mut session, |session| {
+            session
+                .installed_package_ids
+                .insert("must-roll-back".to_string());
+            enqueue_session_resource_effect(
+                session,
+                CoreResourceRequest::public_url("test", "/test", false),
+                [UiInvalidation::MapOverlay],
+            );
+            Ok(vec![UiInvalidation::SessionSnapshot])
+        })
+        .expect_err("persistence failure must abort transaction");
+
+        assert!(error.message.contains("injected settings write failure"));
+        assert_eq!(session.session_revision, prior_revision);
+        assert!(!session.installed_package_ids.contains("must-roll-back"));
+        assert!(session.runtime.pending_resource_effects.is_empty());
+        assert_eq!(
+            session
+                .diagnostics
+                .transaction_rollback_count
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn closing_session_rejects_new_work_and_waits_for_accepted_work() {
+        let handle = u32::MAX;
+        let slot = Arc::new(SessionSlot::new(handle, 99, isolated_test_session(None)));
+        let guard = slot.lock_running().expect("accepted operation");
+
+        assert!(slot.begin_close());
+        assert_eq!(slot.phase(), UiSessionPhase::Closing);
+        assert!(slot.lock_running().is_err());
+
+        let closing_slot = Arc::clone(&slot);
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            closing_slot.finish_close();
+            closed_tx.send(()).expect("report closed");
+        });
+        assert!(closed_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+
+        drop(guard);
+        closed_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("close completes after accepted operation");
+        closer.join().expect("closer thread");
+        assert_eq!(slot.phase(), UiSessionPhase::Closed);
+        assert!(slot.lock_running().is_err());
+    }
+
+    #[test]
+    fn holding_one_session_does_not_block_another_session() {
+        let first = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create first session");
+        let second = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create second session");
+        let first_slot = session_slot(first.handle).expect("first slot");
+        let first_guard = first_slot.lock_running().expect("hold first session");
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        let second_handle = second.handle;
+        let query = std::thread::spawn(move || {
+            result_tx
+                .send(super::get_session_snapshot(second_handle))
+                .expect("send second-session result");
+        });
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second session must not wait for first session");
+        assert!(result.is_ok());
+
+        drop(first_guard);
+        query.join().expect("second-session query");
+        destroy_session(first.handle);
+        destroy_session(second.handle);
+    }
+
+    #[test]
+    fn session_diagnostics_count_operations_projections_and_payload_size() {
+        let first = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create first session");
+        let second = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create second session");
+        let first_initial = session_diagnostics(first.handle).expect("first diagnostics");
+        let second_initial = session_diagnostics(second.handle).expect("second diagnostics");
+        assert!(second_initial.generation > first_initial.generation);
+
+        super::get_session_snapshot(first.handle).expect("project snapshot");
+        record_session_serialized_payload_bytes(first.handle, 12_345);
+        let diagnostics = session_diagnostics(first.handle).expect("updated diagnostics");
+        assert_eq!(diagnostics.phase, UiSessionPhase::Running);
+        assert_eq!(diagnostics.operation_count, 1);
+        assert_eq!(diagnostics.snapshot_projection_count, 2);
+        assert_eq!(diagnostics.app_ui_projection_count, 2);
+        assert_eq!(diagnostics.settings_projection_count, 2);
+        assert_eq!(diagnostics.weather_projection_count, 2);
+        assert_eq!(diagnostics.map_projection_count, 2);
+        assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
+
+        destroy_session(first.handle);
+        destroy_session(second.handle);
+        assert!(session_diagnostics(first.handle).is_err());
     }
 
     #[test]
@@ -14847,6 +15520,70 @@ mod tests {
     }
 
     #[test]
+    fn settings_action_leaves_live_model_unchanged_when_storage_rejects_write() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let before = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            Some(Arc::new(RejectingSettingsStorage)),
+        )
+        .expect("configure rejecting storage");
+        assert_eq!(before.settings_page_state.rows[1].value_id, "2m");
+
+        let error = super::perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
+                value_id: "30s".to_string(),
+            },
+        )
+        .expect_err("failed persistence must reject setting");
+        assert!(error.message.contains("injected settings write failure"));
+
+        let after = get_session_snapshot(init.handle).expect("snapshot retained setting");
+        assert_eq!(after.session_revision, before.session_revision);
+        assert_eq!(after.settings_page_state.rows[1].value_id, "2m");
+        assert_eq!(
+            after
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.dim_after_ms),
+            Some(120_000)
+        );
+        let diagnostics = session_diagnostics(init.handle).expect("diagnostics");
+        assert_eq!(diagnostics.transaction_rollback_count, 1);
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn platform_configuration_rolls_back_when_settings_read_fails() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let error = super::configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            Some(Arc::new(RejectingSettingsReadStorage)),
+        )
+        .expect_err("failed settings read must reject configuration");
+        assert!(error.message.contains("injected settings read failure"));
+
+        let snapshot = get_session_snapshot(init.handle).expect("retained initial snapshot");
+        assert_eq!(snapshot.session_revision, 0);
+        assert!(snapshot.display_policy.is_none());
+        assert!(snapshot.settings_page_state.rows.len() == 1);
+        let diagnostics = session_diagnostics(init.handle).expect("diagnostics");
+        assert_eq!(diagnostics.transaction_rollback_count, 1);
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn offline_package_profile_is_core_persisted_across_session_restart() {
         let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
         let first =
@@ -15158,8 +15895,8 @@ mod tests {
     ) {
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, metrics);
+            let mut session = session_mut(&mut sessions, handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, metrics);
             assert_eq!(statuses.len(), 1);
         }
         let effects = drain_session_resource_effects(handle).expect("root effects");
@@ -15186,8 +15923,8 @@ mod tests {
 
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, metrics);
+            let mut session = session_mut(&mut sessions, handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, metrics);
             assert_eq!(statuses.len(), 1);
         }
         let page_effects = drain_session_resource_effects(handle)
@@ -15220,8 +15957,8 @@ mod tests {
     fn query_obstacle_feature_ids(handle: u32, metrics: &MapSurfaceMetrics) -> Vec<String> {
         let (config, obstacle_cache) = {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, metrics);
+            let mut session = session_mut(&mut sessions, handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, metrics);
             assert!(statuses.is_empty());
             (
                 session.map_overlay_config.clone(),
@@ -15722,8 +16459,8 @@ mod tests {
         );
         assert_eq!(result.retained_artifact_filenames, ["NAV_DB_2608.zip"]);
         assert!(invalidations.contains(&UiInvalidation::NavData));
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("live session");
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("live session");
         assert_eq!(session.nav_data_epoch, 1);
         assert_eq!(session.nav_kv_store_id, Some(2));
         assert_eq!(
@@ -15765,8 +16502,8 @@ mod tests {
         .expect("fault candidate pages");
         assert!(matches!(first, HadOperationOutcome::NeedResources { .. }));
         {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("live session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("live session");
             assert_eq!(session.nav_data_epoch, 0);
             assert_eq!(session.nav_kv_store_id, Some(11));
             assert_eq!(
@@ -15837,11 +16574,11 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == RELOAD_APPLICATION_ACTION_ID));
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("live session");
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("live session");
         assert_eq!(session.nav_kv_store_id, Some(21));
         assert!(session.nav_db_advance_blocked);
-        drop(sessions);
+        drop(session);
 
         let maintenance = nav_db_maintenance_result(
             maintain_nav_db_in_session_at_epoch_ms(
@@ -15911,8 +16648,8 @@ mod tests {
             .rejection_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("KBBB")));
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("retained session");
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("retained session");
         assert_eq!(session.nav_kv_store_id, Some(31));
         assert_eq!(session.app_state.active_plan.as_ref(), Some(&plan));
     }
@@ -16132,8 +16869,8 @@ mod tests {
                 .map(|map| map.selected_family_id.as_str()),
             Some(catalog_before.selected_family_id.as_str())
         );
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("committed 2608 session");
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("committed 2608 session");
         assert_eq!(session.app_state.active_plan.as_ref(), Some(&expected_plan));
         assert_eq!(session.nav_kv_store_id, Some(2608));
         assert!(!session.guidance_leg_geometry.is_empty());
@@ -16200,7 +16937,7 @@ mod tests {
         });
         let bytes = serde_json::to_vec(&bundle).expect("bundle json");
         let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, handle).expect("session");
+        let mut session = session_mut(&mut sessions, handle).expect("session");
         Arc::make_mut(&mut session.publication_resolver)
             .ingest_resource("publication/bundle/test.json", &bytes)
             .expect("ingest bundle");
@@ -16461,9 +17198,9 @@ mod tests {
         });
 
         let requests = {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
-            weather_overlay_resources(session, &overlay)
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
+            weather_overlay_resources(&session, &overlay)
         };
         assert!(
             requests
@@ -16480,7 +17217,7 @@ mod tests {
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
@@ -16510,9 +17247,9 @@ mod tests {
         overlay.needed_tfrs = true;
 
         let requests = {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
-            weather_overlay_resources(session, &overlay)
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
+            weather_overlay_resources(&session, &overlay)
         };
 
         assert!(
@@ -16681,7 +17418,7 @@ mod tests {
 
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
                 r#"{
                     "point_layers": {
@@ -16828,8 +17565,8 @@ mod tests {
             )
             .unwrap();
 
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
             match product {
                 "tafs" => assert_eq!(
                     session
@@ -16858,7 +17595,7 @@ mod tests {
                 ),
                 _ => unreachable!(),
             }
-            drop(sessions);
+            drop(session);
             destroy_session(init.handle);
         }
     }
@@ -16929,15 +17666,15 @@ mod tests {
         ingest_resource_in_session(init.handle, "live_feeds/state/tafs/v1", &state_bytes)
             .expect("tafs state");
 
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).expect("session");
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("session");
         let taf_payload = session.runtime.taf_payload.as_ref().expect("TAF payload");
         assert_eq!(taf_payload.version_label, "v1");
         assert_eq!(
             taf_payload.tafs_by_station["KAAA"].raw_text,
             "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020"
         );
-        drop(sessions);
+        drop(session);
 
         let snapshot = get_session_snapshot_at_epoch_ms(
             init.handle,
@@ -17002,9 +17739,9 @@ mod tests {
         let checkpoint = crate::map_overlay::airport_notam_projection_checkpoint(&source);
 
         let mut sessions = lock_sessions();
-        let session = session_mut(&mut sessions, init.handle).expect("session");
+        let mut session = session_mut(&mut sessions, init.handle).expect("session");
         install_prepared_live_feed(
-            session,
+            &mut session,
             crate::PreparedLiveFeedPayload::Notams(
                 crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint.clone()),
             ),
@@ -17017,7 +17754,7 @@ mod tests {
             mutations: Vec::new(),
         };
         assert!(install_prepared_live_feed(
-            session,
+            &mut session,
             crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
                 stale
             ),),
@@ -17033,7 +17770,7 @@ mod tests {
         );
 
         install_prepared_live_feed(
-            session,
+            &mut session,
             crate::PreparedLiveFeedPayload::Notams(
                 crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint),
             ),
@@ -17054,7 +17791,7 @@ mod tests {
             )],
         };
         assert!(install_prepared_live_feed(
-            session,
+            &mut session,
             crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
                 invalid
             ),),
@@ -17146,7 +17883,7 @@ mod tests {
 
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).unwrap();
+            let mut session = session_mut(&mut sessions, init.handle).unwrap();
             Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
@@ -17198,8 +17935,8 @@ mod tests {
         )
         .unwrap();
         {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).unwrap();
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().unwrap();
             assert_eq!(
                 session
                     .runtime
@@ -17227,8 +17964,8 @@ mod tests {
             &prepared_delta,
         )
         .unwrap();
-        let sessions = lock_sessions();
-        let session = sessions.get(&init.handle).unwrap();
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().unwrap();
         assert_eq!(
             session
                 .runtime
@@ -17320,8 +18057,8 @@ mod tests {
         )
         .expect("prepare NOTAM checkpoint");
         {
-            let mut sessions = lock_sessions();
-            let session = sessions.get_mut(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let mut session = slot.lock_running().expect("session");
             Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
@@ -17364,8 +18101,8 @@ mod tests {
         ingest_prepared_live_feed_resource_in_session(init.handle, &resource_id, &prepared_bytes)
             .expect("install NOTAM checkpoint");
         {
-            let mut sessions = lock_sessions();
-            let session = sessions.get_mut(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
             let index = session
                 .runtime
                 .airport_notam_index
@@ -17414,8 +18151,8 @@ mod tests {
         };
         let init = create_ui_session(plan, &[], None, None).expect("create session");
         {
-            let mut sessions = lock_sessions();
-            let session = sessions.get_mut(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let mut session = slot.lock_running().expect("session");
             let mut metars_by_station = HashMap::new();
             metars_by_station.insert(
                 "KAAA".to_string(),
@@ -17960,7 +18697,7 @@ mod tests {
         attach_isolated_test_nav_kv_store(init.handle, &store);
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
                 r#"{
                     "point_layers": {
@@ -18052,7 +18789,7 @@ mod tests {
                 )]),
                 pireps: Vec::new(),
             });
-            rebuild_metar_tile_cache(session);
+            rebuild_metar_tile_cache(&mut session);
         }
 
         let outcome = get_map_overlay_in_session(
@@ -18077,8 +18814,8 @@ mod tests {
         assert_eq!(overlay.visible_features[0].label, "KAAA");
         assert_eq!(overlay.visible_metars.len(), 1);
         {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
             assert!(
                 session.runtime.important_metar_station_ids.is_none(),
                 "high-zoom METAR rendering must not request the low-zoom importance table"
@@ -18118,8 +18855,8 @@ mod tests {
             "missing vector pages should be returned through the paged operation contract"
         );
         {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
             assert!(
                 !session
                     .data_status_records
@@ -18170,7 +18907,7 @@ mod tests {
         let store_id = attach_isolated_test_nav_kv_store(init.handle, &store);
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
                 r#"{
                     "point_layers": {
@@ -18217,7 +18954,7 @@ mod tests {
                 )]),
                 pireps: Vec::new(),
             });
-            rebuild_metar_tile_cache(session);
+            rebuild_metar_tile_cache(&mut session);
         }
 
         let display_scale = 1.75_f64;
@@ -18250,8 +18987,8 @@ mod tests {
             serde_json::from_value(result).expect("decode overlay result");
         assert!(overlay.visible_metars.is_empty());
         {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
             assert!(session.runtime.important_metar_station_ids.is_none());
             assert!(
                 !session
@@ -18305,8 +19042,8 @@ mod tests {
         assert_eq!(overlay.visible_metars.len(), 1);
         assert_eq!(overlay.visible_metars[0].station_id, "KAAA");
         {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
             assert_eq!(
                 session.runtime.important_metar_station_ids,
                 Some(HashSet::from(["KAAA".to_string()]))
@@ -18480,8 +19217,8 @@ mod tests {
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            install_vector_manifest_config(session, minimal_vector_manifest_json())
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            install_vector_manifest_config(&mut session, minimal_vector_manifest_json())
                 .expect("vector manifest");
             session.map_layer_state.vectors.visible = true;
         }
@@ -18522,8 +19259,8 @@ mod tests {
         let metrics = MapSurfaceMetrics::new(viewport, 240.0, 240.0, 1.0);
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, &metrics);
             assert_eq!(statuses.len(), 1);
         }
         let effects = drain_session_resource_effects(init.handle).expect("root effects");
@@ -18540,8 +19277,8 @@ mod tests {
 
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, &metrics);
             assert_eq!(statuses.len(), 1);
         }
         let page_effects = drain_session_resource_effects(init.handle).expect("page effects");
@@ -18559,8 +19296,8 @@ mod tests {
 
         let (config, obstacle_cache) = {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, &metrics);
             assert!(statuses.is_empty());
             (
                 session.map_overlay_config.clone(),
@@ -18605,8 +19342,8 @@ mod tests {
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            install_vector_manifest_config(session, minimal_vector_manifest_json())
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            install_vector_manifest_config(&mut session, minimal_vector_manifest_json())
                 .expect("vector manifest");
             session.map_layer_state.vectors.visible = true;
         }
@@ -18957,8 +19694,8 @@ mod tests {
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            install_vector_manifest_config(session, minimal_vector_manifest_json())
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            install_vector_manifest_config(&mut session, minimal_vector_manifest_json())
                 .expect("vector manifest");
             session.map_layer_state.vectors.visible = true;
         }
@@ -18981,8 +19718,8 @@ mod tests {
         let metrics = MapSurfaceMetrics::new(viewport, 240.0, 240.0, 1.0);
         let (statuses, effects, config, obstacle_cache) = {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
-            let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            let statuses = ensure_live_obstacle_inputs_loaded(&mut session, &metrics);
             (
                 statuses,
                 std::mem::take(&mut session.runtime.pending_resource_effects),
@@ -19932,7 +20669,7 @@ mod tests {
             .expect("hide vectors");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.map_overlay_config = map_overlay_config_from_vector_manifest_json(
                 r#"{
                     "point_layers": {
@@ -20041,7 +20778,7 @@ mod tests {
             .expect("show metars");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "old-metars".to_string(),
@@ -20068,7 +20805,7 @@ mod tests {
             .expect("show metars");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "loaded-metars".to_string(),
@@ -20115,7 +20852,7 @@ mod tests {
             .expect("show metars");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "fresh-metars".to_string(),
@@ -20159,7 +20896,7 @@ mod tests {
             .expect("hide vectors");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "fresh-then-old-metars".to_string(),
@@ -20217,7 +20954,7 @@ mod tests {
             .expect("show vectors");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.runtime.tfr_payload = Some(TfrProductPayload {
                 schema_version: 1,
                 version_label: "old-tfrs".to_string(),
@@ -20373,7 +21110,7 @@ mod tests {
         let init = create_current_test_session();
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.raster_map_catalog = Some(expired_raster_catalog("2020-01-01").into());
         }
 
@@ -20392,7 +21129,7 @@ mod tests {
         let tac = raster_map_option("tac:nw", "NW TAC", Some("2026-05-14"), Some("2026-07-09"));
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.raster_map_catalog =
                 Some(raster_catalog_with_displayed_maps(tac.clone(), vec![sectional, tac]).into());
         }
@@ -20414,7 +21151,7 @@ mod tests {
         );
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.raster_map_catalog =
                 Some(raster_catalog_with_displayed_maps(option.clone(), vec![option]).into());
         }
@@ -20439,7 +21176,7 @@ mod tests {
         let tac = raster_map_option("tac:nw", "NW TAC", None, Some("2020-01-01"));
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.raster_map_catalog =
                 Some(raster_catalog_with_displayed_maps(tac.clone(), vec![sectional, tac]).into());
         }
@@ -20756,7 +21493,7 @@ mod tests {
                 .expect("create session");
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             Arc::make_mut(&mut session.publication_resolver)
                 .ingest_resource_at_epoch_ms(
                     "publication/current_artifacts",
@@ -21406,13 +22143,13 @@ mod tests {
         attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             assert!(!session.cycle_product_freshness.dirty);
             assert!(session
                 .data_status_records
                 .remove(CYCLE_NAV_DB_STATUS_ID)
                 .is_some());
-            sync_data_status_projection(session);
+            sync_data_status_projection(&mut session);
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
@@ -21434,7 +22171,7 @@ mod tests {
         );
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             assert!(!session.cycle_product_freshness.dirty);
             session.wall_clock_epoch_ms = utc("2026-05-21T00:00:01Z").timestamp_millis();
         }
@@ -24415,8 +25152,8 @@ mod tests {
 
         assert!(guidance.active_to_row_uid.is_some());
         let sessions = lock_sessions();
-        let core_guidance = session_ref(&sessions, init.handle)
-            .expect("session")
+        let session = session_ref(&sessions, init.handle).expect("session");
+        let core_guidance = session
             .app_state
             .active_plan
             .as_ref()
@@ -26433,9 +27170,9 @@ mod tests {
         assert_eq!(guidance.active_detail_index, Some(1));
         assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
         let nav_element = {
-            let sessions = lock_sessions();
-            let session = sessions.get(&init.handle).expect("session");
-            project_active_leg_nav_element(session, None).expect("nav element")
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("session");
+            project_active_leg_nav_element(&session, None).expect("nav element")
         };
         assert_eq!(nav_element.active_leg_summary, "HOLD");
         assert!(

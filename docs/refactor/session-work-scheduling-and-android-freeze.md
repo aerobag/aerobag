@@ -1,5 +1,9 @@
 # Session Work Scheduling and Android Freeze Plan
 
+State ownership, lifecycle, transactions, and partial projection are tracked in
+[`session-ownership-and-projection.md`](session-ownership-and-projection.md).
+This document remains focused on input responsiveness and execution scheduling.
+
 ## Problem
 
 The black tablet freeze/ANR showed Android running expensive session work on paths

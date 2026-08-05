@@ -2915,6 +2915,8 @@ fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActio
                 FlightPlanRowActionId::ShowPlate,
                 component.chart_airport_id.is_some() && component.procedure_id.is_some(),
             ),
+            action(FlightPlanRowActionId::InsertBefore, true),
+            action(FlightPlanRowActionId::InsertAfter, true),
             core_session_action_with_disabled_reason(
                 FlightPlanRowActionId::RemoveProcedure,
                 component.can_remove,
@@ -3040,8 +3042,21 @@ fn validate_waypoint_insertion_attachments(
             message: format!("component index out of bounds: {component_index}"),
         });
     }
-    let mut route_components = plan.route_components.clone();
     let insertion_index = component_index + usize::from(!before);
+    validate_waypoint_insertion_index_attachments(plan, insertion_index)
+}
+
+pub(crate) fn validate_waypoint_insertion_index_attachments(
+    plan: &FlightPlan,
+    insertion_index: usize,
+) -> AppResult<()> {
+    if insertion_index > plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("insertion index out of bounds: {insertion_index}"),
+        });
+    }
+    let mut route_components = plan.route_components.clone();
     route_components.insert(
         insertion_index,
         RouteComponent::Waypoint {
@@ -6605,6 +6620,38 @@ mod tests {
 
         assert!(row_action_for_component(&plan, 0, FlightPlanRowActionId::Remove).enabled);
         assert!(row_action_for_component(&plan, 5, FlightPlanRowActionId::Remove).enabled);
+    }
+
+    #[test]
+    fn procedure_rows_offer_invariant_aware_insert_before_and_after_actions() {
+        let plan = plan_with_all_attached_procedures();
+
+        let sid_before = row_action_for_component(&plan, 1, FlightPlanRowActionId::InsertBefore);
+        let sid_after = row_action_for_component(&plan, 1, FlightPlanRowActionId::InsertAfter);
+        assert!(!sid_before.enabled);
+        assert_eq!(
+            sid_before.disabled_reason.as_deref(),
+            Some(DEPARTURE_ATTACHMENT_MESSAGE)
+        );
+        assert!(sid_after.enabled);
+
+        let star_before = row_action_for_component(&plan, 3, FlightPlanRowActionId::InsertBefore);
+        let star_after = row_action_for_component(&plan, 3, FlightPlanRowActionId::InsertAfter);
+        assert!(star_before.enabled);
+        assert!(!star_after.enabled);
+        assert_eq!(
+            star_after.disabled_reason.as_deref(),
+            Some(ARRIVAL_ATTACHMENT_MESSAGE)
+        );
+
+        for action_id in [
+            FlightPlanRowActionId::InsertBefore,
+            FlightPlanRowActionId::InsertAfter,
+        ] {
+            let approach_action = row_action_for_component(&plan, 4, action_id);
+            assert!(!approach_action.enabled);
+            assert!(approach_action.disabled_reason.is_some());
+        }
     }
 
     fn activate_direct_to_test_leg(

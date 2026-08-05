@@ -3729,6 +3729,12 @@ pub(crate) fn insert_waypoint_best_position_rejection(
             nav_ref_display_label(waypoint)
         ));
     }
+    if !(0..=plan.route_components.len()).any(|insertion_index| {
+        crate::planning::validate_waypoint_insertion_index_attachments(plan, insertion_index)
+            .is_ok()
+    }) {
+        return Some("The flight plan has no valid waypoint insertion point.".to_string());
+    }
     None
 }
 
@@ -3744,6 +3750,11 @@ fn best_top_level_insertion_index(
     let waypoint_position = nav_ref_position(store, waypoint, None)?;
     let mut best: Option<(usize, f64)> = None;
     for insertion_index in 0..=plan.route_components.len() {
+        if crate::planning::validate_waypoint_insertion_index_attachments(&plan, insertion_index)
+            .is_err()
+        {
+            continue;
+        }
         let prev = plan.route_components[..insertion_index]
             .iter()
             .rev()
@@ -8484,5 +8495,76 @@ mod tests {
         assert!(
             matches!(err, HadReadError::Fatal(message) if message.contains("already in the flight plan"))
         );
+    }
+
+    #[test]
+    fn insert_waypoint_best_position_skips_boundaries_inside_attached_procedures() {
+        let lgd = LatLon {
+            lat: 45.2902,
+            lon: -118.0071,
+        };
+        let laced = LatLon {
+            lat: 46.6933,
+            lon: -120.5408,
+        };
+        let pae = LatLon {
+            lat: 47.9063,
+            lon: -122.2816,
+        };
+        let store = test_nav_kv_store(&[
+            (
+                "navref/position/airport/KLGD",
+                serde_json::json!({"lat": lgd.lat, "lon": lgd.lon}),
+            ),
+            (
+                "navref/position/fix/LACED",
+                serde_json::json!({"lat": laced.lat, "lon": laced.lon}),
+            ),
+            (
+                "navref/position/airport/KPAE",
+                serde_json::json!({"lat": pae.lat, "lon": pae.lon}),
+            ),
+        ]);
+        let procedure = |kind, airport_id: &str, procedure_id: &str| RouteComponent::Procedure {
+            procedure: ProcedureSegment {
+                airport_id: AirportId(airport_id.to_string()),
+                procedure_id: procedure_id.to_string(),
+                display_label: None,
+                kind,
+                runway_transition: None,
+                enroute_transition: None,
+                terminal_discontinuity: None,
+                data_quality: Vec::new(),
+            },
+        };
+        let plan = FlightPlan {
+            id: "lgd-chins".to_string(),
+            name: "KLGD LGD1 CHINS5 KPAE".to_string(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KLGD".to_string()),
+                },
+                procedure(ProcedureKind::Sid, "KLGD", "LGD1"),
+                procedure(ProcedureKind::Star, "KPAE", "CHINS5"),
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            departure: Some(AirportId("KLGD".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            ..FlightPlan::default()
+        }
+        .normalized();
+
+        let inserted =
+            insert_waypoint_best_position(&store, &plan, NavRef::Fix("LACED".to_string()))
+                .expect("insert LACED between the SID and STAR");
+
+        assert!(matches!(
+            inserted.route_components.get(2),
+            Some(RouteComponent::Waypoint {
+                waypoint: NavRef::Fix(id)
+            }) if id == "LACED"
+        ));
     }
 }

@@ -6786,6 +6786,14 @@ function MapPage(props: {
                         action_id: action.id,
                         error: errorMessage(error),
                       });
+                      setMapSelection((current) => current ? {
+                        ...current,
+                        detailModal: {
+                          kind: "text",
+                          title: action.label,
+                          text: errorMessage(error),
+                        },
+                      } : current);
                     }
                     return;
                   }

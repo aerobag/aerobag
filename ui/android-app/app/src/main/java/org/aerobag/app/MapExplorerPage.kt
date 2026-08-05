@@ -2951,10 +2951,12 @@ internal fun MapExplorerPage(
                                     null -> Unit
                                 }
                                 action.sessionAction?.let { sessionAction ->
-                                    applySessionCommand("performMapSelectionAction") {
-                                        uiSession.performMapSelectionAction(sessionAction)
+                                    if (applySessionCommand("performMapSelectionAction") {
+                                            uiSession.performMapSelectionAction(sessionAction)
+                                        } != null
+                                    ) {
+                                        mapSelection = null
                                     }
-                                    mapSelection = null
                                     return@MapSelectionTray
                                 }
                             },

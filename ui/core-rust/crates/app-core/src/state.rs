@@ -129,8 +129,22 @@ pub(crate) fn project_app_ui_state_from_projected_parts(
     content_policy: ContentPolicy,
     last_content_report: Option<&ContentReport>,
 ) -> AppUiState {
+    project_app_ui_state_from_ui_parts(
+        active_plan.map(project_ui_state),
+        ownship,
+        content_policy,
+        last_content_report,
+    )
+}
+
+pub(crate) fn project_app_ui_state_from_ui_parts(
+    active_plan: Option<FlightPlanUiState>,
+    ownship: OwnshipUiState,
+    content_policy: ContentPolicy,
+    last_content_report: Option<&ContentReport>,
+) -> AppUiState {
     AppUiState {
-        active_plan: active_plan.map(project_ui_state),
+        active_plan,
         ownship,
         flight_data_banner: FlightDataBannerModel::default(),
         content_policy,

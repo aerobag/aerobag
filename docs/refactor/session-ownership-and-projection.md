@@ -225,13 +225,34 @@ coordinator rather than making `SituationController` own flight-plan state.
 
 This slice did not add a lock, thread, Worker, or platform wire change.
 
+## Completed Sixth Slice
+
+The sixth slice extracted `FlightPlanController` around the normalized active
+plan, guidance geometry, guidance sequencing, and core-owned flight-plan row
+actions. The controller owns monotonic model and route revisions plus cached
+flight-plan UI/materialization and route projections. Projection cache keys
+declare the external ownship, clock, and NAVDB-generation inputs supplied by the
+session coordinator.
+
+NAVDB candidate adoption moves the controller and checkpoints only its model.
+Page-faulted and rejected candidates roll back that model while retaining the
+moved controller allocation. The session still coordinates HAD page delivery,
+chart-page consequences, cloud persistence, weather enrichment, and ownship
+inputs. It commits candidate plans returned by the controller through the
+existing transactional invalidation path.
+
+The public snapshot and route wire contracts remain unchanged. This slice did
+not add a lock, thread, Worker, or platform wire change.
+
 ## Next Slice
 
-Extract `FlightPlanController` around the active plan, guidance geometry,
-sequencing, route projection, and flight-plan UI projection. Keep NAVDB access,
-page-fault retry coordination, and cross-controller orchestration in the
-session coordinator; expose narrow controller operations for applying rebuilt
-plans and navigation updates.
+Split roadmap item 4.6 into reviewable boundaries, starting with nav-data and
+offline-package state. Extract one controller around attached NAVDB identity,
+generation, installed-package policy, cycle-product freshness, and package UI
+projection. Keep byte stores, publication fetch plumbing, and cross-controller
+candidate adoption in the session coordinator during the first pass. Cloud and
+data-status ownership should follow as separate slices rather than becoming one
+catch-all controller.
 
 ## Relationship To Work Scheduling
 

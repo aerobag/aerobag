@@ -621,12 +621,77 @@ fn situation_state_and_projection_are_owned_by_situation_controller() {
     );
     assert!(
         function_body(&session_text, "project_session_app_ui_state")
-            .contains("project_app_ui_state_from_projected_parts"),
+            .contains("project_app_ui_state_from_ui_parts")
+            && function_body(&session_text, "project_session_app_ui_state")
+                .contains("situation_projection.ownship"),
         "aggregate UI projection must consume SituationController's ownship projection"
     );
     assert!(
         state.contains("pub struct AppState") && state.contains("pub ownship: OwnshipState"),
         "AppState remains a public compatibility DTO while session storage is decomposed"
+    );
+}
+
+#[test]
+fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/flight_plan_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+
+    assert!(
+        ui_session.contains("flight_plan: FlightPlanController"),
+        "UiSession must compose flight-plan behavior through one controller"
+    );
+    for field in [
+        "active_plan",
+        "guidance_leg_geometry",
+        "flight_plan_route_revision",
+    ] {
+        assert!(
+            !model.contains(field),
+            "flight-plan field {field} must not return to SessionModel"
+        );
+    }
+    assert!(
+        controller.contains("struct FlightPlanModel")
+            && controller.contains("pub(crate) struct FlightPlanController")
+            && controller.contains("pub(crate) struct FlightPlanProjection"),
+        "FlightPlanController must own its model and cached UI projection"
+    );
+    assert!(
+        !session.contains("session.active_plan")
+            && !session.contains("session.guidance_leg_geometry")
+            && !session.contains("session.flight_plan_route_revision"),
+        "session code must use FlightPlanController APIs rather than raw flight-plan storage"
+    );
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("flight_plan: FlightPlanModelCheckpoint"),
+        "session transactions must checkpoint the flight-plan model"
+    );
+    assert!(
+        function_body(session, "rollback").contains("session.flight_plan.rollback_model"),
+        "session transaction rollback must restore the flight-plan model"
+    );
+    let aggregate_projection = function_body(&session_text, "project_session_app_ui_state");
+    assert!(
+        aggregate_projection.contains("session.flight_plan.project")
+            && aggregate_projection.contains("flight_plan_projection.projection.ui_state"),
+        "aggregate UI projection must consume FlightPlanController's cached projection"
+    );
+    assert!(
+        function_body(session, "project_flight_plan_route_in_session").contains(".flight_plan")
+            && function_body(session, "project_flight_plan_route_in_session")
+                .contains(".project_route"),
+        "route projection must be delegated to FlightPlanController"
+    );
+    assert!(
+        function_body(session, "perform_flight_plan_row_action_in_session")
+            .contains("flight_plan.plan_after_row_action"),
+        "core-owned row actions must be interpreted by FlightPlanController"
     );
 }
 

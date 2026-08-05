@@ -20,6 +20,7 @@ pub mod debug_log;
 mod device_setup_code;
 pub mod errors;
 pub mod flight_data;
+mod flight_plan_controller;
 mod flight_plan_materialization;
 mod forecast_atmosphere;
 pub mod freshness;
@@ -104,6 +105,7 @@ pub use flight_data::{
     FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn,
     FlightDataComputer, FlightTimeFuelEstimate,
 };
+pub use flight_plan_controller::GuidanceLegGeometry;
 pub(crate) use forecast_atmosphere::InstalledForecastAtmosphere;
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,
@@ -311,16 +313,16 @@ pub use session::{
     take_cloud_authorization_request_in_session, take_cloud_provider_request_in_session,
     tick_bad_autopilot_in_session, tick_playback_in_session,
     update_ownship_source_status_in_session, ClientBuildInfo, DebugFlagId, DisplayDimTimeout,
-    FlightPlanSessionCommand, FlightPlanSessionQuery, GuidanceLegGeometry,
-    LiveFeedAcquisitionPolicy, MapLayerId, NavDbAdvanceDisposition, NavDbAdvanceResult,
-    NavDbMaintenanceAction, NavDbMaintenanceResult, PlatformCapabilities, PlatformCloudCapability,
-    PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
-    PlatformOfflinePackagesCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
-    UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomeDestination,
-    UiHomePageButton, UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
-    UiPlaybackPanelState, UiSessionDiagnostics, UiSessionInitResult, UiSessionPhase,
-    UiSessionResourceEffect, UiSessionSnapshot, UiSettingsAction, UiSettingsGridItem,
-    UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
+    FlightPlanSessionCommand, FlightPlanSessionQuery, LiveFeedAcquisitionPolicy, MapLayerId,
+    NavDbAdvanceDisposition, NavDbAdvanceResult, NavDbMaintenanceAction, NavDbMaintenanceResult,
+    PlatformCapabilities, PlatformCloudCapability, PlatformDisplayPolicyCapability,
+    PlatformLiveFeedsCapability, PlatformOfflinePackagesCapability, SettingsPreferences,
+    SettingsStorage, SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisclaimerState,
+    UiDisplayPolicy, UiHomeDestination, UiHomePageButton, UiHomePageState, UiMapLayerState,
+    UiMapLayerToggleState, UiNavDbIdentity, UiPlaybackPanelState, UiSessionDiagnostics,
+    UiSessionInitResult, UiSessionPhase, UiSessionResourceEffect, UiSessionSnapshot,
+    UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState,
+    UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

@@ -742,15 +742,16 @@ pub(crate) fn project_flight_plan_route_distance_annotations(
             });
         }
 
-        let eligible_procedure_leg = leg.procedure_provenance.as_ref().is_none_or(|provenance| {
-            !matches!(
-                provenance.path_termination,
-                PathTermination::HeadingToManual | PathTermination::HeadingToAltitude
-            ) && !matches!(
-                &provenance.path_termination,
-                PathTermination::Other(code) if matches!(code.trim(), "HA" | "HF" | "HM")
-            )
-        });
+        let eligible_procedure_leg = !planning::resolved_leg_ends_in_manual_sequence(leg)
+            && leg.procedure_provenance.as_ref().is_none_or(|provenance| {
+                !matches!(
+                    provenance.path_termination,
+                    PathTermination::HeadingToManual | PathTermination::HeadingToAltitude
+                ) && !matches!(
+                    &provenance.path_termination,
+                    PathTermination::Other(code) if matches!(code.trim(), "HA" | "HF" | "HM")
+                )
+            });
         if eligible_procedure_leg {
             let from_feature_id = flight_plan_waypoint_feature_id(&leg.from);
             let to_feature_id = flight_plan_waypoint_feature_id(&leg.to);
@@ -2153,6 +2154,23 @@ mod tests {
             project_flight_plan_route_distance_annotations(&plan, &vector_route)
                 .expect("project vector annotations")
                 .is_empty()
+        );
+
+        let provenance = plan.resolved_legs[0]
+            .procedure_provenance
+            .as_mut()
+            .expect("procedure provenance");
+        provenance.path_termination = PathTermination::Other("VM".to_string());
+        provenance.discontinuity_after = Some(ProcedureDiscontinuity::Vectors);
+        let vm_route = project_flight_plan_route_with_resolver(&plan, |_, _| {
+            Err::<LatLon, _>("display geometry must be self-contained")
+        })
+        .expect("project VM vectors route");
+        assert!(
+            project_flight_plan_route_distance_annotations(&plan, &vm_route)
+                .expect("project VM vector annotations")
+                .is_empty(),
+            "finite vectors display geometry must not receive a distance pill"
         );
     }
 

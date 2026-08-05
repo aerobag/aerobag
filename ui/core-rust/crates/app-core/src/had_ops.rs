@@ -1384,7 +1384,7 @@ fn prototype_pa46_route_legs(
                 return None;
             }
             let row = materialized.rows.get(row_id)?;
-            let geometry = row.geometry.as_ref()?;
+            let geometry = row.estimate_geometry.as_ref()?;
             let mut path = crate::flight_plan_materialization::geometry_points(geometry);
             if active_index == Some(index) {
                 let start = active_start?;
@@ -1523,12 +1523,20 @@ pub(crate) fn flight_plan_ui_projection(
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
     let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
-    let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
-        &plan,
-        &geometry_by_id,
-        live_data.ownship_position,
-    )
-    .map_err(|err| HadReadError::Fatal(err.message))?;
+    let estimate_geometry_by_leg_id =
+        crate::flight_plan_materialization::estimate_geometry_by_leg_id_with_resolver(
+            &plan,
+            &geometry_by_id,
+            |nav_ref, procedure_airport_id| nav_ref_position(store, nav_ref, procedure_airport_id),
+        )?;
+    let materialized =
+        crate::flight_plan_materialization::MaterializedFlightPlan::build_with_estimate_geometries(
+            &plan,
+            &geometry_by_id,
+            &estimate_geometry_by_leg_id,
+            live_data.ownship_position,
+        )
+        .map_err(|err| HadReadError::Fatal(err.message))?;
     let use_live_eta = live_data.ownship_position.is_some() && materialized.active.is_some();
     let cruise_altitude_ft = plan
         .cruise_altitude_ft
@@ -1742,12 +1750,20 @@ pub(crate) fn altitude_comparison_panel(
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
     let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
-    let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
-        &plan,
-        &geometry_by_id,
-        live_data.ownship_position,
-    )
-    .map_err(|error| HadReadError::Fatal(error.message))?;
+    let estimate_geometry_by_leg_id =
+        crate::flight_plan_materialization::estimate_geometry_by_leg_id_with_resolver(
+            &plan,
+            &geometry_by_id,
+            |nav_ref, procedure_airport_id| nav_ref_position(store, nav_ref, procedure_airport_id),
+        )?;
+    let materialized =
+        crate::flight_plan_materialization::MaterializedFlightPlan::build_with_estimate_geometries(
+            &plan,
+            &geometry_by_id,
+            &estimate_geometry_by_leg_id,
+            live_data.ownship_position,
+        )
+        .map_err(|error| HadReadError::Fatal(error.message))?;
     let origin_airport_id = endpoint_airport_id(&plan, &materialized, true);
     let destination_airport_id = endpoint_airport_id(&plan, &materialized, false);
     let origin_altitude_ft = match origin_airport_id.as_deref() {
@@ -2465,6 +2481,7 @@ fn route_position_keys(plan: &FlightPlan) -> Vec<String> {
             .as_ref()
             .and_then(|provenance| provenance.display_path.as_ref())
             .is_some()
+            && !crate::planning::resolved_leg_ends_in_manual_sequence(leg)
         {
             continue;
         }
@@ -5128,6 +5145,56 @@ mod tests {
             "elevation_msl_ft": elevation_msl_ft,
             "traffic_pattern_altitude_msl_ft": null
         })
+    }
+
+    #[test]
+    fn pa46_estimates_use_vector_bridge_instead_of_chevron_display_path() {
+        let row_id = crate::FlightPlanRowId("vector-row".to_string());
+        let display_start = LatLon { lat: 0.0, lon: 0.0 };
+        let display_end = LatLon { lat: 1.0, lon: 0.5 };
+        let estimate_end = LatLon { lat: 0.0, lon: 2.0 };
+        let row = crate::flight_plan_materialization::MaterializedFlightPlanRow {
+            id: row_id.clone(),
+            location: NavRef::LatLon(estimate_end),
+            leg_index: Some(0),
+            tone: crate::FlightDataCellTone::Planned,
+            arrow: crate::flight_plan_materialization::MaterializedFlightPlanRowArrow::Leg,
+            geometry: Some(crate::GuidanceLegGeometry {
+                leg_id: "vectors".to_string(),
+                from: display_start,
+                to: display_end,
+                path: vec![display_start, display_end],
+            }),
+            estimate_geometry: Some(crate::GuidanceLegGeometry {
+                leg_id: "vectors".to_string(),
+                from: display_start,
+                to: estimate_end,
+                path: vec![display_start, estimate_end],
+            }),
+            distance_remaining_nm: Some(crate::great_circle_distance_nm(
+                display_start,
+                estimate_end,
+            )),
+            cumulative_distance_remaining_nm: Some(crate::great_circle_distance_nm(
+                display_start,
+                estimate_end,
+            )),
+        };
+        let materialized = crate::flight_plan_materialization::MaterializedFlightPlan {
+            order: vec![row_id.clone()],
+            rows: BTreeMap::from([(row_id.clone(), row)]),
+            active: None,
+            total_distance_remaining_nm: Some(crate::great_circle_distance_nm(
+                display_start,
+                estimate_end,
+            )),
+        };
+
+        let route = prototype_pa46_route_legs(&materialized, None);
+
+        assert_eq!(route.len(), 1);
+        assert_eq!(route[0].row_id, row_id);
+        assert_eq!(route[0].path, vec![display_start, estimate_end]);
     }
 
     #[test]

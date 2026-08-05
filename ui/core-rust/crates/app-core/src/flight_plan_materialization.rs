@@ -29,6 +29,7 @@ pub(crate) struct MaterializedFlightPlanRow {
     pub tone: FlightDataCellTone,
     pub arrow: MaterializedFlightPlanRowArrow,
     pub geometry: Option<GuidanceLegGeometry>,
+    pub estimate_geometry: Option<GuidanceLegGeometry>,
     pub distance_remaining_nm: Option<f64>,
     pub cumulative_distance_remaining_nm: Option<f64>,
 }
@@ -53,6 +54,30 @@ impl MaterializedFlightPlan {
     pub fn build(
         plan: &FlightPlan,
         geometry_by_id: &HashMap<String, GuidanceLegGeometry>,
+        ownship_position: Option<LatLon>,
+    ) -> AppResult<Self> {
+        let estimate_geometry_by_leg_id = plan
+            .resolved_legs
+            .iter()
+            .enumerate()
+            .filter(|(_, leg)| !crate::planning::resolved_leg_ends_in_manual_sequence(leg))
+            .filter_map(|(leg_index, leg)| {
+                geometry_for_resolved_leg(plan, leg_index, geometry_by_id)
+                    .map(|geometry| (leg.id.clone(), geometry))
+            })
+            .collect();
+        Self::build_with_estimate_geometries(
+            plan,
+            geometry_by_id,
+            &estimate_geometry_by_leg_id,
+            ownship_position,
+        )
+    }
+
+    pub fn build_with_estimate_geometries(
+        plan: &FlightPlan,
+        geometry_by_id: &HashMap<String, GuidanceLegGeometry>,
+        estimate_geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
         ownship_position: Option<LatLon>,
     ) -> AppResult<Self> {
         let identity_rows = project_identity_rows(plan);
@@ -90,6 +115,11 @@ impl MaterializedFlightPlan {
                     geometry: row.leg_index.and_then(|leg_index| {
                         geometry_for_resolved_leg(plan, leg_index, geometry_by_id)
                     }),
+                    estimate_geometry: row
+                        .leg_index
+                        .and_then(|leg_index| plan.resolved_legs.get(leg_index))
+                        .and_then(|leg| estimate_geometry_by_leg_id.get(&leg.id))
+                        .cloned(),
                     distance_remaining_nm: None,
                     cumulative_distance_remaining_nm: None,
                 },
@@ -147,6 +177,7 @@ impl MaterializedFlightPlan {
                 target_row.tone = FlightDataCellTone::Active;
                 target_row.arrow = MaterializedFlightPlanRowArrow::DirectTo;
                 target_row.geometry = direct_geometry.clone();
+                target_row.estimate_geometry = direct_geometry.clone();
                 active_row_id = Some(target_row_id);
                 active_geometry = direct_geometry;
             }
@@ -190,17 +221,9 @@ impl MaterializedFlightPlan {
         let mut has_contributing_row = false;
         for row_id in &order {
             let row = rows.get_mut(row_id).expect("row order and map agree");
-            let distance_is_indeterminate = row
-                .leg_index
-                .and_then(|leg_index| plan.resolved_legs.get(leg_index))
-                .is_some_and(crate::planning::resolved_leg_ends_in_manual_sequence);
-            let static_distance_nm = (!distance_is_indeterminate)
-                .then(|| row.geometry.as_ref().map(geometry_distance_nm))
-                .flatten();
-            row.distance_remaining_nm = if distance_is_indeterminate {
-                None
-            } else if row.tone == FlightDataCellTone::Active {
-                match (ownship_position, row.geometry.as_ref()) {
+            let static_distance_nm = row.estimate_geometry.as_ref().map(geometry_distance_nm);
+            row.distance_remaining_nm = if row.tone == FlightDataCellTone::Active {
+                match (ownship_position, row.estimate_geometry.as_ref()) {
                     (Some(position), Some(geometry)) => {
                         Some(crate::great_circle_distance_nm(position, geometry.to))
                     }
@@ -311,6 +334,38 @@ pub(crate) fn geometry_for_resolved_leg(
         to,
         path,
     })
+}
+
+pub(crate) fn estimate_geometry_by_leg_id_with_resolver<E, F>(
+    plan: &FlightPlan,
+    geometry_by_id: &HashMap<String, GuidanceLegGeometry>,
+    mut resolve_position: F,
+) -> Result<HashMap<String, GuidanceLegGeometry>, E>
+where
+    F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
+{
+    let mut estimates = HashMap::new();
+    for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
+        let geometry = if crate::planning::resolved_leg_ends_in_manual_sequence(leg) {
+            let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+                (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+            });
+            let from = resolve_position(&leg.from, procedure_airport_id)?;
+            let to = resolve_position(&leg.to, procedure_airport_id)?;
+            Some(GuidanceLegGeometry {
+                leg_id: leg.id.clone(),
+                from,
+                to,
+                path: vec![from, to],
+            })
+        } else {
+            geometry_for_resolved_leg(plan, leg_index, geometry_by_id)
+        };
+        if let Some(geometry) = geometry {
+            estimates.insert(leg.id.clone(), geometry);
+        }
+    }
+    Ok(estimates)
 }
 
 pub(crate) fn geometry_points(geometry: &GuidanceLegGeometry) -> Vec<LatLon> {
@@ -648,11 +703,13 @@ mod tests {
     }
 
     #[test]
-    fn vectors_manual_sequence_makes_route_distance_indeterminate() {
+    fn vectors_manual_sequence_estimates_direct_to_next_waypoint() {
         let mut plan = three_point_plan();
         let start = point(40.0, -120.0);
         let turn = point(40.0, -119.5);
-        let display_end = point(40.0, -119.0);
+        let display_end = point(40.5, -119.5);
+        let next_waypoint = point(40.0, -119.0);
+        let final_waypoint = point(41.0, -119.0);
         plan.resolved_legs[0].procedure_provenance =
             Some(crate::planning::ProcedureLegProvenance {
                 airport_id: "KRNT".to_string(),
@@ -684,16 +741,64 @@ mod tests {
             }
         })
         .expect("project manual-sequence route");
-        let materialized =
-            MaterializedFlightPlan::build(&plan, &geometry_map_from_route(&route), None)
-                .expect("materialize manual-sequence route");
-        let manual_sequence_row = row_id_for_location(&plan, &NavRef::LatLon(display_end));
+        let geometry_by_id = geometry_map_from_route(&route);
+        let estimate_geometry_by_leg_id =
+            estimate_geometry_by_leg_id_with_resolver(&plan, &geometry_by_id, |nav_ref, _| {
+                if let NavRef::LatLon(position) = nav_ref {
+                    Ok(*position)
+                } else {
+                    Err("fixture uses only lat/lon nav refs")
+                }
+            })
+            .expect("estimate manual sequence");
+        let materialized = MaterializedFlightPlan::build_with_estimate_geometries(
+            &plan,
+            &geometry_by_id,
+            &estimate_geometry_by_leg_id,
+            None,
+        )
+        .expect("materialize manual-sequence estimate");
+        let manual_sequence_row = row_id_for_location(&plan, &NavRef::LatLon(next_waypoint));
+        let estimated_manual_distance = crate::great_circle_distance_nm(start, next_waypoint);
+        let displayed_manual_distance = route
+            .iter()
+            .take(crate::guidance_detail_count_for_leg(&plan.resolved_legs[0]))
+            .map(|segment| segment.distance_nm)
+            .sum::<f64>();
 
-        assert_eq!(
-            materialized.rows[&manual_sequence_row].distance_remaining_nm, None,
-            "the finite chevron extension is not a published route distance"
+        assert!(
+            (displayed_manual_distance - estimated_manual_distance).abs() > 1.0,
+            "fixture must distinguish finite chevrons from the direct estimate"
         );
-        assert_eq!(materialized.total_distance_remaining_nm, None);
+        assert_eq!(
+            materialized.rows[&manual_sequence_row]
+                .geometry
+                .as_ref()
+                .map(|geometry| geometry.to),
+            Some(display_end),
+            "rendering must retain the finite vectors chevrons"
+        );
+        assert_eq!(
+            materialized.rows[&manual_sequence_row]
+                .estimate_geometry
+                .as_ref()
+                .map(|geometry| geometry.to),
+            Some(next_waypoint),
+            "estimates must bridge vectors direct to the next waypoint"
+        );
+        assert_near(
+            materialized.rows[&manual_sequence_row]
+                .distance_remaining_nm
+                .expect("vector estimate"),
+            estimated_manual_distance,
+        );
+        assert_near(
+            materialized
+                .total_distance_remaining_nm
+                .expect("complete estimated total"),
+            estimated_manual_distance
+                + crate::great_circle_distance_nm(next_waypoint, final_waypoint),
+        );
     }
 
     #[test]

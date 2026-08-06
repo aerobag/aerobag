@@ -61,6 +61,7 @@ data class ControlsTheme(
 
 data class PlateFolderTheme(
     val thumbnailBg: Color,
+    val disabledAccentPercent: Float,
     val labelColors: Map<String, Color>,
 )
 
@@ -150,6 +151,7 @@ private data class WireControlsTheme(
 @Serializable
 private data class WirePlateFolderTheme(
     val thumbnail_bg: String,
+    val disabled_accent_percent: Float,
     val label_colors: Map<String, String>,
 )
 
@@ -270,6 +272,7 @@ object UiThemeLoader {
             ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),
+                disabledAccentPercent = wire.plate_folder.disabled_accent_percent,
                 labelColors = wire.plate_folder.label_colors.mapValues { (_, value) -> value.toColor() },
             ),
         )

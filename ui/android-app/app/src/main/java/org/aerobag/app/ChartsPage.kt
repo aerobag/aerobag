@@ -2031,12 +2031,21 @@ internal fun MenuPanelRow(
         contentAlignment = Alignment.CenterStart,
     ) {
         if (accentColor != null) {
+            val renderedAccentColor = if (enabled) {
+                accentColor
+            } else {
+                lerp(
+                    uiTheme.controls.buttonDisabled,
+                    accentColor,
+                    uiTheme.plateFolder.disabledAccentPercent / 100f,
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(ThumbSize / 2f)
                     .align(Alignment.BottomStart)
-                    .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
+                    .background(renderedAccentColor),
             )
         }
         if (iconResId != null || toggleState != null || accessoryIconResId != null) {

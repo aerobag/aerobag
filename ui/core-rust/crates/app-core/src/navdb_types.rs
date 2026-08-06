@@ -106,6 +106,7 @@ pub struct ProcedureSummary {
     pub procedure_id: String,
     pub display_label: String,
     pub kind: ProcedureKind,
+    pub accent_category: String,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,

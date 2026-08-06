@@ -102,6 +102,7 @@ export type ProcedureSummary = {
   procedure_id: string;
   display_label: string;
   kind: ProcedureKind;
+  accent_category: string;
   enabled: boolean;
   disabled_reason?: string | null;
 };

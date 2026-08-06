@@ -969,6 +969,7 @@ data class WireProcedureSummary(
     val procedure_id: String,
     val display_label: String,
     val kind: WireProcedureKind,
+    val accent_category: String,
     val enabled: Boolean,
     val disabled_reason: String? = null,
 )

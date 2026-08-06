@@ -1931,8 +1931,8 @@ button {
   background-image:
     linear-gradient(
       to bottom,
-      transparent 0,
-      transparent 50%,
+      var(--theme-button-unchecked) 0,
+      var(--theme-button-unchecked) 50%,
       var(--tray-accent, var(--theme-button-unchecked)) 50%,
       var(--tray-accent, var(--theme-button-unchecked)) 100%
     );
@@ -1987,8 +1987,8 @@ button {
   background-image:
     linear-gradient(
       to bottom,
-      transparent 0,
-      transparent 50%,
+      var(--theme-button-checked) 0,
+      var(--theme-button-checked) 50%,
       var(--tray-accent, var(--theme-button-checked)) 50%,
       var(--tray-accent, var(--theme-button-checked)) 100%
     );
@@ -2007,8 +2007,16 @@ button {
       to bottom,
       var(--theme-button-disabled) 0,
       var(--theme-button-disabled) 50%,
-      var(--tray-accent, var(--theme-button-disabled)) 50%,
-      var(--tray-accent, var(--theme-button-disabled)) 100%
+      color-mix(
+        in srgb,
+        var(--tray-accent, var(--theme-button-disabled)) var(--theme-disabled-accent-percent),
+        var(--theme-button-disabled)
+      ) 50%,
+      color-mix(
+        in srgb,
+        var(--tray-accent, var(--theme-button-disabled)) var(--theme-disabled-accent-percent),
+        var(--theme-button-disabled)
+      ) 100%
     );
   color: var(--theme-button-fg);
 }
@@ -2445,8 +2453,16 @@ button {
       to bottom,
       var(--theme-button-disabled) 0,
       var(--theme-button-disabled) 50%,
-      var(--tray-accent, var(--theme-button-disabled)) 50%,
-      var(--tray-accent, var(--theme-button-disabled)) 100%
+      color-mix(
+        in srgb,
+        var(--tray-accent, var(--theme-button-disabled)) var(--theme-disabled-accent-percent),
+        var(--theme-button-disabled)
+      ) 50%,
+      color-mix(
+        in srgb,
+        var(--tray-accent, var(--theme-button-disabled)) var(--theme-disabled-accent-percent),
+        var(--theme-button-disabled)
+      ) 100%
     );
   color: var(--theme-button-fg);
 }

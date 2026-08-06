@@ -1057,6 +1057,7 @@ internal fun FlightPlanPage(
                                             active = false,
                                             enabled = procedure.enabled,
                                             disabledReason = procedure.disabledReason,
+                                            accentColor = plateFolderColor(uiTheme, procedure.accentCategory),
                                             width = procedureChoiceButtonWidth,
                                             maxLines = 1,
                                             onSelect = {

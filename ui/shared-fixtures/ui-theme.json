@@ -72,6 +72,7 @@
   },
   "plate_folder": {
     "thumbnail_bg": "#303030",
+    "disabled_accent_percent": 50,
     "label_colors": {
       "csup": "#1a84d8d9",
       "airport-diagram": "#1a84d8d9",

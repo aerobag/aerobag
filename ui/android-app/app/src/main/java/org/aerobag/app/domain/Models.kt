@@ -77,6 +77,7 @@ data class ProcedureSummary(
     val procedureId: String,
     val displayLabel: String,
     val kind: ProcedureKind,
+    val accentCategory: String,
     val enabled: Boolean,
     val disabledReason: String?,
 )

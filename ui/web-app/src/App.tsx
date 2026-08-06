@@ -951,6 +951,7 @@ type UiThemeJson = {
   };
   plate_folder: {
     thumbnail_bg: string;
+    disabled_accent_percent: number;
     label_colors: Record<string, string>;
   };
 };
@@ -3609,6 +3610,7 @@ export default function App() {
         "--theme-button-disabled": controlTheme.button_disabled,
         "--theme-button-disabled-icon-saturation": String(controlTheme.button_disabled_icon_saturation),
         "--theme-button-disabled-icon-opacity": String(controlTheme.button_disabled_icon_opacity),
+        "--theme-disabled-accent-percent": `${plateFolderTheme.disabled_accent_percent}%`,
         "--theme-button-fg": controlTheme.button_fg,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,
@@ -9515,6 +9517,7 @@ function FlightPlanPage(props: {
                         data-testid={`plan-procedure-${procedure.procedure_id}`}
                         aria-disabled={procedure.enabled ? undefined : "true"}
                         title={procedure.disabled_reason ?? undefined}
+                        style={{ ["--tray-accent" as string]: plateFolderColor(procedure.accent_category) } as CSSProperties}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
@@ -10029,6 +10032,7 @@ function TrayDock(props: {
         ["--theme-button-disabled" as string]: launcherStyle.getPropertyValue("--theme-button-disabled"),
         ["--theme-button-disabled-icon-saturation" as string]: launcherStyle.getPropertyValue("--theme-button-disabled-icon-saturation"),
         ["--theme-button-disabled-icon-opacity" as string]: launcherStyle.getPropertyValue("--theme-button-disabled-icon-opacity"),
+        ["--theme-disabled-accent-percent" as string]: launcherStyle.getPropertyValue("--theme-disabled-accent-percent"),
         ["--theme-button-fg" as string]: launcherStyle.getPropertyValue("--theme-button-fg"),
         ["--theme-situation-status-unavailable-fg" as string]: launcherStyle.getPropertyValue("--theme-situation-status-unavailable-fg"),
       });

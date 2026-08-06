@@ -3337,6 +3337,7 @@ private fun WireProcedureSummary.toUi() = ProcedureSummary(
     procedureId = procedure_id,
     displayLabel = display_label,
     kind = kind.toUi(),
+    accentCategory = accent_category,
     enabled = enabled,
     disabledReason = disabled_reason,
 )

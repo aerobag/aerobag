@@ -126,6 +126,16 @@ pub enum ProcedureKind {
     Approach,
 }
 
+impl ProcedureKind {
+    pub fn accent_category(&self) -> &'static str {
+        match self {
+            Self::Sid => "departure",
+            Self::Star => "star",
+            Self::Approach => "approach",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcedureDiscontinuity {

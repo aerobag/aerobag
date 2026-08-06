@@ -3534,6 +3534,7 @@ fn list_procedures(
             airport_id: airport_id.trim().to_string(),
             procedure_id,
             display_label,
+            accent_category: kind.accent_category().to_string(),
             kind: kind.clone(),
             enabled,
             disabled_reason: (!enabled).then(|| NO_PROCEDURE_GEOMETRY_REASON.to_string()),
@@ -7605,6 +7606,7 @@ mod tests {
         assert_eq!(procedures.len(), 1);
         assert_eq!(procedures[0].procedure_id, "H34LZ");
         assert_eq!(procedures[0].display_label, "RNAV (RNP) Z 34L");
+        assert_eq!(procedures[0].accent_category, "approach");
     }
 
     #[test]
@@ -7649,6 +7651,7 @@ mod tests {
             serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode departures");
         assert_eq!(procedures[0].procedure_id, "BANGR9");
         assert_eq!(procedures[0].display_label, "BANGR NINE (RNAV)");
+        assert_eq!(procedures[0].accent_category, "departure");
 
         let plan = FlightPlan {
             route_components: vec![
@@ -7709,6 +7712,7 @@ mod tests {
             serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode arrivals");
         assert_eq!(procedures[0].procedure_id, "GLASR3");
         assert_eq!(procedures[0].display_label, "GLASR THREE");
+        assert_eq!(procedures[0].accent_category, "star");
         assert!(procedures[0].enabled);
         assert_eq!(procedures[0].disabled_reason, None);
 

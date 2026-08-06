@@ -25,11 +25,11 @@ function functionSource(name: string): string {
 }
 
 describe("map interaction boundaries", () => {
-  it("routes debug rotation through the planned map-up value", () => {
-    expect(appSource).toContain("const plannedMapUpDeg = debugMapUpDeg ?? resolveMapUpDegrees(");
+  it("routes production map orientation through the planned map-up value", () => {
+    expect(appSource).toContain("const plannedMapUpDeg = resolveMapUpDegrees(");
     expect(appSource).toContain("mapUpDeg={plannedMapUpDeg}");
-    expect(appSource).toContain("onMapUpDegChange={setDebugMapUpDeg}");
-    expect(appSource).toContain('aria-label="Debug map-up rotation"');
+    expect(appSource).toContain("rotationDeg: plannedMapUpDeg");
+    expect(appSource).not.toContain('aria-label="Debug map-up rotation"');
   });
 
   it("clips rotated rasters at the map surface rather than before rotation", () => {

@@ -74,6 +74,7 @@ const snapshotJson = JSON.stringify({
     title: "Settings",
     summary: "No platform settings are available.",
     rows: [],
+    sections: [],
   },
   home_page_state: {
     buttons: [],

@@ -26,6 +26,7 @@
     "inner:e2e:aerobag-cloud-sse": "AEROBAG_E2E_ENABLED=1 AEROBAG_CLOUD_SERVER_BASE_URL= npm run inner:build && node ./scripts/aerobag-cloud-sse-e2e.mjs --spawn-fixture",
     "inner:e2e:aerobag-cloud-rate-limit": "AEROBAG_E2E_ENABLED=1 AEROBAG_CLOUD_SERVER_BASE_URL= npm run inner:build && node ./scripts/aerobag-cloud-sse-e2e.mjs --spawn-fixture --rate-limit-ux=network && node ./scripts/aerobag-cloud-sse-e2e.mjs --spawn-fixture --rate-limit-ux=global",
     "inner:e2e:disclaimer-persistence": "node ./scripts/disclaimer-persistence-e2e.mjs",
+    "inner:e2e:settings-debug": "node ./scripts/settings-debug-e2e.mjs",
     "inner:e2e:nav-db-rollover": "npm run generate:symbols && npm run generate:wire && npm run build:wasm && node ./scripts/nav-db-rollover-e2e.mjs",
     "perf:startup-network": "node ./scripts/startup-network-perf.mjs",
     "perf:terrain-replay": "node ./scripts/terrain-replay-perf.mjs",
@@ -43,6 +44,7 @@
     "e2e:aerobag-cloud-sse": "./scripts/run-target-workspace.sh inner:e2e:aerobag-cloud-sse",
     "e2e:aerobag-cloud-rate-limit": "./scripts/run-target-workspace.sh inner:e2e:aerobag-cloud-rate-limit",
     "e2e:disclaimer-persistence": "./scripts/run-target-workspace.sh inner:e2e:disclaimer-persistence",
+    "e2e:settings-debug": "./scripts/run-target-workspace.sh inner:e2e:settings-debug",
     "e2e:nav-db-rollover": "./scripts/run-target-workspace.sh inner:e2e:nav-db-rollover"
   },
   "dependencies": {

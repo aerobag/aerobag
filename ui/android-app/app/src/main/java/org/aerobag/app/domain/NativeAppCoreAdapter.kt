@@ -47,6 +47,7 @@ import org.aerobag.app.generated.UiNavDbIdentity as WireUiNavDbIdentity
 import org.aerobag.app.generated.UiPlaybackPanelState as WireUiPlaybackPanelState
 import org.aerobag.app.generated.UiSettingsGridItem as WireUiSettingsGridItem
 import org.aerobag.app.generated.UiSettingsPageRow as WireUiSettingsPageRow
+import org.aerobag.app.generated.UiSettingsPageSection as WireUiSettingsPageSection
 import org.aerobag.app.generated.UiSettingsPageState as WireUiSettingsPageState
 import org.aerobag.app.generated.UiSettingsSliderStop as WireUiSettingsSliderStop
 import org.aerobag.app.generated.UiStatusAction as WireUiStatusAction
@@ -2526,10 +2527,18 @@ data class UiSettingsPageRow(
     val actionId: String,
 )
 
+data class UiSettingsPageSection(
+    val id: String,
+    val title: String,
+    val collapsedByDefault: Boolean,
+    val rows: List<UiSettingsPageRow>,
+)
+
 data class UiSettingsPageState(
     val title: String,
     val summary: String,
     val rows: List<UiSettingsPageRow>,
+    val sections: List<UiSettingsPageSection>,
 )
 
 data class UiDisplayPolicy(
@@ -2731,10 +2740,18 @@ private fun WireUiSettingsPageRow.toUi() = UiSettingsPageRow(
     actionId = actionId,
 )
 
+private fun WireUiSettingsPageSection.toUi() = UiSettingsPageSection(
+    id = id,
+    title = title,
+    collapsedByDefault = collapsedByDefault,
+    rows = rows.map { it.toUi() },
+)
+
 private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
     title = title,
     summary = summary,
     rows = rows.map { it.toUi() },
+    sections = sections.map { it.toUi() },
 )
 
 private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(

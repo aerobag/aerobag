@@ -27,13 +27,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -53,7 +48,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
@@ -78,9 +72,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as lazyGridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -201,7 +192,6 @@ import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
-import org.aerobag.app.domain.DebugFlagId
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
@@ -343,102 +333,6 @@ internal fun showActionToast(context: Context, message: String?, long: Boolean =
 
 internal fun showDisabledActionToast(context: Context, reason: String?) {
     showActionToast(context, reason)
-}
-
-@Composable
-internal fun CommonDebugPanel(
-    uptimeLabel: String,
-    debugState: UiDebugState,
-    onDebugFlagChange: (DebugFlagId, Boolean) -> Unit,
-) {
-    Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-    DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange(DebugFlagId.TileLabels, it) }
-    DebugCheckbox("NEXRAD tile labels", debugState.nexradTileLabels) { onDebugFlagChange(DebugFlagId.NexradTileLabels, it) }
-    DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange(DebugFlagId.FastTiles, it) }
-    DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
-        onDebugFlagChange(DebugFlagId.OfflineSimulatedClockButtons, it)
-    }
-    DebugCheckbox("flight plan on plates", debugState.plateFlightPlan) {
-        onDebugFlagChange(DebugFlagId.PlateFlightPlan, it)
-    }
-    DebugCheckbox("Bad Autopilot", debugState.badAutopilot, testTag = "parity:debug-flag:bad_autopilot") {
-        onDebugFlagChange(DebugFlagId.BadAutopilot, it)
-    }
-    DebugCheckbox("internet ADS-B", debugState.internetAdsb) {
-        onDebugFlagChange(DebugFlagId.InternetAdsb, it)
-    }
-    DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange(DebugFlagId.GpsCapture, it) }
-}
-
-@Composable
-internal fun DebugCheckbox(
-    label: String,
-    checked: Boolean,
-    testTag: String? = null,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = testTag
-            ?.let {
-                Modifier
-                    .testTag(it)
-                    .clickable { onCheckedChange(!checked) }
-            }
-            ?: Modifier,
-    ) {
-        Checkbox(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            modifier = Modifier.size(ThumbSize * 0.36f),
-        )
-        Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-    }
-}
-
-@Composable
-internal fun DebugDock(
-    open: Boolean,
-    onToggle: () -> Unit,
-    highlight: Boolean = false,
-    expandAbove: Boolean = false,
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Box(modifier = modifier.padding(ThumbGap)) {
-        CompactSquareButton(
-            label = "DBG",
-            modifier = Modifier
-                .align(if (expandAbove) Alignment.BottomEnd else Alignment.BottomStart)
-                .size(ThumbSize),
-            selected = highlight,
-            selectedColor = Color(0xFFB85C00),
-            onClick = onToggle,
-        )
-
-        AnimatedVisibility(
-            visible = open,
-            modifier = Modifier
-                .align(if (expandAbove) Alignment.BottomEnd else Alignment.BottomStart)
-                .padding(
-                    bottom = ThumbSize + ThumbGap,
-                ),
-            enter = slideInVertically(initialOffsetY = { it / 3 }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it / 3 }) + fadeOut(),
-        ) {
-            Card(
-                modifier = Modifier
-                    .width(ThumbSize * 4f),
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                    content = content,
-                )
-            }
-        }
-    }
 }
 
 internal fun pageLabel(page: AppPage): String = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: page.name.uppercase()

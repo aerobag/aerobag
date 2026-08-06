@@ -2764,7 +2764,6 @@ internal fun AerobagApp(
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
-    var debugPanelOpen by remember { mutableStateOf(false) }
     var debugLayerNavKvFaultsRemaining by remember(armLayerNavKvFault) {
         mutableIntStateOf(if (armLayerNavKvFault) 2 else 0)
     }
@@ -2981,14 +2980,6 @@ internal fun AerobagApp(
             pushViewSnapshot(target, restoreCore = true)
         } else {
             navigateToPage(AppPage.Map)
-        }
-    }
-
-    fun setDebugFlag(flagId: DebugFlagId, enabled: Boolean) {
-        if (applySessionCommand("setDebugFlag") { uiSession.setDebugFlag(flagId, enabled) } != null) {
-            if (flagId == DebugFlagId.GpsCapture) {
-                writeStoredGpsCaptureDebugFlag(prefs, enabled)
-            }
         }
     }
 
@@ -3391,8 +3382,11 @@ internal fun AerobagApp(
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
                         onSettingsAction = { actionId, valueId ->
-                            applySessionCommand("performSettingsAction") {
+                            val snapshot = applySessionCommand("performSettingsAction") {
                                 uiSession.performSettingsAction(actionId, valueId)
+                            }
+                            if (snapshot != null) {
+                                writeStoredGpsCaptureDebugFlag(prefs, snapshot.debugState.gpsCapture)
                             }
                         },
                     )
@@ -3417,23 +3411,6 @@ internal fun AerobagApp(
                         },
                     )
                 }
-            }
-            DebugDock(
-                open = debugPanelOpen,
-                onToggle = { debugPanelOpen = !debugPanelOpen },
-                expandAbove = true,
-                modifier = Modifier
-                    .zIndex(OverlayPlaneControls)
-                    .align(Alignment.BottomEnd)
-                    .padding(
-                        bottom = if (bottomCornerControlsRaised) ThumbSize + ThumbGap else 0.dp,
-                    ),
-            ) {
-                CommonDebugPanel(
-                    uptimeLabel = uptimeLabel,
-                    debugState = sessionSnapshot.debugState,
-                    onDebugFlagChange = ::setDebugFlag,
-                )
             }
             FlightPlanOverlayHost(flightPlanOverlayController)
             if (sessionSnapshot.disclaimerState.required) {

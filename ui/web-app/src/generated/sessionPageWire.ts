@@ -148,8 +148,16 @@ export type UiSettingsPageRow = {
   value_id: string;
 };
 
+export type UiSettingsPageSection = {
+  collapsed_by_default: boolean;
+  id: string;
+  rows: UiSettingsPageRow[];
+  title: string;
+};
+
 export type UiSettingsPageState = {
   rows: UiSettingsPageRow[];
+  sections: UiSettingsPageSection[];
   summary: string;
   title: string;
 };

@@ -1276,7 +1276,6 @@ function androidAssertFeedbackHasBottomControlClearance(serial, out, feedbackNod
     "parity:button:Suspend",
     "parity:button:Unsusp",
     "parity:nav-cdi",
-    "parity:button:DBG",
   ]);
   const controls = findNodes(xml, (node) => bottomControlTags.has(androidTag(node)));
   if (controls.length === 0) {

@@ -63,7 +63,8 @@ const CHART_SEARCH_INPUT_TAG = "parity:chart-search-input";
 const ROUTE_OVERLAY_PREFIX = "parity:flight-plan-route-overlay:";
 const MAP_FOLLOW_PREFIX = "parity:map-follow-state:";
 const BAD_AUTOPILOT_SOURCE_TAG = "parity:ownship-source:__bad_autopilot__";
-const BAD_AUTOPILOT_DEBUG_TAG = "parity:debug-flag:bad_autopilot";
+const BAD_AUTOPILOT_DEBUG_TAG = "parity:settings-toggle:debug_bad_autopilot";
+const DEBUG_DIAGNOSTICS_SECTION_TAG = "parity:settings-section:debug_diagnostics";
 const PLATE_SURFACE_TAG = "parity:plate-surface";
 const PLATE_FOLDER_TILE_PREFIX = "parity:plate-folder-tile:";
 const E2E_ARTIFACT_DIR = process.env.AEROBAG_E2E_ARTIFACT_DIR ?? join(tmpdir(), "aerobag-e2e-artifacts");
@@ -643,9 +644,27 @@ async function waitForMapFollowProbe(serial, predicate, timeoutMs, message) {
 }
 
 async function ensureBadAutopilotDebugFlag(serial, result) {
-  await tapTag(serial, "parity:button:DBG", 10000);
-  await delay(300);
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const xml = dumpAndroid(serial);
+    if (findNode(xml, (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG))) {
+      break;
+    }
+    if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:Settings"))) {
+      await tapTag(serial, "parity:home-button:Settings", 10000);
+    } else if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
+      await tapTag(serial, "parity:button:HOME", 10000);
+    } else {
+      pressKey(serial, "KEYCODE_BACK");
+    }
+    await delay(400);
+  }
   let xml = dumpAndroid(serial);
+  if (!findNode(xml, (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG))) {
+    throwWithUi(serial, "Debug Diagnostics settings section is not visible");
+  }
+  await tapTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 5000);
+  await delay(300);
+  xml = dumpAndroid(serial);
   let checkbox = findNode(xml, (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG));
   if (!checkbox) {
     throwWithUi(serial, "Bad Autopilot debug flag is not visible");
@@ -654,7 +673,7 @@ async function ensureBadAutopilotDebugFlag(serial, result) {
     await tapTag(serial, BAD_AUTOPILOT_DEBUG_TAG, 5000);
     await delay(700);
   }
-  await tapTag(serial, "parity:button:DBG", 5000);
+  await tapTag(serial, "parity:button:CHART", 5000);
   await delay(500);
   recordStep(result, "Bad Autopilot debug source enabled");
 }

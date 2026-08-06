@@ -33,7 +33,7 @@ pub use app_ui_contracts::{
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
         UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
         UiPlaybackPanelState, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
-        UiSettingsPageState, UiSettingsSliderStop,
+        UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop,
     },
 };
 
@@ -103,8 +103,8 @@ use crate::{
     publication::PublicationResolvedResource,
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
     settings_controller::{
-        default_settings_page_state, SettingsController, SettingsModelCheckpoint,
-        SettingsProjection,
+        debug_flag_settings_action, default_settings_page_state, SettingsController,
+        SettingsModelCheckpoint, SettingsProjection,
     },
     situation_controller::{
         selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
@@ -133,7 +133,6 @@ use crate::{
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SettingsPersistenceDocument {
     version: u32,
@@ -2825,14 +2824,18 @@ pub fn perform_settings_action_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     run_session_model_transaction(session, move |session| {
-        let display_policy_available = session
-            .coordinator
-            .platform_capabilities
-            .display_policy
-            .is_some();
-        session
-            .settings
-            .perform_action(&action, display_policy_available)?;
+        if let Some((flag_id, enabled)) = debug_flag_settings_action(&action)? {
+            apply_debug_flag(session, flag_id, enabled)?;
+        } else {
+            let display_policy_available = session
+                .coordinator
+                .platform_capabilities
+                .display_policy
+                .is_some();
+            session
+                .settings
+                .perform_action(&action, display_policy_available)?;
+        }
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -5538,6 +5541,11 @@ pub fn set_debug_flag_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    apply_debug_flag(session, flag_id, enabled)?;
+    changed_session_snapshot_outcome(session)
+}
+
+fn apply_debug_flag(session: &mut UiSession, flag_id: DebugFlagId, enabled: bool) -> AppResult<()> {
     match flag_id {
         DebugFlagId::TileLabels => session.coordinator.debug_state.tile_labels = enabled,
         DebugFlagId::NexradTileLabels => {
@@ -5581,7 +5589,7 @@ pub fn set_debug_flag_in_session(
             }
         }
     }
-    changed_session_snapshot_outcome(session)
+    Ok(())
 }
 
 pub fn get_session_snapshot(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -10536,9 +10544,11 @@ fn try_snapshot_for_session(
         .platform_capabilities
         .display_policy
         .is_some();
-    let settings_projection = session
-        .settings
-        .project(display_policy_available, &app_ui_state.flight_data_banner);
+    let settings_projection = session.settings.project(
+        display_policy_available,
+        &app_ui_state.flight_data_banner,
+        &session.coordinator.debug_state,
+    );
     if settings_projection.rebuilt {
         session
             .diagnostics
@@ -10578,7 +10588,8 @@ fn try_snapshot_for_session(
             "projections": ["app_ui", "flight_plan", "situation", "weather", "settings", "map", "packages", "cloud"],
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
-            "settings_page_rows": settings_page_state.rows.len(),
+            "settings_page_rows": settings_page_state.rows.len()
+                + settings_page_state.sections.iter().map(|section| section.rows.len()).sum::<usize>(),
             "map_families": raster_map.as_ref().map(|state| state.family_options.len()).unwrap_or(0),
         })
     });
@@ -13824,7 +13835,70 @@ mod tests {
         assert_eq!(row.kind, "grid_choices");
         assert_eq!(row.items.len(), 13);
         assert!(row.items.iter().all(|item| item.enabled));
+        assert_eq!(snapshot.settings_page_state.sections.len(), 1);
+        let debug = &snapshot.settings_page_state.sections[0];
+        assert_eq!(debug.id, "debug_diagnostics");
+        assert_eq!(debug.title, "Debug Diagnostics");
+        assert!(debug.collapsed_by_default);
+        assert_eq!(debug.rows.len(), 10);
+        assert!(debug.rows.iter().all(|row| row.kind == "toggle"));
+        assert!(debug.rows.iter().all(|row| row.value_id == "off"));
         assert!(snapshot.display_policy.is_none());
+    }
+
+    #[test]
+    fn debug_settings_rows_cover_every_flag_and_use_the_shared_mutation_path() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let initial = get_session_snapshot(init.handle).expect("initial snapshot");
+        let debug = &initial.settings_page_state.sections[0];
+        let action_ids = debug
+            .rows
+            .iter()
+            .map(|row| row.action_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let expected_action_ids = [
+            "debug_flag.tile_labels",
+            "debug_flag.nexrad_tile_labels",
+            "debug_flag.fast_tiles",
+            "debug_flag.offline_simulated_clock_buttons",
+            "debug_flag.sequencing_finish_lines",
+            "debug_flag.plate_flight_plan",
+            "debug_flag.bad_autopilot",
+            "debug_flag.internet_adsb",
+            "debug_flag.gps_capture",
+            "debug_flag.debug_log_to_developer_server",
+        ];
+        assert_eq!(action_ids.len(), expected_action_ids.len());
+        for action_id in expected_action_ids {
+            assert!(action_ids.contains(action_id));
+        }
+
+        let enabled = perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "debug_flag.plate_flight_plan".to_string(),
+                value_id: "on".to_string(),
+            },
+        )
+        .expect("enable plate flight-plan diagnostics");
+        assert!(enabled.debug_state.plate_flight_plan);
+        let row = enabled.settings_page_state.sections[0]
+            .rows
+            .iter()
+            .find(|row| row.id == "debug_plate_flight_plan")
+            .expect("plate flight-plan settings row");
+        assert_eq!(row.value_id, "on");
+
+        let disabled = set_debug_flag_in_session(init.handle, DebugFlagId::PlateFlightPlan, false)
+            .expect("disable through direct debug command");
+        assert!(!disabled.debug_state.plate_flight_plan);
+        let row = disabled.settings_page_state.sections[0]
+            .rows
+            .iter()
+            .find(|row| row.id == "debug_plate_flight_plan")
+            .expect("plate flight-plan settings row");
+        assert_eq!(row.value_id, "off");
     }
 
     #[test]

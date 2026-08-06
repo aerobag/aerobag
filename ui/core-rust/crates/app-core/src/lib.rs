@@ -326,8 +326,8 @@ pub use session::{
     UiDisplayPolicy, UiHomeDestination, UiHomePageButton, UiHomePageState, UiMapLayerState,
     UiMapLayerToggleState, UiNavDbIdentity, UiPlaybackPanelState, UiSessionDiagnostics,
     UiSessionInitResult, UiSessionPhase, UiSessionResourceEffect, UiSessionSnapshot,
-    UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState,
-    UiSettingsSliderStop,
+    UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection,
+    UiSettingsPageState, UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

@@ -170,6 +170,7 @@ fn main() {
                 "UiSettingsSliderStop",
                 "UiSettingsGridItem",
                 "UiSettingsPageRow",
+                "UiSettingsPageSection",
                 "UiSettingsPageState",
                 "UiDisplayPolicy",
                 "UiDisclaimerState",

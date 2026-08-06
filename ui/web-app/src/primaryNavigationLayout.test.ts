@@ -44,18 +44,17 @@ describe("primary navigation layout", () => {
     }
   });
 
-  it("places the map-only CTR and orientation controls after Search instead of beside DBG", () => {
+  it("places the map-only CTR and orientation controls after Search and omits DBG", () => {
     const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
     const searchIndex = mapPage.indexOf("<ChartSearchBox");
     const centerHereIndex = mapPage.indexOf('className={`centerHereButton');
     const orientationIndex = mapPage.indexOf("<MapOrientationButton");
-    const bottomRightIndex = mapPage.indexOf("mapBottomRightDock");
 
     expect(searchIndex).toBeGreaterThanOrEqual(0);
     expect(centerHereIndex).toBeGreaterThan(searchIndex);
     expect(orientationIndex).toBeGreaterThan(centerHereIndex);
-    expect(orientationIndex).toBeLessThan(bottomRightIndex);
-    expect(mapPage.slice(bottomRightIndex)).not.toContain("centerHereButton");
+    expect(mapPage).not.toContain("DebugDock");
+    expect(mapPage).not.toContain("mapBottomRightDock");
     expect(mapPage).not.toContain("DebugMapUpSlider");
   });
 
@@ -77,12 +76,10 @@ describe("primary navigation layout", () => {
     expect(styles).toContain("gap: var(--thumb-gap)");
   });
 
-  it("raises both corner-control docks when they would collide with primary navigation", () => {
+  it("raises the zoom control when it would collide with primary navigation", () => {
     const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
     expect(mapPage).toContain("shouldRaiseBottomCornerControls(surfaceSize.width)");
     expect(mapPage).toContain('raisedForPrimaryNavigation={bottomCornerControlsRaised}');
-    expect(mapPage).toContain('bottomCornerControlsRaised ? " isRaisedForPrimaryNavigation"');
-    expect(styles).toContain(".mapBottomRightDock.isRaisedForPrimaryNavigation");
     expect(styles).toContain(".zoomControl.isRaisedForPrimaryNavigation");
     expect(styles).toContain("bottom: calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom))");
   });

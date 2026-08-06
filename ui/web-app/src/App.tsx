@@ -1990,7 +1990,6 @@ function emptyNexradOverlayAnimation(): NexradOverlayQueryResult["animation"] {
 
 export default function App() {
   const [sessionStartMs] = useState(() => Date.now());
-  const uptimeLabel = useSessionUptimeLabel(sessionStartMs);
   const initialDebugState = useMemo(defaultUiDebugState, []);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const initialPage = useMemo(() => appPageForCurrentPath() ?? persistedUiState.page ?? "map", [persistedUiState.page]);
@@ -2011,7 +2010,6 @@ export default function App() {
   const startupVisualReadyRef = useRef(false);
   const pageTilePaintTimingRef = useRef<WebPageTilePaintTiming | null>(null);
   const nextPageTilePaintTimingIdRef = useRef(1);
-  const [debugOpen, setDebugOpen] = useState(false);
   const highLatencyWarningsSuppressedRef = useRef(true);
   const highLatencyWarningTimerRef = useRef<number | null>(null);
   const [rasterMapState, setRasterMapState] = useState<RasterMapUiState | null>(null);
@@ -2130,6 +2128,7 @@ export default function App() {
       title: "Settings",
       summary: "No platform settings are available.",
       rows: [],
+      sections: [],
     },
     cloud_page_state: {
       title: "",
@@ -2449,13 +2448,11 @@ export default function App() {
     };
   }, [sessionSnapshot.data_status_page_state]);
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
-  const [debugWarningActive, setDebugWarningActive] = useState(false);
   const [derivedChartPageState, setDerivedChartPageState] = useState<DerivedChartPageState>(initialChartPageState);
   const [chartPageStateLoadError, setChartPageStateLoadError] = useState<string | null>(null);
   const logDebugWarning = useCallback((tag: string, data?: unknown) => {
     debugLog(tag, data);
     debugLog("debug.warn.latched", { tag, data });
-    setDebugWarningActive(true);
   }, []);
   const logHighLatencyWarning = useCallback((tag: string, data?: unknown) => {
     if (highLatencyWarningsSuppressedRef.current) {
@@ -2480,20 +2477,6 @@ export default function App() {
     setSessionInitError(`${fatal.source}: ${fatal.message}`);
     setStartupFatalError(fatal);
   }, [sessionStartMs]);
-  const setDebugFlag = useCallback(async (flagId: DebugFlagId, enabled: boolean) => {
-    if (flagId === "debug_log_to_developer_server") {
-      writePersistedDebugLogDeveloperServerUploadEnabled(enabled);
-      setDebugLogDeveloperServerUploadEnabled(enabled);
-    }
-    if (uiSession === null) {
-      setSessionSnapshot((snapshot) => ({
-        ...snapshot,
-        debug_state: { ...snapshot.debug_state, [flagId]: enabled },
-      }));
-      return;
-    }
-    applySessionSnapshot(await uiSession.setDebugFlag(flagId, enabled), "debug_flag");
-  }, [applySessionSnapshot, uiSession]);
   const applySituationControlInput = useCallback(async (input: SituationControlInput) => {
     if (!uiSession) {
       return;
@@ -3734,7 +3717,6 @@ export default function App() {
           navDataEpoch={sessionSnapshot.nav_data_epoch}
           flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
           page={page}
-          uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
           playbackPanelState={sessionSnapshot.playback_panel_state}
           mapLayerState={mapLayerState}
@@ -3807,10 +3789,6 @@ export default function App() {
           onSituationControlInput={applySituationControlInput}
           uiSession={uiSession}
           onSessionSnapshot={applySessionSnapshot}
-          debugOpen={debugOpen}
-          onDebugToggle={() => setDebugOpen((open) => !open)}
-          onDebugFlagChange={(flagId, enabled) => void setDebugFlag(flagId, enabled)}
-          debugWarningActive={debugWarningActive}
           onDebugWarning={logDebugWarning}
           onHighLatencyWarning={logHighLatencyWarning}
           onFirstVisualReady={reportStartupVisualReady}
@@ -3823,7 +3801,6 @@ export default function App() {
           uiSession={uiSession}
           page={page}
           pageHistory={pageHistory}
-          uptimeLabel={uptimeLabel}
           planUiState={planUiState}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
@@ -3949,7 +3926,6 @@ export default function App() {
               "select_procedure_at_row",
             );
           }}
-          debugWarningActive={debugWarningActive}
         />
       </div>
 
@@ -4076,7 +4052,6 @@ export default function App() {
           onSituationControlInput={applySituationControlInput}
           debugState={sessionSnapshot.debug_state}
           uiSession={uiSession}
-          debugWarningActive={debugWarningActive}
           onFirstVisualReady={reportStartupVisualReady}
         />
       </div>
@@ -4090,7 +4065,6 @@ export default function App() {
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
-          debugWarningActive={debugWarningActive}
         />
       </div>
 
@@ -4120,6 +4094,9 @@ export default function App() {
               return;
             }
             void uiSession.performSettingsAction(actionId, valueId).then((nextSnapshot) => {
+              writePersistedDebugLogDeveloperServerUploadEnabled(
+                nextSnapshot.debug_state.debug_log_to_developer_server,
+              );
               applySessionSnapshot(nextSnapshot, "settings_action");
             });
           }}
@@ -4159,7 +4136,6 @@ function MapPage(props: {
   navDataEpoch: number;
   flightPlanRouteRevision: number;
   page: AppPage;
-  uptimeLabel: string;
   debugState: UiDebugState;
   playbackPanelState: UiPlaybackPanelState;
   mapLayerState: UiMapLayerState;
@@ -4195,10 +4171,6 @@ function MapPage(props: {
   onSituationControlInput: (input: SituationControlInput) => void;
   uiSession: UiSession | null;
   onSessionSnapshot: (nextSnapshot: UiSessionSnapshot, source: string) => void;
-  debugOpen: boolean;
-  onDebugToggle: () => void;
-  onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
-  debugWarningActive: boolean;
   onDebugWarning: (tag: string, data?: unknown) => void;
   onHighLatencyWarning: (tag: string, data?: unknown) => void;
   onFirstVisualReady: () => void;
@@ -4210,7 +4182,6 @@ function MapPage(props: {
     debugState,
     mapLayerState,
     page,
-    uptimeLabel,
     selectedMap,
     selectedFamily,
     familyOptions,
@@ -4235,14 +4206,10 @@ function MapPage(props: {
     onStatusAction,
     planUiState,
     uiSession,
-    debugOpen,
-    onDebugToggle,
-    onDebugFlagChange,
     onPlaybackSnapshotChange,
     onSituationControlInput,
     mapFollowUiState,
     mapFollowTargetViewport,
-    debugWarningActive,
     onDebugWarning,
     onHighLatencyWarning,
     onFirstVisualReady,
@@ -4285,9 +4252,6 @@ function MapPage(props: {
   });
   const [nexradAnimationTick, setNexradAnimationTick] = useState(0);
   const [nexradViewportRefreshTick, setNexradViewportRefreshTick] = useState(0);
-  const [nexradTransferSamples, setNexradTransferSamples] = useState<
-    Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }>
-  >([]);
   const [nexradOverlayFrame, setNexradOverlayFrame] = useState<MapDisplayFrame | null>(null);
   const nexradQueryRequestRef = useRef<{
     id: number;
@@ -4376,10 +4340,9 @@ function MapPage(props: {
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
-  const [debugMapUpDeg, setDebugMapUpDeg] = useState<number | null>(null);
   const mapUpDegRef = useRef(0);
   const previousMapOrientationModeRef = useRef(mapOrientationMode);
-  const plannedMapUpDeg = debugMapUpDeg ?? resolveMapUpDegrees(
+  const plannedMapUpDeg = resolveMapUpDegrees(
     mapOrientationMode,
     ownship.track_deg_true,
     previousMapOrientationModeRef.current === "track" ? mapUpDegRef.current : 0,
@@ -4393,7 +4356,6 @@ function MapPage(props: {
     return { width: Math.ceil(envelope.width), height: Math.ceil(envelope.height) };
   }, [plannedMapUpDeg, surfaceSize.height, surfaceSize.width]);
   const [liveDragPerfRunning, setLiveDragPerfRunning] = useState(false);
-  const [lastLiveDragPerfRunId, setLastLiveDragPerfRunId] = useState<string | null>(null);
   const [mapSelection, setMapSelection] = useState<{
     point: ScreenPoint;
     result: MapSelectionQueryResult;
@@ -5586,72 +5548,6 @@ function MapPage(props: {
   }, [mapIsVisible, mapLayerState.nexrad.visible, nexradOverlay, uiSession]);
 
   useEffect(() => {
-    if (typeof PerformanceObserver === "undefined") {
-      return;
-    }
-    const observer = new PerformanceObserver((list) => {
-      const samples: Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }> = [];
-      for (const entry of list.getEntries()) {
-        if (!(entry instanceof PerformanceResourceTiming)) {
-          continue;
-        }
-        if (!entry.name.includes("/live-feeds/v3/states/nexrad/") || !entry.name.endsWith(".png")) {
-          continue;
-        }
-        const transferBytes = entry.transferSize || 0;
-        const encodedBytes = entry.encodedBodySize || 0;
-        const decodedBytes = entry.decodedBodySize || 0;
-        if (transferBytes <= 0 && encodedBytes <= 0 && decodedBytes <= 0) {
-          continue;
-        }
-        samples.push({ atMs: Date.now(), transferBytes, encodedBytes, decodedBytes });
-      }
-      if (samples.length === 0) {
-        return;
-      }
-      setNexradTransferSamples((current) => {
-        const cutoff = Date.now() - 60_000;
-        return [...current, ...samples].filter((sample) => sample.atMs >= cutoff);
-      });
-    });
-    observer.observe({ type: "resource", buffered: true });
-    return () => observer.disconnect();
-  }, []);
-
-  const nexradDebugLines = useMemo(() => {
-    const lines: string[] = [];
-    const observedAt = nexradOverlay.stats.observed_at_utc;
-    if (observedAt) {
-      const observedAtMs = Date.parse(observedAt);
-      if (Number.isFinite(observedAtMs)) {
-        lines.push(`NEXRAD obs: ${new Date(observedAtMs).toISOString().slice(11, 19)}Z`);
-        lines.push(`NEXRAD age: ${formatUptimeMs(Date.now() - observedAtMs)}`);
-      } else {
-        lines.push(`NEXRAD obs: ${observedAt}`);
-        lines.push("NEXRAD age: n/a");
-      }
-    } else {
-      lines.push("NEXRAD obs: n/a");
-      lines.push("NEXRAD age: n/a");
-    }
-    const cutoff = Date.now() - 60_000;
-    const recentBytes = nexradTransferSamples
-      .filter((sample) => sample.atMs >= cutoff)
-      .reduce(
-        (sum, sample) => ({
-          transferBytes: sum.transferBytes + sample.transferBytes,
-          encodedBytes: sum.encodedBytes + sample.encodedBytes,
-          decodedBytes: sum.decodedBytes + sample.decodedBytes,
-        }),
-        { transferBytes: 0, encodedBytes: 0, decodedBytes: 0 },
-      );
-    lines.push(`NEXRAD net: ${formatMegabytesPerSecond(recentBytes.transferBytes / 60)}`);
-    lines.push(`NEXRAD encoded: ${formatMegabytesPerSecond(recentBytes.encodedBytes / 60)}`);
-    lines.push(`NEXRAD decoded: ${formatMegabytesPerSecond(recentBytes.decodedBytes / 60)}`);
-    return lines;
-  }, [nexradOverlay.stats.observed_at_utc, nexradTransferSamples, uptimeLabel]);
-
-  useEffect(() => {
     perfDebugLog("map.nav_element.render", () => ({
       plan_id: planUiState?.plan_id ?? null,
       plan_guidance: planUiState?.guidance?.nav_element ?? null,
@@ -6087,7 +5983,6 @@ function MapPage(props: {
     clickCandidateRef.current = null;
     setMapSelection(null);
     setLiveDragPerfRunning(true);
-    setLastLiveDragPerfRunId(runId);
     let followDisabledForRun = false;
     if (mapFollowUiState.following) {
       try {
@@ -7673,7 +7568,6 @@ function MapPage(props: {
             mapUpDeg={plannedMapUpDeg}
             magneticVariationDeg={ownship.magnetic_variation_deg}
             onToggle={() => {
-              setDebugMapUpDeg(null);
               onMapOrientationModeChange(mapOrientationMode === "north" ? "track" : "north");
             }}
           />
@@ -7707,23 +7601,6 @@ function MapPage(props: {
           raisedForPrimaryNavigation={bottomCornerControlsRaised}
         />
 
-        <div className={`mapBottomRightDock${bottomCornerControlsRaised ? " isRaisedForPrimaryNavigation" : ""}`}>
-          <div className="debugDock mapDebugDock isRightAligned">
-            <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={onDebugToggle}>
-              <CommonDebugPanel
-                uptimeLabel={uptimeLabel}
-                debugState={debugState}
-                onDebugFlagChange={onDebugFlagChange}
-                extraLines={nexradDebugLines}
-                onRunDragPerf={runLiveDragPerf}
-                dragPerfRunning={liveDragPerfRunning}
-                lastDragPerfRunId={lastLiveDragPerfRunId}
-                mapUpDeg={plannedMapUpDeg}
-                onMapUpDegChange={setDebugMapUpDeg}
-              />
-            </DebugDock>
-          </div>
-        </div>
         </div>
       </Profiler>
     </section>
@@ -8559,7 +8436,6 @@ function FlightPlanPage(props: {
   uiSession: UiSession | null;
   page: AppPage;
   pageHistory: AppViewSnapshot[];
-  uptimeLabel: string;
   planUiState: FlightPlanUiState | null;
   mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
@@ -8578,7 +8454,6 @@ function FlightPlanPage(props: {
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null) => void | Promise<void>;
-  debugWarningActive: boolean;
 }) {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
@@ -10887,7 +10762,6 @@ function ChartsPage(props: {
   uiSession: UiSession | null;
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
-  debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
   const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
@@ -11720,7 +11594,6 @@ function HomePage(props: {
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
-  debugWarningActive: boolean;
 }) {
   const { page, planUiState, onSelectPage, onOpenPlan } = props;
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
@@ -12147,42 +12020,112 @@ function SettingsPage(props: {
         </header>
         <div className="settingsPageRows">
           {props.state.rows.map((row) => (
-            <section key={row.id} className="settingsPageRow">
-              <h2>{row.title}</h2>
-              {row.kind === "grid_choices" ? (
-                <div className="settingsFlightDataGrid">
-                  {row.items.map((item) => (
-                    <button
-                      key={item.cell.id}
-                      type="button"
-                      className={`flightDataCell settingsFlightDataCell${item.enabled ? "" : " isDisabled"}`}
-                      aria-pressed={item.enabled}
-                      onClick={() => props.onSettingsAction(row.action_id, item.cell.id)}
-                    >
-                      <FlightDataCellContents cell={item.cell} />
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              {row.kind === "slider" && row.stops.length > 0 ? (
-                <div className="settingsSliderStops">
-                  {row.stops.map((stop) => (
-                    <button
-                      key={stop.id}
-                      type="button"
-                      className={stop.id === row.value_id ? "isActive" : ""}
-                      aria-pressed={stop.id === row.value_id}
-                      onClick={() => props.onSettingsAction(row.action_id, stop.id)}
-                    >
-                      {stop.label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </section>
+            <SettingsPageRowView
+              key={row.id}
+              row={row}
+              onSettingsAction={props.onSettingsAction}
+            />
+          ))}
+          {props.state.sections.map((section) => (
+            <SettingsPageSectionView
+              key={section.id}
+              section={section}
+              onSettingsAction={props.onSettingsAction}
+            />
           ))}
         </div>
       </div>
+    </section>
+  );
+}
+
+type SettingsPageRowState = UiSessionSnapshot["settings_page_state"]["rows"][number];
+type SettingsPageSectionState = UiSessionSnapshot["settings_page_state"]["sections"][number];
+
+function SettingsPageSectionView(props: {
+  section: SettingsPageSectionState;
+  onSettingsAction: (actionId: string, valueId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(!props.section.collapsed_by_default);
+  const contentId = useId();
+  return (
+    <section className={`settingsPageSection${expanded ? " isExpanded" : ""}`}>
+      <button
+        type="button"
+        className="settingsPageSectionHeader"
+        data-testid={`settings-section-${props.section.id}`}
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className="settingsPageSectionChevron" aria-hidden="true">{expanded ? "\u25BE" : "\u25B8"}</span>
+        <span>{props.section.title}</span>
+      </button>
+      <div id={contentId} className="settingsPageSectionRows" hidden={!expanded}>
+        {props.section.rows.map((row) => (
+          <SettingsPageRowView
+            key={row.id}
+            row={row}
+            onSettingsAction={props.onSettingsAction}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SettingsPageRowView(props: {
+  row: SettingsPageRowState;
+  onSettingsAction: (actionId: string, valueId: string) => void;
+}) {
+  const { row } = props;
+  if (row.kind === "toggle") {
+    const enabled = row.value_id === "on";
+    return (
+      <label className="settingsPageRow settingsToggleRow">
+        <span>{row.title}</span>
+        <input
+          type="checkbox"
+          data-testid={`settings-toggle-${row.id}`}
+          checked={enabled}
+          onChange={() => props.onSettingsAction(row.action_id, enabled ? "off" : "on")}
+        />
+      </label>
+    );
+  }
+  return (
+    <section className="settingsPageRow">
+      <h2>{row.title}</h2>
+      {row.kind === "grid_choices" ? (
+        <div className="settingsFlightDataGrid">
+          {row.items.map((item) => (
+            <button
+              key={item.cell.id}
+              type="button"
+              className={`flightDataCell settingsFlightDataCell${item.enabled ? "" : " isDisabled"}`}
+              aria-pressed={item.enabled}
+              onClick={() => props.onSettingsAction(row.action_id, item.cell.id)}
+            >
+              <FlightDataCellContents cell={item.cell} />
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {row.kind === "slider" && row.stops.length > 0 ? (
+        <div className="settingsSliderStops">
+          {row.stops.map((stop) => (
+            <button
+              key={stop.id}
+              type="button"
+              className={stop.id === row.value_id ? "isActive" : ""}
+              aria-pressed={stop.id === row.value_id}
+              onClick={() => props.onSettingsAction(row.action_id, stop.id)}
+            >
+              {stop.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -12386,114 +12329,6 @@ function formatDataStatusDuration(durationMs: number) {
   return `${Math.floor(days / 365)}y`;
 }
 
-function CommonDebugPanel(props: {
-  uptimeLabel: string;
-  debugState: UiDebugState;
-  onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
-  extraLines?: string[];
-  onRunDragPerf?: () => void;
-  dragPerfRunning?: boolean;
-  lastDragPerfRunId?: string | null;
-  mapUpDeg?: number;
-  onMapUpDegChange?: (mapUpDeg: number) => void;
-}) {
-  const flags: Array<{ id: DebugFlagId; label: string }> = [
-    { id: "tile_labels", label: "tile labels" },
-    { id: "nexrad_tile_labels", label: "NEXRAD tile labels" },
-    { id: "fast_tiles", label: "fast tiles" },
-    { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
-    { id: "sequencing_finish_lines", label: "sequencing finish lines" },
-    { id: "plate_flight_plan", label: "flight plan on plates" },
-    { id: "bad_autopilot", label: "Bad Autopilot" },
-    { id: "internet_adsb", label: "internet ADS-B" },
-    { id: "gps_capture", label: "capture GPS samples" },
-    { id: "debug_log_to_developer_server", label: "debug log to developer server" },
-  ];
-
-  return (
-    <>
-      <div className="debugLine">up: {props.uptimeLabel}</div>
-      {(props.extraLines ?? []).map((line) => (
-        <div key={line} className="debugLine">{line}</div>
-      ))}
-      {props.lastDragPerfRunId ? (
-        <div className="debugLine">drag run: {props.lastDragPerfRunId}</div>
-      ) : null}
-      {props.onRunDragPerf ? (
-        <button
-          type="button"
-          className="debugActionButton"
-          disabled={props.dragPerfRunning}
-          onPointerDown={stopPointer}
-          onPointerUp={stopPointer}
-          onDoubleClick={stopDoubleClick}
-          onClick={props.onRunDragPerf}
-        >
-          {props.dragPerfRunning ? "drag perf running" : "run drag perf"}
-        </button>
-      ) : null}
-      {props.mapUpDeg != null && props.onMapUpDegChange ? (
-        <DebugMapUpSlider mapUpDeg={props.mapUpDeg} onChange={props.onMapUpDegChange} />
-      ) : null}
-      {flags.map((flag) => (
-        <label key={flag.id} className="debugToggle">
-          <input
-            type="checkbox"
-            checked={props.debugState[flag.id]}
-            onChange={(event) => props.onDebugFlagChange(flag.id, event.currentTarget.checked)}
-          />
-          {flag.label}
-        </label>
-      ))}
-    </>
-  );
-}
-
-function DebugMapUpSlider(props: { mapUpDeg: number; onChange: (mapUpDeg: number) => void }) {
-  const mapUpDeg = Math.round(props.mapUpDeg);
-  return (
-    <label className="debugRange">
-      <span>UP {mapUpDeg > 0 ? "+" : ""}{mapUpDeg}°</span>
-      <input
-        type="range"
-        min="-180"
-        max="180"
-        step="1"
-        value={mapUpDeg}
-        aria-label="Debug map-up rotation"
-        onChange={(event) => props.onChange(Number(event.currentTarget.value))}
-      />
-    </label>
-  );
-}
-
-function DebugDock(props: { open: boolean; warn?: boolean; onToggle: () => void; children: React.ReactNode }) {
-  return (
-    <>
-      <button
-        type="button"
-        className={`debugLauncher${props.warn ? " isWarn" : ""}`}
-        onPointerDown={stopPointer}
-        onPointerUp={stopPointer}
-        onDoubleClick={stopDoubleClick}
-        onClick={props.onToggle}
-        aria-expanded={props.open}
-        aria-label="Toggle debug details"
-      >
-        DBG
-      </button>
-      <section
-        className={`debugPanel${props.open ? " isOpen" : ""}`}
-        aria-label="Debug metadata"
-        onPointerDown={stopPointer}
-        onPointerUp={stopPointer}
-      >
-        {props.children}
-      </section>
-    </>
-  );
-}
-
 function ZoomControl(props: {
   zoom: number;
   minZoom: number;
@@ -12586,30 +12421,6 @@ function mergeRecentAirportIds(
     }
   }
   return orderedIds;
-}
-
-function useSessionUptimeLabel(sessionStartMs: number) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(interval);
-  }, []);
-  return formatUptimeMs(nowMs - sessionStartMs);
-}
-
-function formatUptimeMs(elapsedMs: number) {
-  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatMegabytesPerSecond(bytesPerSecond: number) {
-  return `${(bytesPerSecond / (1024 * 1024)).toFixed(3)} MiB/s`;
 }
 
 function moveAirportToFront(

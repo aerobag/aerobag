@@ -2471,168 +2471,8 @@ button {
   cursor: help;
 }
 
-.debugFlag {
-  margin: 0;
-  color: #9a2d00;
-  font-size: 0.86rem;
-  font-weight: 700;
-}
-
-.debugDock {
-  position: absolute;
-  left: var(--thumb-gap);
-  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 7;
-  width: var(--thumb);
-  height: var(--thumb);
-  pointer-events: none;
-}
-
-.mapBottomRightDock {
-  position: absolute;
-  right: var(--thumb-gap);
-  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
-  z-index: 7;
-  display: flex;
-  align-items: flex-end;
-  gap: calc(var(--thumb) * 0.1);
-  pointer-events: none;
-}
-
-.mapBottomRightDock.isRaisedForPrimaryNavigation,
 .zoomControl.isRaisedForPrimaryNavigation {
   bottom: calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
-}
-
-.mapDebugDock {
-  position: relative;
-  left: auto;
-  bottom: auto;
-}
-
-.mapDebugDock .debugPanel {
-  bottom: calc(var(--thumb) + var(--thumb-gap));
-}
-
-.debugLauncher {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: var(--thumb);
-  height: var(--thumb);
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
-  border-radius: var(--thumb-radius);
-  background: var(--theme-button-unchecked);
-  box-shadow: var(--shadow);
-  color: var(--theme-button-fg);
-  font-size: calc(var(--thumb) * 0.22);
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  pointer-events: auto;
-}
-
-.debugLauncher.isWarn {
-  background: #c8741b;
-  border-color: color-mix(in srgb, #c8741b 72%, black);
-  color: #fff7ef;
-}
-
-.debugPanel {
-  position: absolute;
-  left: 0;
-  bottom: calc(var(--thumb) + var(--thumb-gap) + var(--safe-bottom));
-  width: calc(var(--thumb) * 4);
-  min-height: var(--thumb);
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  border: 1px solid rgba(19, 33, 41, 0.14);
-  border-radius: var(--thumb-radius);
-  background: rgba(252, 248, 241, 0.95);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(10px);
-  transform: translateY(calc(var(--thumb-gap) * 0.75));
-  transition: opacity 160ms ease, padding 160ms ease, transform 160ms ease;
-  user-select: text;
-  cursor: text;
-}
-
-.debugDock.isRightAligned .debugPanel {
-  left: auto;
-  right: 0;
-}
-
-.debugPanel.isOpen {
-  opacity: 1;
-  pointer-events: auto;
-  padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.16);
-  transform: translateY(0);
-}
-
-.debugLine {
-  font-size: calc(var(--thumb) * 0.16);
-  line-height: 1.15;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  user-select: text;
-}
-
-.debugActionButton {
-  width: 100%;
-  min-height: calc(var(--thumb) * 0.32);
-  margin: calc(var(--thumb) * 0.08) 0;
-  border: 1px solid rgba(19, 33, 41, 0.18);
-  border-radius: calc(var(--thumb-radius) * 0.55);
-  background: rgba(19, 33, 41, 0.08);
-  color: #253840;
-  font-size: calc(var(--thumb) * 0.15);
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.debugActionButton:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.debugToggle {
-  display: flex;
-  align-items: center;
-  gap: calc(var(--thumb) * 0.08);
-  font-size: calc(var(--thumb) * 0.16);
-  line-height: 1.15;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  color: #52656d;
-  user-select: none;
-  cursor: pointer;
-}
-
-.debugToggle input {
-  width: calc(var(--thumb) * 0.2);
-  height: calc(var(--thumb) * 0.2);
-  margin: 0;
-}
-
-.debugRange {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: calc(var(--thumb) * 0.1);
-  margin: calc(var(--thumb) * 0.08) 0;
-  color: #253840;
-  font-size: calc(var(--thumb) * 0.16);
-  font-weight: 800;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.debugRange input {
-  width: 100%;
-  margin: 0;
 }
 
 .navElement {
@@ -3770,6 +3610,46 @@ button {
   gap: calc(var(--thumb) * 0.24);
 }
 
+.settingsPageSection {
+  display: grid;
+  gap: calc(var(--thumb) * 0.14);
+}
+
+.settingsPageSectionHeader {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: calc(var(--thumb) * 0.64);
+  padding: 0 calc(var(--thumb) * 0.18);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.25);
+  font-weight: 900;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settingsPageSectionChevron {
+  width: calc(var(--thumb) * 0.32);
+  flex: 0 0 auto;
+  font-size: calc(var(--thumb) * 0.26);
+  line-height: 1;
+  text-align: center;
+}
+
+.settingsPageSectionRows {
+  display: grid;
+  gap: calc(var(--thumb) * 0.1);
+}
+
+.settingsPageSectionRows[hidden] {
+  display: none;
+}
+
 .settingsPageRow {
   padding: calc(var(--thumb) * 0.24);
   border-radius: calc(var(--thumb-radius) * 0.65);
@@ -3783,6 +3663,28 @@ button {
   font-weight: 900;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.settingsToggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.2);
+  min-height: calc(var(--thumb) * 0.62);
+  color: #101820;
+  font-size: calc(var(--thumb) * 0.23);
+  font-weight: 850;
+  cursor: pointer;
+  user-select: none;
+}
+
+.settingsToggleRow input {
+  width: calc(var(--thumb) * 0.3);
+  height: calc(var(--thumb) * 0.3);
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--theme-button-checked);
+  cursor: pointer;
 }
 
 .settingsFlightDataGrid {

@@ -293,10 +293,22 @@ pub struct UiSettingsPageRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct UiSettingsPageSection {
+    pub id: String,
+    pub title: String,
+    pub collapsed_by_default: bool,
+    pub rows: Vec<UiSettingsPageRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct UiSettingsPageState {
     pub title: String,
     pub summary: String,
     pub rows: Vec<UiSettingsPageRow>,
+    #[serde(default)]
+    pub sections: Vec<UiSettingsPageSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

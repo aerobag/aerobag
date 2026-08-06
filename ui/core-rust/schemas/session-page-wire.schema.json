@@ -777,12 +777,46 @@
       ],
       "type": "object"
     },
+    "UiSettingsPageSection": {
+      "additionalProperties": false,
+      "properties": {
+        "collapsed_by_default": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/UiSettingsPageRow"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "collapsed_by_default",
+        "rows"
+      ],
+      "type": "object"
+    },
     "UiSettingsPageState": {
       "additionalProperties": false,
       "properties": {
         "rows": {
           "items": {
             "$ref": "#/$defs/UiSettingsPageRow"
+          },
+          "type": "array"
+        },
+        "sections": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UiSettingsPageSection"
           },
           "type": "array"
         },
@@ -942,6 +976,7 @@
     "UiSettingsSliderStop",
     "UiSettingsGridItem",
     "UiSettingsPageRow",
+    "UiSettingsPageSection",
     "UiSettingsPageState",
     "UiDisplayPolicy",
     "UiDisclaimerState",

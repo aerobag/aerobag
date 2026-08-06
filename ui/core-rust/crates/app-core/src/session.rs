@@ -4018,8 +4018,14 @@ fn session_aircraft_definitions(
         let definition: product_contracts::AircraftDefinition = serde_json::from_str(include_str!(
             "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/cessna-172-generic.json"
         ))
-        .expect("bundled default aircraft definition");
-        let hash = definition.content_hash().expect("default aircraft hash");
+        .map_err(|error| AppError {
+            kind: AppErrorKind::Internal,
+            message: format!("invalid bundled default aircraft definition: {error}"),
+        })?;
+        let hash = definition.content_hash().map_err(|error| AppError {
+            kind: AppErrorKind::Internal,
+            message: format!("cannot hash bundled default aircraft definition: {error}"),
+        })?;
         definitions.entry(hash).or_insert(definition);
         return Ok(definitions);
     }

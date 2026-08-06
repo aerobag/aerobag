@@ -15,6 +15,7 @@ import {
 
 const url = process.env.AEROBAG_E2E_URL ?? "http://127.0.0.1:8085/";
 const screenshotPath = process.env.AEROBAG_E2E_SCREENSHOT ?? null;
+const homeScreenshotPath = process.env.AEROBAG_E2E_HOME_SCREENSHOT ?? null;
 const viewportWidth = Number(process.env.AEROBAG_E2E_WIDTH ?? 1000);
 const viewportHeight = Number(process.env.AEROBAG_E2E_HEIGHT ?? 900);
 const userDataDir = await mkdtemp(path.join(os.tmpdir(), "aerobag-settings-debug-"));
@@ -52,6 +53,17 @@ try {
     10_000,
     "Settings launcher did not appear on Home",
   );
+  const altitudePlannerIcon = await page.evaluate(`(() => {
+    const icon = document.querySelector('[data-testid="home-button-altitude_planner"] img');
+    return icon ? { src: icon.getAttribute('src'), loaded: icon.complete && icon.naturalWidth > 0 } : null;
+  })()`);
+  if (!altitudePlannerIcon?.loaded || !altitudePlannerIcon.src?.includes("home-altitude-planner-icon.png")) {
+    throw new Error(`Altitude Planner Home icon did not render: ${JSON.stringify(altitudePlannerIcon)}`);
+  }
+  if (homeScreenshotPath) {
+    const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
+    await writeFile(homeScreenshotPath, Buffer.from(screenshot.data, "base64"));
+  }
   await page.evaluate("document.querySelector('[data-testid=\"home-button-settings\"]')?.click()");
 
   const initial = await waitFor(

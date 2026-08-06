@@ -31,4 +31,9 @@ describe("Home navigation policy", () => {
   it("advertises that web cannot manage Offline Packages", () => {
     expect(adapterSource).toContain("offline_packages: null");
   });
+
+  it("gives Altitude Planner the shared Home icon treatment", () => {
+    expect(appSource).toContain('const HOME_ALTITUDE_PLANNER_ICON_SRC = "/icons/icons/home-altitude-planner-icon.png');
+    expect(appSource).toContain('return { page: "altitude", iconSrc: HOME_ALTITUDE_PLANNER_ICON_SRC };');
+  });
 });

@@ -967,6 +967,7 @@ const PAGE_HOME_ICON_SRC = "/icons/icons/page-home-icon.png?v=20260617a";
 const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
 const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
 const HOME_ABOUT_ICON_SRC = "/icons/icons/home-about-icon.png?v=20260802a";
+const HOME_ALTITUDE_PLANNER_ICON_SRC = "/icons/icons/home-altitude-planner-icon.png?v=20260806a";
 const HOME_CLOUD_ICON_SRC = "/icons/icons/home-cloud-icon.png?v=20260803a";
 const HOME_FLIGHT_PLAN_ICON_SRC = "/icons/icons/home-flight-plan-icon.png?v=20260802a";
 const HOME_OFFLINE_PACKAGES_ICON_SRC = "/icons/icons/home-offline-packages-icon.png?v=20260802a";
@@ -993,7 +994,7 @@ function webHomeButtonPresentation(destination: UiHomeDestination): { page: AppP
     case "flight_plan":
       return { page: "plan", iconSrc: HOME_FLIGHT_PLAN_ICON_SRC };
     case "altitude_planner":
-      return { page: "altitude" };
+      return { page: "altitude", iconSrc: HOME_ALTITUDE_PLANNER_ICON_SRC };
     case "data_status":
       return { page: "data", iconSrc: HOME_STATUS_ICON_SRC };
     case "settings":

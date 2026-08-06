@@ -24,6 +24,7 @@ class AltitudePlannerNavigationPolicyTest {
             ),
         )
         assertTrue(homeSource.contains("UiHomeDestination.AltitudePlanner ->"))
+        assertTrue(homeSource.contains("iconResId = R.drawable.home_altitude_planner_icon"))
         assertTrue(plannerSource.contains("uiSession.altitudeComparisons()"))
         assertTrue(plannerSource.contains("uiSession.performAltitudePlannerAction(actionUid)"))
         assertTrue(plannerSource.contains("uiSession.setAltitudePlannerDepartureInput(field, input)"))

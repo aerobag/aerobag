@@ -843,6 +843,62 @@ fn package_state_resolution_and_projection_are_owned_by_package_controller() {
 }
 
 #[test]
+fn cloud_state_runtime_and_projection_are_owned_by_cloud_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/cloud_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+
+    assert!(
+        ui_session.contains("cloud: CloudController"),
+        "UiSession must compose cloud behavior through one controller"
+    );
+    assert!(
+        !model.contains("cloud:") && !model.contains("CloudEngine"),
+        "raw cloud state must not return to SessionModel"
+    );
+    assert!(
+        controller.contains("struct CloudModel")
+            && controller.contains("engine: Arc<CloudEngine>")
+            && controller.contains("struct CloudProjectionCache")
+            && controller.contains("pub(crate) struct CloudController"),
+        "CloudController must own its provider engine and cached projection"
+    );
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("cloud: CloudModelCheckpoint"),
+        "session transactions must checkpoint cloud state"
+    );
+    assert!(
+        function_body(session, "rollback").contains("session.cloud.rollback_model"),
+        "session transaction rollback must restore cloud state"
+    );
+    let snapshot = function_body(session, "try_snapshot_for_session");
+    assert!(
+        snapshot.contains("project_cloud_for_session")
+            && !snapshot.contains("page_state_with_qr_scanner")
+            && !snapshot.contains("status_summary("),
+        "full snapshots must consume CloudController's cached projection"
+    );
+    let completion = function_body(session, "complete_cloud_provider_request_in_session");
+    assert!(
+        completion.contains("updates.offline_package_preferences")
+            && completion.contains("updates.remote_flight_plan")
+            && !completion.contains("remote_flight_plan()"),
+        "cloud completion must expose typed domain updates to the session coordinator"
+    );
+    assert_eq!(
+        session_text
+            .match_indices("session.cloud.persistent()")
+            .count(),
+        1,
+        "only aggregate persistence may read CloudController's persistent model"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

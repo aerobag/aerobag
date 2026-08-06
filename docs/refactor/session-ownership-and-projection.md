@@ -276,9 +276,9 @@ installed-package filtering.
 
 Cloud retains the durable synchronized records, but it is no longer the source
 used to project effective package preferences. `UiSession` transactionally
-coordinates local package preference changes across `PackageController` and
-`CloudEngine`, and applies remotely reconciled cloud preferences back through
-the package controller. Failed persistence rolls both representations back.
+coordinates local package preference changes across `PackageController` and the
+cloud domain, and applies remotely reconciled cloud preferences back through the
+package controller. Failed persistence rolls both representations back.
 
 Android's standalone offline-package planner remains a pre-runtime editor so a
 user can install a first NAVDB before an application session exists. It remains
@@ -291,14 +291,33 @@ state participates in session transactions and candidate rollback without
 changing the public snapshot or platform wire contracts. This slice did not add
 a lock, thread, Worker, or platform-specific domain policy.
 
+## Completed Ninth Slice
+
+The ninth slice extracted `CloudController` around the cloud persistent model,
+provider workflow runtime, request/effect scheduling, synchronization status,
+and cloud-page projection. The existing `CloudEngine` is now a private
+implementation detail held behind a copy-on-write controller model, so session
+transactions checkpoint a small reference and can restore cloud mutations
+without copying provider state during unrelated operations.
+
+Cloud page, status summary, and status-record projection now share one cached
+projection keyed by the controller revision, wall clock, and QR-scanner
+capability. Provider completions expose typed flight-plan and offline-package
+updates to `UiSession`; the session remains the coordinator that applies those
+updates atomically to `FlightPlanController` and `PackageController`. NAVDB
+candidate adoption moves and restores the cloud controller with the other
+domains.
+
+The public snapshot and platform wire contracts remain unchanged. This slice
+did not add a lock, thread, Worker, or platform-specific domain policy.
+
 ## Next Slice
 
-Continue roadmap item 4.6 with `CloudController` around cloud persistent model,
-provider workflow runtime, request/effect scheduling, synchronization status,
-and cloud-page projection. Keep flight-plan and package application of remote
-records coordinated by `UiSession`; cloud should expose typed reconciled domain
-updates rather than mutating those controllers. Data status remains a later,
-separate controller slice.
+Finish roadmap item 4.6 with `DataStatusController` around status-record
+ownership, hushing, summary/page projection, and status actions. Weather, map,
+package, cloud, and NAVDB controllers should provide typed status inputs; the
+session should coordinate them without owning the status store or rebuilding
+status UI policy itself.
 
 ## Relationship To Work Scheduling
 

@@ -551,7 +551,7 @@ impl Default for CloudPersistentState {
 }
 
 #[derive(Debug, Clone)]
-pub struct CloudEngine {
+pub(crate) struct CloudEngine {
     persistent: CloudPersistentState,
     authorizations: BTreeMap<CloudProviderKind, ProviderAuthorizationState>,
     authorization_request_in_flight: Option<CloudAuthorizationRequest>,
@@ -574,17 +574,24 @@ enum LinkedAccountDetail {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct CloudCompletion {
+pub(crate) struct CloudCompletion {
     changed_records: BTreeMap<String, CloudRecord>,
 }
 
 impl CloudCompletion {
-    pub fn remote_flight_plan(&self) -> AppResult<Option<FlightPlan>> {
+    pub(crate) fn remote_flight_plan(&self) -> AppResult<Option<FlightPlan>> {
         self.changed_records
             .get(FLIGHT_PLAN_RECORD_KEY)
             .map(flight_plan_from_record)
             .transpose()
             .map(|record| record.map(|record| record.plan))
+    }
+
+    pub(crate) fn offline_package_preferences_changed(&self) -> bool {
+        self.changed_records.keys().any(|key| {
+            key.starts_with(OFFLINE_PACKAGE_REGION_RECORD_PREFIX)
+                || key.starts_with(OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX)
+        })
     }
 }
 
@@ -778,22 +785,6 @@ impl CloudEngine {
             .get(FLIGHT_PLAN_RECORD_KEY)
             .and_then(|record| flight_plan_from_record(record).ok())
             .map(|record| record.plan)
-    }
-
-    pub fn pending_remote_flight_plan(&self) -> Option<FlightPlan> {
-        self.persistent
-            .records
-            .deferred_adoption
-            .get(FLIGHT_PLAN_RECORD_KEY)
-            .and_then(|record| flight_plan_from_record(record).ok())
-            .map(|record| record.plan)
-    }
-
-    pub fn clear_pending_remote_flight_plan(&mut self) {
-        self.persistent
-            .records
-            .deferred_adoption
-            .remove(FLIGHT_PLAN_RECORD_KEY);
     }
 
     pub fn take_pending_remote_flight_plan(&mut self) -> Option<FlightPlan> {
@@ -2502,6 +2493,7 @@ impl CloudEngine {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn page_state(&self, now_epoch_ms: i64) -> UiCloudPageState {
         self.page_state_with_qr_scanner(now_epoch_ms, false)
     }

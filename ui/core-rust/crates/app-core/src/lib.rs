@@ -13,6 +13,7 @@ pub mod cloud;
 mod cloud_acs;
 #[cfg(test)]
 mod cloud_acs_memory;
+mod cloud_controller;
 mod cloud_google_drive;
 pub mod content;
 pub mod data_status;
@@ -83,9 +84,9 @@ pub use chart_page::{
     DerivedChartPageState, DerivedChartReferenceFamily,
 };
 pub use cloud::{
-    CloudAuthorizationMode, CloudAuthorizationRequest, CloudAuthorizationResponse, CloudCompletion,
-    CloudEngine, CloudEventStreamEvent, CloudEventStreamEventKind, CloudEventStreamPlan,
-    CloudHttpHeader, CloudHttpMethod, CloudHttpRequest, CloudHttpResponse, CloudPersistentState,
+    CloudAuthorizationMode, CloudAuthorizationRequest, CloudAuthorizationResponse,
+    CloudEventStreamEvent, CloudEventStreamEventKind, CloudEventStreamPlan, CloudHttpHeader,
+    CloudHttpMethod, CloudHttpRequest, CloudHttpResponse, CloudPersistentState,
     CloudPlatformEffect, CloudProviderKind, CloudProviderPrincipal, CloudStatusFact,
     CloudStatusSummary, CloudUiActionId, CloudUiFieldId, CloudUiFieldValue,
     ProviderAuthorizationState, UiCloudAction, UiCloudPageState, UiCloudPanel, UiCloudPanelControl,

@@ -43,9 +43,12 @@ use crate::{
     chart_page::chart_page_airport_ids_from_plan,
     chart_page::ChartAssetRecord,
     cloud::{
-        CloudAuthorizationRequest, CloudAuthorizationResponse, CloudEngine, CloudHttpRequest,
-        CloudHttpResponse, CloudPersistentState, CloudUiActionId, CloudUiFieldValue,
-        UiCloudPageState, CLOUD_STATUS_ID,
+        CloudAuthorizationRequest, CloudAuthorizationResponse, CloudHttpRequest, CloudHttpResponse,
+        CloudPersistentState, CloudUiActionId, CloudUiFieldValue, UiCloudPageState,
+        CLOUD_STATUS_ID,
+    },
+    cloud_controller::{
+        CloudController, CloudModelCheckpoint, CloudProjection, CloudProjectionInput,
     },
     content::{ContentPolicy, ContentReport},
     data_status::{
@@ -182,6 +185,7 @@ struct UiSession {
     flight_plan: FlightPlanController,
     nav_data: NavDataController,
     packages: PackageController,
+    cloud: CloudController,
     situation: SituationController,
     weather: WeatherController,
     map: MapController,
@@ -235,6 +239,8 @@ pub struct UiSessionDiagnostics {
     pub nav_data_revision: u64,
     pub package_revision: u64,
     pub package_projection_count: u64,
+    pub cloud_revision: u64,
+    pub cloud_projection_count: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -254,6 +260,7 @@ struct SessionDiagnosticsCounters {
     situation_projection_count: AtomicU64,
     flight_plan_projection_count: AtomicU64,
     package_projection_count: AtomicU64,
+    cloud_projection_count: AtomicU64,
     last_session_payload_serialized_bytes: AtomicU64,
     transaction_commit_count: AtomicU64,
     transaction_rollback_count: AtomicU64,
@@ -271,6 +278,7 @@ impl SessionDiagnosticsCounters {
         flight_plan_revision: u64,
         nav_data_revision: u64,
         package_revision: u64,
+        cloud_revision: u64,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -294,6 +302,8 @@ impl SessionDiagnosticsCounters {
             nav_data_revision,
             package_revision,
             package_projection_count: self.package_projection_count.load(Ordering::Relaxed),
+            cloud_revision,
+            cloud_projection_count: self.cloud_projection_count.load(Ordering::Relaxed),
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -315,7 +325,6 @@ struct SessionModel {
     platform_capabilities: PlatformCapabilities,
     settings: SettingsController,
     persistence_storage: Option<SettingsStorageHandle>,
-    cloud: CloudEngine,
     debug_state: UiDebugState,
     cycle_product_freshness: CycleProductFreshnessState,
     wall_clock_epoch_ms: i64,
@@ -570,6 +579,7 @@ impl SessionSlot {
             session.flight_plan.revision(),
             session.nav_data.revision(),
             session.packages.revision(),
+            session.cloud.revision(),
         )
     }
 }
@@ -809,12 +819,30 @@ fn sync_adsb_ownship_status_record(session: &mut UiSession) {
     );
 }
 
-fn sync_cloud_status_record(session: &mut UiSession) {
-    if let Some(record) = session.cloud.status_record(session.wall_clock_epoch_ms) {
+fn sync_cloud_status_record(session: &mut UiSession, record: Option<DataStatusRecord>) {
+    if let Some(record) = record {
         upsert_data_status_record(session, record);
     } else {
         clear_data_status_record(session, CLOUD_STATUS_ID);
     }
+}
+
+fn project_cloud_for_session(session: &mut UiSession) -> CloudProjection {
+    let projection = session.cloud.project(CloudProjectionInput {
+        now_epoch_ms: session.wall_clock_epoch_ms,
+        qr_scanner_available: session
+            .platform_capabilities
+            .cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.qr_scan),
+    });
+    if projection.rebuilt {
+        session
+            .diagnostics
+            .cloud_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    projection.projection
 }
 
 fn enqueue_session_resource_effect(
@@ -1942,7 +1970,10 @@ fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
     changed
 }
 
-fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
+fn project_data_status_page_state(
+    session: &UiSession,
+    cloud_projection: &CloudProjection,
+) -> UiDataStatusPageState {
     let metars_status = metar_live_feed_status_source(session);
     let tafs_status = taf_live_feed_status_source(session);
     let mut rows = vec![
@@ -2068,7 +2099,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
         winds_aloft_status_page_row(session),
     ];
     if session.platform_capabilities.cloud.is_some() {
-        rows.insert(3, cloud_status_page_row(session));
+        rows.insert(3, cloud_status_page_row(cloud_projection));
     }
     rows.extend(package_warning_status_page_rows(session));
     UiDataStatusPageState {
@@ -2078,18 +2109,18 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
     }
 }
 
-fn cloud_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let summary = session.cloud.status_summary(session.wall_clock_epoch_ms);
+fn cloud_status_page_row(cloud_projection: &CloudProjection) -> UiDataStatusPageRow {
+    let summary = &cloud_projection.status_summary;
     status_page_row(
         "cloud:status",
         "Cloud",
-        summary.label,
+        summary.label.clone(),
         summary.severity,
-        summary.detail,
+        summary.detail.clone(),
         summary
             .facts
-            .into_iter()
-            .map(|fact| status_fact(fact.label, fact.value))
+            .iter()
+            .map(|fact| status_fact(fact.label.clone(), fact.value.clone()))
             .collect(),
     )
 }
@@ -3496,8 +3527,14 @@ fn create_ui_session_inner(
     let data_status_page_state = default_data_status_page_state();
     let settings_page_state = default_settings_page_state();
     let settings = SettingsController::default();
-    let cloud = CloudEngine::new(CloudPersistentState::default());
-    let cloud_page_state = cloud.page_state(0);
+    let mut cloud = CloudController::default();
+    let cloud_page_state = cloud
+        .project(CloudProjectionInput {
+            now_epoch_ms: wall_clock_epoch_ms,
+            qr_scanner_available: false,
+        })
+        .projection
+        .page_state;
     let mut packages = PackageController::default();
     let offline_package_preferences_json = packages.project()?.offline_package_preferences_json;
     let platform_capabilities = PlatformCapabilities::default();
@@ -3557,6 +3594,9 @@ fn create_ui_session_inner(
     diagnostics
         .package_projection_count
         .store(1, Ordering::Relaxed);
+    diagnostics
+        .cloud_projection_count
+        .store(1, Ordering::Relaxed);
     let session = UiSession {
         model: SessionModel {
             session_revision: 0,
@@ -3569,7 +3609,6 @@ fn create_ui_session_inner(
             platform_capabilities,
             settings,
             persistence_storage: None,
-            cloud,
             debug_state,
             cycle_product_freshness: CycleProductFreshnessState {
                 dirty: true,
@@ -3582,6 +3621,7 @@ fn create_ui_session_inner(
         flight_plan,
         nav_data: NavDataController::default(),
         packages,
+        cloud,
         situation,
         weather: WeatherController::default(),
         map,
@@ -3862,7 +3902,6 @@ pub fn complete_cloud_authorization_in_session(
         session
             .cloud
             .complete_authorization(request_id, response, now_epoch_ms)?;
-        sync_package_preferences_from_cloud(session)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -3906,7 +3945,6 @@ pub fn perform_cloud_ui_action_in_session(
         session
             .cloud
             .perform_ui_action(action_id, &fields, &plan, now_epoch_ms)?;
-        sync_package_preferences_from_cloud(session)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -3934,7 +3972,7 @@ pub fn record_offline_package_preferences_in_session(
     })
 }
 
-fn sync_package_preferences_from_cloud(session: &mut UiSession) -> AppResult<bool> {
+fn restore_package_preferences_from_cloud(session: &mut UiSession) -> AppResult<bool> {
     let preferences = session.cloud.offline_package_preferences()?;
     Ok(session.packages.replace_preferences(preferences))
 }
@@ -3981,7 +4019,6 @@ pub fn report_cloud_event_stream_event_in_session(
         session
             .cloud
             .report_event_stream_event(event, now_epoch_ms)?;
-        sync_package_preferences_from_cloud(session)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -3997,13 +4034,15 @@ pub fn complete_cloud_provider_request_in_session(
     let session = &mut *session_guard;
     run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
-        let completion =
+        let updates =
             session
                 .cloud
                 .complete_provider_request(request_id, response, now_epoch_ms)?;
-        sync_package_preferences_from_cloud(session)?;
+        if let Some(preferences) = updates.offline_package_preferences {
+            session.packages.replace_preferences(preferences);
+        }
         let mut invalidations = vec![UiInvalidation::SessionSnapshot];
-        if let Some(remote_plan) = completion.remote_flight_plan()? {
+        if let Some(remote_plan) = updates.remote_flight_plan {
             let navigation_active = session
                 .flight_plan
                 .active_plan()
@@ -4032,6 +4071,7 @@ struct SessionModelTransactionCheckpoint {
     flight_plan: FlightPlanModelCheckpoint,
     nav_data: NavDataModelCheckpoint,
     packages: PackageModelCheckpoint,
+    cloud: CloudModelCheckpoint,
     situation: SituationModelCheckpoint,
     weather: WeatherModelCheckpoint,
     map: MapModelCheckpoint,
@@ -4045,6 +4085,7 @@ impl SessionModelTransactionCheckpoint {
             flight_plan: session.flight_plan.checkpoint_model(),
             nav_data: session.nav_data.checkpoint_model(),
             packages: session.packages.checkpoint_model(),
+            cloud: session.cloud.checkpoint_model(),
             situation: session.situation.checkpoint_model(),
             weather: session.weather.checkpoint_model(),
             map: session.map.checkpoint_model(),
@@ -4057,6 +4098,7 @@ impl SessionModelTransactionCheckpoint {
         session.flight_plan.rollback_model(self.flight_plan);
         session.nav_data.rollback_model(self.nav_data);
         session.packages.rollback_model(self.packages);
+        session.cloud.rollback_model(self.cloud);
         session.situation.rollback_model(self.situation);
         session.weather.rollback_model(self.weather);
         session.map.rollback_model(self.map);
@@ -6460,6 +6502,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         flight_plan: std::mem::take(&mut live.flight_plan),
         nav_data: live.nav_data.candidate(store_id, store, open_result),
         packages: std::mem::take(&mut live.packages),
+        cloud: std::mem::take(&mut live.cloud),
         situation: std::mem::take(&mut live.situation),
         weather: std::mem::take(&mut live.weather),
         map: std::mem::take(&mut live.map),
@@ -6547,6 +6590,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 .packages
                 .rollback_model(previous_package_model.clone());
             live.packages = candidate.packages;
+            live.cloud = candidate.cloud;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -6566,6 +6610,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
             candidate.packages.rollback_model(previous_package_model);
             live.packages = candidate.packages;
+            live.cloud = candidate.cloud;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -6607,6 +6652,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             });
             warning.hushable = false;
             live.packages = candidate.packages;
+            live.cloud = candidate.cloud;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -11746,7 +11792,8 @@ fn try_snapshot_for_session(
         .diagnostics
         .snapshot_projection_count
         .fetch_add(1, Ordering::Relaxed);
-    sync_cloud_status_record(session);
+    let cloud_projection = project_cloud_for_session(session);
+    sync_cloud_status_record(session, cloud_projection.status_record.clone());
     if session.weather.runtime().metar_payload.is_some()
         || session.weather.runtime().taf_payload.is_some()
     {
@@ -11789,7 +11836,7 @@ fn try_snapshot_for_session(
     let raster_map = map_projection.projection.raster_map;
     let raster_ms = elapsed_ms(raster_started_at);
     let data_status_state = session.data_status_state.clone();
-    let data_status_page_state = project_data_status_page_state(session);
+    let data_status_page_state = project_data_status_page_state(session, &cloud_projection);
     let display_policy_available = session.platform_capabilities.display_policy.is_some();
     let settings_projection = session
         .settings
@@ -11807,14 +11854,7 @@ fn try_snapshot_for_session(
         flight_data_banner,
     } = settings_projection.projection;
     app_ui_state.flight_data_banner = flight_data_banner;
-    let cloud_page_state = session.cloud.page_state_with_qr_scanner(
-        session.wall_clock_epoch_ms,
-        session
-            .platform_capabilities
-            .cloud
-            .as_ref()
-            .is_some_and(|cloud| cloud.qr_scan),
-    );
+    let cloud_page_state = cloud_projection.page_state;
     let package_projection = session
         .packages
         .project()
@@ -11837,7 +11877,7 @@ fn try_snapshot_for_session(
             "situation_ms": situation_ms,
             "clone_ms": clone_ms,
             "raster_ms": raster_ms,
-            "projections": ["app_ui", "flight_plan", "situation", "weather", "settings", "map", "packages"],
+            "projections": ["app_ui", "flight_plan", "situation", "weather", "settings", "map", "packages", "cloud"],
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
             "settings_page_rows": settings_page_state.rows.len(),
@@ -12071,8 +12111,8 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     };
     let document = decode_session_persistence(&bytes);
     session.settings.restore_preferences(document.preferences);
-    session.cloud = CloudEngine::new(document.cloud);
-    sync_package_preferences_from_cloud(session)?;
+    session.cloud = CloudController::new(document.cloud);
+    restore_package_preferences_from_cloud(session)?;
     if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
     }
@@ -13740,7 +13780,6 @@ mod tests {
                 platform_capabilities: PlatformCapabilities::default(),
                 settings: SettingsController::default(),
                 persistence_storage: None,
-                cloud: CloudEngine::new(CloudPersistentState::default()),
                 debug_state: default_debug_state(),
                 cycle_product_freshness: CycleProductFreshnessState::default(),
                 wall_clock_epoch_ms: 0,
@@ -13751,6 +13790,7 @@ mod tests {
             flight_plan,
             nav_data,
             packages: PackageController::default(),
+            cloud: CloudController::default(),
             situation,
             weather: WeatherController::default(),
             map,
@@ -14421,6 +14461,8 @@ mod tests {
         assert_eq!(diagnostics.map_projection_count, 1);
         assert_eq!(diagnostics.situation_projection_count, 1);
         assert_eq!(diagnostics.flight_plan_projection_count, 1);
+        assert_eq!(diagnostics.package_projection_count, 1);
+        assert_eq!(diagnostics.cloud_projection_count, 1);
         assert_eq!(diagnostics.settings_revision, 0);
         assert_eq!(diagnostics.weather_revision, 0);
         assert_eq!(diagnostics.map_revision, 0);
@@ -14514,6 +14556,43 @@ mod tests {
             changed.weather_projection_count,
             configured.weather_projection_count
         );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn unrelated_snapshots_reuse_cloud_projection_until_cloud_inputs_change() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let initial = session_diagnostics(init.handle).expect("initial diagnostics");
+        assert_eq!(initial.cloud_revision, 0);
+        assert_eq!(initial.cloud_projection_count, 1);
+
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                cloud: Some(PlatformCloudCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure cloud capability");
+        let configured = session_diagnostics(init.handle).expect("configured diagnostics");
+        assert_eq!(configured.cloud_revision, initial.cloud_revision + 1);
+        assert_eq!(
+            configured.cloud_projection_count,
+            initial.cloud_projection_count + 1
+        );
+
+        get_session_snapshot(init.handle).expect("repeat snapshot");
+        set_map_layer_enabled_in_session(init.handle, MapLayerId::WorldBasemap, false)
+            .expect("unrelated map mutation");
+        let unchanged = session_diagnostics(init.handle).expect("unchanged diagnostics");
+        assert_eq!(unchanged.cloud_revision, configured.cloud_revision);
+        assert_eq!(
+            unchanged.cloud_projection_count,
+            configured.cloud_projection_count
+        );
+
         destroy_session(init.handle);
     }
 
@@ -15249,6 +15328,7 @@ mod tests {
         )
         .expect("configure rejecting storage");
         let before = get_session_snapshot(init.handle).expect("initial snapshot");
+        let before_diagnostics = session_diagnostics(init.handle).expect("initial diagnostics");
         let preferences = serde_json::json!({
             "regions": {"nw": "pause"},
             "products": {"terrain": "unselected"}
@@ -15260,7 +15340,12 @@ mod tests {
 
         assert!(error.message.contains("injected settings write failure"));
         let after = get_session_snapshot(init.handle).expect("rolled-back snapshot");
+        let after_diagnostics = session_diagnostics(init.handle).expect("rolled-back diagnostics");
         assert_eq!(after.session_revision, before.session_revision);
+        assert_eq!(
+            after_diagnostics.cloud_revision,
+            before_diagnostics.cloud_revision
+        );
         assert_eq!(
             after.offline_package_preferences_json,
             before.offline_package_preferences_json

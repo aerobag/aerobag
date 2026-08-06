@@ -40,23 +40,18 @@ What was updated on the app side in this pass:
 - `snapshot_artifacts.py` was retired.
   - dev clients should point at the artifact root directly.
   - `preprocessor-cli merge-current-artifacts` publishes the list-form `current_artifacts.json`.
-- `ui/scripts/stage_dev_assets.py`
-  - validates the list-form `current_artifacts.json`
-  - records the artifact root used for `/packages`
-  - no longer expects legacy top-level `resource_index`, `catalog`, `nav_kv`, `fast_products`, `static_products`, or `obstacles`
 - `ui/web-app/vite.config.ts`
+  - validates the list-form `current_artifacts.json`
+  - exposes the artifact root directly at `/packages`
   - removed dead packaged aliases for `catalog` / `resource_index`
-- web sample fixtures
-  - replaced dead imports of packaged `catalog` / `resource_index` with local fixtures so tests still run
+- focused web test fixtures no longer depend on packaged `catalog` / `resource_index` data
 
 What was actually validated:
-- `python3 ui/scripts/stage_dev_assets.py`
-- `python3 -m py_compile ui/scripts/stage_dev_assets.py`
 - `npm test` in `ui/web-app`
 - `npm run build` in `ui/web-app`
 
 Result:
-- web staging passes
+- direct artifact-root validation passes
 - web tests pass
 - web production build passes
 

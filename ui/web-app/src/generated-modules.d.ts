@@ -7,11 +7,6 @@ declare module "@shared-ui-theme" {
   export default value;
 }
 
-declare module "@shared-bootstrap" {
-  const value: unknown;
-  export default value;
-}
-
 declare module "@shared/*.html?raw" {
   const value: string;
   export default value;

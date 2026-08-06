@@ -461,7 +461,6 @@ export default defineConfig({
     alias: {
       "@generated": generatedRoot,
       "@shared": sharedRoot,
-      "@shared-bootstrap": path.join(sharedRoot, "dev-bootstrap.json"),
       "@shared-ui-theme": path.join(sharedFixturesRoot, "ui-theme.json"),
     },
   },

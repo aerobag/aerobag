@@ -1981,7 +1981,7 @@ internal fun writeStoredGpsCaptureDebugFlag(prefs: SharedPreferences, enabled: B
     prefs.edit().putBoolean(UiPrefsDebugGpsCaptureKey, enabled).apply()
 }
 
-internal fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
+internal fun summarizeRuntimeLoadFailure(error: Throwable): String {
     val messages = generateSequence(error) { it.cause }
         .mapNotNull { it.message?.trim() }
         .filter { it.isNotEmpty() }
@@ -2001,9 +2001,9 @@ internal fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
         .distinct()
         .toList()
     return if (chain.isEmpty()) {
-        "Runtime bootstrap failed."
+        "Runtime loading failed."
     } else {
-        "Runtime bootstrap failed: ${chain.joinToString(" <- ")}"
+        "Runtime loading failed: ${chain.joinToString(" <- ")}"
     }
 }
 
@@ -2378,7 +2378,6 @@ internal fun AerobagApp(
     val context = LocalContext.current
     val appContext = context.applicationContext
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
-    val bootstrap = remember(context) { AndroidRuntimeContent.loadBootstrap(context.applicationContext) }
     var runtimeReloadToken by remember { mutableStateOf(0) }
     var runtimeFixture by remember { mutableStateOf<Result<RuntimeContent>?>(retainedModel.runtimeResult) }
     fun requestRuntimeReload(targetPage: AppPage? = null) {
@@ -2394,7 +2393,7 @@ internal fun AerobagApp(
         onDispose { NativeBindings.destroyOfflinePackagesController(offlinePackagesControllerHandle) }
     }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
-    LaunchedEffect(context, bootstrap, runtimeReloadToken) {
+    LaunchedEffect(context, runtimeReloadToken) {
         retainedModel.runtimeResult?.let {
             runtimeFixture = it
             return@LaunchedEffect
@@ -2404,7 +2403,6 @@ internal fun AerobagApp(
             runCatching {
                 AndroidRuntimeContent.loadInstalledRuntime(
                     context.applicationContext,
-                    bootstrap,
                     readOfflinePackagesLibraryCacheJson(prefs),
                 )
             }
@@ -2419,7 +2417,6 @@ internal fun AerobagApp(
             page = AppPage.OfflinePackages,
             pageHistory = emptyList(),
             uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
-            bootstrap = bootstrap,
             debugState = defaultUiDebugState(gpsCapture = readStoredGpsCaptureDebugFlag(prefs)),
             navElement = null,
             onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
@@ -2432,7 +2429,7 @@ internal fun AerobagApp(
         when {
             runtimeFixture?.isFailure == true -> {
                 val error = runtimeFixture?.exceptionOrNull() ?: return@LaunchedEffect
-                val message = summarizeRuntimeBootstrapFailure(error)
+                val message = summarizeRuntimeLoadFailure(error)
                 runtimeFailureMessage = message
                 Log.e("AerobagRuntime", message, error)
             }
@@ -3326,7 +3323,6 @@ internal fun AerobagApp(
                         pageHistory = pageHistory,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,
-                        bootstrap = bootstrap,
                         debugState = sessionSnapshot.debugState,
                         navElement = navElement,
                         onSelectPage = ::navigateToPage,
@@ -3353,7 +3349,6 @@ internal fun AerobagApp(
                         pageHistory = pageHistory,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,
-                        bootstrap = bootstrap,
                         debugState = sessionSnapshot.debugState,
                         navElement = navElement,
                         onSelectPage = ::navigateToPage,

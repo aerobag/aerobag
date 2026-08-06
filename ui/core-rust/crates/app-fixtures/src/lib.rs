@@ -2,25 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use app_core::{GeometryBundle, PolygonRecord};
 use serde::Serialize;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-
-pub fn sample_geometry() -> GeometryBundle {
-    GeometryBundle {
-        schema_version: 1,
-        polygons: vec![PolygonRecord {
-            id: "sec:boston".to_string(),
-            points: vec![[-72.0, 43.0], [-72.0, 41.0], [-69.0, 41.0], [-69.0, 43.0]],
-        }],
-    }
-}
-
-pub fn sample_geometry_json() -> String {
-    serde_json::to_string(&sample_geometry()).expect("sample geometry should serialize")
-}
 
 pub fn fixture_snapshot_root() -> PathBuf {
     fixture_publication_root().unwrap_or_else(|| {
@@ -29,56 +14,6 @@ pub fn fixture_snapshot_root() -> PathBuf {
              or keep .aerobag-artifact-read-path in the repo root"
         )
     })
-}
-
-pub fn fixture_published_unpacked_root() -> PathBuf {
-    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_UNPACKED_ROOT") {
-        let path = PathBuf::from(value);
-        assert!(
-            path.is_dir(),
-            "AEROBAG_FIXTURE_UNPACKED_ROOT does not name a directory: {}",
-            path.display()
-        );
-        return path;
-    }
-    let current = selected_supported_current_artifacts_manifest();
-    let root = fixture_snapshot_root().join(current.artifact_roots.unpacked.as_str());
-    assert!(
-        root.is_dir(),
-        "fixture published unpacked root missing: {}",
-        root.display()
-    );
-    root
-}
-
-pub fn fixture_published_packaged_root() -> PathBuf {
-    let current = selected_supported_current_artifacts_manifest();
-    let root = fixture_snapshot_root().join(current.artifact_roots.packaged.as_str());
-    assert!(
-        root.is_dir(),
-        "fixture published packaged root missing: {}",
-        root.display()
-    );
-    root
-}
-
-pub fn fixture_nav_db_package_zip_path() -> PathBuf {
-    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_NAV_DB_PACKAGE") {
-        let path = PathBuf::from(value);
-        assert!(
-            path.is_file(),
-            "AEROBAG_FIXTURE_NAV_DB_PACKAGE does not name a file: {}",
-            path.display()
-        );
-        return path;
-    }
-    let (package_zip_path, _) = current_nav_db_artifact_paths();
-    assert!(
-        package_zip_path.is_file(),
-        "current nav-db package zip missing: {}",
-        package_zip_path.display()
-    );
-    package_zip_path
 }
 
 pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -390,14 +325,6 @@ pub fn planning_bootstrap_scenarios() -> Vec<PlanningScenario> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-
-    #[test]
-    fn sample_geometry_round_trips_to_json() {
-        let json = sample_geometry_json();
-        let parsed: GeometryBundle = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.polygons.len(), 1);
-        assert_eq!(parsed.polygons[0].id, "sec:boston");
-    }
 
     #[test]
     fn planning_bootstrap_scenarios_have_unique_ids() {

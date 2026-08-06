@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createInitialViewport, dragViewport } from "./mapViewport";
-import { mapView } from "./sampleData";
+import { mapView } from "./mapTestFixtures";
 import { MapFollowTargetGate } from "./mapFollowTargetGate";
 
 describe("MapFollowTargetGate", () => {

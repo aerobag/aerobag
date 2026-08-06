@@ -3128,7 +3128,6 @@ fn prune_failed_live_feed_scratch(
     Ok(())
 }
 
-#[allow(dead_code)]
 fn modified_time(path: &Path) -> SystemTime {
     fs::metadata(path)
         .and_then(|metadata| metadata.modified())

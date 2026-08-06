@@ -212,11 +212,11 @@ val artifactRoot = File(
 )
 
 val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
-val devBootstrapFile = file("../../shared/dev-bootstrap.json")
 val generatedSymbolSourceDir = layout.buildDirectory.dir("generated/aerobagSymbols/kotlin")
 val generatedWireSourceDir = layout.buildDirectory.dir("generated/aerobagWire/kotlin")
 val generatedCanonicalResourcesDir = layout.buildDirectory.dir("generated/aerobagCanonicalResources/res")
 val canonicalIconsDir = repoRoot.resolve("ui/icons/icons")
+val canonicalHomePageBackdropFile = repoRoot.resolve("ui/icons/backdrops/home-page-backdrop.jpg")
 
 fun linkOrCopy(source: File, target: File) {
     target.parentFile.mkdirs()
@@ -269,7 +269,6 @@ val stageCanonicalAndroidAssets by tasks.registering {
         val fixturesDir = assetRoot.resolve("fixtures")
         fixturesDir.mkdirs()
         linkOrCopy(uiThemeFile, fixturesDir.resolve("ui-theme.json"))
-        linkOrCopy(devBootstrapFile, fixturesDir.resolve("dev-bootstrap.json"))
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
         fixturesDir.resolve("android-package-source-base-url.txt").writeText(androidPackageSourceBaseUrl)
         fixturesDir.resolve("android-live-feed-source-base-url.txt").writeText(androidLiveFeedSourceBaseUrl)
@@ -279,6 +278,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
 
 val stageCanonicalAndroidResources by tasks.registering {
     inputs.dir(canonicalIconsDir)
+    inputs.file(canonicalHomePageBackdropFile)
     outputs.dir(generatedCanonicalResourcesDir)
     doFirst {
         delete(generatedCanonicalResourcesDir.get().asFile)
@@ -290,6 +290,7 @@ val stageCanonicalAndroidResources by tasks.registering {
             .forEach { icon ->
                 linkOrCopy(icon, drawableDir.resolve(icon.name.replace('-', '_')))
             }
+        linkOrCopy(canonicalHomePageBackdropFile, drawableDir.resolve("home_page_backdrop.jpg"))
     }
 }
 

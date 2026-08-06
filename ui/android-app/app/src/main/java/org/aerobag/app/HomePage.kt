@@ -423,7 +423,6 @@ internal fun HomePage(
     pageHistory: List<AppViewSnapshot>,
     mostRecentChartOrPlatePage: AppPage = AppPage.Map,
     uptimeLabel: String,
-    bootstrap: org.aerobag.app.domain.RuntimeBootstrap,
     debugState: UiDebugState,
     navElement: NavElementUiView?,
     onSelectPage: (AppPage) -> Unit,
@@ -500,7 +499,7 @@ internal fun HomePage(
         val input = OfflinePackagesControllerInputWire(
             packageSourceBaseUrl = packageSourceBaseUrl,
             discoveryFilenames = emptyList(),
-            nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
+            nowEpochMs = System.currentTimeMillis(),
             installed = installed,
             storage = storage,
             event = event,

@@ -114,39 +114,6 @@ impl<V> Drop for GraphCompletionGuard<V> {
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn run_weighted_task_graph<K, V, RunTask, Log>(
-    graph_name: &str,
-    pending_tasks: Vec<GraphScheduledTask<K>>,
-    work_unit_budget: usize,
-    log: Log,
-    run_task: RunTask,
-) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
-where
-    K: Clone + Send + 'static,
-    V: Clone + Send + Sync + 'static,
-    RunTask: Fn(
-            K,
-            GraphReadMap<V>,
-            GraphReadMap<Vec<NodeRecord>>,
-        ) -> anyhow::Result<GraphTaskCompletion<V>>
-        + Clone
-        + Send
-        + 'static,
-    Log: FnMut(String) -> anyhow::Result<()>,
-{
-    let outcome = run_weighted_task_graph_impl(
-        graph_name,
-        pending_tasks,
-        work_unit_budget,
-        log,
-        run_task,
-        |_, _, _, _, _| Ok(Vec::new()),
-        GraphFailurePolicy::FailFast,
-    )?;
-    Ok((outcome.task_values, outcome.task_node_records))
-}
-
 pub(super) fn run_weighted_task_graph_with_expansion<K, V, RunTask, ExpandTask, Log>(
     graph_name: &str,
     pending_tasks: Vec<GraphScheduledTask<K>>,

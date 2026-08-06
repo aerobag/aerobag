@@ -82,6 +82,7 @@ pub(crate) struct SettingsProjectionDependencies {
     pub settings_revision: u64,
     pub display_policy_available: bool,
     pub flight_data_banner: FlightDataBannerProjectionDependencies,
+    pub debug_state: UiDebugState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +121,6 @@ pub(crate) struct SessionProjectionVersionState {
 }
 
 impl SessionProjectionVersionState {
-    #[cfg(test)]
     pub fn versions(&self) -> SessionProjectionVersions {
         self.versions
     }
@@ -267,6 +267,18 @@ mod tests {
                 settings_revision: 0,
                 display_policy_available: false,
                 flight_data_banner: flight_data_banner_dependencies(),
+                debug_state: UiDebugState {
+                    tile_labels: false,
+                    nexrad_tile_labels: false,
+                    fast_tiles: false,
+                    offline_simulated_clock_buttons: false,
+                    sequencing_finish_lines: false,
+                    plate_flight_plan: false,
+                    bad_autopilot: false,
+                    internet_adsb: false,
+                    gps_capture: false,
+                    debug_log_to_developer_server: false,
+                },
             },
             cloud: CloudProjectionDependencies {
                 cloud_revision: 0,

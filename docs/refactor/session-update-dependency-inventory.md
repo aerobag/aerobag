@@ -43,7 +43,7 @@ These accesses are deliberately spelled `session.coordinator.<field>`.
 | Charts | `chart_page_state` | Coordinator chart selection | Active flight plan and NAVDB reads when selection changes |
 | Map | `map_layer_state`, `raster_map` | `MapController` | Debug policy; package/NAVDB changes configure the controller before projection |
 | Status | `data_status_state`, `data_status_page_state`, `next_cycle_product_freshness_check_epoch_ms` | `DataStatusController`; coordinator owns the next-check schedule | Typed NAVDB, package, cloud, weather, platform, clock, and build facts |
-| Settings | `settings_page_state`, `display_policy`, `disclaimer_state` | `SettingsController` | Display capability and unfiltered flight-data banner |
+| Settings | `settings_page_state`, `display_policy`, `disclaimer_state` | `SettingsController` | Display capability, unfiltered flight-data banner, and coordinator debug policy rendered in Settings |
 | Cloud | `cloud_page_state` | `CloudController` | Wall clock and QR-scanner capability |
 | Packages | `offline_package_preferences_json` | `PackageController` | None beyond controller model |
 | Home | `home_page_state` | Platform capability projection | Platform capabilities |
@@ -83,18 +83,27 @@ planner state without scattering manual dirty calls across mutation paths.
 
 The version state is checkpointed with aggregate transactions and cloned into a
 NAVDB candidate. Failed transactions therefore cannot publish versions for
-rolled-back state. The tokens remain core-only until the generated
-`SessionUpdate` contract lands; no platform compares snapshots or serialized
-values to infer changes.
+rolled-back state. Core compares these tokens before and after successful
+projection to populate the generated `UiSessionUpdate`; no platform compares
+snapshots or serialized values to infer changes.
+
+Each optional update group is a versioned JSON-object patch containing exact
+top-level fields from the existing snapshot. This lets adapters merge a patch
+into their cached raw snapshot and reuse the existing strict decoder without
+duplicating the large legacy snapshot type graph in a second generated schema.
+Core owns and tests the non-overlapping field-to-group partition.
 
 ## Implementation Order
 
 1. ~~Add core-only projection version tokens for every proposed group and assert
    that unrelated mutations leave them unchanged.~~ Completed.
-2. Define a generated `SessionUpdate` with an envelope plus optional projection
-   groups. Keep the existing full snapshot as startup/resynchronization data.
+2. ~~Define a generated `SessionUpdate` with an envelope plus optional projection
+   groups. Keep the existing full snapshot as startup/resynchronization data.~~
+   Completed.
 3. Make each mutation return the update assembled from core-owned changed-group
-   decisions while retaining specialized query invalidations.
+   decisions while retaining specialized query invalidations. Snapshot-producing
+   mutations now include this update beside the transitional full snapshot;
+   finish the lone effect-only preferences path when adapters consume updates.
 4. Teach Android and web adapters to merge groups into their local view model.
 5. Remove ordinary full-snapshot serialization only after both platforms have
    conformance and journey coverage.

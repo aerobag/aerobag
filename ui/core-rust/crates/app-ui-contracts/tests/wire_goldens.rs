@@ -61,6 +61,31 @@ fn session_command_ids_match_golden() {
 }
 
 #[test]
+fn session_update_wire_matches_golden() {
+    assert_golden(
+        &session::UiSessionUpdate {
+            ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
+            session_revision: 7,
+            nav_data: None,
+            application: None,
+            situation: None,
+            charts: None,
+            map: Some(session::UiSessionProjectionPatch {
+                version: 3,
+                fields: serde_json::json!({"map_layer_state": {"example": true}}),
+            }),
+            status: None,
+            settings: None,
+            cloud: None,
+            packages: None,
+            home: None,
+            debug: None,
+        },
+        include_str!("goldens/session-update.json"),
+    );
+}
+
+#[test]
 fn contract_decoders_reject_unknown_fields() {
     assert!(serde_json::from_str::<home::UiHomePageState>(
         r#"{"buttons":[],"platform_guess":true}"#,
@@ -72,4 +97,8 @@ fn contract_decoders_reject_unknown_fields() {
     .is_err());
     assert!(serde_json::from_str::<session::MapLayerId>(r#""weather""#).is_err());
     assert!(serde_json::from_str::<session::DebugFlagId>(r#""diagnostics""#).is_err());
+    assert!(serde_json::from_str::<session::UiSessionUpdate>(
+        r#"{"ui_contract_version":1,"session_revision":1,"unknown":true}"#,
+    )
+    .is_err());
 }

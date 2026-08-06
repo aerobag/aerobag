@@ -32,8 +32,9 @@ pub use app_ui_contracts::{
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
         UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
-        UiPlaybackPanelState, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
-        UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop,
+        UiPlaybackPanelState, UiSessionProjectionPatch, UiSessionUpdate, UiSettingsAction,
+        UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState,
+        UiSettingsSliderStop,
     },
 };
 
@@ -106,7 +107,7 @@ use crate::{
         ApplicationProjectionDependencies, CloudProjectionDependencies,
         FlightDataBannerProjectionDependencies, HomeProjectionDependencies,
         MapProjectionDependencies, NavDataProjectionDependencies, SessionProjectionDependencies,
-        SessionProjectionVersionState, SettingsProjectionDependencies,
+        SessionProjectionVersionState, SessionProjectionVersions, SettingsProjectionDependencies,
         StatusProjectionDependencies,
     },
     settings_controller::{
@@ -382,6 +383,8 @@ pub enum NavDbAdvanceDisposition {
 pub struct NavDbAdvanceResult {
     pub disposition: NavDbAdvanceDisposition,
     pub snapshot: UiSessionSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_update: Option<UiSessionUpdate>,
     pub active_artifact_filename: Option<String>,
     pub retained_artifact_filenames: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,6 +402,8 @@ pub enum NavDbMaintenanceAction {
 pub struct NavDbMaintenanceResult {
     pub action: NavDbMaintenanceAction,
     pub snapshot: UiSessionSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_update: Option<UiSessionUpdate>,
 }
 
 #[derive(Clone, Default)]
@@ -2752,9 +2757,9 @@ fn run_session_model_transaction_with_persistence(
     run_session_model_transaction_projecting(
         session,
         mutate,
-        |session| {
-            let snapshot = try_snapshot_for_session(session)?;
-            serde_json::to_value(snapshot).map_err(|error| {
+        |session, previous_versions| {
+            let projection = try_project_session_mutation(session, previous_versions)?;
+            session_mutation_snapshot_value(projection).map_err(|error| {
                 SessionModelTransactionError::App(AppError {
                     kind: AppErrorKind::Internal,
                     message: error.to_string(),
@@ -2769,20 +2774,29 @@ fn run_session_model_update(
     session: &mut UiSession,
     mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
 ) -> AppResult<HadOperationOutcome> {
-    run_session_model_transaction_projecting(session, mutate, |_| Ok(serde_json::Value::Null), true)
+    run_session_model_transaction_projecting(
+        session,
+        mutate,
+        |_, _| Ok(serde_json::Value::Null),
+        true,
+    )
 }
 
 fn run_session_model_transaction_projecting(
     session: &mut UiSession,
     mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
-    project: impl FnOnce(&mut UiSession) -> Result<serde_json::Value, SessionModelTransactionError>,
+    project: impl FnOnce(
+        &mut UiSession,
+        SessionProjectionVersions,
+    ) -> Result<serde_json::Value, SessionModelTransactionError>,
     write_persistence: bool,
 ) -> AppResult<HadOperationOutcome> {
+    let previous_versions = session.projection_versions.versions();
     let checkpoint = SessionModelTransactionCheckpoint::capture(session);
     let result = (|| {
         let invalidations = mutate(session)?;
         advance_session_revision(session);
-        let result = project(session)?;
+        let result = project(session, previous_versions)?;
         if write_persistence {
             write_session_persistence_to_storage(session)?;
         }
@@ -5089,6 +5103,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let live = &mut *session_guard;
+    let previous_versions = live.projection_versions.versions();
     if live.nav_data.advance_blocked() {
         let active_artifact_filename = live
             .nav_data
@@ -5102,6 +5117,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                     "NAVDB advance is blocked until application reload; retained snapshot failed: {error:?}"
                 ),
             })?,
+            session_update: None,
             active_artifact_filename: active_artifact_filename.clone(),
             retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
             rejection_reason: Some(
@@ -5163,7 +5179,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
 
-    let rebuild = (|| -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
+    let rebuild = (|| -> Result<ProjectedSessionMutation, SessionSnapshotProjectionError> {
         if let Some(plan) = candidate.flight_plan.active_plan() {
             let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
             replace_session_flight_plan(&mut candidate, rebuilt_plan)
@@ -5209,16 +5225,17 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         sync_cycle_product_freshness_status_records(&mut candidate);
         clear_data_status_record(&mut candidate, NAV_DB_ADVANCE_STATUS_ID);
         advance_session_revision(&mut candidate);
-        try_snapshot_for_session(&mut candidate)
+        try_project_session_mutation(&mut candidate, previous_versions)
     })();
 
     match rebuild {
-        Ok(snapshot) => {
+        Ok(projection) => {
             let active_artifact_filename = Some(open_result.selected_filename.clone());
             *live = candidate;
             let result = NavDbAdvanceResult {
                 disposition: NavDbAdvanceDisposition::Adopted,
-                snapshot,
+                snapshot: projection.snapshot,
+                session_update: Some(projection.update),
                 active_artifact_filename: active_artifact_filename.clone(),
                 retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
                 rejection_reason: None,
@@ -5348,7 +5365,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             }
             upsert_data_status_record(live, warning);
             advance_session_revision(live);
-            let snapshot = try_snapshot_for_session(live).map_err(|error| AppError {
+            let projection = try_project_session_mutation(live, previous_versions).map_err(|error| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: match error {
                     SessionSnapshotProjectionError::NeedResources(resources) => format!(
@@ -5365,7 +5382,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             let active_artifact_filename = previous_filename;
             let result = NavDbAdvanceResult {
                 disposition: NavDbAdvanceDisposition::Rejected,
-                snapshot,
+                snapshot: projection.snapshot,
+                session_update: Some(projection.update),
                 active_artifact_filename: active_artifact_filename.clone(),
                 retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
                 rejection_reason: Some(message),
@@ -5388,6 +5406,7 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    let previous_versions = session.projection_versions.versions();
     advance_session_wall_clock(session, epoch_ms);
     mark_cycle_product_freshness_dirty_if_deadline_due(session);
     sync_cycle_product_freshness_status_records_if_needed(session);
@@ -5401,11 +5420,13 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
         })?;
     match decision {
         NavDataMaintenanceDecision::None => {
-            nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None)
+            nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None, previous_versions)
         }
-        NavDataMaintenanceDecision::AttemptAdvance => {
-            nav_db_maintenance_outcome(session, NavDbMaintenanceAction::AttemptAdvance)
-        }
+        NavDataMaintenanceDecision::AttemptAdvance => nav_db_maintenance_outcome(
+            session,
+            NavDbMaintenanceAction::AttemptAdvance,
+            previous_versions,
+        ),
         NavDataMaintenanceDecision::NeedResources(resources) => {
             Ok(HadOperationOutcome::NeedResources { resources })
         }
@@ -5415,13 +5436,17 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
 fn nav_db_maintenance_outcome(
     session: &mut UiSession,
     action: NavDbMaintenanceAction,
+    previous_versions: SessionProjectionVersions,
 ) -> AppResult<HadOperationOutcome> {
-    let result = NavDbMaintenanceResult {
-        action,
-        snapshot: try_snapshot_for_session(session).map_err(|error| AppError {
+    let projection =
+        try_project_session_mutation(session, previous_versions).map_err(|error| AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("NAVDB maintenance snapshot failed: {error:?}"),
-        })?,
+        })?;
+    let result = NavDbMaintenanceResult {
+        action,
+        snapshot: projection.snapshot,
+        session_update: Some(projection.update),
     };
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(result).map_err(|err| AppError {
@@ -10415,10 +10440,11 @@ fn changed_session_snapshot_outcome_with_invalidations(
     session: &mut UiSession,
     mut invalidations: Vec<UiInvalidation>,
 ) -> AppResult<HadOperationOutcome> {
+    let previous_versions = session.projection_versions.versions();
     advance_session_revision(session);
     dedupe_invalidations(&mut invalidations);
-    match try_snapshot_for_session(session) {
-        Ok(snapshot) => serde_json::to_value(snapshot)
+    match try_project_session_mutation(session, previous_versions) {
+        Ok(projection) => session_mutation_snapshot_value(projection)
             .map(|snapshot| {
                 if invalidations.is_empty() {
                     HadOperationOutcome::complete(snapshot)
@@ -10546,6 +10572,7 @@ fn session_projection_dependencies(
             settings_revision: session.settings.revision(),
             display_policy_available: capabilities.display_policy.is_some(),
             flight_data_banner,
+            debug_state: session.coordinator.debug_state.clone(),
         },
         cloud: CloudProjectionDependencies {
             cloud_revision: session.cloud.revision(),
@@ -10570,6 +10597,128 @@ fn refresh_session_projection_versions(
 ) {
     let dependencies = session_projection_dependencies(session, next_nav_db_maintenance_epoch_ms);
     session.projection_versions.observe(dependencies);
+}
+
+#[derive(Debug)]
+struct ProjectedSessionMutation {
+    snapshot: UiSessionSnapshot,
+    update: UiSessionUpdate,
+}
+
+fn try_project_session_mutation(
+    session: &mut UiSession,
+    previous_versions: SessionProjectionVersions,
+) -> Result<ProjectedSessionMutation, SessionSnapshotProjectionError> {
+    let snapshot = try_snapshot_for_session(session)?;
+    let current_versions = session.projection_versions.versions();
+    let update = assemble_session_update(&snapshot, previous_versions, current_versions);
+    Ok(ProjectedSessionMutation { snapshot, update })
+}
+
+fn session_mutation_snapshot_value(
+    projection: ProjectedSessionMutation,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(projection.snapshot)?;
+    let fields = value.as_object_mut().ok_or_else(|| {
+        serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "UiSessionSnapshot did not serialize as an object",
+        ))
+    })?;
+    fields.insert(
+        "session_update".to_string(),
+        serde_json::to_value(projection.update)?,
+    );
+    Ok(value)
+}
+
+fn changed_projection_patch(
+    previous_version: u64,
+    current_version: u64,
+    fields: impl FnOnce() -> serde_json::Value,
+) -> Option<UiSessionProjectionPatch> {
+    (previous_version != current_version).then(|| UiSessionProjectionPatch {
+        version: current_version,
+        fields: fields(),
+    })
+}
+
+fn assemble_session_update(
+    snapshot: &UiSessionSnapshot,
+    previous: SessionProjectionVersions,
+    current: SessionProjectionVersions,
+) -> UiSessionUpdate {
+    UiSessionUpdate {
+        ui_contract_version: snapshot.ui_contract_version,
+        session_revision: snapshot.session_revision,
+        nav_data: changed_projection_patch(previous.nav_data, current.nav_data, || {
+            serde_json::json!({
+                "nav_data_epoch": snapshot.nav_data_epoch,
+                "active_nav_db": snapshot.active_nav_db,
+                "next_nav_db_maintenance_epoch_ms": snapshot.next_nav_db_maintenance_epoch_ms,
+            })
+        }),
+        application: changed_projection_patch(previous.application, current.application, || {
+            serde_json::json!({
+                "flight_plan_route_revision": snapshot.flight_plan_route_revision,
+                "app_ui_state": snapshot.app_ui_state,
+            })
+        }),
+        situation: changed_projection_patch(previous.situation, current.situation, || {
+            serde_json::json!({
+                "playback_ui_state": snapshot.playback_ui_state,
+                "playback_panel_state": snapshot.playback_panel_state,
+                "map_follow_ui_state": snapshot.map_follow_ui_state,
+                "map_follow_target_viewport": snapshot.map_follow_target_viewport,
+            })
+        }),
+        charts: changed_projection_patch(previous.charts, current.charts, || {
+            serde_json::json!({
+                "chart_page_state": snapshot.chart_page_state,
+            })
+        }),
+        map: changed_projection_patch(previous.map, current.map, || {
+            serde_json::json!({
+                "map_layer_state": snapshot.map_layer_state,
+                "raster_map": snapshot.raster_map,
+            })
+        }),
+        status: changed_projection_patch(previous.status, current.status, || {
+            serde_json::json!({
+                "data_status_state": snapshot.data_status_state,
+                "data_status_page_state": snapshot.data_status_page_state,
+                "next_cycle_product_freshness_check_epoch_ms": snapshot
+                    .next_cycle_product_freshness_check_epoch_ms,
+            })
+        }),
+        settings: changed_projection_patch(previous.settings, current.settings, || {
+            serde_json::json!({
+                "settings_page_state": snapshot.settings_page_state,
+                "display_policy": snapshot.display_policy,
+                "disclaimer_state": snapshot.disclaimer_state,
+            })
+        }),
+        cloud: changed_projection_patch(previous.cloud, current.cloud, || {
+            serde_json::json!({
+                "cloud_page_state": snapshot.cloud_page_state,
+            })
+        }),
+        packages: changed_projection_patch(previous.packages, current.packages, || {
+            serde_json::json!({
+                "offline_package_preferences_json": snapshot.offline_package_preferences_json,
+            })
+        }),
+        home: changed_projection_patch(previous.home, current.home, || {
+            serde_json::json!({
+                "home_page_state": snapshot.home_page_state,
+            })
+        }),
+        debug: changed_projection_patch(previous.debug, current.debug, || {
+            serde_json::json!({
+                "debug_state": snapshot.debug_state,
+            })
+        }),
+    }
 }
 
 fn try_snapshot_for_session(
@@ -12628,6 +12777,201 @@ mod tests {
         session.projection_versions.versions()
     }
 
+    fn session_update_from_outcome(outcome: HadOperationOutcome) -> UiSessionUpdate {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("session operation unexpectedly needed resources: {outcome:?}");
+        };
+        serde_json::from_value(
+            result
+                .get("session_update")
+                .cloned()
+                .expect("ordinary mutation result must include session_update"),
+        )
+        .expect("session update")
+    }
+
+    fn projection_field_names(patch: &UiSessionProjectionPatch) -> BTreeSet<&str> {
+        patch
+            .fields
+            .as_object()
+            .expect("projection patch fields must be an object")
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn session_update_groups_partition_production_snapshot_fields() {
+        let mut session = isolated_test_session(None);
+        let snapshot = try_snapshot_for_session(&mut session).expect("initial snapshot");
+        let previous = session.projection_versions.versions();
+        let current = SessionProjectionVersions {
+            envelope: previous.envelope.saturating_add(1),
+            nav_data: previous.nav_data.saturating_add(1),
+            application: previous.application.saturating_add(1),
+            situation: previous.situation.saturating_add(1),
+            charts: previous.charts.saturating_add(1),
+            map: previous.map.saturating_add(1),
+            status: previous.status.saturating_add(1),
+            settings: previous.settings.saturating_add(1),
+            cloud: previous.cloud.saturating_add(1),
+            packages: previous.packages.saturating_add(1),
+            home: previous.home.saturating_add(1),
+            debug: previous.debug.saturating_add(1),
+        };
+        let update = assemble_session_update(&snapshot, previous, current);
+        let groups = [
+            ("nav_data", update.nav_data.as_ref().expect("nav data")),
+            (
+                "application",
+                update.application.as_ref().expect("application"),
+            ),
+            ("situation", update.situation.as_ref().expect("situation")),
+            ("charts", update.charts.as_ref().expect("charts")),
+            ("map", update.map.as_ref().expect("map")),
+            ("status", update.status.as_ref().expect("status")),
+            ("settings", update.settings.as_ref().expect("settings")),
+            ("cloud", update.cloud.as_ref().expect("cloud")),
+            ("packages", update.packages.as_ref().expect("packages")),
+            ("home", update.home.as_ref().expect("home")),
+            ("debug", update.debug.as_ref().expect("debug")),
+        ];
+        let expected = BTreeMap::from([
+            (
+                "nav_data",
+                BTreeSet::from([
+                    "active_nav_db",
+                    "nav_data_epoch",
+                    "next_nav_db_maintenance_epoch_ms",
+                ]),
+            ),
+            (
+                "application",
+                BTreeSet::from(["app_ui_state", "flight_plan_route_revision"]),
+            ),
+            (
+                "situation",
+                BTreeSet::from([
+                    "map_follow_target_viewport",
+                    "map_follow_ui_state",
+                    "playback_panel_state",
+                    "playback_ui_state",
+                ]),
+            ),
+            ("charts", BTreeSet::from(["chart_page_state"])),
+            ("map", BTreeSet::from(["map_layer_state", "raster_map"])),
+            (
+                "status",
+                BTreeSet::from([
+                    "data_status_page_state",
+                    "data_status_state",
+                    "next_cycle_product_freshness_check_epoch_ms",
+                ]),
+            ),
+            (
+                "settings",
+                BTreeSet::from(["disclaimer_state", "display_policy", "settings_page_state"]),
+            ),
+            ("cloud", BTreeSet::from(["cloud_page_state"])),
+            (
+                "packages",
+                BTreeSet::from(["offline_package_preferences_json"]),
+            ),
+            ("home", BTreeSet::from(["home_page_state"])),
+            ("debug", BTreeSet::from(["debug_state"])),
+        ]);
+        let mut all_fields = BTreeSet::new();
+        for (group, patch) in groups {
+            let actual = projection_field_names(patch);
+            assert_eq!(actual, expected[group], "{group} field membership changed");
+            for field in actual {
+                assert!(
+                    all_fields.insert(field),
+                    "snapshot field {field} belongs to more than one update group"
+                );
+            }
+        }
+        assert_eq!(
+            all_fields,
+            expected.values().flatten().copied().collect(),
+            "every non-envelope production snapshot field must belong to one update group"
+        );
+        let mut snapshot_fields = serde_json::to_value(snapshot)
+            .expect("serialize snapshot")
+            .as_object()
+            .expect("snapshot object")
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        snapshot_fields.remove("ui_contract_version");
+        snapshot_fields.remove("session_revision");
+        snapshot_fields.remove("app_state");
+        assert_eq!(
+            all_fields
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            snapshot_fields,
+            "new production snapshot fields must be assigned to exactly one update group"
+        );
+    }
+
+    #[test]
+    fn chart_only_mutation_emits_only_chart_projection_patch() {
+        let mut session = isolated_test_session(None);
+        try_snapshot_for_session(&mut session).expect("initial snapshot");
+        session.coordinator.chart_page_state.selected_airport_id = "KSEA".to_string();
+
+        let update = session_update_from_outcome(
+            changed_session_snapshot_outcome(&mut session).expect("chart mutation"),
+        );
+
+        assert_eq!(update.session_revision, 1);
+        assert_eq!(
+            projection_field_names(update.charts.as_ref().expect("chart patch")),
+            BTreeSet::from(["chart_page_state"])
+        );
+        assert!(update.nav_data.is_none());
+        assert!(update.application.is_none());
+        assert!(update.situation.is_none());
+        assert!(update.map.is_none());
+        assert!(update.status.is_none());
+        assert!(update.settings.is_none());
+        assert!(update.cloud.is_none());
+        assert!(update.packages.is_none());
+        assert!(update.home.is_none());
+        assert!(update.debug.is_none());
+    }
+
+    #[test]
+    fn settings_transaction_emits_declared_application_and_settings_patches() {
+        let mut session = isolated_test_session(None);
+        try_snapshot_for_session(&mut session).expect("initial snapshot");
+
+        let outcome = run_session_model_transaction(&mut session, |session| {
+            let mut preferences = SettingsPreferences::default();
+            preferences
+                .disabled_flight_data_cell_ids
+                .insert("ground_speed".to_string());
+            assert!(session.settings.restore_preferences(preferences));
+            Ok(vec![UiInvalidation::SessionSnapshot])
+        })
+        .expect("settings transaction");
+        let update = session_update_from_outcome(outcome);
+
+        assert!(update.application.is_some());
+        assert!(update.settings.is_some());
+        assert!(update.nav_data.is_none());
+        assert!(update.situation.is_none());
+        assert!(update.charts.is_none());
+        assert!(update.map.is_none());
+        assert!(update.status.is_none());
+        assert!(update.cloud.is_none());
+        assert!(update.packages.is_none());
+        assert!(update.home.is_none());
+        assert!(update.debug.is_none());
+    }
+
     #[test]
     fn chart_coordinator_change_advances_only_envelope_and_chart_versions() {
         let mut session = isolated_test_session(None);
@@ -12690,7 +13034,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_only_change_does_not_dirty_map_or_application_groups() {
+    fn debug_only_change_advances_settings_without_dirtying_map_or_application() {
         let mut session = isolated_test_session(None);
         observe_projection_versions(&mut session);
         session.coordinator.debug_state.tile_labels = true;
@@ -12700,6 +13044,7 @@ mod tests {
             observe_projection_versions(&mut session),
             SessionProjectionVersions {
                 envelope: 1,
+                settings: 1,
                 debug: 1,
                 ..SessionProjectionVersions::default()
             }

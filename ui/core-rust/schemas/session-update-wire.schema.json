@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "UiSessionProjectionPatch": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": true,
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "fields"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "org.aerobag.ui-wire.session-update",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Core-owned revisioned partial session update contract.",
+  "properties": {
+    "application": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "charts": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cloud": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "debug": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "home": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "map": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nav_data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "packages": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_revision": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "settings": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "situation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ui_contract_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "ui_contract_version",
+    "session_revision"
+  ],
+  "title": "UiSessionUpdate",
+  "type": "object",
+  "x-contract-version": 1,
+  "x-export-order": [
+    "UiSessionProjectionPatch",
+    "UiSessionUpdate"
+  ]
+}

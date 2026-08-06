@@ -368,12 +368,33 @@ snapshot wire contract.
 
 This slice did not add a platform contract, lock, thread, or Worker.
 
+## Completed Thirteenth Slice
+
+The thirteenth slice defined `UiSessionUpdate` and
+`UiSessionProjectionPatch` in the canonical Rust UI-contract crate, generated a
+JSON Schema and TypeScript/Kotlin bindings, and made core assemble patches from
+pre/post projection versions. The mandatory envelope carries the UI contract
+and session revision; eleven optional groups carry their own monotonic version
+and the exact top-level snapshot fields owned by that group.
+
+Snapshot-producing mutations expose the update as a transitional
+`session_update` member while continuing to return the full snapshot consumed
+by current Android and web adapters. NAVDB adoption and maintenance include the
+same update beside their nested snapshot. Startup and explicit snapshot recovery
+remain full-snapshot operations. The effect-only offline-preferences command
+continues to return JSON `null` until adapters can consume updates directly.
+
+Tests pin the generated wire shape, prove chart-only and settings-only mutation
+scope, and require every production snapshot field to belong to exactly one
+non-overlapping update group. Existing specialized query invalidations are
+unchanged. This slice did not add a lock, thread, Worker, or platform policy.
+
 ## Next Slice
 
-Define the generated `SessionUpdate` envelope and optional projection groups.
-Retain the full snapshot for startup and explicit resynchronization, then make
-ordinary core mutations return updates assembled from the version changes while
-preserving specialized query invalidations.
+Teach the Android and web adapters to validate group versions, merge update
+fields into their cached raw snapshot, and decode the resulting view model.
+Convert the remaining effect-only mutation to return an update, then add
+cross-platform conformance tests before removing transitional full snapshots.
 
 ## Relationship To Work Scheduling
 

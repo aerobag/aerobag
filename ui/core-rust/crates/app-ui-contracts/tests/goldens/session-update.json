@@ -1,0 +1,12 @@
+{
+  "map": {
+    "fields": {
+      "map_layer_state": {
+        "example": true
+      }
+    },
+    "version": 3
+  },
+  "session_revision": 7,
+  "ui_contract_version": 1
+}

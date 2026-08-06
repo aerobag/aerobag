@@ -188,6 +188,14 @@ fn main() {
             tagged_unions: &[],
             schema: session_schema,
         },
+        ContractSchema {
+            filename: "session-update-wire.schema.json",
+            id: "org.aerobag.ui-wire.session-update",
+            description: "Core-owned revisioned partial session update contract.",
+            export_order: &["UiSessionProjectionPatch", "UiSessionUpdate"],
+            tagged_unions: &[],
+            schema: schema::<session::UiSessionUpdate>,
+        },
     ];
 
     for contract in contracts {

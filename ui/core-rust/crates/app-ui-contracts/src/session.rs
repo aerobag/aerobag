@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -441,4 +442,42 @@ pub struct UiSessionPageContracts {
     pub nav_db: UiNavDbIdentity,
     pub capabilities: PlatformCapabilities,
     pub settings_action: UiSettingsAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiSessionProjectionPatch {
+    pub version: u64,
+    pub fields: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiSessionUpdate {
+    pub ui_contract_version: u32,
+    pub session_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nav_data: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub situation: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charts: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packages: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<UiSessionProjectionPatch>,
 }

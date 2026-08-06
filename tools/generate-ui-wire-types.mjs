@@ -13,6 +13,7 @@ const nexradSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/nexrad-overla
 const cloudSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/cloud-wire.schema.json");
 const homePageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/home-page-wire.schema.json");
 const sessionPageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-page-wire.schema.json");
+const sessionUpdateSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-update-wire.schema.json");
 
 const args = new Map();
 const flags = new Set();
@@ -41,6 +42,8 @@ const homePageWebOut =
   args.get("--home-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/homePageWire.ts");
 const sessionPageWebOut =
   args.get("--session-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionPageWire.ts");
+const sessionUpdateWebOut =
+  args.get("--session-update-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionUpdateWire.ts");
 
 let schemaPath;
 let schema;
@@ -137,6 +140,9 @@ function ktDefault(fieldSchema, ktType) {
 }
 
 function ktType(fieldSchema) {
+  if (fieldSchema === true || (typeof fieldSchema === "object" && Object.keys(fieldSchema).length === 0)) {
+    return "JsonElement";
+  }
   const schemaBase = baseSchema(fieldSchema);
   if (schemaBase.$ref) {
     const type = resolveRef(schemaBase.$ref).name;
@@ -169,6 +175,9 @@ function ktType(fieldSchema) {
 }
 
 function tsType(fieldSchema) {
+  if (fieldSchema === true || (typeof fieldSchema === "object" && Object.keys(fieldSchema).length === 0)) {
+    return "unknown";
+  }
   if (Object.hasOwn(fieldSchema, "const")) {
     return JSON.stringify(fieldSchema.const);
   }
@@ -311,7 +320,7 @@ function androidSource() {
   }
   const version = schema["x-contract-version"];
   const versionSource = Number.isInteger(version) ? `const val ${contractVersionName()}: Int = ${version}\n\n` : "";
-  return `${generatedBanner}package org.aerobag.app.generated\n\nimport kotlinx.serialization.ExperimentalSerializationApi\nimport kotlinx.serialization.SerialName\nimport kotlinx.serialization.Serializable\nimport kotlinx.serialization.json.JsonClassDiscriminator\n\n${versionSource}${chunks.join("\n")}`;
+  return `${generatedBanner}package org.aerobag.app.generated\n\nimport kotlinx.serialization.ExperimentalSerializationApi\nimport kotlinx.serialization.SerialName\nimport kotlinx.serialization.Serializable\nimport kotlinx.serialization.json.JsonClassDiscriminator\nimport kotlinx.serialization.json.JsonElement\n\n${versionSource}${chunks.join("\n")}`;
 }
 
 function webSource() {
@@ -362,3 +371,7 @@ writeOrCheck(homePageWebOut, webSource());
 loadSchema(sessionPageSchemaPath);
 writeOrCheck(path.join(androidOut, "SessionPageWire.kt"), androidSource());
 writeOrCheck(sessionPageWebOut, webSource());
+
+loadSchema(sessionUpdateSchemaPath);
+writeOrCheck(path.join(androidOut, "SessionUpdateWire.kt"), androidSource());
+writeOrCheck(sessionUpdateWebOut, webSource());

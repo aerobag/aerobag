@@ -4104,12 +4104,13 @@ fn perform_altitude_planner_action_in_session(
         let session_guard = slot.lock_running()?;
         let session = &*session_guard;
         let private_aircraft_definitions = session_aircraft_definitions(session)?;
-        let available = match crate::had_ops::planner_aircraft_selection_available(
+        let cruise_altitude_ft = match crate::had_ops::planner_aircraft_selection_cruise_altitude(
             session_nav_kv_store(session)?,
             &private_aircraft_definitions,
             &selection,
+            session_plan(session)?.cruise_altitude_ft,
         ) {
-            Ok(available) => available,
+            Ok(cruise_altitude_ft) => cruise_altitude_ft,
             Err(HadReadError::NeedPages(pages)) => {
                 return Ok(HadOperationOutcome::NeedResources {
                     resources: nav_kv_page_resources(pages),
@@ -4123,14 +4124,14 @@ fn perform_altitude_planner_action_in_session(
             }
         };
         drop(session_guard);
-        if !available {
+        let Some(cruise_altitude_ft) = cruise_altitude_ft else {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
                 message: "unknown or unavailable aircraft/profile selection".to_string(),
             });
-        }
+        };
         return mutate_session_flight_plan_controller(handle, |controller| {
-            controller.plan_after_set_aircraft(selection)
+            controller.plan_after_set_aircraft(selection, cruise_altitude_ft)
         });
     }
     if let Some(altitude_ft) = crate::had_ops::planner_altitude_from_action_uid(&action_uid) {
@@ -14627,6 +14628,38 @@ mod tests {
         )
         .expect_err("reject unavailable aircraft profile");
         assert_eq!(error.kind, AppErrorKind::UnsupportedOperation);
+    }
+
+    #[test]
+    fn altitude_planner_aircraft_action_clamps_cruise_to_profile_choices() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(&[], 1024);
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: crate::had_ops::planner_altitude_action_uid(24_000)
+                    .expect("planner altitude action"),
+            },
+            utc("2026-05-20T12:01:00Z").timestamp_millis(),
+        )
+        .expect("select altitude above C172 profile");
+        let selection = product_contracts::default_aircraft_selection();
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: crate::had_ops::planner_aircraft_action_uid(&selection),
+            },
+            utc("2026-05-20T12:02:00Z").timestamp_millis(),
+        )
+        .expect("select default aircraft");
+
+        let sessions = lock_sessions();
+        let session = session_ref(&sessions, init.handle).expect("session");
+        let plan = session.flight_plan.active_plan().expect("active plan");
+        assert_eq!(plan.aircraft.as_ref(), Some(&selection));
+        assert_eq!(plan.cruise_altitude_ft, Some(12_000));
     }
 
     #[test]

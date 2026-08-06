@@ -1371,13 +1371,32 @@ pub(crate) fn planner_aircraft_from_action_uid(
     })
 }
 
-pub(crate) fn planner_aircraft_selection_available(
+pub(crate) fn planner_aircraft_selection_cruise_altitude(
     store: &NavKvStore,
     private_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
     selection: &product_contracts::AircraftSelection,
-) -> Result<bool, HadReadError> {
+    current_altitude_ft: Option<i32>,
+) -> Result<Option<i32>, HadReadError> {
     let resolved = planner_aircraft(store, Some(selection), private_definitions)?;
-    Ok(resolved.advisory.is_none() && resolved.selection == *selection)
+    if resolved.advisory.is_some() || resolved.selection != *selection {
+        return Ok(None);
+    }
+    let requested_altitude_ft = current_altitude_ft.unwrap_or(DEFAULT_CRUISE_ALTITUDE_FT);
+    let nearest_altitude_ft = planner_cruise_altitudes(&resolved.profile)
+        .into_iter()
+        .min_by_key(|candidate| {
+            (
+                (i64::from(*candidate) - i64::from(requested_altitude_ft)).abs(),
+                *candidate,
+            )
+        })
+        .ok_or_else(|| {
+            HadReadError::Fatal(format!(
+                "aircraft profile {} has no selectable cruise altitude",
+                selection.profile_id
+            ))
+        })?;
+    Ok(Some(nearest_altitude_ft))
 }
 
 fn aircraft_control_options(
@@ -1632,13 +1651,19 @@ fn planner_wind_fallback(
 ) -> Option<crate::AltitudePlannerWindFallback> {
     let reason = prediction.fallback_reason.as_ref()?;
     if reason == crate::forecast_atmosphere::TIME_OUTSIDE_FORECAST_COVERAGE {
-        if let Some(valid_through_epoch_ms) = atmosphere
-            .manifest
-            .and_then(|manifest| manifest.valid_times_epoch_ms.last())
-            .copied()
+        if let Some((valid_from_epoch_ms, valid_through_epoch_ms)) =
+            atmosphere.manifest.and_then(|manifest| {
+                manifest
+                    .valid_times_epoch_ms
+                    .first()
+                    .copied()
+                    .zip(manifest.valid_times_epoch_ms.last().copied())
+            })
         {
             return Some(crate::AltitudePlannerWindFallback::ForecastCoverage {
+                valid_from_epoch_ms,
                 valid_through_epoch_ms,
+                flight_start_epoch_ms: departure_epoch_ms,
                 flight_end_epoch_ms: departure_epoch_ms.saturating_add(
                     (prediction.prediction.total_ete_seconds * 1_000.0).round() as i64,
                 ),
@@ -1911,7 +1936,7 @@ pub(crate) fn flight_plan_ui_projection(
         None => None,
     };
     let full_route_legs = trajectory_route_legs(&materialized, None);
-    let mut performance_regime_available = true;
+    let mut modeled_prediction_error = None;
     let wind_model_available = true;
     let modeled_prediction = if !use_live_eta && materialized.active.is_none() {
         match (origin_altitude_ft, destination_altitude_ft) {
@@ -1926,8 +1951,12 @@ pub(crate) fn flight_plan_ui_projection(
                     atmosphere,
                 ) {
                     Ok(prediction) => Some(prediction),
-                    Err(_) => {
-                        performance_regime_available = false;
+                    Err(error) => {
+                        modeled_prediction_error =
+                            Some(crate::altitude_planner::format_trajectory_planner_error(
+                                &aircraft.profile,
+                                &error,
+                            ));
                         None
                     }
                 }
@@ -1953,7 +1982,7 @@ pub(crate) fn flight_plan_ui_projection(
         wind_model_available,
         wind_model_selectable: atmosphere.alternate_available,
         wind_model_action_uid: atmosphere.action_uid.map(str::to_string),
-        performance_regime_available,
+        modeled_prediction_error,
         live_ground_speed_estimate_active: use_live_eta,
         departure_time_epoch_ms: plan.planned_departure_time_epoch_ms,
         effective_departure_time_epoch_ms: departure_epoch_ms,
@@ -5657,6 +5686,30 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct ForecastWindowAtmosphere {
+        valid_from_epoch_ms: i64,
+        valid_through_epoch_ms: i64,
+    }
+
+    impl crate::AtmosphereModel for ForecastWindowAtmosphere {
+        fn sample(
+            &self,
+            _position: LatLon,
+            pressure_altitude_ft: f64,
+            epoch_ms: i64,
+        ) -> Result<crate::AtmosphereSample, String> {
+            if epoch_ms < self.valid_from_epoch_ms || epoch_ms > self.valid_through_epoch_ms {
+                return Err(crate::forecast_atmosphere::TIME_OUTSIDE_FORECAST_COVERAGE.to_string());
+            }
+            Ok(crate::AtmosphereSample {
+                wind_east_kt: 50.0,
+                wind_north_kt: 0.0,
+                temperature_c: 15.0 - pressure_altitude_ft * 0.001_981_2,
+            })
+        }
+    }
+
     fn wind_control(state: &FlightPlanUiState) -> &crate::AltitudePlannerControlUiView {
         state
             .altitude_planner
@@ -5744,18 +5797,28 @@ mod tests {
             product_contracts::default_aircraft_selection()
         );
         assert!(fallback.advisory.is_some());
-        assert!(
-            !planner_aircraft_selection_available(&store, &before_arrival, &selected)
-                .expect("selection availability")
-        );
+        assert!(planner_aircraft_selection_cruise_altitude(
+            &store,
+            &before_arrival,
+            &selected,
+            Some(12_000),
+        )
+        .expect("selection availability")
+        .is_none());
 
         let resolved = planner_aircraft(&store, Some(&selected), &definitions)
             .expect("private definition arrival");
         assert_eq!(resolved.selection, selected);
         assert!(resolved.advisory.is_none());
-        assert!(
-            planner_aircraft_selection_available(&store, &definitions, &selected)
-                .expect("selection availability")
+        assert_eq!(
+            planner_aircraft_selection_cruise_altitude(
+                &store,
+                &definitions,
+                &selected,
+                Some(12_000),
+            )
+            .expect("selection availability"),
+            Some(12_000)
         );
     }
 
@@ -5975,6 +6038,32 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_selected_altitude_names_profile_and_bounds() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let mut plan = three_airport_test_plan();
+        plan.cruise_altitude_ft = Some(18_000);
+
+        let state = default_flight_plan_ui_state_for_test(&store, &plan);
+        let reason = state
+            .altitude_planner
+            .unavailable_reasons
+            .iter()
+            .find(|reason| {
+                reason.code
+                    == crate::AltitudePlannerUnavailableReasonCode::PerformanceRegimeUnavailable
+            })
+            .expect("performance range reason");
+
+        assert_eq!(
+            reason.message,
+            "NORMAL CRUISE cruise performance covers 0–12,000 ft; this flight requires 18,000 ft."
+        );
+    }
+
+    #[test]
     fn installed_forecast_is_a_core_selected_planner_alternative() {
         let aaa = LatLon { lat: 0.0, lon: 0.0 };
         let bbb = LatLon { lat: 0.0, lon: 1.5 };
@@ -6124,6 +6213,51 @@ mod tests {
         assert!(
             panel.advisories.is_empty(),
             "coverage fallback must not also produce a comparison advisory"
+        );
+    }
+
+    #[test]
+    fn planned_departure_before_forecast_coverage_uses_visible_no_wind_fallback() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let mut plan = three_airport_test_plan();
+        plan.planned_departure_time_epoch_ms = Some(6 * 60 * 60 * 1_000);
+        let forecast = ForecastWindowAtmosphere {
+            valid_from_epoch_ms: 12 * 60 * 60 * 1_000,
+            valid_through_epoch_ms: 24 * 60 * 60 * 1_000,
+        };
+        let (mut manifest, _, _, _) = crate::forecast_atmosphere::tests::test_forecast_payload();
+        manifest.valid_times_epoch_ms = vec![
+            forecast.valid_from_epoch_ms,
+            forecast.valid_through_epoch_ms,
+        ];
+
+        let state = flight_plan_ui_projection(
+            &store,
+            &test_aircraft_definitions(),
+            plan.clone(),
+            crate::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData {
+                now_epoch_ms: Some(11 * 60 * 60 * 1_000),
+                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Utc,
+                ..FlightPlanLiveData::default()
+            },
+            PlannerAtmosphereSelection::gfs(Some(&forecast), Some(&manifest)),
+        )
+        .expect("project past scheduled departure")
+        .ui_state;
+
+        assert_eq!(state.altitude_planner.departure.when_value, "−5h");
+        assert_eq!(
+            state
+                .altitude_planner
+                .forecast
+                .expect("coverage fallback status")
+                .summary,
+            "Currently available forecast product valid from 1200Z, flight starts at 0600Z. Using NO-WIND model."
         );
     }
 

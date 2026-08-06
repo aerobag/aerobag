@@ -886,6 +886,8 @@ type UiThemeJson = {
     button_disabled_icon_saturation: number;
     button_disabled_icon_opacity: number;
     button_fg: string;
+    control_group_bg: string;
+    text_input_bg: string;
     panel_bg: string;
     panel_border: string;
     panel_fg: string;
@@ -3596,6 +3598,8 @@ export default function App() {
         "--theme-button-disabled-icon-opacity": String(controlTheme.button_disabled_icon_opacity),
         "--theme-disabled-accent-percent": `${plateFolderTheme.disabled_accent_percent}%`,
         "--theme-button-fg": controlTheme.button_fg,
+        "--theme-control-group-bg": controlTheme.control_group_bg,
+        "--theme-text-input-bg": controlTheme.text_input_bg,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,
         "--theme-panel-fg": controlTheme.panel_fg,
@@ -8356,6 +8360,7 @@ function AltitudePlannerPage(props: {
             <label>
               <span>{planner.departure.when_label}</span>
               <input
+                className={planner.departure.when_is_past ? "isWarning" : undefined}
                 type="text"
                 inputMode="text"
                 value={departureWhenInput}

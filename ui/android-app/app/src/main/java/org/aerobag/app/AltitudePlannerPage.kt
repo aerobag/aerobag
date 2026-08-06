@@ -416,7 +416,7 @@ private fun DepartureEditorRow(
         modifier = Modifier
             .width(ThumbSize * 6.2f)
             .height(ThumbSize),
-        color = uiTheme.controls.panelBg,
+        color = uiTheme.controls.controlGroupBg,
         shape = RoundedCornerShape(ThumbRadius),
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
     ) {
@@ -448,6 +448,7 @@ private fun DepartureEditorRow(
             DepartureTextField(
                 value = whenValue,
                 enabled = departure.enabled,
+                warning = departure.whenIsPast,
                 onValueChange = onWhenValueChange,
                 onFocusChange = onWhenFocusChange,
                 onDone = onDone,
@@ -477,6 +478,7 @@ private fun DepartureLabel(label: String) {
 private fun DepartureTextField(
     value: String,
     enabled: Boolean,
+    warning: Boolean = false,
     onValueChange: (String) -> Unit,
     onFocusChange: (Boolean) -> Unit,
     onDone: () -> Unit,
@@ -486,9 +488,12 @@ private fun DepartureTextField(
         modifier = Modifier
             .width(ThumbSize * 0.9f)
             .height(ThumbSize * 0.58f),
-        color = uiTheme.controls.chartSurfaceBg,
+        color = uiTheme.controls.textInputBg,
         shape = RoundedCornerShape(ThumbRadius),
-        border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
+        border = BorderStroke(
+            if (warning) 2.dp else 1.dp,
+            if (warning) uiTheme.controls.dataStatusWarningStroke else uiTheme.controls.panelBorder,
+        ),
     ) {
         BasicTextField(
             value = value,

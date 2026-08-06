@@ -224,9 +224,11 @@ impl FlightPlanController {
     pub fn plan_after_set_aircraft(
         &self,
         selection: product_contracts::AircraftSelection,
+        cruise_altitude_ft: i32,
     ) -> AppResult<FlightPlan> {
         Ok(FlightPlan {
             aircraft: Some(selection),
+            cruise_altitude_ft: Some(cruise_altitude_ft),
             ..self.required_plan("set aircraft")?.clone()
         })
     }

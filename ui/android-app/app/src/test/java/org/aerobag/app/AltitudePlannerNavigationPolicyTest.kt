@@ -40,6 +40,10 @@ class AltitudePlannerNavigationPolicyTest {
         assertTrue(plannerSource.contains(".horizontalScroll(rememberScrollState())"))
         assertTrue(plannerSource.contains("DepartureEditorRow("))
         assertTrue(plannerSource.contains(".height(ThumbSize)"))
+        assertTrue(plannerSource.contains("warning = departure.whenIsPast"))
+        assertTrue(plannerSource.contains("uiTheme.controls.dataStatusWarningStroke"))
+        assertTrue(plannerSource.contains("color = uiTheme.controls.controlGroupBg"))
+        assertTrue(plannerSource.contains("color = uiTheme.controls.textInputBg"))
         assertFalse(plannerSource.contains("if (loading) {\n                Text(\"Calculating…\""))
     }
 

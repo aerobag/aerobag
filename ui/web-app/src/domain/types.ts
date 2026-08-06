@@ -265,6 +265,7 @@ export type AltitudePlannerDepartureEditorUiView = {
   when_label: string;
   when_value: string;
   when_suffix: string;
+  when_is_past: boolean;
   enabled: boolean;
   disabled_reason?: string | null;
 };

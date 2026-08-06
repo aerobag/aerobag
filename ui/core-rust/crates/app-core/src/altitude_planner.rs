@@ -68,6 +68,7 @@ pub struct AltitudePlannerDepartureEditorUiView {
     pub when_label: String,
     pub when_value: String,
     pub when_suffix: String,
+    pub when_is_past: bool,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
@@ -162,7 +163,7 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_available: bool,
     pub wind_model_selectable: bool,
     pub wind_model_action_uid: Option<String>,
-    pub performance_regime_available: bool,
+    pub modeled_prediction_error: Option<String>,
     pub live_ground_speed_estimate_active: bool,
     pub departure_time_epoch_ms: Option<i64>,
     pub effective_departure_time_epoch_ms: i64,
@@ -177,7 +178,9 @@ pub struct AltitudePlannerUiInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AltitudePlannerWindFallback {
     ForecastCoverage {
+        valid_from_epoch_ms: i64,
         valid_through_epoch_ms: i64,
+        flight_start_epoch_ms: i64,
         flight_end_epoch_ms: i64,
     },
     Other {
@@ -202,7 +205,7 @@ impl Default for AltitudePlannerUiInput {
             wind_model_available: true,
             wind_model_selectable: false,
             wind_model_action_uid: None,
-            performance_regime_available: true,
+            modeled_prediction_error: None,
             live_ground_speed_estimate_active: false,
             departure_time_epoch_ms: None,
             effective_departure_time_epoch_ms: 0,
@@ -254,10 +257,10 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
             "The selected wind model is unavailable for this route and departure time.",
         ));
     }
-    if !input.performance_regime_available {
+    if let Some(message) = input.modeled_prediction_error.as_deref() {
         reasons.push(reason(
             AltitudePlannerUnavailableReasonCode::PerformanceRegimeUnavailable,
-            "The aircraft profile does not cover the required altitude or phase of flight.",
+            message,
         ));
     }
 
@@ -300,22 +303,40 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
     };
     let forecast = match input.wind_fallback.as_ref() {
         Some(AltitudePlannerWindFallback::ForecastCoverage {
+            valid_from_epoch_ms,
             valid_through_epoch_ms,
+            flight_start_epoch_ms,
             flight_end_epoch_ms,
         }) => Some(AltitudePlannerForecastUiView {
-            summary: format!(
-                "Currently available forecast product valid until {}, flight extends until {}. Using NO-WIND model.",
-                format_planner_clock(
-                    *valid_through_epoch_ms,
-                    input.departure_time_basis,
-                    input.local_time_zone,
-                ),
-                format_planner_clock(
-                    *flight_end_epoch_ms,
-                    input.departure_time_basis,
-                    input.local_time_zone,
-                ),
-            ),
+            summary: if flight_start_epoch_ms < valid_from_epoch_ms {
+                format!(
+                    "Currently available forecast product valid from {}, flight starts at {}. Using NO-WIND model.",
+                    format_planner_clock(
+                        *valid_from_epoch_ms,
+                        input.departure_time_basis,
+                        input.local_time_zone,
+                    ),
+                    format_planner_clock(
+                        *flight_start_epoch_ms,
+                        input.departure_time_basis,
+                        input.local_time_zone,
+                    ),
+                )
+            } else {
+                format!(
+                    "Currently available forecast product valid until {}, flight extends until {}. Using NO-WIND model.",
+                    format_planner_clock(
+                        *valid_through_epoch_ms,
+                        input.departure_time_basis,
+                        input.local_time_zone,
+                    ),
+                    format_planner_clock(
+                        *flight_end_epoch_ms,
+                        input.departure_time_basis,
+                        input.local_time_zone,
+                    ),
+                )
+            },
         }),
         _ => input.forecast,
     };
@@ -414,6 +435,9 @@ fn project_departure_editor(
         .departure_time_epoch_ms
         .map(|epoch_ms| format_departure_offset(epoch_ms - input.now_epoch_ms))
         .unwrap_or_else(|| "now".to_string());
+    let when_is_past = input
+        .departure_time_epoch_ms
+        .is_some_and(|epoch_ms| epoch_ms < input.now_epoch_ms);
     let disabled_reason = input
         .navigation_active
         .then(|| "Active navigation always models from ownship at the current time.".to_string());
@@ -425,6 +449,7 @@ fn project_departure_editor(
         when_label: "=".to_string(),
         when_value,
         when_suffix: "from now".to_string(),
+        when_is_past,
         enabled: !input.navigation_active,
         disabled_reason,
     }
@@ -683,6 +708,42 @@ fn format_altitude_ft(altitude_ft: i32) -> String {
     grouped
 }
 
+pub(crate) fn format_trajectory_planner_error(
+    profile: &AircraftPerformanceProfile,
+    error: &TrajectoryPlannerError,
+) -> String {
+    if let TrajectoryPlannerError::PerformanceOutOfRange { phase, altitude_ft } = error {
+        let bounds = match *phase {
+            "climb" => profile
+                .climb
+                .first()
+                .zip(profile.climb.last())
+                .map(|(first, last)| (first.pressure_altitude_ft, last.pressure_altitude_ft)),
+            "cruise" => profile
+                .cruise
+                .first()
+                .zip(profile.cruise.last())
+                .map(|(first, last)| (first.pressure_altitude_ft, last.pressure_altitude_ft)),
+            "descent" => profile
+                .descent
+                .first()
+                .zip(profile.descent.last())
+                .map(|(first, last)| (first.pressure_altitude_ft, last.pressure_altitude_ft)),
+            _ => None,
+        };
+        if let Some((minimum_ft, maximum_ft)) = bounds {
+            return format!(
+                "{} {phase} performance covers {}–{} ft; this flight requires {} ft.",
+                profile.profile_label,
+                format_altitude_ft(minimum_ft.round() as i32),
+                format_altitude_ft(maximum_ft.round() as i32),
+                format_altitude_ft(altitude_ft.round() as i32),
+            );
+        }
+    }
+    format!("Modeled prediction is unavailable: {error}.")
+}
+
 fn reason(
     code: AltitudePlannerUnavailableReasonCode,
     message: &str,
@@ -884,6 +945,7 @@ impl<'a, A: AtmosphereModel + ?Sized> TrajectoryPlanner<'a, A> {
         input: &TrajectoryPlanInput,
     ) -> Result<TrajectoryPrediction, TrajectoryPlannerError> {
         validate_profile(self.profile)?;
+        interpolate_cruise(&self.profile.cruise, input.cruise_pressure_altitude_ft)?;
         let route_distance_nm = input
             .legs
             .iter()
@@ -1383,6 +1445,7 @@ mod tests {
         assert_eq!(local.departure.basis_label, "Local (PDT)");
         assert_eq!(local.departure.when_label, "=");
         assert_eq!(local.departure.when_value, "3h 15m");
+        assert!(!local.departure.when_is_past);
 
         let zulu = project_altitude_planner_ui(AltitudePlannerUiInput {
             now_epoch_ms: now,
@@ -1395,6 +1458,30 @@ mod tests {
         assert_eq!(zulu.departure.time_value, "2215");
         assert_eq!(zulu.departure.basis_label, "Z");
         assert_eq!(zulu.departure.when_value, "3h 15m");
+
+        let past = project_altitude_planner_ui(AltitudePlannerUiInput {
+            now_epoch_ms: now,
+            departure_time_epoch_ms: Some(now - 1),
+            effective_departure_time_epoch_ms: now - 1,
+            ..AltitudePlannerUiInput::default()
+        });
+        assert!(past.departure.when_is_past);
+
+        let exactly_now = project_altitude_planner_ui(AltitudePlannerUiInput {
+            now_epoch_ms: now,
+            departure_time_epoch_ms: Some(now),
+            effective_departure_time_epoch_ms: now,
+            ..AltitudePlannerUiInput::default()
+        });
+        assert!(!exactly_now.departure.when_is_past);
+
+        let dynamic_now = project_altitude_planner_ui(AltitudePlannerUiInput {
+            now_epoch_ms: now,
+            departure_time_epoch_ms: None,
+            effective_departure_time_epoch_ms: now,
+            ..AltitudePlannerUiInput::default()
+        });
+        assert!(!dynamic_now.departure.when_is_past);
     }
 
     struct ConstantAtmosphere {
@@ -1668,7 +1755,9 @@ mod tests {
                 summary: "ordinary provenance".to_string(),
             }),
             wind_fallback: Some(AltitudePlannerWindFallback::ForecastCoverage {
+                valid_from_epoch_ms: 0,
                 valid_through_epoch_ms: 12 * 60 * 60 * 1_000,
+                flight_start_epoch_ms: 0,
                 flight_end_epoch_ms: (15 * 60 + 35) * 60 * 1_000,
             }),
             ..AltitudePlannerUiInput::default()

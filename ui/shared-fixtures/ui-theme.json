@@ -7,6 +7,8 @@
     "button_disabled_icon_saturation": 0.2,
     "button_disabled_icon_opacity": 0.5,
     "button_fg": "#f7fbff",
+    "control_group_bg": "#dce5ec",
+    "text_input_bg": "#ffffff",
     "panel_bg": "#fefcf7",
     "panel_border": "#d7d1c5",
     "panel_fg": "#132129",

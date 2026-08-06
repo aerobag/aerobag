@@ -277,6 +277,7 @@ data class AltitudePlannerDepartureEditorUiView(
     val whenLabel: String,
     val whenValue: String,
     val whenSuffix: String,
+    val whenIsPast: Boolean,
     val enabled: Boolean,
     val disabledReason: String?,
 )

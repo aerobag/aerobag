@@ -79,11 +79,21 @@ describe("flight plan layout CSS", () => {
     expect(departureStyles).toContain("display: flex");
     expect(departureStyles).toContain("height: var(--thumb)");
     expect(departureStyles).toContain("white-space: nowrap");
+    expect(departureStyles).toContain("background: var(--theme-control-group-bg)");
+    const departureInputStyles = [...styles.matchAll(/\.altitudePlannerDeparture input\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(departureInputStyles).toContain("background: var(--theme-text-input-bg)");
     const departureBasisStyles = [...styles.matchAll(/\.altitudePlannerDepartureBasis\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");
     expect(departureBasisStyles).toContain("min-width: calc(var(--thumb) * 1.45)");
     expect(departureBasisStyles).toContain("height: calc(var(--thumb) * 0.58)");
+    expect(plannerPage).toContain('className={planner.departure.when_is_past ? "isWarning" : undefined}');
+    const departureWarningStyles = [...styles.matchAll(/\.altitudePlannerDeparture input\.isWarning\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(departureWarningStyles).toContain("var(--theme-data-status-warning-stroke)");
     expect(plannerPage).not.toContain('{loading ? <p>Calculating…</p> : null}');
     expect(plannerPage).not.toMatch(/tailwind|headwind|average_wind|toFixed/);
 

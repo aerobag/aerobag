@@ -243,11 +243,18 @@ export type FlightPlanUiState = {
 };
 
 export type AltitudePlannerControlUiView = {
-  id: "aircraft_profile" | "wind_model";
+  id: "aircraft" | "aircraft_profile" | "wind_model";
   label: string;
   enabled: boolean;
   action_uid?: string | null;
   disabled_reason?: string | null;
+  options?: AltitudePlannerControlOptionUiView[];
+};
+
+export type AltitudePlannerControlOptionUiView = {
+  label: string;
+  action_uid: string;
+  selected: boolean;
 };
 
 export type AltitudePlannerDepartureEditorUiView = {

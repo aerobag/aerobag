@@ -151,12 +151,29 @@ pub fn build_nav_kv_sorted(
     page_size: u32,
 ) -> Result<NavKvBuildOutput, String> {
     pairs.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
-    build_nav_kv_strict(pairs, page_size)
+    build_nav_kv_strict_with_extra_prefetch_keys(pairs, page_size, &[])
+}
+
+pub fn build_nav_kv_sorted_with_extra_prefetch_keys(
+    mut pairs: Vec<NavKvPair>,
+    page_size: u32,
+    extra_prefetch_keys: &[String],
+) -> Result<NavKvBuildOutput, String> {
+    pairs.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
+    build_nav_kv_strict_with_extra_prefetch_keys(pairs, page_size, extra_prefetch_keys)
 }
 
 pub fn build_nav_kv_strict(
     pairs: Vec<NavKvPair>,
     page_size: u32,
+) -> Result<NavKvBuildOutput, String> {
+    build_nav_kv_strict_with_extra_prefetch_keys(pairs, page_size, &[])
+}
+
+fn build_nav_kv_strict_with_extra_prefetch_keys(
+    pairs: Vec<NavKvPair>,
+    page_size: u32,
+    extra_prefetch_keys: &[String],
 ) -> Result<NavKvBuildOutput, String> {
     validate_pairs(&pairs, page_size)?;
     let page_size_usize = usize::try_from(page_size)
@@ -217,7 +234,7 @@ pub fn build_nav_kv_strict(
         &[],
     )?;
     let root = NavKvRoot::parse(&root_without_prefetch)?;
-    let prefetch_pages = startup_prefetch_pages(&root, &pages)?;
+    let prefetch_pages = startup_prefetch_pages(&root, &pages, extra_prefetch_keys)?;
     let root_bytes = build_root_bytes(
         u32::try_from(pairs.len()).map_err(|_| "nav_kv entry count exceeds u32".to_string())?,
         page_size,
@@ -1494,7 +1511,11 @@ fn parse_internal_node(bytes: &[u8]) -> Result<InternalNode, String> {
     Ok(InternalNode { children, pivots })
 }
 
-fn startup_prefetch_pages(root: &NavKvRoot, pages: &[Vec<u8>]) -> Result<Vec<u32>, String> {
+fn startup_prefetch_pages(
+    root: &NavKvRoot,
+    pages: &[Vec<u8>],
+    extra_prefetch_keys: &[String],
+) -> Result<Vec<u32>, String> {
     let mut touched = BTreeSet::new();
     trace_extract_value(root, pages, &mut touched, "contract/nav-db")?;
     if !trace_extract_value(root, pages, &mut touched, "chart/catalog")? {
@@ -1521,6 +1542,11 @@ fn startup_prefetch_pages(root: &NavKvRoot, pages: &[Vec<u8>]) -> Result<Vec<u32
         trace_extract_value(root, pages, &mut touched, &key)?;
     }
     trace_extract_value(root, pages, &mut touched, "vector/manifest")?;
+    for key in extra_prefetch_keys {
+        if !trace_extract_value(root, pages, &mut touched, key)? {
+            return Err(format!("extra startup prefetch key does not exist: {key}"));
+        }
+    }
     Ok(touched.into_iter().collect())
 }
 
@@ -1949,6 +1975,40 @@ mod tests {
             .as_deref(),
             Some(b"reference-chart".as_slice())
         );
+    }
+
+    #[test]
+    fn caller_can_add_an_exact_startup_prefetch_key() {
+        let key = "aircraft/definition/abc".to_string();
+        let built = build_nav_kv_sorted_with_extra_prefetch_keys(
+            vec![
+                pair("chart/catalog", "catalog-value"),
+                pair(&key, "aircraft-definition"),
+                pair("waypoint/id/KRDD", "unrelated"),
+            ],
+            TEST_PAGE_SIZE,
+            std::slice::from_ref(&key),
+        )
+        .expect("build nav kv");
+        let root = NavKvRoot::parse(&built.root_bytes).expect("parse root");
+        let cache = root
+            .prefetch_pages()
+            .iter()
+            .map(|page| (*page, built.pages[*page as usize].clone()))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            root.extract_value(&key, |page| cache.get(&page).cloned())
+                .as_deref(),
+            Some(b"aircraft-definition".as_slice())
+        );
+        assert!(build_nav_kv_sorted_with_extra_prefetch_keys(
+            vec![pair("chart/catalog", "catalog-value")],
+            TEST_PAGE_SIZE,
+            &["aircraft/definition/missing".to_string()],
+        )
+        .unwrap_err()
+        .contains("does not exist"));
     }
 
     #[test]

@@ -31,7 +31,8 @@ use preprocessor_charts::{
     stage_work_dir, CHART_REFERENCE_CATALOG_NAME, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
-    build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
+    build_nav_kv_sorted_with_extra_prefetch_keys, NavKvPair, NavKvRoot,
+    NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
 };
 use preprocessor_core::{
     xz_compress_bytes_with_system_xz, xz_compress_file_with_system_xz, ChartFamily, Region,

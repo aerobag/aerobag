@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "lineage_id": "cessna-172-generic",
+  "manufacturer": "Cessna",
+  "model": "172",
+  "label": "CESSNA 172 (GENERIC)",
+  "default_profile_id": "normal-cruise",
+  "profiles": [
+    {
+      "id": "normal-cruise",
+      "label": "NORMAL CRUISE",
+      "source": "Aerobag generic planning assumptions; not an aircraft-specific POH model",
+      "reference_weight_lb": 2300,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 112, "fuel_flow_gph": 9 },
+          { "pressure_altitude_ft": 6000, "true_airspeed_kt": 116, "fuel_flow_gph": 9 },
+          { "pressure_altitude_ft": 12000, "true_airspeed_kt": 118, "fuel_flow_gph": 9 }
+        ]
+      },
+      "climb": {
+        "model": "constant_ias_rate",
+        "ias_kt": 75,
+        "fuel_flow_gph": 12,
+        "vertical_speed_fpm": 500
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 5,
+        "vertical_speed_fpm": -500
+      }
+    }
+  ]
+}

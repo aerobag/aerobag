@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
@@ -104,6 +105,30 @@ impl CloudController {
 
     pub fn offline_package_preferences(&self) -> AppResult<OfflinePackagePreferences> {
         self.engine().offline_package_preferences()
+    }
+
+    pub fn aircraft_definitions(
+        &self,
+    ) -> AppResult<BTreeMap<String, product_contracts::AircraftDefinition>> {
+        self.engine().aircraft_definitions()
+    }
+
+    pub fn aircraft_definitions_digest(&self) -> AppResult<[u8; 32]> {
+        self.engine().aircraft_definitions_digest()
+    }
+
+    #[cfg(test)]
+    pub fn record_local_aircraft_definition(
+        &mut self,
+        definition: &product_contracts::AircraftDefinition,
+    ) -> AppResult<bool> {
+        let changed = self
+            .engine_mut()
+            .record_local_aircraft_definition(definition)?;
+        if changed {
+            self.note_change();
+        }
+        Ok(changed)
     }
 
     pub fn event_stream_plan(&self) -> Option<CloudEventStreamPlan> {

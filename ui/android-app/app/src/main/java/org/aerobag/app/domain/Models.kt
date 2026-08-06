@@ -236,6 +236,13 @@ data class AltitudePlannerControlUiView(
     val enabled: Boolean,
     val actionUid: String?,
     val disabledReason: String?,
+    val options: List<AltitudePlannerControlOptionUiView>,
+)
+
+data class AltitudePlannerControlOptionUiView(
+    val label: String,
+    val actionUid: String,
+    val selected: Boolean,
 )
 
 data class AltitudePlannerUnavailableReason(

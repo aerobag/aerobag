@@ -39,6 +39,7 @@ pub struct AltitudePlannerUnavailableReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AltitudePlannerControlId {
+    Aircraft,
     AircraftProfile,
     WindModel,
 }
@@ -81,6 +82,15 @@ pub struct AltitudePlannerControlUiView {
     pub action_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AltitudePlannerControlOptionUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudePlannerControlOptionUiView {
+    pub label: String,
+    pub action_uid: String,
+    pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,8 +148,10 @@ impl Default for AltitudePlannerUiView {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AltitudePlannerUiInput {
+    pub aircraft_label: Option<String>,
     pub aircraft_profile_label: Option<String>,
-    pub aircraft_profile_selectable: bool,
+    pub aircraft_options: Vec<AltitudePlannerControlOptionUiView>,
+    pub aircraft_profile_options: Vec<AltitudePlannerControlOptionUiView>,
     pub cruise_altitude_ft: Option<i32>,
     pub navigation_active: bool,
     pub ownship_altitude_available: bool,
@@ -159,6 +171,7 @@ pub struct AltitudePlannerUiInput {
     pub local_time_zone: Tz,
     pub forecast: Option<AltitudePlannerForecastUiView>,
     pub wind_fallback: Option<AltitudePlannerWindFallback>,
+    pub aircraft_advisory: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,8 +188,10 @@ pub enum AltitudePlannerWindFallback {
 impl Default for AltitudePlannerUiInput {
     fn default() -> Self {
         Self {
+            aircraft_label: None,
             aircraft_profile_label: None,
-            aircraft_profile_selectable: false,
+            aircraft_options: Vec::new(),
+            aircraft_profile_options: Vec::new(),
             cruise_altitude_ft: None,
             navigation_active: false,
             ownship_altitude_available: false,
@@ -196,6 +211,7 @@ impl Default for AltitudePlannerUiInput {
             local_time_zone: chrono_tz::UTC,
             forecast: None,
             wind_fallback: None,
+            aircraft_advisory: None,
         }
     }
 }
@@ -254,6 +270,9 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
     };
     let departure = project_departure_editor(&input);
     let aircraft_label = input
+        .aircraft_label
+        .unwrap_or_else(|| "DEFAULT".to_string());
+    let aircraft_profile_label = input
         .aircraft_profile_label
         .unwrap_or_else(|| "BASIC".to_string());
     let estimate_summary_label = if input.live_ground_speed_estimate_active {
@@ -300,7 +319,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         }),
         _ => input.forecast,
     };
-    let advisories = match input.wind_fallback.as_ref() {
+    let mut advisories = match input.wind_fallback.as_ref() {
         Some(AltitudePlannerWindFallback::Other { reason }) => {
             vec![format!(
                 "Forecast winds do not cover the complete trajectory ({reason}); showing no-wind/ISA estimates."
@@ -308,6 +327,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         }
         _ => Vec::new(),
     };
+    advisories.extend(input.aircraft_advisory);
     AltitudePlannerUiView {
         title: "Altitude Planner".to_string(),
         estimate_kind,
@@ -317,12 +337,26 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         },
         controls: vec![
             AltitudePlannerControlUiView {
-                id: AltitudePlannerControlId::AircraftProfile,
+                id: AltitudePlannerControlId::Aircraft,
                 label: format!("AIRCRAFT\n{aircraft_label}"),
-                enabled: input.aircraft_profile_selectable,
+                enabled: !input.aircraft_options.is_empty(),
                 action_uid: None,
-                disabled_reason: (!input.aircraft_profile_selectable)
-                    .then(|| "Aircraft profile selection is not available yet.".to_string()),
+                disabled_reason: input
+                    .aircraft_options
+                    .is_empty()
+                    .then(|| "No alternate aircraft definitions are available.".to_string()),
+                options: input.aircraft_options,
+            },
+            AltitudePlannerControlUiView {
+                id: AltitudePlannerControlId::AircraftProfile,
+                label: format!("PROFILE\n{aircraft_profile_label}"),
+                enabled: !input.aircraft_profile_options.is_empty(),
+                action_uid: None,
+                disabled_reason: input
+                    .aircraft_profile_options
+                    .is_empty()
+                    .then(|| "No alternate performance profiles are available.".to_string()),
+                options: input.aircraft_profile_options,
             },
             AltitudePlannerControlUiView {
                 id: AltitudePlannerControlId::WindModel,
@@ -331,6 +365,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                 action_uid: input.wind_model_action_uid,
                 disabled_reason: (!input.wind_model_selectable)
                     .then(|| "No alternate wind models are available.".to_string()),
+                options: Vec::new(),
             },
         ],
         departure,
@@ -1452,6 +1487,16 @@ mod tests {
         }
     }
 
+    fn bundled_pa46_profile() -> AircraftPerformanceProfile {
+        let definition: product_contracts::AircraftDefinition = serde_json::from_str(include_str!(
+            "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/piper-pa46-310p.json"
+        ))
+        .expect("bundled PA46 definition");
+        let hash = definition.content_hash().expect("definition hash");
+        crate::performance_profile_from_definition(&hash, &definition, "economy-65")
+            .expect("runtime PA46 profile")
+    }
+
     #[test]
     fn interpolates_cruise_performance_without_extrapolating() {
         let profile = synthetic_profile();
@@ -1470,7 +1515,8 @@ mod tests {
 
     #[test]
     fn vertical_schedule_converts_indicated_speed_with_the_atmosphere() {
-        let points = crate::pa46_310p_climb_points();
+        let profile = bundled_pa46_profile();
+        let points = &profile.climb;
         let sea_level = interpolate_vertical(points, 0.0, 15.0, "climb").unwrap();
         let ten_thousand = interpolate_vertical(points, 10_000.0, -5.0, "climb").unwrap();
         let twenty_thousand = interpolate_vertical(points, 20_000.0, -25.0, "climb").unwrap();
@@ -1484,7 +1530,8 @@ mod tests {
 
     #[test]
     fn warmer_air_increases_true_speed_for_a_vertical_ias_schedule() {
-        let points = crate::pa46_310p_climb_points();
+        let profile = bundled_pa46_profile();
+        let points = &profile.climb;
         let isa = interpolate_vertical(points, 10_000.0, -5.0, "climb").unwrap();
         let warm = interpolate_vertical(points, 10_000.0, 15.0, "climb").unwrap();
 
@@ -1493,7 +1540,7 @@ mod tests {
 
     #[test]
     fn vertical_tas_schedule_is_not_density_corrected() {
-        let profile = crate::pa46_310p_profile(crate::Pa46CruiseConfiguration::Economy65);
+        let profile = bundled_pa46_profile();
         let cold = interpolate_vertical(&profile.descent, 12_000.0, -40.0, "descent").unwrap();
         let warm = interpolate_vertical(&profile.descent, 12_000.0, 20.0, "descent").unwrap();
 

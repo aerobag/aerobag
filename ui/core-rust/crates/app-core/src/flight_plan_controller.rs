@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +54,7 @@ pub(crate) struct FlightPlanProjectionInputs {
     pub now_epoch_ms: i64,
     pub nav_data_generation: u64,
     pub weather_revision: u64,
+    pub aircraft_definitions_digest: [u8; 32],
     pub local_time_zone: chrono_tz::Tz,
     pub departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
 }
@@ -214,6 +218,16 @@ impl FlightPlanController {
         Ok(FlightPlan {
             cruise_altitude_ft: Some(altitude_ft),
             ..self.required_plan("set cruise altitude")?.clone()
+        })
+    }
+
+    pub fn plan_after_set_aircraft(
+        &self,
+        selection: product_contracts::AircraftSelection,
+    ) -> AppResult<FlightPlan> {
+        Ok(FlightPlan {
+            aircraft: Some(selection),
+            ..self.required_plan("set aircraft")?.clone()
         })
     }
 
@@ -421,6 +435,7 @@ impl FlightPlanController {
     pub fn project(
         &mut self,
         store: Option<&NavKvStore>,
+        private_aircraft_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
         inputs: FlightPlanProjectionInputs,
         atmosphere: crate::had_ops::PlannerAtmosphereSelection<'_>,
     ) -> Result<FlightPlanProjectionResult, HadReadError> {
@@ -448,6 +463,7 @@ impl FlightPlanController {
                 if let Some(store) = store {
                     let projection = crate::had_ops::flight_plan_ui_projection(
                         store,
+                        private_aircraft_definitions,
                         plan.clone(),
                         ui_state,
                         FlightDataComputer::with_clock(
@@ -839,6 +855,7 @@ mod tests {
             ownship_altitude_ft: None,
             now_epoch_ms: 0,
             nav_data_generation: 0,
+            aircraft_definitions_digest: [0; 32],
             weather_revision: 0,
             local_time_zone: chrono_tz::UTC,
             departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
@@ -854,14 +871,23 @@ mod tests {
         let mut controller = FlightPlanController::new(plan(), Vec::new()).expect("controller");
         assert!(
             controller
-                .project(None, inputs(), atmosphere())
+                .project(None, &BTreeMap::new(), inputs(), atmosphere())
                 .expect("projection")
                 .rebuilt
         );
         assert!(
             !controller
-                .project(None, inputs(), atmosphere())
+                .project(None, &BTreeMap::new(), inputs(), atmosphere())
                 .expect("projection")
+                .rebuilt
+        );
+
+        let mut definitions_changed = inputs();
+        definitions_changed.aircraft_definitions_digest = [1; 32];
+        assert!(
+            controller
+                .project(None, &BTreeMap::new(), definitions_changed, atmosphere(),)
+                .expect("aircraft definition invalidation")
                 .rebuilt
         );
 
@@ -873,7 +899,7 @@ mod tests {
         }]);
         assert!(
             controller
-                .project(None, inputs(), atmosphere())
+                .project(None, &BTreeMap::new(), inputs(), atmosphere())
                 .expect("projection")
                 .rebuilt
         );

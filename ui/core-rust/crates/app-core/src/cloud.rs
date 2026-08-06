@@ -51,6 +51,8 @@ const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 2;
 const OFFLINE_PACKAGE_REGION_RECORD_PREFIX: &str = "offline_packages/region/";
 const OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX: &str = "offline_packages/product/";
 const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
+const AIRCRAFT_LIBRARY_RECORD_PREFIX: &str = "aircraft/library/";
+const AIRCRAFT_LIBRARY_SCHEMA_VERSION: u32 = 1;
 const LEGACY_UNKNOWN_MUTATION_EPOCH_MS: i64 = i64::MIN;
 const CLOUD_POLL_INTERVAL_MS: i64 = 60_000;
 const CLOUD_TRANSIENT_RETRY_MS: i64 = 5_000;
@@ -1141,6 +1143,96 @@ impl CloudEngine {
             }
         }
         Ok(preferences)
+    }
+
+    pub fn aircraft_definitions(
+        &self,
+    ) -> AppResult<BTreeMap<String, product_contracts::AircraftDefinition>> {
+        self.persistent
+            .records
+            .cached
+            .iter()
+            .filter_map(|(key, record)| {
+                key.strip_prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)
+                    .map(|hash| {
+                        aircraft_definition_from_record(hash, record)
+                            .map(|value| (hash.to_string(), value))
+                    })
+            })
+            .collect()
+    }
+
+    pub fn aircraft_definitions_digest(&self) -> AppResult<[u8; 32]> {
+        let mut digest = Sha256::new();
+        for (hash, definition) in self.aircraft_definitions()? {
+            digest.update(hash.as_bytes());
+            digest.update(definition.content_hash().map_err(cloud_error)?);
+        }
+        Ok(digest.finalize().into())
+    }
+
+    #[cfg(test)]
+    pub fn aircraft_library_definition_hashes(&self) -> AppResult<BTreeSet<String>> {
+        let mut hashes = BTreeSet::new();
+        for (key, record) in &self.persistent.records.cached {
+            let Some(hash) = key.strip_prefix(AIRCRAFT_LIBRARY_RECORD_PREFIX) else {
+                continue;
+            };
+            product_contracts::validate_aircraft_definition_hash(hash).map_err(cloud_error)?;
+            if aircraft_library_membership_from_record(record)?.included {
+                hashes.insert(hash.to_string());
+            }
+        }
+        Ok(hashes)
+    }
+
+    #[cfg(test)]
+    pub fn record_local_aircraft_definition(
+        &mut self,
+        definition: &product_contracts::AircraftDefinition,
+    ) -> AppResult<bool> {
+        let hash = definition.content_hash().map_err(cloud_error)?;
+        let key = product_contracts::aircraft_definition_key(&hash).map_err(cloud_error)?;
+        let record = CloudRecord {
+            schema_version: product_contracts::AIRCRAFT_DEFINITION_SCHEMA_VERSION,
+            modified_at_epoch_ms: None,
+            value: serde_json::to_value(definition).map_err(cloud_json_error)?,
+        };
+        if self.persistent.records.cached.get(&key) == Some(&record) {
+            return Ok(false);
+        }
+        self.record_local_cloud_record(&key, record);
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub fn record_local_aircraft_library_membership(
+        &mut self,
+        definition_hash: &str,
+        included: bool,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        product_contracts::validate_aircraft_definition_hash(definition_hash)
+            .map_err(cloud_error)?;
+        let key = format!("{AIRCRAFT_LIBRARY_RECORD_PREFIX}{definition_hash}");
+        let membership = product_contracts::AircraftLibraryMembership { included };
+        let existing = self
+            .persistent
+            .records
+            .cached
+            .get(&key)
+            .map(aircraft_library_membership_from_record)
+            .transpose()?;
+        if existing == Some(membership) {
+            return Ok(false);
+        }
+        let record = CloudRecord {
+            schema_version: AIRCRAFT_LIBRARY_SCHEMA_VERSION,
+            modified_at_epoch_ms: Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms)),
+            value: serde_json::to_value(membership).map_err(cloud_json_error)?,
+        };
+        self.record_local_cloud_record(&key, record);
+        Ok(true)
     }
 
     fn next_record_mutation_epoch_ms(&self, key: &str, now_epoch_ms: i64) -> i64 {
@@ -3701,9 +3793,10 @@ fn flight_plan_from_record(record: &CloudRecord) -> AppResult<StampedFlightPlan>
             )))
         }
     };
-    let plan = serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
+    let plan: FlightPlan =
+        serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
     Ok(StampedFlightPlan {
-        plan,
+        plan: plan.normalized(),
         modified_at_epoch_ms,
     })
 }
@@ -3725,6 +3818,49 @@ fn offline_package_selection_from_record(
     serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
 }
 
+fn aircraft_definition_from_record(
+    expected_hash: &str,
+    record: &CloudRecord,
+) -> AppResult<product_contracts::AircraftDefinition> {
+    if record.schema_version != product_contracts::AIRCRAFT_DEFINITION_SCHEMA_VERSION {
+        return Err(cloud_error(format!(
+            "unsupported aircraft definition schema {}",
+            record.schema_version
+        )));
+    }
+    if record.modified_at_epoch_ms.is_some() {
+        return Err(cloud_error(
+            "immutable aircraft definition has a mutation timestamp",
+        ));
+    }
+    let definition: product_contracts::AircraftDefinition =
+        serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
+    let actual_hash = definition.content_hash().map_err(cloud_error)?;
+    if actual_hash != expected_hash {
+        return Err(cloud_error(format!(
+            "aircraft definition record hash mismatch: key has {expected_hash}, value has {actual_hash}"
+        )));
+    }
+    Ok(definition)
+}
+
+fn aircraft_library_membership_from_record(
+    record: &CloudRecord,
+) -> AppResult<product_contracts::AircraftLibraryMembership> {
+    if record.schema_version != AIRCRAFT_LIBRARY_SCHEMA_VERSION {
+        return Err(cloud_error(format!(
+            "unsupported aircraft library schema {}",
+            record.schema_version
+        )));
+    }
+    if record.modified_at_epoch_ms.is_none() {
+        return Err(cloud_error(
+            "aircraft library membership has no user-mutation timestamp",
+        ));
+    }
+    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+}
+
 fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
     if key == FLIGHT_PLAN_RECORD_KEY {
         flight_plan_from_record(record)?;
@@ -3732,6 +3868,11 @@ fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
         || key.starts_with(OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX)
     {
         offline_package_selection_from_record(record)?;
+    } else if let Some(hash) = key.strip_prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX) {
+        aircraft_definition_from_record(hash, record)?;
+    } else if let Some(hash) = key.strip_prefix(AIRCRAFT_LIBRARY_RECORD_PREFIX) {
+        product_contracts::validate_aircraft_definition_hash(hash).map_err(cloud_error)?;
+        aircraft_library_membership_from_record(record)?;
     }
     Ok(())
 }
@@ -3758,7 +3899,7 @@ fn compare_cloud_records(left: &CloudRecord, right: &CloudRecord) -> AppResult<O
 }
 
 fn cloud_flight_plan_definition(plan: &FlightPlan) -> FlightPlan {
-    let mut plan = plan.clone();
+    let mut plan = plan.clone().normalized();
     plan.guidance = None;
     plan
 }
@@ -3904,6 +4045,13 @@ fn unexpected_response(context: &str, response: CloudProviderResponse) -> AppErr
 mod tests {
     use super::*;
     use crate::{planning::RouteComponent, NavRef};
+
+    fn bundled_private_aircraft() -> product_contracts::AircraftDefinition {
+        serde_json::from_str(include_str!(
+            "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/piper-pa46-310p.json"
+        ))
+        .expect("bundled PA46 definition")
+    }
 
     #[test]
     fn providers_select_one_explicit_root_publication_protocol() {
@@ -4968,6 +5116,11 @@ mod tests {
         let mut changed = plan(&["KRNT", "KSEA", "KPAE"]);
         changed.cruise_altitude_ft = Some(12_000);
         changed.planned_departure_time_epoch_ms = Some(1_786_032_000_000);
+        let aircraft = bundled_private_aircraft();
+        changed.aircraft = Some(product_contracts::AircraftSelection {
+            definition_hash: aircraft.content_hash().expect("aircraft hash"),
+            profile_id: "economy-65".to_string(),
+        });
         let mut provider = MemoryProvider::default();
         let mut first = CloudEngine::new(CloudPersistentState::default());
         first
@@ -5120,6 +5273,146 @@ mod tests {
         };
         assert_eq!(first.offline_package_preferences().unwrap(), expected);
         assert_eq!(second.offline_package_preferences().unwrap(), expected);
+    }
+
+    #[test]
+    fn aircraft_definition_and_library_membership_crossfill_between_devices() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let definition = bundled_private_aircraft();
+        let hash = definition.content_hash().expect("aircraft hash");
+        let mut provider = MemoryProvider::default();
+        let mut first = CloudEngine::new(CloudPersistentState::default());
+        first
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        first
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut first);
+        first
+            .perform_action(CloudAction::CreateAccount, &initial)
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 10).is_empty());
+
+        let mut second = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut second);
+        second
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode {
+                    setup_code: first.device_setup_code().unwrap(),
+                },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(pump(&mut second, &mut provider, 20), vec![initial]);
+
+        let before_digest = first.aircraft_definitions_digest().unwrap();
+        assert!(first.record_local_aircraft_definition(&definition).unwrap());
+        assert!(first
+            .record_local_aircraft_library_membership(&hash, true, 100)
+            .unwrap());
+        assert_ne!(first.aircraft_definitions_digest().unwrap(), before_digest);
+        assert!(pump(&mut first, &mut provider, 110).is_empty());
+        second
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        assert!(pump(&mut second, &mut provider, 120).is_empty());
+
+        assert_eq!(
+            second.aircraft_definitions().unwrap().get(&hash),
+            Some(&definition)
+        );
+        assert_eq!(
+            second.aircraft_library_definition_hashes().unwrap(),
+            BTreeSet::from([hash])
+        );
+    }
+
+    #[test]
+    fn newer_aircraft_library_tombstone_defeats_an_older_offline_readd() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let definition = bundled_private_aircraft();
+        let hash = definition.content_hash().expect("aircraft hash");
+        let mut provider = MemoryProvider::default();
+        let mut first = CloudEngine::new(CloudPersistentState::default());
+        first
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        first
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut first);
+        first
+            .perform_action(CloudAction::CreateAccount, &initial)
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 10).is_empty());
+        first.record_local_aircraft_definition(&definition).unwrap();
+        first
+            .record_local_aircraft_library_membership(&hash, true, 100)
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 110).is_empty());
+
+        let setup_code = first.device_setup_code().unwrap();
+        let stale_state: CloudPersistentState = serde_json::from_slice(
+            &serde_json::to_vec(first.persistent()).expect("serialize stale device"),
+        )
+        .expect("restore stale device");
+        let mut stale = CloudEngine::new(stale_state);
+        ready(&mut stale);
+        stale
+            .record_local_aircraft_library_membership(&hash, false, 125)
+            .unwrap();
+        stale
+            .record_local_aircraft_library_membership(&hash, true, 150)
+            .unwrap();
+
+        let mut current = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut current);
+        current
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode { setup_code },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(pump(&mut current, &mut provider, 160), vec![initial]);
+        current
+            .record_local_aircraft_library_membership(&hash, false, 200)
+            .unwrap();
+        assert!(pump(&mut current, &mut provider, 210).is_empty());
+
+        assert!(pump(&mut stale, &mut provider, 300).is_empty());
+        assert!(stale
+            .aircraft_library_definition_hashes()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn aircraft_definition_record_rejects_a_content_hash_mismatch() {
+        let definition = bundled_private_aircraft();
+        let wrong_hash = "0".repeat(64);
+        let record = CloudRecord {
+            schema_version: product_contracts::AIRCRAFT_DEFINITION_SCHEMA_VERSION,
+            modified_at_epoch_ms: None,
+            value: serde_json::to_value(definition).unwrap(),
+        };
+
+        let error = validate_known_record(
+            &product_contracts::aircraft_definition_key(&wrong_hash).unwrap(),
+            &record,
+        )
+        .expect_err("mismatched hash must be rejected");
+        assert!(error.message.contains("hash mismatch"));
     }
 
     #[test]

@@ -15,6 +15,9 @@ pub const NAV_DB_CONTRACT_KEY: &str = "contract/nav-db";
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NavKvQuery {
     NavDbContract,
+    AircraftDefinition {
+        definition_hash: String,
+    },
     ChartCatalog,
     OfflineRegionCatalog,
     MetarImportantStations,
@@ -90,6 +93,9 @@ pub enum NavKvQuery {
 pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
     match query {
         NavKvQuery::NavDbContract => Some(NAV_DB_CONTRACT_KEY.to_string()),
+        NavKvQuery::AircraftDefinition { definition_hash } => {
+            product_contracts::aircraft_definition_key(definition_hash).ok()
+        }
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
         NavKvQuery::OfflineRegionCatalog => Some("offline-region/catalog".to_string()),
         NavKvQuery::MetarImportantStations => Some("weather/metar-important-stations".to_string()),

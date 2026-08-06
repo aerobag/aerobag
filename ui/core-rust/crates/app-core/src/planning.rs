@@ -48,6 +48,9 @@ pub struct FlightPlan {
     pub departure: Option<AirportId>,
     pub destination: Option<AirportId>,
     pub alternate: Option<AirportId>,
+    /// The immutable aircraft model and one profile within it used for planning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aircraft: Option<product_contracts::AircraftSelection>,
     pub cruise_altitude_ft: Option<i32>,
     /// A fixed planning departure time. `None` means depart at the current time.
     #[serde(default)]
@@ -1210,6 +1213,9 @@ impl FlightPlan {
 
     pub fn normalized(mut self) -> Self {
         normalize_route_component_uids(&mut self);
+        if self.aircraft.is_none() {
+            self.aircraft = Some(product_contracts::default_aircraft_selection());
+        }
         if self.resolved_legs.is_empty() && !self.route_components.is_empty() {
             self.resolved_legs = resolved_legs_from_waypoint_components(&self.route_components);
         }
@@ -1231,6 +1237,7 @@ impl Default for FlightPlan {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: Some(product_contracts::default_aircraft_selection()),
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6153,6 +6160,22 @@ fn resume_leg_index_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<usi
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_plan_without_aircraft_is_pinned_to_the_exact_default() {
+        let mut value = serde_json::to_value(FlightPlan::default()).expect("plan JSON");
+        value
+            .as_object_mut()
+            .expect("plan object")
+            .remove("aircraft");
+        let legacy: FlightPlan = serde_json::from_value(value).expect("legacy plan");
+
+        assert!(legacy.aircraft.is_none());
+        assert_eq!(
+            legacy.normalized().aircraft,
+            Some(product_contracts::default_aircraft_selection())
+        );
+    }
+
     fn procedure_leg_with_path(
         id: &str,
         from: NavRef,
@@ -6802,6 +6825,7 @@ mod tests {
             departure: Some(AirportId("KBOS".to_string())),
             destination: Some(AirportId("KJFK".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6871,6 +6895,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KRDD".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6961,6 +6986,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KHIO".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7023,6 +7049,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KUAO".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7123,6 +7150,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7303,6 +7331,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KYKM".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7492,6 +7521,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7526,6 +7556,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KUAO".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7581,6 +7612,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KPDX".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7603,6 +7635,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8134,6 +8167,7 @@ mod tests {
             departure: None,
             destination: Some(AirportId("47N".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8587,6 +8621,7 @@ mod tests {
             departure: None,
             destination: Some(AirportId("KHVR".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8680,6 +8715,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,

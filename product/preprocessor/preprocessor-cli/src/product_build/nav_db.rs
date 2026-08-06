@@ -20,6 +20,59 @@ pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
 
 const NAV_COORDINATE_DECIMAL_SCALE: f64 = 10_000_000.0;
 const NAV_DB_DIAGNOSTICS_FORMAT: &str = "nav-db-diagnostics-v1";
+const DEFAULT_AIRCRAFT_LINEAGE_ID: &str = "cessna-172-generic";
+const BUNDLED_AIRCRAFT_DEFINITIONS: &[(&str, &str)] = &[
+    (
+        "cessna-172-generic.json",
+        include_str!("../../resources/aircraft/cessna-172-generic.json"),
+    ),
+    (
+        "piper-pa46-310p.json",
+        include_str!("../../resources/aircraft/piper-pa46-310p.json"),
+    ),
+];
+
+fn build_nav_kv_aircraft_pairs() -> anyhow::Result<(Vec<NavKvPair>, Vec<String>)> {
+    let mut definitions = Vec::new();
+    for (filename, source) in BUNDLED_AIRCRAFT_DEFINITIONS {
+        let definition: product_contracts::AircraftDefinition = serde_json::from_str(source)
+            .with_context(|| format!("failed to parse bundled aircraft definition {filename}"))?;
+        definition.validate().map_err(|error| {
+            anyhow::anyhow!("invalid bundled aircraft definition {filename}: {error}")
+        })?;
+        let hash = definition.content_hash().map_err(|error| {
+            anyhow::anyhow!("failed to hash bundled aircraft definition {filename}: {error}")
+        })?;
+        definitions.push((hash, definition));
+    }
+    definitions.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let (default_hash, default_definition) = definitions
+        .iter()
+        .find(|(_, definition)| definition.lineage_id == DEFAULT_AIRCRAFT_LINEAGE_ID)
+        .ok_or_else(|| {
+            anyhow::anyhow!("bundled aircraft definitions omit the default Cessna 172")
+        })?;
+    if default_hash != product_contracts::DEFAULT_AIRCRAFT_DEFINITION_HASH
+        || default_definition.default_profile_id != product_contracts::DEFAULT_AIRCRAFT_PROFILE_ID
+    {
+        anyhow::bail!(
+            "bundled default aircraft does not match the immutable default selection contract"
+        );
+    }
+    let default_definition_key =
+        product_contracts::aircraft_definition_key(default_hash).map_err(anyhow::Error::msg)?;
+
+    let mut pairs = Vec::new();
+    for (hash, definition) in definitions {
+        pairs.push(json_pair(
+            product_contracts::aircraft_definition_key(&hash).map_err(anyhow::Error::msg)?,
+            &serde_json::to_value(&definition)?,
+            "aircraft definition",
+        )?);
+    }
+    Ok((pairs, vec![default_definition_key]))
+}
 
 pub(super) fn round_nav_coordinate(value: f64) -> f64 {
     let rounded = (value * NAV_COORDINATE_DECIMAL_SCALE).round() / NAV_COORDINATE_DECIMAL_SCALE;
@@ -996,6 +1049,11 @@ pub(super) fn build_nav_kv_artifact(
     stable_packages: &[BundlePackageArtifact],
     static_raster_tile_levels: &[StaticRasterCatalogEntry],
 ) -> anyhow::Result<BuiltNavDbArtifacts> {
+    let aircraft_definition_sources = BUNDLED_AIRCRAFT_DEFINITIONS
+        .iter()
+        .map(|(filename, source)| format!("{filename}\n{}", hash_text(source)))
+        .collect::<Vec<_>>()
+        .join("\n");
     let resource_index: ResourceIndex = serde_json::from_slice(
         &fs::read(resource_index_path)
             .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
@@ -1062,6 +1120,10 @@ pub(super) fn build_nav_kv_artifact(
             "nav_kv_builder".to_string(),
             source_fingerprints::nav_kv_builder_fingerprint()?,
         ),
+        (
+            "aircraft_definitions".to_string(),
+            hash_text(&aircraft_definition_sources),
+        ),
     ]);
     let prepared = prepare_node_at(&build_shared_node_dir(config, "nav-db")?, "nav-db", &inputs)?;
     let output_dir = prepared.dir.join("output");
@@ -1087,6 +1149,7 @@ pub(super) fn build_nav_kv_artifact(
                     build_nav_kv_chart_catalog(&resource_index, static_raster_tile_levels);
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
                     .context("failed to encode nav_kv chart/catalog value")?;
+                let (aircraft_pairs, aircraft_prefetch_keys) = build_nav_kv_aircraft_pairs()?;
                 let mut pairs = vec![
                     NavKvPair {
                         key: "contract/nav-db".to_string(),
@@ -1104,6 +1167,7 @@ pub(super) fn build_nav_kv_artifact(
                     &resource_index,
                     &chart_cutline_polygon_sets,
                 )?);
+                pairs.extend(aircraft_pairs);
                 pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_chart_reference_pairs(&resource_index)?);
@@ -1119,8 +1183,12 @@ pub(super) fn build_nav_kv_artifact(
                 let diagnostics = nav_db_build_diagnostics_from_pairs(&pairs)?;
                 fs::write(&diagnostics_path, serde_json::to_vec_pretty(&diagnostics)?)
                     .with_context(|| format!("failed to write {}", diagnostics_path.display()))?;
-                let built = build_nav_kv_sorted(pairs, 64 * 1024)
-                    .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
+                let built = build_nav_kv_sorted_with_extra_prefetch_keys(
+                    pairs,
+                    64 * 1024,
+                    &aircraft_prefetch_keys,
+                )
+                .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
                 let root_source_path = source_dir.join(root_filename);
                 fs::write(&root_source_path, &built.root_bytes)
                     .with_context(|| format!("failed to write {}", root_source_path.display()))?;
@@ -6012,6 +6080,19 @@ pub(super) fn max_zoom_for_levels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_aircraft_definitions_are_content_addressed_and_prefetched() {
+        let (pairs, prefetch_keys) = build_nav_kv_aircraft_pairs().expect("aircraft pairs");
+        let default = product_contracts::default_aircraft_selection();
+        assert!(pairs.iter().any(|pair| {
+            pair.key
+                == product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()
+        }));
+        assert!(prefetch_keys.contains(
+            &product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()
+        ));
+    }
 
     #[test]
     fn nav_lat_lon_json_rounds_to_seven_decimals() {

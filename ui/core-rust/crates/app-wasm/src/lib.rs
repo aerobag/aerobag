@@ -887,16 +887,31 @@ pub fn startup_smoke_test() -> Result<(), JsValue> {
         0,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let default_aircraft_json = include_bytes!(
+        "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/cessna-172-generic.json"
+    );
+    let default_aircraft: app_core::AircraftDefinition =
+        serde_json::from_slice(default_aircraft_json)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let default_aircraft_key = format!(
+        "aircraft/definition/{}",
+        default_aircraft
+            .content_hash()
+            .map_err(|err| JsValue::from_str(&err))?
+    );
     let store = app_core::nav_kv_store_for_smoke_test(
-        &[(
-            "package/by-id/NAV_DB_SMOKE",
-            br#"{
+        &[
+            (
+                "package/by-id/NAV_DB_SMOKE",
+                br#"{
                 "id": "NAV_DB_SMOKE",
                 "family_id": "nav-db",
                 "expiration_date": "2020-01-01"
             }"#,
-        )],
-        256,
+            ),
+            (default_aircraft_key.as_str(), default_aircraft_json),
+        ],
+        4_096,
     );
     let nav_kv_handle = NEXT_NAV_KV_HANDLE.fetch_add(1, Ordering::Relaxed);
     lock_nav_kv_stores().insert(

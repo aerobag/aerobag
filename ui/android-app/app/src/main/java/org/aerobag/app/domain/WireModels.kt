@@ -1157,6 +1157,14 @@ data class WireAltitudePlannerControlUiView(
     val enabled: Boolean,
     val action_uid: String? = null,
     val disabled_reason: String? = null,
+    val options: List<WireAltitudePlannerControlOptionUiView> = emptyList(),
+)
+
+@Serializable
+data class WireAltitudePlannerControlOptionUiView(
+    val label: String,
+    val action_uid: String,
+    val selected: Boolean,
 )
 
 @Serializable

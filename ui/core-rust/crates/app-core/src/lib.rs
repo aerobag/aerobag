@@ -57,20 +57,17 @@ pub mod ui_work_scheduler;
 mod weather_controller;
 
 pub use adsb::VisibleAdsbTraffic;
-pub use aircraft_profiles::{
-    pa46_310p_climb_points, pa46_310p_profile, Pa46CruiseConfiguration, PA46_310P_AIRCRAFT_LABEL,
-    PA46_310P_AIRCRAFT_MODEL_ID, PA46_310P_PERFORMANCE_SOURCE,
-};
+pub use aircraft_profiles::performance_profile_from_definition;
 pub use airport_info::{
     AirportCommunicationUiView, AirportInfoUiView, AirportRunwayUiView, AirportSolarEventUiView,
 };
 pub use altitude_planner::{
     format_trajectory_wind, parse_altitude_planner_departure_input, project_altitude_planner_ui,
     AircraftPerformanceProfile, AltitudeComparisonPanelUiView, AltitudeComparisonUiView,
-    AltitudePlannerControlId, AltitudePlannerControlUiView, AltitudePlannerDepartureEditorUiView,
-    AltitudePlannerDepartureInputField, AltitudePlannerDepartureTimeBasis,
-    AltitudePlannerForecastUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
-    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
+    AltitudePlannerControlId, AltitudePlannerControlOptionUiView, AltitudePlannerControlUiView,
+    AltitudePlannerDepartureEditorUiView, AltitudePlannerDepartureInputField,
+    AltitudePlannerDepartureTimeBasis, AltitudePlannerForecastUiView, AltitudePlannerUiInput,
+    AltitudePlannerUiView, AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
     AltitudePlannerWindFallback, AtmosphereModel, AtmosphereSample, CruisePerformancePoint,
     FlightEstimateKind, FlightPlanEstimateModeUiView, NoWindIsaAtmosphere,
     ParsedAltitudePlannerDeparture, PerformanceAirspeedBasis, TrajectoryLegPrediction,
@@ -246,6 +243,7 @@ pub use planning::{
     RouteComponent, RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
+pub use product_contracts::{AircraftDefinition, AircraftSelection};
 pub use product_contracts::{SseTransportPolicy, AEROBAG_SSE_TRANSPORT_POLICY};
 pub use publication::{
     nav_db_artifact_candidates_from_installed_artifacts, serialize_publication_outcome,

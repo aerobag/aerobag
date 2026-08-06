@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "lineage_id": "piper-pa46-310p-tsio-520-be",
+  "manufacturer": "Piper",
+  "model": "PA-46-310P",
+  "label": "PA46-310P MALIBU",
+  "default_profile_id": "economy-65",
+  "profiles": [
+    {
+      "id": "high-speed-75",
+      "label": "75% HIGH SPEED",
+      "source": "N9124Y Power Settings v3; PA46-310P POH power table and digitized cruise-speed chart; rough climb assumption: 130 KIAS, 36 GPH, 1100 FPM; rough descent assumption: selected cruise TAS + 8 KT, selected cruise GPH, 500 FPM",
+      "reference_weight_lb": 3740,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 161, "fuel_flow_gph": 16 },
+          { "pressure_altitude_ft": 6000, "true_airspeed_kt": 175, "fuel_flow_gph": 16 },
+          { "pressure_altitude_ft": 12000, "true_airspeed_kt": 188, "fuel_flow_gph": 16 },
+          { "pressure_altitude_ft": 18000, "true_airspeed_kt": 201, "fuel_flow_gph": 16 },
+          { "pressure_altitude_ft": 24000, "true_airspeed_kt": 213, "fuel_flow_gph": 16 }
+        ]
+      },
+      "climb": {
+        "model": "constant_ias_rate",
+        "ias_kt": 130,
+        "fuel_flow_gph": 36,
+        "vertical_speed_fpm": 1100
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 8,
+        "vertical_speed_fpm": -500
+      }
+    },
+    {
+      "id": "economy-65",
+      "label": "65% ECONOMY",
+      "source": "N9124Y Power Settings v3; PA46-310P POH power table and digitized cruise-speed chart; rough climb assumption: 130 KIAS, 36 GPH, 1100 FPM; rough descent assumption: selected cruise TAS + 8 KT, selected cruise GPH, 500 FPM",
+      "reference_weight_lb": 3740,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 148, "fuel_flow_gph": 14 },
+          { "pressure_altitude_ft": 6000, "true_airspeed_kt": 162, "fuel_flow_gph": 14 },
+          { "pressure_altitude_ft": 12000, "true_airspeed_kt": 177, "fuel_flow_gph": 14 },
+          { "pressure_altitude_ft": 18000, "true_airspeed_kt": 190, "fuel_flow_gph": 14 },
+          { "pressure_altitude_ft": 24000, "true_airspeed_kt": 202, "fuel_flow_gph": 14 }
+        ]
+      },
+      "climb": {
+        "model": "constant_ias_rate",
+        "ias_kt": 130,
+        "fuel_flow_gph": 36,
+        "vertical_speed_fpm": 1100
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 8,
+        "vertical_speed_fpm": -500
+      }
+    },
+    {
+      "id": "long-range-55",
+      "label": "55% LONG RANGE",
+      "source": "N9124Y Power Settings v3; PA46-310P POH power table and digitized cruise-speed chart; rough climb assumption: 130 KIAS, 36 GPH, 1100 FPM; rough descent assumption: selected cruise TAS + 8 KT, selected cruise GPH, 500 FPM",
+      "reference_weight_lb": 3740,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 134, "fuel_flow_gph": 12 },
+          { "pressure_altitude_ft": 6000, "true_airspeed_kt": 149, "fuel_flow_gph": 12 },
+          { "pressure_altitude_ft": 12000, "true_airspeed_kt": 164, "fuel_flow_gph": 12 },
+          { "pressure_altitude_ft": 18000, "true_airspeed_kt": 179, "fuel_flow_gph": 12 },
+          { "pressure_altitude_ft": 24000, "true_airspeed_kt": 193, "fuel_flow_gph": 12 }
+        ]
+      },
+      "climb": {
+        "model": "constant_ias_rate",
+        "ias_kt": 130,
+        "fuel_flow_gph": 36,
+        "vertical_speed_fpm": 1100
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 8,
+        "vertical_speed_fpm": -500
+      }
+    }
+  ]
+}

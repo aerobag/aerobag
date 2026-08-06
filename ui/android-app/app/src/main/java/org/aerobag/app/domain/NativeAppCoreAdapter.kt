@@ -3550,6 +3550,13 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
             enabled = it.enabled,
             actionUid = it.action_uid,
             disabledReason = it.disabled_reason,
+            options = it.options.map { option ->
+                AltitudePlannerControlOptionUiView(
+                    label = option.label,
+                    actionUid = option.action_uid,
+                    selected = option.selected,
+                )
+            },
         )
     },
     departure = AltitudePlannerDepartureEditorUiView(
@@ -3599,6 +3606,13 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
             enabled = it.enabled,
             action_uid = it.actionUid,
             disabled_reason = it.disabledReason,
+            options = it.options.map { option ->
+                WireAltitudePlannerControlOptionUiView(
+                    label = option.label,
+                    action_uid = option.actionUid,
+                    selected = option.selected,
+                )
+            },
         )
     },
     departure = WireAltitudePlannerDepartureEditorUiView(

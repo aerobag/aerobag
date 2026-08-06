@@ -8314,6 +8314,7 @@ function AltitudePlannerPage(props: {
   const [error, setError] = useState<string | null>(null);
   const [departureTimeInput, setDepartureTimeInput] = useState(planner.departure.time_value);
   const [departureWhenInput, setDepartureWhenInput] = useState(planner.departure.when_value);
+  const [openControlId, setOpenControlId] = useState<string | null>(null);
   const departureTimeFocused = useRef(false);
   const departureWhenFocused = useRef(false);
   const suppressDepartureBlurSubmit = useRef(false);
@@ -8341,6 +8342,7 @@ function AltitudePlannerPage(props: {
   }, [planner.departure.time_value, planner.departure.when_value]);
 
   const performAction = (actionUid: string) => {
+    setOpenControlId(null);
     setError(null);
     void Promise.resolve(props.onPerformAltitudePlannerAction(actionUid))
       .catch((reason: unknown) => setError(errorMessage(reason)));
@@ -8378,16 +8380,20 @@ function AltitudePlannerPage(props: {
         <div className="altitudePlannerControls" data-testid="altitude-planner-control-tray">
           {planner.controls.map((control) => {
             const disabledReason = disabledReasonText(control.disabled_reason);
+            const hasOptions = (control.options?.length ?? 0) > 0;
+            const open = openControlId === control.id;
             return (
               <button
                 key={control.id}
                 type="button"
-                className={`trayButton altitudePlannerButton${control.enabled ? "" : " isDisabled"}`}
+                className={`trayButton altitudePlannerButton${control.enabled ? "" : " isDisabled"}${open ? " isChecked" : ""}`}
                 data-testid={`altitude-planner-control-${control.id}`}
                 aria-disabled={control.enabled ? undefined : "true"}
                 title={disabledReason ?? undefined}
                 onClick={() => {
-                  if (control.enabled && control.action_uid) {
+                  if (control.enabled && hasOptions) {
+                    setOpenControlId(open ? null : control.id);
+                  } else if (control.enabled && control.action_uid) {
                     performAction(control.action_uid);
                   } else if (disabledReason) {
                     showDisabledAction(disabledReason);
@@ -8461,6 +8467,23 @@ function AltitudePlannerPage(props: {
           </section>
         </div>
       </header>
+
+      {planner.controls.map((control) =>
+        openControlId === control.id && (control.options?.length ?? 0) > 0 ? (
+          <div className="altitudePlannerControlOptions" key={control.id}>
+            {control.options?.map((option) => (
+              <button
+                key={option.action_uid}
+                type="button"
+                className={`trayButton altitudePlannerOption${option.selected ? " isChecked" : ""}`}
+                onClick={() => performAction(option.action_uid)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null,
+      )}
 
       <div className="altitudePlannerPageBody">
         {planner.forecast ? (

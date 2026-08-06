@@ -596,6 +596,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,

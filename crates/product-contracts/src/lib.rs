@@ -5,12 +5,14 @@
 use serde::{Deserialize, Serialize};
 
 mod aerobag_cloud;
+mod aircraft;
 mod atmosphere;
 pub mod live_feeds;
 pub mod publication;
 pub mod versioned_json;
 
 pub use aerobag_cloud::*;
+pub use aircraft::*;
 pub use atmosphere::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +79,7 @@ pub enum AirportNotamEffect {
     Other,
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV18";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV19";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";

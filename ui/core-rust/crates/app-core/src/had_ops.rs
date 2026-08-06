@@ -1291,13 +1291,11 @@ pub(crate) struct FlightPlanUiProjection {
     pub materialized: crate::flight_plan_materialization::MaterializedFlightPlan,
 }
 
-const PROTOTYPE_PA46_CRUISE_ALTITUDE_FT: i32 = 12_000;
-const PROTOTYPE_PA46_CONFIGURATION: crate::Pa46CruiseConfiguration =
-    crate::Pa46CruiseConfiguration::Economy65;
-const PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT: i32 = 2_000;
-const PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT: i32 = 24_000;
-const PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT: i32 = 2_000;
-const PROTOTYPE_PA46_ALTITUDE_ACTION_PREFIX: &str = "altitude-planner:select:";
+const DEFAULT_CRUISE_ALTITUDE_FT: i32 = 12_000;
+const MIN_PLANNER_CRUISE_ALTITUDE_FT: i32 = 2_000;
+const PLANNER_CRUISE_ALTITUDE_STEP_FT: i32 = 2_000;
+const ALTITUDE_ACTION_PREFIX: &str = "altitude-planner:select:";
+const AIRCRAFT_ACTION_PREFIX: &str = "altitude-planner:aircraft:";
 pub(crate) const SELECT_NO_WIND_ACTION_UID: &str = "altitude-planner:wind:no-wind";
 pub(crate) const SELECT_GFS_WIND_ACTION_UID: &str = "altitude-planner:wind:gfs";
 static NO_WIND_ATMOSPHERE: crate::NoWindIsaAtmosphere = crate::NoWindIsaAtmosphere;
@@ -1342,25 +1340,202 @@ impl<'a> PlannerAtmosphereSelection<'a> {
     }
 }
 
-fn prototype_pa46_cruise_altitudes() -> impl Iterator<Item = i32> {
-    let step_count = (PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT
-        - PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT)
-        / PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT;
-    (0..=step_count).rev().map(|step| {
-        PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT + step * PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT
+#[derive(Debug, Clone)]
+struct PlannerAircraft {
+    selection: product_contracts::AircraftSelection,
+    definition: product_contracts::AircraftDefinition,
+    profile: crate::AircraftPerformanceProfile,
+    definitions: BTreeMap<String, product_contracts::AircraftDefinition>,
+    advisory: Option<String>,
+}
+
+pub(crate) fn planner_aircraft_action_uid(
+    selection: &product_contracts::AircraftSelection,
+) -> String {
+    format!(
+        "{AIRCRAFT_ACTION_PREFIX}{}/{}",
+        selection.definition_hash,
+        had_key::component(&selection.profile_id)
+    )
+}
+
+pub(crate) fn planner_aircraft_from_action_uid(
+    action_uid: &str,
+) -> Option<product_contracts::AircraftSelection> {
+    let encoded = action_uid.strip_prefix(AIRCRAFT_ACTION_PREFIX)?;
+    let (definition_hash, profile_id) = encoded.split_once('/')?;
+    product_contracts::validate_aircraft_definition_hash(definition_hash).ok()?;
+    Some(product_contracts::AircraftSelection {
+        definition_hash: definition_hash.to_string(),
+        profile_id: had_key::decode_component(profile_id).ok()?,
     })
 }
 
-pub(crate) fn prototype_pa46_altitude_action_uid(altitude_ft: i32) -> Option<String> {
-    prototype_pa46_cruise_altitudes()
-        .any(|candidate| candidate == altitude_ft)
-        .then(|| format!("{PROTOTYPE_PA46_ALTITUDE_ACTION_PREFIX}{altitude_ft}"))
+pub(crate) fn planner_aircraft_selection_available(
+    store: &NavKvStore,
+    private_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
+    selection: &product_contracts::AircraftSelection,
+) -> Result<bool, HadReadError> {
+    let resolved = planner_aircraft(store, Some(selection), private_definitions)?;
+    Ok(resolved.advisory.is_none() && resolved.selection == *selection)
 }
 
-pub(crate) fn prototype_pa46_altitude_from_action_uid(action_uid: &str) -> Option<i32> {
-    prototype_pa46_cruise_altitudes().find(|altitude_ft| {
-        prototype_pa46_altitude_action_uid(*altitude_ft).as_deref() == Some(action_uid)
+fn aircraft_control_options(
+    aircraft: &PlannerAircraft,
+) -> (
+    Vec<crate::AltitudePlannerControlOptionUiView>,
+    Vec<crate::AltitudePlannerControlOptionUiView>,
+) {
+    let mut definitions = aircraft.definitions.iter().collect::<Vec<_>>();
+    definitions.sort_by(|left, right| {
+        left.1
+            .label
+            .cmp(&right.1.label)
+            .then_with(|| left.0.cmp(right.0))
+    });
+    let aircraft_options = (definitions.len() > 1)
+        .then(|| {
+            definitions
+                .into_iter()
+                .map(|(hash, definition)| {
+                    let selection = product_contracts::AircraftSelection {
+                        definition_hash: hash.clone(),
+                        profile_id: definition.default_profile_id.clone(),
+                    };
+                    crate::AltitudePlannerControlOptionUiView {
+                        label: definition.label.clone(),
+                        action_uid: planner_aircraft_action_uid(&selection),
+                        selected: hash == &aircraft.selection.definition_hash,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let profile_options = (aircraft.definition.profiles.len() > 1)
+        .then(|| {
+            aircraft
+                .definition
+                .profiles
+                .iter()
+                .map(|profile| {
+                    let selection = product_contracts::AircraftSelection {
+                        definition_hash: aircraft.selection.definition_hash.clone(),
+                        profile_id: profile.id.clone(),
+                    };
+                    crate::AltitudePlannerControlOptionUiView {
+                        label: profile.label.clone(),
+                        action_uid: planner_aircraft_action_uid(&selection),
+                        selected: profile.id == aircraft.selection.profile_id,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (aircraft_options, profile_options)
+}
+
+fn planner_aircraft(
+    store: &NavKvStore,
+    requested: Option<&product_contracts::AircraftSelection>,
+    private_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
+) -> Result<PlannerAircraft, HadReadError> {
+    let default_selection = product_contracts::default_aircraft_selection();
+    let mut definitions = BTreeMap::new();
+    for key in nav_kv_prefix_keys(store, product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)? {
+        let hash = key
+            .strip_prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)
+            .ok_or_else(|| {
+                HadReadError::Fatal(format!("invalid aircraft definition key: {key}"))
+            })?;
+        let definition: product_contracts::AircraftDefinition =
+            read_required_key(store, &key, "aircraft definition")?;
+        validate_aircraft_definition(hash, &definition)?;
+        definitions.insert(hash.to_string(), definition);
+    }
+    for (hash, definition) in private_definitions {
+        validate_aircraft_definition(hash, definition)?;
+        definitions.insert(hash.clone(), definition.clone());
+    }
+
+    let requested = requested.unwrap_or(&default_selection);
+    let (selection, advisory) = match definitions.get(&requested.definition_hash) {
+        Some(definition) if definition.profile(&requested.profile_id).is_some() => {
+            (requested.clone(), None)
+        }
+        Some(_) => (
+            default_selection.clone(),
+            Some(format!(
+                "Selected aircraft profile {} is unavailable; using the default Cessna 172 profile.",
+                requested.profile_id
+            )),
+        ),
+        None => (
+            default_selection.clone(),
+            Some(format!(
+                "Selected aircraft definition {} is unavailable; using the default Cessna 172 profile.",
+                requested.definition_hash
+            )),
+        ),
+    };
+    let definition = definitions
+        .get(&selection.definition_hash)
+        .cloned()
+        .ok_or_else(|| HadReadError::Fatal("default aircraft definition is missing".to_string()))?;
+    let profile = crate::performance_profile_from_definition(
+        &selection.definition_hash,
+        &definition,
+        &selection.profile_id,
+    )
+    .map_err(HadReadError::Fatal)?;
+    Ok(PlannerAircraft {
+        selection,
+        definition,
+        profile,
+        definitions,
+        advisory,
     })
+}
+
+fn validate_aircraft_definition(
+    expected_hash: &str,
+    definition: &product_contracts::AircraftDefinition,
+) -> Result<(), HadReadError> {
+    definition.validate().map_err(HadReadError::Fatal)?;
+    let actual_hash = definition.content_hash().map_err(HadReadError::Fatal)?;
+    if actual_hash != expected_hash {
+        return Err(HadReadError::Fatal(format!(
+            "aircraft definition hash mismatch: key has {expected_hash}, value has {actual_hash}"
+        )));
+    }
+    Ok(())
+}
+
+fn planner_cruise_altitudes(profile: &crate::AircraftPerformanceProfile) -> Vec<i32> {
+    let maximum = profile
+        .cruise
+        .last()
+        .map(|point| point.pressure_altitude_ft.floor() as i32)
+        .unwrap_or(MIN_PLANNER_CRUISE_ALTITUDE_FT);
+    let step_count =
+        maximum.saturating_sub(MIN_PLANNER_CRUISE_ALTITUDE_FT) / PLANNER_CRUISE_ALTITUDE_STEP_FT;
+    (0..=step_count)
+        .rev()
+        .map(|step| MIN_PLANNER_CRUISE_ALTITUDE_FT + step * PLANNER_CRUISE_ALTITUDE_STEP_FT)
+        .collect()
+}
+
+pub(crate) fn planner_altitude_action_uid(altitude_ft: i32) -> Option<String> {
+    (altitude_ft >= MIN_PLANNER_CRUISE_ALTITUDE_FT
+        && altitude_ft % PLANNER_CRUISE_ALTITUDE_STEP_FT == 0)
+        .then(|| format!("{ALTITUDE_ACTION_PREFIX}{altitude_ft}"))
+}
+
+pub(crate) fn planner_altitude_from_action_uid(action_uid: &str) -> Option<i32> {
+    let altitude_ft = action_uid
+        .strip_prefix(ALTITUDE_ACTION_PREFIX)?
+        .parse()
+        .ok()?;
+    (planner_altitude_action_uid(altitude_ft).as_deref() == Some(action_uid)).then_some(altitude_ft)
 }
 
 fn endpoint_airport_id(
@@ -1388,7 +1563,7 @@ fn endpoint_airport_id(
     })
 }
 
-fn prototype_pa46_route_legs(
+fn trajectory_route_legs(
     materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
     active_start: Option<LatLon>,
 ) -> Vec<crate::TrajectoryRouteLeg> {
@@ -1426,7 +1601,8 @@ fn prototype_pa46_route_legs(
         .collect()
 }
 
-fn prototype_pa46_prediction(
+fn modeled_prediction(
+    profile: &crate::AircraftPerformanceProfile,
     legs: &[crate::TrajectoryRouteLeg],
     start_altitude_ft: f64,
     cruise_altitude_ft: f64,
@@ -1434,8 +1610,7 @@ fn prototype_pa46_prediction(
     departure_epoch_ms: i64,
     atmosphere: &dyn crate::AtmosphereModel,
 ) -> Result<crate::TrajectoryPrediction, crate::TrajectoryPlannerError> {
-    let profile = crate::pa46_310p_profile(PROTOTYPE_PA46_CONFIGURATION);
-    crate::TrajectoryPlanner::new(&profile, atmosphere).predict(&crate::TrajectoryPlanInput {
+    crate::TrajectoryPlanner::new(profile, atmosphere).predict(&crate::TrajectoryPlanInput {
         legs: legs.to_vec(),
         start_pressure_altitude_ft: start_altitude_ft,
         cruise_pressure_altitude_ft: cruise_altitude_ft,
@@ -1475,7 +1650,8 @@ fn planner_wind_fallback(
     })
 }
 
-fn prototype_pa46_prediction_for_selection(
+fn modeled_prediction_for_selection(
+    profile: &crate::AircraftPerformanceProfile,
     legs: &[crate::TrajectoryRouteLeg],
     start_altitude_ft: f64,
     cruise_altitude_ft: f64,
@@ -1484,7 +1660,8 @@ fn prototype_pa46_prediction_for_selection(
     atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Result<PlannerPrediction, crate::TrajectoryPlannerError> {
     if !atmosphere.forecast_selected {
-        return prototype_pa46_prediction(
+        return modeled_prediction(
+            profile,
             legs,
             start_altitude_ft,
             cruise_altitude_ft,
@@ -1505,7 +1682,8 @@ fn prototype_pa46_prediction_for_selection(
             ))
         },
         |model| {
-            prototype_pa46_prediction(
+            modeled_prediction(
+                profile,
                 legs,
                 start_altitude_ft,
                 cruise_altitude_ft,
@@ -1520,20 +1698,19 @@ fn prototype_pa46_prediction_for_selection(
             prediction,
             fallback_reason: None,
         }),
-        Err(crate::TrajectoryPlannerError::AtmosphereUnavailable(reason)) => {
-            prototype_pa46_prediction(
-                legs,
-                start_altitude_ft,
-                cruise_altitude_ft,
-                destination_altitude_ft,
-                departure_epoch_ms,
-                &NO_WIND_ATMOSPHERE,
-            )
-            .map(|prediction| PlannerPrediction {
-                prediction,
-                fallback_reason: Some(reason),
-            })
-        }
+        Err(crate::TrajectoryPlannerError::AtmosphereUnavailable(reason)) => modeled_prediction(
+            profile,
+            legs,
+            start_altitude_ft,
+            cruise_altitude_ft,
+            destination_altitude_ft,
+            departure_epoch_ms,
+            &NO_WIND_ATMOSPHERE,
+        )
+        .map(|prediction| PlannerPrediction {
+            prediction,
+            fallback_reason: Some(reason),
+        }),
         Err(error) => Err(error),
     }
 }
@@ -1572,7 +1749,8 @@ fn planner_forecast_ui(
     })
 }
 
-fn prototype_pa46_altitude_comparisons(
+fn altitude_comparisons(
+    profile: &crate::AircraftPerformanceProfile,
     materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
     live_data: FlightPlanLiveData,
     origin_altitude_ft: Option<f64>,
@@ -1593,10 +1771,11 @@ fn prototype_pa46_altitude_comparisons(
     let legs = if navigation_active && active_start.is_none() {
         Vec::new()
     } else {
-        prototype_pa46_route_legs(materialized, active_start)
+        trajectory_route_legs(materialized, active_start)
     };
 
-    prototype_pa46_cruise_altitudes()
+    planner_cruise_altitudes(profile)
+        .into_iter()
         .map(|altitude_ft| {
             let selected = altitude_ft == selected_altitude_ft;
             let unavailable = if start_altitude_ft.is_none() {
@@ -1623,7 +1802,8 @@ fn prototype_pa46_altitude_comparisons(
                 None
             };
             let prediction = unavailable.is_none().then(|| {
-                prototype_pa46_prediction_for_selection(
+                modeled_prediction_for_selection(
+                    profile,
                     &legs,
                     start_altitude_ft.expect("availability checked above"),
                     altitude_ft as f64,
@@ -1648,7 +1828,7 @@ fn prototype_pa46_altitude_comparisons(
             let wind = prediction.as_ref().map(crate::format_trajectory_wind);
             crate::AltitudeComparisonUiView {
                 action_uid: enabled
-                    .then(|| prototype_pa46_altitude_action_uid(altitude_ft))
+                    .then(|| planner_altitude_action_uid(altitude_ft))
                     .flatten(),
                 selected,
                 enabled,
@@ -1670,6 +1850,7 @@ fn prototype_pa46_altitude_comparisons(
 
 pub(crate) fn flight_plan_ui_projection(
     store: &NavKvStore,
+    private_aircraft_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,
     computer: crate::FlightDataComputer,
@@ -1677,6 +1858,7 @@ pub(crate) fn flight_plan_ui_projection(
     atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Result<FlightPlanUiProjection, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
+    let aircraft = planner_aircraft(store, plan.aircraft.as_ref(), private_aircraft_definitions)?;
     let mut ui_state = current_ui_state;
     ui_state
         .display_rows
@@ -1709,7 +1891,7 @@ pub(crate) fn flight_plan_ui_projection(
     };
     let cruise_altitude_ft = plan
         .cruise_altitude_ft
-        .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT);
+        .unwrap_or(DEFAULT_CRUISE_ALTITUDE_FT);
     let origin_airport_id = endpoint_airport_id(&plan, &materialized, true);
     let destination_airport_id = endpoint_airport_id(&plan, &materialized, false);
     let origin_altitude_ft = match origin_airport_id.as_deref() {
@@ -1728,13 +1910,14 @@ pub(crate) fn flight_plan_ui_projection(
             .flatten(),
         None => None,
     };
-    let full_route_legs = prototype_pa46_route_legs(&materialized, None);
+    let full_route_legs = trajectory_route_legs(&materialized, None);
     let mut performance_regime_available = true;
     let wind_model_available = true;
     let modeled_prediction = if !use_live_eta && materialized.active.is_none() {
         match (origin_altitude_ft, destination_altitude_ft) {
             (Some(origin), Some(destination)) => {
-                match prototype_pa46_prediction_for_selection(
+                match modeled_prediction_for_selection(
+                    &aircraft.profile,
                     &full_route_legs,
                     origin,
                     cruise_altitude_ft as f64,
@@ -1754,8 +1937,12 @@ pub(crate) fn flight_plan_ui_projection(
     } else {
         None
     };
+    let (aircraft_options, aircraft_profile_options) = aircraft_control_options(&aircraft);
     ui_state.altitude_planner = crate::project_altitude_planner_ui(crate::AltitudePlannerUiInput {
-        aircraft_profile_label: Some(PROTOTYPE_PA46_CONFIGURATION.label().to_string()),
+        aircraft_label: Some(aircraft.definition.label.clone()),
+        aircraft_profile_label: Some(aircraft.profile.profile_label.clone()),
+        aircraft_options,
+        aircraft_profile_options,
         cruise_altitude_ft: Some(cruise_altitude_ft),
         navigation_active: materialized.active.is_some(),
         ownship_altitude_available: live_data.ownship_altitude_ft.is_some(),
@@ -1777,6 +1964,7 @@ pub(crate) fn flight_plan_ui_projection(
         wind_fallback: modeled_prediction.as_ref().and_then(|prediction| {
             planner_wind_fallback(prediction, atmosphere, departure_epoch_ms)
         }),
+        aircraft_advisory: aircraft.advisory,
         ..crate::AltitudePlannerUiInput::default()
     });
     let modeled_by_row_id = modeled_prediction
@@ -1914,11 +2102,13 @@ pub(crate) fn flight_plan_ui_projection(
 
 pub(crate) fn altitude_comparison_panel(
     store: &NavKvStore,
+    private_aircraft_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
     plan: FlightPlan,
     live_data: FlightPlanLiveData,
     atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Result<crate::AltitudeComparisonPanelUiView, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
+    let aircraft = planner_aircraft(store, plan.aircraft.as_ref(), private_aircraft_definitions)?;
     let mut missing_pages = HadReadPageCollector::default();
     let route = missing_pages
         .collect(project_flight_plan_route(store, &plan))?
@@ -1967,23 +2157,25 @@ pub(crate) fn altitude_comparison_panel(
         plan.planned_departure_time_epoch_ms
             .unwrap_or_else(|| live_data.now_epoch_ms.unwrap_or_default())
     };
-    let rows = prototype_pa46_altitude_comparisons(
+    let rows = altitude_comparisons(
+        &aircraft.profile,
         &materialized,
         live_data,
         origin_altitude_ft,
         destination_altitude_ft,
         plan.cruise_altitude_ft
-            .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT),
+            .unwrap_or(DEFAULT_CRUISE_ALTITUDE_FT),
         departure_epoch_ms,
         atmosphere,
     );
-    let advisories = rows
+    let mut advisories = rows
         .iter()
         .filter_map(|row| row.advisory.clone())
         .map(|message| (message, ()))
         .collect::<BTreeMap<_, ()>>()
         .into_keys()
-        .collect();
+        .collect::<Vec<_>>();
+    advisories.extend(aircraft.advisory);
     Ok(crate::AltitudeComparisonPanelUiView {
         columns: crate::altitude_comparison_columns(),
         rows,
@@ -4581,6 +4773,40 @@ mod tests {
     use crate::{planning::NavElementUiView, AirportId, NavKvRoot, ProcedureKind, SequencingMode};
     use app_fixtures::load_fixture_nav_kv_pages;
 
+    fn test_aircraft_definitions() -> BTreeMap<String, product_contracts::AircraftDefinition> {
+        [
+            include_str!(
+                "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/cessna-172-generic.json"
+            ),
+            include_str!(
+                "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/piper-pa46-310p.json"
+            ),
+        ]
+        .into_iter()
+        .map(|source| {
+            let definition: product_contracts::AircraftDefinition =
+                serde_json::from_str(source).expect("bundled aircraft definition");
+            let hash = definition.content_hash().expect("aircraft definition hash");
+            (hash, definition)
+        })
+        .collect()
+    }
+
+    fn test_aircraft_selection(
+        lineage_id: &str,
+        profile_id: &str,
+    ) -> product_contracts::AircraftSelection {
+        let (definition_hash, definition) = test_aircraft_definitions()
+            .into_iter()
+            .find(|(_, definition)| definition.lineage_id == lineage_id)
+            .expect("test aircraft lineage");
+        assert!(definition.profile(profile_id).is_some());
+        product_contracts::AircraftSelection {
+            definition_hash,
+            profile_id: profile_id.to_string(),
+        }
+    }
+
     fn flight_plan_ui_state(
         store: &NavKvStore,
         plan: FlightPlan,
@@ -4590,6 +4816,7 @@ mod tests {
     ) -> Result<FlightPlanUiState, HadReadError> {
         Ok(flight_plan_ui_projection(
             store,
+            &test_aircraft_definitions(),
             plan,
             current_ui_state,
             computer,
@@ -5350,6 +5577,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KCCC".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -5452,7 +5680,7 @@ mod tests {
     }
 
     #[test]
-    fn pa46_estimates_use_vector_bridge_instead_of_chevron_display_path() {
+    fn modeled_estimates_use_vector_bridge_instead_of_chevron_display_path() {
         let row_id = crate::FlightPlanRowId("vector-row".to_string());
         let display_start = LatLon { lat: 0.0, lon: 0.0 };
         let display_end = LatLon { lat: 1.0, lon: 0.5 };
@@ -5494,7 +5722,7 @@ mod tests {
             )),
         };
 
-        let route = prototype_pa46_route_legs(&materialized, None);
+        let route = trajectory_route_legs(&materialized, None);
 
         assert_eq!(route.len(), 1);
         assert_eq!(route[0].row_id, row_id);
@@ -5502,7 +5730,37 @@ mod tests {
     }
 
     #[test]
-    fn inactive_airport_plan_uses_prototype_pa46_modeled_time_and_fuel() {
+    fn missing_selected_definition_falls_back_until_private_definition_arrives() {
+        let store = test_nav_kv_store(&[]);
+        let definitions = test_aircraft_definitions();
+        let selected = test_aircraft_selection("piper-pa46-310p-tsio-520-be", "economy-65");
+        let mut before_arrival = definitions.clone();
+        before_arrival.remove(&selected.definition_hash);
+
+        let fallback =
+            planner_aircraft(&store, Some(&selected), &before_arrival).expect("default fallback");
+        assert_eq!(
+            fallback.selection,
+            product_contracts::default_aircraft_selection()
+        );
+        assert!(fallback.advisory.is_some());
+        assert!(
+            !planner_aircraft_selection_available(&store, &before_arrival, &selected)
+                .expect("selection availability")
+        );
+
+        let resolved = planner_aircraft(&store, Some(&selected), &definitions)
+            .expect("private definition arrival");
+        assert_eq!(resolved.selection, selected);
+        assert!(resolved.advisory.is_none());
+        assert!(
+            planner_aircraft_selection_available(&store, &definitions, &selected)
+                .expect("selection availability")
+        );
+    }
+
+    #[test]
+    fn inactive_airport_plan_uses_selected_aircraft_modeled_time_and_fuel() {
         let aaa = LatLon { lat: 0.0, lon: 0.0 };
         let bbb = LatLon { lat: 0.0, lon: 1.5 };
         let ccc = LatLon { lat: 0.0, lon: 3.0 };
@@ -5522,7 +5780,11 @@ mod tests {
                 serde_json::json!({"lat": ccc.lat, "lon": ccc.lon}),
             ),
         ]);
-        let plan = three_airport_test_plan();
+        let mut plan = three_airport_test_plan();
+        plan.aircraft = Some(test_aircraft_selection(
+            "piper-pa46-310p-tsio-520-be",
+            "economy-65",
+        ));
         let ui_state = default_flight_plan_ui_state_for_test(&store, &plan);
 
         assert_eq!(
@@ -5537,6 +5799,24 @@ mod tests {
                 |control| control.id == crate::AltitudePlannerControlId::AircraftProfile
                     && control.label.contains("65% ECONOMY")
             ));
+        let aircraft_control = ui_state
+            .altitude_planner
+            .controls
+            .iter()
+            .find(|control| control.id == crate::AltitudePlannerControlId::Aircraft)
+            .expect("aircraft control");
+        assert_eq!(aircraft_control.options.len(), 2);
+        let profile_control = ui_state
+            .altitude_planner
+            .controls
+            .iter()
+            .find(|control| control.id == crate::AltitudePlannerControlId::AircraftProfile)
+            .expect("profile control");
+        assert_eq!(profile_control.options.len(), 3);
+        assert!(profile_control
+            .options
+            .iter()
+            .all(|option| { planner_aircraft_from_action_uid(&option.action_uid).is_some() }));
         assert_eq!(
             ui_state.altitude_planner.estimate_summary.label,
             "Estimate basis:\nNo wind\n12,000 cruise"
@@ -5563,6 +5843,7 @@ mod tests {
 
         let panel = altitude_comparison_panel(
             &store,
+            &test_aircraft_definitions(),
             plan.clone(),
             FlightPlanLiveData {
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
@@ -5637,6 +5918,7 @@ mod tests {
         let project = |atmosphere| {
             flight_plan_ui_projection(
                 &store,
+                &test_aircraft_definitions(),
                 plan.clone(),
                 crate::project_ui_state(&plan),
                 crate::FlightDataComputer::default(),
@@ -5684,6 +5966,7 @@ mod tests {
         let plan = three_airport_test_plan();
         let state = flight_plan_ui_projection(
             &store,
+            &test_aircraft_definitions(),
             plan.clone(),
             crate::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
@@ -5731,6 +6014,7 @@ mod tests {
 
         let state = flight_plan_ui_projection(
             &store,
+            &test_aircraft_definitions(),
             plan.clone(),
             crate::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
@@ -5761,6 +6045,7 @@ mod tests {
 
         let panel = altitude_comparison_panel(
             &store,
+            &test_aircraft_definitions(),
             plan,
             FlightPlanLiveData {
                 now_epoch_ms: Some(0),
@@ -5810,6 +6095,7 @@ mod tests {
 
         let panel = altitude_comparison_panel(
             &store,
+            &test_aircraft_definitions(),
             plan,
             FlightPlanLiveData {
                 ownship_position: Some(aaa),
@@ -6071,6 +6357,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6155,6 +6442,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KDDD".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6343,6 +6631,7 @@ mod tests {
         };
         let inactive = altitude_comparison_panel(
             &store,
+            &test_aircraft_definitions(),
             inactive_plan,
             FlightPlanLiveData::default(),
             PlannerAtmosphereSelection::no_wind(false),
@@ -6350,6 +6639,7 @@ mod tests {
         .expect("inactive comparison");
         let active = altitude_comparison_panel(
             &store,
+            &test_aircraft_definitions(),
             active_plan,
             FlightPlanLiveData {
                 ownship_position: Some(ownship),
@@ -6531,6 +6821,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KCCC".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6619,6 +6910,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6699,6 +6991,7 @@ mod tests {
             departure: Some(AirportId("KAAA".to_string())),
             destination: Some(AirportId("KCCC".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6754,6 +7047,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -6787,6 +7081,7 @@ mod tests {
 
         let ui_state = flight_plan_ui_projection(
             &store,
+            &test_aircraft_definitions(),
             mutation.clone(),
             crate::project_ui_state(&mutation),
             crate::FlightDataComputer::default(),
@@ -7074,6 +7369,7 @@ mod tests {
             departure: Some(AirportId("KPAO".to_string())),
             destination: Some(AirportId("KWLW".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7175,6 +7471,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -7400,6 +7697,7 @@ mod tests {
             departure: None,
             destination: Some(AirportId(airport_id.to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8320,6 +8618,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KRNT".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8367,6 +8666,7 @@ mod tests {
             departure: Some(AirportId("KRNT".to_string())),
             destination: Some(AirportId("KRNT".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8478,6 +8778,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8507,6 +8808,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8564,6 +8866,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8657,6 +8960,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8793,6 +9097,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8818,6 +9123,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8894,6 +9200,7 @@ mod tests {
             departure: Some(AirportId("KPAE".to_string())),
             destination: Some(AirportId("KUAO".to_string())),
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8931,6 +9238,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,
@@ -8964,6 +9272,7 @@ mod tests {
             departure: None,
             destination: None,
             alternate: None,
+            aircraft: None,
             cruise_altitude_ft: None,
             planned_departure_time_epoch_ms: None,
             notes: None,

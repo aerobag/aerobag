@@ -73,23 +73,24 @@ Core must continue emitting these invalidations. Platforms must not infer them
 from product IDs, transport events, or whichever update groups happen to be
 present.
 
-## Missing Revision Tokens
+## Projection Version Tokens
 
-Every extracted controller has a monotonic revision and cached projection. The
-coordinator-owned chart, platform-capability, debug, freshness-schedule, content,
-and planner fields do not yet have independent revisions. The first
-`SessionUpdate` implementation must either:
+Core now owns one monotonic token for every group above. Each token observes a
+typed dependency stamp containing the authoritative controller revisions and
+the exact coordinator inputs used by that group. This covers coordinator-owned
+chart, platform-capability, debug, freshness-schedule, content, clock, and
+planner state without scattering manual dirty calls across mutation paths.
 
-1. add explicit coordinator sub-revisions for those groups; or
-2. record a core-owned changed-group set when those fields mutate.
-
-Comparing serialized values in platform code is not acceptable. Core owns the
-dependency graph and must state which projection groups changed.
+The version state is checkpointed with aggregate transactions and cloned into a
+NAVDB candidate. Failed transactions therefore cannot publish versions for
+rolled-back state. The tokens remain core-only until the generated
+`SessionUpdate` contract lands; no platform compares snapshots or serialized
+values to infer changes.
 
 ## Implementation Order
 
-1. Add core-only projection version tokens for every proposed group and assert
-   that unrelated mutations leave them unchanged.
+1. ~~Add core-only projection version tokens for every proposed group and assert
+   that unrelated mutations leave them unchanged.~~ Completed.
 2. Define a generated `SessionUpdate` with an envelope plus optional projection
    groups. Keep the existing full snapshot as startup/resynchronization data.
 3. Make each mutation return the update assembled from core-owned changed-group

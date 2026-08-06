@@ -102,6 +102,13 @@ use crate::{
     project_nav_symbol_feature,
     publication::PublicationResolvedResource,
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
+    session_projection::{
+        ApplicationProjectionDependencies, CloudProjectionDependencies,
+        FlightDataBannerProjectionDependencies, HomeProjectionDependencies,
+        MapProjectionDependencies, NavDataProjectionDependencies, SessionProjectionDependencies,
+        SessionProjectionVersionState, SettingsProjectionDependencies,
+        StatusProjectionDependencies,
+    },
     settings_controller::{
         debug_flag_settings_action, default_settings_page_state, SettingsController,
         SettingsModelCheckpoint, SettingsProjection,
@@ -187,6 +194,7 @@ pub struct UiSessionCreateTiming {
 
 struct UiSession {
     coordinator: SessionCoordinatorModel,
+    projection_versions: SessionProjectionVersionState,
     settings: SettingsController,
     flight_plan: FlightPlanController,
     nav_data: NavDataController,
@@ -356,7 +364,7 @@ impl Default for SessionRuntime {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum AltitudePlannerWindSelection {
+pub(crate) enum AltitudePlannerWindSelection {
     #[default]
     NoWind,
     Gfs,
@@ -2147,7 +2155,7 @@ fn create_ui_session_inner(
     diagnostics
         .data_status_projection_count
         .store(1, Ordering::Relaxed);
-    let session = UiSession {
+    let mut session = UiSession {
         coordinator: SessionCoordinatorModel {
             session_revision: 0,
             content_policy: app_state.content_policy,
@@ -2164,6 +2172,7 @@ fn create_ui_session_inner(
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             altitude_planner_departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
         },
+        projection_versions: SessionProjectionVersionState::default(),
         settings,
         flight_plan,
         nav_data: NavDataController::default(),
@@ -2176,6 +2185,7 @@ fn create_ui_session_inner(
         runtime: SessionRuntime::default(),
         diagnostics,
     };
+    refresh_session_projection_versions(&mut session, None);
     lock_session_registry().insert(
         handle,
         Arc::new(SessionSlot::new(handle, generation, session)),
@@ -2617,6 +2627,7 @@ enum SessionModelTransactionError {
 
 struct SessionModelTransactionCheckpoint {
     coordinator: SessionCoordinatorModel,
+    projection_versions: SessionProjectionVersionState,
     settings: SettingsModelCheckpoint,
     flight_plan: FlightPlanModelCheckpoint,
     nav_data: NavDataModelCheckpoint,
@@ -2633,6 +2644,7 @@ impl SessionModelTransactionCheckpoint {
     fn capture(session: &UiSession) -> Self {
         Self {
             coordinator: session.coordinator.clone(),
+            projection_versions: session.projection_versions.clone(),
             settings: session.settings.checkpoint_model(),
             flight_plan: session.flight_plan.checkpoint_model(),
             nav_data: session.nav_data.checkpoint_model(),
@@ -2648,6 +2660,7 @@ impl SessionModelTransactionCheckpoint {
 
     fn rollback(self, session: &mut UiSession) {
         session.coordinator = self.coordinator;
+        session.projection_versions = self.projection_versions;
         session.settings.rollback_model(self.settings);
         session.flight_plan.rollback_model(self.flight_plan);
         session.nav_data.rollback_model(self.nav_data);
@@ -5126,6 +5139,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
 
     let mut candidate = UiSession {
         coordinator: live.coordinator.clone(),
+        projection_versions: live.projection_versions.clone(),
         settings: std::mem::take(&mut live.settings),
         flight_plan: std::mem::take(&mut live.flight_plan),
         nav_data: live.nav_data.candidate(store_id, store, open_result),
@@ -10468,6 +10482,96 @@ fn session_snapshot_outcome_with_invalidations(
     }
 }
 
+fn session_projection_dependencies(
+    session: &UiSession,
+    next_nav_db_maintenance_epoch_ms: Option<i64>,
+) -> SessionProjectionDependencies {
+    let capabilities = &session.coordinator.platform_capabilities;
+    let cloud_available = capabilities.cloud.is_some();
+    let flight_data_banner = FlightDataBannerProjectionDependencies {
+        flight_plan_revision: session.flight_plan.revision(),
+        flight_plan_route_revision: session.flight_plan.route_revision(),
+        situation_revision: session.situation.revision(),
+        weather_revision: session.weather.revision(),
+        map_revision: session.map.revision(),
+        nav_data_generation: session.nav_data.generation(),
+        cloud_revision: session.cloud.revision(),
+        wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+        local_time_zone: capabilities.local_time_zone.clone(),
+        wind_selection: session.coordinator.altitude_planner_wind_selection,
+        departure_time_basis: session.coordinator.altitude_planner_departure_time_basis,
+    };
+    let application = ApplicationProjectionDependencies {
+        flight_data_banner: flight_data_banner.clone(),
+        settings_revision: session.settings.revision(),
+        content_policy: session.coordinator.content_policy,
+        last_content_report: session.coordinator.last_content_report.clone(),
+        bad_autopilot_enabled: session.coordinator.debug_state.bad_autopilot,
+        internet_adsb_enabled: session.coordinator.debug_state.internet_adsb,
+        internet_adsb_registration: session
+            .runtime
+            .adsb
+            .ownship_registration()
+            .map(str::to_string),
+    };
+    SessionProjectionDependencies {
+        envelope: session.coordinator.session_revision,
+        nav_data: NavDataProjectionDependencies {
+            nav_data_revision: session.nav_data.revision(),
+            package_revision: session.packages.revision(),
+            next_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms,
+        },
+        application,
+        situation: session.situation.revision(),
+        charts: session.coordinator.chart_page_state.clone(),
+        map: MapProjectionDependencies {
+            map_revision: session.map.revision(),
+            internet_adsb_enabled: session.coordinator.debug_state.internet_adsb,
+        },
+        status: StatusProjectionDependencies {
+            data_status_revision: session.data_status.revision(),
+            nav_data_revision: session.nav_data.revision(),
+            package_revision: session.packages.revision(),
+            cloud_revision: session.cloud.revision(),
+            weather_revision: session.weather.revision(),
+            wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+            client_build: capabilities.client_build.clone(),
+            cloud_available,
+            next_freshness_check_epoch_ms: session
+                .coordinator
+                .cycle_product_freshness
+                .next_check_epoch_ms,
+        },
+        settings: SettingsProjectionDependencies {
+            settings_revision: session.settings.revision(),
+            display_policy_available: capabilities.display_policy.is_some(),
+            flight_data_banner,
+        },
+        cloud: CloudProjectionDependencies {
+            cloud_revision: session.cloud.revision(),
+            wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+            qr_scanner_available: capabilities
+                .cloud
+                .as_ref()
+                .is_some_and(|cloud| cloud.qr_scan),
+        },
+        packages: session.packages.revision(),
+        home: HomeProjectionDependencies {
+            offline_packages_available: capabilities.offline_packages.is_some(),
+            cloud_available,
+        },
+        debug: session.coordinator.debug_state.clone(),
+    }
+}
+
+fn refresh_session_projection_versions(
+    session: &mut UiSession,
+    next_nav_db_maintenance_epoch_ms: Option<i64>,
+) {
+    let dependencies = session_projection_dependencies(session, next_nav_db_maintenance_epoch_ms);
+    session.projection_versions.observe(dependencies);
+}
+
 fn try_snapshot_for_session(
     session: &mut UiSession,
 ) -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
@@ -10594,13 +10698,14 @@ fn try_snapshot_for_session(
             "map_families": raster_map.as_ref().map(|state| state.family_options.len()).unwrap_or(0),
         })
     });
-    Ok(UiSessionSnapshot {
+    let next_nav_db_maintenance_epoch_ms = next_nav_db_maintenance_epoch_ms(session);
+    let snapshot = UiSessionSnapshot {
         ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: session.coordinator.session_revision,
         flight_plan_route_revision: session.flight_plan.route_revision(),
         nav_data_epoch: session.nav_data.epoch(),
         active_nav_db: session.nav_data.active_identity(),
-        next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
+        next_nav_db_maintenance_epoch_ms,
         app_state: app_state_for_session(session),
         app_ui_state,
         playback_ui_state,
@@ -10623,7 +10728,9 @@ fn try_snapshot_for_session(
             .coordinator
             .cycle_product_freshness
             .next_check_epoch_ms,
-    })
+    };
+    refresh_session_projection_versions(session, next_nav_db_maintenance_epoch_ms);
+    Ok(snapshot)
 }
 
 fn app_state_for_session(session: &UiSession) -> AppState {
@@ -12362,6 +12469,7 @@ fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<Ha
 mod tests {
     use super::*;
     use crate::nav_data_controller::NAV_DB_PUBLICATION_POLL_INTERVAL_MS;
+    use crate::session_projection::SessionProjectionVersions;
     use crate::{
         guidance_detail_id_for_leg_element,
         map_overlay::NotamProductPayload,
@@ -12499,6 +12607,7 @@ mod tests {
                 altitude_planner_departure_time_basis:
                     crate::AltitudePlannerDepartureTimeBasis::Local,
             },
+            projection_versions: SessionProjectionVersionState::default(),
             settings: SettingsController::default(),
             flight_plan,
             nav_data,
@@ -12511,6 +12620,90 @@ mod tests {
             runtime: SessionRuntime::default(),
             diagnostics: Arc::new(SessionDiagnosticsCounters::default()),
         }
+    }
+
+    fn observe_projection_versions(session: &mut UiSession) -> SessionProjectionVersions {
+        let next_nav_db_maintenance_epoch_ms = next_nav_db_maintenance_epoch_ms(session);
+        refresh_session_projection_versions(session, next_nav_db_maintenance_epoch_ms);
+        session.projection_versions.versions()
+    }
+
+    #[test]
+    fn chart_coordinator_change_advances_only_envelope_and_chart_versions() {
+        let mut session = isolated_test_session(None);
+        assert_eq!(
+            observe_projection_versions(&mut session),
+            SessionProjectionVersions::default()
+        );
+
+        session.coordinator.chart_page_state.selected_airport_id = "KSEA".to_string();
+        advance_session_revision(&mut session);
+
+        assert_eq!(
+            observe_projection_versions(&mut session),
+            SessionProjectionVersions {
+                envelope: 1,
+                charts: 1,
+                ..SessionProjectionVersions::default()
+            }
+        );
+    }
+
+    #[test]
+    fn settings_change_advances_only_declared_snapshot_groups() {
+        let mut session = isolated_test_session(None);
+        observe_projection_versions(&mut session);
+        let mut preferences = SettingsPreferences::default();
+        preferences
+            .disabled_flight_data_cell_ids
+            .insert("ground_speed".to_string());
+        assert!(session.settings.restore_preferences(preferences));
+        advance_session_revision(&mut session);
+
+        assert_eq!(
+            observe_projection_versions(&mut session),
+            SessionProjectionVersions {
+                envelope: 1,
+                application: 1,
+                settings: 1,
+                ..SessionProjectionVersions::default()
+            }
+        );
+    }
+
+    #[test]
+    fn clock_change_advances_time_dependent_groups_without_mutation_envelope() {
+        let mut session = isolated_test_session(None);
+        observe_projection_versions(&mut session);
+        advance_session_wall_clock(&mut session, 1_000);
+
+        assert_eq!(
+            observe_projection_versions(&mut session),
+            SessionProjectionVersions {
+                application: 1,
+                status: 1,
+                settings: 1,
+                cloud: 1,
+                ..SessionProjectionVersions::default()
+            }
+        );
+    }
+
+    #[test]
+    fn debug_only_change_does_not_dirty_map_or_application_groups() {
+        let mut session = isolated_test_session(None);
+        observe_projection_versions(&mut session);
+        session.coordinator.debug_state.tile_labels = true;
+        advance_session_revision(&mut session);
+
+        assert_eq!(
+            observe_projection_versions(&mut session),
+            SessionProjectionVersions {
+                envelope: 1,
+                debug: 1,
+                ..SessionProjectionVersions::default()
+            }
+        );
     }
 
     #[test]
@@ -13067,6 +13260,7 @@ mod tests {
         let mut session = isolated_test_session(None);
         session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
         let prior_revision = session.coordinator.session_revision;
+        let prior_projection_versions = observe_projection_versions(&mut session);
 
         let error = run_session_model_transaction(&mut session, |session| {
             session
@@ -13083,6 +13277,10 @@ mod tests {
 
         assert!(error.message.contains("injected settings write failure"));
         assert_eq!(session.coordinator.session_revision, prior_revision);
+        assert_eq!(
+            session.projection_versions.versions(),
+            prior_projection_versions
+        );
         assert!(!session
             .packages
             .installed_package_ids()

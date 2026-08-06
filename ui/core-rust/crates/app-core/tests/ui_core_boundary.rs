@@ -133,6 +133,56 @@ fn ui_session_exposes_coordinator_state_explicitly() {
 }
 
 #[test]
+fn session_projection_versions_are_core_owned_and_transactional() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let projection = read_repo_file("ui/core-rust/crates/app-core/src/session_projection.rs");
+    let versions = balanced_block_after_marker(
+        strip_rust_tests(&projection),
+        "struct SessionProjectionVersions",
+    );
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    let snapshot = balanced_block_after_marker(session, "pub struct UiSessionSnapshot");
+
+    for group in [
+        "envelope",
+        "nav_data",
+        "application",
+        "situation",
+        "charts",
+        "map",
+        "status",
+        "settings",
+        "cloud",
+        "packages",
+        "home",
+        "debug",
+    ] {
+        assert!(
+            versions.contains(group),
+            "projection version group {group} must remain explicit"
+        );
+    }
+    assert!(
+        ui_session.contains("projection_versions: SessionProjectionVersionState")
+            && checkpoint.contains("projection_versions: SessionProjectionVersionState"),
+        "projection versions must be session-owned and roll back with failed transactions"
+    );
+    assert!(
+        !snapshot.contains("projection_versions"),
+        "projection versions are core-only until the generated partial-update contract lands"
+    );
+    assert!(
+        projection.contains("SessionProjectionDependencies")
+            && !projection.contains("serde_json::to_")
+            && !projection.contains("serde_json::from_"),
+        "core must derive versions from typed dependencies, not serialized snapshot comparison"
+    );
+}
+
+#[test]
 fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

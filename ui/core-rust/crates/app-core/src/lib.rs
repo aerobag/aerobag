@@ -48,6 +48,7 @@ pub mod publication;
 pub mod raster_tiles;
 mod sequencing;
 pub mod session;
+mod session_projection;
 mod settings_controller;
 pub mod situation;
 mod situation_controller;

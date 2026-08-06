@@ -353,12 +353,27 @@ invalidation inventory is recorded in
 The public snapshot and platform wire contracts remain unchanged. This slice did
 not add a lock, thread, Worker, or platform-specific domain policy.
 
+## Completed Twelfth Slice
+
+The twelfth slice added core-owned monotonic projection versions for the twelve
+groups in the dependency inventory. Each version observes a typed dependency
+stamp assembled from controller revisions and explicit coordinator inputs;
+serialized snapshot comparison and platform-side change inference are excluded.
+
+Projection version state participates in aggregate transaction rollback and
+NAVDB candidate adoption. Tests prove chart-only, settings-only, clock-driven,
+and debug-only changes leave unrelated versions untouched, and an architectural
+guard fixes the group list and keeps the versions out of the current full
+snapshot wire contract.
+
+This slice did not add a platform contract, lock, thread, or Worker.
+
 ## Next Slice
 
-Add core-owned projection version tokens for the groups in the dependency
-inventory, including explicit versions or changed-group tracking for residual
-coordinator state. Prove that unrelated mutations leave each token unchanged
-before adding the generated `SessionUpdate` platform wire contract.
+Define the generated `SessionUpdate` envelope and optional projection groups.
+Retain the full snapshot for startup and explicit resynchronization, then make
+ordinary core mutations return updates assembled from the version changes while
+preserving specialized query invalidations.
 
 ## Relationship To Work Scheduling
 

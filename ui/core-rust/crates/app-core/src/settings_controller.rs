@@ -145,9 +145,27 @@ pub(crate) struct SettingsController {
     projection_cache: Option<SettingsProjectionCache>,
 }
 
+pub(crate) struct SettingsModelCheckpoint {
+    preferences: SettingsPreferences,
+    revision: u64,
+}
+
 impl SettingsController {
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn checkpoint_model(&self) -> SettingsModelCheckpoint {
+        SettingsModelCheckpoint {
+            preferences: self.preferences.clone(),
+            revision: self.revision,
+        }
+    }
+
+    pub fn rollback_model(&mut self, checkpoint: SettingsModelCheckpoint) {
+        self.preferences = checkpoint.preferences;
+        self.revision = checkpoint.revision;
+        self.projection_cache = None;
     }
 
     pub fn persistent_preferences(&self) -> SettingsPreferences {

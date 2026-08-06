@@ -97,6 +97,42 @@ fn production_session_snapshot_apis_are_always_paged() {
 }
 
 #[test]
+fn ui_session_exposes_coordinator_state_explicitly() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let coordinator = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
+
+    assert!(
+        ui_session.contains("coordinator: SessionCoordinatorModel"),
+        "UiSession must name its residual cross-domain coordinator state"
+    );
+    assert!(
+        !session.contains("impl Deref for UiSession")
+            && !session.contains("impl DerefMut for UiSession"),
+        "UiSession must not make coordinator fields look like directly owned domain state"
+    );
+    for field in [
+        "session_revision",
+        "content_policy",
+        "last_content_report",
+        "chart_page_state",
+        "platform_capabilities",
+        "persistence_storage",
+        "debug_state",
+        "cycle_product_freshness",
+        "wall_clock_epoch_ms",
+        "altitude_planner_wind_selection",
+        "altitude_planner_departure_time_basis",
+    ] {
+        assert!(
+            coordinator.contains(field),
+            "coordinator field {field} must remain explicit and reviewable"
+        );
+    }
+}
+
+#[test]
 fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(
@@ -406,14 +442,24 @@ fn durable_session_writes_are_owned_by_transaction_helpers() {
 fn settings_state_and_projection_are_owned_by_settings_controller() {
     let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let session = strip_rust_tests(&session_text);
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/settings_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
     assert!(
-        model.contains("settings: SettingsController"),
-        "SessionModel must compose the settings domain through its controller"
+        ui_session.contains("settings: SettingsController"),
+        "UiSession must compose settings through its top-level controller"
     );
     assert!(
-        !model.contains("settings_preferences") && !model.contains("settings_storage"),
-        "raw settings preferences and storage must not return to SessionModel"
+        !model.contains("settings: SettingsController")
+            && !model.contains("settings_preferences")
+            && !model.contains("settings_storage"),
+        "settings controller or raw settings state must not return to SessionCoordinatorModel"
+    );
+    assert!(
+        controller.contains("struct SettingsModelCheckpoint")
+            && controller.contains("pub fn checkpoint_model")
+            && controller.contains("pub fn rollback_model"),
+        "settings must participate in session transactions through its controller checkpoint"
     );
     assert!(
         !session.contains("settings_preferences")
@@ -452,7 +498,7 @@ fn weather_state_runtime_and_projection_are_owned_by_weather_controller() {
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/weather_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
     let runtime = balanced_block_after_marker(session, "struct SessionRuntime");
 
     assert!(
@@ -474,7 +520,7 @@ fn weather_state_runtime_and_projection_are_owned_by_weather_controller() {
     ] {
         assert!(
             !model.contains(field) && !runtime.contains(field),
-            "weather field {field} must not return to SessionModel or SessionRuntime"
+            "weather field {field} must not return to SessionCoordinatorModel or SessionRuntime"
         );
     }
     assert!(
@@ -516,7 +562,7 @@ fn map_state_runtime_and_projection_are_owned_by_map_controller() {
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/map_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
     let runtime = balanced_block_after_marker(session, "struct SessionRuntime");
 
     assert!(
@@ -535,7 +581,7 @@ fn map_state_runtime_and_projection_are_owned_by_map_controller() {
     ] {
         assert!(
             !model.contains(field) && !runtime.contains(field),
-            "map field {field} must not return to SessionModel or SessionRuntime"
+            "map field {field} must not return to SessionCoordinatorModel or SessionRuntime"
         );
     }
     assert!(
@@ -581,7 +627,7 @@ fn situation_state_and_projection_are_owned_by_situation_controller() {
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/situation_controller.rs");
     let state = read_repo_file("ui/core-rust/crates/app-core/src/state.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
 
     assert!(
         ui_session.contains("situation: SituationController"),
@@ -597,7 +643,7 @@ fn situation_state_and_projection_are_owned_by_situation_controller() {
     ] {
         assert!(
             !model.contains(field),
-            "situation field {field} must not return to SessionModel"
+            "situation field {field} must not return to SessionCoordinatorModel"
         );
     }
     assert!(
@@ -647,7 +693,7 @@ fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/flight_plan_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
 
     assert!(
         ui_session.contains("flight_plan: FlightPlanController"),
@@ -660,7 +706,7 @@ fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
     ] {
         assert!(
             !model.contains(field),
-            "flight-plan field {field} must not return to SessionModel"
+            "flight-plan field {field} must not return to SessionCoordinatorModel"
         );
     }
     assert!(
@@ -710,7 +756,7 @@ fn nav_data_state_runtime_and_maintenance_are_owned_by_nav_data_controller() {
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/nav_data_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
     let runtime = balanced_block_after_marker(session, "struct SessionRuntime");
 
     assert!(
@@ -727,7 +773,7 @@ fn nav_data_state_runtime_and_maintenance_are_owned_by_nav_data_controller() {
     ] {
         assert!(
             !model.contains(field) && !runtime.contains(field),
-            "NAVDB field {field} must not return to SessionModel or SessionRuntime"
+            "NAVDB field {field} must not return to SessionCoordinatorModel or SessionRuntime"
         );
     }
     assert!(
@@ -789,7 +835,7 @@ fn package_state_resolution_and_projection_are_owned_by_package_controller() {
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/package_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
 
     assert!(
         ui_session.contains("packages: PackageController"),
@@ -803,7 +849,7 @@ fn package_state_resolution_and_projection_are_owned_by_package_controller() {
     ] {
         assert!(
             !model.contains(field),
-            "package field {field} must not return to SessionModel"
+            "package field {field} must not return to SessionCoordinatorModel"
         );
     }
     assert!(
@@ -857,7 +903,7 @@ fn cloud_state_runtime_and_projection_are_owned_by_cloud_controller() {
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/cloud_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
 
     assert!(
         ui_session.contains("cloud: CloudController"),
@@ -865,7 +911,7 @@ fn cloud_state_runtime_and_projection_are_owned_by_cloud_controller() {
     );
     assert!(
         !model.contains("cloud:") && !model.contains("CloudEngine"),
-        "raw cloud state must not return to SessionModel"
+        "raw cloud state must not return to SessionCoordinatorModel"
     );
     assert!(
         controller.contains("struct CloudModel")
@@ -913,7 +959,7 @@ fn data_status_state_actions_and_projection_are_owned_by_data_status_controller(
     let session = strip_rust_tests(&session_text);
     let controller = read_repo_file("ui/core-rust/crates/app-core/src/data_status_controller.rs");
     let ui_session = balanced_block_after_marker(session, "struct UiSession {");
-    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let model = balanced_block_after_marker(session, "struct SessionCoordinatorModel");
 
     assert!(
         ui_session.contains("data_status: DataStatusController"),
@@ -926,7 +972,7 @@ fn data_status_state_actions_and_projection_are_owned_by_data_status_controller(
     ] {
         assert!(
             !model.contains(field),
-            "raw status field {field} must not return to SessionModel"
+            "raw status field {field} must not return to SessionCoordinatorModel"
         );
     }
     assert!(

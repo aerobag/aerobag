@@ -102,7 +102,10 @@ use crate::{
     project_nav_symbol_feature,
     publication::PublicationResolvedResource,
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
-    settings_controller::{default_settings_page_state, SettingsController, SettingsProjection},
+    settings_controller::{
+        default_settings_page_state, SettingsController, SettingsModelCheckpoint,
+        SettingsProjection,
+    },
     situation_controller::{
         selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
         SituationModelCheckpoint, SituationProjection,
@@ -184,7 +187,8 @@ pub struct UiSessionCreateTiming {
 }
 
 struct UiSession {
-    model: SessionModel,
+    coordinator: SessionCoordinatorModel,
+    settings: SettingsController,
     flight_plan: FlightPlanController,
     nav_data: NavDataController,
     packages: PackageController,
@@ -324,13 +328,12 @@ impl SessionDiagnosticsCounters {
 }
 
 #[derive(Clone)]
-struct SessionModel {
+struct SessionCoordinatorModel {
     session_revision: u64,
     content_policy: ContentPolicy,
     last_content_report: Option<ContentReport>,
     chart_page_state: UiChartPageState,
     platform_capabilities: PlatformCapabilities,
-    settings: SettingsController,
     persistence_storage: Option<SettingsStorageHandle>,
     debug_state: UiDebugState,
     cycle_product_freshness: CycleProductFreshnessState,
@@ -359,20 +362,6 @@ enum AltitudePlannerWindSelection {
     NoWind,
     Gfs,
 }
-impl Deref for UiSession {
-    type Target = SessionModel;
-
-    fn deref(&self) -> &Self::Target {
-        &self.model
-    }
-}
-
-impl DerefMut for UiSession {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.model
-    }
-}
-
 const NAV_DB_ADVANCE_STATUS_ID: &str = "nav_db:advance";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -747,7 +736,7 @@ fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
 }
 
 fn sync_adsb_ownship_status_record(session: &mut UiSession) {
-    if !session.debug_state.internet_adsb || !adsb_ownship_selected(session) {
+    if !session.coordinator.debug_state.internet_adsb || !adsb_ownship_selected(session) {
         clear_data_status_record(session, ADSB_OWNSHIP_STATUS_ID);
         return;
     }
@@ -767,7 +756,7 @@ fn sync_adsb_ownship_status_record(session: &mut UiSession) {
             session
                 .runtime
                 .adsb
-                .ownship_status_detail(session.wall_clock_epoch_ms),
+                .ownship_status_detail(session.coordinator.wall_clock_epoch_ms),
         ),
     );
 }
@@ -782,8 +771,9 @@ fn sync_cloud_status_record(session: &mut UiSession, record: Option<DataStatusRe
 
 fn project_cloud_for_session(session: &mut UiSession) -> CloudProjection {
     let projection = session.cloud.project(CloudProjectionInput {
-        now_epoch_ms: session.wall_clock_epoch_ms,
+        now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
         qr_scanner_available: session
+            .coordinator
             .platform_capabilities
             .cloud
             .as_ref()
@@ -920,8 +910,12 @@ fn data_status_page_input(
                 .map(|state| &state.manifest)
         });
     DataStatusPageInput {
-        now_epoch_ms: session.wall_clock_epoch_ms,
-        client_build: session.platform_capabilities.client_build.clone(),
+        now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+        client_build: session
+            .coordinator
+            .platform_capabilities
+            .client_build
+            .clone(),
         nav_db_available: session.nav_data.store().is_some(),
         active_nav_db: session.nav_data.active_artifact().map(|artifact| {
             DataStatusNavDbArtifactInput {
@@ -945,6 +939,7 @@ fn data_status_page_input(
             }
         }),
         cloud: session
+            .coordinator
             .platform_capabilities
             .cloud
             .as_ref()
@@ -1442,7 +1437,7 @@ fn live_feed_resource_failure_detail(resource_id: &str, message: &str) -> String
 fn record_live_feed_resource_error(session: &mut UiSession, message: String) {
     session
         .weather
-        .record_resource_error(session.wall_clock_epoch_ms, message);
+        .record_resource_error(session.coordinator.wall_clock_epoch_ms, message);
 }
 
 fn clear_live_feed_resource_error(session: &mut UiSession) {
@@ -1546,17 +1541,17 @@ fn utc_from_epoch_ms(epoch_ms: i64) -> DateTime<Utc> {
 }
 
 fn session_wall_clock_utc(session: &UiSession) -> DateTime<Utc> {
-    utc_from_epoch_ms(session.wall_clock_epoch_ms)
+    utc_from_epoch_ms(session.coordinator.wall_clock_epoch_ms)
 }
 
 fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
-    session.wall_clock_epoch_ms = session.wall_clock_epoch_ms.max(epoch_ms);
+    session.coordinator.wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms.max(epoch_ms);
 }
 
 fn next_nav_db_maintenance_epoch_ms(session: &UiSession) -> Option<i64> {
     session
         .nav_data
-        .next_maintenance_epoch_ms(&session.packages, session.wall_clock_epoch_ms)
+        .next_maintenance_epoch_ms(&session.packages, session.coordinator.wall_clock_epoch_ms)
 }
 
 fn min_epoch_ms(current: Option<i64>, candidate: i64) -> Option<i64> {
@@ -1731,15 +1726,23 @@ fn sync_nav_db_expiration_freshness(session: &mut UiSession) -> CycleProductFres
 }
 
 fn mark_cycle_product_freshness_dirty(session: &mut UiSession) {
-    session.cycle_product_freshness.dirty = true;
-    session.cycle_product_freshness.missing_nav_kv_pages.clear();
+    session.coordinator.cycle_product_freshness.dirty = true;
+    session
+        .coordinator
+        .cycle_product_freshness
+        .missing_nav_kv_pages
+        .clear();
 }
 
 fn mark_cycle_product_freshness_dirty_if_deadline_due(session: &mut UiSession) {
-    let Some(next_check_epoch_ms) = session.cycle_product_freshness.next_check_epoch_ms else {
+    let Some(next_check_epoch_ms) = session
+        .coordinator
+        .cycle_product_freshness
+        .next_check_epoch_ms
+    else {
         return;
     };
-    if session.wall_clock_epoch_ms >= next_check_epoch_ms {
+    if session.coordinator.wall_clock_epoch_ms >= next_check_epoch_ms {
         mark_cycle_product_freshness_dirty(session);
     }
 }
@@ -1747,7 +1750,7 @@ fn mark_cycle_product_freshness_dirty_if_deadline_due(session: &mut UiSession) {
 fn sync_cycle_product_freshness_status_records_if_needed(
     session: &mut UiSession,
 ) -> Vec<UiInvalidation> {
-    if !session.cycle_product_freshness.dirty {
+    if !session.coordinator.cycle_product_freshness.dirty {
         return Vec::new();
     }
     sync_cycle_product_freshness_status_records(session)
@@ -1756,7 +1759,7 @@ fn sync_cycle_product_freshness_status_records_if_needed(
 fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<UiInvalidation> {
     let selected = sync_displayed_chart_validity_freshness(session);
     let nav_db = sync_nav_db_expiration_freshness(session);
-    session.cycle_product_freshness = CycleProductFreshnessState {
+    session.coordinator.cycle_product_freshness = CycleProductFreshnessState {
         dirty: false,
         missing_nav_kv_pages: nav_db.missing_nav_kv_pages,
         next_check_epoch_ms: min_optional_epoch_ms(
@@ -1866,7 +1869,7 @@ fn nexrad_freshest_frame_observed_at_utc(session: &UiSession) -> Option<DateTime
 fn weather_projection_input(session: &UiSession) -> WeatherProjectionInput {
     WeatherProjectionInput {
         nexrad_visible: session.map.layer_state().nexrad.visible,
-        wall_clock_epoch_ms: session.wall_clock_epoch_ms,
+        wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
     }
 }
 
@@ -2146,13 +2149,12 @@ fn create_ui_session_inner(
         .data_status_projection_count
         .store(1, Ordering::Relaxed);
     let session = UiSession {
-        model: SessionModel {
+        coordinator: SessionCoordinatorModel {
             session_revision: 0,
             content_policy: app_state.content_policy,
             last_content_report: app_state.last_content_report,
             chart_page_state,
             platform_capabilities,
-            settings,
             persistence_storage: None,
             debug_state,
             cycle_product_freshness: CycleProductFreshnessState {
@@ -2163,6 +2165,7 @@ fn create_ui_session_inner(
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             altitude_planner_departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
         },
+        settings,
         flight_plan,
         nav_data: NavDataController::default(),
         packages,
@@ -2195,7 +2198,7 @@ pub fn set_map_layer_visibility_in_session(
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
-    if layer == MapLayerId::Traffic && !session.debug_state.internet_adsb {
+    if layer == MapLayerId::Traffic && !session.coordinator.debug_state.internet_adsb {
         return session_snapshot_outcome(session);
     }
     session.map.set_layer_visibility(layer, visible);
@@ -2413,10 +2416,11 @@ pub fn configure_platform_capabilities_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     run_session_model_transaction_without_persistence(session, move |session| {
-        session.platform_capabilities = capabilities;
-        session.persistence_storage = settings_storage;
+        session.coordinator.platform_capabilities = capabilities;
+        session.coordinator.persistence_storage = settings_storage;
         load_session_persistence_from_storage(session)?;
         let acs_default_base_url = session
+            .coordinator
             .platform_capabilities
             .cloud
             .as_ref()
@@ -2437,7 +2441,7 @@ pub fn complete_cloud_authorization_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.platform_capabilities.cloud.is_none() {
+    if session.coordinator.platform_capabilities.cloud.is_none() {
         return Err(AppError {
             kind: AppErrorKind::InvalidCatalog,
             message: "this platform did not advertise cloud-provider support".to_string(),
@@ -2459,7 +2463,7 @@ pub fn take_cloud_authorization_request_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.platform_capabilities.cloud.is_none() {
+    if session.coordinator.platform_capabilities.cloud.is_none() {
         return Ok(None);
     }
     advance_session_wall_clock(session, now_epoch_ms);
@@ -2475,7 +2479,7 @@ pub fn perform_cloud_ui_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.platform_capabilities.cloud.is_none() {
+    if session.coordinator.platform_capabilities.cloud.is_none() {
         return Err(AppError {
             kind: AppErrorKind::InvalidCatalog,
             message: "this platform did not advertise cloud-provider support".to_string(),
@@ -2530,7 +2534,7 @@ pub fn take_cloud_provider_request_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.platform_capabilities.cloud.is_none() {
+    if session.coordinator.platform_capabilities.cloud.is_none() {
         return Ok(None);
     }
     run_durable_session_model_value_transaction(
@@ -2613,7 +2617,8 @@ enum SessionModelTransactionError {
 }
 
 struct SessionModelTransactionCheckpoint {
-    model: SessionModel,
+    coordinator: SessionCoordinatorModel,
+    settings: SettingsModelCheckpoint,
     flight_plan: FlightPlanModelCheckpoint,
     nav_data: NavDataModelCheckpoint,
     packages: PackageModelCheckpoint,
@@ -2628,7 +2633,8 @@ struct SessionModelTransactionCheckpoint {
 impl SessionModelTransactionCheckpoint {
     fn capture(session: &UiSession) -> Self {
         Self {
-            model: session.model.clone(),
+            coordinator: session.coordinator.clone(),
+            settings: session.settings.checkpoint_model(),
             flight_plan: session.flight_plan.checkpoint_model(),
             nav_data: session.nav_data.checkpoint_model(),
             packages: session.packages.checkpoint_model(),
@@ -2642,7 +2648,8 @@ impl SessionModelTransactionCheckpoint {
     }
 
     fn rollback(self, session: &mut UiSession) {
-        session.model = self.model;
+        session.coordinator = self.coordinator;
+        session.settings.rollback_model(self.settings);
         session.flight_plan.rollback_model(self.flight_plan);
         session.nav_data.rollback_model(self.nav_data);
         session.packages.rollback_model(self.packages);
@@ -2818,7 +2825,11 @@ pub fn perform_settings_action_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     run_session_model_transaction(session, move |session| {
-        let display_policy_available = session.platform_capabilities.display_policy.is_some();
+        let display_policy_available = session
+            .coordinator
+            .platform_capabilities
+            .display_policy
+            .is_some();
         session
             .settings
             .perform_action(&action, display_policy_available)?;
@@ -2933,7 +2944,7 @@ pub fn get_raster_tile_plan_in_session_at_epoch_ms(
         });
     };
     let options = crate::RasterTilePlanOptions {
-        max_tile_display_multiplier: if session.debug_state.fast_tiles {
+        max_tile_display_multiplier: if session.coordinator.debug_state.fast_tiles {
             2.0
         } else {
             1.0
@@ -3039,7 +3050,7 @@ pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
     let source_displayed_maps = catalog.displayed_maps.len();
     let source_available_maps = catalog.available_maps.len();
     let options = crate::RasterTilePlanOptions {
-        max_tile_display_multiplier: if session.debug_state.fast_tiles {
+        max_tile_display_multiplier: if session.coordinator.debug_state.fast_tiles {
             2.0
         } else {
             1.0
@@ -3318,16 +3329,21 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<Had
     let mut recent_airport_ids = vec![airport_id.to_string()];
     recent_airport_ids.extend(
         session
+            .coordinator
             .chart_page_state
             .recent_airport_ids
             .iter()
             .filter(|id| id.as_str() != airport_id)
             .cloned(),
     );
-    session.chart_page_state = derive_compact_chart_page_state(
+    session.coordinator.chart_page_state = derive_compact_chart_page_state(
         &plan,
         &recent_airport_ids,
-        session.chart_page_state.plate_target_airport_id.as_deref(),
+        session
+            .coordinator
+            .chart_page_state
+            .plate_target_airport_id
+            .as_deref(),
         Some(airport_id),
         None,
     );
@@ -3339,17 +3355,22 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOper
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    session.chart_page_state = derive_compact_chart_page_state_with_reference(
+    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
-        &session.chart_page_state.recent_airport_ids,
-        session.chart_page_state.plate_target_airport_id.as_deref(),
-        Some(&session.chart_page_state.selected_airport_id),
+        &session.coordinator.chart_page_state.recent_airport_ids,
         session
+            .coordinator
+            .chart_page_state
+            .plate_target_airport_id
+            .as_deref(),
+        Some(&session.coordinator.chart_page_state.selected_airport_id),
+        session
+            .coordinator
             .chart_page_state
             .selected_reference_family_id
             .as_deref(),
         Some(chart_id),
-        &session.chart_page_state.suggested_chart_ids,
+        &session.coordinator.chart_page_state.suggested_chart_ids,
     );
     changed_session_snapshot_outcome(session)
 }
@@ -3363,11 +3384,15 @@ pub fn select_chart_reference_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    session.chart_page_state = derive_compact_chart_page_state_with_reference(
+    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
-        &session.chart_page_state.recent_airport_ids,
-        session.chart_page_state.plate_target_airport_id.as_deref(),
-        Some(&session.chart_page_state.selected_airport_id),
+        &session.coordinator.chart_page_state.recent_airport_ids,
+        session
+            .coordinator
+            .chart_page_state
+            .plate_target_airport_id
+            .as_deref(),
+        Some(&session.coordinator.chart_page_state.selected_airport_id),
         Some(family_id),
         None,
         suggested_chart_ids,
@@ -3410,7 +3435,7 @@ pub fn push_situation_sample_in_session(
 }
 
 fn maybe_log_gps_capture_status(session: &UiSession, update: &crate::OwnshipSourceStatusUpdate) {
-    if !session.debug_state.gps_capture {
+    if !session.coordinator.debug_state.gps_capture {
         return;
     }
     let source_kind = session
@@ -3435,7 +3460,9 @@ fn maybe_log_gps_capture_status(session: &UiSession, update: &crate::OwnshipSour
 }
 
 fn maybe_log_gps_capture_sample(session: &UiSession, sample: &crate::SituationSample) {
-    if !session.debug_state.gps_capture || !is_gps_capture_source_kind(sample.source_kind) {
+    if !session.coordinator.debug_state.gps_capture
+        || !is_gps_capture_source_kind(sample.source_kind)
+    {
         return;
     }
     if session
@@ -3478,7 +3505,7 @@ pub fn set_ownship_policy_in_session(
         &policy.selection,
         crate::OwnshipSelectionPolicy::Manual { source_id }
             if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
-    ) && !session.debug_state.internet_adsb
+    ) && !session.coordinator.debug_state.internet_adsb
     {
         return session_snapshot_outcome(session);
     }
@@ -3515,7 +3542,7 @@ pub fn select_ownship_source_in_session(
         &selection,
         crate::OwnshipSelectionCommand::Source { source_id }
             if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
-    ) && !session.debug_state.internet_adsb
+    ) && !session.coordinator.debug_state.internet_adsb
     {
         return session_snapshot_outcome(session);
     }
@@ -3554,7 +3581,7 @@ pub fn perform_ownship_text_action_in_session(
             message: format!("unknown ownship action: {action_id}"),
         });
     }
-    if !session.debug_state.internet_adsb {
+    if !session.coordinator.debug_state.internet_adsb {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
             message: "internet ADS-B is disabled; enable it in DBG to experiment".to_string(),
@@ -3935,7 +3962,7 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
     let plan = session_plan(session)?;
-    let compact = &session.chart_page_state;
+    let compact = &session.coordinator.chart_page_state;
     let derived = match chart_page_state(
         session_nav_kv_store(session)?,
         &plan,
@@ -3972,9 +3999,9 @@ fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::Fli
     crate::had_ops::FlightPlanLiveData {
         ownship_position: ownship.position,
         ownship_altitude_ft: ownship.pressure_altitude_ft.or(ownship.altitude_msl_ft),
-        now_epoch_ms: Some(session.wall_clock_epoch_ms),
+        now_epoch_ms: Some(session.coordinator.wall_clock_epoch_ms),
         local_time_zone: session_local_time_zone(session).unwrap_or(chrono_tz::UTC),
-        departure_time_basis: session.altitude_planner_departure_time_basis,
+        departure_time_basis: session.coordinator.altitude_planner_departure_time_basis,
     }
 }
 
@@ -4003,7 +4030,10 @@ fn session_aircraft_definitions(
 fn planner_atmosphere_for_session(
     session: &UiSession,
 ) -> crate::had_ops::PlannerAtmosphereSelection<'_> {
-    planner_atmosphere_for_selection(session.altitude_planner_wind_selection, &session.weather)
+    planner_atmosphere_for_selection(
+        session.coordinator.altitude_planner_wind_selection,
+        &session.weather,
+    )
 }
 
 fn planner_atmosphere_for_selection(
@@ -4106,7 +4136,7 @@ fn perform_altitude_planner_action_in_session(
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
-    session.altitude_planner_wind_selection = match action_uid.as_str() {
+    session.coordinator.altitude_planner_wind_selection = match action_uid.as_str() {
         crate::had_ops::SELECT_NO_WIND_ACTION_UID => AltitudePlannerWindSelection::NoWind,
         crate::had_ops::SELECT_GFS_WIND_ACTION_UID
             if session.weather.runtime().forecast_atmosphere.is_some() =>
@@ -4125,6 +4155,7 @@ fn perform_altitude_planner_action_in_session(
 
 fn session_local_time_zone(session: &UiSession) -> AppResult<Tz> {
     session
+        .coordinator
         .platform_capabilities
         .local_time_zone
         .as_deref()
@@ -4154,8 +4185,8 @@ fn set_altitude_planner_departure_input_in_session(
     let parsed = crate::parse_altitude_planner_departure_input(
         field,
         &input,
-        session.wall_clock_epoch_ms,
-        session.altitude_planner_departure_time_basis,
+        session.coordinator.wall_clock_epoch_ms,
+        session.coordinator.altitude_planner_departure_time_basis,
         session_local_time_zone(session)?,
     )
     .map_err(|message| AppError {
@@ -4164,12 +4195,12 @@ fn set_altitude_planner_departure_input_in_session(
     })?;
     let mut next = plan;
     next.planned_departure_time_epoch_ms = parsed.departure_time_epoch_ms;
-    let previous_basis = session.altitude_planner_departure_time_basis;
-    session.altitude_planner_departure_time_basis = parsed.basis;
+    let previous_basis = session.coordinator.altitude_planner_departure_time_basis;
+    session.coordinator.altitude_planner_departure_time_basis = parsed.basis;
     match commit_session_flight_plan_with_invalidations_outcome(session, next) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
-            session.altitude_planner_departure_time_basis = previous_basis;
+            session.coordinator.altitude_planner_departure_time_basis = previous_basis;
             Err(error)
         }
     }
@@ -4187,8 +4218,8 @@ fn toggle_altitude_planner_departure_time_basis_in_session(
             message: "active navigation always models departure from ownship now".to_string(),
         });
     }
-    session.altitude_planner_departure_time_basis =
-        match session.altitude_planner_departure_time_basis {
+    session.coordinator.altitude_planner_departure_time_basis =
+        match session.coordinator.altitude_planner_departure_time_basis {
             crate::AltitudePlannerDepartureTimeBasis::Local => {
                 crate::AltitudePlannerDepartureTimeBasis::Utc
             }
@@ -5084,7 +5115,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let previous_data_status_model = live.data_status.checkpoint_model();
 
     let mut candidate = UiSession {
-        model: live.model.clone(),
+        coordinator: live.coordinator.clone(),
+        settings: std::mem::take(&mut live.settings),
         flight_plan: std::mem::take(&mut live.flight_plan),
         nav_data: live.nav_data.candidate(store_id, store, open_result),
         packages: std::mem::take(&mut live.packages),
@@ -5121,12 +5153,25 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 selected_family_id.as_deref(),
             )?));
         ensure_vector_manifest_loaded(&mut candidate)?;
-        if !candidate.chart_page_state.selected_chart_id.is_empty() {
-            read_chart_asset_by_id(store, &candidate.chart_page_state.selected_chart_id)?;
+        if !candidate
+            .coordinator
+            .chart_page_state
+            .selected_chart_id
+            .is_empty()
+        {
+            read_chart_asset_by_id(
+                store,
+                &candidate.coordinator.chart_page_state.selected_chart_id,
+            )?;
         }
         for airport_id in [
-            candidate.chart_page_state.selected_airport_id.as_str(),
             candidate
+                .coordinator
+                .chart_page_state
+                .selected_airport_id
+                .as_str(),
+            candidate
+                .coordinator
                 .chart_page_state
                 .plate_target_airport_id
                 .as_deref()
@@ -5173,6 +5218,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             ))
         }
         Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            live.settings = candidate.settings;
             candidate
                 .packages
                 .rollback_model(previous_package_model.clone());
@@ -5199,6 +5245,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             Ok(HadOperationOutcome::NeedResources { resources })
         }
         Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            live.settings = candidate.settings;
             candidate.packages.rollback_model(previous_package_model);
             live.packages = candidate.packages;
             live.cloud = candidate.cloud;
@@ -5246,6 +5293,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 style: UiStatusActionStyle::Normal,
             });
             warning.hushable = false;
+            live.settings = candidate.settings;
             live.packages = candidate.packages;
             live.cloud = candidate.cloud;
             candidate
@@ -5322,7 +5370,7 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
 
     let decision = session
         .nav_data
-        .maintenance_decision(&session.packages, session.wall_clock_epoch_ms)
+        .maintenance_decision(&session.packages, session.coordinator.wall_clock_epoch_ms)
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
             message,
@@ -5374,11 +5422,12 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
             .insert_page_if_attached(store_id, page_index, page_bytes)
         {
             if session
+                .coordinator
                 .cycle_product_freshness
                 .missing_nav_kv_pages
                 .remove(&page_index)
             {
-                session.cycle_product_freshness.dirty = true;
+                session.coordinator.cycle_product_freshness.dirty = true;
             }
         }
     }
@@ -5463,7 +5512,7 @@ pub fn restore_chart_page_state_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    session.chart_page_state = derive_compact_chart_page_state_with_reference(
+    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
         recent_airport_ids,
         plate_target_airport_id,
@@ -5484,20 +5533,30 @@ pub fn set_debug_flag_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     match flag_id {
-        DebugFlagId::TileLabels => session.debug_state.tile_labels = enabled,
-        DebugFlagId::NexradTileLabels => session.debug_state.nexrad_tile_labels = enabled,
-        DebugFlagId::FastTiles => session.debug_state.fast_tiles = enabled,
-        DebugFlagId::OfflineSimulatedClockButtons => {
-            session.debug_state.offline_simulated_clock_buttons = enabled
+        DebugFlagId::TileLabels => session.coordinator.debug_state.tile_labels = enabled,
+        DebugFlagId::NexradTileLabels => {
+            session.coordinator.debug_state.nexrad_tile_labels = enabled
         }
-        DebugFlagId::SequencingFinishLines => session.debug_state.sequencing_finish_lines = enabled,
-        DebugFlagId::PlateFlightPlan => session.debug_state.plate_flight_plan = enabled,
-        DebugFlagId::GpsCapture => session.debug_state.gps_capture = enabled,
+        DebugFlagId::FastTiles => session.coordinator.debug_state.fast_tiles = enabled,
+        DebugFlagId::OfflineSimulatedClockButtons => {
+            session
+                .coordinator
+                .debug_state
+                .offline_simulated_clock_buttons = enabled
+        }
+        DebugFlagId::SequencingFinishLines => {
+            session.coordinator.debug_state.sequencing_finish_lines = enabled
+        }
+        DebugFlagId::PlateFlightPlan => session.coordinator.debug_state.plate_flight_plan = enabled,
+        DebugFlagId::GpsCapture => session.coordinator.debug_state.gps_capture = enabled,
         DebugFlagId::DebugLogToDeveloperServer => {
-            session.debug_state.debug_log_to_developer_server = enabled
+            session
+                .coordinator
+                .debug_state
+                .debug_log_to_developer_server = enabled
         }
         DebugFlagId::BadAutopilot => {
-            session.debug_state.bad_autopilot = enabled;
+            session.coordinator.debug_state.bad_autopilot = enabled;
             if !enabled {
                 session.situation.reset_bad_autopilot();
                 if selected_ownship_source_kind(session.situation.ownship())
@@ -5510,7 +5569,7 @@ pub fn set_debug_flag_in_session(
             }
         }
         DebugFlagId::InternetAdsb => {
-            session.debug_state.internet_adsb = enabled;
+            session.coordinator.debug_state.internet_adsb = enabled;
             if !enabled {
                 disable_internet_adsb(session)?;
             }
@@ -5683,7 +5742,7 @@ pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome>
     Ok(session
         .weather
         .live_feeds()
-        .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
+        .sync_outcome_with_invalidations_at_epoch_ms(session.coordinator.wall_clock_epoch_ms))
 }
 
 pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -5705,7 +5764,9 @@ pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperati
     Ok(session
         .weather
         .live_feeds()
-        .refresh_current_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
+        .refresh_current_outcome_with_invalidations_at_epoch_ms(
+            session.coordinator.wall_clock_epoch_ms,
+        ))
 }
 
 pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str) -> AppResult<()> {
@@ -5800,7 +5861,9 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
             return Ok(session
                 .weather
                 .live_feeds()
-                .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms));
+                .sync_outcome_with_invalidations_at_epoch_ms(
+                    session.coordinator.wall_clock_epoch_ms,
+                ));
         }
     };
     Ok(session
@@ -5833,11 +5896,11 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let slot = session_slot(handle)?;
         let mut session_guard = slot.lock_running()?;
         let session = &mut *session_guard;
-        if !session.debug_state.internet_adsb {
+        if !session.coordinator.debug_state.internet_adsb {
             return Ok(());
         }
         advance_session_wall_clock(session, epoch_ms);
-        let received_epoch_ms = session.wall_clock_epoch_ms;
+        let received_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         match session
             .runtime
             .adsb
@@ -5914,7 +5977,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             .ingest_resource(resource_id, bytes)
         {
             mark_live_feed_current_refresh_ingested(session, resource_id);
-            let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+            let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
             session
                 .weather
                 .live_feeds_mut()
@@ -5927,7 +5990,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         }
         if let Err(err) = install_live_feed_payloads(session) {
             mark_live_feed_current_refresh_ingested(session, resource_id);
-            let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+            let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
             session
                 .weather
                 .live_feeds_mut()
@@ -5962,7 +6025,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let session = &mut *session_guard;
         if resource_id == "publication/current_artifacts" {
             advance_session_wall_clock(session, epoch_ms);
-            let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+            let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
             session
                 .packages
                 .ingest_resource_at_epoch_ms(resource_id, bytes, wall_clock_epoch_ms)
@@ -6034,7 +6097,7 @@ fn record_live_feed_connection_event(
     advance_session_wall_clock(session, epoch_ms);
     session
         .weather
-        .record_connection_event(event, session.wall_clock_epoch_ms);
+        .record_connection_event(event, session.coordinator.wall_clock_epoch_ms);
 }
 
 pub fn ingest_prepared_live_feed_resource_in_session(
@@ -6522,7 +6585,7 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     if LiveFeedsState::handles_resource(resource_id) {
-        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         session
             .weather
             .live_feeds_mut()
@@ -6555,10 +6618,10 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
                 ),
             ),
         );
-    } else if session.debug_state.internet_adsb
+    } else if session.coordinator.debug_state.internet_adsb
         && crate::adsb::AdsbSessionState::handles_resource(resource_id)
     {
-        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         let ownship_resource = crate::adsb::AdsbSessionState::is_ownship_resource(resource_id);
         session
             .runtime
@@ -8044,7 +8107,7 @@ fn ensure_live_obstacle_inputs_loaded(
         if let HadOperationOutcome::NeedResources { resources } = session
             .weather
             .live_feeds()
-            .sync_product_outcome_at_epoch_ms("obstacles", session.wall_clock_epoch_ms)
+            .sync_product_outcome_at_epoch_ms("obstacles", session.coordinator.wall_clock_epoch_ms)
         {
             for resource in resources {
                 enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
@@ -8191,7 +8254,10 @@ fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreR
         if let HadOperationOutcome::NeedResources { resources } = session
             .weather
             .live_feeds()
-            .sync_product_outcome_at_epoch_ms("winds-aloft", session.wall_clock_epoch_ms)
+            .sync_product_outcome_at_epoch_ms(
+                "winds-aloft",
+                session.coordinator.wall_clock_epoch_ms,
+            )
         {
             return resources;
         }
@@ -8215,7 +8281,7 @@ fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreR
 
 fn forecast_atmosphere_snapshot_resources(session: &mut UiSession) -> Vec<CoreResourceRequest> {
     let bootstrap_resources = forecast_atmosphere_bootstrap_resources(session);
-    if session.altitude_planner_wind_selection != AltitudePlannerWindSelection::Gfs {
+    if session.coordinator.altitude_planner_wind_selection != AltitudePlannerWindSelection::Gfs {
         for resource in bootstrap_resources {
             enqueue_session_resource_effect(session, resource, [UiInvalidation::SessionSnapshot]);
         }
@@ -8317,9 +8383,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     let freshness_ms = 0;
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     let display_traffic =
-        session.debug_state.internet_adsb && session.map.layer_state().traffic.visible;
+        session.coordinator.debug_state.internet_adsb && session.map.layer_state().traffic.visible;
     if display_traffic {
-        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         if let Some(resource) = session
             .runtime
             .adsb
@@ -8428,12 +8494,12 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
                 altitude_msl_ft: session.situation.ownship().render.altitude_msl_ft,
                 pressure_altitude_ft: session.situation.ownship().render.pressure_altitude_ft,
             },
-            session.wall_clock_epoch_ms,
+            session.coordinator.wall_clock_epoch_ms,
         );
         overlay.traffic_next_refresh_epoch_ms = session
             .runtime
             .adsb
-            .next_refresh_epoch_ms(metrics, session.wall_clock_epoch_ms);
+            .next_refresh_epoch_ms(metrics, session.coordinator.wall_clock_epoch_ms);
     }
     let supplemental_started_at = crate::core_clock_ms();
     overlay
@@ -8818,6 +8884,7 @@ fn materialize_map_selection_in_session(
         }
     }
     let local_time_zone = session
+        .coordinator
         .platform_capabilities
         .local_time_zone
         .as_deref()
@@ -8871,7 +8938,7 @@ fn materialize_map_selection_in_session(
     let selection = map_selection_with_ownship_distances(selection, ownship_position);
     let mut selection =
         map_selection_with_session_action_availability(selection, ownship_position.is_some());
-    if session.debug_state.internet_adsb && session.map.layer_state().traffic.visible {
+    if session.coordinator.debug_state.internet_adsb && session.map.layer_state().traffic.visible {
         let traffic = session.runtime.adsb.traffic_selection_category(
             *metrics,
             crate::adsb::TrafficOwnshipAltitude {
@@ -8879,7 +8946,7 @@ fn materialize_map_selection_in_session(
                 pressure_altitude_ft: session.situation.ownship().render.pressure_altitude_ft,
             },
             click,
-            session.wall_clock_epoch_ms,
+            session.coordinator.wall_clock_epoch_ms,
         );
         if let Some(item) = traffic.items.first() {
             selection.initial_selected_item_id = Some(item.id.clone());
@@ -9324,6 +9391,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
         );
     }
     match session
+        .coordinator
         .platform_capabilities
         .live_feeds
         .as_ref()
@@ -9333,7 +9401,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             if let HadOperationOutcome::NeedResources { resources } = session
                 .weather
                 .live_feeds()
-                .sync_product_outcome_at_epoch_ms("nexrad", session.wall_clock_epoch_ms)
+                .sync_product_outcome_at_epoch_ms("nexrad", session.coordinator.wall_clock_epoch_ms)
             {
                 return Ok(HadOperationOutcome::NeedResources { resources });
             }
@@ -9342,7 +9410,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
                 .live_feeds()
                 .missing_history_resources_for_product_at_epoch_ms(
                     "nexrad",
-                    session.wall_clock_epoch_ms,
+                    session.coordinator.wall_clock_epoch_ms,
                 );
             for resource in history_resources {
                 enqueue_session_resource_effect(
@@ -9379,7 +9447,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             freshness_invalidations,
         );
     }
-    let animation = nexrad_animation_for_frames(&frames, session.wall_clock_epoch_ms);
+    let animation = nexrad_animation_for_frames(&frames, session.coordinator.wall_clock_epoch_ms);
     let selected_frame_index = animation.selected_frame_index;
     let query = match selected_frame_index {
         Some(index) => {
@@ -9470,6 +9538,7 @@ fn nexrad_tile_bytes_loaded(session: &UiSession, src: &str) -> AppResult<bool> {
 fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<CoreResourceRequest> {
     let resource_id = nexrad_tile_resource_id(src)?;
     match session
+        .coordinator
         .platform_capabilities
         .live_feeds
         .as_ref()
@@ -10205,18 +10274,23 @@ fn airport_plate_availability(
 
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
     let normalized_plan = session.flight_plan.replace_plan(plan)?.clone();
-    session.last_content_report = None;
-    session.chart_page_state = derive_compact_chart_page_state_with_reference(
+    session.coordinator.last_content_report = None;
+    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
         &normalized_plan,
-        &session.chart_page_state.recent_airport_ids,
-        session.chart_page_state.plate_target_airport_id.as_deref(),
-        Some(&session.chart_page_state.selected_airport_id),
+        &session.coordinator.chart_page_state.recent_airport_ids,
         session
+            .coordinator
+            .chart_page_state
+            .plate_target_airport_id
+            .as_deref(),
+        Some(&session.coordinator.chart_page_state.selected_airport_id),
+        session
+            .coordinator
             .chart_page_state
             .selected_reference_family_id
             .as_deref(),
-        Some(&session.chart_page_state.selected_chart_id),
-        &session.chart_page_state.suggested_chart_ids,
+        Some(&session.coordinator.chart_page_state.selected_chart_id),
+        &session.coordinator.chart_page_state.suggested_chart_ids,
     );
     sync_procedure_geometry_status_records(session, &normalized_plan);
     Ok(())
@@ -10239,7 +10313,7 @@ fn commit_session_flight_plan_with_invalidations_outcome(
             .active_plan()
             .cloned()
             .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
-        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         let definition_changed = session.cloud.record_local_flight_plan_mutation(
             &prior_plan,
             &accepted_plan,
@@ -10260,7 +10334,7 @@ fn commit_session_flight_plan_with_invalidations_outcome(
 }
 
 fn advance_session_revision(session: &mut UiSession) {
-    session.session_revision = session.session_revision.saturating_add(1);
+    session.coordinator.session_revision = session.coordinator.session_revision.saturating_add(1);
 }
 
 #[derive(Debug)]
@@ -10412,14 +10486,14 @@ fn try_snapshot_for_session(
         .fetch_add(1, Ordering::Relaxed);
     let app_ui_ms = elapsed_ms(app_ui_started_at);
     let debug_started_at = crate::core_clock_ms();
-    let debug_state = session.debug_state.clone();
+    let debug_state = session.coordinator.debug_state.clone();
     let debug_ms = elapsed_ms(debug_started_at);
     let playback_panel_state = situation_projection.playback_panel_state;
     let playback_ui_state = situation_projection.playback_ui_state;
     let map_follow_ui_state = situation_projection.map_follow_ui_state;
     let map_follow_target_viewport = situation_projection.map_follow_target_viewport;
     let clone_started_at = crate::core_clock_ms();
-    let chart_page_state = session.chart_page_state.clone();
+    let chart_page_state = session.coordinator.chart_page_state.clone();
     let raster_started_at = crate::core_clock_ms();
     let map_projection = session.map.project();
     if map_projection.rebuilt {
@@ -10430,7 +10504,7 @@ fn try_snapshot_for_session(
     }
     let map_layer_state = project_map_layer_state_for_debug(
         &map_projection.projection.layer_state,
-        &session.debug_state,
+        &session.coordinator.debug_state,
     );
     let raster_map = map_projection.projection.raster_map;
     let raster_ms = elapsed_ms(raster_started_at);
@@ -10451,7 +10525,11 @@ fn try_snapshot_for_session(
             .fetch_add(1, Ordering::Relaxed);
     }
     let data_status_page_state = data_status_page_projection.state;
-    let display_policy_available = session.platform_capabilities.display_policy.is_some();
+    let display_policy_available = session
+        .coordinator
+        .platform_capabilities
+        .display_policy
+        .is_some();
     let settings_projection = session
         .settings
         .project(display_policy_available, &app_ui_state.flight_data_banner);
@@ -10480,7 +10558,7 @@ fn try_snapshot_for_session(
             .fetch_add(1, Ordering::Relaxed);
     }
     let offline_package_preferences_json = package_projection.offline_package_preferences_json;
-    let home_page_state = project_home_page_state(&session.platform_capabilities);
+    let home_page_state = project_home_page_state(&session.coordinator.platform_capabilities);
     let clone_ms = elapsed_ms(clone_started_at);
     let total_ms = elapsed_ms(total_started_at);
     crate::core_perf_debug_log("session.snapshot.core", || {
@@ -10500,7 +10578,7 @@ fn try_snapshot_for_session(
     });
     Ok(UiSessionSnapshot {
         ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
-        session_revision: session.session_revision,
+        session_revision: session.coordinator.session_revision,
         flight_plan_route_revision: session.flight_plan.route_revision(),
         nav_data_epoch: session.nav_data.epoch(),
         active_nav_db: session.nav_data.active_identity(),
@@ -10524,6 +10602,7 @@ fn try_snapshot_for_session(
         debug_state,
         raster_map,
         next_cycle_product_freshness_check_epoch_ms: session
+            .coordinator
             .cycle_product_freshness
             .next_check_epoch_ms,
     })
@@ -10533,8 +10612,8 @@ fn app_state_for_session(session: &UiSession) -> AppState {
     AppState {
         active_plan: session.flight_plan.active_plan().cloned(),
         ownship: session.situation.ownship().clone(),
-        content_policy: session.content_policy,
-        last_content_report: session.last_content_report.clone(),
+        content_policy: session.coordinator.content_policy,
+        last_content_report: session.coordinator.last_content_report.clone(),
     }
 }
 
@@ -10620,10 +10699,10 @@ fn apply_adsb_ownship_update(
 }
 
 fn prepare_adsb_ownship_effect(session: &mut UiSession) {
-    if !session.debug_state.internet_adsb || !adsb_ownship_selected(session) {
+    if !session.coordinator.debug_state.internet_adsb || !adsb_ownship_selected(session) {
         return;
     }
-    let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+    let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
     if let Some(resource) = session
         .runtime
         .adsb
@@ -10708,7 +10787,7 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
 }
 
 fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<()> {
-    let Some(storage) = session.persistence_storage.as_ref() else {
+    let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
     let Some(bytes) = storage.read_settings()? else {
@@ -10725,7 +10804,7 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
 }
 
 fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
-    let Some(storage) = session.persistence_storage.as_ref() else {
+    let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
     let bytes = encode_session_persistence(session)?;
@@ -10840,8 +10919,10 @@ fn project_session_app_ui_state(
     let nav_kv_store = session.nav_data.store_arc();
     let weather_revision = session.weather.revision();
     let local_time_zone = session_local_time_zone(session).unwrap_or(chrono_tz::UTC);
-    let atmosphere =
-        planner_atmosphere_for_selection(session.altitude_planner_wind_selection, &session.weather);
+    let atmosphere = planner_atmosphere_for_selection(
+        session.coordinator.altitude_planner_wind_selection,
+        &session.weather,
+    );
     let private_aircraft_definitions = session_aircraft_definitions(session)
         .map_err(|error| HadReadError::Fatal(error.message))?;
     let aircraft_definitions_digest = session
@@ -10859,12 +10940,12 @@ fn project_session_app_ui_state(
                 .render
                 .pressure_altitude_ft
                 .or(situation_projection.ownship.render.altitude_msl_ft),
-            now_epoch_ms: session.wall_clock_epoch_ms,
+            now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
             nav_data_generation: session.nav_data.generation(),
             weather_revision,
             aircraft_definitions_digest,
             local_time_zone,
-            departure_time_basis: session.altitude_planner_departure_time_basis,
+            departure_time_basis: session.coordinator.altitude_planner_departure_time_basis,
         },
         atmosphere,
     )?;
@@ -10877,8 +10958,8 @@ fn project_session_app_ui_state(
     let mut app_ui_state = state::project_app_ui_state_from_ui_parts(
         flight_plan_projection.projection.ui_state,
         situation_projection.ownship.clone(),
-        session.content_policy,
-        session.last_content_report.as_ref(),
+        session.coordinator.content_policy,
+        session.coordinator.last_content_report.as_ref(),
     );
     let materialized_plan = flight_plan_projection.projection.materialized;
     project_bad_autopilot_availability(session, &mut app_ui_state);
@@ -10898,7 +10979,7 @@ fn project_session_app_ui_state(
             session
                 .runtime
                 .adsb
-                .ownship_next_refresh_epoch_ms(session.wall_clock_epoch_ms)
+                .ownship_next_refresh_epoch_ms(session.coordinator.wall_clock_epoch_ms)
         })
         .flatten();
     project_internet_adsb_availability(session, &mut app_ui_state);
@@ -10978,8 +11059,10 @@ fn project_flight_data_banner(
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
     let store = session.nav_data.store();
-    let flight_data_computer =
-        crate::FlightDataComputer::with_clock(ownship.speed_kt, Some(session.wall_clock_epoch_ms));
+    let flight_data_computer = crate::FlightDataComputer::with_clock(
+        ownship.speed_kt,
+        Some(session.coordinator.wall_clock_epoch_ms),
+    );
 
     let altitude_ft = ownship.altitude_msl_ft.or(ownship.pressure_altitude_ft);
     let agl_ft = ownship
@@ -11031,14 +11114,14 @@ fn project_flight_data_banner(
 
 fn project_bad_autopilot_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
     project_bad_autopilot_availability_for_state(
-        &session.debug_state,
+        &session.coordinator.debug_state,
         bad_autopilot_available(session),
         app_ui_state,
     );
 }
 
 fn project_internet_adsb_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
-    project_internet_adsb_availability_for_state(&session.debug_state, app_ui_state);
+    project_internet_adsb_availability_for_state(&session.coordinator.debug_state, app_ui_state);
 }
 
 fn project_internet_adsb_availability_for_state(
@@ -11083,7 +11166,7 @@ fn project_bad_autopilot_availability_for_state(
 }
 
 fn bad_autopilot_selectable(session: &UiSession) -> bool {
-    session.debug_state.bad_autopilot && bad_autopilot_available(session)
+    session.coordinator.debug_state.bad_autopilot && bad_autopilot_available(session)
 }
 
 fn bad_autopilot_available(session: &UiSession) -> bool {
@@ -11539,7 +11622,7 @@ fn tick_bad_autopilot(
     session: &mut UiSession,
     now_epoch_ms: f64,
 ) -> AppResult<Option<OwnshipMotionResult>> {
-    if !session.debug_state.bad_autopilot {
+    if !session.coordinator.debug_state.bad_autopilot {
         return Ok(None);
     }
     if selected_ownship_source_kind(session.situation.ownship())
@@ -12378,7 +12461,7 @@ mod tests {
             false,
         );
         UiSession {
-            model: SessionModel {
+            coordinator: SessionCoordinatorModel {
                 session_revision: 0,
                 content_policy: app_state.content_policy,
                 last_content_report: app_state.last_content_report,
@@ -12390,7 +12473,6 @@ mod tests {
                     None,
                 ),
                 platform_capabilities: PlatformCapabilities::default(),
-                settings: SettingsController::default(),
                 persistence_storage: None,
                 debug_state: default_debug_state(),
                 cycle_product_freshness: CycleProductFreshnessState::default(),
@@ -12399,6 +12481,7 @@ mod tests {
                 altitude_planner_departure_time_basis:
                     crate::AltitudePlannerDepartureTimeBasis::Local,
             },
+            settings: SettingsController::default(),
             flight_plan,
             nav_data,
             packages: PackageController::default(),
@@ -12497,14 +12580,14 @@ mod tests {
     fn traffic_layer_uses_session_resource_effect_and_projects_core_normalized_aircraft() {
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let mut session = isolated_test_session(None);
-        session.debug_state.internet_adsb = true;
+        session.coordinator.debug_state.internet_adsb = true;
         session.map.set_layer_visibility(MapLayerId::Vectors, false);
         session.map.set_layer_visibility(MapLayerId::Metars, false);
         session.map.set_layer_visibility(MapLayerId::Traffic, true);
         session
             .map
             .set_layer_visibility(MapLayerId::OfflineRegions, false);
-        session.wall_clock_epoch_ms = 1_785_900_880_000;
+        session.coordinator.wall_clock_epoch_ms = 1_785_900_880_000;
         let generation = NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed);
         lock_sessions().insert(
             handle,
@@ -12964,8 +13047,8 @@ mod tests {
     #[test]
     fn model_transaction_rolls_back_model_and_queued_effects_when_persistence_fails() {
         let mut session = isolated_test_session(None);
-        session.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
-        let prior_revision = session.session_revision;
+        session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
+        let prior_revision = session.coordinator.session_revision;
 
         let error = run_session_model_transaction(&mut session, |session| {
             session
@@ -12981,7 +13064,7 @@ mod tests {
         .expect_err("persistence failure must abort transaction");
 
         assert!(error.message.contains("injected settings write failure"));
-        assert_eq!(session.session_revision, prior_revision);
+        assert_eq!(session.coordinator.session_revision, prior_revision);
         assert!(!session
             .packages
             .installed_package_ids()
@@ -14491,7 +14574,7 @@ mod tests {
                 Some(departure),
             );
             assert_eq!(
-                session.altitude_planner_departure_time_basis,
+                session.coordinator.altitude_planner_departure_time_basis,
                 crate::AltitudePlannerDepartureTimeBasis::Utc,
             );
         }
@@ -14506,7 +14589,7 @@ mod tests {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
             assert_eq!(
-                session.altitude_planner_departure_time_basis,
+                session.coordinator.altitude_planner_departure_time_basis,
                 crate::AltitudePlannerDepartureTimeBasis::Local,
             );
             assert_eq!(
@@ -18062,6 +18145,7 @@ mod tests {
             let sessions = lock_sessions();
             let revision = session_ref(&sessions, init.handle)
                 .expect("session")
+                .coordinator
                 .session_revision;
             revision
         };
@@ -18103,10 +18187,10 @@ mod tests {
         let sessions = lock_sessions();
         let session = session_ref(&sessions, init.handle).expect("session");
         assert_eq!(
-            session.altitude_planner_wind_selection,
+            session.coordinator.altitude_planner_wind_selection,
             AltitudePlannerWindSelection::Gfs
         );
-        assert_eq!(session.session_revision, revision_before + 1);
+        assert_eq!(session.coordinator.session_revision, revision_before + 1);
     }
 
     #[test]
@@ -18164,6 +18248,7 @@ mod tests {
             assert_eq!(
                 session_ref(&sessions, init.handle)
                     .expect("session")
+                    .coordinator
                     .altitude_planner_wind_selection,
                 AltitudePlannerWindSelection::Gfs
             );
@@ -18177,6 +18262,7 @@ mod tests {
         assert_eq!(
             session_ref(&sessions, init.handle)
                 .expect("session")
+                .coordinator
                 .altitude_planner_wind_selection,
             AltitudePlannerWindSelection::NoWind
         );
@@ -18388,7 +18474,7 @@ mod tests {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
             assert!(!session.map.layer_state().nexrad.visible);
-            session.session_revision
+            session.coordinator.session_revision
         };
 
         let outcome =
@@ -18402,7 +18488,7 @@ mod tests {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
             assert!(!session.map.layer_state().nexrad.visible);
-            assert_eq!(session.session_revision, revision_before);
+            assert_eq!(session.coordinator.session_revision, revision_before);
         }
 
         for (page_index, page) in pages.iter().enumerate() {
@@ -18459,7 +18545,7 @@ mod tests {
         {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
-            assert_eq!(session.session_revision, 1);
+            assert_eq!(session.coordinator.session_revision, 1);
             assert_eq!(session.situation.ownship().render.position, Some(position));
         }
 
@@ -20738,7 +20824,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            assert!(!session.cycle_product_freshness.dirty);
+            assert!(!session.coordinator.cycle_product_freshness.dirty);
             assert!(session.data_status.clear(CYCLE_NAV_DB_STATUS_ID));
         }
 
@@ -20762,8 +20848,9 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            assert!(!session.cycle_product_freshness.dirty);
-            session.wall_clock_epoch_ms = utc("2026-05-21T00:00:01Z").timestamp_millis();
+            assert!(!session.coordinator.cycle_product_freshness.dirty);
+            session.coordinator.wall_clock_epoch_ms =
+                utc("2026-05-21T00:00:01Z").timestamp_millis();
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("expired snapshot");

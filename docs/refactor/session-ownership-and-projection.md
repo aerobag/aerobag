@@ -334,12 +334,31 @@ projections. The public snapshot and platform wire contracts remain unchanged.
 This slice did not add a lock, thread, Worker, or platform-specific domain
 policy.
 
+## Completed Eleventh Slice
+
+The eleventh slice removed `UiSession`'s `Deref`/`DerefMut` access to residual
+coordinator state. That state is now named `SessionCoordinatorModel`, and every
+access is explicit as `session.coordinator.<field>`. A boundary test prevents the
+implicit field shortcut from returning and fixes the remaining coordinator field
+list as a reviewable architectural boundary.
+
+`SettingsController`, which predated the common controller composition pattern,
+now sits directly on `UiSession` with the other controllers. It checkpoints only
+its preferences and revision during aggregate transactions and invalidates its
+projection cache on rollback.
+
+The aggregate snapshot, owner/revision, projection-input, and specialized-query
+invalidation inventory is recorded in
+[`session-update-dependency-inventory.md`](session-update-dependency-inventory.md).
+The public snapshot and platform wire contracts remain unchanged. This slice did
+not add a lock, thread, Worker, or platform-specific domain policy.
+
 ## Next Slice
 
-Remove `UiSession`'s `Deref`/`DerefMut` access to `SessionModel` and make the
-remaining coordinator-owned fields explicit at their call sites. Then inventory
-the aggregate snapshot dependencies and invalidations as preparation for the
-revisioned `SessionUpdate` wire model in roadmap item 7.
+Add core-owned projection version tokens for the groups in the dependency
+inventory, including explicit versions or changed-group tracking for residual
+coordinator state. Prove that unrelated mutations leave each token unchanged
+before adding the generated `SessionUpdate` platform wire contract.
 
 ## Relationship To Work Scheduling
 

@@ -5909,6 +5909,72 @@ mod tests {
     }
 
     #[test]
+    fn selected_aircraft_profile_changes_time_and_fuel_predictions() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let definitions = test_aircraft_definitions();
+        let project = |profile_id: &str| {
+            let mut plan = three_airport_test_plan();
+            plan.aircraft = Some(test_aircraft_selection(
+                "piper-pa46-310p-tsio-520-be",
+                profile_id,
+            ));
+            let ui_state = default_flight_plan_ui_state_for_test(&store, &plan);
+            let total = ui_state
+                .display_rows
+                .iter()
+                .find(|row| row.label == "TOTAL")
+                .expect("flight-plan total");
+            let flight_plan_values = (
+                row_cell(total, "waypoint_ete").value.clone(),
+                row_cell(total, "fuel").value.clone(),
+            );
+            let panel = altitude_comparison_panel(
+                &store,
+                &definitions,
+                plan,
+                FlightPlanLiveData {
+                    now_epoch_ms: Some(12 * 60 * 60 * 1000),
+                    ..FlightPlanLiveData::default()
+                },
+                PlannerAtmosphereSelection::no_wind(false),
+            )
+            .expect("altitude comparison panel");
+            let selected = panel
+                .rows
+                .iter()
+                .find(|row| row.selected)
+                .expect("selected altitude");
+            let comparison_value = |cell_id: &str| {
+                selected
+                    .cells
+                    .iter()
+                    .find(|cell| cell.id == cell_id)
+                    .and_then(|cell| cell.value.clone())
+                    .expect("comparison value")
+            };
+            (
+                flight_plan_values,
+                (comparison_value("waypoint_ete"), comparison_value("fuel")),
+            )
+        };
+
+        let high_speed = project("high-speed-75");
+        let long_range = project("long-range-55");
+
+        assert_ne!(
+            high_speed.0, long_range.0,
+            "flight-plan estimate must change"
+        );
+        assert_ne!(
+            high_speed.1, long_range.1,
+            "altitude-comparison estimate must change"
+        );
+    }
+
+    #[test]
     fn installed_forecast_is_a_core_selected_planner_alternative() {
         let aaa = LatLon { lat: 0.0, lon: 0.0 };
         let bbb = LatLon { lat: 0.0, lon: 1.5 };

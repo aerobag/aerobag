@@ -3056,23 +3056,6 @@ button {
   line-height: 1.02;
 }
 
-.altitudePlannerControlOptions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--thumb-gap);
-  padding: var(--thumb-gap);
-  border: 1px solid var(--theme-panel-border);
-  border-radius: var(--thumb-radius);
-  background: var(--theme-panel-bg);
-}
-
-.altitudePlannerOption {
-  width: calc(var(--thumb) * 2.2);
-  min-height: var(--thumb);
-}
-
 .altitudePlannerPage {
   display: flex;
   flex-direction: column;

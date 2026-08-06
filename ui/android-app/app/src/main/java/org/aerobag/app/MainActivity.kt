@@ -1156,6 +1156,11 @@ internal enum class MenuDockStyle(
         trayWidth = ThumbSize * 4f,
         launcherMaxLines = 1,
     ),
+    AltitudePlanner(
+        buttonWidth = ThumbSize * 2.2f,
+        trayWidth = ThumbSize * 4f,
+        launcherMaxLines = 2,
+    ),
 }
 
 internal val PageOptions = listOf(

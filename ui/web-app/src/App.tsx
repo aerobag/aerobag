@@ -8196,6 +8196,10 @@ function AltitudePlannerPage(props: {
   const departureWhenFocused = useRef(false);
   const suppressDepartureBlurSubmit = useRef(false);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
+  const comparisonControlKey = planner.controls.map((control) => {
+    const selectedOption = control.options?.find((option) => option.selected)?.action_uid ?? "";
+    return `${control.id}:${control.label}:${control.action_uid ?? ""}:${selectedOption}`;
+  }).join("|");
 
   const reload = () => {
     setLoading(true);
@@ -8211,7 +8215,13 @@ function AltitudePlannerPage(props: {
 
   useEffect(() => {
     if (props.page === "altitude") reload();
-  }, [props.page, props.planUiState.plan_version, planner.estimate_summary.label]);
+  }, [
+    props.page,
+    props.planUiState.plan_version,
+    planner.estimate_summary.label,
+    planner.departure.time_value,
+    comparisonControlKey,
+  ]);
 
   useEffect(() => {
     if (!departureTimeFocused.current) setDepartureTimeInput(planner.departure.time_value);
@@ -8252,6 +8262,9 @@ function AltitudePlannerPage(props: {
 
   return (
     <section className="appPage altitudePlannerPage">
+      {openControlId ? (
+        <TrayScrim ariaLabel="Close altitude planner menu" onClose={() => setOpenControlId(null)} />
+      ) : null}
       <header className="altitudePlannerPageHeader">
         <h1>{planner.title}</h1>
         <div className="altitudePlannerControls" data-testid="altitude-planner-control-tray">
@@ -8259,6 +8272,29 @@ function AltitudePlannerPage(props: {
             const disabledReason = disabledReasonText(control.disabled_reason);
             const hasOptions = (control.options?.length ?? 0) > 0;
             const open = openControlId === control.id;
+            if (hasOptions) {
+              return (
+                <TrayDock
+                  key={control.id}
+                  launcherLabel={control.label}
+                  open={open}
+                  onToggle={() => setOpenControlId(open ? null : control.id)}
+                  ariaLabel={`${control.label.replace(/\n/g, " ")} options`}
+                  disabled={!control.enabled}
+                  disabledReason={disabledReason}
+                  onDisabledAction={showDisabledAction}
+                  style="wide"
+                  launcherClassName="altitudePlannerButton"
+                  testId={`altitude-planner-control-${control.id}`}
+                  options={(control.options ?? []).map((option) => ({
+                    id: option.action_uid,
+                    label: option.label,
+                    active: option.selected,
+                    onSelect: () => performAction(option.action_uid),
+                  }))}
+                />
+              );
+            }
             return (
               <button
                 key={control.id}
@@ -8268,9 +8304,7 @@ function AltitudePlannerPage(props: {
                 aria-disabled={control.enabled ? undefined : "true"}
                 title={disabledReason ?? undefined}
                 onClick={() => {
-                  if (control.enabled && hasOptions) {
-                    setOpenControlId(open ? null : control.id);
-                  } else if (control.enabled && control.action_uid) {
+                  if (control.enabled && control.action_uid) {
                     performAction(control.action_uid);
                   } else if (disabledReason) {
                     showDisabledAction(disabledReason);
@@ -8344,23 +8378,6 @@ function AltitudePlannerPage(props: {
           </section>
         </div>
       </header>
-
-      {planner.controls.map((control) =>
-        openControlId === control.id && (control.options?.length ?? 0) > 0 ? (
-          <div className="altitudePlannerControlOptions" key={control.id}>
-            {control.options?.map((option) => (
-              <button
-                key={option.action_uid}
-                type="button"
-                className={`trayButton altitudePlannerOption${option.selected ? " isChecked" : ""}`}
-                onClick={() => performAction(option.action_uid)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        ) : null,
-      )}
 
       <div className="altitudePlannerPageBody">
         {planner.forecast ? (

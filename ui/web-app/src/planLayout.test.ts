@@ -54,6 +54,10 @@ describe("flight plan layout CSS", () => {
     expect(plannerPage).toContain('submitDepartureInput("time", departureTimeInput)');
     expect(plannerPage).toContain('submitDepartureInput("when", departureWhenInput)');
     expect(plannerPage).toContain("props.onToggleDepartureTimeBasis()");
+    expect(plannerPage).toContain("comparisonControlKey");
+    expect(plannerPage).toContain("<TrayDock");
+    expect(plannerPage).toContain("<TrayScrim");
+    expect(plannerPage).not.toContain("altitudePlannerControlOptions");
     expect(plannerPage).not.toContain('type="datetime-local"');
     expect(plannerPage).not.toContain("new Date(");
     expect(plannerPage).toContain("planner.forecast.summary");

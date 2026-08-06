@@ -178,26 +178,43 @@ internal fun AltitudePlannerPage(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     planner.controls.forEach { control ->
-                        CompactSquareButton(
-                            label = control.label,
-                            modifier = Modifier
-                                .width(ThumbSize * 2.2f)
-                                .height(ThumbSize),
-                            maxLines = 2,
-                            enabled = control.enabled,
-                            selected = openControlId == control.id,
-                            testTag = "parity:altitude-planner-control:${control.id}",
-                            onDisabledClick = control.disabledReason?.let { reason ->
-                                { showDisabledActionToast(context, reason) }
-                            },
-                            onClick = {
-                                if (control.options.isNotEmpty()) {
-                                    openControlId = if (openControlId == control.id) null else control.id
-                                } else {
-                                    control.actionUid?.let(::performAction)
-                                }
-                            },
-                        )
+                        if (control.options.isNotEmpty()) {
+                            val open = openControlId == control.id
+                            MenuDock(
+                                launcherLabel = control.label,
+                                launcherTestTag = "parity:altitude-planner-control:${control.id}",
+                                optionTestTagPrefix = "parity:altitude-planner-option:${control.id}",
+                                open = open,
+                                onToggle = {
+                                    openControlId = if (open) null else control.id
+                                },
+                                style = MenuDockStyle.AltitudePlanner,
+                                disabled = !control.enabled,
+                                disabledReason = control.disabledReason,
+                                options = control.options.map { option ->
+                                    MenuDockOption(
+                                        key = option.actionUid,
+                                        label = option.label,
+                                        active = option.selected,
+                                        onSelect = { performAction(option.actionUid) },
+                                    )
+                                },
+                            )
+                        } else {
+                            CompactSquareButton(
+                                label = control.label,
+                                modifier = Modifier
+                                    .width(ThumbSize * 2.2f)
+                                    .height(ThumbSize),
+                                maxLines = 2,
+                                enabled = control.enabled,
+                                testTag = "parity:altitude-planner-control:${control.id}",
+                                onDisabledClick = control.disabledReason?.let { reason ->
+                                    { showDisabledActionToast(context, reason) }
+                                },
+                                onClick = { control.actionUid?.let(::performAction) },
+                            )
+                        }
                     }
                     DepartureEditorRow(
                         departure = planner.departure,
@@ -231,28 +248,6 @@ internal fun AltitudePlannerPage(
                         },
                     )
                 }
-                planner.controls
-                    .firstOrNull { it.id == openControlId && it.options.isNotEmpty() }
-                    ?.let { control ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
-                        ) {
-                            control.options.forEach { option ->
-                                CompactSquareButton(
-                                    label = option.label,
-                                    modifier = Modifier
-                                        .width(ThumbSize * 2.2f)
-                                        .height(ThumbSize),
-                                    maxLines = 2,
-                                    selected = option.selected,
-                                    onClick = { performAction(option.actionUid) },
-                                )
-                            }
-                        }
-                    }
             }
 
             planner.forecast?.let { forecast ->
@@ -377,6 +372,13 @@ internal fun AltitudePlannerPage(
                     }
                 }
             }
+        }
+
+        if (openControlId != null) {
+            Scrim(
+                modifier = Modifier.zIndex(OverlayPlaneModalScrim),
+                onDismiss = { openControlId = null },
+            )
         }
 
         PrimaryNavigationDock(

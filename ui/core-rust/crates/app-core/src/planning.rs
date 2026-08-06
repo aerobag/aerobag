@@ -3453,12 +3453,14 @@ fn action_matrix_from_actions(
             FlightPlanRowActionId::Remove,
             FlightPlanRowActionId::RemoveAllAbove,
         ],
-        vec![FlightPlanRowActionId::AddAirway],
         vec![
             FlightPlanRowActionId::SelectDeparture,
-            FlightPlanRowActionId::SelectArrival,
+            FlightPlanRowActionId::AddAirway,
         ],
-        vec![FlightPlanRowActionId::SelectApproach],
+        vec![
+            FlightPlanRowActionId::SelectArrival,
+            FlightPlanRowActionId::SelectApproach,
+        ],
         vec![
             FlightPlanRowActionId::WaypointInfo,
             FlightPlanRowActionId::Plates,
@@ -9666,12 +9668,14 @@ mod tests {
                     FlightPlanRowActionId::Remove,
                     FlightPlanRowActionId::RemoveAllAbove,
                 ],
-                vec![FlightPlanRowActionId::AddAirway],
                 vec![
                     FlightPlanRowActionId::SelectDeparture,
-                    FlightPlanRowActionId::SelectArrival,
+                    FlightPlanRowActionId::AddAirway,
                 ],
-                vec![FlightPlanRowActionId::SelectApproach],
+                vec![
+                    FlightPlanRowActionId::SelectArrival,
+                    FlightPlanRowActionId::SelectApproach,
+                ],
                 vec![
                     FlightPlanRowActionId::WaypointInfo,
                     FlightPlanRowActionId::Plates

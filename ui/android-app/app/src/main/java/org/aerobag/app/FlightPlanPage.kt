@@ -279,6 +279,7 @@ import org.aerobag.app.generated.airportFuelMarkerPath
 import org.aerobag.app.generated.airportOpenMarkerSymbol
 import org.aerobag.app.generated.fixTrianglePath
 import org.aerobag.app.generated.heliportHPath
+import org.aerobag.app.generated.hasFlightPlanActionSymbol
 import org.aerobag.app.generated.mapSelectionSpotSymbol
 import org.aerobag.app.generated.metarBknSymbol
 import org.aerobag.app.generated.metarClearSymbol
@@ -414,19 +415,15 @@ internal fun FlightPlanPage(
     val configuration = LocalConfiguration.current
     val narrowPortraitWaypointTray =
         configuration.screenWidthDp <= 720 && configuration.screenHeightDp > configuration.screenWidthDp
-    val waypointActionButtonWidth =
-        if (narrowPortraitWaypointTray) {
-            ThumbSize * 1.5f
-        } else {
-            ThumbSize * 2f
-        }
+    val waypointActionButtonWidth = ThumbSize * 2.5f
+    val waypointActionGap = 3.dp
+    val waypointTrayWidth = waypointActionButtonWidth * 2f + waypointActionGap + 6.dp
     val planWaypointTrayStart =
-        ThumbGap + PlanArrowLane +
-            if (narrowPortraitWaypointTray) {
-                ThumbSize * 2.5f
-            } else {
-                ThumbSize * 3.15f
-            } + PlanGridGap
+        if (narrowPortraitWaypointTray) {
+            (configuration.screenWidthDp.dp - waypointTrayWidth - ThumbGap).coerceAtLeast(ThumbGap)
+        } else {
+            ThumbGap + PlanArrowLane + ThumbSize * 3.15f + PlanGridGap
+        }
     val imeBottomPadding = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     val fallbackKeyboardPadding = (configuration.screenHeightDp * 0.38f).dp
     val keyboardAvoidancePadding =
@@ -517,8 +514,6 @@ internal fun FlightPlanPage(
                 desiredTop.coerceIn(paneTop, maxTop)
             }
         }
-    val waypointActionGap = 3.dp
-    val waypointTrayWidth = waypointActionButtonWidth * 2f + waypointActionGap + 6.dp
     val procedureChoiceButtonWidth = ThumbSize * 3f
     val procedureTrayWidth = procedureChoiceButtonWidth * 2f + waypointActionGap + 6.dp
     val waypointTrayPaneBottom =
@@ -1271,6 +1266,17 @@ internal fun FlightPlanPage(
                                     disabledReason = action.disabledReason,
                                     testTag = "parity:plan-row-action:${action.id}",
                                     width = waypointActionButtonWidth,
+                                    trailingContent = if (hasFlightPlanActionSymbol(action.id)) {
+                                        {
+                                            FlightPlanActionIcon(
+                                                actionId = action.id,
+                                                enabled = action.enabled,
+                                                modifier = Modifier.size(ThumbSize * 0.62f),
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
                                     onSelect = {
                                         if (!action.enabled) {
                                             return@MenuPanelRow

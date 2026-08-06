@@ -9,6 +9,7 @@
     "button_fg": "#f7fbff",
     "control_group_bg": "#dce5ec",
     "text_input_bg": "#ffffff",
+    "button_icon_secondary": "#f7fbff99",
     "panel_bg": "#fefcf7",
     "panel_border": "#d7d1c5",
     "panel_fg": "#132129",

@@ -4332,7 +4332,7 @@ button {
 .waypointModal {
   position: absolute;
   top: calc(var(--thumb) * 1.25);
-  --waypoint-action-button-width: calc(var(--thumb) * 2);
+  --waypoint-action-button-width: calc(var(--thumb) * 2.5);
   --waypoint-action-tray-left: calc(var(--thumb-gap) + var(--thumb) * 3.15);
   left: var(--waypoint-action-tray-left);
   width: min(calc(var(--waypoint-action-button-width) * 2 + var(--thumb-gap) * 3), calc(100% - var(--thumb-gap) - var(--waypoint-action-tray-left)));
@@ -4385,12 +4385,46 @@ button {
   width: var(--waypoint-action-button-width);
   min-width: var(--waypoint-action-button-width);
   max-width: var(--waypoint-action-button-width);
+  padding-inline: calc(var(--thumb) * 0.14) calc(var(--thumb) * 0.08);
+}
+
+.flightPlanActionButtonContent {
+  display: block;
+  width: 100%;
+}
+
+.flightPlanActionButtonContent.hasIcon {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) calc(var(--thumb) * 0.62);
+  align-items: center;
+  gap: calc(var(--thumb) * 0.04);
+}
+
+.flightPlanActionButtonLabel {
+  min-width: 0;
+  line-height: 1.04;
+}
+
+.flightPlanActionIcon {
+  display: block;
+  width: calc(var(--thumb) * 0.62);
+  height: calc(var(--thumb) * 0.62);
+  overflow: visible;
+}
+
+.waypointActionGrid .airwayChoiceButton.isDisabled .flightPlanActionIcon,
+.waypointActionGrid .airwayChoiceButton:disabled .flightPlanActionIcon {
+  opacity: var(--theme-button-disabled-icon-opacity);
+  filter: saturate(var(--theme-button-disabled-icon-saturation));
 }
 
 @media (max-width: 720px) and (orientation: portrait) {
   .waypointModal {
-    --waypoint-action-button-width: calc(var(--thumb) * 1.5);
-    --waypoint-action-tray-left: calc(var(--thumb-gap) + var(--thumb) * 2.5);
+    --waypoint-action-button-width: calc(var(--thumb) * 2.5);
+    --waypoint-action-tray-left: max(
+      var(--thumb-gap),
+      calc(100vw - (var(--thumb) * 5) - (var(--thumb-gap) * 4))
+    );
   }
 }
 

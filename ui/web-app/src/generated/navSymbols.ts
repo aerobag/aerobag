@@ -28,6 +28,446 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
+export type FlightPlanActionSymbolId = "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather";
+export const flightPlanActionSymbols = {
+  "activate_leg": [
+    {
+      "path": "M 13 -17 H -11 V 10 H 9",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "action_active",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 9 3 L 20 10 L 9 17 Z",
+      "paint": "action_arrow",
+      "fill": "action_active",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "direct_to": [
+    {
+      "path": "M -11 -12 V 12 M -11 -12 H -7 C 9 -12 9 12 -7 12 H -11",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -19 0 H 10",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 10 -7 L 20 0 L 10 7 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "insert_before": [
+    {
+      "path": "M -19 7 H 19 V 15 H -19 Z",
+      "paint": "action_row",
+      "fill": "button_icon_secondary",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -7 -5 H 7 M 0 -12 V 2",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "move_up": [
+    {
+      "path": "M -19 7 H 19 V 15 H -19 Z",
+      "paint": "action_row",
+      "fill": "button_icon_secondary",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 0 8 V -6",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -7 -6 L 0 -18 L 7 -6 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "insert_after": [
+    {
+      "path": "M -19 -15 H 19 V -7 H -19 Z",
+      "paint": "action_row",
+      "fill": "button_icon_secondary",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -7 5 H 7 M 0 -2 V 12",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "move_down": [
+    {
+      "path": "M -19 -15 H 19 V -7 H -19 Z",
+      "paint": "action_row",
+      "fill": "button_icon_secondary",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 0 -8 V 6",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -7 6 L 0 18 L 7 6 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "remove": [
+    {
+      "path": "M -9 -8 L -7 16 H 7 L 9 -8 Z M -4 -4 L -3 11 M 0 -4 V 11 M 4 -4 L 3 11",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -12 -13 H 12 M -5 -17 H 5",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "remove_all_above": [
+    {
+      "path": "M -9 3 L -7 20 H 7 L 9 3 Z M -4 7 L -3 16 M 0 7 V 16 M 4 7 L 3 16",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.6,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -12 -1 H 12 M -5 -5 H 5",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.6,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 0 -3 V -11",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -7 -10 L 0 -21 L 7 -10 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "select_departure": [
+    {
+      "path": "M -15 20 V 7",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -15 5 V 1 C -15 -6 -10 -10 -4 -12 L 1 -14",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 8 -16 L 3 -16 L 5 -12 Z M 14 -19 L 9 -19 L 11 -15 Z M 20 -21 L 15 -21 L 17 -17 Z",
+      "paint": "action_chevrons",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "add_airway": [
+    {
+      "path": "M -19 9 L -7 -5 L 6 8 L 19 1",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -19 6 C -17.343 6 -16 7.343 -16 9 C -16 10.657 -17.343 12 -19 12 C -20.657 12 -22 10.657 -22 9 C -22 7.343 -20.657 6 -19 6 Z M -7 -8 C -5.343 -8 -4 -6.657 -4 -5 C -4 -3.343 -5.343 -2 -7 -2 C -8.657 -2 -10 -3.343 -10 -5 C -10 -6.657 -8.657 -8 -7 -8 Z M 6 5 C 7.657 5 9 6.343 9 8 C 9 9.657 7.657 11 6 11 C 4.343 11 3 9.657 3 8 C 3 6.343 4.343 5 6 5 Z M 19 -2 C 20.657 -2 22 -0.657 22 1 C 22 2.657 20.657 4 19 4 C 17.343 4 16 2.657 16 1 C 16 -0.657 17.343 -2 19 -2 Z",
+      "paint": "action_nodes",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "select_arrival": [
+    {
+      "path": "M -20 -18 L -8 -10 L 2 0 H 20 M -20 -6 L -9 -5 L 2 0 M -20 6 L -9 5 L 2 0 M -20 18 L -8 10 L 2 0",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "select_approach": [
+    {
+      "path": "M -20 15 H 20",
+      "paint": "action_secondary",
+      "fill": "none",
+      "stroke": "button_icon_secondary",
+      "stroke_width": 2.4,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 12 -19 V 15 M -4 -10 V 15",
+      "paint": "action_fix_markers",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 1.2,
+      "line_cap": "square",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 20 -14 H 12 L 3 -5 H -4 L -13 5 H -20",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "waypoint_info": [
+    {
+      "path": "M -20.6 -0.4 L 18.4 -9.4 L 20.6 0.4 L -18.4 9.4 Z",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -14.5 -0.7 L -8.7 -2.1 L -8.2 -0.1 L -14.1 1.2 Z M -13.2 5.1 L -7.3 3.7 L -6.9 5.7 L -12.7 7 Z M 6.9 -5.7 L 12.7 -7 L 13.2 -5.1 L 7.3 -3.7 Z M 8.2 0.1 L 14.1 -1.2 L 14.5 0.7 L 8.7 2.1 Z",
+      "paint": "action_markings",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "plates": [
+    {
+      "path": "M -13 -20 H 10 L 16 -14 V 20 H -13 Z M 10 -20 V -14 H 16",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 8 13 V 0 L 3 -5 L -1 -9 C -3.8 -11.8 0.4 -16 3.2 -13.2 L 8 -8 V 15",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.1,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "show_plate": [
+    {
+      "path": "M -13 -20 H 10 L 16 -14 V 20 H -13 Z M 10 -20 V -14 H 16",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 8 13 V 0 L 3 -5 L -1 -9 C -3.8 -11.8 0.4 -16 3.2 -13.2 L 8 -8 V 15",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.1,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "remove_procedure": [
+    {
+      "path": "M -9 -8 L -7 16 H 7 L 9 -8 Z M -4 -4 L -3 11 M 0 -4 V 11 M 4 -4 L 3 11",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -12 -13 H 12 M -5 -17 H 5",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "weather": [
+    {
+      "path": "M -14 -20 V 20 M -18 20 H -10 M -16 17 L -14 20 L -12 17",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -14 -17 L 3 -14.5 L 15.3 -3.8 L 12.7 -0.2 L 3 -5.5 L -14 -4 Z M -6 -15.8 V -5.1 M 2 -14.6 V -5.4 M 9.9 -9 L 6.1 -3.8",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ]
+} satisfies Record<FlightPlanActionSymbolId, readonly NavSymbolLayer[]>;
+export function flightPlanActionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
+  return (flightPlanActionSymbols as Record<string, readonly NavSymbolLayer[]>)[actionId];
+}
 export const dataStatusWarningSymbol = [
   {
     "path": "M 0.543 -45 H 0.965 L 49.343 44.457 V 45 H -48.318 L -48.8 44.457 H -49.343 Q -1.387 -43.009 0.543 -45 Z M 0 -33.66 L -40.054 38.787 V 39.812 H 40.597 V 39.269 Q 1.749 -31.971 0 -33.66 Z M 0.543 -20.268 Q 5.188 -20.268 5.188 -16.166 Q 2.051 20.811 0.543 20.811 Q -0.845 20.811 -4.102 -16.709 Q -2.594 -20.268 0.543 -20.268 Z M 0.483 25.275 Q 1.629 25.275 2.714 25.878 Q 3.861 26.481 4.464 27.567 Q 5.127 28.653 5.127 29.92 Q 5.127 31.126 4.524 32.212 Q 3.921 33.298 2.775 33.901 Q 1.629 34.504 0.483 34.504 Q -0.724 34.504 -1.81 33.901 Q -2.895 33.298 -3.559 32.212 Q -4.162 31.126 -4.162 29.92 Q -4.162 28.653 -3.559 27.567 Q -2.895 26.481 -1.81 25.878 Q -0.724 25.275 0.483 25.275 Z",

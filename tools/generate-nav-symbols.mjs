@@ -40,6 +40,7 @@ const androidOut =
   );
 
 const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+const flightPlanActionSymbols = spec.flight_plan_action_symbols;
 
 function fmtNumber(value) {
   if (Object.is(value, -0)) {
@@ -189,6 +190,12 @@ function ktSymbolLayers(name) {
     .join(",\n    ");
 }
 
+function ktFlightPlanActionSymbols() {
+  return Object.entries(flightPlanActionSymbols)
+    .map(([actionId, symbolName]) => `"${actionId}" -> listOf(\n        ${ktSymbolLayers(symbolName).replaceAll("\n", "\n        ")}\n    )`)
+    .join("\n    ");
+}
+
 const vorOuterHexPoints = spec.vor.outer_hex_points;
 const vorInnerHexPoints = offsetPolygonByEdgeDistances(vorOuterHexPoints, spec.vor.edge_inset_distances);
 const vorOuterHexPath = pathFromPoints(vorOuterHexPoints);
@@ -228,6 +235,17 @@ export const mapSelectionSpotPegPath = ${JSON.stringify(spec.paths.map_selection
 export const mapSelectionSpotDotPath = ${JSON.stringify(spec.paths.map_selection_spot_dot)};
 export const manualSequenceChevronPath = ${JSON.stringify(spec.paths.manual_sequence_chevron)};
 export const manualSequenceChevronSpacing = ${JSON.stringify(spec.manual_sequence.spacing)};
+export type FlightPlanActionSymbolId = ${Object.keys(flightPlanActionSymbols).map(JSON.stringify).join(" | ")};
+export const flightPlanActionSymbols = ${JSON.stringify(
+  Object.fromEntries(
+    Object.entries(flightPlanActionSymbols).map(([actionId, symbolName]) => [actionId, symbolSource(symbolName)]),
+  ),
+  null,
+  2,
+)} satisfies Record<FlightPlanActionSymbolId, readonly NavSymbolLayer[]>;
+export function flightPlanActionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
+  return (flightPlanActionSymbols as Record<string, readonly NavSymbolLayer[]>)[actionId];
+}
 export const dataStatusWarningSymbol = ${JSON.stringify(symbolSource("data_status_warning"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const airportOpenMarkerSymbol = ${JSON.stringify(symbolSource("airport_open_marker"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const mapSelectionSpotSymbol = ${JSON.stringify(symbolSource("map_selection_spot"), null, 2)} satisfies readonly NavSymbolLayer[];
@@ -493,6 +511,18 @@ fun pirepModerateIcingSymbol(center: Offset, scale: Float): List<NavSymbolLayer>
 fun pirepSevereIcingSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
     ${ktSymbolLayers("pirep_severe_icing")}
 )
+
+fun flightPlanActionSymbol(actionId: String, center: Offset, scale: Float): List<NavSymbolLayer>? =
+    when (actionId) {
+        ${ktFlightPlanActionSymbols()}
+        else -> null
+    }
+
+fun hasFlightPlanActionSymbol(actionId: String): Boolean =
+    when (actionId) {
+        ${Object.keys(flightPlanActionSymbols).map((actionId) => `${JSON.stringify(actionId)} -> true`).join("\n        ")}
+        else -> false
+    }
 
 const val obstacleShortDotY: Float = ${ktFloat(spec.obstacle_dot.short_y)}
 const val obstacleTallDotY: Float = ${ktFloat(spec.obstacle_dot.tall_y)}

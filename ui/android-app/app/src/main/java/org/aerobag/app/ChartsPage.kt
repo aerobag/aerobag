@@ -1987,6 +1987,7 @@ internal fun MenuPanelRow(
     @DrawableRes accessoryIconResId: Int? = null,
     accessoryTestTag: String? = null,
     onAccessorySelect: (() -> Unit)? = null,
+    trailingContent: (@Composable () -> Unit)? = null,
     testTag: String? = null,
     disabledReason: String? = null,
     modifier: Modifier = Modifier,
@@ -2048,7 +2049,7 @@ internal fun MenuPanelRow(
                     .background(renderedAccentColor),
             )
         }
-        if (iconResId != null || toggleState != null || accessoryIconResId != null) {
+        if (iconResId != null || toggleState != null || accessoryIconResId != null || trailingContent != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2070,6 +2071,7 @@ internal fun MenuPanelRow(
                     overflow = TextOverflow.Ellipsis,
                     color = rowTextColor,
                 )
+                trailingContent?.invoke()
                 if (toggleState != null) {
                     LayerToggle(
                         visible = toggleState.visible,

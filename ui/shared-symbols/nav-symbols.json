@@ -30,9 +30,109 @@
     "pirep_light_icing": "M 3 -10 V 23 M -19 -16 C -6.85 2 12.85 2 25 -16",
     "pirep_moderate_icing": "M -19 -16 C -6.85 2 12.85 2 25 -16 M 8 -10 V 23 M -2 -10 V 23",
     "pirep_severe_icing": "M -7 -10 V 23 M 11 -10 V 23 M 2 -10 V 23 M -19 -16 C -6.85 2 12.85 2 25 -16",
+    "action_activate_leg_route": "M 13 -17 H -11 V 10 H 9",
+    "action_activate_leg_arrow": "M 9 3 L 20 10 L 9 17 Z",
+    "action_direct_to_d": "M -11 -12 V 12 M -11 -12 H -7 C 9 -12 9 12 -7 12 H -11",
+    "action_direct_to_shaft": "M -19 0 H 10",
+    "action_direct_to_arrow": "M 10 -7 L 20 0 L 10 7 Z",
+    "action_row_below": "M -19 7 H 19 V 15 H -19 Z",
+    "action_row_above": "M -19 -15 H 19 V -7 H -19 Z",
+    "action_insert_before_plus": "M -7 -5 H 7 M 0 -12 V 2",
+    "action_insert_after_plus": "M -7 5 H 7 M 0 -2 V 12",
+    "action_move_up_shaft": "M 0 8 V -6",
+    "action_move_up_arrow": "M -7 -6 L 0 -18 L 7 -6 Z",
+    "action_move_down_shaft": "M 0 -8 V 6",
+    "action_move_down_arrow": "M -7 6 L 0 18 L 7 6 Z",
+    "action_trash_body": "M -9 -8 L -7 16 H 7 L 9 -8 Z M -4 -4 L -3 11 M 0 -4 V 11 M 4 -4 L 3 11",
+    "action_trash_lid": "M -12 -13 H 12 M -5 -17 H 5",
+    "action_trash_above_body": "M -9 3 L -7 20 H 7 L 9 3 Z M -4 7 L -3 16 M 0 7 V 16 M 4 7 L 3 16",
+    "action_trash_above_lid": "M -12 -1 H 12 M -5 -5 H 5",
+    "action_trash_above_shaft": "M 0 -3 V -11",
+    "action_trash_above_arrow": "M -7 -10 L 0 -21 L 7 -10 Z",
+    "action_departure_runway": "M -15 20 V 7",
+    "action_departure_route": "M -15 5 V 1 C -15 -6 -10 -10 -4 -12 L 1 -14",
+    "action_departure_chevrons": "M 8 -16 L 3 -16 L 5 -12 Z M 14 -19 L 9 -19 L 11 -15 Z M 20 -21 L 15 -21 L 17 -17 Z",
+    "action_airway_route": "M -19 9 L -7 -5 L 6 8 L 19 1",
+    "action_airway_nodes": "M -19 6 C -17.343 6 -16 7.343 -16 9 C -16 10.657 -17.343 12 -19 12 C -20.657 12 -22 10.657 -22 9 C -22 7.343 -20.657 6 -19 6 Z M -7 -8 C -5.343 -8 -4 -6.657 -4 -5 C -4 -3.343 -5.343 -2 -7 -2 C -8.657 -2 -10 -3.343 -10 -5 C -10 -6.657 -8.657 -8 -7 -8 Z M 6 5 C 7.657 5 9 6.343 9 8 C 9 9.657 7.657 11 6 11 C 4.343 11 3 9.657 3 8 C 3 6.343 4.343 5 6 5 Z M 19 -2 C 20.657 -2 22 -0.657 22 1 C 22 2.657 20.657 4 19 4 C 17.343 4 16 2.657 16 1 C 16 -0.657 17.343 -2 19 -2 Z",
+    "action_arrival_fan": "M -20 -18 L -8 -10 L 2 0 H 20 M -20 -6 L -9 -5 L 2 0 M -20 6 L -9 5 L 2 0 M -20 18 L -8 10 L 2 0",
+    "action_approach_baseline": "M -20 15 H 20",
+    "action_approach_profile": "M 20 -14 H 12 L 3 -5 H -4 L -13 5 H -20",
+    "action_approach_fix_markers": "M 12 -19 V 15 M -4 -10 V 15",
+    "action_airport_info_outline": "M -20.6 -0.4 L 18.4 -9.4 L 20.6 0.4 L -18.4 9.4 Z",
+    "action_airport_info_marks": "M -14.5 -0.7 L -8.7 -2.1 L -8.2 -0.1 L -14.1 1.2 Z M -13.2 5.1 L -7.3 3.7 L -6.9 5.7 L -12.7 7 Z M 6.9 -5.7 L 12.7 -7 L 13.2 -5.1 L 7.3 -3.7 Z M 8.2 0.1 L 14.1 -1.2 L 14.5 0.7 L 8.7 2.1 Z",
+    "action_plates_page": "M -13 -20 H 10 L 16 -14 V 20 H -13 Z M 10 -20 V -14 H 16",
+    "action_plates_procedure_turn": "M 8 13 V 0 L 3 -5 L -1 -9 C -3.8 -11.8 0.4 -16 3.2 -13.2 L 8 -8 V 15",
+    "action_weather_mast": "M -14 -20 V 20 M -18 20 H -10 M -16 17 L -14 20 L -12 17",
+    "action_weather_sock": "M -14 -17 L 3 -14.5 L 15.3 -3.8 L 12.7 -0.2 L 3 -5.5 L -14 -4 Z M -6 -15.8 V -5.1 M 2 -14.6 V -5.4 M 9.9 -9 L 6.1 -3.8",
     "data_status_warning_glyph": "M 0.543 -45 H 0.965 L 49.343 44.457 V 45 H -48.318 L -48.8 44.457 H -49.343 Q -1.387 -43.009 0.543 -45 Z M 0 -33.66 L -40.054 38.787 V 39.812 H 40.597 V 39.269 Q 1.749 -31.971 0 -33.66 Z M 0.543 -20.268 Q 5.188 -20.268 5.188 -16.166 Q 2.051 20.811 0.543 20.811 Q -0.845 20.811 -4.102 -16.709 Q -2.594 -20.268 0.543 -20.268 Z M 0.483 25.275 Q 1.629 25.275 2.714 25.878 Q 3.861 26.481 4.464 27.567 Q 5.127 28.653 5.127 29.92 Q 5.127 31.126 4.524 32.212 Q 3.921 33.298 2.775 33.901 Q 1.629 34.504 0.483 34.504 Q -0.724 34.504 -1.81 33.901 Q -2.895 33.298 -3.559 32.212 Q -4.162 31.126 -4.162 29.92 Q -4.162 28.653 -3.559 27.567 Q -2.895 26.481 -1.81 25.878 Q -0.724 25.275 0.483 25.275 Z"
   },
   "symbols": {
+    "action_activate_leg": [
+      { "path": "action_activate_leg_route", "paint": "action_route", "fill": "none", "stroke": "action_active", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
+      { "path": "action_activate_leg_arrow", "paint": "action_arrow", "fill": "action_active" }
+    ],
+    "action_direct_to": [
+      { "path": "action_direct_to_d", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round", "line_join": "round" },
+      { "path": "action_direct_to_shaft", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round" },
+      { "path": "action_direct_to_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_insert_before": [
+      { "path": "action_row_below", "paint": "action_row", "fill": "button_icon_secondary" },
+      { "path": "action_insert_before_plus", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" }
+    ],
+    "action_move_up": [
+      { "path": "action_row_below", "paint": "action_row", "fill": "button_icon_secondary" },
+      { "path": "action_move_up_shaft", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" },
+      { "path": "action_move_up_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_insert_after": [
+      { "path": "action_row_above", "paint": "action_row", "fill": "button_icon_secondary" },
+      { "path": "action_insert_after_plus", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" }
+    ],
+    "action_move_down": [
+      { "path": "action_row_above", "paint": "action_row", "fill": "button_icon_secondary" },
+      { "path": "action_move_down_shaft", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" },
+      { "path": "action_move_down_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_remove": [
+      { "path": "action_trash_body", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" },
+      { "path": "action_trash_lid", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round" }
+    ],
+    "action_remove_all_above": [
+      { "path": "action_trash_above_body", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.6, "line_cap": "round", "line_join": "round" },
+      { "path": "action_trash_above_lid", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.6, "line_cap": "round" },
+      { "path": "action_trash_above_shaft", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round" },
+      { "path": "action_trash_above_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_select_departure": [
+      { "path": "action_departure_runway", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" },
+      { "path": "action_departure_route", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 2.8, "line_cap": "round", "line_join": "round" },
+      { "path": "action_departure_chevrons", "paint": "action_chevrons", "fill": "button_icon" }
+    ],
+    "action_add_airway": [
+      { "path": "action_airway_route", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 2.8, "line_cap": "round", "line_join": "round" },
+      { "path": "action_airway_nodes", "paint": "action_nodes", "fill": "button_icon" }
+    ],
+    "action_select_arrival": [
+      { "path": "action_arrival_fan", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 2.8, "line_cap": "round", "line_join": "round" }
+    ],
+    "action_select_approach": [
+      { "path": "action_approach_baseline", "paint": "action_secondary", "fill": "none", "stroke": "button_icon_secondary", "stroke_width": 2.4, "line_cap": "round" },
+      { "path": "action_approach_fix_markers", "paint": "action_fix_markers", "fill": "none", "stroke": "button_icon", "stroke_width": 1.2, "line_cap": "square" },
+      { "path": "action_approach_profile", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" }
+    ],
+    "action_waypoint_info": [
+      { "path": "action_airport_info_outline", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.8, "line_cap": "round", "line_join": "round" },
+      { "path": "action_airport_info_marks", "paint": "action_markings", "fill": "button_icon" }
+    ],
+    "action_plates": [
+      { "path": "action_plates_page", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.8, "line_cap": "round", "line_join": "round" },
+      { "path": "action_plates_procedure_turn", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.1, "line_cap": "round", "line_join": "round" }
+    ],
+    "action_weather": [
+      { "path": "action_weather_mast", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" },
+      { "path": "action_weather_sock", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" }
+    ],
     "data_status_warning": [
       { "path": "data_status_warning_glyph", "paint": "data_status_warning_glyph", "fill": "data_status_symbol_ink" }
     ],
@@ -158,6 +258,25 @@
       { "path": "pirep_bubble", "paint": "pirep_bubble", "fill": "paper", "stroke": "pirep_ink", "stroke_width": 3.8, "line_join": "round" },
       { "path": "pirep_severe_icing", "paint": "pirep_glyph", "fill": "none", "stroke": "pirep_symbol", "stroke_width": 4.8, "line_cap": "round", "line_join": "round" }
     ]
+  },
+  "flight_plan_action_symbols": {
+    "activate_leg": "action_activate_leg",
+    "direct_to": "action_direct_to",
+    "insert_before": "action_insert_before",
+    "move_up": "action_move_up",
+    "insert_after": "action_insert_after",
+    "move_down": "action_move_down",
+    "remove": "action_remove",
+    "remove_all_above": "action_remove_all_above",
+    "select_departure": "action_select_departure",
+    "add_airway": "action_add_airway",
+    "select_arrival": "action_select_arrival",
+    "select_approach": "action_select_approach",
+    "waypoint_info": "action_waypoint_info",
+    "plates": "action_plates",
+    "show_plate": "action_plates",
+    "remove_procedure": "action_remove",
+    "weather": "action_weather"
   },
   "obstacle_dot": {
     "short_y": 4.8,

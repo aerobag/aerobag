@@ -278,6 +278,7 @@ import org.aerobag.app.generated.airportCircleMarkerPath
 import org.aerobag.app.generated.airportFuelMarkerPath
 import org.aerobag.app.generated.airportOpenMarkerSymbol
 import org.aerobag.app.generated.fixTrianglePath
+import org.aerobag.app.generated.flightPlanActionSymbol as generatedFlightPlanActionSymbol
 import org.aerobag.app.generated.heliportHPath
 import org.aerobag.app.generated.mapSelectionSpotSymbol
 import org.aerobag.app.generated.metarBknSymbol
@@ -324,6 +325,27 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
+
+
+@Composable
+internal fun FlightPlanActionIcon(
+    actionId: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Canvas(
+        modifier = modifier.alpha(
+            if (enabled) 1f else uiTheme.controls.buttonDisabledIconOpacity,
+        ),
+    ) {
+        val scale = size.minDimension / 48f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        generatedFlightPlanActionSymbol(actionId, center, scale).orEmpty().forEach { layer ->
+            drawNavSymbolLayer(layer, scale, uiTheme)
+        }
+    }
+}
 
 
 @Composable

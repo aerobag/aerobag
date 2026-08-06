@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -52,11 +52,17 @@ use crate::{
     },
     content::{ContentPolicy, ContentReport},
     data_status::{
-        parse_status_action_id, procedure_geometry_warning_presentation, project_data_status_state,
-        DataStatusRecord, ProcedureGeometryWarningContext, UiDataStatusPageFact,
-        UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
-        UiStatusAction, UiStatusActionCommand, UiStatusActionStyle, UiStatusSeverity,
-        RELOAD_APPLICATION_ACTION_ID,
+        procedure_geometry_warning_presentation, DataStatusRecord, ProcedureGeometryWarningContext,
+        UiDataStatusPageState, UiDataStatusState, UiStatusAction, UiStatusActionStyle,
+        UiStatusSeverity, RELOAD_APPLICATION_ACTION_ID,
+    },
+    data_status_controller::{
+        chart_validity_detail, chart_validity_value, collect_chart_validity_violations,
+        DataStatusActionIntent, DataStatusAttachedPackageWarning, DataStatusController,
+        DataStatusForecastInput, DataStatusLiveFeedConnectionInput,
+        DataStatusLiveFeedConnectionMode, DataStatusLiveFeedProductInput,
+        DataStatusModelCheckpoint, DataStatusNavDbArtifactInput, DataStatusNavDbFamilyRecord,
+        DataStatusNavDbPackageRecord, DataStatusPageInput, DataStatusPublicationInput,
     },
     flight_plan_controller::{
         guidance_leg_geometry_from_route, self_contained_guidance_leg_geometry_for_plan,
@@ -74,8 +80,8 @@ use crate::{
         HadReadError, UiInvalidation,
     },
     live_feed_runtime::{
-        LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedNetworkStatus,
-        LiveFeedRuntimeDecision, LiveFeedRuntimeInput,
+        LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedRuntimeDecision,
+        LiveFeedRuntimeInput,
     },
     live_feeds::{
         LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH, NEXRAD_FRAME_WINDOW_SIZE,
@@ -89,10 +95,7 @@ use crate::{
         MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
     },
     map_overlay_config_from_vector_manifest_json,
-    nav_data_controller::{
-        AttachedNavDbArtifact, NavDataController, NavDataMaintenanceDecision,
-        NavDataModelCheckpoint,
-    },
+    nav_data_controller::{NavDataController, NavDataMaintenanceDecision, NavDataModelCheckpoint},
     nav_kv_key_for_query,
     package_controller::{PackageController, PackageModelCheckpoint},
     planning::NavElementUiView,
@@ -186,6 +189,7 @@ struct UiSession {
     nav_data: NavDataController,
     packages: PackageController,
     cloud: CloudController,
+    data_status: DataStatusController,
     situation: SituationController,
     weather: WeatherController,
     map: MapController,
@@ -241,6 +245,8 @@ pub struct UiSessionDiagnostics {
     pub package_projection_count: u64,
     pub cloud_revision: u64,
     pub cloud_projection_count: u64,
+    pub data_status_revision: u64,
+    pub data_status_projection_count: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -261,6 +267,7 @@ struct SessionDiagnosticsCounters {
     flight_plan_projection_count: AtomicU64,
     package_projection_count: AtomicU64,
     cloud_projection_count: AtomicU64,
+    data_status_projection_count: AtomicU64,
     last_session_payload_serialized_bytes: AtomicU64,
     transaction_commit_count: AtomicU64,
     transaction_rollback_count: AtomicU64,
@@ -279,6 +286,7 @@ impl SessionDiagnosticsCounters {
         nav_data_revision: u64,
         package_revision: u64,
         cloud_revision: u64,
+        data_status_revision: u64,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -304,6 +312,8 @@ impl SessionDiagnosticsCounters {
             package_projection_count: self.package_projection_count.load(Ordering::Relaxed),
             cloud_revision,
             cloud_projection_count: self.cloud_projection_count.load(Ordering::Relaxed),
+            data_status_revision,
+            data_status_projection_count: self.data_status_projection_count.load(Ordering::Relaxed),
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -319,9 +329,6 @@ struct SessionModel {
     content_policy: ContentPolicy,
     last_content_report: Option<ContentReport>,
     chart_page_state: UiChartPageState,
-    data_status_records: BTreeMap<String, DataStatusRecord>,
-    hushed_status_ids: BTreeSet<String>,
-    data_status_state: UiDataStatusState,
     platform_capabilities: PlatformCapabilities,
     settings: SettingsController,
     persistence_storage: Option<SettingsStorageHandle>,
@@ -580,6 +587,7 @@ impl SessionSlot {
             session.nav_data.revision(),
             session.packages.revision(),
             session.cloud.revision(),
+            session.data_status.revision(),
         )
     }
 }
@@ -695,7 +703,6 @@ const ADSB_OWNSHIP_STATUS_ID: &str = "adsb:ownship";
 const CYCLE_DISPLAYED_CHART_STATUS_ID: &str = "cycle:displayed_chart_invalid";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const VECTOR_INPUTS_STATUS_ID: &str = "map_overlay:vector_inputs_loading";
-const PACKAGE_UI_WARNING_STATUS_PREFIX: &str = "package_ui_warning:";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
 const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 const LIVE_OBSTACLE_HAD_RESOURCE_PREFIX: &str = "live_obstacle_had/";
@@ -719,41 +726,6 @@ struct WeatherStationAirportAliasPayload {
     position: LatLon,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct NavDbPackageRecord {
-    id: String,
-    family_id: String,
-    #[serde(default)]
-    effective_date: Option<String>,
-    #[serde(default)]
-    expiration_date: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct NavDbFamilyRecord {
-    id: String,
-    display_name: String,
-    #[serde(default)]
-    warning_text: Option<String>,
-    #[serde(default)]
-    ui_warning: Option<PackageUiWarningRecord>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct PackageUiWarningRecord {
-    severity: UiStatusSeverity,
-    label: String,
-    #[serde(default)]
-    value: Option<String>,
-    detail: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CycleWindow {
-    effective: Option<DateTime<Utc>>,
-    expiration: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Deserialize)]
 struct LiveObstacleHadManifest {
     schema_version: u32,
@@ -766,31 +738,12 @@ struct LiveObstacleHadManifest {
     state_sha256: String,
 }
 
-fn sync_data_status_projection(session: &mut UiSession) {
-    session.data_status_state =
-        project_data_status_state(&session.data_status_records, &session.hushed_status_ids);
-}
-
 fn upsert_data_status_record(session: &mut UiSession, record: DataStatusRecord) -> bool {
-    let changed = session
-        .data_status_records
-        .get(&record.id)
-        .is_none_or(|existing| existing != &record);
-    if changed {
-        session
-            .data_status_records
-            .insert(record.id.clone(), record);
-        sync_data_status_projection(session);
-    }
-    changed
+    session.data_status.upsert(record)
 }
 
 fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
-    let changed = session.data_status_records.remove(id).is_some();
-    if changed {
-        sync_data_status_projection(session);
-    }
-    changed
+    session.data_status.clear(id)
 }
 
 fn sync_adsb_ownship_status_record(session: &mut UiSession) {
@@ -843,6 +796,189 @@ fn project_cloud_for_session(session: &mut UiSession) -> CloudProjection {
             .fetch_add(1, Ordering::Relaxed);
     }
     projection.projection
+}
+
+fn data_status_page_input(
+    session: &UiSession,
+    cloud_projection: &CloudProjection,
+) -> DataStatusPageInput {
+    let live_feeds = session.weather.live_feeds();
+    let index_loaded = live_feeds.current_loaded();
+    let product =
+        |product_id: &str,
+         loaded: bool,
+         collected_utc: Option<DateTime<Utc>>,
+         loaded_version: Option<String>| DataStatusLiveFeedProductInput {
+            loaded,
+            listed: live_feeds.has_product_current_version(product_id),
+            index_loaded,
+            collected_utc,
+            loaded_version,
+        };
+    let metars = metar_live_feed_status_source(session);
+    let tafs = taf_live_feed_status_source(session);
+    let tfrs_collected_utc = live_feed_status_timestamp(session, "tfrs").or_else(|| {
+        session
+            .weather
+            .runtime()
+            .tfr_payload
+            .as_ref()
+            .and_then(|payload| payload.generated_at_utc)
+    });
+    let obstacles_collected_utc = live_feed_status_timestamp(session, "obstacles").or_else(|| {
+        live_feeds
+            .product_state_manifest("obstacles")
+            .and_then(json_generated_at_utc)
+    });
+    let nexrad_collected_utc = live_feed_status_timestamp(session, "nexrad")
+        .or_else(|| nexrad_status_manifest(session).and_then(json_observed_at_utc));
+    let mut live_feed_products = BTreeMap::new();
+    live_feed_products.insert(
+        "tfrs".to_string(),
+        product(
+            "tfrs",
+            session.weather.runtime().tfr_payload.is_some(),
+            tfrs_collected_utc,
+            live_feeds
+                .product_loaded_version("tfrs")
+                .map(str::to_string),
+        ),
+    );
+    live_feed_products.insert(
+        "notams".to_string(),
+        product(
+            "notams",
+            session.weather.runtime().airport_notam_index.is_some(),
+            live_feed_status_timestamp(session, "notams"),
+            live_feeds
+                .product_loaded_version("notams")
+                .map(str::to_string),
+        ),
+    );
+    live_feed_products.insert(
+        "metars".to_string(),
+        product(
+            "metars",
+            metars.loaded,
+            metars.collected_utc,
+            metars.loaded_version,
+        ),
+    );
+    live_feed_products.insert(
+        "tafs".to_string(),
+        product("tafs", tafs.loaded, tafs.collected_utc, tafs.loaded_version),
+    );
+    live_feed_products.insert(
+        "nexrad".to_string(),
+        product(
+            "nexrad",
+            nexrad_status_manifest(session).is_some(),
+            nexrad_collected_utc,
+            latest_installed_nexrad(session)
+                .map(|installed| installed.version.clone())
+                .or_else(|| {
+                    live_feeds
+                        .product_loaded_version("nexrad")
+                        .map(str::to_string)
+                }),
+        ),
+    );
+    live_feed_products.insert(
+        "obstacles".to_string(),
+        product(
+            "obstacles",
+            session.weather.runtime().obstacle_had.is_some()
+                || live_feeds.product_state_manifest("obstacles").is_some(),
+            obstacles_collected_utc,
+            session
+                .weather
+                .runtime()
+                .obstacle_had
+                .as_ref()
+                .map(|had| had.source.version.clone())
+                .or_else(|| {
+                    live_feeds
+                        .product_loaded_version("obstacles")
+                        .map(str::to_string)
+                }),
+        ),
+    );
+
+    let connection = session.weather.connection();
+    let forecast_manifest = session
+        .weather
+        .runtime()
+        .forecast_atmosphere
+        .as_ref()
+        .map(crate::InstalledForecastAtmosphere::manifest)
+        .or_else(|| {
+            session
+                .weather
+                .runtime()
+                .forecast_atmosphere_state
+                .as_ref()
+                .map(|state| &state.manifest)
+        });
+    DataStatusPageInput {
+        now_epoch_ms: session.wall_clock_epoch_ms,
+        client_build: session.platform_capabilities.client_build.clone(),
+        nav_db_available: session.nav_data.store().is_some(),
+        active_nav_db: session.nav_data.active_artifact().map(|artifact| {
+            DataStatusNavDbArtifactInput {
+                package_id: artifact.package_id.clone(),
+                filename: artifact.filename.clone(),
+                cycle: artifact.cycle.clone(),
+                cycle_version: artifact.cycle_version.clone(),
+                contract_id: artifact.contract_id.clone(),
+                effective_date: artifact.effective_date.clone(),
+                expiration_date: artifact.expiration_date.clone(),
+            }
+        }),
+        nav_db_packages: nav_db_package_records(session),
+        published_packages: session.packages.loaded_bundle_packages().cloned().collect(),
+        publication: session.packages.current_artifacts().map(|current| {
+            DataStatusPublicationInput {
+                bundle_count: current.bundles.len(),
+                loaded_manifest_count: session.packages.loaded_bundle_manifest_count(),
+                as_of_utc: current.as_of_utc.clone(),
+                checked_epoch_ms: session.packages.current_artifacts_checked_epoch_ms(),
+            }
+        }),
+        cloud: session
+            .platform_capabilities
+            .cloud
+            .as_ref()
+            .map(|_| cloud_projection.status_summary.clone()),
+        live_feed_connection: DataStatusLiveFeedConnectionInput {
+            mode: match connection.mode {
+                LiveFeedConnectionMode::Unknown => DataStatusLiveFeedConnectionMode::Unknown,
+                LiveFeedConnectionMode::Connecting => DataStatusLiveFeedConnectionMode::Connecting,
+                LiveFeedConnectionMode::Connected => DataStatusLiveFeedConnectionMode::Connected,
+                LiveFeedConnectionMode::Error => DataStatusLiveFeedConnectionMode::Error,
+                LiveFeedConnectionMode::Closed => DataStatusLiveFeedConnectionMode::Closed,
+            },
+            source_url: connection.source_url.clone(),
+            status_url: connection.status_url.clone(),
+            last_heard_epoch_ms: connection.last_heard_epoch_ms,
+            last_error_epoch_ms: connection.last_error_epoch_ms,
+            last_error_message: connection.last_error_message.clone(),
+            last_resource_error_epoch_ms: connection.last_resource_error_epoch_ms,
+            last_resource_error_message: connection.last_resource_error_message.clone(),
+            network_status: connection.network_status,
+        },
+        live_feed_products,
+        forecast: DataStatusForecastInput {
+            loaded: session.weather.runtime().forecast_atmosphere.is_some(),
+            listed: live_feeds.has_product_current_version("winds-aloft"),
+            index_loaded,
+            version_label: forecast_manifest.map(|manifest| manifest.version_label.clone()),
+            model_id: forecast_manifest.map(|manifest| manifest.model_id.clone()),
+            cycle_time_epoch_ms: forecast_manifest.map(|manifest| manifest.cycle_time_epoch_ms),
+            valid_through_epoch_ms: forecast_manifest
+                .and_then(|manifest| manifest.valid_times_epoch_ms.last().copied()),
+        },
+        nexrad_frame_age_summary: nexrad_frame_age_summary(session),
+    }
 }
 
 fn enqueue_session_resource_effect(
@@ -935,7 +1071,7 @@ fn sync_live_feed_product_status_record(
             Vec::new()
         };
     }
-    if session.data_status_records.contains_key(&status_id) {
+    if session.data_status.contains(&status_id) {
         return Vec::new();
     }
     sync_layer_unavailable_status_record(
@@ -1210,34 +1346,10 @@ fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStat
 }
 
 fn sync_procedure_geometry_status_records(session: &mut UiSession, plan: &FlightPlan) -> bool {
-    let records = procedure_geometry_status_records_for_plan(plan);
-    let active_ids = records
-        .iter()
-        .map(|record| record.id.clone())
-        .collect::<BTreeSet<_>>();
-    let stale_ids = session
-        .data_status_records
-        .keys()
-        .filter(|id| id.starts_with(PROCEDURE_GEOMETRY_STATUS_PREFIX) && !active_ids.contains(*id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut changed = false;
-    for id in stale_ids {
-        changed |= session.data_status_records.remove(&id).is_some();
-    }
-    for record in records {
-        changed |= session
-            .data_status_records
-            .get(&record.id)
-            .is_none_or(|existing| existing != &record);
-        session
-            .data_status_records
-            .insert(record.id.clone(), record);
-    }
-    if changed {
-        sync_data_status_projection(session);
-    }
-    changed
+    session.data_status.replace_prefix(
+        PROCEDURE_GEOMETRY_STATUS_PREFIX,
+        procedure_geometry_status_records_for_plan(plan),
+    )
 }
 
 fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataStatusRecord {
@@ -1511,19 +1623,6 @@ struct CycleProductFreshnessSync {
     next_check_epoch_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ChartValidityViolationKind {
-    NotYetEffective,
-    Expired,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChartValidityViolation {
-    family_label: &'static str,
-    family_sort_key: u8,
-    kind: ChartValidityViolationKind,
-}
-
 fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
     let mut sync = CycleProductFreshnessSync::default();
     let Some(catalog) = session.map.raster_catalog() else {
@@ -1591,114 +1690,6 @@ fn min_optional_epoch_ms(current: Option<i64>, candidate: Option<i64>) -> Option
     match candidate {
         Some(candidate) => min_epoch_ms(current, candidate),
         None => current,
-    }
-}
-
-fn collect_chart_validity_violations(
-    violations: &mut Vec<ChartValidityViolation>,
-    seen: &mut BTreeSet<(u8, ChartValidityViolationKind)>,
-    family_label: &'static str,
-    family_sort_key: u8,
-    effective_date: Option<&str>,
-    expiration_date: Option<&str>,
-    now_utc: DateTime<Utc>,
-) -> Option<i64> {
-    let mut next_check_epoch_ms = None;
-    if let Some(effective_date) = effective_date {
-        if let Some(effective_utc) = parse_utc_instant(effective_date) {
-            if now_utc < effective_utc {
-                push_chart_validity_violation(
-                    violations,
-                    seen,
-                    family_label,
-                    family_sort_key,
-                    ChartValidityViolationKind::NotYetEffective,
-                );
-                next_check_epoch_ms =
-                    min_epoch_ms(next_check_epoch_ms, effective_utc.timestamp_millis());
-            }
-        }
-    }
-    if let Some(expiration_date) = expiration_date {
-        if let Some(expiration_utc) = parse_utc_instant(expiration_date) {
-            if cycle_product_is_expired(expiration_utc, now_utc) {
-                push_chart_validity_violation(
-                    violations,
-                    seen,
-                    family_label,
-                    family_sort_key,
-                    ChartValidityViolationKind::Expired,
-                );
-            } else {
-                next_check_epoch_ms =
-                    min_epoch_ms(next_check_epoch_ms, expiration_utc.timestamp_millis());
-            }
-        }
-    }
-    next_check_epoch_ms
-}
-
-fn push_chart_validity_violation(
-    violations: &mut Vec<ChartValidityViolation>,
-    seen: &mut BTreeSet<(u8, ChartValidityViolationKind)>,
-    family_label: &'static str,
-    family_sort_key: u8,
-    kind: ChartValidityViolationKind,
-) {
-    let key = (family_sort_key, kind);
-    if !seen.insert(key) {
-        return;
-    }
-    violations.push(ChartValidityViolation {
-        family_label,
-        family_sort_key,
-        kind,
-    });
-}
-
-fn chart_validity_value(violations: &[ChartValidityViolation]) -> &'static str {
-    let kinds = violations
-        .iter()
-        .map(|violation| violation.kind)
-        .collect::<BTreeSet<_>>();
-    if kinds.len() > 1 {
-        return "INVALID";
-    }
-    match kinds.first() {
-        Some(ChartValidityViolationKind::Expired) => "EXPIRED",
-        Some(ChartValidityViolationKind::NotYetEffective) => "EARLY",
-        None => "INVALID",
-    }
-}
-
-fn chart_validity_detail(violations: &[ChartValidityViolation]) -> String {
-    let family_list = violations
-        .iter()
-        .map(|violation| (violation.family_sort_key, violation.family_label))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|(_, label)| label)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{} charts {}.",
-        family_list,
-        chart_validity_condition(violations)
-    )
-}
-
-fn chart_validity_condition(violations: &[ChartValidityViolation]) -> &'static str {
-    let kinds = violations
-        .iter()
-        .map(|violation| violation.kind)
-        .collect::<BTreeSet<_>>();
-    if kinds.len() > 1 {
-        return "not valid";
-    }
-    match kinds.first() {
-        Some(ChartValidityViolationKind::Expired) => "expired",
-        Some(ChartValidityViolationKind::NotYetEffective) => "not valid yet",
-        None => "not valid",
     }
 }
 
@@ -1795,105 +1786,7 @@ fn chart_family_status_label(chart_family: &str) -> (&'static str, u8) {
     }
 }
 
-fn structured_package_warning_status_record(
-    warning_id: &str,
-    label: String,
-    value: Option<String>,
-    severity: UiStatusSeverity,
-    detail: String,
-) -> DataStatusRecord {
-    DataStatusRecord::new(
-        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{warning_id}"),
-        label,
-        value,
-        severity,
-        matches!(
-            severity,
-            UiStatusSeverity::Caution | UiStatusSeverity::Warning | UiStatusSeverity::Unavailable
-        ),
-        detail,
-    )
-}
-
-fn warning_text_package_status_record(
-    warning_id: &str,
-    family_id: &str,
-    warning_text: &str,
-) -> DataStatusRecord {
-    DataStatusRecord::new(
-        format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{warning_id}"),
-        package_warning_label(family_id),
-        Some("WARNING".to_string()),
-        UiStatusSeverity::Warning,
-        true,
-        warning_text.to_string(),
-    )
-}
-
-fn nav_db_family_warning_status_record(family: &NavDbFamilyRecord) -> Option<DataStatusRecord> {
-    if !family_warning_is_supported(&family.id) {
-        return None;
-    }
-    let warning_id = format!("family:{}", family.id);
-    if let Some(warning) = family.ui_warning.as_ref() {
-        return Some(structured_package_warning_status_record(
-            &warning_id,
-            if warning.label.is_empty() {
-                family.display_name.clone()
-            } else {
-                warning.label.clone()
-            },
-            warning.value.clone(),
-            warning.severity,
-            warning.detail.clone(),
-        ));
-    }
-    family.warning_text.as_ref().map(|warning_text| {
-        warning_text_package_status_record(&warning_id, &family.id, warning_text)
-    })
-}
-
-fn family_warning_is_supported(family_id: &str) -> bool {
-    matches!(
-        family_id,
-        "sec" | "tac" | "flyway" | "enr-l" | "enr-h" | "tpp" | "csup"
-    )
-}
-
-fn attached_nav_db_warning_status_record(
-    artifact: &AttachedNavDbArtifact,
-) -> Option<DataStatusRecord> {
-    artifact.warning_text.as_ref().map(|warning_text| {
-        DataStatusRecord::new(
-            format!("{PACKAGE_UI_WARNING_STATUS_PREFIX}{}", artifact.package_id),
-            "NAV DB",
-            Some("WARNING".to_string()),
-            UiStatusSeverity::Warning,
-            true,
-            warning_text.clone(),
-        )
-    })
-}
-
-fn package_warning_label(family_id: &str) -> String {
-    match family_id {
-        "nav-db" => "NAV DB".to_string(),
-        "sec" => "Sectional".to_string(),
-        "tac" => "TAC".to_string(),
-        "flyway" => "Flyway".to_string(),
-        "enr-l" => "IFR-L".to_string(),
-        "enr-h" => "IFR-H".to_string(),
-        "tpp" => "TPP".to_string(),
-        "csup" => "CSup".to_string(),
-        "terrain" => "Terrain".to_string(),
-        "shaded-relief" => "Shaded relief".to_string(),
-        "world-basemap" => "World basemap".to_string(),
-        "geo" => "Geodesy".to_string(),
-        other => other.to_ascii_uppercase(),
-    }
-}
-
-fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
+fn nav_db_package_records(session: &UiSession) -> Vec<DataStatusNavDbPackageRecord> {
     let Some(store) = session.nav_data.store() else {
         return Vec::new();
     };
@@ -1904,7 +1797,7 @@ fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
             let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes(&key) else {
                 return None;
             };
-            serde_json::from_slice::<NavDbPackageRecord>(&bytes).ok()
+            serde_json::from_slice::<DataStatusNavDbPackageRecord>(&bytes).ok()
         })
         .collect::<Vec<_>>();
     records.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1912,1274 +1805,30 @@ fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
     records
 }
 
-fn nav_db_family_records(session: &UiSession) -> Vec<NavDbFamilyRecord> {
+fn nav_db_family_records(session: &UiSession) -> Vec<DataStatusNavDbFamilyRecord> {
     let Some(store) = session.nav_data.store() else {
         return Vec::new();
     };
     let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes("resource/families") else {
         return Vec::new();
     };
-    serde_json::from_slice::<Vec<NavDbFamilyRecord>>(&bytes).unwrap_or_default()
-}
-
-fn package_warning_status_records(session: &UiSession) -> Vec<DataStatusRecord> {
-    let mut records = BTreeMap::new();
-    for family in nav_db_family_records(session) {
-        if let Some(record) = nav_db_family_warning_status_record(&family) {
-            records.insert(record.id.clone(), record);
-        }
-    }
-    if let Some(record) = session
-        .nav_data
-        .active_artifact()
-        .and_then(attached_nav_db_warning_status_record)
-    {
-        records.insert(record.id.clone(), record);
-    }
-    records.into_values().collect()
+    serde_json::from_slice::<Vec<DataStatusNavDbFamilyRecord>>(&bytes).unwrap_or_default()
 }
 
 fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
-    let records = package_warning_status_records(session);
-    let active_ids = records
-        .iter()
-        .map(|record| record.id.clone())
-        .collect::<BTreeSet<_>>();
-    let stale_ids = session
-        .data_status_records
-        .keys()
-        .filter(|id| id.starts_with(PACKAGE_UI_WARNING_STATUS_PREFIX) && !active_ids.contains(*id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut changed = false;
-    for id in stale_ids {
-        changed |= session.data_status_records.remove(&id).is_some();
-    }
-    for record in records {
-        changed |= session
-            .data_status_records
-            .get(&record.id)
-            .is_none_or(|existing| existing != &record);
-        session
-            .data_status_records
-            .insert(record.id.clone(), record);
-    }
-    if changed {
-        sync_data_status_projection(session);
-    }
-    changed
-}
-
-fn project_data_status_page_state(
-    session: &UiSession,
-    cloud_projection: &CloudProjection,
-) -> UiDataStatusPageState {
-    let metars_status = metar_live_feed_status_source(session);
-    let tafs_status = taf_live_feed_status_source(session);
-    let mut rows = vec![
-        client_build_status_page_row(session),
-        publication_status_page_row(session),
-        expected_contract_versions_status_page_row(),
-        nav_db_status_page_row(session),
-        cycle_package_group_status_page_row(
-            session,
-            "cycle:charts",
-            "Charts",
-            "charts",
-            &[
-                ("sec", "Sectional", 10),
-                ("tac", "TAC", 20),
-                ("enr-l", "IFR-L", 30),
-                ("enr-h", "IFR-H", 40),
-            ],
-        ),
-        cycle_package_group_status_page_row(
-            session,
-            "cycle:airport_docs",
-            "Airport docs",
-            "airport docs",
-            &[("tpp", "TPP", 10), ("csup", "CSup", 20)],
-        ),
-        static_package_group_status_page_row(
-            session,
-            "static:base_data",
-            "Static data",
-            &[
-                ("terrain", "Terrain", 10),
-                ("shaded-relief", "Shaded relief", 20),
-                ("world-basemap", "World basemap", 30),
-                ("geo", "Geodesy", 40),
-            ],
-        ),
-        live_feed_connection_status_page_row(session),
-        live_feed_product_status_page_row(
-            session,
-            "tfrs",
-            "TFRs",
-            session.weather.runtime().tfr_payload.is_some(),
-            live_feed_status_timestamp(session, "tfrs").or_else(|| {
-                session
-                    .weather
-                    .runtime()
-                    .tfr_payload
-                    .as_ref()
-                    .and_then(|payload| payload.generated_at_utc)
-            }),
-            DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
-            session
-                .weather
-                .live_feeds()
-                .product_loaded_version("tfrs")
-                .map(str::to_string),
-        ),
-        live_feed_product_status_page_row(
-            session,
-            "notams",
-            "NOTAMs",
-            session.weather.runtime().airport_notam_index.is_some(),
-            live_feed_status_timestamp(session, "notams"),
-            DATA_FRESHNESS_POLICIES.live_feeds.notams,
-            session
-                .weather
-                .live_feeds()
-                .product_loaded_version("notams")
-                .map(str::to_string),
-        ),
-        live_feed_product_status_page_row(
-            session,
-            "metars",
-            "METARs",
-            metars_status.loaded,
-            metars_status.collected_utc,
-            DATA_FRESHNESS_POLICIES.live_feeds.metars,
-            metars_status.loaded_version,
-        ),
-        live_feed_product_status_page_row(
-            session,
-            "tafs",
-            "TAFs",
-            tafs_status.loaded,
-            tafs_status.collected_utc,
-            DATA_FRESHNESS_POLICIES.live_feeds.tafs,
-            tafs_status.loaded_version,
-        ),
-        nexrad_live_feed_status_page_row(session),
-        live_feed_product_status_page_row(
-            session,
-            "obstacles",
-            "Obstacles",
-            session.weather.runtime().obstacle_had.is_some()
-                || session
-                    .weather
-                    .live_feeds()
-                    .product_state_manifest("obstacles")
-                    .is_some(),
-            live_feed_status_timestamp(session, "obstacles").or_else(|| {
-                session
-                    .weather
-                    .live_feeds()
-                    .product_state_manifest("obstacles")
-                    .and_then(json_generated_at_utc)
-            }),
-            DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
-            session
-                .weather
-                .runtime()
-                .obstacle_had
-                .as_ref()
-                .map(|had| had.source.version.clone())
-                .or_else(|| {
-                    session
-                        .weather
-                        .live_feeds()
-                        .product_loaded_version("obstacles")
-                        .map(str::to_string)
-                }),
-        ),
-        winds_aloft_status_page_row(session),
-    ];
-    if session.platform_capabilities.cloud.is_some() {
-        rows.insert(3, cloud_status_page_row(cloud_projection));
-    }
-    rows.extend(package_warning_status_page_rows(session));
-    UiDataStatusPageState {
-        title: "Status".to_string(),
-        summary: data_status_page_summary(&rows),
-        rows,
-    }
-}
-
-fn cloud_status_page_row(cloud_projection: &CloudProjection) -> UiDataStatusPageRow {
-    let summary = &cloud_projection.status_summary;
-    status_page_row(
-        "cloud:status",
-        "Cloud",
-        summary.label.clone(),
-        summary.severity,
-        summary.detail.clone(),
-        summary
-            .facts
-            .iter()
-            .map(|fact| status_fact(fact.label.clone(), fact.value.clone()))
-            .collect(),
-    )
-}
-
-fn package_warning_status_page_rows(session: &UiSession) -> Vec<UiDataStatusPageRow> {
-    let mut records = package_warning_status_records(session);
-    records.sort_by(|left, right| {
-        left.label
-            .cmp(&right.label)
-            .then_with(|| left.id.cmp(&right.id))
+    let families = nav_db_family_records(session);
+    let attached = session.nav_data.active_artifact().and_then(|artifact| {
+        artifact
+            .warning_text
+            .as_ref()
+            .map(|warning_text| DataStatusAttachedPackageWarning {
+                package_id: artifact.package_id.clone(),
+                warning_text: warning_text.clone(),
+            })
     });
-    records
-        .into_iter()
-        .map(|record| {
-            status_page_row(
-                record.id,
-                record.label,
-                record.value.unwrap_or_else(|| "WARNING".to_string()),
-                record.severity,
-                record.detail,
-                Vec::new(),
-            )
-        })
-        .collect()
-}
-
-fn data_status_page_summary(rows: &[UiDataStatusPageRow]) -> String {
-    let warnings = rows
-        .iter()
-        .filter(|row| matches!(row.severity, UiStatusSeverity::Warning))
-        .count();
-    let unavailable = rows
-        .iter()
-        .filter(|row| matches!(row.severity, UiStatusSeverity::Unavailable))
-        .count();
-    let cautions = rows
-        .iter()
-        .filter(|row| matches!(row.severity, UiStatusSeverity::Caution))
-        .count();
-    if warnings + unavailable + cautions == 0 {
-        return "All tracked systems are usable.".to_string();
-    }
-    let mut parts = Vec::new();
-    if warnings > 0 {
-        parts.push(format!("{warnings} warning{}", plural_s(warnings)));
-    }
-    if cautions > 0 {
-        parts.push(format!("{cautions} caution{}", plural_s(cautions)));
-    }
-    if unavailable > 0 {
-        parts.push(format!(
-            "{unavailable} unavailable source{}",
-            plural_s(unavailable)
-        ));
-    }
-    parts.join(", ")
-}
-
-fn client_build_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let Some(build) = session.platform_capabilities.client_build.as_ref() else {
-        return status_page_row(
-            "client",
-            "Client",
-            "UNKNOWN",
-            UiStatusSeverity::Info,
-            "Client build identity was not provided by this platform.",
-            Vec::new(),
-        );
-    };
-
-    let mut facts = vec![status_fact("Platform", build.platform.clone())];
-    if let Some(built_at_utc) = build.built_at_utc.as_deref() {
-        if let Some(instant) = parse_utc_instant(built_at_utc) {
-            facts.push(status_time_fact(
-                "Built",
-                instant,
-                UiDataStatusPageTimeDisplay::Ago,
-            ));
-        } else {
-            facts.push(status_fact("Built", built_at_utc.to_string()));
-        }
-    }
-    if let Some(commit) = build.commit.as_deref().filter(|commit| !commit.is_empty()) {
-        facts.push(status_fact("Commit", commit.to_string()));
-    }
-    if build.dirty {
-        facts.push(status_fact("Worktree", "dirty"));
-    }
-
-    let detail = if build.dirty {
-        format!(
-            "Running the {} client build {} from a dirty worktree.",
-            build.platform, build.version
-        )
-    } else {
-        format!(
-            "Running the {} client build {}.",
-            build.platform, build.version
-        )
-    };
-
-    status_page_row(
-        "client",
-        "Client",
-        build.version.clone(),
-        UiStatusSeverity::Ok,
-        detail,
-        facts,
-    )
-}
-
-fn cycle_package_group_status_page_row(
-    session: &UiSession,
-    id: &str,
-    label: &str,
-    noun: &str,
-    families: &[(&'static str, &'static str, u8)],
-) -> UiDataStatusPageRow {
-    let packages = package_group_packages(session, families);
-    if packages.is_empty() {
-        let severity = if session.nav_data.store().is_none() {
-            UiStatusSeverity::Unavailable
-        } else {
-            UiStatusSeverity::Info
-        };
-        return status_page_row(
-            id,
-            label,
-            "MISSING",
-            severity,
-            format!("No {noun} package rows are present in the attached nav-db."),
-            Vec::new(),
-        );
-    }
-
-    let now_utc = session_wall_clock_utc(session);
-    let mut seen_violations = BTreeSet::new();
-    let mut violations = Vec::new();
-    let mut family_set = BTreeSet::new();
-    let mut earliest_expiration: Option<DateTime<Utc>> = None;
-    let mut latest_effective: Option<DateTime<Utc>> = None;
-    let mut missing_expiration_families = BTreeSet::new();
-
-    let mut packages_by_family: BTreeMap<u8, (&'static str, Vec<&NavDbPackageRecord>)> =
-        BTreeMap::new();
-    for package in &packages {
-        let Some((_, family_label, family_sort_key)) = family_spec_for_package(families, package)
-        else {
-            continue;
-        };
-        family_set.insert((family_sort_key, family_label));
-        packages_by_family
-            .entry(family_sort_key)
-            .or_insert_with(|| (family_label, Vec::new()))
-            .1
-            .push(package);
-    }
-
-    for (family_sort_key, (family_label, family_packages)) in &packages_by_family {
-        let current_packages = family_packages
-            .iter()
-            .copied()
-            .filter(|package| cycle_package_is_currently_valid(package, now_utc))
-            .collect::<Vec<_>>();
-        if current_packages.is_empty() {
-            for package in family_packages {
-                collect_chart_validity_violations(
-                    &mut violations,
-                    &mut seen_violations,
-                    family_label,
-                    *family_sort_key,
-                    package.effective_date.as_deref(),
-                    package.expiration_date.as_deref(),
-                    now_utc,
-                );
-            }
-            continue;
-        }
-        let mut family_has_expiration = false;
-        for package in current_packages {
-            if let Some(effective_utc) = package
-                .effective_date
-                .as_deref()
-                .and_then(parse_utc_instant)
-            {
-                latest_effective = Some(
-                    latest_effective
-                        .map(|current| current.max(effective_utc))
-                        .unwrap_or(effective_utc),
-                );
-            }
-            if let Some(expiration_utc) = package
-                .expiration_date
-                .as_deref()
-                .and_then(parse_utc_instant)
-            {
-                family_has_expiration = true;
-                earliest_expiration = Some(
-                    earliest_expiration
-                        .map(|current| current.min(expiration_utc))
-                        .unwrap_or(expiration_utc),
-                );
-            }
-        }
-        if !family_has_expiration {
-            missing_expiration_families.insert((*family_sort_key, *family_label));
-        }
-    }
-
-    let family_list = status_family_list(family_set.iter().copied());
-    if !violations.is_empty() {
-        return status_page_row(
-            id,
-            label,
-            chart_validity_value(&violations),
-            UiStatusSeverity::Warning,
-            package_validity_detail(&family_list, noun, &violations),
-            vec![status_fact("Products", family_list)],
-        );
-    }
-
-    let mut facts = vec![
-        status_fact("Products", family_list.clone()),
-        status_fact("Packages", packages.len().to_string()),
-    ];
-    if let Some(effective) = latest_effective {
-        facts.push(status_time_fact(
-            "Effective",
-            effective,
-            UiDataStatusPageTimeDisplay::Ago,
-        ));
-    }
-    let next_cycle_window = next_published_cycle_window_for_families(session, families, now_utc)
-        .or_else(|| next_cycle_window_for_package_groups(&packages_by_family, now_utc));
-
-    if let Some(expiration) = earliest_expiration {
-        facts.push(status_time_fact(
-            "Expires",
-            expiration,
-            UiDataStatusPageTimeDisplay::Until,
-        ));
-        push_next_cycle_window_facts(&mut facts, next_cycle_window);
-        return status_page_row(
-            id,
-            label,
-            "OK",
-            UiStatusSeverity::Ok,
-            format!(
-                "{family_list} {noun} valid until {}.",
-                format_status_utc(expiration)
-            ),
-            facts,
-        );
-    }
-    if !missing_expiration_families.is_empty() {
-        facts.push(status_fact(
-            "Missing dates",
-            status_family_list(missing_expiration_families.iter().copied()),
-        ));
-    }
-    push_next_cycle_window_facts(&mut facts, next_cycle_window);
-    status_page_row(
-        id,
-        label,
-        "UNKNOWN",
-        UiStatusSeverity::Info,
-        format!("{family_list} {noun} validity metadata is not available."),
-        facts,
-    )
-}
-
-fn next_published_cycle_window_for_families(
-    session: &UiSession,
-    families: &[(&'static str, &'static str, u8)],
-    now_utc: DateTime<Utc>,
-) -> Option<CycleWindow> {
-    let mut latest_effective: Option<DateTime<Utc>> = None;
-    let mut earliest_expiration: Option<DateTime<Utc>> = None;
-    for (family_id, _, _) in families {
-        let Some((package, effective)) = session
-            .packages
-            .loaded_bundle_packages()
-            .filter(|package| {
-                package.family_id == *family_id
-                    && crate::package_management::package_contract_is_supported(package)
-            })
-            .filter_map(|package| {
-                let effective = package
-                    .effective_date
-                    .as_deref()
-                    .and_then(parse_utc_instant)?;
-                (now_utc < effective).then_some((package, effective))
-            })
-            .min_by(
-                |(left_package, left_effective), (right_package, right_effective)| {
-                    left_effective
-                        .cmp(right_effective)
-                        .then_with(|| left_package.id.cmp(&right_package.id))
-                },
-            )
-        else {
-            continue;
-        };
-        latest_effective = Some(
-            latest_effective
-                .map(|current| current.max(effective))
-                .unwrap_or(effective),
-        );
-        if let Some(expiration) = package
-            .expiration_date
-            .as_deref()
-            .and_then(parse_utc_instant)
-        {
-            earliest_expiration = Some(
-                earliest_expiration
-                    .map(|current| current.min(expiration))
-                    .unwrap_or(expiration),
-            );
-        }
-    }
-    if latest_effective.is_none() && earliest_expiration.is_none() {
-        None
-    } else {
-        Some(CycleWindow {
-            effective: latest_effective,
-            expiration: earliest_expiration,
-        })
-    }
-}
-
-fn next_cycle_window_for_package_groups(
-    packages_by_family: &BTreeMap<u8, (&'static str, Vec<&NavDbPackageRecord>)>,
-    now_utc: DateTime<Utc>,
-) -> Option<CycleWindow> {
-    let mut latest_effective: Option<DateTime<Utc>> = None;
-    let mut earliest_expiration: Option<DateTime<Utc>> = None;
-    for (_, family_packages) in packages_by_family.values() {
-        let Some(package) = family_packages
-            .iter()
-            .filter_map(|package| {
-                let effective = package
-                    .effective_date
-                    .as_deref()
-                    .and_then(parse_utc_instant)?;
-                (now_utc < effective).then_some((*package, effective))
-            })
-            .min_by(|(_, left), (_, right)| left.cmp(right))
-        else {
-            continue;
-        };
-        latest_effective = Some(
-            latest_effective
-                .map(|current| current.max(package.1))
-                .unwrap_or(package.1),
-        );
-        if let Some(expiration) = package
-            .0
-            .expiration_date
-            .as_deref()
-            .and_then(parse_utc_instant)
-        {
-            earliest_expiration = Some(
-                earliest_expiration
-                    .map(|current| current.min(expiration))
-                    .unwrap_or(expiration),
-            );
-        }
-    }
-    if latest_effective.is_none() && earliest_expiration.is_none() {
-        None
-    } else {
-        Some(CycleWindow {
-            effective: latest_effective,
-            expiration: earliest_expiration,
-        })
-    }
-}
-
-fn push_next_cycle_window_facts(
-    facts: &mut Vec<UiDataStatusPageFact>,
-    window: Option<CycleWindow>,
-) {
-    let Some(window) = window else {
-        return;
-    };
-    if let Some(effective) = window.effective {
-        facts.push(status_time_fact(
-            "Next effective",
-            effective,
-            UiDataStatusPageTimeDisplay::Until,
-        ));
-    }
-    if let Some(expiration) = window.expiration {
-        facts.push(status_time_fact(
-            "Next expires",
-            expiration,
-            UiDataStatusPageTimeDisplay::Until,
-        ));
-    }
-}
-
-fn cycle_package_is_currently_valid(package: &NavDbPackageRecord, now_utc: DateTime<Utc>) -> bool {
-    if package
-        .effective_date
-        .as_deref()
-        .and_then(parse_utc_instant)
-        .is_some_and(|effective| now_utc < effective)
-    {
-        return false;
-    }
-    if package
-        .expiration_date
-        .as_deref()
-        .and_then(parse_utc_instant)
-        .is_some_and(|expiration| cycle_product_is_expired(expiration, now_utc))
-    {
-        return false;
-    }
-    true
-}
-
-fn static_package_group_status_page_row(
-    session: &UiSession,
-    id: &str,
-    label: &str,
-    families: &[(&'static str, &'static str, u8)],
-) -> UiDataStatusPageRow {
-    let packages = package_group_packages(session, families);
-    if packages.is_empty() {
-        let severity = if session.nav_data.store().is_none() {
-            UiStatusSeverity::Unavailable
-        } else {
-            UiStatusSeverity::Info
-        };
-        return status_page_row(
-            id,
-            label,
-            "MISSING",
-            severity,
-            "No static package rows are present in the attached nav-db.",
-            Vec::new(),
-        );
-    }
-
-    let now_utc = session_wall_clock_utc(session);
-    let mut newest_by_family: BTreeMap<u8, (&'static str, DateTime<Utc>)> = BTreeMap::new();
-    let mut family_set = BTreeSet::new();
-    for package in &packages {
-        let Some((_, family_label, family_sort_key)) = family_spec_for_package(families, package)
-        else {
-            continue;
-        };
-        family_set.insert((family_sort_key, family_label));
-        if let Some(effective_utc) = package
-            .effective_date
-            .as_deref()
-            .and_then(parse_utc_instant)
-        {
-            newest_by_family
-                .entry(family_sort_key)
-                .and_modify(|(_, current)| *current = (*current).max(effective_utc))
-                .or_insert((family_label, effective_utc));
-        }
-    }
-
-    let family_list = status_family_list(family_set.iter().copied());
-    let mut facts = vec![
-        status_fact("Products", family_list.clone()),
-        status_fact("Packages", packages.len().to_string()),
-    ];
-    for (_, (family_label, effective_utc)) in &newest_by_family {
-        facts.push(status_time_fact(
-            *family_label,
-            *effective_utc,
-            UiDataStatusPageTimeDisplay::Old,
-        ));
-    }
-    if newest_by_family.is_empty() {
-        return status_page_row(
-            id,
-            label,
-            "LOADED",
-            UiStatusSeverity::Info,
-            format!("{family_list} packages are loaded, but source age metadata is not available."),
-            facts,
-        );
-    }
-    let oldest = newest_by_family
-        .values()
-        .map(|(_, effective)| *effective)
-        .min()
-        .unwrap_or(now_utc);
-    status_page_row(
-        id,
-        label,
-        "OK",
-        UiStatusSeverity::Ok,
-        format!(
-            "{family_list} source data dates back to {}.",
-            format_status_utc(oldest)
-        ),
-        facts,
-    )
-}
-
-fn package_group_packages(
-    session: &UiSession,
-    families: &[(&'static str, &'static str, u8)],
-) -> Vec<NavDbPackageRecord> {
-    let family_ids = families
-        .iter()
-        .map(|(family_id, _, _)| *family_id)
-        .collect::<BTreeSet<_>>();
-    nav_db_package_records(session)
-        .into_iter()
-        .filter(|package| family_ids.contains(package.family_id.as_str()))
-        .collect()
-}
-
-fn family_spec_for_package<'a>(
-    families: &'a [(&'static str, &'static str, u8)],
-    package: &NavDbPackageRecord,
-) -> Option<(&'static str, &'static str, u8)> {
-    families
-        .iter()
-        .find(|(family_id, _, _)| *family_id == package.family_id.as_str())
-        .copied()
-}
-
-fn package_validity_detail(
-    family_list: &str,
-    noun: &str,
-    violations: &[ChartValidityViolation],
-) -> String {
-    format!(
-        "{family_list} {noun} {}.",
-        chart_validity_condition(violations)
-    )
-}
-
-fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let Some(artifact) = session.nav_data.active_artifact() else {
-        return status_page_row(
-            "nav_db",
-            "NAV DB",
-            "MISSING",
-            UiStatusSeverity::Unavailable,
-            "No nav-db package is attached.",
-            Vec::new(),
-        );
-    };
-    let now_utc = session_wall_clock_utc(session);
-    let mut earliest_expiration: Option<DateTime<Utc>> = None;
-    let mut latest_effective: Option<DateTime<Utc>> = None;
-    let mut expired = false;
-    let mut not_yet_effective = false;
-    if let Some(effective_utc) = artifact
-        .effective_date
-        .as_deref()
-        .and_then(parse_utc_instant)
-    {
-        latest_effective = Some(effective_utc);
-        not_yet_effective |= now_utc < effective_utc;
-    }
-    if let Some(expiration_utc) = artifact
-        .expiration_date
-        .as_deref()
-        .and_then(parse_utc_instant)
-    {
-        earliest_expiration = Some(expiration_utc);
-        expired |= cycle_product_is_expired(expiration_utc, now_utc);
-    }
-    let mut facts = vec![
-        status_fact("Package", artifact.package_id.clone()),
-        status_fact("File", artifact.filename.clone()),
-    ];
-    if let Some(cycle) = artifact.cycle.as_deref() {
-        facts.push(status_fact("Cycle", cycle));
-    }
-    if let Some(version) = artifact.cycle_version.as_deref() {
-        facts.push(status_fact("Cycle version", version));
-    }
-    if let Some(contract_id) = artifact.contract_id.as_deref() {
-        facts.push(status_fact("Contract", contract_id));
-    }
-    if let Some(effective) = latest_effective {
-        facts.push(status_time_fact(
-            "Effective",
-            effective,
-            UiDataStatusPageTimeDisplay::Ago,
-        ));
-    }
-    if let Some(expiration) = earliest_expiration {
-        facts.push(status_time_fact(
-            "Expires",
-            expiration,
-            UiDataStatusPageTimeDisplay::Until,
-        ));
-    }
-    push_next_cycle_window_facts(&mut facts, next_nav_db_cycle_window(session, now_utc));
-    if expired || not_yet_effective {
-        let value = match (expired, not_yet_effective) {
-            (true, true) => "INVALID",
-            (true, false) => "EXPIRED",
-            (false, true) => "EARLY",
-            (false, false) => "INVALID",
-        };
-        let condition = match (expired, not_yet_effective) {
-            (true, true) => "not valid",
-            (true, false) => "expired",
-            (false, true) => "not valid yet",
-            (false, false) => "not valid",
-        };
-        return status_page_row(
-            "nav_db",
-            "NAV DB",
-            value,
-            UiStatusSeverity::Warning,
-            format!(
-                "Attached nav-db package {} is {condition}.",
-                artifact.package_id
-            ),
-            facts,
-        );
-    }
-    if let Some(expiration) = earliest_expiration {
-        return status_page_row(
-            "nav_db",
-            "NAV DB",
-            "OK",
-            UiStatusSeverity::Ok,
-            format!("NAV DB valid until {}.", format_status_utc(expiration)),
-            facts,
-        );
-    }
-    status_page_row(
-        "nav_db",
-        "NAV DB",
-        "UNKNOWN",
-        UiStatusSeverity::Info,
-        "NAV DB package metadata does not include an expiration date.",
-        facts,
-    )
-}
-
-fn next_nav_db_cycle_window(session: &UiSession, now_utc: DateTime<Utc>) -> Option<CycleWindow> {
-    let mut candidates = session
-        .packages
-        .loaded_bundle_packages()
-        .filter(|package| {
-            package.family_id == "nav-db"
-                && crate::package_management::package_contract_is_supported(package)
-        })
-        .filter_map(|package| {
-            let effective = package
-                .effective_date
-                .as_deref()
-                .and_then(parse_utc_instant)?;
-            (now_utc < effective).then_some((package, effective))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(
-        |(left_package, left_effective), (right_package, right_effective)| {
-            left_effective
-                .cmp(right_effective)
-                .then_with(|| left_package.id.cmp(&right_package.id))
-        },
-    );
-    let (package, effective) = candidates.first().copied()?;
-    Some(CycleWindow {
-        effective: Some(effective),
-        expiration: package
-            .expiration_date
-            .as_deref()
-            .and_then(parse_utc_instant),
-    })
-}
-
-fn expected_contract_versions_status_page_row() -> UiDataStatusPageRow {
-    let facts = product_contracts::PRODUCT_CONTRACTS
-        .iter()
-        .map(|contract| {
-            status_fact(
-                package_warning_label(contract.family_id),
-                contract.contract_id,
-            )
-        })
-        .collect::<Vec<_>>();
-    status_page_row(
-        "contracts:expected",
-        "Contract versions",
-        product_contracts::PRODUCT_CONTRACTS.len().to_string(),
-        UiStatusSeverity::Ok,
-        "Core will only accept packages that match these product contract ids.",
-        facts,
-    )
-}
-
-fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let Some(current_artifacts) = session.packages.current_artifacts() else {
-        return status_page_row(
-            "publication:current_artifacts",
-            "Package library",
-            "NEVER",
-            UiStatusSeverity::Info,
-            "current_artifacts.json has not been checked in this session.",
-            Vec::new(),
-        );
-    };
-    let mut facts = Vec::new();
-    facts.push(status_fact(
-        "Bundles",
-        current_artifacts.bundles.len().to_string(),
-    ));
-    facts.push(status_fact(
-        "Loaded manifests",
-        session.packages.loaded_bundle_manifest_count().to_string(),
-    ));
-    if let Some(as_of) = current_artifacts
-        .as_of_utc
-        .as_deref()
-        .and_then(parse_utc_instant)
-    {
-        facts.push(status_time_fact(
-            "Published",
-            as_of,
-            UiDataStatusPageTimeDisplay::Ago,
-        ));
-    }
-    if let Some(checked_at) = session.packages.current_artifacts_checked_epoch_ms() {
-        let checked_utc = utc_from_epoch_ms(checked_at);
-        facts.push(status_time_fact(
-            "Checked",
-            checked_utc,
-            UiDataStatusPageTimeDisplay::Ago,
-        ));
-        return status_page_row(
-            "publication:current_artifacts",
-            "Package library",
-            "OK",
-            UiStatusSeverity::Ok,
-            format!(
-                "current_artifacts.json checked at {}.",
-                format_status_utc(checked_utc)
-            ),
-            facts,
-        );
-    }
-    status_page_row(
-        "publication:current_artifacts",
-        "Package library",
-        "LOADED",
-        UiStatusSeverity::Ok,
-        "current_artifacts.json is loaded; check time was not recorded.",
-        facts,
-    )
-}
-
-fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let connection = session.weather.connection();
-    let mut facts = Vec::new();
-    if let Some(source_url) = connection.source_url.as_deref() {
-        facts.push(status_link_fact(
-            "Server",
-            source_url,
-            connection.status_url.as_deref().unwrap_or(source_url),
-        ));
-    }
-    if let Some(last_heard) = connection.last_heard_epoch_ms {
-        facts.push(status_time_fact(
-            "Last server event",
-            utc_from_epoch_ms(last_heard),
-            UiDataStatusPageTimeDisplay::Ago,
-        ));
-    }
-    if let Some(status) = connection.network_status {
-        facts.push(status_fact(
-            "Network",
-            live_feed_network_status_label(status),
-        ));
-    }
-    let last_error_epoch = connection
-        .last_resource_error_epoch_ms
-        .or(connection.last_error_epoch_ms);
-    let network_issue = live_feed_network_status_issue(connection.network_status);
-    let last_error_message = connection
-        .last_resource_error_message
-        .as_deref()
-        .or_else(|| {
-            if matches!(connection.mode, LiveFeedConnectionMode::Error) {
-                network_issue
-            } else {
-                None
-            }
-        })
-        .or(connection.last_error_message.as_deref());
-    if let Some(last_error) = last_error_epoch {
-        facts.push(status_time_fact(
-            "Last error",
-            utc_from_epoch_ms(last_error),
-            UiDataStatusPageTimeDisplay::Ago,
-        ));
-    }
-    if let Some(message) = last_error_message {
-        facts.push(status_fact("Error", message.to_string()));
-    }
-    let resource_error_message = connection.last_resource_error_message.as_ref();
-    let (value, severity, detail) = if let Some(message) = resource_error_message {
-        (
-            "ERROR",
-            UiStatusSeverity::Unavailable,
-            match connection.mode {
-                LiveFeedConnectionMode::Connected => format!(
-                    "The live-feed event stream is connected, but live-feed data is unavailable: {message}"
-                ),
-                LiveFeedConnectionMode::Closed => {
-                    format!("The live-feed event stream is closed. Last live-feed error: {message}")
-                }
-                _ => format!("Live-feed data is unavailable: {message}"),
-            },
-        )
-    } else if let Some(message) = network_issue {
-        (
-            match connection.network_status {
-                Some(LiveFeedNetworkStatus::Metered) => "METERED",
-                Some(LiveFeedNetworkStatus::NoActiveNetwork) => "NO NETWORK",
-                _ => "NETWORK",
-            },
-            UiStatusSeverity::Unavailable,
-            message.to_string(),
-        )
-    } else {
-        match connection.mode {
-            LiveFeedConnectionMode::Unknown => (
-                "UNKNOWN",
-                UiStatusSeverity::Info,
-                "No live-feed connection state has been reported.".to_string(),
-            ),
-            LiveFeedConnectionMode::Connecting => (
-                "CONNECTING",
-                UiStatusSeverity::Info,
-                "The live-feed event stream is connecting.".to_string(),
-            ),
-            LiveFeedConnectionMode::Connected => {
-                let heard = connection
-                    .last_heard_epoch_ms
-                    .map(|epoch| {
-                        format!(
-                            " Last server event was at {}.",
-                            format_status_utc(utc_from_epoch_ms(epoch))
-                        )
-                    })
-                    .unwrap_or_default();
-                (
-                    "CONNECTED",
-                    UiStatusSeverity::Ok,
-                    format!("The live-feed event stream is connected.{heard}"),
-                )
-            }
-            LiveFeedConnectionMode::Error => (
-                "ERROR",
-                UiStatusSeverity::Unavailable,
-                connection
-                    .last_error_message
-                    .as_ref()
-                    .map(|message| {
-                        format!("The live-feed event stream reported an error: {message}.")
-                    })
-                    .unwrap_or_else(|| "The live-feed event stream reported an error.".to_string()),
-            ),
-            LiveFeedConnectionMode::Closed => (
-                "CLOSED",
-                UiStatusSeverity::Unavailable,
-                connection
-                    .last_error_message
-                    .as_ref()
-                    .map(|message| {
-                        format!(
-                            "The live-feed event stream is closed. Last live-feed error: {message}"
-                        )
-                    })
-                    .unwrap_or_else(|| "The live-feed event stream is closed.".to_string()),
-            ),
-        }
-    };
-    status_page_row(
-        "live_feed:connection",
-        "Live-feed connection",
-        value,
-        severity,
-        detail,
-        facts,
-    )
-}
-
-fn live_feed_network_status_label(status: LiveFeedNetworkStatus) -> &'static str {
-    match status {
-        LiveFeedNetworkStatus::Unmetered => "Unmetered",
-        LiveFeedNetworkStatus::Metered => "Metered",
-        LiveFeedNetworkStatus::NoActiveNetwork => "No active network",
-        LiveFeedNetworkStatus::Unknown => "Unknown",
-    }
-}
-
-fn live_feed_network_status_issue(status: Option<LiveFeedNetworkStatus>) -> Option<&'static str> {
-    match status {
-        Some(LiveFeedNetworkStatus::Metered) => Some(
-            "The active network is metered. Live feeds are allowed, but this network condition can explain live-feed connectivity failures.",
-        ),
-        Some(LiveFeedNetworkStatus::NoActiveNetwork) => {
-            Some("Android reports no active network for live feeds.")
-        }
-        _ => None,
-    }
-}
-
-fn live_feed_product_status_page_row(
-    session: &UiSession,
-    product: &str,
-    label: &str,
-    loaded: bool,
-    collected_utc: Option<DateTime<Utc>>,
-    policy: crate::freshness::AgeFreshnessPolicy,
-    loaded_version: Option<String>,
-) -> UiDataStatusPageRow {
-    let now_utc = session_wall_clock_utc(session);
-    let mut facts = Vec::new();
-    if let Some(version) = loaded_version {
-        facts.push(status_fact("Version", version));
-    }
-    if let Some(collected) = collected_utc {
-        facts.push(status_time_fact(
-            "Collected At",
-            collected,
-            UiDataStatusPageTimeDisplay::Old,
-        ));
-    }
-    if !loaded {
-        let detail = if session.weather.live_feeds().current_loaded() {
-            if session
-                .weather
-                .live_feeds()
-                .has_product_current_version(product)
-            {
-                format!("{label} is listed in the live-feed index but no current state is loaded.")
-            } else {
-                format!("{label} is not listed in the live-feed index.")
-            }
-        } else {
-            "The live-feed index has not loaded.".to_string()
-        };
-        return status_page_row(
-            format!("live_feed:{product}"),
-            label,
-            "MISSING",
-            UiStatusSeverity::Unavailable,
-            detail,
-            facts,
-        );
-    }
-    let Some(collected_utc) = collected_utc else {
-        return status_page_row(
-            format!("live_feed:{product}"),
-            label,
-            "CACHED",
-            UiStatusSeverity::Info,
-            format!("Cached {label} live-feed data is available, but source timestamp is unknown."),
-            facts,
-        );
-    };
-    if let Some(violation) = evaluate_age(policy, collected_utc, now_utc) {
-        return status_page_row(
-            format!("live_feed:{product}"),
-            label,
-            "OLD",
-            freshness_status_severity(violation),
-            format!("{label} data is {} old.", format_age(violation.age_ms)),
-            facts,
-        );
-    }
-    status_page_row(
-        format!("live_feed:{product}"),
-        label,
-        "OK",
-        UiStatusSeverity::Ok,
-        format!("{label} is loaded."),
-        facts,
-    )
-}
-
-fn winds_aloft_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let manifest = session
-        .weather
-        .runtime()
-        .forecast_atmosphere
-        .as_ref()
-        .map(crate::InstalledForecastAtmosphere::manifest)
-        .or_else(|| {
-            session
-                .weather
-                .runtime()
-                .forecast_atmosphere_state
-                .as_ref()
-                .map(|state| &state.manifest)
-        });
-    let mut facts = Vec::new();
-    if let Some(manifest) = manifest {
-        facts.push(status_fact("Version", manifest.version_label.clone()));
-        facts.push(status_fact("Model", manifest.model_id.clone()));
-        if let Some(cycle) = DateTime::<Utc>::from_timestamp_millis(manifest.cycle_time_epoch_ms) {
-            facts.push(status_time_fact(
-                "Model Cycle",
-                cycle,
-                UiDataStatusPageTimeDisplay::Old,
-            ));
-        }
-        if let Some(valid_through) = manifest
-            .valid_times_epoch_ms
-            .last()
-            .and_then(|epoch_ms| DateTime::<Utc>::from_timestamp_millis(*epoch_ms))
-        {
-            facts.push(status_time_fact(
-                "Valid Through",
-                valid_through,
-                UiDataStatusPageTimeDisplay::Until,
-            ));
-        }
-    }
-    if session.weather.runtime().forecast_atmosphere.is_some() {
-        return status_page_row(
-            "live_feed:winds-aloft",
-            "Winds aloft",
-            "OK",
-            UiStatusSeverity::Ok,
-            "NOAA forecast atmosphere is loaded.",
-            facts,
-        );
-    }
-    let detail = if session.weather.live_feeds().current_loaded() {
-        if session
-            .weather
-            .live_feeds()
-            .has_product_current_version("winds-aloft")
-        {
-            "Winds aloft is listed in the live-feed index but its current NavKv state is not loaded."
-        } else {
-            "Winds aloft is not listed in the live-feed index."
-        }
-    } else {
-        "The live-feed index has not loaded."
-    };
-    status_page_row(
-        "live_feed:winds-aloft",
-        "Winds aloft",
-        "MISSING",
-        UiStatusSeverity::Unavailable,
-        detail,
-        facts,
-    )
+    session
+        .data_status
+        .replace_package_warnings(families, attached)
 }
 
 fn nexrad_status_manifest(session: &UiSession) -> Option<&serde_json::Value> {
@@ -3204,30 +1853,6 @@ fn latest_installed_nexrad(session: &UiSession) -> Option<&LiveNexradInstalledSt
                 .cmp(&json_observed_at_utc(&right.manifest))
                 .then_with(|| left.version.cmp(&right.version))
         })
-}
-
-fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let mut row = live_feed_product_status_page_row(
-        session,
-        "nexrad",
-        "NEXRAD",
-        nexrad_status_manifest(session).is_some(),
-        live_feed_status_timestamp(session, "nexrad")
-            .or_else(|| nexrad_status_manifest(session).and_then(json_observed_at_utc)),
-        DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
-        latest_installed_nexrad(session)
-            .map(|installed| installed.version.clone())
-            .or_else(|| {
-                session
-                    .weather
-                    .live_feeds()
-                    .product_loaded_version("nexrad")
-                    .map(str::to_string)
-            }),
-    );
-    row.facts
-        .push(status_fact("Frames", nexrad_frame_age_summary(session)));
-    row
 }
 
 fn nexrad_frame_age_summary(session: &UiSession) -> String {
@@ -3273,86 +1898,6 @@ fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
         .get("observed_at_utc")
         .and_then(serde_json::Value::as_str)
         .and_then(parse_utc_instant)
-}
-
-fn status_page_row(
-    id: impl Into<String>,
-    label: impl Into<String>,
-    value: impl Into<String>,
-    severity: UiStatusSeverity,
-    detail: impl Into<String>,
-    facts: Vec<UiDataStatusPageFact>,
-) -> UiDataStatusPageRow {
-    UiDataStatusPageRow {
-        id: id.into(),
-        label: label.into(),
-        value: value.into(),
-        severity,
-        detail: detail.into(),
-        facts,
-    }
-}
-
-fn status_fact(label: impl Into<String>, value: impl Into<String>) -> UiDataStatusPageFact {
-    UiDataStatusPageFact {
-        label: label.into(),
-        value: value.into(),
-        link_url: None,
-        time_utc: None,
-        time_display: None,
-    }
-}
-
-fn status_link_fact(
-    label: impl Into<String>,
-    value: impl Into<String>,
-    link_url: impl Into<String>,
-) -> UiDataStatusPageFact {
-    UiDataStatusPageFact {
-        label: label.into(),
-        value: value.into(),
-        link_url: Some(link_url.into()),
-        time_utc: None,
-        time_display: None,
-    }
-}
-
-fn status_time_fact(
-    label: impl Into<String>,
-    instant: DateTime<Utc>,
-    display: UiDataStatusPageTimeDisplay,
-) -> UiDataStatusPageFact {
-    UiDataStatusPageFact {
-        label: label.into(),
-        value: format_status_utc(instant),
-        link_url: None,
-        time_utc: Some(format_status_rfc3339(instant)),
-        time_display: Some(display),
-    }
-}
-
-fn status_family_list<'a>(families: impl IntoIterator<Item = (u8, &'a str)>) -> String {
-    families
-        .into_iter()
-        .map(|(_, label)| label)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_status_utc(instant: DateTime<Utc>) -> String {
-    instant.format("%Y-%m-%d %H:%M UTC").to_string()
-}
-
-fn format_status_rfc3339(instant: DateTime<Utc>) -> String {
-    instant.to_rfc3339_opts(SecondsFormat::Secs, true)
-}
-
-fn plural_s(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
 }
 
 fn missing_active_plan_error(context: &str) -> AppError {
@@ -3518,12 +2063,9 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_other_ui_state");
     }
-    let mut data_status_records = BTreeMap::new();
-    for record in procedure_geometry_status_records_for_plan(&active_plan) {
-        data_status_records.insert(record.id.clone(), record);
-    }
-    let hushed_status_ids = BTreeSet::new();
-    let data_status_state = project_data_status_state(&data_status_records, &hushed_status_ids);
+    let mut data_status =
+        DataStatusController::new(procedure_geometry_status_records_for_plan(&active_plan));
+    let data_status_state = data_status.project_state().state;
     let data_status_page_state = default_data_status_page_state();
     let settings_page_state = default_settings_page_state();
     let settings = SettingsController::default();
@@ -3597,15 +2139,15 @@ fn create_ui_session_inner(
     diagnostics
         .cloud_projection_count
         .store(1, Ordering::Relaxed);
+    diagnostics
+        .data_status_projection_count
+        .store(1, Ordering::Relaxed);
     let session = UiSession {
         model: SessionModel {
             session_revision: 0,
             content_policy: app_state.content_policy,
             last_content_report: app_state.last_content_report,
             chart_page_state,
-            data_status_records,
-            hushed_status_ids,
-            data_status_state,
             platform_capabilities,
             settings,
             persistence_storage: None,
@@ -3622,6 +2164,7 @@ fn create_ui_session_inner(
         nav_data: NavDataController::default(),
         packages,
         cloud,
+        data_status,
         situation,
         weather: WeatherController::default(),
         map,
@@ -4072,6 +2615,7 @@ struct SessionModelTransactionCheckpoint {
     nav_data: NavDataModelCheckpoint,
     packages: PackageModelCheckpoint,
     cloud: CloudModelCheckpoint,
+    data_status: DataStatusModelCheckpoint,
     situation: SituationModelCheckpoint,
     weather: WeatherModelCheckpoint,
     map: MapModelCheckpoint,
@@ -4086,6 +2630,7 @@ impl SessionModelTransactionCheckpoint {
             nav_data: session.nav_data.checkpoint_model(),
             packages: session.packages.checkpoint_model(),
             cloud: session.cloud.checkpoint_model(),
+            data_status: session.data_status.checkpoint_model(),
             situation: session.situation.checkpoint_model(),
             weather: session.weather.checkpoint_model(),
             map: session.map.checkpoint_model(),
@@ -4099,6 +2644,7 @@ impl SessionModelTransactionCheckpoint {
         session.nav_data.rollback_model(self.nav_data);
         session.packages.rollback_model(self.packages);
         session.cloud.rollback_model(self.cloud);
+        session.data_status.rollback_model(self.data_status);
         session.situation.rollback_model(self.situation);
         session.weather.rollback_model(self.weather);
         session.map.rollback_model(self.map);
@@ -6353,33 +4899,12 @@ pub fn perform_status_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let command =
-        parse_status_action_id(&action_id).ok_or_else(|| invalid_status_action(&action_id))?;
-    match command {
-        UiStatusActionCommand::Hush(status_id) => {
-            if !session.data_status_records.contains_key(&status_id) {
-                return Err(invalid_status_action(&action_id));
-            }
-            session.hushed_status_ids.insert(status_id);
-            sync_data_status_projection(session);
-        }
-        UiStatusActionCommand::Unhush(status_id) => {
-            if !session.data_status_records.contains_key(&status_id) {
-                return Err(invalid_status_action(&action_id));
-            }
-            session.hushed_status_ids.remove(&status_id);
-            sync_data_status_projection(session);
-        }
-        UiStatusActionCommand::ReloadApplication => {
-            if !session
-                .data_status_records
-                .values()
-                .flat_map(|record| &record.actions)
-                .any(|action| action.id == action_id && action.enabled)
-            {
-                return Err(invalid_status_action(&action_id));
-            }
-        }
+    match session
+        .data_status
+        .perform_action(&action_id)
+        .ok_or_else(|| invalid_status_action(&action_id))?
+    {
+        DataStatusActionIntent::ProjectionChanged | DataStatusActionIntent::ReloadApplication => {}
     }
     changed_session_snapshot_outcome(session)
 }
@@ -6496,6 +5021,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let previous_situation_model = live.situation.checkpoint_model();
     let previous_flight_plan_model = live.flight_plan.checkpoint_model();
     let previous_package_model = live.packages.checkpoint_model();
+    let previous_data_status_model = live.data_status.checkpoint_model();
 
     let mut candidate = UiSession {
         model: live.model.clone(),
@@ -6503,6 +5029,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         nav_data: live.nav_data.candidate(store_id, store, open_result),
         packages: std::mem::take(&mut live.packages),
         cloud: std::mem::take(&mut live.cloud),
+        data_status: std::mem::take(&mut live.data_status),
         situation: std::mem::take(&mut live.situation),
         weather: std::mem::take(&mut live.weather),
         map: std::mem::take(&mut live.map),
@@ -6592,6 +5119,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             live.packages = candidate.packages;
             live.cloud = candidate.cloud;
             candidate
+                .data_status
+                .rollback_model(previous_data_status_model.clone());
+            live.data_status = candidate.data_status;
+            candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
             live.flight_plan = candidate.flight_plan;
@@ -6611,6 +5142,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             candidate.packages.rollback_model(previous_package_model);
             live.packages = candidate.packages;
             live.cloud = candidate.cloud;
+            candidate
+                .data_status
+                .rollback_model(previous_data_status_model.clone());
+            live.data_status = candidate.data_status;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -6653,6 +5188,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             warning.hushable = false;
             live.packages = candidate.packages;
             live.cloud = candidate.cloud;
+            candidate
+                .data_status
+                .rollback_model(previous_data_status_model);
+            live.data_status = candidate.data_status;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -6946,7 +5485,7 @@ pub fn get_session_snapshot_at_epoch_ms(
     let live_feed_status_started_at = crate::core_clock_ms();
     sync_live_feed_overlay_status_records(session);
     let live_feed_status_ms = elapsed_ms(live_feed_status_started_at);
-    let status_record_count = session.data_status_records.len();
+    let status_record_count = session.data_status.len();
     let pending_resource_effect_count = session.runtime.pending_resource_effects.len();
     let snapshot_started_at = crate::core_clock_ms();
     let result = session_snapshot_outcome(session);
@@ -11835,8 +10374,23 @@ fn try_snapshot_for_session(
     );
     let raster_map = map_projection.projection.raster_map;
     let raster_ms = elapsed_ms(raster_started_at);
-    let data_status_state = session.data_status_state.clone();
-    let data_status_page_state = project_data_status_page_state(session, &cloud_projection);
+    let data_status_projection = session.data_status.project_state();
+    if data_status_projection.rebuilt {
+        session
+            .diagnostics
+            .data_status_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    let data_status_state = data_status_projection.state;
+    let data_status_page_input = data_status_page_input(session, &cloud_projection);
+    let data_status_page_projection = session.data_status.project_page(data_status_page_input);
+    if data_status_page_projection.rebuilt {
+        session
+            .diagnostics
+            .data_status_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    let data_status_page_state = data_status_page_projection.state;
     let display_policy_available = session.platform_capabilities.display_policy.is_some();
     let settings_projection = session
         .settings
@@ -12049,15 +10603,6 @@ fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
             status_label: "Ready".to_string(),
         }),
     )
-}
-
-#[cfg(test)]
-fn default_data_status_state() -> UiDataStatusState {
-    UiDataStatusState {
-        boxes: Vec::new(),
-        launcher_count: None,
-        launcher_severity: UiStatusSeverity::Info,
-    }
 }
 
 fn default_data_status_page_state() -> UiDataStatusPageState {
@@ -13656,13 +12201,15 @@ mod tests {
             NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS, NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS,
         },
         AirportId, CloudProviderPrincipal, FlightPlan, FlightPlanDisplayRowKind, GuidanceState,
-        LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MapSelectionAction,
-        MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId,
-        OwnshipSourceKind, PathTermination, PointVectorRecord, ProcedureDiscontinuity,
-        ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
-        RouteComponent, SequencingMode, Situation, SituationPosition, SituationSample,
-        UiCloudPanelControl, REQUIRED_NAV_DB_CONTRACT_ID,
+        LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, LiveFeedNetworkStatus,
+        MapSelectionAction, MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, NavRef,
+        OwnshipSourceId, OwnshipSourceKind, PathTermination, PointVectorRecord,
+        ProcedureDiscontinuity, ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg,
+        ResolvedLegSource, RouteComponent, SequencingMode, Situation, SituationPosition,
+        SituationSample, UiCloudPanelControl, UiDataStatusPageTimeDisplay,
+        REQUIRED_NAV_DB_CONTRACT_ID,
     };
+    use chrono::SecondsFormat;
     use std::io::Read;
 
     // Page delivery broadcasts by store ID, so unrelated test databases need distinct identities.
@@ -13774,9 +12321,6 @@ mod tests {
                     None,
                     None,
                 ),
-                data_status_records: BTreeMap::new(),
-                hushed_status_ids: BTreeSet::new(),
-                data_status_state: default_data_status_state(),
                 platform_capabilities: PlatformCapabilities::default(),
                 settings: SettingsController::default(),
                 persistence_storage: None,
@@ -13791,6 +12335,7 @@ mod tests {
             nav_data,
             packages: PackageController::default(),
             cloud: CloudController::default(),
+            data_status: DataStatusController::default(),
             situation,
             weather: WeatherController::default(),
             map,
@@ -14463,13 +13008,22 @@ mod tests {
         assert_eq!(diagnostics.flight_plan_projection_count, 1);
         assert_eq!(diagnostics.package_projection_count, 1);
         assert_eq!(diagnostics.cloud_projection_count, 1);
+        assert_eq!(diagnostics.data_status_projection_count, 3);
         assert_eq!(diagnostics.settings_revision, 0);
         assert_eq!(diagnostics.weather_revision, 0);
         assert_eq!(diagnostics.map_revision, 0);
         assert_eq!(diagnostics.situation_revision, 0);
         assert_eq!(diagnostics.flight_plan_revision, 0);
         assert_eq!(diagnostics.nav_data_revision, 0);
+        assert_eq!(diagnostics.data_status_revision, 3);
         assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
+
+        super::get_session_snapshot(first.handle).expect("reuse status projection");
+        let repeated = session_diagnostics(first.handle).expect("repeated diagnostics");
+        assert_eq!(
+            repeated.data_status_projection_count,
+            diagnostics.data_status_projection_count
+        );
 
         destroy_session(first.handle);
         destroy_session(second.handle);
@@ -17975,7 +16529,7 @@ mod tests {
                 .airport_notam_index
                 .as_ref()
                 .unwrap_or_else(|| {
-                    panic!("airport NOTAM index: {:?}", session.data_status_records)
+                    panic!("airport NOTAM index: {:?}", session.data_status.records())
                 });
             assert_eq!(index.version_label, state_id);
             let detail = crate::map_overlay::weather_detail_for_station(
@@ -18738,7 +17292,8 @@ mod tests {
             let session = slot.lock_running().expect("session");
             assert!(
                 !session
-                    .data_status_records
+                    .data_status
+                    .records()
                     .contains_key(VECTOR_INPUTS_STATUS_ID),
                 "viewport-local vector loading must not dirty session status"
             );
@@ -18876,7 +17431,8 @@ mod tests {
                 .is_none());
             assert!(
                 !session
-                    .data_status_records
+                    .data_status
+                    .records()
                     .contains_key(METAR_STATION_IMPORTANCE_STATUS_ID),
                 "viewport-local METAR importance loading must not dirty session status"
             );
@@ -18933,7 +17489,8 @@ mod tests {
                 Some(HashSet::from(["KAAA".to_string()]))
             );
             assert!(!session
-                .data_status_records
+                .data_status
+                .records()
                 .contains_key(METAR_STATION_IMPORTANCE_STATUS_ID));
         }
     }
@@ -19013,7 +17570,8 @@ mod tests {
 
         assert!(session.weather.runtime().tfr_payload.is_none());
         assert!(session
-            .data_status_records
+            .data_status
+            .records()
             .values()
             .any(|record| record.id == LIVE_FEED_TFRS_STATUS_ID
                 && record.detail.contains("summary_text")));
@@ -22054,11 +20612,7 @@ mod tests {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
             assert!(!session.cycle_product_freshness.dirty);
-            assert!(session
-                .data_status_records
-                .remove(CYCLE_NAV_DB_STATUS_ID)
-                .is_some());
-            sync_data_status_projection(&mut session);
+            assert!(session.data_status.clear(CYCLE_NAV_DB_STATUS_ID));
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");

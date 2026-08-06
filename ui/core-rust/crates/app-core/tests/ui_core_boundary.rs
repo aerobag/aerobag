@@ -368,9 +368,18 @@ fn durable_session_writes_are_owned_by_transaction_helpers() {
         .match_indices("write_session_persistence_to_storage(")
         .count();
     assert_eq!(
-        persistence_write_occurrences, 2,
-        "durable settings writes must appear only in the two transaction executors"
+        persistence_write_occurrences, 3,
+        "persistence must have one definition and calls only in the two transaction executors"
     );
+    for executor in [
+        "run_durable_session_model_value_transaction",
+        "run_session_model_transaction_projecting",
+    ] {
+        assert!(
+            function_body(source, executor).contains("write_session_persistence_to_storage"),
+            "{executor} must own its durable persistence write"
+        );
+    }
 
     for function in [
         "perform_settings_action_in_session",
@@ -895,6 +904,75 @@ fn cloud_state_runtime_and_projection_are_owned_by_cloud_controller() {
             .count(),
         1,
         "only aggregate persistence may read CloudController's persistent model"
+    );
+}
+
+#[test]
+fn data_status_state_actions_and_projection_are_owned_by_data_status_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/data_status_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+
+    assert!(
+        ui_session.contains("data_status: DataStatusController"),
+        "UiSession must compose status behavior through one controller"
+    );
+    for field in [
+        "data_status_records",
+        "hushed_status_ids",
+        "data_status_state",
+    ] {
+        assert!(
+            !model.contains(field),
+            "raw status field {field} must not return to SessionModel"
+        );
+    }
+    assert!(
+        controller.contains("struct DataStatusModel")
+            && controller.contains("struct DataStatusStateCache")
+            && controller.contains("struct DataStatusPageCache")
+            && controller.contains("pub(crate) struct DataStatusController"),
+        "DataStatusController must own status records and both cached projections"
+    );
+    for policy in [
+        "fn project_data_status_page_state",
+        "fn client_build_status_page_row",
+        "fn live_feed_connection_status_page_row",
+        "fn cycle_package_group_status_page_row",
+        "fn chart_validity_condition",
+    ] {
+        assert!(
+            controller.contains(policy) && !session.contains(policy),
+            "status policy {policy} must remain inside DataStatusController"
+        );
+    }
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("data_status: DataStatusModelCheckpoint"),
+        "session transactions must checkpoint data-status state"
+    );
+    assert!(
+        function_body(session, "rollback").contains("session.data_status.rollback_model"),
+        "session transaction rollback must restore data-status state"
+    );
+    let action = function_body(session, "perform_status_action_in_session");
+    assert!(
+        action.contains(".data_status") && action.contains(".perform_action"),
+        "status actions must delegate validation and hushing to DataStatusController"
+    );
+    let snapshot = function_body(session, "try_snapshot_for_session");
+    assert!(
+        snapshot.contains(".data_status.project_state")
+            && snapshot.contains(".data_status.project_page"),
+        "full snapshots must consume both cached status projections"
+    );
+    assert!(
+        function_body(session, "sync_package_ui_warning_status_records")
+            .contains(".replace_package_warnings"),
+        "package warning interpretation must be owned by DataStatusController"
     );
 }
 

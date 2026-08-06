@@ -311,13 +311,35 @@ domains.
 The public snapshot and platform wire contracts remain unchanged. This slice
 did not add a lock, thread, Worker, or platform-specific domain policy.
 
+## Completed Tenth Slice
+
+The tenth slice extracted `DataStatusController` around status-record ownership,
+hushing, status actions, package-warning interpretation, and both status-strip
+and Data Status page projection. The controller owns a copy-on-write,
+transaction-checkpointed model with a monotonic revision and separately cached
+strip and page projections.
+
+`UiSession` supplies one typed page-input value assembled from NAVDB, package,
+cloud, weather, platform, and clock facts. Status presentation policy, live-feed
+freshness thresholds, chart validity interpretation, and package warning text no
+longer live in the coordinator. Shared chart-validity helpers remain controller
+owned and are reused when the coordinator creates the displayed-chart warning,
+avoiding a second policy implementation.
+
+NAVDB candidate adoption moves and restores the controller with the other
+domains, and aggregate session transactions checkpoint its lightweight model.
+Boundary tests prevent raw status state or page policy from returning to
+`SessionModel`; cache tests prove repeated snapshots reuse unchanged status
+projections. The public snapshot and platform wire contracts remain unchanged.
+This slice did not add a lock, thread, Worker, or platform-specific domain
+policy.
+
 ## Next Slice
 
-Finish roadmap item 4.6 with `DataStatusController` around status-record
-ownership, hushing, summary/page projection, and status actions. Weather, map,
-package, cloud, and NAVDB controllers should provide typed status inputs; the
-session should coordinate them without owning the status store or rebuilding
-status UI policy itself.
+Remove `UiSession`'s `Deref`/`DerefMut` access to `SessionModel` and make the
+remaining coordinator-owned fields explicit at their call sites. Then inventory
+the aggregate snapshot dependencies and invalidations as preparation for the
+revisioned `SessionUpdate` wire model in roadmap item 7.
 
 ## Relationship To Work Scheduling
 

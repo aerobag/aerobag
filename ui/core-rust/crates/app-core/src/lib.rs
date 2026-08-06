@@ -17,6 +17,7 @@ mod cloud_controller;
 mod cloud_google_drive;
 pub mod content;
 pub mod data_status;
+mod data_status_controller;
 pub mod debug_log;
 mod device_setup_code;
 pub mod errors;

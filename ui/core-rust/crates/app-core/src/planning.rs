@@ -17,6 +17,14 @@ use crate::{
 
 pub(crate) const OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON: &str =
     "Restore FP before editing the flight plan.";
+pub(crate) const DIRECT_TO_OWNSHIP_POSITION_DISABLED_REASON: &str =
+    "Direct-to requires ownship position.";
+
+pub(crate) fn direct_to_ownship_disabled_reason(
+    has_ownship_position: bool,
+) -> Option<&'static str> {
+    (!has_ownship_position).then_some(DIRECT_TO_OWNSHIP_POSITION_DISABLED_REASON)
+}
 const AIRWAY_ENDPOINT_REMOVE_DISABLED_REASON: &str = "Only airway endpoints can be removed.";
 const WAYPOINT_REMOVE_DISABLED_REASON: &str =
     "This waypoint cannot be removed from the flight plan.";
@@ -3519,6 +3527,24 @@ pub(crate) fn normalize_flight_plan_action_availability(state: &mut FlightPlanUi
     for row in &mut state.display_rows {
         for action in flight_plan_row_actions_mut(row) {
             set_flight_plan_row_action_enabled(action, action.enabled);
+        }
+    }
+}
+
+pub(crate) fn apply_flight_plan_live_action_availability(
+    state: &mut FlightPlanUiState,
+    has_ownship_position: bool,
+) {
+    let Some(disabled_reason) = direct_to_ownship_disabled_reason(has_ownship_position) else {
+        return;
+    };
+
+    for row in &mut state.display_rows {
+        for action in flight_plan_row_actions_mut(row) {
+            if action.id == FlightPlanRowActionId::DirectTo && action.enabled {
+                action.enabled = false;
+                action.disabled_reason = Some(disabled_reason.to_string());
+            }
         }
     }
 }

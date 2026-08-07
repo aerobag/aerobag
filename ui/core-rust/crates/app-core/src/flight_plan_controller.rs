@@ -240,7 +240,11 @@ impl FlightPlanController {
         ownship_position: Option<LatLon>,
     ) -> AppResult<FlightPlan> {
         let plan = self.required_plan("perform row action")?;
-        let ui = crate::project_ui_state(plan);
+        let mut ui = crate::project_ui_state(plan);
+        crate::planning::apply_flight_plan_live_action_availability(
+            &mut ui,
+            ownship_position.is_some(),
+        );
         let row = ui
             .display_rows
             .iter()
@@ -258,7 +262,10 @@ impl FlightPlanController {
         if !action.enabled {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
-                message: format!("flight-plan row action is disabled: {action_uid}"),
+                message: action
+                    .disabled_reason
+                    .clone()
+                    .unwrap_or_else(|| format!("flight-plan row action is disabled: {action_uid}")),
             });
         }
         if action.execution != FlightPlanRowActionExecution::CoreSession {
@@ -455,7 +462,7 @@ impl FlightPlanController {
             }
         }
 
-        let projection = match self.model.active_plan.as_ref() {
+        let mut projection = match self.model.active_plan.as_ref() {
             None => FlightPlanProjection {
                 ui_state: None,
                 materialized: None,
@@ -499,6 +506,12 @@ impl FlightPlanController {
                 }
             }
         };
+        if let Some(ui_state) = projection.ui_state.as_mut() {
+            crate::planning::apply_flight_plan_live_action_availability(
+                ui_state,
+                inputs.ownship_position.is_some(),
+            );
+        }
         self.projection_cache = Some(FlightPlanProjectionCache {
             key,
             projection: projection.clone(),
@@ -866,6 +879,77 @@ mod tests {
 
     fn atmosphere() -> crate::had_ops::PlannerAtmosphereSelection<'static> {
         crate::had_ops::PlannerAtmosphereSelection::no_wind(false)
+    }
+
+    fn direct_to_plan() -> FlightPlan {
+        FlightPlan {
+            route_components: vec![
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("YKM".to_string()),
+                },
+            ],
+            ..FlightPlan::empty()
+        }
+    }
+
+    fn direct_to_action(
+        projection: &FlightPlanProjection,
+    ) -> (
+        &crate::planning::FlightPlanDisplayRowUiView,
+        &crate::planning::FlightPlanRowActionUiView,
+    ) {
+        let row = projection
+            .ui_state
+            .as_ref()
+            .expect("flight-plan UI")
+            .display_rows
+            .iter()
+            .find(|row| row.nav_ref == Some(NavRef::Navaid("YKM".to_string())))
+            .expect("YKM row");
+        let action = crate::planning::flight_plan_row_actions(row)
+            .find(|action| action.id == FlightPlanRowActionId::DirectTo)
+            .expect("Direct-To action");
+        (row, action)
+    }
+
+    #[test]
+    fn direct_to_menu_tracks_ownship_availability() {
+        let mut controller =
+            FlightPlanController::new(direct_to_plan(), Vec::new()).expect("controller");
+
+        let unavailable = controller
+            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .expect("projection without ownship")
+            .projection;
+        let (row, action) = direct_to_action(&unavailable);
+        assert!(!action.enabled);
+        assert_eq!(
+            action.disabled_reason.as_deref(),
+            Some(crate::planning::DIRECT_TO_OWNSHIP_POSITION_DISABLED_REASON)
+        );
+        let error = controller
+            .plan_after_row_action(&row.uid, &action.uid, None)
+            .expect_err("disabled Direct-To must not execute");
+        assert_eq!(
+            error.message,
+            crate::planning::DIRECT_TO_OWNSHIP_POSITION_DISABLED_REASON
+        );
+
+        let mut positioned_inputs = inputs();
+        positioned_inputs.ownship_position = Some(LatLon {
+            lat: 47.5,
+            lon: -122.3,
+        });
+        let available = controller
+            .project(None, &BTreeMap::new(), positioned_inputs, atmosphere())
+            .expect("projection with ownship")
+            .projection;
+        let (_, action) = direct_to_action(&available);
+        assert!(action.enabled);
+        assert_eq!(action.disabled_reason, None);
     }
 
     #[test]

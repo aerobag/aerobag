@@ -9175,9 +9175,11 @@ fn map_selection_with_session_action_availability(
     mut selection: MapSelectionQueryResult,
     has_ownship_position: bool,
 ) -> MapSelectionQueryResult {
-    if has_ownship_position {
+    let Some(direct_to_disabled_reason) =
+        crate::planning::direct_to_ownship_disabled_reason(has_ownship_position)
+    else {
         return selection;
-    }
+    };
 
     for action in selection
         .categories
@@ -9187,7 +9189,7 @@ fn map_selection_with_session_action_availability(
         .filter(|action| action.id == "direct_to")
     {
         action.enabled = false;
-        action.disabled_reason = Some("Direct-to requires ownship position.".to_string());
+        action.disabled_reason = Some(direct_to_disabled_reason.to_string());
         action.session_action = None;
         action.flight_plan_row_action = None;
     }
@@ -23648,7 +23650,7 @@ mod tests {
         assert!(!action.enabled);
         assert_eq!(
             action.disabled_reason.as_deref(),
-            Some("Direct-to requires ownship position.")
+            Some(crate::planning::DIRECT_TO_OWNSHIP_POSITION_DISABLED_REASON)
         );
         assert_eq!(action.detail_text, None);
         assert!(action.session_action.is_none());

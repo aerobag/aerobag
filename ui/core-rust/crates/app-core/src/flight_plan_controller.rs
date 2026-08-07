@@ -315,9 +315,7 @@ impl FlightPlanController {
                 })?,
                 &crate::FlightPlanRowId(row.uid.clone()),
             ),
-            FlightPlanRowActionId::Remove
-            | FlightPlanRowActionId::RemoveAirway
-            | FlightPlanRowActionId::RemoveProcedure => {
+            FlightPlanRowActionId::Remove | FlightPlanRowActionId::RemoveProcedure => {
                 if row.component_kind == Some(RouteComponentViewKind::Airway) && row.depth > 0 {
                     let nav_ref = row.nav_ref.as_ref().ok_or_else(|| AppError {
                         kind: AppErrorKind::InvalidFlightPlan,
@@ -329,20 +327,7 @@ impl FlightPlanController {
                 }
             }
             FlightPlanRowActionId::RemoveAllAbove => {
-                if row.component_kind == Some(RouteComponentViewKind::Airway) && row.depth > 0 {
-                    let nav_ref = row.nav_ref.as_ref().ok_or_else(|| AppError {
-                        kind: AppErrorKind::InvalidFlightPlan,
-                        message: "airway child remove-all-above row has no nav reference"
-                            .to_string(),
-                    })?;
-                    crate::remove_all_above_airway_child_waypoint(
-                        plan,
-                        row_component_index()?,
-                        nav_ref,
-                    )
-                } else {
-                    crate::remove_all_above(plan, row_component_index()?)
-                }
+                crate::remove_all_above(plan, row_component_index()?)
             }
             FlightPlanRowActionId::MoveUp => {
                 crate::move_component(plan, row_component_index()?, -1)

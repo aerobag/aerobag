@@ -1024,7 +1024,6 @@ pub enum FlightPlanRowActionId {
     SelectApproach,
     Plates,
     ShowPlate,
-    RemoveAirway,
     RemoveProcedure,
 }
 
@@ -1055,6 +1054,8 @@ pub struct FlightPlanRowActionUiView {
     pub id: FlightPlanRowActionId,
     #[serde(default)]
     pub uid: String,
+    #[serde(default)]
+    pub menu_column: u8,
     pub label: String,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2932,24 +2933,36 @@ fn can_insert_procedure_before_component(plan: &FlightPlan, component_index: usi
 fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
     match component.kind {
         RouteComponentViewKind::Airway => vec![
-            core_session_action_with_disabled_reason(
-                FlightPlanRowActionId::RemoveAirway,
-                component.can_remove,
-                AIRWAY_REMOVE_DISABLED_REASON,
-            ),
+            action(FlightPlanRowActionId::InsertBefore, true),
+            move_action(FlightPlanRowActionId::MoveUp, component.can_reorder_up),
+            action(FlightPlanRowActionId::InsertAfter, true),
+            move_action(FlightPlanRowActionId::MoveDown, component.can_reorder_down),
+            remove_airway_action(component),
             core_session_action(FlightPlanRowActionId::RemoveAllAbove, true),
         ],
         RouteComponentViewKind::Procedure => vec![
-            action(
-                FlightPlanRowActionId::ShowPlate,
-                component.chart_airport_id.is_some() && component.procedure_id.is_some(),
-            ),
             action(FlightPlanRowActionId::InsertBefore, true),
             action(FlightPlanRowActionId::InsertAfter, true),
             remove_procedure_action(component),
+            core_session_action(FlightPlanRowActionId::RemoveAllAbove, true),
+            action_in_menu_column(
+                FlightPlanRowActionId::ShowPlate,
+                component.chart_airport_id.is_some() && component.procedure_id.is_some(),
+                1,
+            ),
         ],
         RouteComponentViewKind::Waypoint => Vec::new(),
     }
+}
+
+fn remove_airway_action(component: &RouteComponentUiView) -> FlightPlanRowActionUiView {
+    let mut action = core_session_action_with_disabled_reason(
+        FlightPlanRowActionId::Remove,
+        component.can_remove,
+        AIRWAY_REMOVE_DISABLED_REASON,
+    );
+    action.label = "Remove Airway".to_string();
+    action
 }
 
 fn remove_procedure_action(component: &RouteComponentUiView) -> FlightPlanRowActionUiView {
@@ -2976,9 +2989,7 @@ fn apply_component_mutation_action_availability(
     for action in &mut actions {
         let result =
             match action.id {
-                FlightPlanRowActionId::Remove
-                | FlightPlanRowActionId::RemoveAirway
-                | FlightPlanRowActionId::RemoveProcedure => Some(
+                FlightPlanRowActionId::Remove | FlightPlanRowActionId::RemoveProcedure => Some(
                     validate_component_removal_attachments(plan, component_index),
                 ),
                 FlightPlanRowActionId::RemoveAllAbove => {
@@ -3210,10 +3221,6 @@ fn child_waypoint_actions_for_row(
             is_endpoint,
             AIRWAY_ENDPOINT_REMOVE_DISABLED_REASON,
         ));
-        actions.push(core_session_action(
-            FlightPlanRowActionId::RemoveAllAbove,
-            nav_ref.is_some(),
-        ));
     }
     actions
 }
@@ -3323,6 +3330,7 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
+        menu_column: 0,
         id,
         enabled,
         disabled_reason,
@@ -3335,11 +3343,22 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
     }
 }
 
+fn action_in_menu_column(
+    id: FlightPlanRowActionId,
+    enabled: bool,
+    menu_column: u8,
+) -> FlightPlanRowActionUiView {
+    let mut action = action(id, enabled);
+    action.menu_column = menu_column;
+    action
+}
+
 fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
     let disabled_reason = row_action_disabled_reason(&id, enabled);
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
+        menu_column: 0,
         id,
         enabled,
         disabled_reason,
@@ -3379,6 +3398,7 @@ fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionU
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
+        menu_column: 0,
         id,
         enabled,
         disabled_reason,
@@ -3422,7 +3442,6 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             }
             FlightPlanRowActionId::Plates => "No airport plates are associated with this row.",
             FlightPlanRowActionId::ShowPlate => "This procedure has no plate to show.",
-            FlightPlanRowActionId::RemoveAirway => AIRWAY_REMOVE_DISABLED_REASON,
             FlightPlanRowActionId::RemoveProcedure => PROCEDURE_REMOVE_DISABLED_REASON,
         }
         .to_string()
@@ -3481,11 +3500,17 @@ fn action_matrix_from_actions(
         .filter_map(|row| {
             let actions_in_row = row
                 .into_iter()
-                .filter_map(|id| {
-                    actions.iter().find(|action| action.id == id).map(|action| {
-                        used.push(id);
-                        action.clone()
-                    })
+                .enumerate()
+                .filter_map(|(menu_column, id)| {
+                    actions
+                        .iter()
+                        .find(|action| action_matches_matrix_slot(&action.id, &id))
+                        .map(|action| {
+                            used.push(action.id.clone());
+                            let mut action = action.clone();
+                            action.menu_column = menu_column as u8;
+                            action
+                        })
                 })
                 .collect::<Vec<_>>();
             (!actions_in_row.is_empty()).then_some(actions_in_row)
@@ -3497,6 +3522,15 @@ fn action_matrix_from_actions(
         }
     }
     matrix
+}
+
+fn action_matches_matrix_slot(
+    action_id: &FlightPlanRowActionId,
+    slot_id: &FlightPlanRowActionId,
+) -> bool {
+    action_id == slot_id
+        || (*slot_id == FlightPlanRowActionId::Remove
+            && *action_id == FlightPlanRowActionId::RemoveProcedure)
 }
 
 pub(crate) fn flight_plan_row_actions(
@@ -3619,7 +3653,6 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
         FlightPlanRowActionId::SelectApproach => "Select Approach",
         FlightPlanRowActionId::Plates => "Plates",
         FlightPlanRowActionId::ShowPlate => "Show Plate",
-        FlightPlanRowActionId::RemoveAirway => "Remove Airway",
         FlightPlanRowActionId::RemoveProcedure => "Remove Procedure",
     }
 }
@@ -4471,36 +4504,6 @@ pub fn remove_airway_child_waypoint(
         following_waypoint,
     );
     rebuild_with_airway_replacement(&plan, component_index, replacement, false)
-}
-
-pub fn remove_all_above_airway_child_waypoint(
-    plan: &FlightPlan,
-    component_index: usize,
-    nav_ref: &NavRef,
-) -> AppResult<FlightPlan> {
-    let plan = plan.clone().normalized();
-    let (airway, points, legs) = airway_points_and_legs(&plan, component_index)?;
-    let Some(point_index) = points.iter().position(|point| point == nav_ref) else {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!(
-                "airway child waypoint is not in component: {}",
-                nav_ref_label(nav_ref)
-            ),
-        });
-    };
-
-    let remaining_points = points.get(point_index + 1..).unwrap_or(&[]).to_vec();
-    let remaining_legs = legs.get(point_index + 1..).unwrap_or(&[]).to_vec();
-    let following_waypoint =
-        adjacent_waypoint_component(&plan.route_components, component_index, 1);
-    let replacement = airway_replacement_from_remaining_points(
-        airway,
-        remaining_points,
-        remaining_legs,
-        following_waypoint,
-    );
-    rebuild_with_airway_replacement(&plan, component_index, replacement, true)
 }
 
 pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
@@ -9412,6 +9415,49 @@ mod tests {
     }
 
     #[test]
+    fn remove_all_above_procedure_headers_preserves_attachment_invariants() {
+        let plan = plan_with_all_attached_procedures();
+
+        let without_departure = remove_all_above(&plan, 1).expect("remove departure and origin");
+        assert!(matches!(
+            without_departure.route_components.first(),
+            Some(RouteComponent::Waypoint {
+                waypoint: NavRef::Fix(id)
+            }) if id == "ENRTE"
+        ));
+        validate_procedure_attachments(&without_departure.route_components)
+            .expect("remaining arrival and approach stay attached");
+
+        let without_arrival = remove_all_above(&plan, 3).expect("remove through arrival");
+        assert!(matches!(
+            without_arrival.route_components.as_slice(),
+            [
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        kind: ProcedureKind::Approach,
+                        ..
+                    }
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport(id)
+                }
+            ] if id == "KPAE"
+        ));
+        validate_procedure_attachments(&without_arrival.route_components)
+            .expect("remaining approach stays attached");
+
+        let without_approach = remove_all_above(&plan, 4).expect("remove through approach");
+        assert!(matches!(
+            without_approach.route_components.as_slice(),
+            [RouteComponent::Waypoint {
+                waypoint: NavRef::Airport(id)
+            }] if id == "KPAE"
+        ));
+        validate_procedure_attachments(&without_approach.route_components)
+            .expect("destination alone is valid");
+    }
+
+    #[test]
     fn route_component_uids_survive_reorder_and_delete() {
         let plan = sample_four_waypoint_plan().normalized();
         let original_uids = plan.route_component_uids.clone();
@@ -9642,7 +9688,6 @@ mod tests {
             FlightPlanRowActionId::SelectApproach,
             FlightPlanRowActionId::Plates,
             FlightPlanRowActionId::ShowPlate,
-            FlightPlanRowActionId::RemoveAirway,
             FlightPlanRowActionId::RemoveProcedure,
         ] {
             let mut projected = action(id.clone(), true);
@@ -9732,10 +9777,6 @@ mod tests {
             Some(WAYPOINT_REMOVE_DISABLED_REASON)
         );
         assert_eq!(
-            row_action_disabled_reason(&FlightPlanRowActionId::RemoveAirway, false).as_deref(),
-            Some(AIRWAY_REMOVE_DISABLED_REASON)
-        );
-        assert_eq!(
             row_action_disabled_reason(&FlightPlanRowActionId::RemoveProcedure, false).as_deref(),
             Some(PROCEDURE_REMOVE_DISABLED_REASON)
         );
@@ -9781,6 +9822,93 @@ mod tests {
         ));
         let components = projected_components_for_test(&moved);
         assert!(components.iter().all(|component| component.can_reorder));
+    }
+
+    #[test]
+    fn airway_group_exposes_standard_insert_move_and_remove_rows() {
+        let ui = project_ui_state(&sample_airway_component_plan());
+        let airway = ui
+            .display_rows
+            .iter()
+            .find(|row| {
+                row.row_kind == FlightPlanDisplayRowKind::Group
+                    && row.component_kind == Some(RouteComponentViewKind::Airway)
+            })
+            .expect("airway group row");
+        let action_matrix = airway
+            .action_matrix
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|action| action.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            action_matrix,
+            vec![
+                vec![
+                    FlightPlanRowActionId::InsertBefore,
+                    FlightPlanRowActionId::MoveUp,
+                ],
+                vec![
+                    FlightPlanRowActionId::InsertAfter,
+                    FlightPlanRowActionId::MoveDown,
+                ],
+                vec![
+                    FlightPlanRowActionId::Remove,
+                    FlightPlanRowActionId::RemoveAllAbove,
+                ],
+            ]
+        );
+        assert_eq!(
+            flight_plan_row_actions(airway)
+                .find(|action| action.id == FlightPlanRowActionId::Remove)
+                .map(|action| action.label.as_str()),
+            Some("Remove Airway")
+        );
+    }
+
+    #[test]
+    fn procedure_group_places_actions_in_waypoint_relative_columns() {
+        let ui = project_ui_state(&plan_with_all_attached_procedures());
+        let departure = ui
+            .display_rows
+            .iter()
+            .find(|row| {
+                row.row_kind == FlightPlanDisplayRowKind::Group
+                    && row.procedure_kind == Some(ProcedureKind::Sid)
+            })
+            .expect("departure group row");
+        let action_matrix = departure
+            .action_matrix
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|action| (action.id.clone(), action.menu_column))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            action_matrix,
+            vec![
+                vec![(FlightPlanRowActionId::InsertBefore, 0)],
+                vec![(FlightPlanRowActionId::InsertAfter, 0)],
+                vec![
+                    (FlightPlanRowActionId::RemoveProcedure, 0),
+                    (FlightPlanRowActionId::RemoveAllAbove, 1),
+                ],
+                vec![(FlightPlanRowActionId::ShowPlate, 1)],
+            ]
+        );
+        assert_eq!(
+            flight_plan_row_actions(departure)
+                .find(|action| action.id == FlightPlanRowActionId::RemoveProcedure)
+                .map(|action| action.label.as_str()),
+            Some("Remove Departure")
+        );
     }
 
     #[test]
@@ -10745,7 +10873,7 @@ mod tests {
     }
 
     #[test]
-    fn airway_child_rows_expose_remove_for_visible_endpoints_only_and_remove_all_above_for_all() {
+    fn airway_child_rows_expose_remove_for_visible_endpoints_without_remove_all_above() {
         let ui = project_ui_state(&sample_v165_plan_with_explicit_endpoints());
         let airway_rows = ui
             .display_rows
@@ -10799,12 +10927,13 @@ mod tests {
             true,
             FlightPlanRowActionExecution::CoreSession
         )));
-        for label in ["CETRA", "HOKBO", "UBG"] {
-            assert!(row_actions(label).contains(&(
-                FlightPlanRowActionId::RemoveAllAbove,
-                true,
-                FlightPlanRowActionExecution::CoreSession
-            )));
+        for row in airway_rows {
+            assert!(
+                flight_plan_row_actions(row)
+                    .all(|action| action.id != FlightPlanRowActionId::RemoveAllAbove),
+                "structured airway child {} must not expose Remove All Above",
+                row.label
+            );
         }
     }
 
@@ -10848,61 +10977,6 @@ mod tests {
             .iter()
             .any(|leg| leg.from == NavRef::Fix("CETRA".to_string())
                 && leg.to == NavRef::Fix("HOKBO".to_string())));
-    }
-
-    #[test]
-    fn remove_all_above_airway_child_retargets_airway_to_remaining_tail() {
-        let changed = remove_all_above_airway_child_waypoint(
-            &sample_v165_plan_with_explicit_endpoints(),
-            2,
-            &NavRef::Fix("CETRA".to_string()),
-        )
-        .unwrap();
-
-        assert_eq!(changed.route_components.len(), 3);
-        let RouteComponent::Airway { airway } = &changed.route_components[0] else {
-            panic!("expected airway");
-        };
-        assert_eq!(airway.entry, NavRef::Fix("HOKBO".to_string()));
-        assert_eq!(airway.exit, NavRef::Fix("RAWER".to_string()));
-    }
-
-    #[test]
-    fn remove_all_above_next_to_last_airway_child_collapses_to_singleton_waypoint() {
-        let mut plan = sample_v165_plan_with_explicit_endpoints();
-        plan.route_components.remove(3);
-        plan = plan.normalized();
-        let changed =
-            remove_all_above_airway_child_waypoint(&plan, 2, &NavRef::Fix("UBG".to_string()))
-                .unwrap();
-
-        assert!(matches!(
-            changed.route_components.first(),
-            Some(RouteComponent::Waypoint {
-                waypoint: NavRef::Fix(id)
-            }) if id == "RAWER"
-        ));
-    }
-
-    #[test]
-    fn remove_all_above_last_airway_child_deletes_airway_block() {
-        let changed = remove_all_above_airway_child_waypoint(
-            &sample_v165_plan_with_explicit_endpoints(),
-            2,
-            &NavRef::Fix("RAWER".to_string()),
-        )
-        .unwrap();
-
-        assert!(matches!(
-            changed.route_components.first(),
-            Some(RouteComponent::Waypoint {
-                waypoint: NavRef::Fix(id)
-            }) if id == "RAWER"
-        ));
-        assert!(!matches!(
-            changed.route_components.first(),
-            Some(RouteComponent::Airway { .. })
-        ));
     }
 
     #[test]

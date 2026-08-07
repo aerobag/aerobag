@@ -35,7 +35,7 @@ export const flightPlanActionSymbols = {
       "path": "M 13 -17 H -11 V 10 H 9",
       "paint": "action_route",
       "fill": "none",
-      "stroke": "action_active",
+      "stroke": "flight_plan_guidance",
       "stroke_width": 3.2,
       "line_cap": "round",
       "line_join": "round",
@@ -44,7 +44,7 @@ export const flightPlanActionSymbols = {
     {
       "path": "M 9 3 L 20 10 L 9 17 Z",
       "paint": "action_arrow",
-      "fill": "action_active",
+      "fill": "flight_plan_guidance",
       "stroke": null,
       "stroke_width": null,
       "line_cap": null,

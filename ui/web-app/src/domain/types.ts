@@ -334,6 +334,7 @@ export type AirportNotamUiView = {
 export type FlightPlanRowActionUiView = {
   id: string;
   uid: string;
+  menu_column?: number;
   label: string;
   enabled: boolean;
   disabled_reason?: string | null;

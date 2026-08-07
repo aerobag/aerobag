@@ -69,6 +69,7 @@
     "completed": "#8c9dad",
     "active": "#ff4fcf",
     "active_leg_remaining": "#ff9fe6",
+    "guidance_arrow": "#d45a7a",
     "remaining": "#ffffff",
     "distance_pill_bg": "#ffffff",
     "distance_pill_fg": "#111111"

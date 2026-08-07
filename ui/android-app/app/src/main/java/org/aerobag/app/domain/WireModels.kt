@@ -1246,6 +1246,7 @@ enum class WireFlightPlanDisplayRowKind {
 data class WireFlightPlanRowActionUiView(
     val id: String,
     val uid: String = "",
+    val menu_column: Int = 0,
     val label: String,
     val enabled: Boolean,
     val disabled_reason: String? = null,

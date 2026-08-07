@@ -38,7 +38,7 @@ const paintColors = {
   none: "none",
   button_icon: theme.controls.button_fg,
   button_icon_secondary: theme.controls.button_icon_secondary,
-  action_active: theme.flight_plan_route.active,
+  flight_plan_guidance: theme.flight_plan_route.guidance_arrow,
 };
 
 function escapeXml(value) {

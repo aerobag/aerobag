@@ -4938,7 +4938,7 @@ internal fun navSymbolColor(token: String?, uiTheme: UiTheme, dynamicColors: Map
     "button_unchecked" -> uiTheme.controls.buttonUnchecked
     "button_icon" -> uiTheme.controls.buttonFg
     "button_icon_secondary" -> uiTheme.controls.buttonIconSecondary
-    "action_active" -> uiTheme.flightPlanRoute.active
+    "flight_plan_guidance" -> uiTheme.flightPlanRoute.guidanceArrow
     "compass_north" -> uiTheme.controls.compassNorth
     "compass_south" -> uiTheme.controls.compassSouth
     else -> dynamicColors[token]

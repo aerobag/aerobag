@@ -68,8 +68,8 @@
   },
   "symbols": {
     "action_activate_leg": [
-      { "path": "action_activate_leg_route", "paint": "action_route", "fill": "none", "stroke": "action_active", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
-      { "path": "action_activate_leg_arrow", "paint": "action_arrow", "fill": "action_active" }
+      { "path": "action_activate_leg_route", "paint": "action_route", "fill": "none", "stroke": "flight_plan_guidance", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
+      { "path": "action_activate_leg_arrow", "paint": "action_arrow", "fill": "flight_plan_guidance" }
     ],
     "action_direct_to": [
       { "path": "action_direct_to_d", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round", "line_join": "round" },

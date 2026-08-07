@@ -949,6 +949,7 @@ type UiThemeJson = {
     completed: string;
     active: string;
     active_leg_remaining: string;
+    guidance_arrow: string;
     remaining: string;
     distance_pill_bg: string;
     distance_pill_fg: string;
@@ -1644,8 +1645,8 @@ function navSymbolColor(token: string | null | undefined): string | undefined {
       return "var(--theme-button-fg)";
     case "button_icon_secondary":
       return "var(--theme-button-icon-secondary)";
-    case "action_active":
-      return "var(--theme-flight-plan-active)";
+    case "flight_plan_guidance":
+      return "var(--theme-flight-plan-guidance-arrow)";
     case "compass_north":
       return "var(--theme-compass-north)";
     case "compass_south":
@@ -3623,6 +3624,7 @@ export default function App() {
         "--theme-text-input-bg": controlTheme.text_input_bg,
         "--theme-button-icon-secondary": controlTheme.button_icon_secondary,
         "--theme-flight-plan-active": loadedUiTheme.flight_plan_route.active,
+        "--theme-flight-plan-guidance-arrow": loadedUiTheme.flight_plan_route.guidance_arrow,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,
         "--theme-panel-fg": controlTheme.panel_fg,
@@ -8703,7 +8705,7 @@ function FlightPlanPage(props: {
 
   const rowActionRows = useMemo(() => {
     if (!selectedRow) {
-    return [] as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabledReason?: string | null; execution?: string; navigation?: FlightPlanRowNavigationAction | null; onSelect: () => void }>>;
+    return [] as Array<Array<{ id: string; uid: string; menuColumn: number; label: string; enabled: boolean; disabledReason?: string | null; execution?: string; navigation?: FlightPlanRowNavigationAction | null; onSelect: () => void }>>;
     }
 
     const closeTray = () => {
@@ -8713,10 +8715,11 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }) => {
+    const actionForUi = (action: { id: string; uid: string; menu_column?: number; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }) => {
       return {
         id: action.id,
         uid: action.uid,
+        menuColumn: action.menu_column ?? 0,
         label: action.label,
         enabled: action.enabled,
         disabledReason: action.disabled_reason ?? null,
@@ -8854,7 +8857,7 @@ function FlightPlanPage(props: {
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }>>).map((row) => row.map(actionForUi));
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; menu_column?: number; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
@@ -9745,6 +9748,7 @@ function FlightPlanPage(props: {
                           key={action.id}
                           type="button"
                           className={`trayButton airwayChoiceButton${disabled ? " isDisabled" : ""}`}
+                          style={{ gridColumnStart: action.menuColumn + 1 }}
                           data-testid={`plan-row-action-${action.id}`}
                           disabled={disabled && !disabledReason}
                           aria-disabled={disabled ? "true" : undefined}

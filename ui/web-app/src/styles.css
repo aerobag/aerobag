@@ -3925,14 +3925,14 @@ button {
 
 .planStructuredArrowPath {
   fill: none;
-  stroke: #d45a7a;
+  stroke: var(--theme-flight-plan-guidance-arrow);
   stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .planStructuredArrowHead {
-  fill: #d45a7a;
+  fill: var(--theme-flight-plan-guidance-arrow);
 }
 
 .planTable {

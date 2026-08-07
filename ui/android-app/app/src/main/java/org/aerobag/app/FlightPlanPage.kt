@@ -868,7 +868,7 @@ internal fun FlightPlanPage(
                             }
                         drawPath(
                             path = path,
-                            color = Color(0xFFD45A7A),
+                            color = uiTheme.flightPlanRoute.guidanceArrow,
                             style =
                                 Stroke(
                                     width = with(density) { 3.dp.toPx() },
@@ -889,7 +889,7 @@ internal fun FlightPlanPage(
                                     )
                                     close()
                                 }
-                            drawPath(head, color = Color(0xFFD45A7A))
+                            drawPath(head, color = uiTheme.flightPlanRoute.guidanceArrow)
                         }
                     }
                 }
@@ -1258,7 +1258,12 @@ internal fun FlightPlanPage(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(waypointActionGap),
                         ) {
-                            actionRow.forEach { action ->
+                            (0..1).forEach { menuColumn ->
+                                val action = actionRow.find { it.menuColumn == menuColumn }
+                                if (action == null) {
+                                    Box(modifier = Modifier.width(waypointActionButtonWidth))
+                                    return@forEach
+                                }
                                 MenuPanelRow(
                                     label = action.label,
                                     active = false,

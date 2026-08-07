@@ -308,6 +308,7 @@ enum class FlightPlanDisplayRowKind {
 data class FlightPlanRowActionUiView(
     val id: String,
     val uid: String = "",
+    val menuColumn: Int = 0,
     val label: String,
     val enabled: Boolean,
     val disabledReason: String? = null,

@@ -664,6 +664,7 @@ async function ensureBadAutopilotDebugFlag(serial, result) {
   }
   await tapTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 5000);
   await delay(300);
+  await scrollUntilTag(serial, BAD_AUTOPILOT_DEBUG_TAG, 6);
   xml = dumpAndroid(serial);
   let checkbox = findNode(xml, (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG));
   if (!checkbox) {

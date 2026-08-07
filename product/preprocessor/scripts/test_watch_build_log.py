@@ -147,6 +147,36 @@ class WatchBuildLogTests(unittest.TestCase):
             snapshot["tasks"]["completed"][0]["source"], "product-scheduler"
         )
         self.assertEqual(snapshot["process"]["alive"], True)
+        self.assertEqual(snapshot["process"]["status"], "running")
+
+    def test_completed_build_reports_exited_process_instead_of_dead(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "2026-06-09T21:00:00+00:00 +0:00 begin pid=999999999 "
+            "build_root=/tmp/build publish_dir=/tmp/build/published/main/20260609T210000Z"
+        )
+        state.apply_line(
+            "2026-06-09T21:00:05+00:00 +0:05 complete PASS "
+            "product_artifacts=/tmp/build/product_artifacts.json"
+        )
+
+        snapshot = watch_build_log.state_snapshot(state, Path("/tmp/build.log"))
+
+        self.assertEqual(snapshot["result"]["status"], "pass")
+        self.assertEqual(snapshot["process"]["alive"], False)
+        self.assertEqual(snapshot["process"]["status"], "exited")
+
+    def test_incomplete_build_with_missing_process_reports_dead(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "2026-06-09T21:00:00+00:00 +0:00 begin pid=999999999 "
+            "build_root=/tmp/build publish_dir=/tmp/build/published/main/20260609T210000Z"
+        )
+
+        snapshot = watch_build_log.state_snapshot(state, Path("/tmp/build.log"))
+
+        self.assertEqual(snapshot["result"]["status"], "in_progress")
+        self.assertEqual(snapshot["process"]["status"], "dead")
 
     def test_completed_task_runtime_uses_completion_time_not_now(self) -> None:
         state = watch_build_log.BuildState()

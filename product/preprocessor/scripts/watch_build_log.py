@@ -391,6 +391,16 @@ def pid_is_alive(pid: int | None) -> bool | None:
     return Path(f"/proc/{pid}").exists()
 
 
+def process_status(state: BuildState, alive: bool | None) -> str:
+    if alive is None:
+        return "unknown"
+    if alive:
+        return "running"
+    if state.final_result in {"PASS", "FAIL"}:
+        return "exited"
+    return "dead"
+
+
 def format_duration(seconds: int | None) -> str:
     if seconds is None:
         return "?"
@@ -463,6 +473,7 @@ def state_snapshot(
     now_wall = now_wall or datetime.now(timezone.utc)
     diagnostics = read_diagnostics_state(state)
     pid_alive = pid_is_alive(state.pid)
+    pid_status = process_status(state, pid_alive)
     current_artifacts_path = parse_current_artifacts_path(state.final_details)
     if (
         current_artifacts_path is None
@@ -532,6 +543,7 @@ def state_snapshot(
         "process": {
             "pid": state.pid,
             "alive": pid_alive,
+            "status": pid_status,
         },
         "tasks": {
             "active": [task_snapshot(task, now_wall) for task in state.active_tasks()],
@@ -808,12 +820,16 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             max_x,
         )
         pid_alive = pid_is_alive(state.pid)
-        if pid_alive is None:
+        pid_status = process_status(state, pid_alive)
+        if pid_status == "unknown":
             liveness = "pid=unknown"
             liveness_attr = curses.A_DIM
-        elif pid_alive:
+        elif pid_status == "running":
             liveness = f"pid={state.pid} alive"
             liveness_attr = curses.color_pair(1) | curses.A_BOLD
+        elif pid_status == "exited":
+            liveness = f"pid={state.pid} exited"
+            liveness_attr = curses.A_DIM
         else:
             liveness = f"pid={state.pid} dead"
             liveness_attr = curses.color_pair(4) | curses.A_BOLD
@@ -1288,7 +1304,10 @@ def build_dashboard_html(refresh_seconds: float) -> str:
       document.getElementById("completedBar").style.width = pct(progress.completion_fraction) + "%";
       document.getElementById("scheduledBar").style.width = pct(progress.scheduled_fraction) + "%";
       const statusParts = [
-        pill(`pid=${{state.process.pid || "unknown"}} ${{state.process.alive === true ? "alive" : state.process.alive === false ? "dead" : "unknown"}}`, cls(state.process.alive)),
+        pill(
+          `pid=${{state.process.pid || "unknown"}} ${{state.process.status === "running" ? "alive" : state.process.status}}`,
+          state.process.status === "running" ? "ok" : state.process.status === "dead" ? "bad" : ""
+        ),
         pill(`pending=${{progress.pending}}`, "info"),
         pill(`updated=${{state.generated_at_utc}}`, "")
       ];

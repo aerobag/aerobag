@@ -15,12 +15,20 @@ import kotlinx.serialization.json.Json
 private const val InstalledPackagesDirectoryName = "packages"
 
 @Serializable
-private data class InstalledArtifactMetadata(
+internal data class InstalledArtifactMetadata(
     val artifactId: String,
     val filename: String,
     val sizeBytes: Long? = null,
     val checksumSha256: String? = null,
+    val familyId: String? = null,
+    val regionId: String? = null,
+    val chartPackageTier: String? = null,
 )
+
+private val InstalledArtifactJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}
 
 data class InstalledPackageArtifact(
     val artifactId: String,
@@ -28,6 +36,9 @@ data class InstalledPackageArtifact(
     val file: File,
     val sizeBytes: Long? = null,
     val checksumSha256: String? = null,
+    val familyId: String? = null,
+    val regionId: String? = null,
+    val chartPackageTier: String? = null,
 )
 
 data class InstalledPackageStorageStats(
@@ -36,11 +47,6 @@ data class InstalledPackageStorageStats(
 )
 
 object InstalledPackages {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-    }
-
     fun internalPackageFile(context: Context, filename: String): File =
         File(File(context.filesDir, InstalledPackagesDirectoryName), filename)
 
@@ -63,7 +69,7 @@ object InstalledPackages {
         val target = metadataFile(zipFile)
         target.parentFile?.mkdirs()
         val temp = File(target.parentFile, "${target.name}.tmp")
-        temp.writeText(json.encodeToString(metadata))
+        temp.writeText(encodeInstalledArtifactMetadata(metadata))
         if (!temp.renameTo(target)) {
             temp.copyTo(target, overwrite = true)
             temp.delete()
@@ -74,7 +80,7 @@ object InstalledPackages {
         metadataFile(zipFile)
             .takeIf { it.isFile }
             ?.let { file ->
-                runCatching { json.decodeFromString<InstalledArtifactMetadata>(file.readText()) }.getOrNull()
+                runCatching { decodeInstalledArtifactMetadata(file.readText()) }.getOrNull()
             }
 
     fun listInstalledArtifacts(context: Context): List<InstalledPackageArtifact> {
@@ -96,6 +102,9 @@ object InstalledPackages {
                     file = zipFile,
                     sizeBytes = metadata.sizeBytes ?: zipFile.length(),
                     checksumSha256 = metadata.checksumSha256,
+                    familyId = metadata.familyId,
+                    regionId = metadata.regionId,
+                    chartPackageTier = metadata.chartPackageTier,
                 )
                 artifactsByFilename.putIfAbsent(artifact.filename, artifact)
             }
@@ -123,6 +132,9 @@ object InstalledPackages {
         bytes: ByteArray,
         sizeBytes: Long? = null,
         checksumSha256: String? = null,
+        familyId: String? = null,
+        regionId: String? = null,
+        chartPackageTier: String? = null,
     ) {
         val target = internalPackageFile(context, filename)
         target.parentFile?.mkdirs()
@@ -140,6 +152,9 @@ object InstalledPackages {
                 filename = filename,
                 sizeBytes = sizeBytes ?: target.length(),
                 checksumSha256 = checksumSha256,
+                familyId = familyId,
+                regionId = regionId,
+                chartPackageTier = chartPackageTier,
             ),
         )
     }
@@ -151,6 +166,9 @@ object InstalledPackages {
         source: InputStream,
         sizeBytes: Long? = null,
         checksumSha256: String? = null,
+        familyId: String? = null,
+        regionId: String? = null,
+        chartPackageTier: String? = null,
     ) {
         val target = internalPackageFile(context, filename)
         target.parentFile?.mkdirs()
@@ -170,8 +188,41 @@ object InstalledPackages {
                 filename = filename,
                 sizeBytes = sizeBytes ?: target.length(),
                 checksumSha256 = checksumSha256,
+                familyId = familyId,
+                regionId = regionId,
+                chartPackageTier = chartPackageTier,
             ),
         )
+    }
+
+    fun updateInstalledArtifactGrouping(
+        context: Context,
+        artifactId: String,
+        filename: String,
+        familyId: String,
+        regionId: String?,
+        chartPackageTier: String?,
+    ): Boolean {
+        val artifact = listInstalledArtifacts(context)
+            .firstOrNull { it.artifactId == artifactId && it.filename == filename }
+            ?: return false
+        val metadata = readMetadata(artifact.file) ?: return false
+        if (
+            metadata.familyId == familyId &&
+            metadata.regionId == regionId &&
+            metadata.chartPackageTier == chartPackageTier
+        ) {
+            return false
+        }
+        writeMetadata(
+            artifact.file,
+            metadata.copy(
+                familyId = familyId,
+                regionId = regionId,
+                chartPackageTier = chartPackageTier,
+            ),
+        )
+        return true
     }
 
     fun deleteInstalledArtifact(
@@ -212,3 +263,9 @@ object InstalledPackages {
             ?: error("missing $entryName in ${zipFile.absolutePath}")
     }
 }
+
+internal fun encodeInstalledArtifactMetadata(metadata: InstalledArtifactMetadata): String =
+    InstalledArtifactJson.encodeToString(metadata)
+
+internal fun decodeInstalledArtifactMetadata(value: String): InstalledArtifactMetadata =
+    InstalledArtifactJson.decodeFromString(value)

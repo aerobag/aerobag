@@ -943,7 +943,7 @@ internal fun OfflinePackagePlanRow(
         )
         OfflinePackageSizeSummary(
             row = row,
-            modifier = Modifier.width(ThumbSize * 0.88f),
+            modifier = Modifier.width(ThumbSize * 1.35f),
         )
     }
 }
@@ -1032,7 +1032,7 @@ internal fun OfflinePackageSizeSummary(
         )
         if (row.plannedSizeChangeVisible) {
             Text(
-                text = row.plannedDeltaLabel,
+                text = row.plannedChangeLabel,
                 style = MaterialTheme.typography.labelSmall,
                 color = OfflinePackageMagenta,
                 fontWeight = FontWeight.ExtraBold,
@@ -1166,6 +1166,9 @@ internal fun listInstalledPackageArtifacts(context: Context): List<InstalledArti
                 filename = it.filename,
                 sizeBytes = it.sizeBytes,
                 checksumSha256 = it.checksumSha256,
+                familyId = it.familyId,
+                regionId = it.regionId,
+                chartPackageTier = it.chartPackageTier,
             )
         }
         .toList()
@@ -1291,6 +1294,9 @@ internal suspend fun syncOfflinePackages(
                                 tempFile = tempFile,
                                 sizeBytes = pkg.sizeBytes,
                                 checksumSha256 = pkg.checksumSha256,
+                                familyId = pkg.familyId,
+                                regionId = pkg.regionId,
+                                chartPackageTier = pkg.metadata?.chartPackageTier,
                             )
                             progressMutex.withLock {
                                 activeFetchBytesByArtifactId.remove(artifactId)
@@ -1809,6 +1815,9 @@ internal fun installDownloadedPackage(
     tempFile: File,
     sizeBytes: Long?,
     checksumSha256: String?,
+    familyId: String,
+    regionId: String?,
+    chartPackageTier: String?,
 ) {
     tempFile.inputStream().buffered().use { source ->
         InstalledPackages.replaceInstalledFileFromStream(
@@ -1818,6 +1827,9 @@ internal fun installDownloadedPackage(
             source = source,
             sizeBytes = sizeBytes,
             checksumSha256 = checksumSha256,
+            familyId = familyId,
+            regionId = regionId,
+            chartPackageTier = chartPackageTier,
         )
     }
     tempFile.delete()

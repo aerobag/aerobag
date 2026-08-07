@@ -808,12 +808,18 @@ mod tests {
                 filename: "sec_nw_2606.zip".to_string(),
                 size_bytes: None,
                 checksum_sha256: None,
+                family_id: None,
+                region_id: None,
+                chart_package_tier: None,
             },
             InstalledArtifact {
                 artifact_id: "NOT_INTERPRETED_BY_ANDROID".to_string(),
                 filename: "nav_db_2606.zip".to_string(),
                 size_bytes: None,
                 checksum_sha256: None,
+                family_id: None,
+                region_id: None,
+                chart_package_tier: None,
             },
         ];
 

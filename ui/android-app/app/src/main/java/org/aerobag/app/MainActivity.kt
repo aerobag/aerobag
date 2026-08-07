@@ -707,6 +707,12 @@ internal data class InstalledArtifactWire(
     val sizeBytes: Long? = null,
     @SerialName("checksum_sha256")
     val checksumSha256: String? = null,
+    @SerialName("family_id")
+    val familyId: String? = null,
+    @SerialName("region_id")
+    val regionId: String? = null,
+    @SerialName("chart_package_tier")
+    val chartPackageTier: String? = null,
 )
 
 
@@ -729,8 +735,8 @@ internal data class OfflinePackagesUiRowWire(
     val planEntries: List<OfflinePackagesUiPlanEntryWire> = emptyList(),
     @SerialName("installed_size_label")
     val installedSizeLabel: String = "0M",
-    @SerialName("planned_delta_label")
-    val plannedDeltaLabel: String = "+0M",
+    @SerialName("planned_change_label")
+    val plannedChangeLabel: String = "+0M",
     @SerialName("planned_total_size_label")
     val plannedTotalSizeLabel: String = "0M",
     @SerialName("planned_size_change_visible")
@@ -816,6 +822,13 @@ internal data class BundlePackageArtifactWire(
     val effectiveDate: String? = null,
     @SerialName("expiration_date")
     val expirationDate: String? = null,
+    val metadata: BundlePackageMetadataWire? = null,
+)
+
+@Serializable
+internal data class BundlePackageMetadataWire(
+    @SerialName("chart_package_tier")
+    val chartPackageTier: String? = null,
 )
 
 @Serializable
@@ -962,6 +975,21 @@ internal data class OfflinePackagesControllerResultWire(
     val command: OfflinePackagesControllerCommandWire? = null,
     @SerialName("preferences_for_cloud_json")
     val preferencesForCloudJson: String? = null,
+    @SerialName("installed_metadata_updates")
+    val installedMetadataUpdates: List<InstalledArtifactMetadataUpdateWire> = emptyList(),
+)
+
+@Serializable
+internal data class InstalledArtifactMetadataUpdateWire(
+    @SerialName("artifact_id")
+    val artifactId: String,
+    val filename: String,
+    @SerialName("family_id")
+    val familyId: String,
+    @SerialName("region_id")
+    val regionId: String? = null,
+    @SerialName("chart_package_tier")
+    val chartPackageTier: String? = null,
 )
 
 @Serializable

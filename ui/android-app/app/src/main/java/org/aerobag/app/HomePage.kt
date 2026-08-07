@@ -527,6 +527,23 @@ internal fun HomePage(
             throw error
         }
         val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(outputJson)
+        if (result.installedMetadataUpdates.isNotEmpty()) {
+            val updatedCount = withContext(Dispatchers.IO) {
+                result.installedMetadataUpdates.count { update ->
+                    InstalledPackages.updateInstalledArtifactGrouping(
+                        context = context.applicationContext,
+                        artifactId = update.artifactId,
+                        filename = update.filename,
+                        familyId = update.familyId,
+                        regionId = update.regionId,
+                        chartPackageTier = update.chartPackageTier,
+                    )
+                }
+            }
+            diagnosticLogInfo("OfflinePackages") {
+                "persisted grouping metadata for $updatedCount/${result.installedMetadataUpdates.size} installed artifacts"
+            }
+        }
         Log.i(
             "OfflinePackages",
             "controller result event=${event::class.simpleName} source=$packageSourceBaseUrl " +

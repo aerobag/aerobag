@@ -2079,6 +2079,7 @@ struct OfflinePackagesControllerResultWire {
     ui_state: app_core::OfflinePackagesControllerUiState,
     command: Option<app_core::OfflinePackagesControllerCommand>,
     preferences_for_cloud_json: Option<String>,
+    installed_metadata_updates: Vec<app_core::InstalledArtifactMetadataUpdate>,
 }
 
 #[derive(Deserialize)]
@@ -2231,6 +2232,7 @@ pub fn dispatch_offline_packages_controller_json(
             app_core::OfflinePackagesControllerEvent::SyncFinished { summary }
         }
     };
+    let installed = input.installed.clone();
     let result = app_core::reduce_offline_packages_controller_owned(
         app_core::OfflinePackagesControllerInput {
             state: Some(state),
@@ -2266,12 +2268,24 @@ pub fn dispatch_offline_packages_controller_json(
         .map(serde_json::to_string)
         .transpose()
         .map_err(|err| err.to_string())?;
+    let installed_metadata_updates = result
+        .state
+        .library_cache
+        .as_ref()
+        .map(|cache| {
+            app_core::installed_artifact_metadata_updates(
+                &cache.bundle_manifests_by_filename,
+                &installed,
+            )
+        })
+        .unwrap_or_default();
     let wire = OfflinePackagesControllerResultWire {
         packages_state_json,
         library_cache_json,
         ui_state: result.ui_state,
         command: result.command,
         preferences_for_cloud_json,
+        installed_metadata_updates,
     };
     controllers.insert(handle as u32, result.state);
     serde_json::to_string(&wire).map_err(|err| err.to_string())

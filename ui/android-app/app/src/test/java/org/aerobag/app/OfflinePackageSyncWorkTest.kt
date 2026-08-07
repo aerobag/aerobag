@@ -106,5 +106,6 @@ class OfflinePackageSyncWorkTest {
             filename = "$id.zip",
             relativePath = "$id.zip",
             sizeBytes = sizeBytes,
+            metadata = BundlePackageMetadataWire(chartPackageTier = "detail"),
         )
 }

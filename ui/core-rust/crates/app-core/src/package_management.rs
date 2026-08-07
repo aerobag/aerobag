@@ -467,6 +467,21 @@ pub struct InstalledArtifact {
     pub filename: String,
     pub size_bytes: Option<u64>,
     pub checksum_sha256: Option<String>,
+    #[serde(default)]
+    pub family_id: Option<String>,
+    #[serde(default)]
+    pub region_id: Option<String>,
+    #[serde(default)]
+    pub chart_package_tier: Option<product_contracts::ChartPackageTier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledArtifactMetadataUpdate {
+    pub artifact_id: String,
+    pub filename: String,
+    pub family_id: String,
+    pub region_id: Option<String>,
+    pub chart_package_tier: Option<product_contracts::ChartPackageTier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -522,7 +537,7 @@ pub struct OfflinePackagesUiRow {
     #[serde(default)]
     pub installed_size_label: String,
     #[serde(default)]
-    pub planned_delta_label: String,
+    pub planned_change_label: String,
     #[serde(default)]
     pub planned_total_size_label: String,
     #[serde(default)]
@@ -2124,9 +2139,12 @@ fn offline_packages_ui_row(
         pause_count: details.map_or(0, |details| details.pause_count),
         plan_entries,
         installed_size_label: format_package_size_label(installed_size_bytes),
-        planned_delta_label: format_signed_package_size_label(planned_delta_bytes),
+        planned_change_label: format_package_change_label(
+            planned_download_bytes,
+            planned_delta_bytes,
+        ),
         planned_total_size_label: format_package_size_label(planned_total_size_bytes),
-        planned_size_change_visible: planned_delta_bytes != 0,
+        planned_size_change_visible: planned_download_bytes != 0 || planned_delta_bytes != 0,
         sync_progress_per_mille,
     }
 }
@@ -2266,6 +2284,46 @@ fn plan_rows_by_dimension(
     rows
 }
 
+pub fn installed_artifact_metadata_updates(
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    installed: &[InstalledArtifact],
+) -> Vec<InstalledArtifactMetadataUpdate> {
+    let packages_by_id: BTreeMap<&str, &BundlePackageArtifact> = bundle_manifests_by_filename
+        .values()
+        .flat_map(|bundle| bundle.packages.iter())
+        .map(|pkg| (pkg.id.as_str(), pkg))
+        .collect();
+    let mut updates = installed
+        .iter()
+        .filter_map(|artifact| {
+            let pkg = packages_by_id.get(artifact.artifact_id.as_str()).copied()?;
+            let chart_package_tier = pkg
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.chart_package_tier);
+            if artifact.family_id.as_deref() == Some(pkg.family_id.as_str())
+                && artifact.region_id == pkg.region_id
+                && artifact.chart_package_tier == chart_package_tier
+            {
+                return None;
+            }
+            Some(InstalledArtifactMetadataUpdate {
+                artifact_id: artifact.artifact_id.clone(),
+                filename: artifact.filename.clone(),
+                family_id: pkg.family_id.clone(),
+                region_id: pkg.region_id.clone(),
+                chart_package_tier,
+            })
+        })
+        .collect::<Vec<_>>();
+    updates.sort_by(|left, right| {
+        left.artifact_id
+            .cmp(&right.artifact_id)
+            .then_with(|| left.filename.cmp(&right.filename))
+    });
+    updates
+}
+
 fn apply_sync_progress(
     rows: &mut PlanRowsByDimension,
     packages_by_id: &BTreeMap<&str, &BundlePackageArtifact>,
@@ -2368,8 +2426,26 @@ fn apply_to_package_dimensions(
     pkg: &BundlePackageArtifact,
     mutate: impl Fn(&mut DimensionPlanDetails),
 ) {
+    apply_to_package_grouping_dimensions(
+        rows,
+        &pkg.family_id,
+        pkg.region_id.as_deref(),
+        pkg.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.chart_package_tier),
+        mutate,
+    );
+}
+
+fn apply_to_package_grouping_dimensions(
+    rows: &mut PlanRowsByDimension,
+    family_id: &str,
+    region_id: Option<&str>,
+    chart_package_tier: Option<product_contracts::ChartPackageTier>,
+    mutate: impl Fn(&mut DimensionPlanDetails),
+) {
     mutate(&mut rows.all_packages);
-    if let Some(region_id) = &pkg.region_id {
+    if let Some(region_id) = region_id {
         if region_id == WIDE_COVERAGE_REGION_ID {
             mutate(
                 rows.zoom_levels
@@ -2377,13 +2453,13 @@ fn apply_to_package_dimensions(
                     .or_default(),
             );
         } else {
-            mutate(rows.regions.entry(region_id.clone()).or_default());
+            mutate(rows.regions.entry(region_id.to_string()).or_default());
         }
-        mutate(rows.products.entry(pkg.family_id.clone()).or_default());
+        mutate(rows.products.entry(family_id.to_string()).or_default());
     } else {
-        mutate(rows.core_products.entry(pkg.family_id.clone()).or_default());
+        mutate(rows.core_products.entry(family_id.to_string()).or_default());
     }
-    if chart_package_is_detail(pkg) {
+    if chart_package_tier == Some(product_contracts::ChartPackageTier::Detail) {
         mutate(
             rows.zoom_levels
                 .entry(CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string())
@@ -2400,6 +2476,16 @@ fn apply_to_package_dimensions_opt(
 ) {
     if let Some(pkg) = pkg {
         apply_to_package_dimensions(rows, pkg, mutate);
+        return;
+    }
+    if let Some(family_id) = installed.family_id.as_deref() {
+        apply_to_package_grouping_dimensions(
+            rows,
+            family_id,
+            installed.region_id.as_deref(),
+            installed.chart_package_tier,
+            mutate,
+        );
         return;
     }
     mutate(&mut rows.all_packages);
@@ -2481,6 +2567,18 @@ fn format_signed_package_size_label(bytes: i128) -> String {
     let sign = if bytes >= 0 { "+" } else { "-" };
     let magnitude = bytes.unsigned_abs().min(u64::MAX as u128) as u64;
     format!("{sign}{}", format_package_size_label(magnitude))
+}
+
+fn format_package_change_label(planned_download_bytes: u64, planned_delta_bytes: i128) -> String {
+    let delta = format_signed_package_size_label(planned_delta_bytes);
+    if planned_download_bytes == 0 {
+        delta
+    } else {
+        format!(
+            "⤓{} {delta}",
+            format_package_size_label(planned_download_bytes)
+        )
+    }
 }
 
 fn size_label_precision(value: f64) -> usize {
@@ -2919,6 +3017,9 @@ mod tests {
             filename: format!("{id}.zip"),
             size_bytes: None,
             checksum_sha256: None,
+            family_id: None,
+            region_id: None,
+            chart_package_tier: None,
         }
     }
 
@@ -2938,6 +3039,9 @@ mod tests {
             filename: format!("{id}.zip"),
             size_bytes: Some(size_bytes),
             checksum_sha256: None,
+            family_id: None,
+            region_id: None,
+            chart_package_tier: None,
         }
     }
 
@@ -2947,6 +3051,26 @@ mod tests {
             filename: filename.to_string(),
             size_bytes: None,
             checksum_sha256: None,
+            family_id: None,
+            region_id: None,
+            chart_package_tier: None,
+        }
+    }
+
+    fn installed_with_grouping(
+        id: &str,
+        size_bytes: u64,
+        family_id: &str,
+        region_id: Option<&str>,
+    ) -> InstalledArtifact {
+        InstalledArtifact {
+            artifact_id: id.to_string(),
+            filename: format!("{id}.zip"),
+            size_bytes: Some(size_bytes),
+            checksum_sha256: None,
+            family_id: Some(family_id.to_string()),
+            region_id: region_id.map(str::to_string),
+            chart_package_tier: None,
         }
     }
 
@@ -3648,7 +3772,7 @@ mod tests {
         );
 
         assert_eq!(nw.installed_size_label, "0.00M");
-        assert_eq!(nw.planned_delta_label, "-0.00M");
+        assert_eq!(nw.planned_change_label, "⤓0.00M -0.00M");
         assert_eq!(nw.planned_total_size_label, "0.00M");
         assert!(nw.planned_size_change_visible);
         assert_eq!(nw.sync_progress_per_mille, Some(500));
@@ -3709,6 +3833,130 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn obsolete_installed_artifacts_keep_their_persisted_package_dimensions() {
+        let current_tpp = with_cycle_and_size(
+            pkg(
+                "NW_TPP_TPP1_2608",
+                "tpp",
+                Some("nw"),
+                Some("2026-08-06"),
+                Some("2099-01-01"),
+            ),
+            "2608",
+            180_000_000,
+        );
+        let current_nav = with_cycle_and_size(
+            pkg(
+                "NAV_DB_NAV19_2608_01",
+                "nav-db",
+                None,
+                Some("2026-08-06"),
+                Some("2099-01-01"),
+            ),
+            "2608",
+            20_000_000,
+        );
+        let mut old_detail =
+            installed_with_grouping("NW_SEC_DETAIL_SEC1_2606", 10_000_000, "sec", Some("nw"));
+        old_detail.chart_package_tier = Some(product_contracts::ChartPackageTier::Detail);
+        let old_tpp = installed_with_grouping("NW_TPP_TPP1_2607", 200_000_000, "tpp", Some("nw"));
+        let old_nav = installed_with_grouping("NAV_DB_NAV18_2608_01", 18_000_000, "nav-db", None);
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["nw"], ["sec", "tpp", "nav-db"]),
+            bundle: BundleManifest {
+                packages: vec![current_tpp, current_nav],
+            },
+            installed: vec![old_tpp.clone(), old_nav.clone(), old_detail.clone()],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+        let plan = PackageManagementPlan {
+            fetch: vec![
+                "NW_TPP_TPP1_2608".to_string(),
+                "NAV_DB_NAV19_2608_01".to_string(),
+            ],
+            gc: vec![old_tpp.filename, old_nav.filename, old_detail.filename],
+            ..PackageManagementPlan::default()
+        };
+
+        let rows = plan_rows_by_dimension(&input, &plan, &BTreeMap::new(), None);
+
+        assert_eq!(rows.regions["nw"].gc_count, 2);
+        assert_eq!(rows.products["tpp"].gc_count, 1);
+        assert_eq!(rows.core_products["nav-db"].gc_count, 1);
+        assert_eq!(
+            rows.zoom_levels[CHART_HIGH_RESOLUTION_PRODUCT_ID].gc_count,
+            1
+        );
+        assert!(!rows.products.contains_key("NW_TPP_TPP1_2607"));
+        assert!(!rows.products.contains_key("NAV_DB_NAV18_2608_01"));
+    }
+
+    #[test]
+    fn loaded_manifests_backfill_grouping_for_legacy_installed_sidecars() {
+        let bundles = BTreeMap::from([(
+            "bundle_cycle_2608.json".to_string(),
+            BundleManifest {
+                packages: vec![
+                    detail_pkg("NW_SEC_SEC1_2607", "sec", "nw"),
+                    pkg(
+                        "NAV_DB_NAV19_2608_01",
+                        "nav-db",
+                        None,
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                ],
+            },
+        )]);
+        let installed = vec![
+            installed("NW_SEC_SEC1_2607"),
+            installed("NAV_DB_NAV19_2608_01"),
+        ];
+
+        let updates = installed_artifact_metadata_updates(&bundles, &installed);
+
+        assert_eq!(
+            updates,
+            vec![
+                InstalledArtifactMetadataUpdate {
+                    artifact_id: "NAV_DB_NAV19_2608_01".to_string(),
+                    filename: "NAV_DB_NAV19_2608_01.zip".to_string(),
+                    family_id: "nav-db".to_string(),
+                    region_id: None,
+                    chart_package_tier: None,
+                },
+                InstalledArtifactMetadataUpdate {
+                    artifact_id: "NW_SEC_SEC1_2607".to_string(),
+                    filename: "NW_SEC_SEC1_2607.zip".to_string(),
+                    family_id: "sec".to_string(),
+                    region_id: Some("nw".to_string()),
+                    chart_package_tier: Some(product_contracts::ChartPackageTier::Detail),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn package_change_label_separates_download_bytes_from_net_storage_change() {
+        let row = offline_packages_ui_row(
+            "all-packages".to_string(),
+            "All packages".to_string(),
+            OfflinePackageSelection::Play,
+            None,
+            None,
+            Some(&DimensionPlanDetails {
+                planned_download_bytes: 180_000_000,
+                planned_gc_bytes: 218_000_000,
+                ..DimensionPlanDetails::default()
+            }),
+        );
+
+        assert_eq!(row.planned_change_label, "⤓180M -38M");
     }
 
     #[test]
@@ -4108,6 +4356,9 @@ mod tests {
                 filename: "nav_db_2604_01_good.zip".to_string(),
                 size_bytes: None,
                 checksum_sha256: None,
+                family_id: None,
+                region_id: None,
+                chart_package_tier: None,
             }],
             storage: None,
             event: OfflinePackagesControllerEvent::SyncFinished {

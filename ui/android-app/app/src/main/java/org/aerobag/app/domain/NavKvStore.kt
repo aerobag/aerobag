@@ -113,6 +113,12 @@ private data class WireInstalledArtifact(
     val sizeBytes: Long? = null,
     @SerialName("checksum_sha256")
     val checksumSha256: String? = null,
+    @SerialName("family_id")
+    val familyId: String? = null,
+    @SerialName("region_id")
+    val regionId: String? = null,
+    @SerialName("chart_package_tier")
+    val chartPackageTier: String? = null,
 )
 
 @Serializable
@@ -265,6 +271,9 @@ class NavKvStore private constructor(
                 filename = filename,
                 sizeBytes = sizeBytes,
                 checksumSha256 = checksumSha256,
+                familyId = familyId,
+                regionId = regionId,
+                chartPackageTier = chartPackageTier,
             )
     }
 

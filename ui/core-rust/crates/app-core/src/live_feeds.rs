@@ -1427,7 +1427,7 @@ impl LiveFeedsState {
         self.public_live_feed_resource(CURRENT_RESOURCE_ID, CURRENT_ADDRESS, false)
     }
 
-    fn public_live_feed_resource(
+    pub(crate) fn public_live_feed_resource(
         &self,
         id: impl Into<String>,
         live_feed_relative_url: &str,

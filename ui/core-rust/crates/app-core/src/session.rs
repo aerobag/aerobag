@@ -7771,10 +7771,13 @@ fn live_nav_kv_resource_id_prefix(source: &LiveNavKvSource) -> String {
     }
 }
 
-fn live_nav_kv_root_resource(source: &LiveNavKvSource) -> CoreResourceRequest {
-    CoreResourceRequest::public_url(
+fn live_nav_kv_root_resource(
+    live_feeds: &LiveFeedsState,
+    source: &LiveNavKvSource,
+) -> CoreResourceRequest {
+    live_feeds.public_live_feed_resource(
         format!("{}/root", live_nav_kv_resource_id_prefix(source)),
-        live_feed_state_member_address(&source.state_url, &source.root_member_path),
+        &live_feed_state_member_address(&source.state_url, &source.root_member_path),
         false,
     )
 }
@@ -7786,16 +7789,21 @@ fn live_nav_kv_page_member_path(source: &LiveNavKvSource, page: u32) -> String {
         .replace("{page}", &page.to_string())
 }
 
-fn live_nav_kv_page_resource(source: &LiveNavKvSource, page: u32) -> CoreResourceRequest {
+fn live_nav_kv_page_resource(
+    live_feeds: &LiveFeedsState,
+    source: &LiveNavKvSource,
+    page: u32,
+) -> CoreResourceRequest {
     let member_path = live_nav_kv_page_member_path(source, page);
-    CoreResourceRequest::public_url(
+    live_feeds.public_live_feed_resource(
         format!("{}/page/{page:04}", live_nav_kv_resource_id_prefix(source)),
-        live_feed_state_member_address(&source.state_url, &member_path),
+        &live_feed_state_member_address(&source.state_url, &member_path),
         false,
     )
 }
 
 fn live_nav_kv_page_resources(
+    live_feeds: &LiveFeedsState,
     source: &LiveNavKvSource,
     pages: Vec<u32>,
 ) -> Vec<CoreResourceRequest> {
@@ -7804,19 +7812,23 @@ fn live_nav_kv_page_resources(
     pages.dedup();
     pages
         .into_iter()
-        .map(|page| live_nav_kv_page_resource(source, page))
+        .map(|page| live_nav_kv_page_resource(live_feeds, source, page))
         .collect()
 }
 
-fn live_obstacle_had_root_resource(had: &LiveObstacleHadState) -> CoreResourceRequest {
-    live_nav_kv_root_resource(&had.source)
+fn live_obstacle_had_root_resource(
+    live_feeds: &LiveFeedsState,
+    had: &LiveObstacleHadState,
+) -> CoreResourceRequest {
+    live_nav_kv_root_resource(live_feeds, &had.source)
 }
 
 fn live_obstacle_had_page_resources(
+    live_feeds: &LiveFeedsState,
     had: &LiveObstacleHadState,
     pages: Vec<u32>,
 ) -> Vec<CoreResourceRequest> {
-    live_nav_kv_page_resources(&had.source, pages)
+    live_nav_kv_page_resources(live_feeds, &had.source, pages)
 }
 
 fn live_obstacle_had_resource_parts(resource_id: &str) -> Option<(&str, &str)> {
@@ -8178,7 +8190,7 @@ fn ensure_live_obstacle_inputs_loaded(
     if had.store.is_none() {
         enqueue_session_resource_effect(
             session,
-            live_obstacle_had_root_resource(&had),
+            live_obstacle_had_root_resource(session.weather.live_feeds(), &had),
             [UiInvalidation::MapOverlay],
         );
         return vec![live_feed_unavailable_status_record(
@@ -8221,7 +8233,9 @@ fn ensure_live_obstacle_inputs_loaded(
         }
     };
     if !missing_pages.is_empty() {
-        for resource in live_obstacle_had_page_resources(&had, missing_pages) {
+        for resource in
+            live_obstacle_had_page_resources(session.weather.live_feeds(), &had, missing_pages)
+        {
             enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
         }
         return vec![live_feed_unavailable_status_record(
@@ -8268,7 +8282,9 @@ fn ensure_live_obstacle_inputs_loaded(
             },
             Ok(NavKvLookup::MissingKey) => {}
             Ok(NavKvLookup::MissingPages(pages)) => {
-                for resource in live_obstacle_had_page_resources(&had, pages) {
+                for resource in
+                    live_obstacle_had_page_resources(session.weather.live_feeds(), &had, pages)
+                {
                     enqueue_session_resource_effect(
                         session,
                         resource,
@@ -8328,7 +8344,10 @@ fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreR
         return Vec::new();
     };
     if session.weather.runtime().forecast_atmosphere.is_none() {
-        return vec![live_nav_kv_root_resource(&source)];
+        return vec![live_nav_kv_root_resource(
+            session.weather.live_feeds(),
+            &source,
+        )];
     }
     Vec::new()
 }
@@ -8376,7 +8395,7 @@ fn forecast_atmosphere_snapshot_resources(session: &mut UiSession) -> Vec<CoreRe
         clear_data_status_record(session, &status_id);
         return Vec::new();
     }
-    live_nav_kv_page_resources(&state.source, missing_pages)
+    live_nav_kv_page_resources(session.weather.live_feeds(), &state.source, missing_pages)
 }
 
 pub fn get_map_overlay_in_session(
@@ -18552,6 +18571,8 @@ mod tests {
 
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_live_feed_source_in_session(init.handle, "https://feeds.example.test")
+            .expect("configure live-feed source");
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18606,7 +18627,9 @@ mod tests {
         assert_eq!(
             effects[0].resource.source,
             crate::CoreResourceSource::PublicUrl {
-                url: format!("{LIVE_FEEDS_BASE_PATH}/states/obstacles/v1/root"),
+                url: format!(
+                    "https://feeds.example.test{LIVE_FEEDS_BASE_PATH}/states/obstacles/v1/root"
+                ),
             }
         );
         ingest_resource_in_session(init.handle, "live_obstacle_had/v1/root", &built.root_bytes)
@@ -18806,7 +18829,9 @@ mod tests {
         assert_eq!(
             root_effect.resource.source,
             crate::CoreResourceSource::PublicUrl {
-                url: format!("/live-feeds/v3/states/winds-aloft/{version}/root"),
+                url: format!(
+                    "https://feeds.example.test/live-feeds/v3/states/winds-aloft/{version}/root"
+                ),
             }
         );
 
@@ -18820,6 +18845,25 @@ mod tests {
             .find(|row| row.id == "live_feed:winds-aloft")
             .expect("winds-aloft status row");
         assert_eq!(winds_status.value, "OK");
+        let failed = report_session_resource_failure_in_session(
+            init.handle,
+            &format!("live_nav_kv/winds-aloft/{version}/page/0000"),
+            "diagnostic page fetch failure",
+        )
+        .expect("report winds page failure");
+        let failed_status = failed
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:winds-aloft")
+            .expect("failed winds-aloft status row");
+        assert_eq!(failed_status.value, "UNAVAIL");
+        assert_eq!(failed_status.severity, UiStatusSeverity::Unavailable);
+        assert!(failed_status
+            .detail
+            .contains("diagnostic page fetch failure"));
+        ingest_resource_in_session(init.handle, &root_effect.resource.id, &root)
+            .expect("reload atmosphere root after diagnostic failure");
         let revision_before = {
             let sessions = lock_sessions();
             let revision = session_ref(&sessions, init.handle)
@@ -18851,6 +18895,13 @@ mod tests {
                 .expect("resource effects")
                 .is_empty());
             for resource in resources {
+                let CoreResourceSource::PublicUrl { url } = &resource.source else {
+                    panic!("winds page must be a public URL: {resource:?}");
+                };
+                assert!(
+                    url.starts_with("https://feeds.example.test/live-feeds/v3/states/winds-aloft/"),
+                    "winds page URL must resolve against the configured live-feed server: {url}"
+                );
                 let page_index = resource
                     .id
                     .rsplit('/')

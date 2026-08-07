@@ -22,6 +22,7 @@ use crate::{
 };
 
 const PACKAGE_WARNING_STATUS_PREFIX: &str = "package_ui_warning:";
+const WINDS_ALOFT_UNAVAILABLE_STATUS_ID: &str = "live_feed:winds-aloft_unavailable";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct DataStatusNavDbPackageRecord {
@@ -444,7 +445,10 @@ fn project_data_status_page_state(
         live_feed_product_status_page_row(input, LiveFeedProduct::Tafs),
         nexrad_live_feed_status_page_row(input),
         live_feed_product_status_page_row(input, LiveFeedProduct::Obstacles),
-        winds_aloft_status_page_row(&input.forecast),
+        winds_aloft_status_page_row(
+            &input.forecast,
+            records.get(WINDS_ALOFT_UNAVAILABLE_STATUS_ID),
+        ),
     ];
     if let Some(cloud) = input.cloud.as_ref() {
         rows.insert(3, cloud_status_page_row(cloud));
@@ -983,7 +987,10 @@ fn live_feed_product_status_page_row(
     )
 }
 
-fn winds_aloft_status_page_row(forecast: &DataStatusForecastInput) -> UiDataStatusPageRow {
+fn winds_aloft_status_page_row(
+    forecast: &DataStatusForecastInput,
+    unavailable: Option<&DataStatusRecord>,
+) -> UiDataStatusPageRow {
     let mut facts = Vec::new();
     if let Some(version) = forecast.version_label.as_ref() {
         facts.push(status_fact("Version", version.clone()));
@@ -1010,6 +1017,19 @@ fn winds_aloft_status_page_row(forecast: &DataStatusForecastInput) -> UiDataStat
             valid_through,
             UiDataStatusPageTimeDisplay::Until,
         ));
+    }
+    if let Some(unavailable) = unavailable {
+        return status_page_row(
+            "live_feed:winds-aloft",
+            "Winds aloft",
+            unavailable
+                .value
+                .clone()
+                .unwrap_or_else(|| "UNAVAIL".to_string()),
+            unavailable.severity,
+            unavailable.detail.clone(),
+            facts,
+        );
     }
     if forecast.loaded {
         return status_page_row(

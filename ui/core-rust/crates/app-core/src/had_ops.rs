@@ -6251,6 +6251,7 @@ mod tests {
         .ui_state;
 
         assert_eq!(state.altitude_planner.departure.when_value, "−5h");
+        assert!(state.altitude_planner.departure.when_is_past);
         assert_eq!(
             state
                 .altitude_planner

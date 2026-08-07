@@ -124,6 +124,8 @@ internal fun AltitudePlannerPage(
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
+            departureTimeInput = planner.departure.timeValue
+            departureWhenInput = planner.departure.whenValue
             errorMessage = error.message ?: "Invalid departure time"
         }
     }

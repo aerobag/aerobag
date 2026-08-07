@@ -14,6 +14,15 @@ import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
 import { debugLog, getBrowserInstanceId, isDebugLogEnabled, type DebugLogRecord } from "./debugLog";
 import type { SituationRingCandidate } from "./types";
 
+// Session facade objects outlive React hot updates. Reload rather than combining
+// an updated caller with a facade created from the previous method surface.
+const hotReload = (import.meta as ImportMeta & {
+  hot?: { accept(callback: () => void): void };
+}).hot;
+if (hotReload) {
+  hotReload.accept(() => globalThis.location.reload());
+}
+
 type WorkerCallTarget =
   | { kind: "adapter" }
   | { kind: "session"; sessionId: number };

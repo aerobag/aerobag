@@ -53,6 +53,7 @@ describe("flight plan layout CSS", () => {
     expect(plannerPage).toContain('props.onSetDepartureInput(field, input)');
     expect(plannerPage).toContain('submitDepartureInput("time", departureTimeInput)');
     expect(plannerPage).toContain('submitDepartureInput("when", departureWhenInput)');
+    expect(plannerPage).toContain("setDepartureWhenInput(planner.departure.when_value)");
     expect(plannerPage).toContain("props.onToggleDepartureTimeBasis()");
     expect(plannerPage).toContain("comparisonControlKey");
     expect(plannerPage).toContain("<TrayDock");

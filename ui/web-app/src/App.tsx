@@ -8268,7 +8268,11 @@ function AltitudePlannerPage(props: {
   const submitDepartureInput = (field: "time" | "when", input: string) => {
     setError(null);
     void Promise.resolve(props.onSetDepartureInput(field, input))
-      .catch((reason: unknown) => setError(errorMessage(reason)));
+      .catch((reason: unknown) => {
+        setDepartureTimeInput(planner.departure.time_value);
+        setDepartureWhenInput(planner.departure.when_value);
+        setError(errorMessage(reason));
+      });
   };
 
   const toggleDepartureTimeBasis = () => {
@@ -8283,6 +8287,8 @@ function AltitudePlannerPage(props: {
         }
         await props.onToggleDepartureTimeBasis();
       } catch (reason: unknown) {
+        setDepartureTimeInput(planner.departure.time_value);
+        setDepartureWhenInput(planner.departure.when_value);
         setError(errorMessage(reason));
       } finally {
         suppressDepartureBlurSubmit.current = false;

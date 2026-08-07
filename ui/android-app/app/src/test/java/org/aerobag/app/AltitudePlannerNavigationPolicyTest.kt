@@ -30,6 +30,7 @@ class AltitudePlannerNavigationPolicyTest {
         assertTrue(plannerSource.contains("uiSession.setAltitudePlannerDepartureInput(field, input)"))
         assertTrue(plannerSource.contains("setDepartureInput(\"time\", departureTimeInput)"))
         assertTrue(plannerSource.contains("setDepartureInput(\"when\", departureWhenInput)"))
+        assertTrue(plannerSource.contains("departureWhenInput = planner.departure.whenValue"))
         assertTrue(plannerSource.contains("uiSession.toggleAltitudePlannerDepartureTimeBasis()"))
         assertFalse(plannerSource.contains("DatePickerDialog"))
         assertFalse(plannerSource.contains("ZonedDateTime"))

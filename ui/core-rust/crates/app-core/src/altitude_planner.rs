@@ -636,10 +636,16 @@ fn parse_departure_offset(raw_input: &str, now_epoch_ms: i64) -> Result<Option<i
     if input == "now" || input == "0" || input == "0m" || input == "0h" {
         return Ok(None);
     }
-    let input = input.strip_prefix('+').unwrap_or(&input);
-    if input.starts_with('-') || input.starts_with('−') {
-        return Err("departure offset must not be in the past".to_string());
-    }
+    let (negative, input) = if let Some(value) = input.strip_prefix('-') {
+        (true, value.trim_start())
+    } else if let Some(value) = input.strip_prefix('−') {
+        (true, value.trim_start())
+    } else {
+        (
+            false,
+            input.strip_prefix('+').unwrap_or(&input).trim_start(),
+        )
+    };
     let bytes = input.as_bytes();
     let mut cursor = 0;
     let mut total_seconds = 0.0;
@@ -668,7 +674,12 @@ fn parse_departure_offset(raw_input: &str, now_epoch_ms: i64) -> Result<Option<i
         while cursor < bytes.len() && bytes[cursor].is_ascii_alphabetic() {
             cursor += 1;
         }
-        let unit = &input[unit_start..cursor];
+        let unit = if unit_start == cursor && cursor == bytes.len() && terms == 0 {
+            // A lone number is useful shorthand in this compact hours-oriented field.
+            "h"
+        } else {
+            &input[unit_start..cursor]
+        };
         let multiplier = match unit {
             "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
             "h" | "hr" | "hrs" | "hour" | "hours" => 3_600.0,
@@ -681,16 +692,21 @@ fn parse_departure_offset(raw_input: &str, now_epoch_ms: i64) -> Result<Option<i
     if terms == 0 || !total_seconds.is_finite() {
         return Err("enter a departure offset such as 3h or 1h 30m".to_string());
     }
-    let offset_ms = (total_seconds * 1_000.0).round();
-    if offset_ms > i64::MAX as f64 {
+    let magnitude_ms = (total_seconds * 1_000.0).round();
+    if magnitude_ms > i64::MAX as f64 {
         return Err("departure offset is too large".to_string());
     }
+    let offset_ms = if negative {
+        -(magnitude_ms as i64)
+    } else {
+        magnitude_ms as i64
+    };
     let departure = now_epoch_ms
-        .checked_add(offset_ms as i64)
+        .checked_add(offset_ms)
         .ok_or_else(|| "departure time is outside the supported UTC range".to_string())?;
     DateTime::<Utc>::from_timestamp_millis(departure)
         .ok_or_else(|| "departure time is outside the supported UTC range".to_string())?;
-    Ok((offset_ms > 0.0).then_some(departure))
+    Ok((offset_ms != 0).then_some(departure))
 }
 
 fn format_altitude_ft(altitude_ft: i32) -> String {
@@ -1425,6 +1441,32 @@ mod tests {
             .expect("dynamic now")
             .departure_time_epoch_ms,
             None
+        );
+
+        let past = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::When,
+            "-3",
+            now,
+            AltitudePlannerDepartureTimeBasis::Local,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("unitless negative hours");
+        assert_eq!(
+            past.departure_time_epoch_ms,
+            Some(utc("2026-08-05T16:15:30Z").timestamp_millis())
+        );
+
+        let unicode_past = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::When,
+            "−1h 30m",
+            now,
+            AltitudePlannerDepartureTimeBasis::Local,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("Unicode-minus past departure");
+        assert_eq!(
+            unicode_past.departure_time_epoch_ms,
+            Some(utc("2026-08-05T17:45:30Z").timestamp_millis())
         );
     }
 

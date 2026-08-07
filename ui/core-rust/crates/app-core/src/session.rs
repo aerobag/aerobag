@@ -15263,9 +15263,30 @@ mod tests {
             init.handle,
             FlightPlanSessionCommand::SetAltitudePlannerDepartureInput {
                 field: crate::AltitudePlannerDepartureInputField::When,
-                input: "now".to_string(),
+                input: "-3".to_string(),
             },
             utc("2026-05-21T12:01:00Z").timestamp_millis(),
+        )
+        .expect("set past departure by relative offset");
+        {
+            let sessions = lock_sessions();
+            assert_eq!(
+                session_ref(&sessions, init.handle)
+                    .expect("session")
+                    .flight_plan
+                    .active_plan()
+                    .and_then(|plan| plan.planned_departure_time_epoch_ms),
+                Some(utc("2026-05-21T09:01:00Z").timestamp_millis()),
+            );
+        }
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::SetAltitudePlannerDepartureInput {
+                field: crate::AltitudePlannerDepartureInputField::When,
+                input: "now".to_string(),
+            },
+            utc("2026-05-21T12:01:15Z").timestamp_millis(),
         )
         .expect("restore depart-now mode");
         let sessions = lock_sessions();

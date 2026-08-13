@@ -726,7 +726,9 @@ where
     Ok(route)
 }
 
-const MINIMUM_ROUTE_PATH_TO_DISTANCE_PILL_WIDTH_RATIO: f64 = 1.6;
+// Leave roughly one pill width between the departure waypoint and the pill's
+// near edge, with equivalent clearance available at the arrival waypoint.
+const MINIMUM_ROUTE_PATH_TO_DISTANCE_PILL_WIDTH_RATIO: f64 = 3.2;
 
 pub(crate) fn project_flight_plan_route_distance_annotations(
     plan: &FlightPlan,
@@ -2053,7 +2055,7 @@ mod tests {
             ]
         );
         assert!(annotations[0].text.ends_with("nm"));
-        assert_eq!(annotations[0].minimum_path_to_pill_width_ratio, 1.6);
+        assert_eq!(annotations[0].minimum_path_to_pill_width_ratio, 3.2);
     }
 
     #[test]

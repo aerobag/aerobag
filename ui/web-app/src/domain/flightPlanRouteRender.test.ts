@@ -52,9 +52,9 @@ describe("flight plan route rendering", () => {
       distance_nm: 53,
       status: "remaining",
       required_feature_ids: ["flight-plan:start", "flight-plan:end"],
-      minimum_path_to_pill_width_ratio: 1.6,
+      minimum_path_to_pill_width_ratio: 3.2,
     };
-    const segment = { status: "remaining" as const, path: [{ x: 0, y: 0 }, { x: 160, y: 0 }] };
+    const segment = { status: "remaining" as const, path: [{ x: 0, y: 0 }, { x: 320, y: 0 }] };
 
     expect(layoutFlightPlanRouteDistancePills(
       [annotation],
@@ -73,7 +73,7 @@ describe("flight plan route rendering", () => {
       [segment],
       new Set(annotation.required_feature_ids),
       () => 100,
-    )).toEqual([{ annotation, center: { x: 80, y: 0 }, width: 100, rotationDegrees: 0 }]);
+    )).toEqual([{ annotation, center: { x: 160, y: 0 }, width: 100, rotationDegrees: 0 }]);
   });
 
   it("places and rotates one logical-leg pill along its aggregated drawable path", () => {
@@ -84,13 +84,13 @@ describe("flight plan route rendering", () => {
       distance_nm: 20,
       status: "active",
       required_feature_ids: [],
-      minimum_path_to_pill_width_ratio: 1.6,
+      minimum_path_to_pill_width_ratio: 3.2,
     };
     const layouts = layoutFlightPlanRouteDistancePills(
       [annotation],
       [
         { status: "active", path: [{ x: 0, y: 0 }, { x: 20, y: 0 }] },
-        { status: "active_leg_remaining", path: [{ x: 20, y: 0 }, { x: 20, y: 100 }] },
+        { status: "active_leg_remaining", path: [{ x: 20, y: 0 }, { x: 20, y: 180 }] },
       ],
       new Set(),
       () => 50,
@@ -98,7 +98,7 @@ describe("flight plan route rendering", () => {
 
     expect(layouts).toEqual([{
       annotation,
-      center: { x: 20, y: 20 },
+      center: { x: 20, y: 60 },
       width: 50,
       rotationDegrees: 90,
     }]);
@@ -112,7 +112,7 @@ describe("flight plan route rendering", () => {
       distance_nm: 53,
       status: "remaining",
       required_feature_ids: [],
-      minimum_path_to_pill_width_ratio: 1.6,
+      minimum_path_to_pill_width_ratio: 3.2,
     };
     const [layout] = layoutFlightPlanRouteDistancePills(
       [annotation],
@@ -121,7 +121,7 @@ describe("flight plan route rendering", () => {
       () => 50,
     );
 
-    expect(layout.center).toEqual({ x: 0, y: 60 });
+    expect(layout.center).toEqual({ x: 0, y: 20 });
     expect(layout.rotationDegrees).toBe(90);
   });
 
@@ -133,7 +133,7 @@ describe("flight plan route rendering", () => {
       distance_nm: 730,
       status: "remaining",
       required_feature_ids: [],
-      minimum_path_to_pill_width_ratio: 1.6,
+      minimum_path_to_pill_width_ratio: 3.2,
     };
     const segment = {
       status: "remaining" as const,

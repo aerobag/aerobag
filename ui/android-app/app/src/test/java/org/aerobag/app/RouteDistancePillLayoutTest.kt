@@ -19,14 +19,14 @@ class RouteDistancePillLayoutTest {
         distanceNm = 20.0,
         status = RouteSegmentStatus.Active,
         requiredFeatureIds = listOf("start", "end"),
-        minimumPathToPillWidthRatio = 1.6,
+        minimumPathToPillWidthRatio = 3.2,
     )
 
     @Test
     fun `requires endpoint features and enough projected path length`() {
         val paths = listOf(
-            listOf(Offset(0f, 0f), Offset(100f, 0f)),
-            listOf(Offset(100f, 0f), Offset(100f, 60f)),
+            listOf(Offset(0f, 0f), Offset(200f, 0f)),
+            listOf(Offset(200f, 0f), Offset(200f, 120f)),
         )
         assertTrue(layoutRouteDistancePills(listOf(annotation), paths, setOf("start")) { 100f }.isEmpty())
         assertTrue(layoutRouteDistancePills(listOf(annotation), paths, setOf("start", "end")) { 101f }.isEmpty())
@@ -36,7 +36,7 @@ class RouteDistancePillLayoutTest {
             paths,
             setOf("start", "end"),
         ) { 100f }.single()
-        assertEquals(Offset(80f, 0f), layout.center)
+        assertEquals(Offset(160f, 0f), layout.center)
         assertEquals(0f, layout.rotationDegrees)
     }
 
@@ -46,11 +46,11 @@ class RouteDistancePillLayoutTest {
             listOf(annotation.copy(requiredFeatureIds = emptyList())),
             listOf(
                 listOf(Offset(0f, 0f), Offset(20f, 0f)),
-                listOf(Offset(20f, 0f), Offset(20f, 100f)),
+                listOf(Offset(20f, 0f), Offset(20f, 180f)),
             ),
             emptySet(),
         ) { 50f }.single()
-        assertEquals(Offset(20f, 20f), layout.center)
+        assertEquals(Offset(20f, 60f), layout.center)
         assertEquals(90f, layout.rotationDegrees)
     }
 
@@ -61,7 +61,7 @@ class RouteDistancePillLayoutTest {
             listOf(listOf(Offset(0f, 100f), Offset(0f, -100f))),
             emptySet(),
         ) { 50f }.single()
-        assertEquals(Offset(0f, 60f), layout.center)
+        assertEquals(Offset(0f, 20f), layout.center)
         assertEquals(90f, layout.rotationDegrees)
     }
 

@@ -1,7 +1,7 @@
 ---
 id: TASK-37
-title: Altitude/wind/performance calculation
-state: low
+title: @a4 Altitude/wind/performance calculation
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

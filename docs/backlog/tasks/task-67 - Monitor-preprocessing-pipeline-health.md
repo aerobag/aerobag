@@ -1,7 +1,7 @@
 ---
 id: TASK-67
-title: Monitor preprocessing pipeline health @a1
-state: high
+title: Monitor preprocessing pipeline health
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -382,7 +382,6 @@ Do not put threshold computation in the browser.
 7. Add dashboard.
    - HTML/Plotly presentation over monitor JSON only.
    - No client-side health computation beyond display formatting.
-
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

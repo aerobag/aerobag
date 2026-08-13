@@ -1,7 +1,7 @@
 ---
 id: TASK-87
 title: Delete first/last of airway
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:

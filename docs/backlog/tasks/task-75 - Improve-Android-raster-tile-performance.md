@@ -1,7 +1,7 @@
 ---
 id: TASK-75
 title: Improve Android raster tile performance
-state: medium
+state: low
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

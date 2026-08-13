@@ -1,16 +1,16 @@
 ---
-id: TASK-125
-title: Procedures should use pretty names
+id: TASK-151
+title: STARs & SIDs
 assignee: []
-created_date: '2026-05-19 15:11'
+created_date: '2026-07-27 21:58'
 labels:
-  - cat:core
+  - cat:navigation
 dependencies: []
 state: done
-ordinal: 125000
+ordinal: 151000
 ---
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-"ILS 23", not I23
+
 <!-- SECTION:DESCRIPTION:END -->

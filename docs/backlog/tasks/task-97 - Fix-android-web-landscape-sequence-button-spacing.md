@@ -1,7 +1,7 @@
 ---
 id: TASK-97
 title: Android-web landscape sequence buttons eat space
-state: medium
+state: someday
 assignee: []
 created_date: '2026-05-12 20:10'
 labels:

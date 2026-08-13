@@ -1,7 +1,7 @@
 ---
 id: TASK-12
 title: Add SID and STAR support
-state: low
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

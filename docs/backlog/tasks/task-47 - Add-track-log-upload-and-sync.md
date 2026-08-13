@@ -1,7 +1,7 @@
 ---
 id: TASK-47
 title: Add track log upload and sync
-state: low
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -16,6 +16,12 @@ ordinal: 47000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Add track logging with upload/sync support.
+Save
+Replay
+Display on map
+Share
+Post?
+Store?
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -6,7 +6,7 @@ created_date: '2026-06-03 05:05'
 labels:
   - cat:data
 dependencies: []
-state: medium
+state: done
 ordinal: 131000
 ---
 ## Description
@@ -21,5 +21,7 @@ Another bummer is that, in cycles, two diverging navdb contracts can share chart
 
 We'd also need an ultimate "merge" story, analogous to the python merger for cycles. For live feeds, this probably happens at SSE: as the feedsd produces updates and publishes them to the SSE server, it only updates its contract; the feedsd server keeps publishing the latest values for the "other" contract until the other publisher emits new data.
 
+
+I think this is actually close to sorted out already. Apps insert a /v2/ into their live-feed request URL, so it's already kinda trivial for a live-feed root to serve multiple live-feed contracts simultaneously. Separate roots, separate SSE servers, separate data path.
 Maybe I should do something much simpler until this is an actual problem: run two end-to-end live feed publish + SSE servers at different endpoints. Newer clients just learn the appropriate endpoint. Rather than one endpoint that all clients can use to get a "directory of contracts".
 <!-- SECTION:DESCRIPTION:END -->

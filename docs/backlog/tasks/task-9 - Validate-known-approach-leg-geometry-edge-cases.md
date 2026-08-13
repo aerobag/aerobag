@@ -1,7 +1,7 @@
 ---
 id: TASK-9
 title: Validate known approach leg geometry edge cases
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

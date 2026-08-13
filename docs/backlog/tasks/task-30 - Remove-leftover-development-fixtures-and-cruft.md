@@ -1,6 +1,6 @@
 ---
 id: TASK-30
-title: Remove leftover development fixtures and cruft
+title: @a6 Remove leftover development fixtures and cruft
 state: low
 assignee: []
 created_date: '2026-05-12 16:20'

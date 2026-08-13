@@ -16,7 +16,6 @@ ordinal: 91000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Traffic from internet ADSB
 traffic from stratux
 traffic from Garmin transponder Bluetooth
 <!-- SECTION:DESCRIPTION:END -->

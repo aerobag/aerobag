@@ -1,7 +1,7 @@
 ---
 id: TASK-39
 title: Background updates
-state: low
+state: medium
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

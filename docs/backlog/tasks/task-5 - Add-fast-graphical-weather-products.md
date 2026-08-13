@@ -1,7 +1,7 @@
 ---
 id: TASK-5
 title: Add fast graphical weather products
-state: medium
+state: low
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

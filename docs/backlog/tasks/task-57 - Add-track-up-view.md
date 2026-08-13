@@ -1,7 +1,7 @@
 ---
 id: TASK-57
 title: Add track-up view
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

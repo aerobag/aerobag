@@ -1,7 +1,7 @@
 ---
 id: TASK-17
 title: Restore TFR altitudes and NOTAM text
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

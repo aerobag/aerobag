@@ -1,7 +1,7 @@
 ---
 id: TASK-60
-title: Render Honolulu TAC inset
-state: medium
+title: CUTLINES! Render Honolulu TAC inset
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:
@@ -18,6 +18,16 @@ ordinal: 60000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 The Honolulu TAC inset is not currently rendered.
 Probably needs a cutline.
+
+
+  - right now, TACs have their legends/margins flopping out, which overhangs adjacent sectionals (since
+  our TAC layer is TAC-over-sectional).
+  - I'd like to actually trim out one (or all, if they're different?) of the legends for every chart type
+  and make them available to the user! Legends are legendary.
+  - Many charts have insets I'd like to be able to access like a legend, such as the half-dozen subcharts
+  for how to cross LAX.
+  - we're missing a honolulu inset; I'd like to track that down.
+  - where's the grand canyon chart?
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

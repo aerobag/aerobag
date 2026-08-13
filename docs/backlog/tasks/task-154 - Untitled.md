@@ -1,16 +1,16 @@
 ---
-id: TASK-125
-title: Procedures should use pretty names
+id: TASK-154
+title: live-feed ADSB
 assignee: []
-created_date: '2026-05-19 15:11'
+created_date: '2026-08-04 22:35'
 labels:
-  - cat:core
+  - cat:data
 dependencies: []
 state: done
-ordinal: 125000
+ordinal: 154000
 ---
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-"ILS 23", not I23
+ADSB ownship for tracking Jeremy!
 <!-- SECTION:DESCRIPTION:END -->

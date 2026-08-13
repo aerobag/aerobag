@@ -1,7 +1,7 @@
 ---
 id: TASK-76
 title: Help: Add disabled action reason messages
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

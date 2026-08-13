@@ -1,7 +1,7 @@
 ---
 id: TASK-59
 title: Add chart legend popup from boundary inspection
-state: low
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

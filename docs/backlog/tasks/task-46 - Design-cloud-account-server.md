@@ -1,7 +1,7 @@
 ---
 id: TASK-46
 title: Design cloud account server
-state: low
+state: done
 assignee: []
 created_date: '2026-05-12 16:35'
 labels:

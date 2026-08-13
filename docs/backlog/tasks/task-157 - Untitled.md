@@ -1,20 +1,16 @@
 ---
-id: TASK-94
-title: AHARS AI emergency panel
-state: someday
+id: TASK-157
+title: Undo button for flight plan mutations
 assignee: []
-created_date: '2026-05-12 20:10'
+created_date: '2026-08-07 04:33'
 labels:
-  - navigation
-  - feature
   - cat:navigation
 dependencies: []
-ordinal: 94000
+state: medium
+ordinal: 157000
 ---
-
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 
 <!-- SECTION:DESCRIPTION:END -->
-

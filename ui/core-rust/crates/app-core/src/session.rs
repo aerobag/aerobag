@@ -11660,7 +11660,7 @@ impl ActiveGuidanceProjection {
     fn nav_element(
         &self,
         position: Option<LatLon>,
-        store: Option<&NavKvStore>,
+        _store: Option<&NavKvStore>,
     ) -> Result<NavElementUiView, HadReadError> {
         let Some(geometry) = self.geometry.as_ref() else {
             return Ok(NavElementUiView {
@@ -11669,19 +11669,10 @@ impl ActiveGuidanceProjection {
                 cdi_offscale_readout: None,
             });
         };
-        let course_deg = active_display_course_deg(geometry, position, store)?;
         let cdi_indicator_dots =
             position.map(|position| cdi_dots_for_guidance_geometry(geometry, position));
         let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
-        let active_leg_summary = if let Some(course_deg) = course_deg {
-            format!(
-                "{} CRS {}",
-                self.summary,
-                crate::flight_data::format_course_degrees(course_deg)
-            )
-        } else {
-            self.summary.clone()
-        };
+        let active_leg_summary = self.summary.clone();
 
         Ok(NavElementUiView {
             active_leg_summary,
@@ -24291,6 +24282,28 @@ mod tests {
     fn session_projects_cdi_from_injected_guidance_geometry() {
         let init =
             create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                (
+                    "navref/position/airport/KPAO",
+                    br#"{"lat":37.461,"lon":-122.115}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/VPDUB",
+                    br#"{"lat":38.0,"lon":-122.0}"# as &[u8],
+                ),
+                (
+                    "navref/position/airport/KVCB",
+                    br#"{"lat":38.377,"lon":-121.962}"# as &[u8],
+                ),
+                ("magvar/37/-123", b"14" as &[u8]),
+                ("magvar/37/-122", b"14" as &[u8]),
+                ("magvar/38/-123", b"14" as &[u8]),
+                ("magvar/38/-122", b"14" as &[u8]),
+            ],
+            256,
+        );
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
         let after_geometry = set_guidance_leg_geometry_in_session(
             init.handle,
             vec![GuidanceLegGeometry {
@@ -24347,13 +24360,34 @@ mod tests {
             },
         )
         .expect("push sample");
-        let dots = after_position
+        let guidance = after_position
             .app_ui_state
             .active_plan
             .as_ref()
             .and_then(|plan| plan.guidance.as_ref())
-            .and_then(|guidance| guidance.nav_element.cdi_indicator_dots);
-        assert!(dots.is_some(), "expected CDI dots after ownship update");
+            .expect("guidance");
+        assert_eq!(guidance.nav_element.active_leg_summary, "KPAO -> VPDUB");
+        assert!(
+            !guidance.nav_element.active_leg_summary.contains("CRS"),
+            "CDI label should not include course: {}",
+            guidance.nav_element.active_leg_summary
+        );
+        assert!(
+            guidance.nav_element.cdi_indicator_dots.is_some(),
+            "expected CDI dots after ownship update"
+        );
+        let dtk_cell = after_position
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "desired_track")
+            .expect("DTK flight data cell");
+        assert_eq!(dtk_cell.label, "DTK");
+        assert!(
+            dtk_cell.value.is_some(),
+            "DTK cell should contain active leg course"
+        );
     }
 
     #[test]

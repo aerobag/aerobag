@@ -73,11 +73,7 @@ const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 13] = [
         "VS fpm",
     ),
     banner_cell(FlightDataBannerField::Track, "track", "TRK °M"),
-    banner_cell(
-        FlightDataBannerField::DesiredTrack,
-        "desired_track",
-        "DTK °M",
-    ),
+    banner_cell(FlightDataBannerField::DesiredTrack, "desired_track", "DTK"),
     banner_cell(
         FlightDataBannerField::WaypointDistance,
         "waypoint_distance",
@@ -254,7 +250,7 @@ impl FlightDataComputer {
             cell_with_estimate("fuel", "FUEL gal", fuel, estimate.estimate_kind),
             cell(
                 "desired_track",
-                "DTK °M",
+                "DTK",
                 course_magnetic_deg.map(format_course_degrees),
             ),
         ]
@@ -330,7 +326,7 @@ pub fn flight_plan_columns() -> Vec<FlightDataColumn> {
         column("final_eta", "ETA"),
         column("waypoint_ete", "ETE"),
         column("fuel", "FUEL gal"),
-        column("desired_track", "DTK °M"),
+        column("desired_track", "DTK"),
     ]
 }
 
@@ -533,6 +529,28 @@ mod tests {
     #[test]
     fn flight_plan_distance_column_is_named_dist() {
         assert_eq!(flight_plan_columns()[0].label, "DIST nm");
+    }
+
+    #[test]
+    fn desired_track_is_available_as_dtk_grid_cell() {
+        let desired_track_column = possible_columns()
+            .into_iter()
+            .find(|column| column.id == "desired_track")
+            .expect("desired track column");
+        assert_eq!(desired_track_column.label, "DTK");
+
+        let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
+            desired_track_magnetic_deg: Some(271.4),
+            ..FlightDataBannerInput::default()
+        });
+        let desired_track_cell = banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "desired_track")
+            .expect("desired track cell");
+
+        assert_eq!(desired_track_cell.label, "DTK");
+        assert_eq!(desired_track_cell.value.as_deref(), Some("271"));
     }
 
     #[test]

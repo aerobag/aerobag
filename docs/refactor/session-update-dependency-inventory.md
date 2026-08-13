@@ -106,5 +106,7 @@ Core owns and tests the non-overlapping field-to-group partition.
 4. ~~Teach Android and web adapters to merge groups into their local view model.~~
    Completed with one shared conformance fixture and transitional full-snapshot
    equality checks.
-5. Remove ordinary full-snapshot serialization only after both platforms have
-   conformance and journey coverage.
+5. ~~Remove ordinary full-snapshot serialization only after both platforms have
+   conformance and journey coverage.~~ Completed. Revision gaps now recover
+   through the explicit paged full-snapshot API, and NAVDB envelopes no longer
+   embed snapshots.

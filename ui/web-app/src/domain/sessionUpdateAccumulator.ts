@@ -14,7 +14,6 @@ type JsonObject = Record<string, unknown>;
 export type SessionUpdateDisposition = "applied" | "stale" | "resync_required";
 
 export class SessionUpdateContractError extends Error {}
-export class SessionUpdateProjectionMismatchError extends Error {}
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -67,8 +66,10 @@ export function parseSessionUpdate(value: unknown): UiSessionUpdate {
 
 function sanitizedFullSnapshot(value: unknown, expectedContractVersion: number): JsonObject {
   const raw = requireJsonObject(value, "session snapshot");
+  if (Object.hasOwn(raw, "session_update")) {
+    throw new SessionUpdateContractError("full session snapshot must not contain session_update");
+  }
   const snapshot = { ...raw };
-  delete snapshot.session_update;
   const contractVersion = requireWireInteger(snapshot.ui_contract_version, "snapshot contract version");
   requireWireInteger(snapshot.session_revision, "snapshot revision");
   if (contractVersion !== expectedContractVersion) {
@@ -77,21 +78,6 @@ function sanitizedFullSnapshot(value: unknown, expectedContractVersion: number):
     );
   }
   return snapshot;
-}
-
-function jsonEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left)
-      && Array.isArray(right)
-      && left.length === right.length
-      && left.every((value, index) => jsonEqual(value, right[index]));
-  }
-  if (!isJsonObject(left) || !isJsonObject(right)) return false;
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return leftKeys.length === rightKeys.length
-    && leftKeys.every((key) => Object.hasOwn(right, key) && jsonEqual(left[key], right[key]));
 }
 
 export class SessionUpdateAccumulator {
@@ -160,26 +146,15 @@ export class SessionUpdateAccumulator {
     return "applied";
   }
 
-  applyTransitionalMutationSnapshot(value: unknown): SessionUpdateDisposition {
-    const fullSnapshot = sanitizedFullSnapshot(value, this.expectedContractVersion);
-    const raw = requireJsonObject(value, "session mutation result");
-    if (!Object.hasOwn(raw, "session_update")) {
-      throw new SessionUpdateContractError("session mutation result is missing session_update");
-    }
-    const update = parseSessionUpdate(raw.session_update);
-    if (fullSnapshot.session_revision !== update.session_revision) {
-      throw new SessionUpdateContractError("session mutation snapshot and update revisions differ");
-    }
-    const disposition = this.apply(update);
+  async applyOrResync(
+    value: unknown,
+    loadFullSnapshot: () => Promise<unknown>,
+  ): Promise<SessionUpdateDisposition> {
+    const disposition = this.apply(value);
     if (disposition === "resync_required") {
-      this.replaceFullSnapshot(fullSnapshot);
-      return disposition;
-    }
-    if (disposition === "applied" && !jsonEqual(this.rawSnapshot, fullSnapshot)) {
-      throw new SessionUpdateProjectionMismatchError(
-        `session update revision ${update.session_revision} does not reproduce core's full snapshot`,
-      );
+      this.replaceFullSnapshot(await loadFullSnapshot());
     }
     return disposition;
   }
+
 }

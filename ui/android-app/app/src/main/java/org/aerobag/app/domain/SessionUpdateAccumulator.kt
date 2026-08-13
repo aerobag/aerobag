@@ -23,8 +23,6 @@ internal enum class SessionUpdateDisposition {
 
 internal class SessionUpdateContractException(message: String) : IllegalArgumentException(message)
 
-internal class SessionUpdateProjectionMismatchException(message: String) : IllegalStateException(message)
-
 internal class SessionUpdateAccumulator(
     initialSnapshot: JsonObject,
     private val expectedContractVersion: Int,
@@ -47,31 +45,15 @@ internal class SessionUpdateAccumulator(
 
     fun apply(value: JsonElement): SessionUpdateDisposition = apply(parseSessionUpdate(value))
 
-    fun applyTransitionalMutationSnapshot(value: JsonElement): SessionUpdateDisposition {
-        val raw = value as? JsonObject
-            ?: throw SessionUpdateContractException("session mutation result must be a JSON object")
-        val fullSnapshot = sanitizeFullSnapshot(raw)
-        val updateElement = raw["session_update"]
-            ?: throw SessionUpdateContractException("session mutation result is missing session_update")
-        val update = parseSessionUpdate(updateElement)
-        if (fullSnapshot.wireLong("session_revision") != update.sessionRevision) {
-            throw SessionUpdateContractException("session mutation snapshot and update revisions differ")
+    fun applyOrResync(
+        value: JsonElement,
+        loadFullSnapshot: () -> JsonElement,
+    ): SessionUpdateDisposition {
+        val disposition = apply(value)
+        if (disposition == SessionUpdateDisposition.ResyncRequired) {
+            replaceFullSnapshot(loadFullSnapshot())
         }
-        return when (val disposition = apply(update)) {
-            SessionUpdateDisposition.ResyncRequired -> {
-                replaceFullSnapshot(fullSnapshot)
-                disposition
-            }
-            SessionUpdateDisposition.Applied -> {
-                if (snapshot != fullSnapshot) {
-                    throw SessionUpdateProjectionMismatchException(
-                        "session update revision ${update.sessionRevision} does not reproduce core's full snapshot",
-                    )
-                }
-                disposition
-            }
-            SessionUpdateDisposition.Stale -> disposition
-        }
+        return disposition
     }
 
     private fun apply(update: UiSessionUpdate): SessionUpdateDisposition {
@@ -157,7 +139,12 @@ internal class SessionUpdateAccumulator(
     private fun sanitizeFullSnapshot(value: JsonElement): JsonObject {
         val raw = value as? JsonObject
             ?: throw SessionUpdateContractException("session snapshot must be a JSON object")
-        val snapshot = JsonObject(raw - "session_update")
+        if ("session_update" in raw) {
+            throw SessionUpdateContractException(
+                "full session snapshot must not contain session_update",
+            )
+        }
+        val snapshot = raw
         val contractVersion = snapshot.wireLong("ui_contract_version")
         snapshot.wireLong("session_revision")
         if (contractVersion != expectedContractVersion.toLong()) {

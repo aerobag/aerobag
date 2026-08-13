@@ -6,7 +6,6 @@ package org.aerobag.app.domain
 
 import java.io.File
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -51,24 +50,48 @@ class SessionUpdateAccumulatorTest {
     }
 
     @Test
-    fun transitionalSnapshotMustMatchAppliedPatch() {
+    fun revisionGapLeavesSnapshotUntouchedForExplicitResync() {
         val accumulator = accumulator()
         val initial = conformance.getValue("initial_snapshot").jsonObject
-        val result = JsonObject(
+        val update = json.parseToJsonElement(
+            """{
+                "ui_contract_version":1,
+                "session_revision":9,
+                "map":{"version":3,"fields":{"map_layer_state":{"nexrad":true}}}
+            }""".trimIndent(),
+        )
+        assertEquals(SessionUpdateDisposition.ResyncRequired, accumulator.apply(update))
+        assertEquals(initial, accumulator.snapshot)
+    }
+
+    @Test
+    fun revisionGapLoadsAndInstallsExplicitFullSnapshot() {
+        val accumulator = accumulator()
+        val initial = conformance.getValue("initial_snapshot").jsonObject
+        val update = json.parseToJsonElement(
+            """{
+                "ui_contract_version":1,
+                "session_revision":9,
+                "map":{"version":3,"fields":{"map_layer_state":{"nexrad":true}}}
+            }""".trimIndent(),
+        )
+        val fullSnapshot = kotlinx.serialization.json.JsonObject(
             initial + mapOf(
-                "session_revision" to json.parseToJsonElement("8"),
+                "session_revision" to json.parseToJsonElement("9"),
                 "map_layer_state" to json.parseToJsonElement("{\"nexrad\":true}"),
-                "session_update" to json.parseToJsonElement(
-                    """{
-                        "ui_contract_version":1,
-                        "session_revision":8
-                    }""".trimIndent(),
-                ),
             ),
         )
-        assertThrows(SessionUpdateProjectionMismatchException::class.java) {
-            accumulator.applyTransitionalMutationSnapshot(result)
-        }
+        var loads = 0
+
+        assertEquals(
+            SessionUpdateDisposition.ResyncRequired,
+            accumulator.applyOrResync(update) {
+                loads += 1
+                fullSnapshot
+            },
+        )
+        assertEquals(1, loads)
+        assertEquals(fullSnapshot, accumulator.snapshot)
     }
 
     private fun accumulator() = SessionUpdateAccumulator(

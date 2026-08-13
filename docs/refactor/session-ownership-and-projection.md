@@ -414,15 +414,29 @@ Android `KRNT KPWT` route-rendering journey passes with the accumulator active.
 Ordinary mutation results still carry the transitional full snapshot for the
 next cutover slice. This slice did not add a lock, thread, or Worker.
 
+## Completed Fifteenth Slice
+
+The fifteenth slice removed the transitional full snapshot from ordinary
+mutation results. Core now serializes `UiSessionUpdate` directly; NAVDB
+maintenance and adoption envelopes carry only their action/disposition metadata
+and an optional update. Startup, explicit refresh, rejected-command recovery,
+and committed page-fault continuation remain explicit full-snapshot operations.
+
+Android and web apply generated updates directly. A revision gap leaves the
+cached model untouched, calls the existing paged full-snapshot API, installs the
+returned snapshot, and resets projection-group version tracking. Both platform
+accumulators test this recovery behavior, and core asserts that narrow mutation
+payloads contain no snapshot fields and are smaller than the corresponding full
+snapshot. NAVDB tests also reject any reintroduction of an embedded snapshot.
+
 ## Next Slice
 
-Remove the transitional full snapshot from ordinary mutation results. Android
-and web should consume the generated update directly; a detected revision gap
-should call the explicit paged full-snapshot API and reset the accumulator.
-Apply the same cutover to NAVDB maintenance and adoption envelopes while
-retaining startup, explicit refresh, rejected-command recovery, and committed
-page-fault continuation as full-snapshot operations. Add payload-size assertions
-before deleting the transitional merge/full comparison code.
+Measure update group frequency, serialized bytes, and projection time in normal
+journeys now that full-snapshot duplication no longer obscures those costs. Use
+that evidence to decide whether the cross-domain `app_ui_state` group should be
+split and which large platform adapter surfaces should be decomposed first.
+Separately stage any measured expensive core operation behind prepare/validate/
+commit boundaries before considering a thread or Worker move.
 
 ## Relationship To Work Scheduling
 

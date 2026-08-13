@@ -382,7 +382,6 @@ pub enum NavDbAdvanceDisposition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NavDbAdvanceResult {
     pub disposition: NavDbAdvanceDisposition,
-    pub snapshot: UiSessionSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_update: Option<UiSessionUpdate>,
     pub active_artifact_filename: Option<String>,
@@ -401,7 +400,6 @@ pub enum NavDbMaintenanceAction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NavDbMaintenanceResult {
     pub action: NavDbMaintenanceAction,
-    pub snapshot: UiSessionSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_update: Option<UiSessionUpdate>,
 }
@@ -2235,7 +2233,7 @@ pub fn set_map_layer_visibility_in_session(
         | MapLayerId::WorldBasemap
         | MapLayerId::OfflineRegions => {}
     }
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -2256,7 +2254,7 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
     };
     session.map.replace_raster_catalog(Some(catalog));
     sync_cycle_product_freshness_status_records(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn resolve_nav_db_artifact_candidates_in_session(
@@ -2393,7 +2391,7 @@ pub fn set_resource_policy_in_session(
     if session.packages.set_resource_policy(policy) {
         session.map.replace_raster_catalog(None);
     }
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn load_offline_package_library_cache_in_session(
@@ -2412,7 +2410,7 @@ pub fn load_offline_package_library_cache_in_session(
             message,
         })?;
     mark_cycle_product_freshness_dirty(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn configure_platform_capabilities_in_session(
@@ -2758,8 +2756,8 @@ fn run_session_model_transaction_with_persistence(
         session,
         mutate,
         |session, previous_versions| {
-            let projection = try_project_session_mutation(session, previous_versions)?;
-            session_mutation_snapshot_value(projection).map_err(|error| {
+            let update = try_project_session_update(session, previous_versions)?;
+            serde_json::to_value(update).map_err(|error| {
                 SessionModelTransactionError::App(AppError {
                     kind: AppErrorKind::Internal,
                     message: error.to_string(),
@@ -2876,7 +2874,7 @@ pub fn set_installed_package_ids_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     session.packages.set_installed_package_ids(package_ids);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn raster_resource_mode_for_policy(policy: CoreResourcePolicy) -> RasterResourceMode {
@@ -2904,7 +2902,7 @@ pub fn select_map_family_in_session(
         };
         session.map.replace_raster_catalog(Some(catalog));
         sync_cycle_product_freshness_status_records(session);
-        return changed_session_snapshot_outcome(session);
+        return changed_session_update_outcome(session);
     }
     let Some(catalog) = session.map.raster_catalog_mut() else {
         return Err(AppError {
@@ -2914,7 +2912,7 @@ pub fn select_map_family_in_session(
     };
     crate::select_map_family_in_catalog(catalog, family_id);
     sync_cycle_product_freshness_status_records(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn select_raster_map_in_session(
@@ -2932,7 +2930,7 @@ pub fn select_raster_map_in_session(
     };
     crate::select_map_in_catalog(catalog, selected_map_id);
     sync_cycle_product_freshness_status_records(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn get_raster_tile_plan_in_session(
@@ -3177,7 +3175,7 @@ pub fn set_map_layer_enabled_in_session(
         return Ok(outcome);
     }
     session.map.set_layer_enabled(layer, enabled);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 #[allow(dead_code)]
@@ -3189,7 +3187,7 @@ pub(crate) fn set_guidance_leg_geometry_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     install_guidance_leg_geometry(session, geometries)?;
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn install_guidance_leg_geometry(
@@ -3222,7 +3220,7 @@ pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationO
                     "total_ms": started.elapsed_ms(),
                 }),
             );
-            changed_session_snapshot_outcome(session)
+            changed_session_update_outcome(session)
         }
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
@@ -3365,7 +3363,7 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<Had
         Some(airport_id),
         None,
     );
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOperationOutcome> {
@@ -3390,7 +3388,7 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOper
         Some(chart_id),
         &session.coordinator.chart_page_state.suggested_chart_ids,
     );
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn select_chart_reference_in_session(
@@ -3415,7 +3413,7 @@ pub fn select_chart_reference_in_session(
         None,
         suggested_chart_ids,
     );
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn register_ownship_source_in_session(
@@ -3426,7 +3424,7 @@ pub fn register_ownship_source_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     session.situation.register_source(registration);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn update_ownship_source_status_in_session(
@@ -3438,7 +3436,7 @@ pub fn update_ownship_source_status_in_session(
     let session = &mut *session_guard;
     maybe_log_gps_capture_status(session, &update);
     session.situation.update_source_status(update);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn push_situation_sample_in_session(
@@ -3449,7 +3447,7 @@ pub fn push_situation_sample_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let motion = apply_ownship_sample(session, sample)?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
+    changed_session_update_outcome_for_ownship_motion(session, Some(motion))
 }
 
 fn maybe_log_gps_capture_status(session: &UiSession, update: &crate::OwnshipSourceStatusUpdate) {
@@ -3529,7 +3527,7 @@ pub fn set_ownship_policy_in_session(
     }
     session.situation.set_policy(policy);
     sync_adsb_ownship_status_record(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn select_ownship_source_in_session(
@@ -3577,7 +3575,7 @@ pub fn select_ownship_source_in_session(
         _ => {}
     }
     sync_adsb_ownship_status_record(session);
-    changed_session_snapshot_outcome_with_invalidations(
+    changed_session_update_outcome_with_invalidations(
         session,
         ownship_motion_invalidations_from(session, terrain_key_before, sequenced_guidance),
     )
@@ -3625,7 +3623,7 @@ pub fn perform_ownship_text_action_in_session(
         });
     sync_adsb_ownship_status_record(session);
     prepare_adsb_ownship_effect(session);
-    changed_session_snapshot_outcome_with_invalidations(
+    changed_session_update_outcome_with_invalidations(
         session,
         vec![UiInvalidation::SessionSnapshot],
     )
@@ -3647,7 +3645,7 @@ pub fn apply_situation_control_input_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn load_playback_trace_in_session(
@@ -3663,7 +3661,7 @@ pub fn load_playback_trace_in_session(
         .playback_mut()
         .load_trace_json(source_path.to_string(), trace_json)?;
     let motion = apply_playback_state_to_ownship(session, playback_state, 0)?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
+    changed_session_update_outcome_for_ownship_motion(session, Some(motion))
 }
 
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
@@ -3676,7 +3674,7 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
         .transpose()?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
+    changed_session_update_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
@@ -3689,7 +3687,7 @@ pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Ha
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
         .transpose()?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
+    changed_session_update_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn seek_playback_in_session(
@@ -3709,7 +3707,7 @@ pub fn seek_playback_in_session(
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
         .transpose()?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
+    changed_session_update_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn set_playback_rate_in_session(
@@ -3729,7 +3727,7 @@ pub fn set_playback_rate_in_session(
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
         .transpose()?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
+    changed_session_update_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
@@ -3742,7 +3740,7 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
         .transpose()?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
+    changed_session_update_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn set_situation_in_session(
@@ -3760,7 +3758,7 @@ pub fn set_situation_in_session(
         situation,
         0,
     )?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
+    changed_session_update_outcome_for_ownship_motion(session, Some(motion))
 }
 
 pub fn tick_bad_autopilot_in_session(
@@ -3771,7 +3769,7 @@ pub fn tick_bad_autopilot_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let motion = tick_bad_autopilot(session, now_epoch_ms)?;
-    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
+    changed_session_update_outcome_for_ownship_motion(session, motion)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4175,7 +4173,7 @@ fn perform_altitude_planner_action_in_session(
             })
         }
     };
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn session_local_time_zone(session: &UiSession) -> AppResult<Tz> {
@@ -4252,7 +4250,7 @@ fn toggle_altitude_planner_departure_time_basis_in_session(
                 crate::AltitudePlannerDepartureTimeBasis::Local
             }
         };
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -5022,7 +5020,7 @@ pub fn perform_status_action_in_session(
     {
         DataStatusActionIntent::ProjectionChanged | DataStatusActionIntent::ReloadApplication => {}
     }
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn invalid_status_action(action_id: &str) -> AppError {
@@ -5099,18 +5097,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             .map(|artifact| artifact.filename.clone());
         let result = NavDbAdvanceResult {
             disposition: NavDbAdvanceDisposition::Rejected,
-            snapshot: try_snapshot_for_session(live).map_err(|error| AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: format!(
-                    "NAVDB advance is blocked until application reload; retained snapshot failed: {error:?}"
-                ),
-            })?,
             session_update: None,
             active_artifact_filename: active_artifact_filename.clone(),
             retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
-            rejection_reason: Some(
-                "NAVDB advance is blocked until application reload".to_string(),
-            ),
+            rejection_reason: Some("NAVDB advance is blocked until application reload".to_string()),
         };
         return Ok(HadOperationOutcome::complete(
             serde_json::to_value(result).map_err(|err| AppError {
@@ -5167,7 +5157,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
 
-    let rebuild = (|| -> Result<ProjectedSessionMutation, SessionSnapshotProjectionError> {
+    let rebuild = (|| -> Result<UiSessionUpdate, SessionSnapshotProjectionError> {
         if let Some(plan) = candidate.flight_plan.active_plan() {
             let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
             replace_session_flight_plan(&mut candidate, rebuilt_plan)
@@ -5213,17 +5203,16 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         sync_cycle_product_freshness_status_records(&mut candidate);
         clear_data_status_record(&mut candidate, NAV_DB_ADVANCE_STATUS_ID);
         advance_session_revision(&mut candidate);
-        try_project_session_mutation(&mut candidate, previous_versions)
+        try_project_session_update(&mut candidate, previous_versions)
     })();
 
     match rebuild {
-        Ok(projection) => {
+        Ok(update) => {
             let active_artifact_filename = Some(open_result.selected_filename.clone());
             *live = candidate;
             let result = NavDbAdvanceResult {
                 disposition: NavDbAdvanceDisposition::Adopted,
-                snapshot: projection.snapshot,
-                session_update: Some(projection.update),
+                session_update: Some(update),
                 active_artifact_filename: active_artifact_filename.clone(),
                 retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
                 rejection_reason: None,
@@ -5353,7 +5342,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             }
             upsert_data_status_record(live, warning);
             advance_session_revision(live);
-            let projection = try_project_session_mutation(live, previous_versions).map_err(|error| AppError {
+            let update = try_project_session_update(live, previous_versions).map_err(|error| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: match error {
                     SessionSnapshotProjectionError::NeedResources(resources) => format!(
@@ -5370,8 +5359,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             let active_artifact_filename = previous_filename;
             let result = NavDbAdvanceResult {
                 disposition: NavDbAdvanceDisposition::Rejected,
-                snapshot: projection.snapshot,
-                session_update: Some(projection.update),
+                session_update: Some(update),
                 active_artifact_filename: active_artifact_filename.clone(),
                 retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
                 rejection_reason: Some(message),
@@ -5427,15 +5415,14 @@ fn nav_db_maintenance_outcome(
     previous_versions: SessionProjectionVersions,
 ) -> AppResult<HadOperationOutcome> {
     advance_session_revision(session);
-    let projection =
-        try_project_session_mutation(session, previous_versions).map_err(|error| AppError {
+    let update =
+        try_project_session_update(session, previous_versions).map_err(|error| AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("NAVDB maintenance snapshot failed: {error:?}"),
         })?;
     let result = NavDbMaintenanceResult {
         action,
-        snapshot: projection.snapshot,
-        session_update: Some(projection.update),
+        session_update: Some(update),
     };
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(result).map_err(|err| AppError {
@@ -5493,7 +5480,7 @@ pub fn engage_map_follow_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     session.situation.engage_map_follow(viewport);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn disengage_map_follow_in_session(
@@ -5504,7 +5491,7 @@ pub fn disengage_map_follow_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     session.situation.disengage_map_follow(viewport);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn set_map_follow_offset_in_session(
@@ -5519,7 +5506,7 @@ pub fn set_map_follow_offset_in_session(
     session
         .situation
         .set_map_follow_anchor(viewport, offset_x_px, offset_y_px);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn sync_map_follow_in_session(
@@ -5534,7 +5521,7 @@ pub fn sync_map_follow_in_session(
     session
         .situation
         .sync_map_follow_for_viewport(viewport, width_px, height_px);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn restore_chart_page_state_in_session(
@@ -5559,7 +5546,7 @@ pub fn restore_chart_page_state_in_session(
         selected_chart_id,
         suggested_chart_ids,
     );
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn set_debug_flag_in_session(
@@ -5571,7 +5558,7 @@ pub fn set_debug_flag_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     apply_debug_flag(session, flag_id, enabled)?;
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn apply_debug_flag(session: &mut UiSession, flag_id: DebugFlagId, enabled: bool) -> AppResult<()> {
@@ -6129,7 +6116,7 @@ pub fn report_live_feed_connection_event_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     record_live_feed_connection_event(session, event, epoch_ms);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn record_live_feed_connection_event(
@@ -6227,7 +6214,7 @@ pub fn install_live_feed_installed_state_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     install_live_feed_installed_state(session, installed)?;
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 pub fn install_prepared_live_feed_cache_product_in_session(
@@ -6268,7 +6255,7 @@ pub fn install_prepared_live_feed_cache_product_in_session(
             installed_live_feed_state_manifest(installed),
         );
     sync_live_feed_overlay_status_records(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn install_live_feed_installed_state(
@@ -6481,7 +6468,7 @@ pub fn sync_live_feed_catalog_in_session(
         .live_feeds_mut()
         .merge_catalog_from(live_feeds);
     sync_live_feed_overlay_status_records(session);
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn installed_live_feed_state_manifest(
@@ -6705,7 +6692,7 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
             ),
         );
     }
-    changed_session_snapshot_outcome(session)
+    changed_session_update_outcome(session)
 }
 
 fn ingest_live_obstacle_had_resource(
@@ -10439,27 +10426,27 @@ fn preflight_session_snapshot_resources(
     }
 }
 
-fn changed_session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
-    changed_session_snapshot_outcome_with_invalidations(session, Vec::new())
+fn changed_session_update_outcome(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
+    changed_session_update_outcome_with_invalidations(session, Vec::new())
 }
 
 // Use this only after an infallible model commit. Snapshot paging is a continuation,
 // so NeedSnapshotResources retains the committed revision. Fallible mutations and
 // durable writes must use run_session_model_transaction instead.
-fn changed_session_snapshot_outcome_with_invalidations(
+fn changed_session_update_outcome_with_invalidations(
     session: &mut UiSession,
     mut invalidations: Vec<UiInvalidation>,
 ) -> AppResult<HadOperationOutcome> {
     let previous_versions = session.projection_versions.versions();
     advance_session_revision(session);
     dedupe_invalidations(&mut invalidations);
-    match try_project_session_mutation(session, previous_versions) {
-        Ok(projection) => session_mutation_snapshot_value(projection)
-            .map(|snapshot| {
+    match try_project_session_update(session, previous_versions) {
+        Ok(update) => serde_json::to_value(update)
+            .map(|update| {
                 if invalidations.is_empty() {
-                    HadOperationOutcome::complete(snapshot)
+                    HadOperationOutcome::complete(update)
                 } else {
-                    HadOperationOutcome::complete_with_invalidations(snapshot, invalidations)
+                    HadOperationOutcome::complete_with_invalidations(update, invalidations)
                 }
             })
             .map_err(|err| AppError {
@@ -10609,37 +10596,17 @@ fn refresh_session_projection_versions(
     session.projection_versions.observe(dependencies);
 }
 
-#[derive(Debug)]
-struct ProjectedSessionMutation {
-    snapshot: UiSessionSnapshot,
-    update: UiSessionUpdate,
-}
-
-fn try_project_session_mutation(
+fn try_project_session_update(
     session: &mut UiSession,
     previous_versions: SessionProjectionVersions,
-) -> Result<ProjectedSessionMutation, SessionSnapshotProjectionError> {
+) -> Result<UiSessionUpdate, SessionSnapshotProjectionError> {
     let snapshot = try_snapshot_for_session(session)?;
     let current_versions = session.projection_versions.versions();
-    let update = assemble_session_update(&snapshot, previous_versions, current_versions);
-    Ok(ProjectedSessionMutation { snapshot, update })
-}
-
-fn session_mutation_snapshot_value(
-    projection: ProjectedSessionMutation,
-) -> Result<serde_json::Value, serde_json::Error> {
-    let mut value = serde_json::to_value(projection.snapshot)?;
-    let fields = value.as_object_mut().ok_or_else(|| {
-        serde_json::Error::io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "UiSessionSnapshot did not serialize as an object",
-        ))
-    })?;
-    fields.insert(
-        "session_update".to_string(),
-        serde_json::to_value(projection.update)?,
-    );
-    Ok(value)
+    Ok(assemble_session_update(
+        &snapshot,
+        previous_versions,
+        current_versions,
+    ))
 }
 
 fn changed_projection_patch(
@@ -12363,14 +12330,14 @@ fn ownship_motion_invalidations_from(
     invalidations
 }
 
-fn changed_session_snapshot_outcome_for_ownship_motion(
+fn changed_session_update_outcome_for_ownship_motion(
     session: &mut UiSession,
     motion: Option<OwnshipMotionResult>,
 ) -> AppResult<HadOperationOutcome> {
     let invalidations = motion
         .map(|motion| ownship_motion_invalidations(session, motion))
         .unwrap_or_default();
-    changed_session_snapshot_outcome_with_invalidations(session, invalidations)
+    changed_session_update_outcome_with_invalidations(session, invalidations)
 }
 
 fn apply_situation_to_ownship(
@@ -12799,13 +12766,7 @@ mod tests {
         let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("session operation unexpectedly needed resources: {outcome:?}");
         };
-        serde_json::from_value(
-            result
-                .get("session_update")
-                .cloned()
-                .expect("ordinary mutation result must include session_update"),
-        )
-        .expect("session update")
+        serde_json::from_value(result).expect("session update")
     }
 
     fn projection_field_names(patch: &UiSessionProjectionPatch) -> BTreeSet<&str> {
@@ -12935,7 +12896,7 @@ mod tests {
         session.coordinator.chart_page_state.selected_airport_id = "KSEA".to_string();
 
         let update = session_update_from_outcome(
-            changed_session_snapshot_outcome(&mut session).expect("chart mutation"),
+            changed_session_update_outcome(&mut session).expect("chart mutation"),
         );
 
         assert_eq!(update.session_revision, 1);
@@ -12953,6 +12914,33 @@ mod tests {
         assert!(update.packages.is_none());
         assert!(update.home.is_none());
         assert!(update.debug.is_none());
+    }
+
+    #[test]
+    fn ordinary_mutation_payload_is_update_only_and_smaller_than_full_snapshot() {
+        let mut session = isolated_test_session(None);
+        try_snapshot_for_session(&mut session).expect("initial snapshot");
+        session.coordinator.chart_page_state.selected_airport_id = "KSEA".to_string();
+
+        let outcome = changed_session_update_outcome(&mut session).expect("chart mutation");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("chart mutation unexpectedly needed resources");
+        };
+        let result_fields = result.as_object().expect("update object");
+        assert!(result_fields.contains_key("ui_contract_version"));
+        assert!(result_fields.contains_key("session_revision"));
+        assert!(result_fields.contains_key("charts"));
+        assert!(!result_fields.contains_key("session_update"));
+        assert!(!result_fields.contains_key("app_ui_state"));
+
+        let full_snapshot = try_snapshot_for_session(&mut session).expect("full snapshot");
+        assert!(
+            serde_json::to_vec(&result).expect("serialize update").len()
+                < serde_json::to_vec(&full_snapshot)
+                    .expect("serialize full snapshot")
+                    .len(),
+            "a narrow mutation update must be smaller than the corresponding full snapshot",
+        );
     }
 
     #[test]
@@ -13470,10 +13458,9 @@ mod tests {
         })
         .expect("serialize action");
 
-        let selected = snapshot_from_outcome(
-            perform_map_selection_action_in_session(init.handle, action, 10_000)
-                .expect("follow traffic"),
-        );
+        perform_map_selection_action_in_session(init.handle, action, 10_000)
+            .expect("follow traffic");
+        let selected = get_session_snapshot(init.handle).expect("snapshot after following traffic");
         assert_eq!(
             selected
                 .app_ui_state
@@ -14092,10 +14079,11 @@ mod tests {
     }
 
     macro_rules! snapshot_wrapper {
-        ($name:ident($($arg:ident: $arg_type:ty),* $(,)?)) => {
+        ($name:ident(handle: u32 $(, $arg:ident: $arg_type:ty)* $(,)?)) => {
             #[allow(dead_code)]
-            fn $name($($arg: $arg_type),*) -> AppResult<UiSessionSnapshot> {
-                super::$name($($arg),*).map(snapshot_from_outcome)
+            fn $name(handle: u32 $(, $arg: $arg_type)*) -> AppResult<UiSessionSnapshot> {
+                super::$name(handle $(, $arg)*)?;
+                get_session_snapshot(handle)
             }
         };
     }
@@ -14623,15 +14611,15 @@ mod tests {
         };
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(
-                result["offline_package_preferences_json"]
+                result["packages"]["fields"]["offline_package_preferences_json"]
                     .as_str()
                     .expect("projected preferences JSON"),
             )
             .unwrap(),
             serde_json::from_str::<serde_json::Value>(&preferences).unwrap()
         );
-        assert!(result["session_update"]["packages"].is_object());
-        assert!(result["session_update"]["cloud"].is_object());
+        assert!(result["packages"].is_object());
+        assert!(result["cloud"].is_object());
         assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         let snapshot = get_session_snapshot(first.handle).expect("snapshot package profile");
         assert_eq!(
@@ -15414,18 +15402,64 @@ mod tests {
         crate::navkv::nav_kv_store_for_test(&entries, 1024)
     }
 
-    fn nav_db_advance_result(outcome: HadOperationOutcome) -> NavDbAdvanceResult {
+    struct TestedNavDbAdvanceResult {
+        result: NavDbAdvanceResult,
+        snapshot: UiSessionSnapshot,
+    }
+
+    impl std::ops::Deref for TestedNavDbAdvanceResult {
+        type Target = NavDbAdvanceResult;
+
+        fn deref(&self) -> &Self::Target {
+            &self.result
+        }
+    }
+
+    fn nav_db_advance_result(
+        handle: u32,
+        outcome: HadOperationOutcome,
+    ) -> TestedNavDbAdvanceResult {
         let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("NAVDB advance unexpectedly needed resources: {outcome:?}");
         };
-        serde_json::from_value(result).expect("NAVDB advance result")
+        assert!(
+            result.get("snapshot").is_none(),
+            "NAVDB advance envelopes must not embed a full snapshot",
+        );
+        TestedNavDbAdvanceResult {
+            result: serde_json::from_value(result).expect("NAVDB advance result"),
+            snapshot: get_session_snapshot(handle).expect("snapshot after NAVDB advance"),
+        }
     }
 
-    fn nav_db_maintenance_result(outcome: HadOperationOutcome) -> NavDbMaintenanceResult {
+    struct TestedNavDbMaintenanceResult {
+        result: NavDbMaintenanceResult,
+        snapshot: UiSessionSnapshot,
+    }
+
+    impl std::ops::Deref for TestedNavDbMaintenanceResult {
+        type Target = NavDbMaintenanceResult;
+
+        fn deref(&self) -> &Self::Target {
+            &self.result
+        }
+    }
+
+    fn nav_db_maintenance_result(
+        handle: u32,
+        outcome: HadOperationOutcome,
+    ) -> TestedNavDbMaintenanceResult {
         let HadOperationOutcome::Complete { result, .. } = outcome else {
             panic!("NAVDB maintenance unexpectedly needed resources: {outcome:?}");
         };
-        serde_json::from_value(result).expect("NAVDB maintenance result")
+        assert!(
+            result.get("snapshot").is_none(),
+            "NAVDB maintenance envelopes must not embed a full snapshot",
+        );
+        TestedNavDbMaintenanceResult {
+            result: serde_json::from_value(result).expect("NAVDB maintenance result"),
+            snapshot: get_session_snapshot(handle).expect("snapshot after NAVDB maintenance"),
+        }
     }
 
     fn install_nav_db_maintenance_catalog(
@@ -15522,6 +15556,7 @@ mod tests {
         );
 
         let before = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(init.handle, before_rollover)
                 .expect("maintenance before rollover"),
         );
@@ -15540,6 +15575,7 @@ mod tests {
         );
 
         let after = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(init.handle, rollover)
                 .expect("maintenance at rollover"),
         );
@@ -15555,6 +15591,7 @@ mod tests {
         );
 
         let just_after = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(init.handle, rollover + 1)
                 .expect("maintenance immediately after rollover"),
         );
@@ -15590,6 +15627,7 @@ mod tests {
         .expect("ingest current artifacts");
 
         let before = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(
                 init.handle,
                 checked_at + NAV_DB_PUBLICATION_POLL_INTERVAL_MS - 1,
@@ -15691,6 +15729,7 @@ mod tests {
         .expect("ingest new bundle");
 
         let discovered = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(init.handle, poll_at)
                 .expect("discover new candidate"),
         );
@@ -15701,6 +15740,7 @@ mod tests {
         );
 
         let effective = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(init.handle, effective_at)
                 .expect("candidate becomes effective"),
         );
@@ -15728,7 +15768,7 @@ mod tests {
             HadOperationOutcome::Complete { invalidations, .. } => invalidations.clone(),
             _ => unreachable!(),
         };
-        let result = nav_db_advance_result(outcome);
+        let result = nav_db_advance_result(init.handle, outcome);
 
         assert_eq!(result.disposition, NavDbAdvanceDisposition::Adopted);
         assert_eq!(result.snapshot.nav_data_epoch, 1);
@@ -15814,6 +15854,7 @@ mod tests {
             next_store.insert_page(page_index as u32, page);
         }
         let result = nav_db_advance_result(
+            init.handle,
             advance_nav_kv_store_in_session_with_open_result(
                 init.handle,
                 12,
@@ -15846,6 +15887,7 @@ mod tests {
         let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
 
         let result = nav_db_advance_result(
+            init.handle,
             advance_nav_kv_store_in_session_with_open_result(
                 init.handle,
                 22,
@@ -15876,6 +15918,7 @@ mod tests {
         drop(session);
 
         let maintenance = nav_db_maintenance_result(
+            init.handle,
             maintain_nav_db_in_session_at_epoch_ms(
                 init.handle,
                 utc("2026-07-16T00:00:00Z").timestamp_millis(),
@@ -15886,6 +15929,7 @@ mod tests {
         assert_eq!(maintenance.snapshot.next_nav_db_maintenance_epoch_ms, None);
 
         let second = nav_db_advance_result(
+            init.handle,
             advance_nav_kv_store_in_session_with_open_result(
                 init.handle,
                 23,
@@ -15919,6 +15963,7 @@ mod tests {
         let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
 
         let result = nav_db_advance_result(
+            init.handle,
             advance_nav_kv_store_in_session_with_open_result(
                 init.handle,
                 32,
@@ -16130,11 +16175,11 @@ mod tests {
             Some(&old_open),
         )
         .expect("attach 2607 NAVDB");
-        let catalog_before = snapshot_from_outcome(
-            super::load_raster_map_catalog_in_session(init.handle).expect("load 2607 catalog"),
-        )
-        .raster_map
-        .expect("2607 raster map");
+        super::load_raster_map_catalog_in_session(init.handle).expect("load 2607 catalog");
+        let catalog_before = get_session_snapshot(init.handle)
+            .expect("snapshot after loading 2607 catalog")
+            .raster_map
+            .expect("2607 raster map");
         sync_guidance_geometry_in_session(init.handle).expect("build 2607 guidance");
 
         let mut next_open = nav_db_open_result_for_test(&next_package_id, None);
@@ -16146,6 +16191,7 @@ mod tests {
         next_open.selected_cycle = Some("2608".to_string());
         next_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
         let result = nav_db_advance_result(
+            init.handle,
             advance_nav_kv_store_in_session_with_open_result(
                 init.handle,
                 2608,
@@ -23450,12 +23496,14 @@ mod tests {
         else {
             panic!("restore direct-to unexpectedly needed resources");
         };
-        let snapshot: UiSessionSnapshot = serde_json::from_value(result).expect("snapshot result");
+        let update: UiSessionUpdate = serde_json::from_value(result).expect("session update");
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot after restore");
 
         assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         assert!(invalidations.contains(&UiInvalidation::FlightPlanRoute));
         assert!(invalidations.contains(&UiInvalidation::MapOverlay));
-        assert_eq!(snapshot.session_revision, 1);
+        assert_eq!(update.session_revision, 1);
+        assert_eq!(snapshot.session_revision, update.session_revision);
         assert_eq!(
             snapshot
                 .app_state
@@ -23504,11 +23552,12 @@ mod tests {
         else {
             panic!("sequencing unexpectedly needed resources");
         };
-        let snapshot: UiSessionSnapshot =
-            serde_json::from_value(result).expect("sequenced snapshot");
+        let update: UiSessionUpdate = serde_json::from_value(result).expect("sequenced update");
+        let snapshot = get_session_snapshot(init.handle).expect("sequenced snapshot");
         assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         assert!(invalidations.contains(&UiInvalidation::FlightPlanRoute));
         assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+        assert_eq!(update.session_revision, snapshot.session_revision);
         assert_eq!(snapshot.flight_plan_route_revision, 1);
 
         let route =
@@ -23581,8 +23630,9 @@ mod tests {
         else {
             panic!("sequencing unexpectedly needed resources");
         };
-        let snapshot: UiSessionSnapshot =
-            serde_json::from_value(result).expect("sequenced snapshot");
+        let update: UiSessionUpdate = serde_json::from_value(result).expect("sequenced update");
+        let snapshot = get_session_snapshot(init.handle).expect("sequenced snapshot");
+        assert_eq!(update.session_revision, snapshot.session_revision);
 
         if invalidations.contains(&UiInvalidation::FlightPlanRoute) {
             rendered_route_plan = snapshot

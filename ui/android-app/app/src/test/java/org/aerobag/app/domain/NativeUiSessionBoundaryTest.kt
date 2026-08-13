@@ -89,8 +89,17 @@ class NativeUiSessionBoundaryTest {
         )
         assertTrue(
             "Ordinary mutations must apply core's generated update and full refreshes must explicitly reset it.",
-            sessionBody.contains("snapshotAccumulator.applyTransitionalMutationSnapshot") &&
+            sessionBody.contains("snapshotAccumulator.applyOrResync(update)") &&
                 sessionBody.contains("snapshotAccumulator.replaceFullSnapshot"),
+        )
+        assertTrue(
+            "A revision gap must recover through core's explicit paged full-snapshot API.",
+            sessionBody.contains("snapshotAccumulator.applyOrResync(update)") &&
+                sessionBody.contains("bridge.getSessionSnapshotPagedJson(handle)"),
+        )
+        assertFalse(
+            "Mutation payloads must not retain the transitional full-snapshot merge path.",
+            sessionBody.contains("applyTransitionalMutationSnapshot"),
         )
         assertFalse(
             "NativeUiSession must not retain a direct snapshot JSON decoder.",

@@ -723,7 +723,7 @@ class NativeUiSession internal constructor(
             plannedGcFilenames,
         )
         val result = json.decodeFromJsonElement<WireNavDbAdvanceResult>(outcome.result)
-        applyMutationEnvelope(result.snapshot, result.sessionUpdate)
+        applyOptionalSessionUpdate(result.sessionUpdate)
         publishPagedInvalidations("navDbAdvance", outcome, snapshotAlreadyReturned = true)
         return NavDbAdvanceUiResult(
             adopted = result.disposition == "adopted",
@@ -741,7 +741,7 @@ class NativeUiSession internal constructor(
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
         ) ?: error("NAVDB maintenance requires a nav kv store")
         val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
-        applyMutationEnvelope(result.snapshot, result.sessionUpdate)
+        applyOptionalSessionUpdate(result.sessionUpdate)
         publishPagedInvalidations("navDbMaintenance", outcome, snapshotAlreadyReturned = true)
         return NavDbMaintenanceUiResult(
             shouldAttemptAdvance = result.action == "attempt_advance",
@@ -782,7 +782,7 @@ class NativeUiSession internal constructor(
         if (outcome.resumedSnapshot) {
             snapshotAccumulator.replaceFullSnapshot(outcome.result)
         } else {
-            snapshotAccumulator.applyTransitionalMutationSnapshot(outcome.result)
+            applySessionUpdate(outcome.result)
         }
         updateSnapshot(decodeAccumulatedSnapshot())
         publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)
@@ -821,15 +821,24 @@ class NativeUiSession internal constructor(
     private fun decodeAccumulatedSnapshot(): UiSessionSnapshot =
         json.decodeFromJsonElement<WireUiSessionSnapshot>(snapshotAccumulator.snapshot).toUi()
 
-    private fun applyMutationEnvelope(fullSnapshot: JsonElement, update: JsonElement?) {
-        if (update == null || update is JsonNull) {
-            snapshotAccumulator.replaceFullSnapshot(fullSnapshot)
-        } else {
-            snapshotAccumulator.applyTransitionalMutationSnapshot(
-                JsonObject(fullSnapshot.jsonObject + ("session_update" to update)),
+    private fun applyOptionalSessionUpdate(update: JsonElement?) {
+        if (update == null || update is JsonNull) return
+        applySessionUpdate(update)
+        updateSnapshot(decodeAccumulatedSnapshot())
+    }
+
+    private fun applySessionUpdate(update: JsonElement) {
+        val disposition = snapshotAccumulator.applyOrResync(update) {
+            executePagedOperation {
+                bridge.getSessionSnapshotPagedJson(handle)
+            }.result
+        }
+        if (disposition == SessionUpdateDisposition.ResyncRequired) {
+            Log.w(
+                "AerobagSessionUpdate",
+                "session revision gap; requested a full snapshot",
             )
         }
-        updateSnapshot(decodeAccumulatedSnapshot())
     }
 
     private fun publishPagedInvalidations(
@@ -2233,7 +2242,6 @@ private data class WireUiSessionSnapshot(
 @kotlinx.serialization.Serializable
 private data class WireNavDbAdvanceResult(
     val disposition: String,
-    val snapshot: JsonObject,
     @kotlinx.serialization.SerialName("session_update")
     val sessionUpdate: JsonElement? = null,
     val retained_artifact_filenames: List<String> = emptyList(),
@@ -2243,7 +2251,6 @@ private data class WireNavDbAdvanceResult(
 @kotlinx.serialization.Serializable
 private data class WireNavDbMaintenanceResult(
     val action: String,
-    val snapshot: JsonObject,
     @kotlinx.serialization.SerialName("session_update")
     val sessionUpdate: JsonElement? = null,
 )

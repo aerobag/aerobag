@@ -674,7 +674,6 @@ type NavDbOpenFinish = {
 
 export type NavDbAdvanceResult = {
   disposition: "adopted" | "rejected";
-  snapshot: import("./appCoreAdapter").UiSessionSnapshot;
   session_update?: UiSessionUpdate | null;
   active_artifact_filename?: string | null;
   retained_artifact_filenames: string[];

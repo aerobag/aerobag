@@ -217,8 +217,14 @@ fn session_updates_are_generated_and_assembled_from_core_projection_versions() {
     assert!(
         contracts.contains("pub struct UiSessionProjectionPatch")
             && update.contains("pub session_revision: u64")
-            && session.contains("\"session_update\".to_string()"),
+            && session.contains("try_project_session_update")
+            && session.contains("serde_json::to_value(update)"),
         "ordinary mutation results must carry the canonical generated update envelope"
+    );
+    assert!(
+        !session.contains("session_mutation_snapshot_value")
+            && !session.contains("ProjectedSessionMutation"),
+        "ordinary mutation results must not serialize a transitional full snapshot"
     );
     assert!(
         transaction.contains("previous_versions")
@@ -248,10 +254,12 @@ fn session_updates_are_generated_and_assembled_from_core_projection_versions() {
         "platform update accumulators must consume the schema-generated group inventory"
     );
     assert!(
-        web_adapter.contains("applyTransitionalMutationSnapshot")
-            && android_adapter.contains("applyTransitionalMutationSnapshot")
+        web_adapter.contains("snapshotAccumulator.applyOrResync")
+            && android_adapter.contains("snapshotAccumulator.applyOrResync")
             && web_adapter.contains("replaceFullSnapshot")
-            && android_adapter.contains("replaceFullSnapshot"),
+            && android_adapter.contains("replaceFullSnapshot")
+            && web_adapter.contains("get_session_snapshot_paged(handle)")
+            && android_adapter.contains("getSessionSnapshotPagedJson(handle)"),
         "both adapters must distinguish revisioned mutation updates from explicit full-snapshot recovery"
     );
     assert!(

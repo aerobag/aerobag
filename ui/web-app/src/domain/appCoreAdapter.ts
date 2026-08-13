@@ -1134,8 +1134,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       snapshot = decodeAccumulatedSnapshot();
       return snapshot;
     };
-    const applySessionMutationSnapshot = (value: unknown) => {
-      const disposition = snapshotAccumulator.applyTransitionalMutationSnapshot(value);
+    const applySessionUpdate = async (value: unknown) => {
+      const disposition = await snapshotAccumulator.applyOrResync(
+        value,
+        async () => runSessionOperation<unknown>(() =>
+          this.module.get_session_snapshot_paged(handle)),
+      );
       if (disposition === "resync_required") {
         debugLog("session.update.revision_gap_resync", {
           session_revision: snapshotAccumulator.snapshot.session_revision,
@@ -1144,13 +1148,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       snapshot = decodeAccumulatedSnapshot();
       return snapshot;
     };
-    const applySessionMutationEnvelope = (fullSnapshot: unknown, update: unknown) => {
-      if (update === null || update === undefined) return installFullSnapshot(fullSnapshot);
-      return applySessionMutationSnapshot({
-        ...(fullSnapshot as Record<string, unknown>),
-        session_update: update,
-      });
-    };
+    const applyOptionalSessionUpdate = (update: unknown) =>
+      update === null || update === undefined ? Promise.resolve(snapshot) : applySessionUpdate(update);
     const runSessionMutation = async (
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
@@ -1165,7 +1164,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       return resumedWithFullSnapshot
         ? installFullSnapshot(result)
-        : applySessionMutationSnapshot(result);
+        : applySessionUpdate(result);
     };
     const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
       JSON.parse(await json) as SessionSnapshotRefreshDecision;
@@ -1275,7 +1274,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       maintainNavDb: async (nowEpochMs) => {
         const maintenance = await runSessionOperation<{
           action: "none" | "attempt_advance";
-          snapshot: unknown;
           session_update?: unknown;
         }>(
           () => this.module.maintain_nav_db_in_session_at_epoch_ms(
@@ -1289,7 +1287,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
           "nav_db.maintenance",
         );
-        applySessionMutationEnvelope(maintenance.snapshot, maintenance.session_update);
+        await applyOptionalSessionUpdate(maintenance.session_update);
         if (maintenance.action === "attempt_advance") {
           const advanced = await advanceSharedNavKvStore(
             handle,
@@ -1303,7 +1301,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             () => this.module.drain_session_resource_effects(handle),
             () => this.module.get_session_snapshot_paged(handle),
           );
-          applySessionMutationEnvelope(advanced.snapshot, advanced.session_update);
+          await applyOptionalSessionUpdate(advanced.session_update);
         }
         return snapshot;
       },

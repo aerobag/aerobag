@@ -4,6 +4,7 @@
 
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { resolveLiveFeedResourceUrl } from "./liveFeedUrls";
+import type { UiSessionUpdate } from "../generated/sessionUpdateWire";
 
 type NavKvWasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
@@ -237,6 +238,7 @@ export class NavKvStore {
     drainSessionEffects?: () => Promise<string> | string,
     operationLabel?: string,
     resumeSnapshot?: () => Promise<string> | string,
+    onSnapshotResume?: () => void,
   ): Promise<T> {
     return this.withActiveOperation(async () => {
       const result = await this.runPagedOperation<T>(
@@ -246,6 +248,7 @@ export class NavKvStore {
         reportResourceFailure,
         operationLabel,
         resumeSnapshot,
+        onSnapshotResume,
       );
       if (drainSessionEffects) {
         this.launchSessionEffectPump(
@@ -313,6 +316,7 @@ export class NavKvStore {
     reportResourceFailure?: ResourceFailureReporter,
     operationLabel?: string,
     resumeSnapshot?: () => Promise<string> | string,
+    onSnapshotResume?: () => void,
   ): Promise<T> {
     let iteration = 0;
     let activeOperation = operation;
@@ -363,6 +367,7 @@ export class NavKvStore {
         if (!resumeSnapshot) {
           throw new Error("committed session mutation requires a snapshot-resume operation");
         }
+        onSnapshotResume?.();
         activeOperation = resumeSnapshot;
       }
       await Promise.all(
@@ -670,6 +675,7 @@ type NavDbOpenFinish = {
 export type NavDbAdvanceResult = {
   disposition: "adopted" | "rejected";
   snapshot: import("./appCoreAdapter").UiSessionSnapshot;
+  session_update?: UiSessionUpdate | null;
   active_artifact_filename?: string | null;
   retained_artifact_filenames: string[];
   rejection_reason?: string | null;
@@ -862,6 +868,7 @@ export async function runCoreHadSessionOperation<T>(
   drainSessionEffects?: () => Promise<string> | string,
   operationLabel?: string,
   resumeSnapshot?: () => Promise<string> | string,
+  onSnapshotResume?: () => void,
 ): Promise<T> {
   const store = await getNavKvStore(sessionHandle);
   if (!store) {
@@ -875,6 +882,7 @@ export async function runCoreHadSessionOperation<T>(
     drainSessionEffects,
     operationLabel,
     resumeSnapshot,
+    onSnapshotResume,
   );
 }
 

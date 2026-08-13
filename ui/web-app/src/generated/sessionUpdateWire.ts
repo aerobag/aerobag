@@ -6,7 +6,7 @@
 export const UI_SESSION_UPDATE_WIRE_VERSION = 1 as const;
 
 export type UiSessionProjectionPatch = {
-  fields: unknown;
+  fields: Record<string, unknown>;
   version: number;
 };
 
@@ -25,3 +25,7 @@ export type UiSessionUpdate = {
   status?: UiSessionProjectionPatch | null;
   ui_contract_version: number;
 };
+
+export const UI_SESSION_UPDATE_GROUPS = ["application", "charts", "cloud", "debug", "home", "map", "nav_data", "packages", "settings", "situation", "status"] as const;
+
+export type UiSessionUpdateGroup = typeof UI_SESSION_UPDATE_GROUPS[number];

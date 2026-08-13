@@ -2526,7 +2526,7 @@ pub fn record_offline_package_preferences_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    run_session_model_update(session, |session| {
+    run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         session.packages.replace_preferences(preferences.clone());
         session
@@ -2767,18 +2767,6 @@ fn run_session_model_transaction_with_persistence(
             })
         },
         write_persistence,
-    )
-}
-
-fn run_session_model_update(
-    session: &mut UiSession,
-    mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
-) -> AppResult<HadOperationOutcome> {
-    run_session_model_transaction_projecting(
-        session,
-        mutate,
-        |_, _| Ok(serde_json::Value::Null),
-        true,
     )
 }
 
@@ -5438,6 +5426,7 @@ fn nav_db_maintenance_outcome(
     action: NavDbMaintenanceAction,
     previous_versions: SessionProjectionVersions,
 ) -> AppResult<HadOperationOutcome> {
+    advance_session_revision(session);
     let projection =
         try_project_session_mutation(session, previous_versions).map_err(|error| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -10656,12 +10645,20 @@ fn session_mutation_snapshot_value(
 fn changed_projection_patch(
     previous_version: u64,
     current_version: u64,
-    fields: impl FnOnce() -> serde_json::Value,
+    fields: impl FnOnce() -> serde_json::Map<String, serde_json::Value>,
 ) -> Option<UiSessionProjectionPatch> {
     (previous_version != current_version).then(|| UiSessionProjectionPatch {
         version: current_version,
         fields: fields(),
     })
+}
+
+macro_rules! projection_fields {
+    ($($name:literal => $value:expr),* $(,)?) => {{
+        let mut fields = serde_json::Map::new();
+        $(fields.insert($name.to_string(), serde_json::json!($value));)*
+        fields
+    }};
 }
 
 fn assemble_session_update(
@@ -10673,71 +10670,71 @@ fn assemble_session_update(
         ui_contract_version: snapshot.ui_contract_version,
         session_revision: snapshot.session_revision,
         nav_data: changed_projection_patch(previous.nav_data, current.nav_data, || {
-            serde_json::json!({
-                "nav_data_epoch": snapshot.nav_data_epoch,
-                "active_nav_db": snapshot.active_nav_db,
-                "next_nav_db_maintenance_epoch_ms": snapshot.next_nav_db_maintenance_epoch_ms,
-            })
+            projection_fields! {
+                "nav_data_epoch" => snapshot.nav_data_epoch,
+                "active_nav_db" => snapshot.active_nav_db,
+                "next_nav_db_maintenance_epoch_ms" => snapshot.next_nav_db_maintenance_epoch_ms,
+            }
         }),
         application: changed_projection_patch(previous.application, current.application, || {
-            serde_json::json!({
-                "flight_plan_route_revision": snapshot.flight_plan_route_revision,
-                "app_ui_state": snapshot.app_ui_state,
-            })
+            projection_fields! {
+                "flight_plan_route_revision" => snapshot.flight_plan_route_revision,
+                "app_ui_state" => snapshot.app_ui_state,
+            }
         }),
         situation: changed_projection_patch(previous.situation, current.situation, || {
-            serde_json::json!({
-                "playback_ui_state": snapshot.playback_ui_state,
-                "playback_panel_state": snapshot.playback_panel_state,
-                "map_follow_ui_state": snapshot.map_follow_ui_state,
-                "map_follow_target_viewport": snapshot.map_follow_target_viewport,
-            })
+            projection_fields! {
+                "playback_ui_state" => snapshot.playback_ui_state,
+                "playback_panel_state" => snapshot.playback_panel_state,
+                "map_follow_ui_state" => snapshot.map_follow_ui_state,
+                "map_follow_target_viewport" => snapshot.map_follow_target_viewport,
+            }
         }),
         charts: changed_projection_patch(previous.charts, current.charts, || {
-            serde_json::json!({
-                "chart_page_state": snapshot.chart_page_state,
-            })
+            projection_fields! {
+                "chart_page_state" => snapshot.chart_page_state,
+            }
         }),
         map: changed_projection_patch(previous.map, current.map, || {
-            serde_json::json!({
-                "map_layer_state": snapshot.map_layer_state,
-                "raster_map": snapshot.raster_map,
-            })
+            projection_fields! {
+                "map_layer_state" => snapshot.map_layer_state,
+                "raster_map" => snapshot.raster_map,
+            }
         }),
         status: changed_projection_patch(previous.status, current.status, || {
-            serde_json::json!({
-                "data_status_state": snapshot.data_status_state,
-                "data_status_page_state": snapshot.data_status_page_state,
-                "next_cycle_product_freshness_check_epoch_ms": snapshot
+            projection_fields! {
+                "data_status_state" => snapshot.data_status_state,
+                "data_status_page_state" => snapshot.data_status_page_state,
+                "next_cycle_product_freshness_check_epoch_ms" => snapshot
                     .next_cycle_product_freshness_check_epoch_ms,
-            })
+            }
         }),
         settings: changed_projection_patch(previous.settings, current.settings, || {
-            serde_json::json!({
-                "settings_page_state": snapshot.settings_page_state,
-                "display_policy": snapshot.display_policy,
-                "disclaimer_state": snapshot.disclaimer_state,
-            })
+            projection_fields! {
+                "settings_page_state" => snapshot.settings_page_state,
+                "display_policy" => snapshot.display_policy,
+                "disclaimer_state" => snapshot.disclaimer_state,
+            }
         }),
         cloud: changed_projection_patch(previous.cloud, current.cloud, || {
-            serde_json::json!({
-                "cloud_page_state": snapshot.cloud_page_state,
-            })
+            projection_fields! {
+                "cloud_page_state" => snapshot.cloud_page_state,
+            }
         }),
         packages: changed_projection_patch(previous.packages, current.packages, || {
-            serde_json::json!({
-                "offline_package_preferences_json": snapshot.offline_package_preferences_json,
-            })
+            projection_fields! {
+                "offline_package_preferences_json" => snapshot.offline_package_preferences_json,
+            }
         }),
         home: changed_projection_patch(previous.home, current.home, || {
-            serde_json::json!({
-                "home_page_state": snapshot.home_page_state,
-            })
+            projection_fields! {
+                "home_page_state" => snapshot.home_page_state,
+            }
         }),
         debug: changed_projection_patch(previous.debug, current.debug, || {
-            serde_json::json!({
-                "debug_state": snapshot.debug_state,
-            })
+            projection_fields! {
+                "debug_state" => snapshot.debug_state,
+            }
         }),
     }
 }
@@ -12812,13 +12809,7 @@ mod tests {
     }
 
     fn projection_field_names(patch: &UiSessionProjectionPatch) -> BTreeSet<&str> {
-        patch
-            .fields
-            .as_object()
-            .expect("projection patch fields must be an object")
-            .keys()
-            .map(String::as_str)
-            .collect()
+        patch.fields.keys().map(String::as_str).collect()
     }
 
     #[test]
@@ -14630,7 +14621,17 @@ mod tests {
         else {
             panic!("package preference update unexpectedly needed resources");
         };
-        assert_eq!(result, serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                result["offline_package_preferences_json"]
+                    .as_str()
+                    .expect("projected preferences JSON"),
+            )
+            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(&preferences).unwrap()
+        );
+        assert!(result["session_update"]["packages"].is_object());
+        assert!(result["session_update"]["cloud"].is_object());
         assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         let snapshot = get_session_snapshot(first.handle).expect("snapshot package profile");
         assert_eq!(
@@ -15529,12 +15530,21 @@ mod tests {
             before.snapshot.next_nav_db_maintenance_epoch_ms,
             Some(rollover)
         );
+        assert_eq!(
+            before
+                .session_update
+                .as_ref()
+                .expect("maintenance update")
+                .session_revision,
+            before.snapshot.session_revision,
+        );
 
         let after = nav_db_maintenance_result(
             maintain_nav_db_in_session_at_epoch_ms(init.handle, rollover)
                 .expect("maintenance at rollover"),
         );
         assert_eq!(after.action, NavDbMaintenanceAction::AttemptAdvance);
+        assert!(after.snapshot.session_revision > before.snapshot.session_revision);
         assert_eq!(
             after
                 .snapshot

@@ -389,12 +389,40 @@ scope, and require every production snapshot field to belong to exactly one
 non-overlapping update group. Existing specialized query invalidations are
 unchanged. This slice did not add a lock, thread, Worker, or platform policy.
 
+## Completed Fourteenth Slice
+
+The fourteenth slice taught both platform adapters to retain a raw startup
+snapshot, validate generated `UiSessionUpdate` envelopes and group versions,
+merge changed top-level fields, and run the result through their existing
+snapshot decoders. Stale responses are ignored, revision gaps explicitly reset
+from the accompanying transitional full snapshot, and a normally applied patch
+must exactly reproduce that full snapshot. Paged-operation runners now report
+when a committed mutation resumed through the full-snapshot continuation, so
+that recovery path cannot be mistaken for a missing update.
+
+The schema generator derives the patch-group inventory from the canonical
+contract and emits it for TypeScript and Kotlin. The canonical `fields` type is
+now a JSON object rather than arbitrary JSON. Both accumulators run the same
+checked-in conformance sequence, including stale, gap, malformed, overlapping,
+and envelope-replacement cases.
+
+Offline-package preference persistence now returns a normal revisioned update;
+the update-free model transaction helper was removed. This work also found and
+fixed NAVDB maintenance publishing changed projections without advancing the
+session revision. Full core, web, and Android tests pass, and the hermetic
+Android `KRNT KPWT` route-rendering journey passes with the accumulator active.
+Ordinary mutation results still carry the transitional full snapshot for the
+next cutover slice. This slice did not add a lock, thread, or Worker.
+
 ## Next Slice
 
-Teach the Android and web adapters to validate group versions, merge update
-fields into their cached raw snapshot, and decode the resulting view model.
-Convert the remaining effect-only mutation to return an update, then add
-cross-platform conformance tests before removing transitional full snapshots.
+Remove the transitional full snapshot from ordinary mutation results. Android
+and web should consume the generated update directly; a detected revision gap
+should call the explicit paged full-snapshot API and reset the accumulator.
+Apply the same cutover to NAVDB maintenance and adoption envelopes while
+retaining startup, explicit refresh, rejected-command recovery, and committed
+page-fault continuation as full-snapshot operations. Add payload-size assertions
+before deleting the transitional merge/full comparison code.
 
 ## Relationship To Work Scheduling
 

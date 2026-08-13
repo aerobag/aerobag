@@ -100,10 +100,11 @@ Core owns and tests the non-overlapping field-to-group partition.
 2. ~~Define a generated `SessionUpdate` with an envelope plus optional projection
    groups. Keep the existing full snapshot as startup/resynchronization data.~~
    Completed.
-3. Make each mutation return the update assembled from core-owned changed-group
-   decisions while retaining specialized query invalidations. Snapshot-producing
-   mutations now include this update beside the transitional full snapshot;
-   finish the lone effect-only preferences path when adapters consume updates.
-4. Teach Android and web adapters to merge groups into their local view model.
+3. ~~Make each mutation return the update assembled from core-owned changed-group
+   decisions while retaining specialized query invalidations.~~ Completed,
+   including the former effect-only preferences path.
+4. ~~Teach Android and web adapters to merge groups into their local view model.~~
+   Completed with one shared conformance fixture and transitional full-snapshot
+   equality checks.
 5. Remove ordinary full-snapshot serialization only after both platforms have
    conformance and journey coverage.

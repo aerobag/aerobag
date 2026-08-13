@@ -3,7 +3,10 @@
     "UiSessionProjectionPatch": {
       "additionalProperties": false,
       "properties": {
-        "fields": true,
+        "fields": {
+          "additionalProperties": true,
+          "type": "object"
+        },
         "version": {
           "format": "uint64",
           "minimum": 0,

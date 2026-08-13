@@ -72,7 +72,10 @@ fn session_update_wire_matches_golden() {
             charts: None,
             map: Some(session::UiSessionProjectionPatch {
                 version: 3,
-                fields: serde_json::json!({"map_layer_state": {"example": true}}),
+                fields: serde_json::from_value(serde_json::json!({
+                    "map_layer_state": {"example": true}
+                }))
+                .expect("object fields"),
             }),
             status: None,
             settings: None,
@@ -89,6 +92,10 @@ fn session_update_wire_matches_golden() {
 fn contract_decoders_reject_unknown_fields() {
     assert!(serde_json::from_str::<home::UiHomePageState>(
         r#"{"buttons":[],"platform_guess":true}"#,
+    )
+    .is_err());
+    assert!(serde_json::from_value::<session::UiSessionProjectionPatch>(
+        serde_json::json!({"version": 1, "fields": []}),
     )
     .is_err());
     assert!(serde_json::from_str::<nexrad::NexradOverlayStatus>(

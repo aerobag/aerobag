@@ -111,6 +111,7 @@ import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUr
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
 import { ingestPreparedLiveFeedResource, resetLiveFeedPrep } from "./liveFeedPrep";
 import { liveFeedSourceUrl } from "./liveFeedUrls";
+import { SessionUpdateAccumulator } from "./sessionUpdateAccumulator";
 export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
 
 declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
@@ -1031,6 +1032,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
+      onSnapshotResume?: () => void,
     ) => runCoreHadSessionOperation<T>(
       sessionHandle,
       operation,
@@ -1043,6 +1045,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       () => this.module.drain_session_resource_effects(sessionHandle),
       operationLabel,
       () => this.module.get_session_snapshot_paged(sessionHandle),
+      onSnapshotResume,
     );
     const createSession = async (
       nextRecentAirportIds: string[],
@@ -1090,18 +1093,23 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
-      const catalogedSnapshot = assertUiContractVersion(await debugTiming("startup.session.load_raster_catalog", () =>
-        runSessionOperationForHandle<UiSessionSnapshot>(created.handle, () =>
+      const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
+        runSessionOperationForHandle<unknown>(created.handle, () =>
           module.load_raster_map_catalog_in_session(created.handle),
-        ),
-      ));
+        ));
+      const snapshotAccumulator = new SessionUpdateAccumulator(
+        catalogedSnapshot,
+        UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
+      );
       return {
         ...created,
-        snapshot: catalogedSnapshot,
+        snapshot: assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot),
+        snapshotAccumulator,
       };
     };
     const init = await createSession(recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
+    const snapshotAccumulator = init.snapshotAccumulator;
     let snapshot = init.snapshot;
     const snapshotRefreshSchedulerHandle = await debugTiming("startup.session.create_snapshot_scheduler", () =>
       this.module.create_session_snapshot_refresh_scheduler(),
@@ -1111,13 +1119,60 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
-    ) => runSessionOperationForHandle<T>(handle, operation, ingestSessionResource, operationLabel);
+      onSnapshotResume?: () => void,
+    ) => runSessionOperationForHandle<T>(
+      handle,
+      operation,
+      ingestSessionResource,
+      operationLabel,
+      onSnapshotResume,
+    );
+    const decodeAccumulatedSnapshot = () =>
+      assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot);
+    const installFullSnapshot = (value: unknown) => {
+      snapshotAccumulator.replaceFullSnapshot(value);
+      snapshot = decodeAccumulatedSnapshot();
+      return snapshot;
+    };
+    const applySessionMutationSnapshot = (value: unknown) => {
+      const disposition = snapshotAccumulator.applyTransitionalMutationSnapshot(value);
+      if (disposition === "resync_required") {
+        debugLog("session.update.revision_gap_resync", {
+          session_revision: snapshotAccumulator.snapshot.session_revision,
+        });
+      }
+      snapshot = decodeAccumulatedSnapshot();
+      return snapshot;
+    };
+    const applySessionMutationEnvelope = (fullSnapshot: unknown, update: unknown) => {
+      if (update === null || update === undefined) return installFullSnapshot(fullSnapshot);
+      return applySessionMutationSnapshot({
+        ...(fullSnapshot as Record<string, unknown>),
+        session_update: update,
+      });
+    };
+    const runSessionMutation = async (
+      operation: (navKvHandle: number) => Promise<string> | string,
+      ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+      operationLabel?: string,
+    ) => {
+      let resumedWithFullSnapshot = false;
+      const result = await runSessionOperation<unknown>(
+        operation,
+        ingestSessionResource,
+        operationLabel,
+        () => { resumedWithFullSnapshot = true; },
+      );
+      return resumedWithFullSnapshot
+        ? installFullSnapshot(result)
+        : applySessionMutationSnapshot(result);
+    };
     const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
       JSON.parse(await json) as SessionSnapshotRefreshDecision;
     let liveFeedSubscription: LiveFeedSubscription | null = null;
     let configuredLiveFeedSourceUrl: string | null = null;
     reportSessionResourceFailure = async (resourceId, message) => {
-      snapshot = await runSessionOperation<UiSessionSnapshot>(
+      snapshot = await runSessionMutation(
         () => this.module.report_session_resource_failure_in_session_at_epoch_ms(
           handle,
           resourceId,
@@ -1168,7 +1223,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ...input,
       }))) as LiveFeedRuntimeDecision;
       if (decision.connection_event) {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.report_live_feed_connection_event_in_session(
             handle,
             JSON.stringify(decision.connection_event),
@@ -1183,14 +1238,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     };
     const syncGuidanceGeometry = async (reason = "unspecified") => {
       snapshot = await debugTiming("plan.guidance.sync", () =>
-        runSessionOperation<UiSessionSnapshot>(() =>
+        runSessionMutation(() =>
           this.module.sync_guidance_geometry_in_session(handle),
         ),
         { reason });
       return snapshot;
     };
     const runFlightPlanMutation = async (operation: () => Promise<string> | string) => {
-      snapshot = await runSessionOperation<UiSessionSnapshot>(operation);
+      snapshot = await runSessionMutation(operation);
       return snapshot;
     };
     const performFlightPlanCommand = (command: Record<string, unknown>) =>
@@ -1213,14 +1268,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       initialSnapshot: () => snapshot,
       snapshot: async () => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        const fullSnapshot = await runSessionOperation<unknown>(() =>
           this.module.get_session_snapshot_at_epoch_ms_paged(handle, BigInt(Date.now())));
-        return snapshot;
+        return installFullSnapshot(fullSnapshot);
       },
       maintainNavDb: async (nowEpochMs) => {
         const maintenance = await runSessionOperation<{
           action: "none" | "attempt_advance";
-          snapshot: UiSessionSnapshot;
+          snapshot: unknown;
+          session_update?: unknown;
         }>(
           () => this.module.maintain_nav_db_in_session_at_epoch_ms(
             handle,
@@ -1233,7 +1289,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
           "nav_db.maintenance",
         );
-        snapshot = maintenance.snapshot;
+        applySessionMutationEnvelope(maintenance.snapshot, maintenance.session_update);
         if (maintenance.action === "attempt_advance") {
           const advanced = await advanceSharedNavKvStore(
             handle,
@@ -1247,7 +1303,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             () => this.module.drain_session_resource_effects(handle),
             () => this.module.get_session_snapshot_paged(handle),
           );
-          snapshot = advanced.snapshot;
+          applySessionMutationEnvelope(advanced.snapshot, advanced.session_update);
         }
         return snapshot;
       },
@@ -1397,7 +1453,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return performFlightPlanCommand({ kind: "toggle_altitude_planner_departure_time_basis" });
       },
       performStatusAction: async (actionId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.perform_status_action_in_session(handle, actionId),
         );
         return snapshot;
@@ -1418,43 +1474,43 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return performFlightPlanCommand({ kind: "sequence_active_leg" });
       },
       setSituation: async (situation) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.set_situation_in_session_paged(handle, JSON.stringify(situation)),
         );
         return snapshot;
       },
       tickBadAutopilot: async (nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.tick_bad_autopilot_in_session_paged(handle, nowEpochMs),
         );
         return syncGuidanceGeometry("tick_bad_autopilot");
       },
       registerOwnshipSource: async (registration) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.register_ownship_source_in_session_paged(handle, JSON.stringify(registration)),
         );
         return snapshot;
       },
       updateOwnshipSourceStatus: async (update) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.update_ownship_source_status_in_session_paged(handle, JSON.stringify(update)),
         );
         return snapshot;
       },
       pushSituationSample: async (sample) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.push_situation_sample_in_session_paged(handle, JSON.stringify(sample)),
         );
         return snapshot;
       },
       selectOwnshipSource: async (selection) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.select_ownship_source_in_session_paged(handle, JSON.stringify(ownshipSelectionToCore(selection))),
         );
         return snapshot;
       },
       performOwnshipTextAction: async (actionId, value, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.perform_ownship_text_action_in_session(
             handle,
             actionId,
@@ -1465,7 +1521,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       applySituationControlInput: async (input, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.apply_situation_control_input_in_session(
             handle,
             JSON.stringify(input),
@@ -1475,25 +1531,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       setMapLayerVisibility: async (layerId, visible) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.set_map_layer_visibility_in_session_paged(handle, JSON.stringify(layerId), visible),
         );
         return snapshot;
       },
       setMapLayerEnabled: async (layerId, enabled) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(
+        snapshot = await runSessionMutation(
           () => this.module.set_map_layer_enabled_in_session_paged(handle, JSON.stringify(layerId), enabled),
         );
         return snapshot;
       },
       setDebugFlag: async (flagId, enabled) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.set_debug_flag_in_session(handle, JSON.stringify(flagId), enabled),
         );
         return snapshot;
       },
       performSettingsAction: async (actionId, valueId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.perform_settings_action_in_session(
             handle,
             JSON.stringify({ action_id: actionId, value_id: valueId }),
@@ -1510,7 +1566,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ) as CloudAuthorizationRequest | null;
       },
       completeCloudAuthorization: async (requestId, response, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.complete_cloud_authorization_in_session(
             handle,
             BigInt(requestId),
@@ -1521,7 +1577,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       performCloudUiAction: async (actionId, fields, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.perform_cloud_ui_action_in_session(
             handle,
             JSON.stringify(actionId),
@@ -1532,7 +1588,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       recordOfflinePackagePreferences: async (preferencesJson, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.record_offline_package_preferences_in_session(
             handle,
             preferencesJson,
@@ -1550,7 +1606,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ) as CloudHttpRequest | null;
       },
       completeCloudProviderRequest: async (requestId, response, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.complete_cloud_provider_request_in_session(
             handle,
             BigInt(requestId),
@@ -1566,7 +1622,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ) as CloudEventStreamPlan | null;
       },
       reportCloudEventStreamEvent: async (event, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.report_cloud_event_stream_event_in_session(
             handle,
             JSON.stringify(event),
@@ -1576,13 +1632,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       acceptDisclaimer: async (agreementId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.accept_disclaimer_in_session(handle, agreementId),
         );
         return snapshot;
       },
       loadRasterMapCatalog: async () => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.load_raster_map_catalog_in_session(handle),
         );
         return snapshot;
@@ -1590,19 +1646,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       resolveChartAssetUrl: (chartId, assetKind) =>
         resolveChartAssetUrl(handle, chartId, assetKind),
       selectMapFamily: async (familyId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.select_map_family_in_session(handle, JSON.stringify(familyId)),
         );
         return snapshot;
       },
       selectRasterMap: async (selectedMapId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.select_raster_map_in_session(handle, JSON.stringify(selectedMapId)),
         );
         return snapshot;
       },
       engageMapFollow: async (viewport) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.engage_map_follow_in_session(
             handle,
             JSON.stringify(coreViewportForMap(viewport)),
@@ -1611,7 +1667,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       disengageMapFollow: async (viewport) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.disengage_map_follow_in_session(
             handle,
             JSON.stringify(coreViewportForMap(viewport)),
@@ -1620,7 +1676,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       setMapFollowOffset: async (viewport, offsetXPx, offsetYPx) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.set_map_follow_offset_in_session(
             handle,
             JSON.stringify(coreViewportForMap(viewport)),
@@ -1631,7 +1687,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       syncMapFollow: async (viewport, widthPx, heightPx) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.sync_map_follow_in_session(
             handle,
             JSON.stringify(coreViewportForMap(viewport)),
@@ -1642,55 +1698,55 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       loadPlaybackTrace: async (sourcePath, traceJson) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.load_playback_trace_in_session_paged(handle, JSON.stringify(sourcePath), traceJson),
         );
         return snapshot;
       },
       playPlayback: async (nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.play_playback_in_session_paged(handle, nowEpochMs),
         );
         return snapshot;
       },
       pausePlayback: async (nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.pause_playback_in_session_paged(handle, nowEpochMs),
         );
         return snapshot;
       },
       seekPlayback: async (cursorSeconds, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.seek_playback_in_session_paged(handle, cursorSeconds, nowEpochMs),
         );
         return snapshot;
       },
       setPlaybackRate: async (rate, nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.set_playback_rate_in_session_paged(handle, rate, nowEpochMs),
         );
         return snapshot;
       },
       tickPlayback: async (nowEpochMs) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.tick_playback_in_session_paged(handle, nowEpochMs),
         );
         return snapshot;
       },
       selectAirport: async (airportId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.select_airport_in_session(handle, JSON.stringify(airportId)),
         );
         return snapshot;
       },
       selectChart: async (chartId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.select_chart_in_session(handle, JSON.stringify(chartId)),
         );
         return snapshot;
       },
       selectChartReference: async (familyId, suggestedChartIds) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.select_chart_reference_in_session(
             handle,
             JSON.stringify(familyId),
@@ -1865,7 +1921,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         nextSelectedChartId,
         nextSuggestedChartIds = [],
       ) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.restore_chart_page_state_in_session(
             handle,
             JSON.stringify(nextRecentAirportIds),

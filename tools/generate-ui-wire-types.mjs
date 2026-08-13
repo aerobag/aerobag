@@ -14,6 +14,10 @@ const cloudSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/cloud-wire.sch
 const homePageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/home-page-wire.schema.json");
 const sessionPageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-page-wire.schema.json");
 const sessionUpdateSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-update-wire.schema.json");
+const sessionUpdateConformancePath = path.join(
+  repoRoot,
+  "ui/core-rust/crates/app-ui-contracts/tests/goldens/session-update-conformance.json",
+);
 
 const args = new Map();
 const flags = new Set();
@@ -44,6 +48,9 @@ const sessionPageWebOut =
   args.get("--session-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionPageWire.ts");
 const sessionUpdateWebOut =
   args.get("--session-update-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionUpdateWire.ts");
+const sessionUpdateConformanceWebOut =
+  args.get("--session-update-conformance-web-out")
+    ?? path.join(repoRoot, "ui/web-app/src/generated/sessionUpdateConformance.json");
 
 let schemaPath;
 let schema;
@@ -120,6 +127,34 @@ function contractVersionName() {
   return `${screaming}_WIRE_VERSION`;
 }
 
+function sessionUpdateGroupProperties() {
+  if (schema.title !== "UiSessionUpdate") return [];
+  return Object.entries(schema.properties ?? {}).filter(([, propertySchema]) => {
+    const schemaBase = baseSchema(propertySchema);
+    return schemaBase.$ref && resolveRef(schemaBase.$ref).name === "UiSessionProjectionPatch";
+  });
+}
+
+function ktSessionUpdateGroupSource() {
+  const groups = sessionUpdateGroupProperties();
+  if (groups.length === 0) return "";
+  const members = groups.map(([wireName]) =>
+    `    ${enumMemberName(wireName)}(${JSON.stringify(wireName)}),`
+  );
+  const patches = groups.map(([wireName]) => {
+    const propertyName = snakeToCamel(wireName);
+    return `    ${propertyName}?.let { add(UiSessionUpdateGroup.${enumMemberName(wireName)} to it) }`;
+  });
+  return `\nenum class UiSessionUpdateGroup(val wireName: String) {\n${members.join("\n")}\n}\n\nfun UiSessionUpdate.projectionPatches(): List<Pair<UiSessionUpdateGroup, UiSessionProjectionPatch>> =\n  buildList {\n${patches.join("\n")}\n  }\n`;
+}
+
+function tsSessionUpdateGroupSource() {
+  const groups = sessionUpdateGroupProperties();
+  if (groups.length === 0) return "";
+  const wireNames = groups.map(([wireName]) => JSON.stringify(wireName)).join(", ");
+  return `\nexport const UI_SESSION_UPDATE_GROUPS = [${wireNames}] as const;\n\nexport type UiSessionUpdateGroup = typeof UI_SESSION_UPDATE_GROUPS[number];\n`;
+}
+
 function ktDefault(fieldSchema, ktType) {
   if (Object.hasOwn(fieldSchema, "default")) {
     const value = fieldSchema.default;
@@ -167,6 +202,10 @@ function ktType(fieldSchema) {
       type = "Boolean";
       break;
     case "object":
+      if (schemaBase.additionalProperties === true || typeof schemaBase.additionalProperties === "object") {
+        type = "JsonObject";
+        break;
+      }
       throw new Error("inline object schemas need a named $defs entry");
     default:
       throw new Error(`unsupported Kotlin schema type ${schemaBase.type}`);
@@ -206,6 +245,10 @@ function tsType(fieldSchema) {
       type = "boolean";
       break;
     case "object":
+      if (schemaBase.additionalProperties === true || typeof schemaBase.additionalProperties === "object") {
+        type = "Record<string, unknown>";
+        break;
+      }
       throw new Error("inline object schemas need a named $defs entry");
     default:
       throw new Error(`unsupported TypeScript schema type ${schemaBase.type}`);
@@ -320,7 +363,7 @@ function androidSource() {
   }
   const version = schema["x-contract-version"];
   const versionSource = Number.isInteger(version) ? `const val ${contractVersionName()}: Int = ${version}\n\n` : "";
-  return `${generatedBanner}package org.aerobag.app.generated\n\nimport kotlinx.serialization.ExperimentalSerializationApi\nimport kotlinx.serialization.SerialName\nimport kotlinx.serialization.Serializable\nimport kotlinx.serialization.json.JsonClassDiscriminator\nimport kotlinx.serialization.json.JsonElement\n\n${versionSource}${chunks.join("\n")}`;
+  return `${generatedBanner}package org.aerobag.app.generated\n\nimport kotlinx.serialization.ExperimentalSerializationApi\nimport kotlinx.serialization.SerialName\nimport kotlinx.serialization.Serializable\nimport kotlinx.serialization.json.JsonClassDiscriminator\nimport kotlinx.serialization.json.JsonElement\nimport kotlinx.serialization.json.JsonObject\n\n${versionSource}${chunks.join("\n")}${ktSessionUpdateGroupSource()}`;
 }
 
 function webSource() {
@@ -340,7 +383,7 @@ function webSource() {
   }
   const version = schema["x-contract-version"];
   const versionSource = Number.isInteger(version) ? `export const ${contractVersionName()} = ${version} as const;\n\n` : "";
-  return `${generatedBanner}\n${versionSource}${chunks.join("\n")}`;
+  return `${generatedBanner}\n${versionSource}${chunks.join("\n")}${tsSessionUpdateGroupSource()}`;
 }
 
 function writeOrCheck(filePath, content) {
@@ -375,3 +418,7 @@ writeOrCheck(sessionPageWebOut, webSource());
 loadSchema(sessionUpdateSchemaPath);
 writeOrCheck(path.join(androidOut, "SessionUpdateWire.kt"), androidSource());
 writeOrCheck(sessionUpdateWebOut, webSource());
+writeOrCheck(
+  sessionUpdateConformanceWebOut,
+  fs.readFileSync(sessionUpdateConformancePath, "utf8"),
+);

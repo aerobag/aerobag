@@ -1,0 +1,127 @@
+{
+  "expected_contract_version": 1,
+  "initial_snapshot": {
+    "ui_contract_version": 1,
+    "session_revision": 7,
+    "map_layer_state": { "nexrad": false },
+    "debug_state": { "tile_labels": false },
+    "unchanged": "retained"
+  },
+  "steps": [
+    {
+      "name": "applies one replacement group",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map": {
+          "version": 3,
+          "fields": { "map_layer_state": { "nexrad": true } }
+        }
+      },
+      "disposition": "applied",
+      "expected_snapshot": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map_layer_state": { "nexrad": true },
+        "debug_state": { "tile_labels": false },
+        "unchanged": "retained"
+      }
+    },
+    {
+      "name": "ignores a duplicate response",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map": {
+          "version": 3,
+          "fields": { "map_layer_state": { "nexrad": true } }
+        }
+      },
+      "disposition": "stale",
+      "expected_snapshot": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map_layer_state": { "nexrad": true },
+        "debug_state": { "tile_labels": false },
+        "unchanged": "retained"
+      }
+    },
+    {
+      "name": "applies multiple groups atomically",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 9,
+        "map": {
+          "version": 4,
+          "fields": { "map_layer_state": { "nexrad": false } }
+        },
+        "debug": {
+          "version": 11,
+          "fields": { "debug_state": { "tile_labels": true } }
+        }
+      },
+      "disposition": "applied",
+      "expected_snapshot": {
+        "ui_contract_version": 1,
+        "session_revision": 9,
+        "map_layer_state": { "nexrad": false },
+        "debug_state": { "tile_labels": true },
+        "unchanged": "retained"
+      }
+    },
+    {
+      "name": "requires resynchronization across a revision gap",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 11,
+        "status": {
+          "version": 2,
+          "fields": { "data_status_state": { "summary": "changed" } }
+        }
+      },
+      "disposition": "resync_required",
+      "expected_snapshot": {
+        "ui_contract_version": 1,
+        "session_revision": 9,
+        "map_layer_state": { "nexrad": false },
+        "debug_state": { "tile_labels": true },
+        "unchanged": "retained"
+      }
+    }
+  ],
+  "invalid_updates": [
+    {
+      "name": "rejects string revisions",
+      "update": { "ui_contract_version": 1, "session_revision": "8" }
+    },
+    {
+      "name": "rejects another contract",
+      "update": { "ui_contract_version": 2, "session_revision": 8 }
+    },
+    {
+      "name": "rejects non-object fields",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map": { "version": 3, "fields": [] }
+      }
+    },
+    {
+      "name": "rejects envelope replacement",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map": { "version": 3, "fields": { "session_revision": 99 } }
+      }
+    },
+    {
+      "name": "rejects fields repeated across groups",
+      "update": {
+        "ui_contract_version": 1,
+        "session_revision": 8,
+        "map": { "version": 3, "fields": { "shared": 1 } },
+        "status": { "version": 2, "fields": { "shared": 2 } }
+      }
+    }
+  ]
+}

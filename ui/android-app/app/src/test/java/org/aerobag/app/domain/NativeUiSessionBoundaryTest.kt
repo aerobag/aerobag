@@ -36,12 +36,12 @@ class NativeUiSessionBoundaryTest {
             "fun recordOfflinePackagePreferences(",
         )
         assertTrue(
-            "Package preferences must use the invalidation-only session boundary.",
-            packagePreferenceMutation.contains("executePagedInvalidationCommand"),
+            "Package preferences must return and apply the same revisioned update as every model mutation.",
+            packagePreferenceMutation.contains("executePagedSnapshot"),
         )
         assertFalse(
-            "Package preferences must not synchronously project a complete UI snapshot.",
-            packagePreferenceMutation.contains("runPagedSnapshot"),
+            "Package preferences must not retain the former invalidation-only exception.",
+            packagePreferenceMutation.contains("executePagedInvalidationCommand"),
         )
         assertTrue(
             "Paged session mutations must publish core invalidations instead of dropping them.",
@@ -82,10 +82,15 @@ class NativeUiSessionBoundaryTest {
             Regex("""decodeSnapshot\(\s*bridge\.""").containsMatchIn(sessionBody),
         )
         assertTrue(
-            "NativeUiSession must have exactly one snapshot-wire decoder, inside the paged runner.",
+            "NativeUiSession must have exactly one snapshot-wire decoder behind its accumulator.",
             Regex("""decodeFromJsonElement<WireUiSessionSnapshot>""")
                 .findAll(sessionBody)
                 .count() == 1,
+        )
+        assertTrue(
+            "Ordinary mutations must apply core's generated update and full refreshes must explicitly reset it.",
+            sessionBody.contains("snapshotAccumulator.applyTransitionalMutationSnapshot") &&
+                sessionBody.contains("snapshotAccumulator.replaceFullSnapshot"),
         )
         assertFalse(
             "NativeUiSession must not retain a direct snapshot JSON decoder.",

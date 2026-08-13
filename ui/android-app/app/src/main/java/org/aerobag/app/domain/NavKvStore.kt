@@ -55,6 +55,7 @@ sealed class CoreResourceSource {
 data class PagedSessionOperationResult(
     val result: JsonElement,
     val invalidations: List<String>,
+    val resumedSnapshot: Boolean = false,
 )
 
 private data class CoreSessionResourceEffect(
@@ -419,6 +420,7 @@ class NavKvStore private constructor(
         operation: () -> String,
     ): PagedSessionOperationResult {
         var activeOperation = operation
+        var resumedSnapshot = false
         val pendingInvalidations = linkedSetOf<String>()
         // A peer may install a requested NAVKV page after core reports the request but
         // before this operation reaches ensurePage. An already-present page therefore
@@ -438,6 +440,7 @@ class NavKvStore private constructor(
                                 ?.map { it.jsonPrimitive.content }
                                 ?: emptyList()
                             )).toList(),
+                        resumedSnapshot = resumedSnapshot,
                     )
                 }
                 "need_resources", "need_snapshot_resources" -> {
@@ -448,6 +451,7 @@ class NavKvStore private constructor(
                             ?: emptyList()
                         activeOperation = resumeSnapshot
                             ?: error("committed session mutation requires a snapshot-resume operation")
+                        resumedSnapshot = true
                     }
                     val resources = parseCoreResourceRequests(outcome)
                     check(resources.isNotEmpty()) {

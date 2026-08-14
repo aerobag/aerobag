@@ -8,6 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::{
@@ -123,6 +124,8 @@ pub(crate) struct DataStatusForecastInput {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DataStatusPageInput {
     pub now_epoch_ms: i64,
+    pub time_display_mode: crate::TimeDisplayMode,
+    pub local_time_zone: Tz,
     pub client_build: Option<ClientBuildInfo>,
     pub nav_db_available: bool,
     pub active_nav_db: Option<DataStatusNavDbArtifactInput>,
@@ -405,7 +408,7 @@ fn project_data_status_page_state(
 ) -> UiDataStatusPageState {
     let mut rows = vec![
         client_build_status_page_row(input.client_build.as_ref()),
-        publication_status_page_row(input.publication.as_ref()),
+        publication_status_page_row(input),
         expected_contract_versions_status_page_row(),
         nav_db_status_page_row(input),
         cycle_package_group_status_page_row(
@@ -438,7 +441,7 @@ fn project_data_status_page_state(
                 ("geo", "Geodesy", 40),
             ],
         ),
-        live_feed_connection_status_page_row(&input.live_feed_connection),
+        live_feed_connection_status_page_row(input),
         live_feed_product_status_page_row(input, LiveFeedProduct::Tfrs),
         live_feed_product_status_page_row(input, LiveFeedProduct::Notams),
         live_feed_product_status_page_row(input, LiveFeedProduct::Metars),
@@ -453,6 +456,7 @@ fn project_data_status_page_state(
     if let Some(cloud) = input.cloud.as_ref() {
         rows.insert(3, cloud_status_page_row(cloud));
     }
+    project_status_clock_facts(&mut rows, input);
     rows.extend(package_warning_status_page_rows(records));
     UiDataStatusPageState {
         title: "Status".to_string(),
@@ -471,7 +475,18 @@ fn cloud_status_page_row(summary: &CloudStatusSummary) -> UiDataStatusPageRow {
         summary
             .facts
             .iter()
-            .map(|fact| status_fact(fact.label.clone(), fact.value.clone()))
+            .map(|fact| {
+                fact.time_epoch_ms.map_or_else(
+                    || status_fact(fact.label.clone(), fact.value.clone()),
+                    |epoch_ms| {
+                        status_time_fact(
+                            fact.label.clone(),
+                            utc_from_epoch_ms(epoch_ms),
+                            UiDataStatusPageTimeDisplay::Ago,
+                        )
+                    },
+                )
+            })
             .collect(),
     )
 }
@@ -648,9 +663,8 @@ fn expected_contract_versions_status_page_row() -> UiDataStatusPageRow {
     )
 }
 
-fn publication_status_page_row(
-    publication: Option<&DataStatusPublicationInput>,
-) -> UiDataStatusPageRow {
+fn publication_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
+    let publication = input.publication.as_ref();
     let Some(publication) = publication else {
         return status_page_row(
             "publication:current_artifacts",
@@ -689,7 +703,7 @@ fn publication_status_page_row(
             UiStatusSeverity::Ok,
             format!(
                 "current_artifacts.json checked at {}.",
-                format_status_utc(checked_utc)
+                format_status_time(checked_utc, input),
             ),
             facts,
         );
@@ -704,9 +718,8 @@ fn publication_status_page_row(
     )
 }
 
-fn live_feed_connection_status_page_row(
-    connection: &DataStatusLiveFeedConnectionInput,
-) -> UiDataStatusPageRow {
+fn live_feed_connection_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
+    let connection = &input.live_feed_connection;
     let mut facts = Vec::new();
     if let Some(source_url) = connection.source_url.as_deref() {
         facts.push(status_link_fact(
@@ -795,7 +808,7 @@ fn live_feed_connection_status_page_row(
                     .map(|epoch| {
                         format!(
                             " Last server event was at {}.",
-                            format_status_utc(utc_from_epoch_ms(epoch))
+                            format_status_time(utc_from_epoch_ms(epoch), input),
                         )
                     })
                     .unwrap_or_default();
@@ -1327,7 +1340,7 @@ fn cycle_package_group_status_page_row(
             UiStatusSeverity::Ok,
             format!(
                 "{family_list} {noun} valid until {}.",
-                format_status_utc(expiration)
+                format_status_time(expiration, input),
             ),
             facts,
         );
@@ -1510,7 +1523,6 @@ fn static_package_group_status_page_row(
             Vec::new(),
         );
     }
-    let now_utc = utc_from_epoch_ms(input.now_epoch_ms);
     let mut newest_by_family: BTreeMap<u8, (&'static str, DateTime<Utc>)> = BTreeMap::new();
     let mut family_set = BTreeSet::new();
     for package in &packages {
@@ -1556,7 +1568,7 @@ fn static_package_group_status_page_row(
         .values()
         .map(|(_, effective)| *effective)
         .min()
-        .unwrap_or(now_utc);
+        .unwrap_or_else(|| utc_from_epoch_ms(input.now_epoch_ms));
     status_page_row(
         id,
         label,
@@ -1564,7 +1576,7 @@ fn static_package_group_status_page_row(
         UiStatusSeverity::Ok,
         format!(
             "{family_list} source data dates back to {}.",
-            format_status_utc(oldest)
+            format_status_time(oldest, input),
         ),
         facts,
     )
@@ -1665,13 +1677,16 @@ fn nav_db_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
             facts,
         );
     }
-    if let Some(expiration) = earliest_expiration {
+    if earliest_expiration.is_some() {
         return status_page_row(
             "nav_db",
             "NAV DB",
             "OK",
             UiStatusSeverity::Ok,
-            format!("NAV DB valid until {}.", format_status_utc(expiration)),
+            format!(
+                "NAV DB valid until {}.",
+                format_status_time(earliest_expiration.expect("checked expiration"), input),
+            ),
             facts,
         );
     }
@@ -1743,6 +1758,7 @@ fn status_fact(label: impl Into<String>, value: impl Into<String>) -> UiDataStat
     UiDataStatusPageFact {
         label: label.into(),
         value: value.into(),
+        action_id: None,
         link_url: None,
         time_utc: None,
         time_display: None,
@@ -1757,6 +1773,7 @@ fn status_link_fact(
     UiDataStatusPageFact {
         label: label.into(),
         value: value.into(),
+        action_id: None,
         link_url: Some(link_url.into()),
         time_utc: None,
         time_display: None,
@@ -1771,9 +1788,24 @@ fn status_time_fact(
     UiDataStatusPageFact {
         label: label.into(),
         value: format_status_utc(instant),
+        action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
         link_url: None,
         time_utc: Some(format_status_rfc3339(instant)),
         time_display: Some(display),
+    }
+}
+
+fn project_status_clock_facts(rows: &mut [UiDataStatusPageRow], input: &DataStatusPageInput) {
+    for fact in rows.iter_mut().flat_map(|row| row.facts.iter_mut()) {
+        let Some(instant) = fact.time_utc.as_deref().and_then(parse_utc_instant) else {
+            continue;
+        };
+        fact.value = crate::format_dated_time(
+            instant.timestamp_millis(),
+            input.time_display_mode,
+            input.local_time_zone,
+            crate::DatedTimeStyle::IsoMinute,
+        );
     }
 }
 
@@ -1811,6 +1843,15 @@ fn format_status_utc(instant: DateTime<Utc>) -> String {
     instant.format("%Y-%m-%d %H:%M UTC").to_string()
 }
 
+fn format_status_time(instant: DateTime<Utc>, input: &DataStatusPageInput) -> String {
+    crate::format_dated_time(
+        instant.timestamp_millis(),
+        input.time_display_mode,
+        input.local_time_zone,
+        crate::DatedTimeStyle::IsoMinute,
+    )
+}
+
 fn format_status_rfc3339(instant: DateTime<Utc>) -> String {
     instant.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
@@ -1842,6 +1883,8 @@ mod tests {
     fn page_input() -> DataStatusPageInput {
         DataStatusPageInput {
             now_epoch_ms: 1_000,
+            time_display_mode: crate::TimeDisplayMode::Local,
+            local_time_zone: chrono_tz::UTC,
             client_build: None,
             nav_db_available: false,
             active_nav_db: None,

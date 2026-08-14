@@ -5,13 +5,15 @@
 pub use app_ui_contracts::session::{
     FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn, FlightEstimateKind,
 };
-use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FlightDataComputer {
     ground_speed_kt: Option<f64>,
     fuel_flow_gph: Option<f64>,
     now_epoch_ms: Option<i64>,
+    time_display_mode: crate::TimeDisplayMode,
+    local_time_zone: Tz,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,10 +119,28 @@ impl FlightDataComputer {
         fuel_flow_gph: Option<f64>,
         now_epoch_ms: Option<i64>,
     ) -> Self {
+        Self::with_fuel_flow_clock_and_time_display(
+            ground_speed_kt,
+            fuel_flow_gph,
+            now_epoch_ms,
+            crate::TimeDisplayMode::Utc,
+            chrono_tz::UTC,
+        )
+    }
+
+    pub fn with_fuel_flow_clock_and_time_display(
+        ground_speed_kt: Option<f64>,
+        fuel_flow_gph: Option<f64>,
+        now_epoch_ms: Option<i64>,
+        time_display_mode: crate::TimeDisplayMode,
+        local_time_zone: Tz,
+    ) -> Self {
         Self {
             ground_speed_kt: ground_speed_kt.filter(|speed| *speed > 1.0),
             fuel_flow_gph: fuel_flow_gph.filter(|fuel_flow| *fuel_flow > 0.0),
             now_epoch_ms,
+            time_display_mode,
+            local_time_zone,
         }
     }
 
@@ -169,7 +189,18 @@ impl FlightDataComputer {
                         FlightDataBannerField::FinalEta => final_eta.clone(),
                         FlightDataBannerField::NexradAge => input.nexrad_age.clone(),
                     };
-                    cell(definition.id, definition.label, value)
+                    let label = (definition.field == FlightDataBannerField::FinalEta)
+                        .then(|| self.eta_label());
+                    let mut cell = cell(
+                        definition.id,
+                        label.as_deref().unwrap_or(definition.label),
+                        value,
+                    );
+                    if definition.field == FlightDataBannerField::FinalEta {
+                        cell.action_id =
+                            Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string());
+                    }
+                    cell
                 })
                 .collect(),
         }
@@ -215,14 +246,20 @@ impl FlightDataComputer {
         estimate: FlightTimeFuelEstimate,
     ) -> Vec<FlightDataCell> {
         if !row_has_data {
-            return flight_plan_columns()
+            return self
+                .flight_plan_columns()
                 .into_iter()
-                .map(|column| FlightDataCell {
-                    id: column.id,
-                    label: column.label,
-                    value: Some(String::new()),
-                    tone: FlightDataCellTone::Planned,
-                    estimate_kind: FlightEstimateKind::Basic,
+                .map(|column| {
+                    let actionable = column.id == "final_eta";
+                    FlightDataCell {
+                        id: column.id,
+                        label: column.label,
+                        value: Some(String::new()),
+                        action_id: actionable
+                            .then(|| crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
+                        tone: FlightDataCellTone::Planned,
+                        estimate_kind: FlightEstimateKind::Basic,
+                    }
                 })
                 .collect();
         }
@@ -234,7 +271,7 @@ impl FlightDataComputer {
         let eta = eta.or_else(|| {
             self.now_epoch_ms
                 .zip(ete_seconds)
-                .map(|(now, ete)| format_eta(now, ete))
+                .map(|(now, ete)| self.format_eta_epoch(now, ete))
         });
         let fuel = estimate.cumulative_fuel_gal.map(format_fuel_gal);
 
@@ -245,7 +282,13 @@ impl FlightDataComputer {
                 segment_distance_nm.map(format_nm),
                 distance_tone,
             ),
-            cell_with_estimate("final_eta", "ETA", eta, estimate.estimate_kind),
+            actionable_cell_with_estimate(
+                "final_eta",
+                &self.eta_label(),
+                eta,
+                estimate.estimate_kind,
+                crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+            ),
             cell_with_estimate("waypoint_ete", "ETE", ete, estimate.estimate_kind),
             cell_with_estimate("fuel", "FUEL gal", fuel, estimate.estimate_kind),
             cell(
@@ -293,7 +336,7 @@ impl FlightDataComputer {
 
     pub fn format_eta_at(&self, distance_nm: f64, now_epoch_ms: i64) -> Option<String> {
         let ete_seconds = self.ete_seconds(distance_nm)?;
-        Some(format_eta(now_epoch_ms, ete_seconds))
+        Some(self.format_eta_epoch(now_epoch_ms, ete_seconds))
     }
 
     fn format_ete(&self, distance_nm: f64) -> Option<String> {
@@ -303,7 +346,7 @@ impl FlightDataComputer {
     fn format_eta(&self, distance_nm: f64) -> Option<String> {
         let now_epoch_ms = self.now_epoch_ms?;
         let ete_seconds = self.ete_seconds(distance_nm)?;
-        Some(format_eta(now_epoch_ms, ete_seconds))
+        Some(self.format_eta_epoch(now_epoch_ms, ete_seconds))
     }
 
     fn ete_seconds(&self, distance_nm: f64) -> Option<i64> {
@@ -318,16 +361,45 @@ impl FlightDataComputer {
                 format_fuel_gal(distance_nm / speed_kt * fuel_flow_gph)
             })
     }
+
+    fn format_eta_epoch(&self, now_epoch_ms: i64, ete_seconds: i64) -> String {
+        format_eta(
+            now_epoch_ms,
+            ete_seconds,
+            self.time_display_mode,
+            self.local_time_zone,
+        )
+    }
+
+    pub fn eta_label(&self) -> String {
+        let basis = match self.time_display_mode {
+            crate::TimeDisplayMode::Local => {
+                crate::time_zone_label(self.now_epoch_ms.unwrap_or_default(), self.local_time_zone)
+            }
+            crate::TimeDisplayMode::Utc => "Z".to_string(),
+        };
+        format!("ETA {basis}")
+    }
+
+    pub fn flight_plan_columns(&self) -> Vec<FlightDataColumn> {
+        flight_plan_columns_with_eta_label(&self.eta_label())
+    }
 }
 
 pub fn flight_plan_columns() -> Vec<FlightDataColumn> {
-    vec![
+    flight_plan_columns_with_eta_label("ETA")
+}
+
+fn flight_plan_columns_with_eta_label(eta_label: &str) -> Vec<FlightDataColumn> {
+    let mut columns = vec![
         column("waypoint_distance", "DIST nm"),
-        column("final_eta", "ETA"),
+        column("final_eta", eta_label),
         column("waypoint_ete", "ETE"),
         column("fuel", "FUEL gal"),
         column("desired_track", "DTK"),
-    ]
+    ];
+    columns[1].action_id = Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string());
+    columns
 }
 
 pub fn possible_columns() -> Vec<FlightDataColumn> {
@@ -402,6 +474,7 @@ pub fn cell_with_tone(
         id: id.to_string(),
         label: label.to_string(),
         value,
+        action_id: None,
         tone,
         estimate_kind: FlightEstimateKind::Basic,
     }
@@ -417,6 +490,24 @@ pub fn cell_with_estimate(
         id: id.to_string(),
         label: label.to_string(),
         value,
+        action_id: None,
+        tone: FlightDataCellTone::Planned,
+        estimate_kind,
+    }
+}
+
+fn actionable_cell_with_estimate(
+    id: &str,
+    label: &str,
+    value: Option<String>,
+    estimate_kind: FlightEstimateKind,
+    action_id: &str,
+) -> FlightDataCell {
+    FlightDataCell {
+        id: id.to_string(),
+        label: label.to_string(),
+        value,
+        action_id: Some(action_id.to_string()),
         tone: FlightDataCellTone::Planned,
         estimate_kind,
     }
@@ -426,6 +517,7 @@ fn column(id: &str, label: &str) -> FlightDataColumn {
     FlightDataColumn {
         id: id.to_string(),
         label: label.to_string(),
+        action_id: None,
     }
 }
 
@@ -476,19 +568,28 @@ fn format_ete_seconds(total_seconds: i64) -> String {
     }
 }
 
-fn format_eta(now_epoch_ms: i64, ete_seconds: i64) -> String {
+fn format_eta(
+    now_epoch_ms: i64,
+    ete_seconds: i64,
+    mode: crate::TimeDisplayMode,
+    local_time_zone: Tz,
+) -> String {
     let eta_epoch_ms = now_epoch_ms
         .saturating_add(ete_seconds.saturating_mul(1000))
         .saturating_add(30_000);
-    DateTime::<Utc>::from_timestamp_millis(eta_epoch_ms)
-        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
-        .format("%H:%M")
-        .to_string()
+    crate::format_time_of_day(
+        eta_epoch_ms,
+        mode,
+        local_time_zone,
+        crate::TimeOfDayStyle::Colon,
+    )
+    .value
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::DateTime;
 
     #[test]
     fn banner_and_flight_plan_rows_share_ete_formatting() {
@@ -643,6 +744,43 @@ mod tests {
                 .find(|cell| cell.id == "final_eta")
                 .and_then(|cell| cell.value.as_deref()),
             Some("12:15")
+        );
+    }
+
+    #[test]
+    fn eta_uses_device_zone_and_exposes_the_shared_time_action() {
+        let now = DateTime::parse_from_rfc3339("2026-08-13T02:00:00Z")
+            .expect("instant")
+            .timestamp_millis();
+        let computer = FlightDataComputer::with_fuel_flow_clock_and_time_display(
+            Some(120.0),
+            None,
+            Some(now),
+            crate::TimeDisplayMode::Local,
+            chrono_tz::America::Los_Angeles,
+        );
+        let row_cells = computer.flight_plan_row_cells(
+            true,
+            Some(12.0),
+            Some(30.0),
+            None,
+            None,
+            FlightDataCellTone::Planned,
+        );
+        let eta = row_cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .expect("ETA cell");
+
+        assert_eq!(eta.label, "ETA PDT");
+        assert_eq!(eta.value.as_deref(), Some("19:15"));
+        assert_eq!(
+            eta.action_id.as_deref(),
+            Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
+        );
+        assert_eq!(
+            computer.flight_plan_columns()[1].action_id.as_deref(),
+            Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
         );
     }
 

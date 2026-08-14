@@ -132,7 +132,9 @@ internal fun AltitudePlannerPage(
 
     fun toggleDepartureTimeBasis() {
         try {
-            onApplySessionSnapshot(uiSession.toggleAltitudePlannerDepartureTimeBasis())
+            onApplySessionSnapshot(
+                uiSession.performTimeDisplayAction(planner.departure.timeDisplayActionId),
+            )
             refreshRevision += 1
         } catch (error: CancellationException) {
             throw error
@@ -442,8 +444,6 @@ private fun DepartureEditorRow(
                     .width(ThumbSize * 1.45f)
                     .height(ThumbSize * 0.58f),
                 maxLines = 1,
-                enabled = departure.enabled,
-                onDisabledClick = onDisabledClick,
                 onClick = onToggleBasis,
             )
             DepartureLabel(departure.whenLabel)

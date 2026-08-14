@@ -262,6 +262,7 @@ export type AltitudePlannerDepartureEditorUiView = {
   time_label: string;
   time_value: string;
   basis_label: string;
+  time_display_action_id: string;
   when_label: string;
   when_value: string;
   when_suffix: string;

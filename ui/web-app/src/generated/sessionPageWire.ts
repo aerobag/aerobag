@@ -10,6 +10,7 @@ export type FlightDataCellTone = "planned" | "passed" | "active";
 export type FlightEstimateKind = "basic" | "modeled";
 
 export type FlightDataCell = {
+  action_id?: string | null;
   estimate_kind?: FlightEstimateKind;
   id: string;
   label: string;
@@ -18,6 +19,7 @@ export type FlightDataCell = {
 };
 
 export type FlightDataColumn = {
+  action_id?: string | null;
   id: string;
   label: string;
 };
@@ -57,6 +59,7 @@ export type UiDataStatusState = {
 export type UiDataStatusPageTimeDisplay = "ago" | "old" | "until";
 
 export type UiDataStatusPageFact = {
+  action_id?: string | null;
   label: string;
   link_url?: string | null;
   time_display?: UiDataStatusPageTimeDisplay | null;

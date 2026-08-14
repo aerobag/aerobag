@@ -27,7 +27,7 @@ controller state:
 | `debug_state` | Core-owned diagnostic feature policy | Debug, map, application UI groups |
 | `cycle_product_freshness` | Schedules product-validity reevaluation | Status scheduling group |
 | `wall_clock_epoch_ms` | Input to age, ETA, animation, cloud, and status projections | Input token, not an independently rendered group |
-| `altitude_planner_wind_selection`, `altitude_planner_departure_time_basis` | Cross-domain planner choices | Flight-plan/application UI group |
+| `altitude_planner_wind_selection`, `time_display_mode` | Cross-domain planner and time-presentation choices | Flight-plan/application UI group |
 
 These accesses are deliberately spelled `session.coordinator.<field>`.
 `UiSession` must not implement `Deref` or `DerefMut` to this model.

@@ -16,6 +16,7 @@ declare module "@generated/app_wasm.js" {
   const init: (...args: unknown[]) => Promise<unknown>;
   export default init;
   export const perform_flight_plan_command_in_session: (...args: unknown[]) => string;
+  export const perform_time_display_action_in_session: (...args: unknown[]) => string;
   export const query_flight_plan_in_session: (...args: unknown[]) => string;
   export const perform_status_action_in_session: (...args: unknown[]) => string;
   export const perform_ownship_text_action_in_session: (...args: unknown[]) => string;

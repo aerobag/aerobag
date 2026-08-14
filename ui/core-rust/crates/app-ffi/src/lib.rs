@@ -201,6 +201,16 @@ pub fn perform_flight_plan_command_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn perform_time_display_action_in_session_json(
+    handle: u64,
+    action_id: &str,
+) -> Result<String, String> {
+    let outcome =
+        app_core::perform_time_display_action_in_session(handle as u32, action_id.to_string())
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn query_flight_plan_in_session_json(handle: u64, query_json: &str) -> Result<String, String> {
     let query: app_core::FlightPlanSessionQuery =
         serde_json::from_str(query_json).map_err(|err| err.to_string())?;
@@ -3150,6 +3160,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightP
     let result = (|| {
         let command_json = get_java_string(&mut env, command_json)?;
         perform_flight_plan_command_in_session_json(handle as u64, &command_json, now_epoch_ms)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performTimeDisplayActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_id: JString,
+) -> jstring {
+    let result = (|| {
+        let action_id = get_java_string(&mut env, action_id)?;
+        perform_time_display_action_in_session_json(handle as u64, &action_id)
     })();
     return_string(&mut env, result)
 }

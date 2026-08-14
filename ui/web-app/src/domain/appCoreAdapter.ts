@@ -526,8 +526,8 @@ export type AirportInfoUiView = {
   elevation_label: string;
   traffic_pattern_altitude_label: string;
   traffic_pattern_altitude_source: "published" | "derived";
-  local_time_label: string;
-  utc_time_label: string;
+  time_label: string;
+  time_display_action_id: string;
   time_zone_label: string;
   sunrise?: AirportSolarEventUiView | null;
   sunset?: AirportSolarEventUiView | null;
@@ -537,8 +537,8 @@ export type AirportInfoUiView = {
 };
 
 export type AirportSolarEventUiView = {
-  local_time_label: string;
-  utc_time_label: string;
+  time_label: string;
+  time_display_action_id: string;
   next_in_label?: string | null;
 };
 
@@ -575,6 +575,7 @@ export type AirportRunwayPatternUiView = {
 export type MapSelectionDetailStatus = {
   text: string;
   color_key: string;
+  action_id?: string | null;
 };
 
 export type MapSelectionNavigationAction =
@@ -737,7 +738,7 @@ export interface UiSession {
   altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
   performAltitudePlannerAction(actionUid: string): Promise<UiSessionSnapshot>;
   setAltitudePlannerDepartureInput(field: "time" | "when", input: string): Promise<UiSessionSnapshot>;
-  toggleAltitudePlannerDepartureTimeBasis(): Promise<UiSessionSnapshot>;
+  performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
@@ -924,6 +925,10 @@ type WasmModule = {
     sessionHandle: number,
     commandJson: string,
     nowEpochMs: bigint,
+  ): Promise<string> | string;
+  perform_time_display_action_in_session(
+    sessionHandle: number,
+    actionId: string,
   ): Promise<string> | string;
   query_flight_plan_in_session(sessionHandle: number, queryJson: string): Promise<string> | string;
   perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
@@ -1458,8 +1463,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           input,
         });
       },
-      toggleAltitudePlannerDepartureTimeBasis: async () => {
-        return performFlightPlanCommand({ kind: "toggle_altitude_planner_departure_time_basis" });
+      performTimeDisplayAction: async (actionId) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.perform_time_display_action_in_session(handle, actionId),
+        );
+        return snapshot;
       },
       performStatusAction: async (actionId) => {
         snapshot = await runSessionMutation(() =>
@@ -2067,6 +2075,7 @@ async function loadBestAvailableAdapterUncached(
     "configure_platform_capabilities_in_session",
     "should_prepare_live_feed_resource",
     "perform_flight_plan_command_in_session",
+    "perform_time_display_action_in_session",
     "query_flight_plan_in_session",
     "perform_status_action_in_session",
     "set_situation_in_session_paged",

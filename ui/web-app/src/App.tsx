@@ -3958,6 +3958,13 @@ export default function App() {
               "select_procedure_at_row",
             );
           }}
+          onTimeDisplayAction={async (actionId) => {
+            if (!uiSession) return;
+            applySessionSnapshot(
+              await uiSession.performTimeDisplayAction(actionId),
+              "time_display_mode",
+            );
+          }}
         />
       </div>
 
@@ -3989,8 +3996,8 @@ export default function App() {
           onToggleDepartureTimeBasis={async () => {
             if (!uiSession) return;
             applySessionSnapshot(
-              await uiSession.toggleAltitudePlannerDepartureTimeBasis(),
-              "altitude_planner_departure_basis",
+              await uiSession.performTimeDisplayAction(planUiState.altitude_planner.departure.time_display_action_id),
+              "time_display_mode",
             );
           }}
         />
@@ -4110,6 +4117,13 @@ export default function App() {
           onOpenPlan={() => navigateToPage("plan")}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
+          onTimeDisplayAction={async (actionId) => {
+            if (!uiSession) return;
+            applySessionSnapshot(
+              await uiSession.performTimeDisplayAction(actionId),
+              "time_display_mode",
+            );
+          }}
         />
       </div>
       <div className={`pageLayer${page === "settings" ? " isActive" : ""}`} aria-hidden={page !== "settings"}>
@@ -4392,7 +4406,7 @@ function MapPage(props: {
     point: ScreenPoint;
     result: MapSelectionQueryResult;
     selectedItem: MapSelectionItem | null;
-    detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string } | null } | { kind: "weather"; detail: WeatherDetailUiView } | { kind: "airport"; detail: AirportInfoUiView } | null;
+    detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string; action_id?: string | null } | null } | { kind: "weather"; detail: WeatherDetailUiView } | { kind: "airport"; detail: AirportInfoUiView } | null;
   } | null>(null);
   const [hoverWeather, setHoverWeather] = useState<{
     stationId: string;
@@ -6474,6 +6488,42 @@ function MapPage(props: {
     return null;
   }
 
+  async function toggleOpenMapSelectionTimeDisplay(actionId: string) {
+    if (!uiSession || !mapSelection) return;
+    const previous = mapSelection;
+    const selectedItemId = previous.selectedItem?.id ?? null;
+    props.onSessionSnapshot(
+      await uiSession.performTimeDisplayAction(actionId),
+      "time_display_mode",
+    );
+    const result = await uiSession.queryMapSelection(
+      viewportRef.current,
+      surfaceSize.width,
+      surfaceSize.height,
+      { lat: previous.result.click_lat, lon: previous.result.click_lon },
+    );
+    const selectedItem = mapSelectionItemById(result, selectedItemId);
+    const detailAction = selectedItem?.actions.find((action) =>
+      action.detail_status?.action_id === actionId && action.detail_text,
+    );
+    setMapSelection((current) => {
+      if (!current || current.result.click_lat !== previous.result.click_lat || current.result.click_lon !== previous.result.click_lon) {
+        return current;
+      }
+      return {
+        ...current,
+        result,
+        selectedItem,
+        detailModal: detailAction?.detail_text ? {
+          kind: "text",
+          title: detailAction.detail_title ?? detailAction.label,
+          text: detailAction.detail_text,
+          status: detailAction.detail_status,
+        } : current.detailModal,
+      };
+    });
+  }
+
   function handleMetarHoverEnter(event: React.PointerEvent<SVGGElement>, feature: VisibleMetarFeature) {
     if (
       event.pointerType !== "mouse" ||
@@ -6685,6 +6735,12 @@ function MapPage(props: {
           edgeColumnCount={flightDataBannerEdgeColumnCount}
           edgeLayout={flightDataBannerEdgeLayout}
           lowered={statusControlDockLowered}
+          onAction={(actionId) => {
+            if (!uiSession) return;
+            void uiSession.performTimeDisplayAction(actionId).then((snapshot) => {
+              props.onSessionSnapshot(snapshot, "time_display_mode");
+            });
+          }}
         />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {mapSelection ? (
@@ -6693,12 +6749,31 @@ function MapPage(props: {
             {mapSelection.detailModal?.kind === "weather" ? (
               <WeatherDetailModal detail={mapSelection.detailModal.detail} />
             ) : mapSelection.detailModal?.kind === "airport" ? (
-              <AirportInfoModal detail={mapSelection.detailModal.detail} />
+              <AirportInfoModal
+                detail={mapSelection.detailModal.detail}
+                onTimeDisplayAction={async (actionId) => {
+                  if (!uiSession) return;
+                  const airportId = mapSelection.detailModal?.kind === "airport"
+                    ? mapSelection.detailModal.detail.airport_id
+                    : null;
+                  if (!airportId) return;
+                  props.onSessionSnapshot(
+                    await uiSession.performTimeDisplayAction(actionId),
+                    "time_display_mode",
+                  );
+                  const detail = await uiSession.airportInfo(airportId);
+                  setMapSelection((current) => current?.detailModal?.kind === "airport"
+                    && current.detailModal.detail.airport_id === airportId
+                    ? { ...current, detailModal: { kind: "airport", detail } }
+                    : current);
+                }}
+              />
             ) : mapSelection.detailModal ? (
               <MapSelectionDetailModal
                 title={mapSelection.detailModal.title}
                 text={mapSelection.detailModal.text}
                 status={mapSelection.detailModal.status}
+                onTimeDisplayAction={toggleOpenMapSelectionTimeDisplay}
               />
             ) : (
               <MapSelectionTray
@@ -7709,6 +7784,7 @@ function FlightDataBanner(props: {
   edgeColumnCount?: number;
   edgeLayout?: boolean;
   lowered?: boolean;
+  onAction: (actionId: string) => void;
 }) {
   const cells = props.banner.cells;
   if (cells.length === 0) {
@@ -7725,7 +7801,24 @@ function FlightDataBanner(props: {
       aria-label="Flight data"
     >
       {cells.map((cell) => (
-        <div key={cell.id} className="flightDataCell">
+        <div
+          key={cell.id}
+          className={`flightDataCell${cell.action_id ? " isActionable" : ""}`}
+          role={cell.action_id ? "button" : undefined}
+          tabIndex={cell.action_id ? 0 : undefined}
+          onPointerDown={cell.action_id ? stopPointer : undefined}
+          onPointerUp={cell.action_id ? stopPointer : undefined}
+          onClick={cell.action_id ? (event) => {
+            event.stopPropagation();
+            props.onAction(cell.action_id!);
+          } : undefined}
+          onKeyDown={cell.action_id ? (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              props.onAction(cell.action_id!);
+            }
+          } : undefined}
+        >
           <FlightDataCellContents cell={cell} />
         </div>
       ))}
@@ -8383,7 +8476,6 @@ function AltitudePlannerPage(props: {
               <button
                 type="button"
                 className="trayButton altitudePlannerDepartureBasis"
-                disabled={!planner.departure.enabled}
                 onMouseDown={() => { suppressDepartureBlurSubmit.current = true; }}
                 onClick={toggleDepartureTimeBasis}
               >
@@ -8510,6 +8602,7 @@ function FlightPlanPage(props: {
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null) => void | Promise<void>;
+  onTimeDisplayAction: (actionId: string) => Promise<void>;
 }) {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
@@ -9118,7 +9211,21 @@ function FlightPlanPage(props: {
               <div className="planTable" ref={structuredTableRef}>
                 <div className="planHeader planWaypointCell">Waypoint</div>
                 {planDataColumns.map((column) => (
-                  <div key={column.id} className="planHeader">{column.label}</div>
+                  <div
+                    key={column.id}
+                    className={`planHeader${column.action_id ? " isActionable" : ""}`}
+                    role={column.action_id ? "button" : undefined}
+                    tabIndex={column.action_id ? 0 : undefined}
+                    onClick={column.action_id ? () => void props.onTimeDisplayAction(column.action_id!) : undefined}
+                    onKeyDown={column.action_id ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        void props.onTimeDisplayAction(column.action_id!);
+                      }
+                    } : undefined}
+                  >
+                    {column.label}
+                  </div>
                 ))}
                 {displayRows.map((row) => {
                   const procedureGroupCell = row.rowKind === "group" && row.componentKind === "procedure";
@@ -9207,12 +9314,22 @@ function FlightPlanPage(props: {
                           key={`${row.id}:data:${planDataColumns[cellIndex]?.id ?? cellIndex}`}
                           className={[
                             "planCell",
+                            cell.action_id ? "isActionable" : "",
                             row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
                             row.rowKind === "summary" ? "planSummaryCell" : "",
                             cell.estimate_kind === "modeled" ? "isModeled" : "",
                             cell.tone === "passed" ? "isPassed" : "",
                             cell.tone === "active" ? "isActive" : "",
                           ].filter(Boolean).join(" ")}
+                          onClick={cell.action_id ? () => void props.onTimeDisplayAction(cell.action_id!) : undefined}
+                          role={cell.action_id ? "button" : undefined}
+                          tabIndex={cell.action_id ? 0 : undefined}
+                          onKeyDown={cell.action_id ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              void props.onTimeDisplayAction(cell.action_id!);
+                            }
+                          } : undefined}
                         >
                           {cell.value ?? "\u2014"}
                         </div>
@@ -9796,7 +9913,18 @@ function FlightPlanPage(props: {
         <>
           <TrayScrim ariaLabel="Close airport info" onClose={() => setFlightPlanAirportInfoModal(null)} />
           {flightPlanAirportInfoModal.detail ? (
-            <AirportInfoModal detail={flightPlanAirportInfoModal.detail} />
+            <AirportInfoModal
+              detail={flightPlanAirportInfoModal.detail}
+              onTimeDisplayAction={async (actionId) => {
+                const airportId = flightPlanAirportInfoModal.airportId;
+                await props.onTimeDisplayAction(actionId);
+                if (!props.uiSession) return;
+                const detail = await props.uiSession.airportInfo(airportId);
+                setFlightPlanAirportInfoModal((current) => current?.airportId === airportId
+                  ? { airportId, detail, error: null }
+                  : current);
+              }}
+            />
           ) : (
             <MapSelectionDetailModal
               title={flightPlanAirportInfoModal.airportId}
@@ -10406,7 +10534,8 @@ function MapSelectionTray(props: {
 function MapSelectionDetailModal(props: {
   title: string;
   text: string;
-  status?: { text: string; color_key: string } | null;
+  status?: { text: string; color_key: string; action_id?: string | null } | null;
+  onTimeDisplayAction?: (actionId: string) => void | Promise<void>;
 }) {
   return (
     <section
@@ -10423,8 +10552,17 @@ function MapSelectionDetailModal(props: {
       <div className="mapSelectionDetailTitle">{props.title}</div>
       {props.status ? (
         <div
-          className="mapSelectionDetailStatus"
+          className={`mapSelectionDetailStatus${props.status.action_id ? " isActionable" : ""}`}
           style={{ color: aviationThemeColor(props.status.color_key) }}
+          role={props.status.action_id ? "button" : undefined}
+          tabIndex={props.status.action_id ? 0 : undefined}
+          onClick={props.status.action_id ? () => void props.onTimeDisplayAction?.(props.status!.action_id!) : undefined}
+          onKeyDown={props.status.action_id ? (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void props.onTimeDisplayAction?.(props.status!.action_id!);
+            }
+          } : undefined}
         >
           {props.status.text}
         </div>
@@ -10515,7 +10653,10 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
   );
 }
 
-function AirportInfoModal(props: { detail: AirportInfoUiView }) {
+function AirportInfoModal(props: {
+  detail: AirportInfoUiView;
+  onTimeDisplayAction: (actionId: string) => void | Promise<void>;
+}) {
   const { detail } = props;
   return (
     <section
@@ -10540,20 +10681,26 @@ function AirportInfoModal(props: { detail: AirportInfoUiView }) {
             label="Traffic pattern altitude"
             value={`${detail.traffic_pattern_altitude_label} ${detail.traffic_pattern_altitude_source}`}
           />
-          <AirportInfoFact label="Time at airport" value={`${detail.local_time_label}  ${detail.utc_time_label}`} />
+          <AirportInfoFact
+            label="Time at airport"
+            value={detail.time_label}
+            onClick={() => props.onTimeDisplayAction(detail.time_display_action_id)}
+          />
           <AirportInfoFact label="Time zone" value={detail.time_zone_label} />
           {detail.sunrise ? (
             <AirportInfoFact
               label="Sunrise"
-              value={`${detail.sunrise.local_time_label}  ${detail.sunrise.utc_time_label}`}
+              value={detail.sunrise.time_label}
               nextIn={detail.sunrise.next_in_label}
+              onClick={() => props.onTimeDisplayAction(detail.sunrise!.time_display_action_id)}
             />
           ) : null}
           {detail.sunset ? (
             <AirportInfoFact
               label="Sunset"
-              value={`${detail.sunset.local_time_label}  ${detail.sunset.utc_time_label}`}
+              value={detail.sunset.time_label}
               nextIn={detail.sunset.next_in_label}
+              onClick={() => props.onTimeDisplayAction(detail.sunset!.time_display_action_id)}
             />
           ) : null}
         </div>
@@ -10604,11 +10751,23 @@ function AirportInfoFact(props: {
   label: string;
   value: ReactNode;
   nextIn?: string | null;
+  onClick?: () => void;
 }) {
   return (
     <div className="airportInfoFact">
       <div className="airportInfoFactLabel">{props.label}</div>
-      <div className="airportInfoFactValue">
+      <div
+        className={`airportInfoFactValue${props.onClick ? " isActionable" : ""}`}
+        role={props.onClick ? "button" : undefined}
+        tabIndex={props.onClick ? 0 : undefined}
+        onClick={props.onClick}
+        onKeyDown={props.onClick ? (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            props.onClick?.();
+          }
+        } : undefined}
+      >
         {props.value}
         {props.nextIn ? <span className="airportInfoNextEvent">◷ {props.nextIn}</span> : null}
       </div>
@@ -12223,6 +12382,7 @@ function DataStatusPage(props: {
   onOpenPlan: () => void;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
+  onTimeDisplayAction: (actionId: string) => void | Promise<void>;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -12252,7 +12412,12 @@ function DataStatusPage(props: {
         </header>
         <div className="dataStatusPageRows">
           {[props.dataSourcesRow, ...props.state.rows].map((row) => (
-            <DataStatusPageRowArticle key={row.id} row={row} nowMs={nowMs} />
+            <DataStatusPageRowArticle
+              key={row.id}
+              row={row}
+              nowMs={nowMs}
+              onTimeDisplayAction={props.onTimeDisplayAction}
+            />
           ))}
         </div>
       </div>
@@ -12263,6 +12428,7 @@ function DataStatusPage(props: {
 function DataStatusPageRowArticle(props: {
   row: UiDataStatusPageState["rows"][number];
   nowMs: number;
+  onTimeDisplayAction: (actionId: string) => void | Promise<void>;
 }) {
   const { row, nowMs } = props;
   return (
@@ -12277,7 +12443,20 @@ function DataStatusPageRowArticle(props: {
           {row.facts.map((fact) => (
             <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
               <dt>{fact.label}</dt>
-              <dd>{renderDataStatusFactValue(fact, nowMs)}</dd>
+              <dd
+                className={fact.action_id ? "isActionable" : undefined}
+                role={fact.action_id ? "button" : undefined}
+                tabIndex={fact.action_id ? 0 : undefined}
+                onClick={fact.action_id ? () => void props.onTimeDisplayAction(fact.action_id!) : undefined}
+                onKeyDown={fact.action_id ? (event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void props.onTimeDisplayAction(fact.action_id!);
+                  }
+                } : undefined}
+              >
+                {renderDataStatusFactValue(fact, nowMs)}
+              </dd>
             </div>
           ))}
         </dl>

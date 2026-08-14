@@ -785,6 +785,9 @@ internal fun ChartsPage(
                 surfaceSize = surfaceSize,
                 situationDockTopPadding = situationDockTopPadding,
                 uiTheme = uiTheme,
+                onAction = { actionId ->
+                    applySessionCommand { uiSession.performTimeDisplayAction(actionId) }
+                },
                 modifier = Modifier.align(if (surfaceSize.width > surfaceSize.height) Alignment.TopEnd else Alignment.TopCenter),
             )
         }

@@ -69,6 +69,12 @@
     "FlightDataCell": {
       "additionalProperties": false,
       "properties": {
+        "action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "estimate_kind": {
           "$ref": "#/$defs/FlightEstimateKind"
         },
@@ -105,6 +111,12 @@
     "FlightDataColumn": {
       "additionalProperties": false,
       "properties": {
+        "action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
@@ -349,6 +361,12 @@
     "UiDataStatusPageFact": {
       "additionalProperties": false,
       "properties": {
+        "action_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "label": {
           "type": "string"
         },

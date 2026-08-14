@@ -774,6 +774,7 @@ data class WireMapSelectionAction(
 data class WireMapSelectionDetailStatus(
     val text: String,
     val color_key: String,
+    val action_id: String? = null,
 )
 
 @Serializable
@@ -1201,6 +1202,7 @@ data class WireAltitudePlannerDepartureEditorUiView(
     val time_label: String,
     val time_value: String,
     val basis_label: String,
+    val time_display_action_id: String,
     val when_label: String,
     val when_value: String,
     val when_suffix: String,
@@ -1265,8 +1267,8 @@ data class WireAirportInfoUiView(
     val elevation_label: String,
     val traffic_pattern_altitude_label: String,
     val traffic_pattern_altitude_source: String,
-    val local_time_label: String,
-    val utc_time_label: String,
+    val time_label: String,
+    val time_display_action_id: String,
     val time_zone_label: String,
     val sunrise: WireAirportSolarEventUiView? = null,
     val sunset: WireAirportSolarEventUiView? = null,
@@ -1277,8 +1279,8 @@ data class WireAirportInfoUiView(
 
 @Serializable
 data class WireAirportSolarEventUiView(
-    val local_time_label: String,
-    val utc_time_label: String,
+    val time_label: String,
+    val time_display_action_id: String,
     val next_in_label: String? = null,
 )
 

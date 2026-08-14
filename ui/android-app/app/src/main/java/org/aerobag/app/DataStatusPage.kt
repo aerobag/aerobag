@@ -359,6 +359,7 @@ internal fun DataStatusPage(
     onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
+    onTimeDisplayAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -437,7 +438,11 @@ internal fun DataStatusPage(
                 verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
             ) {
                 lazyGridItems(listOf(dataSourcesRow) + state.rows, key = { it.id }) { row ->
-                    DataStatusPageRowCard(row = row, nowMs = nowMs)
+                    DataStatusPageRowCard(
+                        row = row,
+                        nowMs = nowMs,
+                        onTimeDisplayAction = onTimeDisplayAction,
+                    )
                 }
             }
         }
@@ -448,6 +453,7 @@ internal fun DataStatusPage(
 private fun DataStatusPageRowCard(
     row: UiDataStatusPageRow,
     nowMs: Long,
+    onTimeDisplayAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val accentColor = statusSeverityColors(row.severity, uiTheme.controls).second
@@ -517,6 +523,7 @@ private fun DataStatusPageRowCard(
                             DataStatusFactView(
                                 fact = fact,
                                 nowMs = nowMs,
+                                onTimeDisplayAction = onTimeDisplayAction,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -565,6 +572,7 @@ internal fun dataSourcesStatusRow(
             UiDataStatusPageFact(
                 label = "Cycle Data",
                 value = cycleDataBaseUrl,
+                actionId = null,
                 linkUrl = cycleDataBaseUrl,
                 timeUtc = null,
                 timeDisplay = null,
@@ -572,6 +580,7 @@ internal fun dataSourcesStatusRow(
             UiDataStatusPageFact(
                 label = "Live Feeds",
                 value = liveFeedsStatusUrl,
+                actionId = null,
                 linkUrl = liveFeedsStatusUrl,
                 timeUtc = null,
                 timeDisplay = null,
@@ -584,19 +593,23 @@ internal fun dataSourcesStatusRow(
 private fun DataStatusFactView(
     fact: UiDataStatusPageFact,
     nowMs: Long,
+    onTimeDisplayAction: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val uriHandler = LocalUriHandler.current
+    val uiTheme = LocalAerobagUiTheme.current
     val textColor = Color(0xFF101820)
     val value = dataStatusFactDisplayValue(fact, nowMs)
     Column(
         modifier = modifier
             .fillMaxWidth()
             .then(
-                if (fact.linkUrl.isNullOrBlank()) {
-                    Modifier
-                } else {
+                if (!fact.linkUrl.isNullOrBlank()) {
                     Modifier.clickable { uriHandler.openUri(fact.linkUrl) }
+                } else if (fact.actionId != null) {
+                    Modifier.clickable { onTimeDisplayAction(fact.actionId) }
+                } else {
+                    Modifier
                 },
             ),
         verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -619,10 +632,14 @@ private fun DataStatusFactView(
                 lineHeight = DataStatusPageFactTextSize * 1.18f,
                 fontWeight = FontWeight.ExtraBold,
             ),
-            color = textColor,
+            color = if (fact.actionId == null) textColor else uiTheme.aviation.classBDBlue,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            textDecoration = if (fact.linkUrl.isNullOrBlank()) TextDecoration.None else TextDecoration.Underline,
+            textDecoration = if (fact.linkUrl.isNullOrBlank() && fact.actionId == null) {
+                TextDecoration.None
+            } else {
+                TextDecoration.Underline
+            },
         )
     }
 }

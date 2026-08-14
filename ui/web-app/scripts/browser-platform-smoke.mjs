@@ -50,6 +50,8 @@ try {
   progress("waiting for map");
   await acceptDisclaimerIfPresent(page);
   const mapRect = await waitForMap(page);
+  progress("checking shared time-display actions");
+  const timeDisplay = await verifyTimeDisplayActions(page);
   progress("checking rotated raster coverage");
   const rotatedRaster = await verifyRotatedRasterCoverage(page, args.screenshot);
   progress("clicking map");
@@ -67,7 +69,7 @@ try {
   }
 
   process.stdout.write(
-    `browser platform smoke passed: ${JSON.stringify({ rotatedRaster, selection })}\n`,
+    `browser platform smoke passed: ${JSON.stringify({ timeDisplay, rotatedRaster, selection })}\n`,
   );
 } finally {
   await browser?.close();
@@ -140,6 +142,90 @@ async function waitForMap(page) {
     `timed out waiting for map surface; diagnostics=${JSON.stringify(page.diagnostics.slice(-10))}`,
     200,
   );
+}
+
+async function verifyTimeDisplayActions(page) {
+  const bannerLocal = await waitFor(
+    async () => await page.evaluate(`(() => {
+      const cell = [...document.querySelectorAll('.flightDataCell')]
+        .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.startsWith('ETA '));
+      if (!(cell instanceof HTMLElement)
+        || cell.getAttribute('role') !== 'button'
+        || getComputedStyle(cell).pointerEvents !== 'auto') return null;
+      return cell.querySelector('.flightDataLabel')?.textContent?.trim() ?? null;
+    })()`),
+    10000,
+    "ETA flight-data cell did not become a clickable core action",
+    100,
+  );
+  if (bannerLocal.includes('LCL')) {
+    throw new Error(`ETA flight-data cell exposed generic local label: ${bannerLocal}`);
+  }
+  await page.evaluate(`(() => {
+    const cell = [...document.querySelectorAll('.flightDataCell')]
+      .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.startsWith('ETA '));
+    cell?.click();
+  })()`);
+  const bannerZulu = await waitFor(
+    async () => await page.evaluate(`(() => [...document.querySelectorAll('.flightDataCell')]
+      .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.trim() === 'ETA Z')
+      ?.querySelector('.flightDataLabel')?.textContent?.trim() ?? null)()`),
+    10000,
+    "ETA flight-data action did not switch the shared mode to Zulu",
+    100,
+  );
+  await page.evaluate(`(() => {
+    const cell = [...document.querySelectorAll('.flightDataCell')]
+      .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.trim() === 'ETA Z');
+    cell?.click();
+  })()`);
+  await waitFor(
+    async () => await page.evaluate(`(() => [...document.querySelectorAll('.flightDataCell')]
+      .some((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.trim() === ${JSON.stringify(bannerLocal)}))()`),
+    10000,
+    "ETA flight-data action did not restore local mode",
+    100,
+  );
+
+  await page.evaluate(`document.querySelector('[aria-label="Primary navigation"] [data-testid="nav-cdi"]')?.click()`);
+  const columnLocal = await waitFor(
+    async () => await page.evaluate(`(() => {
+      const header = [...document.querySelectorAll('.planHeader.isActionable')]
+        .find((candidate) => candidate.textContent?.startsWith('ETA '));
+      return header?.textContent?.trim() ?? null;
+    })()`),
+    10000,
+    "flight-plan ETA column did not expose the shared time action",
+    100,
+  );
+  await page.evaluate(`(() => {
+    const header = [...document.querySelectorAll('.planHeader.isActionable')]
+      .find((candidate) => candidate.textContent?.startsWith('ETA '));
+    header?.click();
+  })()`);
+  const columnZulu = await waitFor(
+    async () => await page.evaluate(`(() => [...document.querySelectorAll('.planHeader.isActionable')]
+      .find((candidate) => candidate.textContent?.trim() === 'ETA Z')?.textContent?.trim() ?? null)()`),
+    10000,
+    "flight-plan ETA column action did not switch the shared mode to Zulu",
+    100,
+  );
+  await page.evaluate(`(() => {
+    const header = [...document.querySelectorAll('.planHeader.isActionable')]
+      .find((candidate) => candidate.textContent?.trim() === 'ETA Z');
+    header?.click();
+  })()`);
+  await waitFor(
+    async () => await page.evaluate(`(() => [...document.querySelectorAll('.planHeader.isActionable')]
+      .some((candidate) => candidate.textContent?.trim() === ${JSON.stringify(columnLocal)}))()`),
+    10000,
+    "flight-plan ETA column action did not restore local mode",
+    100,
+  );
+  await page.evaluate(`document.querySelector('[data-testid="page-button-return-chart"]')?.click()`);
+  await waitForMap(page);
+
+  return { bannerLocal, bannerZulu, columnLocal, columnZulu };
 }
 
 async function installSyntheticGeolocation(page) {

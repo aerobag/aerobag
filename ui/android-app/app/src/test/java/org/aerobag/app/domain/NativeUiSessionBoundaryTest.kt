@@ -151,8 +151,8 @@ class NativeUiSessionBoundaryTest {
             runnerSource.split("fetchResource = fetchResource").size - 1 >= 4,
         )
         assertTrue(
-            "Raw clicks, search inspection, and the selection perf path must use the normalized fetcher.",
-            mapSource.split("fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)").size - 1 == 4,
+            "Raw clicks, time-display refresh, search inspection, and the selection perf path must use the normalized fetcher.",
+            mapSource.split("fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)").size - 1 == 5,
         )
     }
 

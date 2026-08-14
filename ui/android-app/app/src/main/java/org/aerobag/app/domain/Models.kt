@@ -274,6 +274,7 @@ data class AltitudePlannerDepartureEditorUiView(
     val timeLabel: String,
     val timeValue: String,
     val basisLabel: String,
+    val timeDisplayActionId: String,
     val whenLabel: String,
     val whenValue: String,
     val whenSuffix: String,
@@ -326,8 +327,8 @@ data class AirportInfoUiView(
     val elevationLabel: String,
     val trafficPatternAltitudeLabel: String,
     val trafficPatternAltitudeSource: String,
-    val localTimeLabel: String,
-    val utcTimeLabel: String,
+    val timeLabel: String,
+    val timeDisplayActionId: String,
     val timeZoneLabel: String,
     val sunrise: AirportSolarEventUiView?,
     val sunset: AirportSolarEventUiView?,
@@ -337,8 +338,8 @@ data class AirportInfoUiView(
 )
 
 data class AirportSolarEventUiView(
-    val localTimeLabel: String,
-    val utcTimeLabel: String,
+    val timeLabel: String,
+    val timeDisplayActionId: String,
     val nextInLabel: String?,
 )
 
@@ -405,6 +406,7 @@ data class FlightDataCell(
     val id: String,
     val label: String,
     val value: String?,
+    val actionId: String? = null,
     val tone: String = "planned",
     val estimateKind: String = "basic",
 )
@@ -412,6 +414,7 @@ data class FlightDataCell(
 data class FlightDataColumn(
     val id: String,
     val label: String,
+    val actionId: String? = null,
 )
 
 data class FlightDataBannerModel(

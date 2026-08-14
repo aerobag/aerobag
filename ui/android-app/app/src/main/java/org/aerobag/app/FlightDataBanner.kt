@@ -62,6 +62,7 @@ internal fun FlightDataBanner(
     situationDockTopPadding: Dp,
     uiTheme: UiTheme,
     modifier: Modifier = Modifier,
+    onAction: (String) -> Unit,
 ) {
     val cells = banner.cells
     if (cells.isEmpty() || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -98,7 +99,15 @@ internal fun FlightDataBanner(
             rows.forEach { columnCells ->
                 Column(verticalArrangement = Arrangement.spacedBy(FlightDataGap)) {
                     columnCells.forEach { cell ->
-                        FlightDataBannerCell(cell, uiTheme, FlightDataCellMinWidth, cellHeight)
+                        FlightDataBannerCell(
+                            cell,
+                            uiTheme,
+                            FlightDataCellMinWidth,
+                            cellHeight,
+                            modifier = cell.actionId?.let { actionId ->
+                                Modifier.clickable { onAction(actionId) }
+                            } ?: Modifier,
+                        )
                     }
                 }
             }
@@ -132,7 +141,15 @@ internal fun FlightDataBanner(
                     horizontalArrangement = Arrangement.spacedBy(FlightDataGap, Alignment.CenterHorizontally),
                 ) {
                     rowCells.forEach { cell ->
-                        FlightDataBannerCell(cell, uiTheme, cellWidth, cellHeight)
+                        FlightDataBannerCell(
+                            cell,
+                            uiTheme,
+                            cellWidth,
+                            cellHeight,
+                            modifier = cell.actionId?.let { actionId ->
+                                Modifier.clickable { onAction(actionId) }
+                            } ?: Modifier,
+                        )
                     }
                 }
             }

@@ -328,11 +328,22 @@ import kotlin.math.sin
 
 
 @Composable
-internal fun PlanHeaderRow(columns: List<FlightDataColumn>) {
+internal fun PlanHeaderRow(
+    columns: List<FlightDataColumn>,
+    onDataColumnAction: (String) -> Unit,
+) {
     Row(horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         PlanCell("Waypoint", Modifier.width(ThumbSize * 2.5f), isHeader = true)
         columns.forEach { column ->
-            PlanCell(column.label, Modifier.weight(1f), isHeader = true)
+            PlanCell(
+                column.label,
+                Modifier
+                    .weight(1f)
+                    .then(column.actionId?.let { actionId ->
+                        Modifier.clickable { onDataColumnAction(actionId) }
+                    } ?: Modifier),
+                isHeader = true,
+            )
         }
     }
 }

@@ -123,7 +123,7 @@ fn ui_session_exposes_coordinator_state_explicitly() {
         "cycle_product_freshness",
         "wall_clock_epoch_ms",
         "altitude_planner_wind_selection",
-        "altitude_planner_departure_time_basis",
+        "time_display_mode",
     ] {
         assert!(
             coordinator.contains(field),
@@ -1228,6 +1228,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "select_map_family_in_session",
         "perform_map_selection_action_in_session",
         "perform_flight_plan_command_in_session",
+        "perform_time_display_action_in_session",
         "query_flight_plan_in_session",
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",
@@ -1270,6 +1271,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "selectMapFamilyInSessionJson",
         "performMapSelectionActionInSessionJson",
         "performFlightPlanCommandInSessionJson",
+        "performTimeDisplayActionInSessionJson",
         "queryFlightPlanInSessionJson",
         "syncGuidanceGeometryInSessionJson",
         "projectFlightPlanRouteInSessionJson",

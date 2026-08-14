@@ -43,6 +43,8 @@ pub struct FlightDataCell {
     pub id: String,
     pub label: String,
     pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
     #[serde(default, skip_serializing_if = "FlightDataCellTone::is_planned")]
     pub tone: FlightDataCellTone,
     #[serde(default, skip_serializing_if = "FlightEstimateKind::is_basic")]
@@ -55,6 +57,8 @@ pub struct FlightDataCell {
 pub struct FlightDataColumn {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +135,8 @@ pub enum UiDataStatusPageTimeDisplay {
 pub struct UiDataStatusPageFact {
     pub label: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

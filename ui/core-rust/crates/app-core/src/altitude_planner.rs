@@ -11,7 +11,7 @@ pub use app_ui_contracts::session::FlightEstimateKind;
 
 use crate::{
     great_circle_distance_nm, great_circle_intermediate, initial_course_deg, FlightDataCell,
-    FlightPlanRowId, LatLon,
+    FlightPlanRowId, LatLon, TimeDisplayMode,
 };
 
 const MAX_INTEGRATION_STEP_NM: f64 = 1.0;
@@ -44,14 +44,6 @@ pub enum AltitudePlannerControlId {
     WindModel,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AltitudePlannerDepartureTimeBasis {
-    #[default]
-    Local,
-    Utc,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AltitudePlannerDepartureInputField {
@@ -65,6 +57,7 @@ pub struct AltitudePlannerDepartureEditorUiView {
     pub time_label: String,
     pub time_value: String,
     pub basis_label: String,
+    pub time_display_action_id: String,
     pub when_label: String,
     pub when_value: String,
     pub when_suffix: String,
@@ -168,7 +161,7 @@ pub struct AltitudePlannerUiInput {
     pub departure_time_epoch_ms: Option<i64>,
     pub effective_departure_time_epoch_ms: i64,
     pub now_epoch_ms: i64,
-    pub departure_time_basis: AltitudePlannerDepartureTimeBasis,
+    pub time_display_mode: TimeDisplayMode,
     pub local_time_zone: Tz,
     pub forecast: Option<AltitudePlannerForecastUiView>,
     pub wind_fallback: Option<AltitudePlannerWindFallback>,
@@ -210,7 +203,7 @@ impl Default for AltitudePlannerUiInput {
             departure_time_epoch_ms: None,
             effective_departure_time_epoch_ms: 0,
             now_epoch_ms: 0,
-            departure_time_basis: AltitudePlannerDepartureTimeBasis::Local,
+            time_display_mode: TimeDisplayMode::Local,
             local_time_zone: chrono_tz::UTC,
             forecast: None,
             wind_fallback: None,
@@ -313,12 +306,12 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     "Currently available forecast product valid from {}, flight starts at {}. Using NO-WIND model.",
                     format_planner_clock(
                         *valid_from_epoch_ms,
-                        input.departure_time_basis,
+                        input.time_display_mode,
                         input.local_time_zone,
                     ),
                     format_planner_clock(
                         *flight_start_epoch_ms,
-                        input.departure_time_basis,
+                        input.time_display_mode,
                         input.local_time_zone,
                     ),
                 )
@@ -327,12 +320,12 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     "Currently available forecast product valid until {}, flight extends until {}. Using NO-WIND model.",
                     format_planner_clock(
                         *valid_through_epoch_ms,
-                        input.departure_time_basis,
+                        input.time_display_mode,
                         input.local_time_zone,
                     ),
                     format_planner_clock(
                         *flight_end_epoch_ms,
-                        input.departure_time_basis,
+                        input.time_display_mode,
                         input.local_time_zone,
                     ),
                 )
@@ -396,20 +389,14 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
     }
 }
 
-fn format_planner_clock(
-    epoch_ms: i64,
-    basis: AltitudePlannerDepartureTimeBasis,
-    local_time_zone: Tz,
-) -> String {
-    let time =
-        DateTime::<Utc>::from_timestamp_millis(epoch_ms).unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
-    match basis {
-        AltitudePlannerDepartureTimeBasis::Local => time
-            .with_timezone(&local_time_zone)
-            .format("%H%M %Z")
-            .to_string(),
-        AltitudePlannerDepartureTimeBasis::Utc => time.format("%H%MZ").to_string(),
-    }
+fn format_planner_clock(epoch_ms: i64, basis: TimeDisplayMode, local_time_zone: Tz) -> String {
+    crate::format_time_of_day(
+        epoch_ms,
+        basis,
+        local_time_zone,
+        crate::TimeOfDayStyle::Compact,
+    )
+    .with_basis()
 }
 
 fn project_departure_editor(
@@ -417,20 +404,14 @@ fn project_departure_editor(
 ) -> AltitudePlannerDepartureEditorUiView {
     let effective = DateTime::<Utc>::from_timestamp_millis(input.effective_departure_time_epoch_ms)
         .unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
-    let time_value = match input.departure_time_basis {
-        AltitudePlannerDepartureTimeBasis::Local => effective
-            .with_timezone(&input.local_time_zone)
-            .format("%H%M")
-            .to_string(),
-        AltitudePlannerDepartureTimeBasis::Utc => effective.format("%H%M").to_string(),
-    };
-    let basis_label = match input.departure_time_basis {
-        AltitudePlannerDepartureTimeBasis::Local => format!(
-            "Local ({})",
-            effective.with_timezone(&input.local_time_zone).format("%Z")
-        ),
-        AltitudePlannerDepartureTimeBasis::Utc => "Z".to_string(),
-    };
+    let displayed_time = crate::format_time_of_day(
+        effective.timestamp_millis(),
+        input.time_display_mode,
+        input.local_time_zone,
+        crate::TimeOfDayStyle::Compact,
+    );
+    let time_value = displayed_time.value;
+    let basis_label = displayed_time.basis_label;
     let when_value = input
         .departure_time_epoch_ms
         .map(|epoch_ms| format_departure_offset(epoch_ms - input.now_epoch_ms))
@@ -446,6 +427,7 @@ fn project_departure_editor(
         time_label: String::new(),
         time_value,
         basis_label,
+        time_display_action_id: crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
         when_label: "=".to_string(),
         when_value,
         when_suffix: "from now".to_string(),
@@ -485,14 +467,14 @@ fn format_departure_offset(offset_ms: i64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedAltitudePlannerDeparture {
     pub departure_time_epoch_ms: Option<i64>,
-    pub basis: AltitudePlannerDepartureTimeBasis,
+    pub basis: TimeDisplayMode,
 }
 
 pub fn parse_altitude_planner_departure_input(
     field: AltitudePlannerDepartureInputField,
     raw_input: &str,
     now_epoch_ms: i64,
-    current_basis: AltitudePlannerDepartureTimeBasis,
+    current_basis: TimeDisplayMode,
     local_time_zone: Tz,
 ) -> Result<ParsedAltitudePlannerDeparture, String> {
     match field {
@@ -509,7 +491,7 @@ pub fn parse_altitude_planner_departure_input(
 fn parse_departure_clock_time(
     raw_input: &str,
     now_epoch_ms: i64,
-    current_basis: AltitudePlannerDepartureTimeBasis,
+    current_basis: TimeDisplayMode,
     local_time_zone: Tz,
 ) -> Result<ParsedAltitudePlannerDeparture, String> {
     let mut value = raw_input.trim().to_ascii_lowercase();
@@ -521,13 +503,13 @@ fn parse_departure_clock_time(
     }
     let basis = if let Some(stripped) = value.strip_suffix("local") {
         value = stripped.trim_end().to_string();
-        AltitudePlannerDepartureTimeBasis::Local
+        TimeDisplayMode::Local
     } else if let Some(stripped) = value.strip_suffix("lcl") {
         value = stripped.trim_end().to_string();
-        AltitudePlannerDepartureTimeBasis::Local
+        TimeDisplayMode::Local
     } else if let Some(stripped) = value.strip_suffix('z') {
         value = stripped.trim_end().to_string();
-        AltitudePlannerDepartureTimeBasis::Utc
+        TimeDisplayMode::Utc
     } else {
         current_basis
     };
@@ -535,13 +517,11 @@ fn parse_departure_clock_time(
     let now = DateTime::<Utc>::from_timestamp_millis(now_epoch_ms)
         .ok_or_else(|| "current time is outside the supported UTC range".to_string())?;
     let candidate = match basis {
-        AltitudePlannerDepartureTimeBasis::Utc => {
+        TimeDisplayMode::Utc => {
             next_utc_clock_occurrence(now, time).map(|value| value.timestamp_millis())?
         }
-        AltitudePlannerDepartureTimeBasis::Local => {
-            next_local_clock_occurrence(now, time, local_time_zone)
-                .map(|value| value.timestamp_millis())?
-        }
+        TimeDisplayMode::Local => next_local_clock_occurrence(now, time, local_time_zone)
+            .map(|value| value.timestamp_millis())?,
     };
     Ok(ParsedAltitudePlannerDeparture {
         departure_time_epoch_ms: Some(candidate),
@@ -1357,12 +1337,12 @@ mod tests {
             AltitudePlannerDepartureInputField::Time,
             "1400 lcl",
             now,
-            AltitudePlannerDepartureTimeBasis::Utc,
+            TimeDisplayMode::Utc,
             chrono_tz::America::Los_Angeles,
         )
         .expect("local clock time");
 
-        assert_eq!(parsed.basis, AltitudePlannerDepartureTimeBasis::Local);
+        assert_eq!(parsed.basis, TimeDisplayMode::Local);
         assert_eq!(
             parsed.departure_time_epoch_ms,
             Some(utc("2026-08-05T21:00:00Z").timestamp_millis())
@@ -1372,7 +1352,7 @@ mod tests {
             AltitudePlannerDepartureInputField::Time,
             "1100 local",
             now,
-            AltitudePlannerDepartureTimeBasis::Utc,
+            TimeDisplayMode::Utc,
             chrono_tz::America::Los_Angeles,
         )
         .expect("tomorrow's local clock time");
@@ -1389,11 +1369,11 @@ mod tests {
             AltitudePlannerDepartureInputField::Time,
             "1100Z",
             now,
-            AltitudePlannerDepartureTimeBasis::Local,
+            TimeDisplayMode::Local,
             chrono_tz::America::Los_Angeles,
         )
         .expect("Zulu clock time");
-        assert_eq!(explicit_z.basis, AltitudePlannerDepartureTimeBasis::Utc);
+        assert_eq!(explicit_z.basis, TimeDisplayMode::Utc);
         assert_eq!(
             explicit_z.departure_time_epoch_ms,
             Some(utc("2026-08-05T11:00:00Z").timestamp_millis())
@@ -1403,7 +1383,7 @@ mod tests {
             AltitudePlannerDepartureInputField::Time,
             "0800",
             now,
-            AltitudePlannerDepartureTimeBasis::Utc,
+            TimeDisplayMode::Utc,
             chrono_tz::America::Los_Angeles,
         )
         .expect("bare time in current Z basis");
@@ -1420,12 +1400,12 @@ mod tests {
             AltitudePlannerDepartureInputField::When,
             "1h 30m",
             now,
-            AltitudePlannerDepartureTimeBasis::Local,
+            TimeDisplayMode::Local,
             chrono_tz::America::Los_Angeles,
         )
         .expect("relative departure");
 
-        assert_eq!(parsed.basis, AltitudePlannerDepartureTimeBasis::Local);
+        assert_eq!(parsed.basis, TimeDisplayMode::Local);
         assert_eq!(
             parsed.departure_time_epoch_ms,
             Some(utc("2026-08-05T20:45:30Z").timestamp_millis())
@@ -1435,7 +1415,7 @@ mod tests {
                 AltitudePlannerDepartureInputField::When,
                 "now",
                 now,
-                AltitudePlannerDepartureTimeBasis::Local,
+                TimeDisplayMode::Local,
                 chrono_tz::America::Los_Angeles,
             )
             .expect("dynamic now")
@@ -1447,7 +1427,7 @@ mod tests {
             AltitudePlannerDepartureInputField::When,
             "-3",
             now,
-            AltitudePlannerDepartureTimeBasis::Local,
+            TimeDisplayMode::Local,
             chrono_tz::America::Los_Angeles,
         )
         .expect("unitless negative hours");
@@ -1460,7 +1440,7 @@ mod tests {
             AltitudePlannerDepartureInputField::When,
             "−1h 30m",
             now,
-            AltitudePlannerDepartureTimeBasis::Local,
+            TimeDisplayMode::Local,
             chrono_tz::America::Los_Angeles,
         )
         .expect("Unicode-minus past departure");
@@ -1478,13 +1458,13 @@ mod tests {
             now_epoch_ms: now,
             departure_time_epoch_ms: Some(departure),
             effective_departure_time_epoch_ms: departure,
-            departure_time_basis: AltitudePlannerDepartureTimeBasis::Local,
+            time_display_mode: TimeDisplayMode::Local,
             local_time_zone: chrono_tz::America::Los_Angeles,
             ..AltitudePlannerUiInput::default()
         });
         assert_eq!(local.departure.time_value, "1515");
         assert_eq!(local.departure.time_label, "");
-        assert_eq!(local.departure.basis_label, "Local (PDT)");
+        assert_eq!(local.departure.basis_label, "PDT");
         assert_eq!(local.departure.when_label, "=");
         assert_eq!(local.departure.when_value, "3h 15m");
         assert!(!local.departure.when_is_past);
@@ -1493,7 +1473,7 @@ mod tests {
             now_epoch_ms: now,
             departure_time_epoch_ms: Some(departure),
             effective_departure_time_epoch_ms: departure,
-            departure_time_basis: AltitudePlannerDepartureTimeBasis::Utc,
+            time_display_mode: TimeDisplayMode::Utc,
             local_time_zone: chrono_tz::America::Los_Angeles,
             ..AltitudePlannerUiInput::default()
         });
@@ -1792,7 +1772,7 @@ mod tests {
             plan_destination_altitude_available: true,
             wind_model_label: "FORECAST".to_string(),
             wind_model_selected: true,
-            departure_time_basis: AltitudePlannerDepartureTimeBasis::Utc,
+            time_display_mode: TimeDisplayMode::Utc,
             forecast: Some(AltitudePlannerForecastUiView {
                 summary: "ordinary provenance".to_string(),
             }),
@@ -1820,7 +1800,7 @@ mod tests {
         let pacific = "America/Los_Angeles".parse::<Tz>().expect("time zone");
 
         assert_eq!(
-            format_planner_clock(epoch_ms, AltitudePlannerDepartureTimeBasis::Local, pacific),
+            format_planner_clock(epoch_ms, TimeDisplayMode::Local, pacific),
             "0500 PDT"
         );
     }

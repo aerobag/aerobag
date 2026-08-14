@@ -138,4 +138,19 @@ describe("map interaction boundaries", () => {
     expect(hoverPanelBlocks).toContain("transform: none");
     expect(hoverPanelBlocks).toContain("pointer-events: none");
   });
+
+  it("keeps core-actionable ETA cells and the ETA column header clickable", () => {
+    const actionableFlightDataBlocks = [...styles.matchAll(/\.flightDataCell\.isActionable\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(actionableFlightDataBlocks).toContain("pointer-events: auto");
+
+    const banner = sourceBetween("function FlightDataBanner", "function FlightDataCellContents");
+    expect(banner).toContain("cell.action_id");
+    expect(banner).toContain("props.onAction(cell.action_id!)");
+
+    const planHeaders = sourceBetween("planDataColumns.map((column)", "displayRows.map((row)");
+    expect(planHeaders).toContain("column.action_id");
+    expect(planHeaders).toContain("props.onTimeDisplayAction(column.action_id!)");
+  });
 });

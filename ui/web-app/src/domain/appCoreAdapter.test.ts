@@ -148,6 +148,7 @@ describe("loadBestAvailableAdapter", () => {
       select_map_family_in_session: async () => snapshotJson,
       select_raster_map_in_session: async () => snapshotJson,
       perform_flight_plan_command_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      perform_time_display_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       query_flight_plan_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       perform_status_action_in_session: async () => snapshotJson,
       sync_guidance_geometry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

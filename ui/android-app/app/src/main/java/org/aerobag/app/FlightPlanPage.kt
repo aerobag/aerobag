@@ -758,7 +758,14 @@ internal fun FlightPlanPage(
                         .testTag(planStateTestTag),
                     verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                 ) {
-                    PlanHeaderRow(planUiState.dataColumns)
+                    PlanHeaderRow(
+                        columns = planUiState.dataColumns,
+                        onDataColumnAction = { actionId ->
+                            applySessionCommand("performTimeDisplayAction") {
+                                uiSession.performTimeDisplayAction(actionId)
+                            }
+                        },
+                    )
                     LazyColumn(
                         state = planListState,
                         modifier = Modifier
@@ -787,6 +794,11 @@ internal fun FlightPlanPage(
                                             procedurePicker = null
                                             airportInsert = null
                                         },
+                                        onDataCellAction = { actionId ->
+                                            applySessionCommand("performTimeDisplayAction") {
+                                                uiSession.performTimeDisplayAction(actionId)
+                                            }
+                                        },
                                     )
                                 }
 
@@ -807,6 +819,11 @@ internal fun FlightPlanPage(
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
+                                        },
+                                        onDataCellAction = { actionId ->
+                                            applySessionCommand("performTimeDisplayAction") {
+                                                uiSession.performTimeDisplayAction(actionId)
+                                            }
                                         },
                                         children = block.children,
                                         selectedWaypointUid = selectedWaypointUid,

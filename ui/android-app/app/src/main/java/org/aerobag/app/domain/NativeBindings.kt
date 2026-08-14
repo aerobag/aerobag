@@ -343,6 +343,11 @@ interface NativeBridge {
         actionId: String,
     ): String
 
+    fun performTimeDisplayActionInSessionJson(
+        handle: Long,
+        actionId: String,
+    ): String
+
     fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
@@ -922,6 +927,11 @@ object NativeBindings : NativeBridge {
     external override fun maintainNavDbInSessionAtEpochMsJson(handle: Long, epochMs: Long): String
 
     external override fun performStatusActionInSessionJson(
+        handle: Long,
+        actionId: String,
+    ): String
+
+    external override fun performTimeDisplayActionInSessionJson(
         handle: Long,
         actionId: String,
     ): String

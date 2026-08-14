@@ -46,7 +46,7 @@ pub(crate) struct FlightPlanLiveData {
     pub ownship_altitude_ft: Option<f64>,
     pub now_epoch_ms: Option<i64>,
     pub local_time_zone: Tz,
-    pub departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
+    pub time_display_mode: crate::TimeDisplayMode,
 }
 
 impl Default for FlightPlanLiveData {
@@ -56,7 +56,7 @@ impl Default for FlightPlanLiveData {
             ownship_altitude_ft: None,
             now_epoch_ms: None,
             local_time_zone: chrono_tz::UTC,
-            departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
+            time_display_mode: crate::TimeDisplayMode::Local,
         }
     }
 }
@@ -1743,6 +1743,8 @@ fn modeled_prediction_for_selection(
 fn planner_forecast_ui(
     atmosphere: PlannerAtmosphereSelection<'_>,
     now_epoch_ms: i64,
+    time_display_mode: crate::TimeDisplayMode,
+    local_time_zone: chrono_tz::Tz,
 ) -> Option<crate::AltitudePlannerForecastUiView> {
     let manifest = atmosphere.manifest?;
     let cycle = DateTime::<Utc>::from_timestamp_millis(manifest.cycle_time_epoch_ms)?;
@@ -1767,9 +1769,24 @@ fn planner_forecast_ui(
         summary: format!(
             "NOAA {} cycle {} ({age}); valid {} through {}.",
             manifest.model_id.to_uppercase(),
-            cycle.format("%m/%d %H:%MZ"),
-            valid_from.format("%m/%d %H:%MZ"),
-            valid_through.format("%m/%d %H:%MZ"),
+            crate::format_dated_time(
+                cycle.timestamp_millis(),
+                time_display_mode,
+                local_time_zone,
+                crate::DatedTimeStyle::MonthDayMinute,
+            ),
+            crate::format_dated_time(
+                valid_from.timestamp_millis(),
+                time_display_mode,
+                local_time_zone,
+                crate::DatedTimeStyle::MonthDayMinute,
+            ),
+            crate::format_dated_time(
+                valid_through.timestamp_millis(),
+                time_display_mode,
+                local_time_zone,
+                crate::DatedTimeStyle::MonthDayMinute,
+            ),
         ),
     })
 }
@@ -1987,9 +2004,14 @@ pub(crate) fn flight_plan_ui_projection(
         departure_time_epoch_ms: plan.planned_departure_time_epoch_ms,
         effective_departure_time_epoch_ms: departure_epoch_ms,
         now_epoch_ms,
-        departure_time_basis: live_data.departure_time_basis,
+        time_display_mode: live_data.time_display_mode,
         local_time_zone: live_data.local_time_zone,
-        forecast: planner_forecast_ui(atmosphere, now_epoch_ms),
+        forecast: planner_forecast_ui(
+            atmosphere,
+            now_epoch_ms,
+            live_data.time_display_mode,
+            live_data.local_time_zone,
+        ),
         wind_fallback: modeled_prediction.as_ref().and_then(|prediction| {
             planner_wind_fallback(prediction, atmosphere, departure_epoch_ms)
         }),
@@ -2118,7 +2140,7 @@ pub(crate) fn flight_plan_ui_projection(
                 }),
         ));
     }
-    ui_state.data_columns = crate::flight_data::flight_plan_columns();
+    ui_state.data_columns = computer.flight_plan_columns();
     let pages = missing_pages.into_pages();
     if !pages.is_empty() {
         return Err(HadReadError::NeedPages(pages));
@@ -6175,7 +6197,7 @@ mod tests {
             crate::FlightDataComputer::default(),
             FlightPlanLiveData {
                 now_epoch_ms: Some(0),
-                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Utc,
+                time_display_mode: crate::TimeDisplayMode::Utc,
                 ..FlightPlanLiveData::default()
             },
             PlannerAtmosphereSelection::gfs(Some(&forecast), Some(&manifest)),
@@ -6204,7 +6226,7 @@ mod tests {
             plan,
             FlightPlanLiveData {
                 now_epoch_ms: Some(0),
-                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Utc,
+                time_display_mode: crate::TimeDisplayMode::Utc,
                 ..FlightPlanLiveData::default()
             },
             PlannerAtmosphereSelection::gfs(Some(&forecast), Some(&manifest)),
@@ -6242,7 +6264,7 @@ mod tests {
             crate::FlightDataComputer::default(),
             FlightPlanLiveData {
                 now_epoch_ms: Some(11 * 60 * 60 * 1_000),
-                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Utc,
+                time_display_mode: crate::TimeDisplayMode::Utc,
                 ..FlightPlanLiveData::default()
             },
             PlannerAtmosphereSelection::gfs(Some(&forecast), Some(&manifest)),
@@ -6272,6 +6294,8 @@ mod tests {
         let view = planner_forecast_ui(
             PlannerAtmosphereSelection::gfs(Some(&ConstantForecastAtmosphere), Some(&manifest)),
             5_400_000,
+            crate::TimeDisplayMode::Utc,
+            chrono_tz::UTC,
         )
         .expect("forecast provenance");
 

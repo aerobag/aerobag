@@ -261,6 +261,7 @@ pub(crate) enum CloudAction {
 pub struct CloudStatusFact {
     pub label: String,
     pub value: String,
+    pub time_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2976,16 +2977,19 @@ impl CloudEngine {
             facts.push(CloudStatusFact {
                 label: "Provider".to_string(),
                 value: provider.label().to_string(),
+                time_epoch_ms: None,
             });
         }
         facts.push(CloudStatusFact {
             label: "Sync Account".to_string(),
             value: if linked { "Linked" } else { "Not linked" }.to_string(),
+            time_epoch_ms: None,
         });
         if let Some(principal) = authorization.principal() {
             facts.push(CloudStatusFact {
                 label: "Authorized as".to_string(),
                 value: principal.display_label.clone(),
+                time_epoch_ms: None,
             });
         }
         if let Some(account) = self.persistent.account.as_ref() {
@@ -2993,17 +2997,20 @@ impl CloudEngine {
                 facts.push(CloudStatusFact {
                     label: "Generation".to_string(),
                     value: tip.generation.to_string(),
+                    time_epoch_ms: None,
                 });
             }
         }
         facts.push(CloudStatusFact {
             label: "Pending local records".to_string(),
             value: self.persistent.records.pending_keys.len().to_string(),
+            time_epoch_ms: None,
         });
         if let Some(last_success) = self.persistent.last_success_epoch_ms {
             facts.push(CloudStatusFact {
                 label: "Last provider success".to_string(),
                 value: format_epoch_ms_utc(last_success),
+                time_epoch_ms: Some(last_success),
             });
         }
 

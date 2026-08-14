@@ -54,6 +54,7 @@ pub mod situation;
 mod situation_controller;
 pub mod state;
 pub mod terrain;
+pub mod time_display;
 pub mod ui_work_scheduler;
 mod weather_controller;
 
@@ -68,8 +69,8 @@ pub use altitude_planner::{
     AircraftPerformanceProfile, AltitudeComparisonPanelUiView, AltitudeComparisonUiView,
     AltitudePlannerControlId, AltitudePlannerControlOptionUiView, AltitudePlannerControlUiView,
     AltitudePlannerDepartureEditorUiView, AltitudePlannerDepartureInputField,
-    AltitudePlannerDepartureTimeBasis, AltitudePlannerForecastUiView, AltitudePlannerUiInput,
-    AltitudePlannerUiView, AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
+    AltitudePlannerForecastUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
+    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
     AltitudePlannerWindFallback, AtmosphereModel, AtmosphereSample, CruisePerformancePoint,
     FlightEstimateKind, FlightPlanEstimateModeUiView, NoWindIsaAtmosphere,
     ParsedAltitudePlannerDeparture, PerformanceAirspeedBasis, TrajectoryLegPrediction,
@@ -298,14 +299,14 @@ pub use session::{
     nexrad_tile_bytes_in_session, pause_playback_in_session, perform_cloud_ui_action_in_session,
     perform_flight_plan_command_in_session, perform_map_selection_action_in_session,
     perform_ownship_text_action_in_session, perform_settings_action_in_session,
-    perform_status_action_in_session, play_playback_in_session, prepare_nexrad_tile_in_session,
-    project_flight_plan_route_in_session, push_situation_sample_in_session,
-    query_flight_plan_in_session, record_offline_package_preferences_in_session,
-    record_session_serialized_payload_bytes, refresh_live_feed_current_in_session,
-    register_ownship_source_in_session, render_terrain_overlay_tile_by_key_in_session,
-    render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
-    report_cloud_event_stream_event_in_session, report_live_feed_connection_event_in_session,
-    report_session_resource_failure_in_session,
+    perform_status_action_in_session, perform_time_display_action_in_session,
+    play_playback_in_session, prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
+    push_situation_sample_in_session, query_flight_plan_in_session,
+    record_offline_package_preferences_in_session, record_session_serialized_payload_bytes,
+    refresh_live_feed_current_in_session, register_ownship_source_in_session,
+    render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
+    render_terrain_overlay_tiles_in_session, report_cloud_event_stream_event_in_session,
+    report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,
     resolve_nav_db_artifact_candidates_in_session, restore_chart_page_state_in_session,
@@ -339,6 +340,10 @@ pub use terrain::{
     render_terrain_warning_rgba, schedule_terrain_overlay_frame, terrain_altitude_bucket_ft,
     TerrainOverlayQueryResult, TerrainOverlayScheduleDecision, TerrainOverlaySourceTile,
     TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
+};
+pub use time_display::{
+    format_dated_time, format_time_of_day, time_zone_label, DatedTimeStyle, TimeDisplayMode,
+    TimeOfDayDisplay, TimeOfDayStyle, TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
 };
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,

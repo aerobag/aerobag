@@ -374,6 +374,7 @@ data class MapSelectionAction(
 data class MapSelectionDetailStatus(
     val text: String,
     val colorKey: String,
+    val actionId: String?,
 )
 
 data class MapSelectionFlightPlanRowAction(
@@ -1344,11 +1345,10 @@ class NativeUiSession internal constructor(
         )
     }
 
-    fun toggleAltitudePlannerDepartureTimeBasis(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "toggleAltitudePlannerDepartureTimeBasis",
-            buildJsonObject { put("kind", "toggle_altitude_planner_departure_time_basis") },
-        )
+    fun performTimeDisplayAction(actionId: String): UiSessionSnapshot {
+        return runPagedSnapshot("performTimeDisplayAction") {
+            bridge.performTimeDisplayActionInSessionJson(handle, actionId)
+        }
     }
 
     fun performStatusAction(actionId: String): UiSessionSnapshot {
@@ -2525,6 +2525,7 @@ enum class UiDataStatusPageTimeDisplay {
 data class UiDataStatusPageFact(
     val label: String,
     val value: String,
+    val actionId: String?,
     val linkUrl: String?,
     val timeUtc: String?,
     val timeDisplay: UiDataStatusPageTimeDisplay?,
@@ -2738,6 +2739,7 @@ private fun WireUiDataStatusPageTimeDisplay.toUi() = when (this) {
 private fun WireUiDataStatusPageFact.toUi() = UiDataStatusPageFact(
     label = label,
     value = value,
+    actionId = actionId,
     linkUrl = linkUrl,
     timeUtc = timeUtc,
     timeDisplay = timeDisplay?.toUi(),
@@ -3229,6 +3231,7 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
 private fun WireMapSelectionDetailStatus.toUi() = MapSelectionDetailStatus(
     text = text,
     colorKey = color_key,
+    actionId = action_id,
 )
 
 private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(
@@ -3619,6 +3622,7 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
         timeLabel = departure.time_label,
         timeValue = departure.time_value,
         basisLabel = departure.basis_label,
+        timeDisplayActionId = departure.time_display_action_id,
         whenLabel = departure.when_label,
         whenValue = departure.when_value,
         whenSuffix = departure.when_suffix,
@@ -3676,6 +3680,7 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
         time_label = departure.timeLabel,
         time_value = departure.timeValue,
         basis_label = departure.basisLabel,
+        time_display_action_id = departure.timeDisplayActionId,
         when_label = departure.whenLabel,
         when_value = departure.whenValue,
         when_suffix = departure.whenSuffix,
@@ -3694,6 +3699,7 @@ private fun WireFlightDataCell.toUi() = FlightDataCell(
     id = id,
     label = label,
     value = value,
+    actionId = actionId,
     tone = tone?.name?.lowercase() ?: "planned",
     estimateKind = estimateKind?.name?.lowercase() ?: "basic",
 )
@@ -3702,6 +3708,7 @@ private fun FlightDataCell.toWire() = WireFlightDataCell(
     id = id,
     label = label,
     value = value,
+    actionId = actionId,
     tone = when (tone) {
         "planned" -> org.aerobag.app.generated.FlightDataCellTone.Planned
         "passed" -> org.aerobag.app.generated.FlightDataCellTone.Passed
@@ -3718,6 +3725,7 @@ private fun FlightDataCell.toWire() = WireFlightDataCell(
 private fun WireFlightDataColumn.toUi() = FlightDataColumn(
     id = id,
     label = label,
+    actionId = actionId,
 )
 
 private fun WireFlightDataBannerModel.toUi() = FlightDataBannerModel(
@@ -3727,6 +3735,7 @@ private fun WireFlightDataBannerModel.toUi() = FlightDataBannerModel(
 private fun FlightDataColumn.toWire() = WireFlightDataColumn(
     id = id,
     label = label,
+    actionId = actionId,
 )
 
 private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
@@ -3841,8 +3850,8 @@ private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
     elevationLabel = elevation_label,
     trafficPatternAltitudeLabel = traffic_pattern_altitude_label,
     trafficPatternAltitudeSource = traffic_pattern_altitude_source,
-    localTimeLabel = local_time_label,
-    utcTimeLabel = utc_time_label,
+    timeLabel = time_label,
+    timeDisplayActionId = time_display_action_id,
     timeZoneLabel = time_zone_label,
     sunrise = sunrise?.toUi(),
     sunset = sunset?.toUi(),
@@ -3852,8 +3861,8 @@ private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
 )
 
 private fun WireAirportSolarEventUiView.toUi() = AirportSolarEventUiView(
-    localTimeLabel = local_time_label,
-    utcTimeLabel = utc_time_label,
+    timeLabel = time_label,
+    timeDisplayActionId = time_display_action_id,
     nextInLabel = next_in_label,
 )
 

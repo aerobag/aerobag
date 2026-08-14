@@ -56,7 +56,7 @@ pub(crate) struct FlightPlanProjectionInputs {
     pub weather_revision: u64,
     pub aircraft_definitions_digest: [u8; 32],
     pub local_time_zone: chrono_tz::Tz,
-    pub departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
+    pub time_display_mode: crate::TimeDisplayMode,
 }
 
 #[derive(Debug, Clone)]
@@ -460,16 +460,19 @@ impl FlightPlanController {
                         private_aircraft_definitions,
                         plan.clone(),
                         ui_state,
-                        FlightDataComputer::with_clock(
+                        FlightDataComputer::with_fuel_flow_clock_and_time_display(
                             inputs.ownship_speed_kt,
+                            None,
                             Some(inputs.now_epoch_ms),
+                            inputs.time_display_mode,
+                            inputs.local_time_zone,
                         ),
                         FlightPlanLiveData {
                             ownship_position: inputs.ownship_position,
                             ownship_altitude_ft: inputs.ownship_altitude_ft,
                             now_epoch_ms: Some(inputs.now_epoch_ms),
                             local_time_zone: inputs.local_time_zone,
-                            departure_time_basis: inputs.departure_time_basis,
+                            time_display_mode: inputs.time_display_mode,
                         },
                         atmosphere,
                     )?;
@@ -858,7 +861,7 @@ mod tests {
             aircraft_definitions_digest: [0; 32],
             weather_revision: 0,
             local_time_zone: chrono_tz::UTC,
-            departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
+            time_display_mode: crate::TimeDisplayMode::Local,
         }
     }
 

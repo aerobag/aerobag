@@ -480,6 +480,7 @@ internal fun FlightPlanDataRow(
     modifier: Modifier = Modifier,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onWaypointClick: () -> Unit,
+    onDataCellAction: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
@@ -565,7 +566,11 @@ internal fun FlightPlanDataRow(
         row.dataCells.forEach { cell ->
             PlanCell(
                 cell.value ?: "—",
-                Modifier.weight(1f),
+                Modifier
+                    .weight(1f)
+                    .then(cell.actionId?.let { actionId ->
+                        Modifier.clickable { onDataCellAction(actionId) }
+                    } ?: Modifier),
                 cellHeight = cellHeight,
                 tone = cell.tone,
                 estimateKind = cell.estimateKind,
@@ -588,6 +593,7 @@ internal fun FlightPlanGroupBlock(
     children: List<Pair<Int, FlightPlanDisplayRow>>,
     selectedWaypointUid: String?,
     onChildClick: (FlightPlanDisplayRow) -> Unit,
+    onDataCellAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val groupOverhang = 8.dp
@@ -621,6 +627,7 @@ internal fun FlightPlanGroupBlock(
             selected = headerSelected,
             structuredRowBounds = structuredRowBounds,
             onWaypointClick = onHeaderClick,
+            onDataCellAction = onDataCellAction,
         )
         children.forEach { (_, childRow) ->
             FlightPlanDataRow(
@@ -628,6 +635,7 @@ internal fun FlightPlanGroupBlock(
                 selected = selectedWaypointUid == childRow.id,
                 structuredRowBounds = structuredRowBounds,
                 onWaypointClick = { onChildClick(childRow) },
+                onDataCellAction = onDataCellAction,
             )
         }
     }

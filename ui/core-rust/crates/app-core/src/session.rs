@@ -347,7 +347,7 @@ struct SessionCoordinatorModel {
     cycle_product_freshness: CycleProductFreshnessState,
     wall_clock_epoch_ms: i64,
     altitude_planner_wind_selection: AltitudePlannerWindSelection,
-    altitude_planner_departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
+    time_display_mode: crate::TimeDisplayMode,
 }
 
 struct SessionRuntime {
@@ -921,6 +921,8 @@ fn data_status_page_input(
         });
     DataStatusPageInput {
         now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+        time_display_mode: session.coordinator.time_display_mode,
+        local_time_zone: session_local_time_zone(session).unwrap_or(chrono_tz::UTC),
         client_build: session
             .coordinator
             .platform_capabilities
@@ -2041,7 +2043,7 @@ fn create_ui_session_inner(
                 weather_revision: 0,
                 aircraft_definitions_digest,
                 local_time_zone: chrono_tz::UTC,
-                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
+                time_display_mode: crate::TimeDisplayMode::Local,
             },
             crate::had_ops::PlannerAtmosphereSelection::no_wind(false),
         )
@@ -2173,7 +2175,7 @@ fn create_ui_session_inner(
             },
             wall_clock_epoch_ms,
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
-            altitude_planner_departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
+            time_display_mode: crate::TimeDisplayMode::Local,
         },
         projection_versions: SessionProjectionVersionState::default(),
         settings,
@@ -3810,7 +3812,6 @@ pub enum FlightPlanSessionCommand {
         field: crate::AltitudePlannerDepartureInputField,
         input: String,
     },
-    ToggleAltitudePlannerDepartureTimeBasis,
     ActivateNextLeg,
     StopNavigation,
     SuspendSequencing,
@@ -3897,9 +3898,6 @@ pub fn perform_flight_plan_command_in_session(
         FlightPlanSessionCommand::SetAltitudePlannerDepartureInput { field, input } => {
             set_altitude_planner_departure_input_in_session(handle, field, input)
         }
-        FlightPlanSessionCommand::ToggleAltitudePlannerDepartureTimeBasis => {
-            toggle_altitude_planner_departure_time_basis_in_session(handle)
-        }
         FlightPlanSessionCommand::ActivateNextLeg => activate_next_leg_in_session(handle),
         FlightPlanSessionCommand::StopNavigation => stop_navigation_in_session(handle),
         FlightPlanSessionCommand::SuspendSequencing => suspend_sequencing_in_session(handle),
@@ -3954,6 +3952,7 @@ fn airport_info_in_session(
         session_nav_kv_store(session)?,
         &airport_id,
         utc_from_epoch_ms(now_epoch_ms),
+        session.coordinator.time_display_mode,
     ) {
         Ok(view) => view,
         Err(HadReadError::NeedPages(pages)) => {
@@ -4017,7 +4016,7 @@ fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::Fli
         ownship_altitude_ft: ownship.pressure_altitude_ft.or(ownship.altitude_msl_ft),
         now_epoch_ms: Some(session.coordinator.wall_clock_epoch_ms),
         local_time_zone: session_local_time_zone(session).unwrap_or(chrono_tz::UTC),
-        departure_time_basis: session.coordinator.altitude_planner_departure_time_basis,
+        time_display_mode: session.coordinator.time_display_mode,
     }
 }
 
@@ -4209,7 +4208,7 @@ fn set_altitude_planner_departure_input_in_session(
         field,
         &input,
         session.coordinator.wall_clock_epoch_ms,
-        session.coordinator.altitude_planner_departure_time_basis,
+        session.coordinator.time_display_mode,
         session_local_time_zone(session)?,
     )
     .map_err(|message| AppError {
@@ -4218,38 +4217,31 @@ fn set_altitude_planner_departure_input_in_session(
     })?;
     let mut next = plan;
     next.planned_departure_time_epoch_ms = parsed.departure_time_epoch_ms;
-    let previous_basis = session.coordinator.altitude_planner_departure_time_basis;
-    session.coordinator.altitude_planner_departure_time_basis = parsed.basis;
+    let previous_basis = session.coordinator.time_display_mode;
+    session.coordinator.time_display_mode = parsed.basis;
     match commit_session_flight_plan_with_invalidations_outcome(session, next) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
-            session.coordinator.altitude_planner_departure_time_basis = previous_basis;
+            session.coordinator.time_display_mode = previous_basis;
             Err(error)
         }
     }
 }
 
-fn toggle_altitude_planner_departure_time_basis_in_session(
+pub fn perform_time_display_action_in_session(
     handle: u32,
+    action_id: String,
 ) -> AppResult<HadOperationOutcome> {
+    if action_id != crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unknown time-display action: {action_id}"),
+        });
+    }
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session_plan(session)?.guidance.is_some() {
-        return Err(AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: "active navigation always models departure from ownship now".to_string(),
-        });
-    }
-    session.coordinator.altitude_planner_departure_time_basis =
-        match session.coordinator.altitude_planner_departure_time_basis {
-            crate::AltitudePlannerDepartureTimeBasis::Local => {
-                crate::AltitudePlannerDepartureTimeBasis::Utc
-            }
-            crate::AltitudePlannerDepartureTimeBasis::Utc => {
-                crate::AltitudePlannerDepartureTimeBasis::Local
-            }
-        };
+    session.coordinator.time_display_mode = session.coordinator.time_display_mode.toggled();
     changed_session_update_outcome(session)
 }
 
@@ -8961,6 +8953,7 @@ fn materialize_map_selection_in_session(
         &mut availability,
         Some(session_wall_clock_utc(session)),
         local_time_zone,
+        session.coordinator.time_display_mode,
     );
     if !missing_pages.is_empty() {
         return Ok(MapSelectionMaterialization::NeedResources(
@@ -10522,7 +10515,7 @@ fn session_projection_dependencies(
         wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
         local_time_zone: capabilities.local_time_zone.clone(),
         wind_selection: session.coordinator.altitude_planner_wind_selection,
-        departure_time_basis: session.coordinator.altitude_planner_departure_time_basis,
+        time_display_mode: session.coordinator.time_display_mode,
     };
     let application = ApplicationProjectionDependencies {
         flight_data_banner: flight_data_banner.clone(),
@@ -11204,7 +11197,7 @@ fn project_session_app_ui_state(
             weather_revision,
             aircraft_definitions_digest,
             local_time_zone,
-            departure_time_basis: session.coordinator.altitude_planner_departure_time_basis,
+            time_display_mode: session.coordinator.time_display_mode,
         },
         atmosphere,
     )?;
@@ -11318,9 +11311,12 @@ fn project_flight_data_banner(
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
     let store = session.nav_data.store();
-    let flight_data_computer = crate::FlightDataComputer::with_clock(
+    let flight_data_computer = crate::FlightDataComputer::with_fuel_flow_clock_and_time_display(
         ownship.speed_kt,
+        None,
         Some(session.coordinator.wall_clock_epoch_ms),
+        session.coordinator.time_display_mode,
+        session_local_time_zone(session)?,
     );
 
     let altitude_ft = ownship.altitude_msl_ft.or(ownship.pressure_altitude_ft);
@@ -12729,8 +12725,7 @@ mod tests {
                 cycle_product_freshness: CycleProductFreshnessState::default(),
                 wall_clock_epoch_ms: 0,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
-                altitude_planner_departure_time_basis:
-                    crate::AltitudePlannerDepartureTimeBasis::Local,
+                time_display_mode: crate::TimeDisplayMode::Local,
             },
             projection_versions: SessionProjectionVersionState::default(),
             settings: SettingsController::default(),
@@ -15231,23 +15226,22 @@ mod tests {
                 Some(departure),
             );
             assert_eq!(
-                session.coordinator.altitude_planner_departure_time_basis,
-                crate::AltitudePlannerDepartureTimeBasis::Utc,
+                session.coordinator.time_display_mode,
+                crate::TimeDisplayMode::Utc,
             );
         }
 
-        perform_flight_plan_command_in_session(
+        perform_time_display_action_in_session(
             init.handle,
-            FlightPlanSessionCommand::ToggleAltitudePlannerDepartureTimeBasis,
-            utc("2026-05-21T12:00:45Z").timestamp_millis(),
+            crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
         )
         .expect("toggle departure display to local time");
         {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
             assert_eq!(
-                session.coordinator.altitude_planner_departure_time_basis,
-                crate::AltitudePlannerDepartureTimeBasis::Local,
+                session.coordinator.time_display_mode,
+                crate::TimeDisplayMode::Local,
             );
             assert_eq!(
                 session
@@ -25293,6 +25287,22 @@ mod tests {
             noon_utc,
         )
         .expect("create session");
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                local_time_zone: Some("America/Los_Angeles".to_string()),
+                client_build: Some(ClientBuildInfo {
+                    platform: "test".to_string(),
+                    version: "test".to_string(),
+                    built_at_utc: Some("2026-06-14T11:00:00Z".to_string()),
+                    commit: None,
+                    dirty: false,
+                }),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure device time zone");
         attach_isolated_test_nav_kv_store(init.handle, &store);
         let outcome =
             sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
@@ -25324,17 +25334,54 @@ mod tests {
         )
         .expect("push sample");
 
-        let banner_eta = snapshot
+        let local_banner_eta = snapshot
             .app_ui_state
             .flight_data_banner
             .cells
             .iter()
             .find(|cell| cell.id == "final_eta")
-            .and_then(|cell| cell.value.as_deref());
+            .expect("final ETA cell");
 
         assert!(
-            banner_eta.is_some(),
+            local_banner_eta.value.is_some(),
             "synced active geometry should produce final ETA"
+        );
+        assert_eq!(local_banner_eta.label, "ETA PDT");
+        let local_built = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "client")
+            .and_then(|row| row.facts.iter().find(|fact| fact.label == "Built"))
+            .expect("local build time");
+
+        let zulu_snapshot = snapshot_from_outcome(
+            perform_time_display_action_in_session(
+                init.handle,
+                crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
+            )
+            .expect("global time display remains toggleable during active guidance"),
+        );
+        let zulu_banner_eta = zulu_snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .expect("Zulu final ETA cell");
+        assert_eq!(zulu_banner_eta.label, "ETA Z");
+        assert_ne!(zulu_banner_eta.value, local_banner_eta.value);
+        let zulu_built = zulu_snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "client")
+            .and_then(|row| row.facts.iter().find(|fact| fact.label == "Built"))
+            .expect("Zulu build time");
+        assert_ne!(zulu_built.value, local_built.value);
+        assert_eq!(
+            zulu_built.action_id.as_deref(),
+            Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
         );
     }
 

@@ -2360,7 +2360,12 @@ internal data class UiInvalidationRevisions(
 }
 
 @Composable
-private fun FlightPlanOverlayHost(controller: FlightPlanOverlayController) {
+private fun FlightPlanOverlayHost(
+    controller: FlightPlanOverlayController,
+    uiSession: NativeUiSession,
+    onSessionSnapshot: (UiSessionSnapshot) -> Unit,
+) {
+    val airportInfoScope = rememberCoroutineScope()
     val presentation = controller.state.present()
     val weatherDetail = presentation.weatherDetail
     val airportInfo = presentation.airportInfo
@@ -2384,6 +2389,29 @@ private fun FlightPlanOverlayHost(controller: FlightPlanOverlayController) {
                 airportInfo?.detail != null ->
                     AirportInfoModal(
                         detail = airportInfo.detail,
+                        onTimeDisplayAction = { actionId ->
+                            val airportId = airportInfo.airportId
+                            airportInfoScope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.Default) {
+                                        uiSession.performTimeDisplayAction(actionId)
+                                    }
+                                }.onSuccess(onSessionSnapshot)
+                                    .onFailure { return@launch }
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        uiSession.airportInfo(airportId)
+                                    }
+                                }.onSuccess { detail ->
+                                    controller.dispatch(
+                                        FlightPlanOverlayAction.ResolveAirportInfo(
+                                            airportId,
+                                            detail,
+                                        ),
+                                    )
+                                }
+                            }
+                        },
                         modifier = Modifier
                             .align(Alignment.Center)
                             .zIndex(OverlayPlaneModal),
@@ -3403,6 +3431,11 @@ internal fun AerobagApp(
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
+                        onTimeDisplayAction = { actionId ->
+                            applySessionCommand("performTimeDisplayAction") {
+                                uiSession.performTimeDisplayAction(actionId)
+                            }
+                        },
                     )
                 }
                 AppPage.Settings -> {
@@ -3445,7 +3478,11 @@ internal fun AerobagApp(
                     )
                 }
             }
-            FlightPlanOverlayHost(flightPlanOverlayController)
+            FlightPlanOverlayHost(
+                flightPlanOverlayController,
+                uiSession,
+                ::applySessionSnapshot,
+            )
             if (sessionSnapshot.disclaimerState.required) {
                 DisclaimerConsentModal(
                     state = sessionSnapshot.disclaimerState,

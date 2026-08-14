@@ -4,10 +4,7 @@
 
 use app_ui_contracts::session::{ClientBuildInfo, UiChartPageState, UiDebugState};
 
-use crate::{
-    session::AltitudePlannerWindSelection, AltitudePlannerDepartureTimeBasis, ContentPolicy,
-    ContentReport,
-};
+use crate::{session::AltitudePlannerWindSelection, ContentPolicy, ContentReport, TimeDisplayMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SessionProjectionVersions {
@@ -37,7 +34,7 @@ pub(crate) struct FlightDataBannerProjectionDependencies {
     pub wall_clock_epoch_ms: i64,
     pub local_time_zone: Option<String>,
     pub wind_selection: AltitudePlannerWindSelection,
-    pub departure_time_basis: AltitudePlannerDepartureTimeBasis,
+    pub time_display_mode: TimeDisplayMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,7 +217,7 @@ mod tests {
             wall_clock_epoch_ms: 0,
             local_time_zone: None,
             wind_selection: AltitudePlannerWindSelection::NoWind,
-            departure_time_basis: AltitudePlannerDepartureTimeBasis::Local,
+            time_display_mode: TimeDisplayMode::Local,
         }
     }
 

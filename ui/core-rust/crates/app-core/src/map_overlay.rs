@@ -1350,6 +1350,8 @@ pub struct MapSelectionAction {
 pub struct MapSelectionDetailStatus {
     pub text: String,
     pub color_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3048,6 +3050,7 @@ pub fn query_map_selection_for_surface(
         airport_plate_availability,
         weather_age_reference_utc,
         chrono_tz::UTC,
+        crate::TimeDisplayMode::Utc,
     )
 }
 
@@ -3069,6 +3072,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
     local_time_zone: Tz,
+    time_display_mode: crate::TimeDisplayMode,
 ) -> MapSelectionQueryResult {
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
@@ -3227,6 +3231,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
                     area,
                     weather_age_reference_utc,
                     local_time_zone,
+                    time_display_mode,
                 ));
             }
         }
@@ -4433,6 +4438,7 @@ fn selection_item_for_tfr(
     area: &TfrAreaPayload,
     reference_utc: Option<DateTime<Utc>>,
     local_time_zone: Tz,
+    time_display_mode: crate::TimeDisplayMode,
 ) -> MapSelectionItem {
     let notam = area.notam.as_ref();
     let timing = tfr_timing_state(area, reference_utc);
@@ -4449,7 +4455,8 @@ fn selection_item_for_tfr(
         notam.and_then(tfr_notam_detail_text),
         "No TFR text is available for this area.",
     );
-    text_action.detail_status = tfr_timing_detail_status(area, reference_utc, local_time_zone);
+    text_action.detail_status =
+        tfr_timing_detail_status(area, reference_utc, local_time_zone, time_display_mode);
     actions.push(text_action);
     MapSelectionItem {
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
@@ -4510,37 +4517,49 @@ fn tfr_timing_detail_status(
     area: &TfrAreaPayload,
     reference_utc: Option<DateTime<Utc>>,
     local_time_zone: Tz,
+    time_display_mode: crate::TimeDisplayMode,
 ) -> Option<MapSelectionDetailStatus> {
     let reference_utc = reference_utc.filter(|value| *value > DateTime::<Utc>::UNIX_EPOCH)?;
     let start_utc = tfr_effective_start_utc(area);
     let end_utc = tfr_effective_end_utc(area);
     let timing = tfr_timing_state(area, Some(reference_utc));
-    let text = if let Some(start_utc) = start_utc.filter(|start| *start > reference_utc) {
-        let starts_in_ms = start_utc
-            .signed_duration_since(reference_utc)
-            .num_milliseconds();
-        format!(
-            "Starts in {} ({})",
-            format_tfr_duration(starts_in_ms),
-            format_tfr_local_time(start_utc, local_time_zone),
-        )
-    } else if let Some(end_utc) = end_utc.filter(|end| *end > reference_utc) {
-        let ends_in_ms = end_utc
-            .signed_duration_since(reference_utc)
-            .num_milliseconds();
-        format!(
-            "Active now; ends in {} ({})",
-            format_tfr_duration(ends_in_ms),
-            format_tfr_local_time(end_utc, local_time_zone),
-        )
-    } else if end_utc.is_none() {
-        "Active now; no scheduled end".to_string()
-    } else {
-        "The published effective interval has ended".to_string()
-    };
+    let (text, action_id) =
+        if let Some(start_utc) = start_utc.filter(|start| *start > reference_utc) {
+            let starts_in_ms = start_utc
+                .signed_duration_since(reference_utc)
+                .num_milliseconds();
+            (
+                format!(
+                    "Starts in {} ({})",
+                    format_tfr_duration(starts_in_ms),
+                    format_tfr_time(start_utc, local_time_zone, time_display_mode),
+                ),
+                Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
+            )
+        } else if let Some(end_utc) = end_utc.filter(|end| *end > reference_utc) {
+            let ends_in_ms = end_utc
+                .signed_duration_since(reference_utc)
+                .num_milliseconds();
+            (
+                format!(
+                    "Active now; ends in {} ({})",
+                    format_tfr_duration(ends_in_ms),
+                    format_tfr_time(end_utc, local_time_zone, time_display_mode),
+                ),
+                Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
+            )
+        } else if end_utc.is_none() {
+            ("Active now; no scheduled end".to_string(), None)
+        } else {
+            (
+                "The published effective interval has ended".to_string(),
+                None,
+            )
+        };
     Some(MapSelectionDetailStatus {
         text,
         color_key: timing.style_key.to_string(),
+        action_id,
     })
 }
 
@@ -4564,11 +4583,17 @@ fn format_compact_time_unit(value: f64, suffix: &str) -> String {
     }
 }
 
-fn format_tfr_local_time(instant: DateTime<Utc>, local_time_zone: Tz) -> String {
-    instant
-        .with_timezone(&local_time_zone)
-        .format("%a %b %-d %-I:%M%P %Z")
-        .to_string()
+fn format_tfr_time(
+    instant: DateTime<Utc>,
+    local_time_zone: Tz,
+    time_display_mode: crate::TimeDisplayMode,
+) -> String {
+    crate::format_dated_time(
+        instant.timestamp_millis(),
+        time_display_mode,
+        local_time_zone,
+        crate::DatedTimeStyle::Friendly,
+    )
 }
 
 fn tfr_effective_start_utc(area: &TfrAreaPayload) -> Option<DateTime<Utc>> {
@@ -10081,6 +10106,7 @@ mod tests {
             &area,
             crate::freshness::parse_utc_instant("2026-07-11T12:30:00Z"),
             chrono_tz::America::Los_Angeles,
+            crate::TimeDisplayMode::Local,
         );
 
         assert_eq!(item.detail_text, None);
@@ -10101,6 +10127,7 @@ mod tests {
             Some(&MapSelectionDetailStatus {
                 text: "Active now; ends in 16d (Mon Jul 27 5:30am PDT)".to_string(),
                 color_key: TFR_ACTIVE_STYLE_KEY.to_string(),
+                action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
             })
         );
     }
@@ -10138,19 +10165,31 @@ mod tests {
         };
         let reference = crate::freshness::parse_utc_instant("2026-07-24T19:00:00Z");
         assert_eq!(
-            tfr_timing_detail_status(&area, reference, chrono_tz::America::Los_Angeles,),
+            tfr_timing_detail_status(
+                &area,
+                reference,
+                chrono_tz::America::Los_Angeles,
+                crate::TimeDisplayMode::Local,
+            ),
             Some(MapSelectionDetailStatus {
                 text: "Starts in 3d (Mon Jul 27 12:00pm PDT)".to_string(),
                 color_key: TFR_UPCOMING_STYLE_KEY.to_string(),
+                action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
             })
         );
 
         let within_one_hour = crate::freshness::parse_utc_instant("2026-07-27T18:30:00Z");
         assert_eq!(
-            tfr_timing_detail_status(&area, within_one_hour, chrono_tz::America::Los_Angeles,),
+            tfr_timing_detail_status(
+                &area,
+                within_one_hour,
+                chrono_tz::America::Los_Angeles,
+                crate::TimeDisplayMode::Local,
+            ),
             Some(MapSelectionDetailStatus {
                 text: "Starts in 30m (Mon Jul 27 12:00pm PDT)".to_string(),
                 color_key: TFR_ACTIVE_STYLE_KEY.to_string(),
+                action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
             })
         );
     }

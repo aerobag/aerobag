@@ -7,7 +7,7 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sunrise::{Coordinates, SolarDay, SolarEvent};
 
-use crate::{had_ops::HadReadError, NavKvLookup, NavKvStore};
+use crate::{had_ops::HadReadError, NavKvLookup, NavKvStore, TimeDisplayMode};
 
 // AIM 4-3-3 uses 1,000 AGL unless an altitude is established; the 1,500 AGL
 // large/turbine recommendation needs aircraft context this airport-only view lacks.
@@ -26,8 +26,8 @@ pub struct AirportInfoUiView {
     pub elevation_label: String,
     pub traffic_pattern_altitude_label: String,
     pub traffic_pattern_altitude_source: String,
-    pub local_time_label: String,
-    pub utc_time_label: String,
+    pub time_label: String,
+    pub time_display_action_id: String,
     pub time_zone_label: String,
     pub sunrise: Option<AirportSolarEventUiView>,
     pub sunset: Option<AirportSolarEventUiView>,
@@ -38,8 +38,8 @@ pub struct AirportInfoUiView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AirportSolarEventUiView {
-    pub local_time_label: String,
-    pub utc_time_label: String,
+    pub time_label: String,
+    pub time_display_action_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_in_label: Option<String>,
 }
@@ -140,6 +140,7 @@ pub(crate) fn airport_info(
     store: &NavKvStore,
     airport_id: &str,
     now: DateTime<Utc>,
+    time_display_mode: TimeDisplayMode,
 ) -> Result<AirportInfoUiView, HadReadError> {
     let record = read_airport_info_record(store, airport_id)?.ok_or_else(|| {
         HadReadError::Fatal(format!(
@@ -147,7 +148,7 @@ pub(crate) fn airport_info(
             airport_id.trim().to_ascii_uppercase()
         ))
     })?;
-    project_airport_info(record, now).map_err(HadReadError::Fatal)
+    project_airport_info(record, now, time_display_mode).map_err(HadReadError::Fatal)
 }
 
 pub(crate) fn airport_elevation_msl_ft(
@@ -174,6 +175,7 @@ fn read_airport_info_record(
 fn project_airport_info(
     record: AirportInfoRecord,
     now: DateTime<Utc>,
+    time_display_mode: TimeDisplayMode,
 ) -> Result<AirportInfoUiView, String> {
     if record.schema_version != 1 {
         return Err(format!(
@@ -203,6 +205,7 @@ fn project_airport_info(
         record.elevation_msl_ft,
         time_zone,
         now,
+        time_display_mode,
     );
     let standalone_runway_scale_ft = record
         .runways
@@ -253,8 +256,14 @@ fn project_airport_info(
         elevation_label,
         traffic_pattern_altitude_label,
         traffic_pattern_altitude_source,
-        local_time_label: local_now.format("%H:%M %Z").to_string(),
-        utc_time_label: now.format("%H%MZ").to_string(),
+        time_label: crate::format_time_of_day(
+            now.timestamp_millis(),
+            time_display_mode,
+            time_zone,
+            airport_time_style(time_display_mode),
+        )
+        .with_basis(),
+        time_display_action_id: crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
         time_zone_label: format!(
             "{} (UTC {})",
             local_now.format("%Z"),
@@ -315,6 +324,7 @@ fn solar_event_views(
     elevation_msl_ft: Option<f64>,
     time_zone: Tz,
     now: DateTime<Utc>,
+    time_display_mode: TimeDisplayMode,
 ) -> (
     Option<AirportSolarEventUiView>,
     Option<AirportSolarEventUiView>,
@@ -338,8 +348,12 @@ fn solar_event_views(
     let sunset_at = next_event(SolarEvent::Sunset);
     let next_at = [sunrise_at, sunset_at].into_iter().flatten().min();
     (
-        sunrise_at.map(|at| solar_event_ui_view(at, time_zone, now, next_at == Some(at))),
-        sunset_at.map(|at| solar_event_ui_view(at, time_zone, now, next_at == Some(at))),
+        sunrise_at.map(|at| {
+            solar_event_ui_view(at, time_zone, now, next_at == Some(at), time_display_mode)
+        }),
+        sunset_at.map(|at| {
+            solar_event_ui_view(at, time_zone, now, next_at == Some(at), time_display_mode)
+        }),
     )
 }
 
@@ -348,11 +362,25 @@ fn solar_event_ui_view(
     time_zone: Tz,
     now: DateTime<Utc>,
     is_next: bool,
+    time_display_mode: TimeDisplayMode,
 ) -> AirportSolarEventUiView {
     AirportSolarEventUiView {
-        local_time_label: at.with_timezone(&time_zone).format("%H:%M %Z").to_string(),
-        utc_time_label: at.format("%H%MZ").to_string(),
+        time_label: crate::format_time_of_day(
+            at.timestamp_millis(),
+            time_display_mode,
+            time_zone,
+            airport_time_style(time_display_mode),
+        )
+        .with_basis(),
+        time_display_action_id: crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
         next_in_label: is_next.then(|| format_duration_until(at - now)),
+    }
+}
+
+fn airport_time_style(time_display_mode: TimeDisplayMode) -> crate::TimeOfDayStyle {
+    match time_display_mode {
+        TimeDisplayMode::Local => crate::TimeOfDayStyle::Colon,
+        TimeDisplayMode::Utc => crate::TimeOfDayStyle::Compact,
     }
 }
 
@@ -778,10 +806,14 @@ mod tests {
     #[test]
     fn airport_info_projects_dst_solar_runway_and_derived_tpa_in_core() {
         let now = Utc.with_ymd_and_hms(2026, 7, 26, 2, 34, 0).unwrap();
-        let view = project_airport_info(sample_record(), now).expect("view");
+        let view =
+            project_airport_info(sample_record(), now, TimeDisplayMode::Local).expect("view");
 
-        assert_eq!(view.local_time_label, "19:34 PDT");
-        assert_eq!(view.utc_time_label, "0234Z");
+        assert_eq!(view.time_label, "19:34 PDT");
+        assert_eq!(
+            view.time_display_action_id,
+            crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+        );
         assert_eq!(view.time_zone_label, "PDT (UTC -0700)");
         assert_eq!(
             view.traffic_pattern_altitude_label,
@@ -931,7 +963,8 @@ mod tests {
             },
         });
 
-        let complex = project_airport_info(record.clone(), now).expect("complex view");
+        let complex = project_airport_info(record.clone(), now, TimeDisplayMode::Local)
+            .expect("complex view");
         assert!(complex.runway_diagram_complex);
         assert_eq!(complex.runways.len(), 3);
         assert!(
@@ -946,15 +979,16 @@ mod tests {
         assert!(east_center_x > west_center_x);
 
         record.runways[1].end_b.longitude = None;
-        let one_end_completed =
-            project_airport_info(record.clone(), now).expect("one-end-completed view");
+        let one_end_completed = project_airport_info(record.clone(), now, TimeDisplayMode::Local)
+            .expect("one-end-completed view");
         assert!(one_end_completed.runway_diagram_complex);
 
         record.runways[1].end_a.latitude = None;
         record.runways[1].end_a.longitude = None;
         record.runways[1].end_b.latitude = None;
         record.runways[1].end_b.longitude = None;
-        let arp_inferred = project_airport_info(record.clone(), now).expect("ARP-inferred view");
+        let arp_inferred = project_airport_info(record.clone(), now, TimeDisplayMode::Local)
+            .expect("ARP-inferred view");
         assert!(arp_inferred.runway_diagram_complex);
         let inferred_east_center_x = (arp_inferred.runways[0].diagram_end_a_x
             + arp_inferred.runways[0].diagram_end_b_x)
@@ -968,7 +1002,8 @@ mod tests {
         record.runways[0].end_a.longitude = None;
         record.runways[0].end_b.latitude = None;
         record.runways[0].end_b.longitude = None;
-        let fallback = project_airport_info(record, now).expect("fallback view");
+        let fallback =
+            project_airport_info(record, now, TimeDisplayMode::Local).expect("fallback view");
         assert!(!fallback.runway_diagram_complex);
         for runway in fallback.runways {
             assert!((runway.diagram_end_a_x + runway.diagram_end_b_x).abs() < 1e-12);
@@ -990,9 +1025,25 @@ mod tests {
     #[test]
     fn airport_time_zone_follows_winter_standard_time() {
         let now = Utc.with_ymd_and_hms(2026, 1, 26, 2, 34, 0).unwrap();
-        let view = project_airport_info(sample_record(), now).expect("view");
+        let view =
+            project_airport_info(sample_record(), now, TimeDisplayMode::Local).expect("view");
 
-        assert_eq!(view.local_time_label, "18:34 PST");
+        assert_eq!(view.time_label, "18:34 PST");
         assert_eq!(view.time_zone_label, "PST (UTC -0800)");
+    }
+
+    #[test]
+    fn airport_time_display_mode_projects_all_clocks_in_zulu() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 26, 2, 34, 0).unwrap();
+        let view = project_airport_info(sample_record(), now, TimeDisplayMode::Utc).expect("view");
+
+        assert_eq!(view.time_label, "0234Z");
+        for event in view.sunrise.iter().chain(view.sunset.iter()) {
+            assert!(event.time_label.ends_with('Z'));
+            assert_eq!(
+                event.time_display_action_id,
+                crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+            );
+        }
     }
 }

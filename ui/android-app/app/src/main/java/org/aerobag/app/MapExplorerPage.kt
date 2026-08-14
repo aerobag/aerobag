@@ -2370,6 +2370,59 @@ internal fun MapExplorerPage(
             },
         )
     }
+    fun toggleOpenMapSelectionTimeDisplay(actionId: String) {
+        val previous = mapSelection ?: return
+        val selectedItemId = previous.selectedItem?.id
+        if (applySessionCommand("performTimeDisplayAction") {
+                uiSession.performTimeDisplayAction(actionId)
+            } == null
+        ) {
+            return
+        }
+        sessionWorkRunner.submitMapSelection(
+            viewport = viewportState.value.copy(rotationDeg = plannedMapUpDeg),
+            widthPx = surfaceWidthPx.toDouble(),
+            heightPx = surfaceHeightPx.toDouble(),
+            click = LatLonPoint(
+                lat = previous.result.clickLat,
+                lon = previous.result.clickLon,
+            ),
+            pointDisplayScale = density.density.toDouble(),
+            fetchResource = { resource ->
+                fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
+            },
+            onResult = { result ->
+                val current = mapSelection
+                if (
+                    current == null ||
+                    current.result.clickLat != previous.result.clickLat ||
+                    current.result.clickLon != previous.result.clickLon
+                ) {
+                    return@submitMapSelection
+                }
+                val selectedItem = mapSelectionItemById(result, selectedItemId)
+                val detailAction = selectedItem?.actions?.firstOrNull { action ->
+                    action.detailStatus?.actionId == actionId && action.detailText != null
+                }
+                mapSelection = current.copy(
+                    result = result,
+                    selectedItem = selectedItem,
+                    detailModal = if (detailAction?.detailText != null) {
+                        MapSelectionDetailModalState(
+                            title = detailAction.detailTitle ?: detailAction.label,
+                            text = detailAction.detailText,
+                            status = detailAction.detailStatus,
+                        )
+                    } else {
+                        current.detailModal
+                    },
+                )
+            },
+            onError = { error ->
+                Log.w("AerobagSelection", "map selection time refresh failed", error)
+            },
+        )
+    }
     fun mapInputBlockedAt(position: Offset): Boolean {
         if (menuTrayOpen) {
             return true
@@ -2672,6 +2725,11 @@ internal fun MapExplorerPage(
             surfaceSize = surfaceSize,
             situationDockTopPadding = situationDockTopPadding,
             uiTheme = uiTheme,
+            onAction = { actionId ->
+                applySessionCommand("performTimeDisplayAction") {
+                    uiSession.performTimeDisplayAction(actionId)
+                }
+            },
             modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
         )
         DataStatusBadge(
@@ -2835,6 +2893,26 @@ internal fun MapExplorerPage(
                         selection.detailModal.airportInfo?.let { airportInfo ->
                             AirportInfoModal(
                                 detail = airportInfo,
+                                onTimeDisplayAction = { actionId ->
+                                    applySessionCommand("performTimeDisplayAction") {
+                                        uiSession.performTimeDisplayAction(actionId)
+                                    }
+                                    val airportId = airportInfo.airportId
+                                    airportInfoScope.launch {
+                                        runCatching {
+                                            withContext(Dispatchers.IO) {
+                                                uiSession.airportInfo(airportId)
+                                            }
+                                        }.onSuccess { detail ->
+                                            mapSelection = mapSelection?.copy(
+                                                detailModal = MapSelectionDetailModalState(
+                                                    title = airportId,
+                                                    airportInfo = detail,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                },
                                 modifier = Modifier
                                     .align(Alignment.Center)
                                     .zIndex(OverlayPlaneModal),
@@ -2850,6 +2928,7 @@ internal fun MapExplorerPage(
                             title = selection.detailModal.title,
                             text = selection.detailModal.text.orEmpty(),
                             status = selection.detailModal.status,
+                            onTimeDisplayAction = ::toggleOpenMapSelectionTimeDisplay,
                             modifier = Modifier
                                 .align(Alignment.Center)
                                 .zIndex(OverlayPlaneModal),
@@ -4263,6 +4342,7 @@ internal fun MapSelectionDetailModal(
     title: String,
     text: String,
     status: MapSelectionDetailStatus? = null,
+    onTimeDisplayAction: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -4293,9 +4373,19 @@ internal fun MapSelectionDetailModal(
             status?.let { timing ->
                 Text(
                     text = timing.text,
+                    modifier = if (timing.actionId != null) {
+                        Modifier.clickable { onTimeDisplayAction(timing.actionId) }
+                    } else {
+                        Modifier
+                    },
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Black,
                         lineHeight = 18.sp,
+                        textDecoration = if (timing.actionId == null) {
+                            TextDecoration.None
+                        } else {
+                            TextDecoration.Underline
+                        },
                     ),
                     color = aviationColor(uiTheme, timing.colorKey),
                 )
@@ -4382,6 +4472,7 @@ internal fun WeatherDetailModal(
 internal fun AirportInfoModal(
     detail: AirportInfoUiView,
     modifier: Modifier = Modifier,
+    onTimeDisplayAction: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
@@ -4416,20 +4507,26 @@ internal fun AirportInfoModal(
                 "Traffic pattern altitude",
                 "${detail.trafficPatternAltitudeLabel} ${detail.trafficPatternAltitudeSource}",
             )
-            AirportInfoFact("Time at airport", "${detail.localTimeLabel}  ${detail.utcTimeLabel}")
+            AirportInfoFact(
+                "Time at airport",
+                detail.timeLabel,
+                onClick = { onTimeDisplayAction(detail.timeDisplayActionId) },
+            )
             AirportInfoFact("Time zone", detail.timeZoneLabel)
             detail.sunrise?.let { event ->
                 AirportInfoFact(
                     "Sunrise",
-                    "${event.localTimeLabel}  ${event.utcTimeLabel}",
+                    event.timeLabel,
                     event.nextInLabel,
+                    onClick = { onTimeDisplayAction(event.timeDisplayActionId) },
                 )
             }
             detail.sunset?.let { event ->
                 AirportInfoFact(
                     "Sunset",
-                    "${event.localTimeLabel}  ${event.utcTimeLabel}",
+                    event.timeLabel,
                     event.nextInLabel,
+                    onClick = { onTimeDisplayAction(event.timeDisplayActionId) },
                 )
             }
             if (detail.communications.isNotEmpty()) {

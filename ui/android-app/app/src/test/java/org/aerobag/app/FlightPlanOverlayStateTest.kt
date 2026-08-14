@@ -30,8 +30,8 @@ class FlightPlanOverlayStateTest {
             elevationLabel = "2,871 ft",
             trafficPatternAltitudeLabel = "3,871 ft",
             trafficPatternAltitudeSource = "derived",
-            localTimeLabel = "12:00",
-            utcTimeLabel = "18:00Z",
+            timeLabel = "12:00 MDT",
+            timeDisplayActionId = "toggle_time_display_mode",
             timeZoneLabel = "MDT",
             sunrise = null,
             sunset = null,
@@ -125,7 +125,8 @@ class FlightPlanOverlayStateTest {
 
         assertTrue(
             "AerobagApp must render flight-plan modals on the app-wide modal plane.",
-            appSource.contains("FlightPlanOverlayHost(flightPlanOverlayController)"),
+            appSource.contains("FlightPlanOverlayHost(") &&
+                appSource.contains("flightPlanOverlayController,"),
         )
         assertTrue(
             "The overlay host must directly observe controller state so every modal invalidates its own composition.",

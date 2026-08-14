@@ -773,9 +773,28 @@ fn tfr_notam_altitude_text(metadata: &StructuredTfrNotamMetadata) -> Option<&str
 }
 
 fn tfr_altitude_limits_from_text(text: &str) -> Option<(StructuredTfrLimit, StructuredTfrLimit)> {
-    text.split_whitespace()
-        .filter_map(parse_tfr_altitude_pair_token)
-        .next()
+    let tokens = text.split_whitespace().collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some(limits) = parse_tfr_altitude_pair_token(token) {
+            return Some(limits);
+        }
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        let next = next
+            .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+            .to_ascii_uppercase();
+        let Some(upper) = next
+            .strip_prefix("MSL-")
+            .or_else(|| next.strip_prefix("AGL-"))
+        else {
+            continue;
+        };
+        if let Some(limits) = parse_tfr_altitude_pair_token(&format!("{token}-{upper}")) {
+            return Some(limits);
+        }
+    }
+    None
 }
 
 fn parse_tfr_altitude_pair_token(token: &str) -> Option<(StructuredTfrLimit, StructuredTfrLimit)> {
@@ -786,10 +805,22 @@ fn parse_tfr_altitude_pair_token(token: &str) -> Option<(StructuredTfrLimit, Str
     if lower.is_empty() || upper.is_empty() {
         return None;
     }
+    // Bare numeric ranges also describe compact NOTAM effective dates. At
+    // least one side must carry syntax that identifies this as an altitude.
+    if !tfr_altitude_limit_has_marker(lower) && !tfr_altitude_limit_has_marker(upper) {
+        return None;
+    }
     Some((
         parse_tfr_altitude_limit(lower)?,
         parse_tfr_altitude_limit(upper)?,
     ))
+}
+
+fn tfr_altitude_limit_has_marker(value: &str) -> bool {
+    let value = value
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_ascii_uppercase();
+    value == "SFC" || value.starts_with("FL") || value.ends_with("FT")
 }
 
 fn parse_tfr_altitude_limit(value: &str) -> Option<StructuredTfrLimit> {
@@ -801,6 +832,14 @@ fn parse_tfr_altitude_limit(value: &str) -> Option<StructuredTfrLimit> {
             value_text: "SFC".to_string(),
             unit: String::new(),
         });
+    }
+    if let Some(number) = value.strip_prefix("FL") {
+        if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(StructuredTfrLimit {
+                value_text: number.to_string(),
+                unit: "FL".to_string(),
+            });
+        }
     }
     if let Some(number) = value.strip_suffix("FT") {
         if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
@@ -3047,6 +3086,24 @@ mod tests {
         assert_eq!("5000", area["upper_limit"]["value_text"]);
         assert_eq!("FT", area["upper_limit"]["unit"]);
         Ok(())
+    }
+
+    #[test]
+    fn tfr_altitude_parser_ignores_effective_dates_before_msl_to_flight_level_limits() {
+        let text = "2603080900-2611010959 END PART 1 OF 2 \
+                    390803N1212615W 4100FT MSL-FL180 \
+                    EFFECTIVE 2603080900 UTC UNTIL 2611010959 UTC";
+
+        let (lower, upper) = tfr_altitude_limits_from_text(text).expect("TFR altitude limits");
+
+        assert_eq!(lower.value_text, "4100");
+        assert_eq!(lower.unit, "FT");
+        assert_eq!(upper.value_text, "180");
+        assert_eq!(upper.unit, "FL");
+        assert!(
+            tfr_altitude_limits_from_text("EFFECTIVE 2603080900 UTC UNTIL 2611010959 UTC")
+                .is_none()
+        );
     }
 
     #[test]

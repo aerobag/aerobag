@@ -60,7 +60,8 @@ mod weather_controller;
 pub use adsb::VisibleAdsbTraffic;
 pub use aircraft_profiles::performance_profile_from_definition;
 pub use airport_info::{
-    AirportCommunicationUiView, AirportInfoUiView, AirportRunwayUiView, AirportSolarEventUiView,
+    AirportCommunicationUiView, AirportInfoUiView, AirportRunwayPatternUiView, AirportRunwayUiView,
+    AirportSolarEventUiView,
 };
 pub use altitude_planner::{
     format_trajectory_wind, parse_altitude_planner_departure_input, project_altitude_planner_ui,

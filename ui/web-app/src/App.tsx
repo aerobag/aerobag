@@ -943,6 +943,7 @@ type UiThemeJson = {
     airport_runway_unpaved: string;
     airport_runway_water: string;
     airport_runway_inactive: string;
+    airport_runway_pattern: string;
   };
   flight_plan_route: {
     contrast: string;
@@ -3673,6 +3674,7 @@ export default function App() {
         "--theme-airport-runway-unpaved": loadedUiTheme.aviation.airport_runway_unpaved,
         "--theme-airport-runway-water": loadedUiTheme.aviation.airport_runway_water,
         "--theme-airport-runway-inactive": loadedUiTheme.aviation.airport_runway_inactive,
+        "--theme-airport-runway-pattern": loadedUiTheme.aviation.airport_runway_pattern,
       }) as CSSProperties,
     [],
   );
@@ -10639,6 +10641,16 @@ function runwayDiagramPolygon(runway: AirportInfoUiView["runways"][number]): str
   ].map(([x, y]) => `${x},${y}`).join(" ");
 }
 
+function runwayPatternPoints(
+  pattern: NonNullable<AirportInfoUiView["runways"][number]["diagram_end_a_pattern"]>,
+): string {
+  return [
+    [pattern.base_x, pattern.base_y],
+    [pattern.corner_x, pattern.corner_y],
+    [pattern.final_x, pattern.final_y],
+  ].map(([x, y]) => `${x},${y}`).join(" ");
+}
+
 function RunwayDiagram(props: {
   runways: AirportInfoUiView["runways"];
   activeRunwayIndex: number;
@@ -10665,6 +10677,18 @@ function RunwayDiagram(props: {
           />
         );
       })}
+      {[activeRunway.diagram_end_a_pattern, activeRunway.diagram_end_b_pattern]
+        .map((pattern, index) => pattern ? (
+          <polyline
+            key={`pattern:${index}`}
+            points={runwayPatternPoints(pattern)}
+            fill="none"
+            stroke={aviationThemeColor("airport_runway_pattern")}
+            strokeWidth={0.018}
+            strokeLinecap="square"
+            strokeLinejoin="miter"
+          />
+        ) : null)}
     </svg>
   );
 }

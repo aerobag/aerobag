@@ -359,6 +359,17 @@ data class AirportRunwayUiView(
     val diagramEndBX: Double,
     val diagramEndBY: Double,
     val diagramWidthRatio: Double,
+    val diagramEndAPattern: AirportRunwayPatternUiView?,
+    val diagramEndBPattern: AirportRunwayPatternUiView?,
+)
+
+data class AirportRunwayPatternUiView(
+    val baseX: Double,
+    val baseY: Double,
+    val cornerX: Double,
+    val cornerY: Double,
+    val finalX: Double,
+    val finalY: Double,
 )
 
 data class WeatherDetailUiView(

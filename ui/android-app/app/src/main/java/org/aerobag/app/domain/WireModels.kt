@@ -1301,6 +1301,18 @@ data class WireAirportRunwayUiView(
     val diagram_end_b_x: Double,
     val diagram_end_b_y: Double,
     val diagram_width_ratio: Double,
+    val diagram_end_a_pattern: WireAirportRunwayPatternUiView? = null,
+    val diagram_end_b_pattern: WireAirportRunwayPatternUiView? = null,
+)
+
+@Serializable
+data class WireAirportRunwayPatternUiView(
+    val base_x: Double,
+    val base_y: Double,
+    val corner_x: Double,
+    val corner_y: Double,
+    val final_x: Double,
+    val final_y: Double,
 )
 
 @Serializable

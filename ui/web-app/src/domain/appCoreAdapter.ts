@@ -559,6 +559,17 @@ export type AirportRunwayUiView = {
   diagram_end_b_x: number;
   diagram_end_b_y: number;
   diagram_width_ratio: number;
+  diagram_end_a_pattern?: AirportRunwayPatternUiView | null;
+  diagram_end_b_pattern?: AirportRunwayPatternUiView | null;
+};
+
+export type AirportRunwayPatternUiView = {
+  base_x: number;
+  base_y: number;
+  corner_x: number;
+  corner_y: number;
+  final_x: number;
+  final_y: number;
 };
 
 export type MapSelectionDetailStatus = {

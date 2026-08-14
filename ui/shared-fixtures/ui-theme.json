@@ -62,7 +62,8 @@
     "airport_runway_turf": "#2f7d32",
     "airport_runway_unpaved": "#875c34",
     "airport_runway_water": "#2574b8",
-    "airport_runway_inactive": "#b8bdc1"
+    "airport_runway_inactive": "#b8bdc1",
+    "airport_runway_pattern": "#111111"
   },
   "flight_plan_route": {
     "contrast": "#0000008c",

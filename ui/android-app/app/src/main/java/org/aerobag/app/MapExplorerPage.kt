@@ -4616,6 +4616,28 @@ private fun AirportRunwayDiagram(
                 )
             }
         }
+        listOfNotNull(
+            activeRunway.diagramEndAPattern,
+            activeRunway.diagramEndBPattern,
+        ).forEach { pattern ->
+            val path = Path().apply {
+                val base = point(pattern.baseX, pattern.baseY)
+                val corner = point(pattern.cornerX, pattern.cornerY)
+                val final = point(pattern.finalX, pattern.finalY)
+                moveTo(base.x, base.y)
+                lineTo(corner.x, corner.y)
+                lineTo(final.x, final.y)
+            }
+            drawPath(
+                path = path,
+                color = uiTheme.aviation.airportRunwayPattern,
+                style = Stroke(
+                    width = 1.5.dp.toPx(),
+                    cap = StrokeCap.Square,
+                    join = StrokeJoin.Miter,
+                ),
+            )
+        }
     }
 }
 

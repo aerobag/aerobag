@@ -3874,6 +3874,17 @@ private fun WireAirportRunwayUiView.toUi() = AirportRunwayUiView(
     diagramEndBX = diagram_end_b_x,
     diagramEndBY = diagram_end_b_y,
     diagramWidthRatio = diagram_width_ratio,
+    diagramEndAPattern = diagram_end_a_pattern?.toUi(),
+    diagramEndBPattern = diagram_end_b_pattern?.toUi(),
+)
+
+private fun WireAirportRunwayPatternUiView.toUi() = AirportRunwayPatternUiView(
+    baseX = base_x,
+    baseY = base_y,
+    cornerX = corner_x,
+    cornerY = corner_y,
+    finalX = final_x,
+    finalY = final_y,
 )
 
 private fun WireFlightPlanRowNavigationAction.toUi(): FlightPlanRowNavigationAction? =

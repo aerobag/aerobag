@@ -15,6 +15,9 @@ const DERIVED_TRAFFIC_PATTERN_ALTITUDE_AGL_FT: f64 = 1_000.0;
 const MIN_RUNWAY_DIAGRAM_SCALE_FT: f64 = 5_000.0;
 const FEET_PER_NAUTICAL_MILE: f64 = 6_076.115_49;
 const MAX_RUNWAY_ENDPOINT_DISTANCE_FROM_AIRPORT_FT: f64 = 20.0 * FEET_PER_NAUTICAL_MILE;
+const RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE: f64 = 0.95;
+const PATTERN_INDICATOR_LEG_LENGTH: f64 = 0.065;
+const PATTERN_INDICATOR_THRESHOLD_GAP: f64 = 0.025;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirportInfoUiView {
@@ -60,6 +63,18 @@ pub struct AirportRunwayUiView {
     pub diagram_end_b_x: f64,
     pub diagram_end_b_y: f64,
     pub diagram_width_ratio: f64,
+    pub diagram_end_a_pattern: Option<AirportRunwayPatternUiView>,
+    pub diagram_end_b_pattern: Option<AirportRunwayPatternUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AirportRunwayPatternUiView {
+    pub base_x: f64,
+    pub base_y: f64,
+    pub corner_x: f64,
+    pub corner_y: f64,
+    pub final_x: f64,
+    pub final_y: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -567,7 +582,31 @@ fn runway_ui_view(
     runway: &AirportRunwayRecord,
     geometry: RunwayDiagramGeometry,
 ) -> AirportRunwayUiView {
+    // Leave room beyond each threshold for the traffic-pattern turn indicator.
+    let geometry = RunwayDiagramGeometry {
+        end_a_x: geometry.end_a_x * RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE,
+        end_a_y: geometry.end_a_y * RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE,
+        end_b_x: geometry.end_b_x * RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE,
+        end_b_y: geometry.end_b_y * RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE,
+        width_ratio: geometry.width_ratio * RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE,
+    };
     let (surface_label, surface_color_key) = runway_surface(&runway.surface);
+    let (diagram_end_a_pattern, diagram_end_b_pattern) = if runway_is_heliport(runway) {
+        (None, None)
+    } else {
+        (
+            runway_pattern_ui_view(
+                (geometry.end_a_x, geometry.end_a_y),
+                (geometry.end_b_x, geometry.end_b_y),
+                runway.end_a.right_pattern,
+            ),
+            runway_pattern_ui_view(
+                (geometry.end_b_x, geometry.end_b_y),
+                (geometry.end_a_x, geometry.end_a_y),
+                runway.end_b.right_pattern,
+            ),
+        )
+    };
     AirportRunwayUiView {
         end_a_label: format!(
             "RWY {} ({} pattern)",
@@ -601,7 +640,40 @@ fn runway_ui_view(
         diagram_end_b_x: geometry.end_b_x,
         diagram_end_b_y: geometry.end_b_y,
         diagram_width_ratio: geometry.width_ratio,
+        diagram_end_a_pattern,
+        diagram_end_b_pattern,
     }
+}
+
+fn runway_pattern_ui_view(
+    runway_end: (f64, f64),
+    opposite_end: (f64, f64),
+    right_pattern: bool,
+) -> Option<AirportRunwayPatternUiView> {
+    let delta = (opposite_end.0 - runway_end.0, opposite_end.1 - runway_end.1);
+    let length = delta.0.hypot(delta.1);
+    if !length.is_finite() || length <= f64::EPSILON {
+        return None;
+    }
+    let final_direction = (delta.0 / length, delta.1 / length);
+    let final_point = (
+        runway_end.0 - final_direction.0 * PATTERN_INDICATOR_THRESHOLD_GAP,
+        runway_end.1 - final_direction.1 * PATTERN_INDICATOR_THRESHOLD_GAP,
+    );
+    let corner = (
+        final_point.0 - final_direction.0 * PATTERN_INDICATOR_LEG_LENGTH,
+        final_point.1 - final_direction.1 * PATTERN_INDICATOR_LEG_LENGTH,
+    );
+    let right_side = (-final_direction.1, final_direction.0);
+    let side_sign = if right_pattern { 1.0 } else { -1.0 };
+    Some(AirportRunwayPatternUiView {
+        base_x: corner.0 + right_side.0 * PATTERN_INDICATOR_LEG_LENGTH * side_sign,
+        base_y: corner.1 + right_side.1 * PATTERN_INDICATOR_LEG_LENGTH * side_sign,
+        corner_x: corner.0,
+        corner_y: corner.1,
+        final_x: final_point.0,
+        final_y: final_point.1,
+    })
 }
 
 fn runway_surface(surface: &str) -> (String, String) {
@@ -718,6 +790,58 @@ mod tests {
         assert_eq!(view.traffic_pattern_altitude_source, "derived");
         assert_eq!(view.communications[0].value, "124.7");
         assert_eq!(view.runways[0].end_b_label, "RWY 34 (right pattern)");
+        let end_a_pattern = view.runways[0]
+            .diagram_end_a_pattern
+            .as_ref()
+            .expect("runway 16 left-pattern indicator");
+        let end_b_pattern = view.runways[0]
+            .diagram_end_b_pattern
+            .as_ref()
+            .expect("runway 34 right-pattern indicator");
+        let turn_cross = |pattern: &AirportRunwayPatternUiView| {
+            let base_direction = (
+                pattern.corner_x - pattern.base_x,
+                pattern.corner_y - pattern.base_y,
+            );
+            let final_direction = (
+                pattern.final_x - pattern.corner_x,
+                pattern.final_y - pattern.corner_y,
+            );
+            base_direction.0 * final_direction.1 - base_direction.1 * final_direction.0
+        };
+        assert!(
+            turn_cross(end_a_pattern) < 0.0,
+            "runway 16 must show left traffic"
+        );
+        assert!(
+            turn_cross(end_b_pattern) > 0.0,
+            "runway 34 must show right traffic"
+        );
+        let threshold_gap = |pattern: &AirportRunwayPatternUiView, end: (f64, f64)| {
+            (pattern.final_x - end.0).hypot(pattern.final_y - end.1)
+        };
+        assert!(
+            (threshold_gap(
+                end_a_pattern,
+                (
+                    view.runways[0].diagram_end_a_x,
+                    view.runways[0].diagram_end_a_y,
+                ),
+            ) - PATTERN_INDICATOR_THRESHOLD_GAP)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (threshold_gap(
+                end_b_pattern,
+                (
+                    view.runways[0].diagram_end_b_x,
+                    view.runways[0].diagram_end_b_y,
+                ),
+            ) - PATTERN_INDICATOR_THRESHOLD_GAP)
+                .abs()
+                < 1e-12
+        );
         assert_eq!(
             view.runways[0].surface_label,
             "Asphalt / Concrete, good condition"
@@ -732,6 +856,43 @@ mod tests {
                 .count()
                 == 1
         );
+    }
+
+    #[test]
+    fn runway_diagram_reserves_room_for_pattern_indicators() {
+        let record = sample_record();
+        let runway = runway_ui_view(
+            &record.runways[0],
+            RunwayDiagramGeometry {
+                end_a_x: 0.0,
+                end_a_y: -0.5,
+                end_b_x: 0.0,
+                end_b_y: 0.5,
+                width_ratio: 0.02,
+            },
+        );
+
+        assert!((runway.diagram_end_a_y + 0.475).abs() < 1e-12);
+        assert!((runway.diagram_end_b_y - 0.475).abs() < 1e-12);
+        let maximum_pattern_extent = RUNWAY_DIAGRAM_RUNWAY_EXTENT_SCALE / 2.0
+            + PATTERN_INDICATOR_THRESHOLD_GAP
+            + PATTERN_INDICATOR_LEG_LENGTH;
+        for pattern in [
+            runway.diagram_end_a_pattern.expect("end A pattern"),
+            runway.diagram_end_b_pattern.expect("end B pattern"),
+        ] {
+            for coordinate in [
+                pattern.base_x,
+                pattern.base_y,
+                pattern.corner_x,
+                pattern.corner_y,
+                pattern.final_x,
+                pattern.final_y,
+            ] {
+                assert!(coordinate.abs() <= maximum_pattern_extent + 1e-12);
+            }
+        }
+        assert!(maximum_pattern_extent < 0.58);
     }
 
     #[test]
@@ -776,6 +937,8 @@ mod tests {
         assert!(
             (complex.runways[2].diagram_end_b_y - complex.runways[2].diagram_end_a_y).abs() > 0.0
         );
+        assert!(complex.runways[2].diagram_end_a_pattern.is_none());
+        assert!(complex.runways[2].diagram_end_b_pattern.is_none());
         let east_center_x =
             (complex.runways[0].diagram_end_a_x + complex.runways[0].diagram_end_b_x) / 2.0;
         let west_center_x =

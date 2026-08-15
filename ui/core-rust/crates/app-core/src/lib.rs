@@ -145,7 +145,8 @@ pub use live_feeds::{
     LiveFeedCacheRequestKind, LiveFeedDeltaRef, LiveFeedDurableInstalledProduct,
     LiveFeedPayloadRef, LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState,
     NotamProjectionPreparer, PreparedLiveFeedEnvelope, PreparedLiveFeedPayload,
-    PreparedMetarLiveFeed, PreparedMetarTile, PreparedNotamPayload,
+    PreparedMetarLiveFeed, PreparedMetarTile, PreparedNotamPayload, PreparedPirepLiveFeed,
+    PreparedPirepTile,
 };
 pub use map_follow::MapFollowUiState;
 pub(crate) use map_overlay::query_map_overlay_for_surface_at;
@@ -168,12 +169,12 @@ pub use map_overlay::{
     MapSelectionForNavRefResult, MapSelectionHighlight, MapSelectionItem, MapSelectionQueryResult,
     MapSelectionSessionAction, MapSurfaceMetrics, MetarProductPayload, MetarRecord,
     MetarTilePayload, NavSymbolFeature, NotamRecord, ObstacleOverlayContext, OfflineRegionCatalog,
-    OfflineRegionDisplay, OfflineRegionRecord, OverlaySurfaceDecision, PirepRecord,
-    PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord, TfrAltitudeLimit,
-    TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata, TfrProductPayload, TfrScheduleFragment,
-    VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest, VisibleMapFeature,
-    VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView, WeatherStationAirportAliases,
-    AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
+    OfflineRegionDisplay, OfflineRegionRecord, OverlaySurfaceDecision, PirepProductPayload,
+    PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord,
+    TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata, TfrProductPayload,
+    TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest,
+    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView,
+    WeatherStationAirportAliases, AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayPresentationPlan, AirwayPresentationPoint, AirwayPresentationSelection, AirwaySuggestion,

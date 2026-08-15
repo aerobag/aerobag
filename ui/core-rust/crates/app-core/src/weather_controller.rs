@@ -131,6 +131,8 @@ pub(crate) struct WeatherRuntime {
     pub metar_tile_cache: HashMap<String, MetarTilePayload>,
     pub metar_payload: Option<MetarProductPayload>,
     pub prepared_metar_tiles: Option<Vec<PreparedMetarTile>>,
+    pub pirep_payload: Option<crate::PirepProductPayload>,
+    pub prepared_pirep_tiles: Option<Vec<crate::PreparedPirepTile>>,
     pub important_metar_station_ids: Option<HashSet<String>>,
     pub metar_station_importance_status: Option<DataStatusRecord>,
     pub weather_station_airport_aliases: Option<WeatherStationAirportAliases>,

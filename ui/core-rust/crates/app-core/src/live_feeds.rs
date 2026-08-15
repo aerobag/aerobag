@@ -14,7 +14,7 @@ use crate::{
     map_overlay::{
         airport_notam_projection_checkpoint, airport_notam_projection_delta,
         AirportNotamProjectionCheckpoint, AirportNotamProjectionDelta, MetarProductPayload,
-        TafProductPayload, TfrProductPayload,
+        PirepProductPayload, TafProductPayload, TfrProductPayload,
     },
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
@@ -172,6 +172,7 @@ pub enum PreparedLiveFeedPayload {
     Tafs(TafProductPayload),
     Tfrs(TfrProductPayload),
     Notams(PreparedNotamPayload),
+    Pireps(PreparedPirepLiveFeed),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +254,21 @@ pub struct PreparedMetarTile {
     pub station_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreparedPirepLiveFeed {
+    pub schema_version: u32,
+    pub payload: PirepProductPayload,
+    pub tiles: Vec<PreparedPirepTile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreparedPirepTile {
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    pub pirep_ids: Vec<String>,
+}
+
 impl PreparedLiveFeedPayload {
     fn product(&self) -> &'static str {
         match self {
@@ -260,6 +276,7 @@ impl PreparedLiveFeedPayload {
             Self::Tafs(_) => "tafs",
             Self::Tfrs(_) => "tfrs",
             Self::Notams(_) => "notams",
+            Self::Pireps(_) => "pireps",
         }
     }
 
@@ -272,6 +289,7 @@ impl PreparedLiveFeedPayload {
                 &checkpoint.state_id
             }
             Self::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) => &delta.to_state_id,
+            Self::Pireps(feed) => &feed.payload.version_label,
         }
     }
 }
@@ -2303,7 +2321,7 @@ pub fn decode_prepared_live_feed(bytes: &[u8]) -> AppResult<PreparedLiveFeedEnve
 }
 
 pub fn supports_prepared_live_feed(product: &str) -> bool {
-    matches!(product, "metars" | "tafs" | "tfrs" | "notams")
+    matches!(product, "metars" | "tafs" | "pireps" | "tfrs" | "notams")
 }
 
 pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
@@ -2328,6 +2346,13 @@ fn prepare_live_feed_payload(product: &str, state: Value) -> AppResult<PreparedL
         "tafs" => serde_json::from_value(state)
             .map(PreparedLiveFeedPayload::Tafs)
             .map_err(invalid_live_feed_json),
+        "pireps" => {
+            let payload: PirepProductPayload =
+                serde_json::from_value(state).map_err(invalid_live_feed_json)?;
+            Ok(PreparedLiveFeedPayload::Pireps(prepare_pirep_live_feed(
+                payload,
+            )))
+        }
         "tfrs" => serde_json::from_value(state)
             .map(PreparedLiveFeedPayload::Tfrs)
             .map_err(invalid_live_feed_json),
@@ -2367,6 +2392,32 @@ fn prepare_metar_live_feed(payload: MetarProductPayload) -> PreparedMetarLiveFee
                 y,
                 station_ids,
             })
+            .collect(),
+    }
+}
+
+fn prepare_pirep_live_feed(payload: PirepProductPayload) -> PreparedPirepLiveFeed {
+    let mut records = payload.pireps_by_id.values().collect::<Vec<_>>();
+    records.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut tiles = std::collections::BTreeMap::<(u32, u32, u32), Vec<String>>::new();
+    for zoom in [5_u32, 6, 7] {
+        for record in &records {
+            let Some((x, y)) = live_feed_metar_tile_xy(record.latitude, record.longitude, zoom)
+            else {
+                continue;
+            };
+            tiles
+                .entry((zoom, x, y))
+                .or_default()
+                .push(record.id.clone());
+        }
+    }
+    PreparedPirepLiveFeed {
+        schema_version: 1,
+        payload,
+        tiles: tiles
+            .into_iter()
+            .map(|((z, x, y), pirep_ids)| PreparedPirepTile { z, x, y, pirep_ids })
             .collect(),
     }
 }

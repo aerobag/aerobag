@@ -693,6 +693,7 @@ pub fn record_session_serialized_payload_bytes(handle: u32, byte_count: usize) {
 
 const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
+const LIVE_FEED_PIREPS_STATUS_ID: &str = "live_feed:pireps_unavailable";
 const LIVE_FEED_TAFS_STATUS_ID: &str = "live_feed:tafs_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
@@ -817,6 +818,7 @@ fn data_status_page_input(
         };
     let metars = metar_live_feed_status_source(session);
     let tafs = taf_live_feed_status_source(session);
+    let pireps = pirep_live_feed_status_source(session);
     let tfrs_collected_utc = live_feed_status_timestamp(session, "tfrs").or_else(|| {
         session
             .weather
@@ -862,6 +864,15 @@ fn data_status_page_input(
             metars.loaded,
             metars.collected_utc,
             metars.loaded_version,
+        ),
+    );
+    live_feed_products.insert(
+        "pireps".to_string(),
+        product(
+            "pireps",
+            pireps.loaded,
+            pireps.collected_utc,
+            pireps.loaded_version,
         ),
     );
     live_feed_products.insert(
@@ -1103,6 +1114,17 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         DATA_FRESHNESS_POLICIES.live_feeds.metars,
     ));
 
+    let pireps_status = pirep_live_feed_status_source(session);
+    invalidations.extend(sync_live_feed_product_status_record(
+        session,
+        metars_visible,
+        pireps_status.loaded,
+        "pireps",
+        "PIREP live feed unavailable: no current PIREP product is loaded",
+        pireps_status.collected_utc,
+        DATA_FRESHNESS_POLICIES.live_feeds.pireps,
+    ));
+
     let tfrs_visible = session.map.layer_state().vectors.visible;
     let tfrs_collected_utc = live_feed_status_timestamp(session, "tfrs").or_else(|| {
         session
@@ -1176,6 +1198,26 @@ fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSo
             .weather
             .live_feeds()
             .product_loaded_version("metars")
+            .map(str::to_string),
+    }
+}
+
+fn pirep_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
+    if let Some(payload) = session.weather.runtime().pirep_payload.as_ref() {
+        return LiveFeedProductStatusSource {
+            loaded: true,
+            collected_utc: live_feed_status_timestamp(session, "pireps")
+                .or(payload.generated_at_utc),
+            loaded_version: Some(payload.version_label.clone()),
+        };
+    }
+    LiveFeedProductStatusSource {
+        loaded: false,
+        collected_utc: None,
+        loaded_version: session
+            .weather
+            .live_feeds()
+            .product_loaded_version("pireps")
             .map(str::to_string),
     }
 }
@@ -1364,6 +1406,14 @@ fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataSta
         "metars" => DataStatusRecord::new(
             LIVE_FEED_METARS_STATUS_ID,
             "METARS",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
+        "pireps" => DataStatusRecord::new(
+            LIVE_FEED_PIREPS_STATUS_ID,
+            "PIREPS",
             Some("UNAVAIL".to_string()),
             UiStatusSeverity::Unavailable,
             true,
@@ -6266,6 +6316,17 @@ fn install_live_feed_installed_state(
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
+        ("pireps", crate::LiveFeedInstalledPayload::Json { bytes }) => {
+            let payload: crate::PirepProductPayload =
+                serde_json::from_slice(bytes).map_err(|err| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed PIREP live feed: {err}"),
+                })?;
+            session.weather.runtime_mut().pirep_payload = Some(payload);
+            session.weather.runtime_mut().prepared_pirep_tiles = None;
+            rebuild_metar_tile_cache(session);
+            clear_data_status_record(session, LIVE_FEED_PIREPS_STATUS_ID);
+        }
         ("tafs", crate::LiveFeedInstalledPayload::Json { bytes }) => {
             let payload: TafProductPayload =
                 serde_json::from_slice(bytes).map_err(|err| AppError {
@@ -6544,6 +6605,18 @@ fn install_prepared_live_feed(
             }
             let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
             clear_data_status_record(session, &status_id);
+        }
+        crate::PreparedLiveFeedPayload::Pireps(feed) => {
+            if feed.schema_version != 1 {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("unsupported prepared PIREP schema {}", feed.schema_version),
+                });
+            }
+            session.weather.runtime_mut().pirep_payload = Some(feed.payload);
+            session.weather.runtime_mut().prepared_pirep_tiles = Some(feed.tiles);
+            rebuild_metar_tile_cache(session);
+            clear_data_status_record(session, LIVE_FEED_PIREPS_STATUS_ID);
         }
     }
     Ok(())
@@ -6857,6 +6930,16 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         if !session
             .weather
             .live_feeds()
+            .has_product_current_version("pireps")
+        {
+            session.weather.runtime_mut().pirep_payload = None;
+            session.weather.runtime_mut().prepared_pirep_tiles = None;
+            rebuild_metar_tile_cache(session);
+            clear_data_status_record(session, LIVE_FEED_PIREPS_STATUS_ID);
+        }
+        if !session
+            .weather
+            .live_feeds()
             .has_product_current_version("tafs")
         {
             session.weather.runtime_mut().taf_payload = None;
@@ -6935,6 +7018,46 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
                         live_feed_unavailable_status_record(
                             "metars",
                             format!("METAR live feed unavailable: failed to parse state: {err}"),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let loaded_pireps_version = session
+        .weather
+        .live_feeds()
+        .product_loaded_version("pireps");
+    let pireps_installed = session
+        .weather
+        .runtime()
+        .pirep_payload
+        .as_ref()
+        .and_then(|payload| loaded_pireps_version.map(|version| payload.version_label == version))
+        .unwrap_or(false);
+    if !pireps_installed {
+        if let Some(pireps_value) = session
+            .weather
+            .live_feeds()
+            .product_state_manifest("pireps")
+            .cloned()
+        {
+            match serde_json::from_value::<crate::PirepProductPayload>(pireps_value) {
+                Ok(payload) => {
+                    session.weather.runtime_mut().pirep_payload = Some(payload);
+                    session.weather.runtime_mut().prepared_pirep_tiles = None;
+                    rebuild_metar_tile_cache(session);
+                    clear_data_status_record(session, LIVE_FEED_PIREPS_STATUS_ID);
+                }
+                Err(err) => {
+                    session.weather.runtime_mut().pirep_payload = None;
+                    session.weather.runtime_mut().prepared_pirep_tiles = None;
+                    rebuild_metar_tile_cache(session);
+                    upsert_data_status_record(
+                        session,
+                        live_feed_unavailable_status_record(
+                            "pireps",
+                            format!("PIREP live feed unavailable: failed to parse state: {err}"),
                         ),
                     );
                 }
@@ -7463,40 +7586,122 @@ fn metar_tile_cache_for_prepared_live_feed(
     Some(cache)
 }
 
-fn rebuild_metar_tile_cache(session: &mut UiSession) {
-    if let Some(tiles) = session.weather.runtime().prepared_metar_tiles.as_ref() {
-        let empty = HashSet::new();
-        let important_station_ids = session
-            .weather
-            .runtime()
-            .important_metar_station_ids
-            .as_ref()
-            .unwrap_or(&empty);
-        if let Some(cache) = metar_tile_cache_for_prepared_live_feed(
-            tiles,
-            session.map.overlay_config().metar_layer.as_ref(),
-            important_station_ids,
-        ) {
-            session.weather.runtime_mut().metar_tile_cache = cache;
-            return;
+fn append_pirep_tile_cache_for_live_feed(
+    cache: &mut HashMap<String, MetarTilePayload>,
+    payload: &crate::PirepProductPayload,
+    layer: Option<&crate::map_overlay::PointTileLayerConfig>,
+) {
+    let Some(layer) = layer else {
+        return;
+    };
+    for zoom in &layer.available_zooms {
+        for record in payload.pireps_by_id.values() {
+            let Some((x, y)) = metar_tile_xy(record.latitude, record.longitude, *zoom) else {
+                continue;
+            };
+            let key = crate::tile_key("metars", *zoom, x, y);
+            cache
+                .entry(key)
+                .or_insert_with(|| MetarTilePayload {
+                    schema_version: 1,
+                    layer: "metars".to_string(),
+                    z: *zoom,
+                    x,
+                    y,
+                    records: Vec::new(),
+                })
+                .records
+                .push(MetarTileRecord {
+                    kind: "pirep".to_string(),
+                    id: record.id.clone(),
+                });
         }
     }
-    if let Some(payload) = session.weather.runtime().metar_payload.as_ref() {
-        let empty = HashSet::new();
-        let important_station_ids = session
-            .weather
-            .runtime()
-            .important_metar_station_ids
-            .as_ref()
-            .unwrap_or(&empty);
-        session.weather.runtime_mut().metar_tile_cache = metar_tile_cache_for_live_feed(
-            payload,
-            session.map.overlay_config().metar_layer.as_ref(),
-            important_station_ids,
-        );
-    } else {
-        session.weather.runtime_mut().metar_tile_cache.clear();
+}
+
+fn append_pirep_tile_cache_for_prepared_live_feed(
+    cache: &mut HashMap<String, MetarTilePayload>,
+    tiles: &[crate::PreparedPirepTile],
+    layer: Option<&crate::map_overlay::PointTileLayerConfig>,
+) -> bool {
+    let Some(layer) = layer else {
+        return true;
+    };
+    let available_zooms = layer
+        .available_zooms
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let feed_zooms = tiles.iter().map(|tile| tile.z).collect::<HashSet<_>>();
+    if !available_zooms.is_subset(&feed_zooms) {
+        return false;
     }
+    for tile in tiles {
+        if !available_zooms.contains(&tile.z) || tile.pirep_ids.is_empty() {
+            continue;
+        }
+        let key = crate::tile_key("metars", tile.z, tile.x, tile.y);
+        let records = &mut cache
+            .entry(key)
+            .or_insert_with(|| MetarTilePayload {
+                schema_version: 1,
+                layer: "metars".to_string(),
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+                records: Vec::new(),
+            })
+            .records;
+        records.extend(tile.pirep_ids.iter().map(|id| MetarTileRecord {
+            kind: "pirep".to_string(),
+            id: id.clone(),
+        }));
+    }
+    true
+}
+
+fn rebuild_metar_tile_cache(session: &mut UiSession) {
+    let layer = session.map.overlay_config().metar_layer.clone();
+    let important_station_ids = session
+        .weather
+        .runtime()
+        .important_metar_station_ids
+        .clone()
+        .unwrap_or_default();
+    let mut cache = session
+        .weather
+        .runtime()
+        .prepared_metar_tiles
+        .as_ref()
+        .and_then(|tiles| {
+            metar_tile_cache_for_prepared_live_feed(tiles, layer.as_ref(), &important_station_ids)
+        })
+        .or_else(|| {
+            session
+                .weather
+                .runtime()
+                .metar_payload
+                .as_ref()
+                .map(|payload| {
+                    metar_tile_cache_for_live_feed(payload, layer.as_ref(), &important_station_ids)
+                })
+        })
+        .unwrap_or_default();
+
+    let used_prepared_pireps = session
+        .weather
+        .runtime()
+        .prepared_pirep_tiles
+        .as_ref()
+        .is_some_and(|tiles| {
+            append_pirep_tile_cache_for_prepared_live_feed(&mut cache, tiles, layer.as_ref())
+        });
+    if !used_prepared_pireps {
+        if let Some(payload) = session.weather.runtime().pirep_payload.as_ref() {
+            append_pirep_tile_cache_for_live_feed(&mut cache, payload, layer.as_ref());
+        }
+    }
+    session.weather.runtime_mut().metar_tile_cache = cache;
 }
 
 fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
@@ -8521,6 +8726,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         &session.weather.runtime().obstacle_tile_cache,
         &session.weather.runtime().metar_tile_cache,
         session.weather.runtime().metar_payload.as_ref(),
+        session.weather.runtime().pirep_payload.as_ref(),
         &session.map.runtime().airspace_feature_cache,
         session.weather.runtime().tfr_payload.as_ref(),
         &flight_plan_features,
@@ -8955,6 +9161,7 @@ fn materialize_map_selection_in_session(
         &session.map.runtime().vector_tile_cache,
         &session.weather.runtime().metar_tile_cache,
         session.weather.runtime().metar_payload.as_ref(),
+        session.weather.runtime().pirep_payload.as_ref(),
         session.weather.runtime().taf_payload.as_ref(),
         session.weather.runtime().airport_notam_index.as_ref(),
         weather_station_airport_aliases,
@@ -13725,7 +13932,7 @@ mod tests {
         assert_eq!(diagnostics.situation_revision, 0);
         assert_eq!(diagnostics.flight_plan_revision, 0);
         assert_eq!(diagnostics.nav_data_revision, 0);
-        assert_eq!(diagnostics.data_status_revision, 3);
+        assert_eq!(diagnostics.data_status_revision, 4);
         assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
 
         super::get_session_snapshot(first.handle).expect("reuse status projection");
@@ -15046,6 +15253,7 @@ mod tests {
             &HashMap::new(),
             &obstacle_cache,
             &HashMap::new(),
+            None,
             None,
             &HashMap::new(),
             None,
@@ -16699,7 +16907,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
-            pireps: Vec::new(),
         };
         let metar_tile_cache = metar_tile_cache_for_live_feed(
             &payload,
@@ -16724,6 +16931,7 @@ mod tests {
             &HashMap::new(),
             &metar_tile_cache,
             Some(&payload),
+            None,
             &HashMap::new(),
             None,
         );
@@ -16751,8 +16959,7 @@ mod tests {
                     "longitude": 0.0,
                     "latitude": 0.0
                 }
-            },
-            "pireps": []
+            }
         });
         let state_bytes = serde_json::to_vec(&state).expect("state bytes");
         let resource_id = "live_feeds/state/metars/v1";
@@ -16845,6 +17052,117 @@ mod tests {
         assert_eq!(overlay.visible_metars.len(), 1);
         assert_eq!(overlay.visible_metars[0].station_id, "KAAA");
         assert_eq!(overlay.visible_metars[0].flight_category, "mvfr");
+    }
+
+    #[test]
+    fn published_pirep_state_reaches_the_observations_overlay() {
+        // This guards the complete product boundary. Parser-only and renderer-only tests did not
+        // catch the regression where PIREPs disappeared from the live-feed product registry.
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "v1",
+            "generated_at_utc": "2026-08-14T12:00:00Z",
+            "observed_at_utc": "2026-08-14T11:55:00Z",
+            "pirep_count": 1,
+            "pireps_by_id": {
+                "pirep:test": {
+                    "id": "pirep:test",
+                    "raw_text": "SEA UA /OV SEA090010 /TM 1155 /FL080 /TP C172 /TB MOD",
+                    "observed_at_utc": "2026-08-14T11:55:00Z",
+                    "report_type": "PIREP",
+                    "longitude": 0.0,
+                    "latitude": 0.0,
+                    "symbol": "moderate-turbulence",
+                    "icing": "none",
+                    "turbulence": "moderate"
+                }
+            }
+        });
+        let state_bytes = serde_json::to_vec(&state).expect("state bytes");
+        let resource_id = "live_feeds/state/pireps/v1";
+        let (_raw_state, prepared_bytes) =
+            crate::prepare_live_feed_state_resource(resource_id, &state_bytes)
+                .expect("prepare PIREP state");
+        let envelope =
+            crate::decode_prepared_live_feed(&prepared_bytes).expect("decode prepared PIREPs");
+
+        {
+            let mut sessions = lock_sessions();
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            session.map.replace_overlay_config(
+                map_overlay_config_from_vector_manifest_json(
+                    r#"{
+                    "point_layers": {
+                        "airport": { "available_zooms": [9] },
+                        "fix": { "available_zooms": [9] },
+                        "nav": { "available_zooms": [9] },
+                        "metars": {
+                            "min_zoom": 5,
+                            "max_zoom": 7,
+                            "available_zooms": [5, 6, 7],
+                            "tile_path_template": "unused-by-live-feeds"
+                        }
+                    },
+                    "airspace": {
+                        "reference_tile_min_zoom": 0,
+                        "reference_tile_max_zoom": 0,
+                        "label_tile_min_zoom": 0,
+                        "label_tile_max_zoom": 0
+                    }
+                }"#,
+                )
+                .expect("observations layer config"),
+                false,
+            );
+            session
+                .weather
+                .live_feeds_mut()
+                .ingest_resource(
+                    "live_feeds/current",
+                    format!(
+                        r#"{{
+                            "schema_version": 3,
+                            "generated_at_utc": "2026-08-14T12:00:00Z",
+                            "products": {{
+                                "pireps": {{
+                                    "current": "v1",
+                                    "version_manifest_url": "versions/pireps/v1.json",
+                                    "state_url": "states/pireps/v1.json",
+                                    "state_sha256": "{}"
+                                }}
+                            }}
+                        }}"#,
+                        envelope.state_sha256
+                    )
+                    .as_bytes(),
+                )
+                .expect("current manifest");
+        }
+        ingest_prepared_live_feed_resource_in_session(init.handle, resource_id, &prepared_bytes)
+            .expect("install prepared PIREPs");
+
+        let outcome = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+        )
+        .expect("overlay");
+        let crate::HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("overlay unexpectedly needed resources");
+        };
+        let overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("overlay result");
+        assert_eq!(overlay.visible_pireps.len(), 1);
+        assert_eq!(overlay.visible_pireps[0].id, "pirep:test");
+        assert_eq!(overlay.visible_pireps[0].symbol, "moderate-turbulence");
     }
 
     #[test]
@@ -17556,7 +17874,6 @@ mod tests {
                 observed_at_utc: None,
                 metar_count: Some(1),
                 metars_by_station,
-                pireps: Vec::new(),
             });
             let mut tafs_by_station = HashMap::new();
             tafs_by_station.insert(
@@ -17907,7 +18224,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
-            pireps: Vec::new(),
         });
         session.weather.runtime_mut().important_metar_station_ids =
             Some(HashSet::from(["KAAA".to_string()]));
@@ -17983,7 +18299,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(2),
             metars_by_station,
-            pireps: Vec::new(),
         };
 
         let cache = metar_tile_cache_for_live_feed(
@@ -18049,7 +18364,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station: HashMap::from([("K1S5".to_string(), metar)]),
-            pireps: Vec::new(),
         };
         let detail = crate::map_overlay::weather_detail_for_airport(
             "1S5",
@@ -18174,7 +18488,6 @@ mod tests {
                         latitude: 0.0,
                     },
                 )]),
-                pireps: Vec::new(),
             });
             rebuild_metar_tile_cache(&mut session);
         }
@@ -18349,7 +18662,6 @@ mod tests {
                         latitude: 0.0,
                     },
                 )]),
-                pireps: Vec::new(),
             });
             rebuild_metar_tile_cache(&mut session);
         }
@@ -18728,6 +19040,7 @@ mod tests {
             &HashMap::new(),
             &obstacle_cache,
             &HashMap::new(),
+            None,
             None,
             &HashMap::new(),
             None,
@@ -19186,6 +19499,7 @@ mod tests {
             &HashMap::new(),
             &obstacle_cache,
             &HashMap::new(),
+            None,
             None,
             &HashMap::new(),
             None,
@@ -20235,7 +20549,6 @@ mod tests {
                 observed_at_utc: Some(utc("2020-01-01T00:00:00Z")),
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
-                pireps: Vec::new(),
             });
         }
 
@@ -20262,7 +20575,6 @@ mod tests {
                 observed_at_utc: Some(utc("2026-05-20T11:55:00Z")),
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
-                pireps: Vec::new(),
             });
         }
 
@@ -20309,7 +20621,6 @@ mod tests {
                 observed_at_utc: None,
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
-                pireps: Vec::new(),
             });
         }
 
@@ -20353,7 +20664,6 @@ mod tests {
                 observed_at_utc: Some(utc("2026-05-20T11:45:00Z")),
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
-                pireps: Vec::new(),
             });
         }
 

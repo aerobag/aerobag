@@ -851,8 +851,19 @@ pub struct MetarProductPayload {
     #[serde(default)]
     pub metar_count: Option<u32>,
     pub metars_by_station: HashMap<String, MetarRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PirepProductPayload {
+    pub schema_version: u32,
+    pub version_label: String,
     #[serde(default)]
-    pub pireps: Vec<PirepRecord>,
+    pub generated_at_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub observed_at_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub pirep_count: Option<u32>,
+    pub pireps_by_id: HashMap<String, PirepRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1925,6 +1936,7 @@ pub fn query_map_overlay(
     obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
 ) -> MapOverlayQueryResult {
@@ -1941,6 +1953,7 @@ pub fn query_map_overlay(
         obstacle_tile_cache,
         metar_tile_cache,
         metar_payload,
+        pirep_payload,
         airspace_feature_cache,
         tfr_payload,
         1.0,
@@ -1960,6 +1973,7 @@ pub fn query_map_overlay_with_point_display_scale(
     obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
     point_display_scale: f64,
@@ -1976,6 +1990,7 @@ pub fn query_map_overlay_with_point_display_scale(
         obstacle_tile_cache,
         metar_tile_cache,
         metar_payload,
+        pirep_payload,
         airspace_feature_cache,
         tfr_payload,
         &[],
@@ -2074,6 +2089,7 @@ pub fn query_map_overlay_for_surface(
     obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
     protected_point_features: &[VisibleMapFeature],
@@ -2089,6 +2105,7 @@ pub fn query_map_overlay_for_surface(
         obstacle_tile_cache,
         metar_tile_cache,
         metar_payload,
+        pirep_payload,
         airspace_feature_cache,
         tfr_payload,
         protected_point_features,
@@ -2107,6 +2124,7 @@ pub(crate) fn query_map_overlay_for_surface_at(
     obstacle_tile_cache: &HashMap<String, PointTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
     protected_point_features: &[VisibleMapFeature],
@@ -2350,6 +2368,7 @@ pub(crate) fn query_map_overlay_for_surface_at(
             scale,
             metar_tile_cache,
             metar_payload,
+            pirep_payload,
         )
     } else {
         MetarOverlayProjection {
@@ -2709,6 +2728,7 @@ fn query_metar_overlay(
     scale: f64,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
 ) -> MetarOverlayProjection {
     let Some(metar_zoom) = metar_tile_zoom else {
         return MetarOverlayProjection {
@@ -2740,15 +2760,15 @@ fn query_metar_overlay(
             }
             continue;
         };
-        let Some(metars) = metar_payload else {
-            continue;
-        };
         for record_ref in &tile_payload.records {
             if visible_metars.len() + visible_pireps.len() >= WEATHER_DISPLAY_FEATURE_LIMIT {
                 limit_hit = true;
                 break;
             }
             if record_ref.kind == "metar" {
+                let Some(metars) = metar_payload else {
+                    continue;
+                };
                 let Some(record) = metars.metars_by_station.get(&record_ref.id) else {
                     continue;
                 };
@@ -2769,11 +2789,10 @@ fn query_metar_overlay(
                     visible_metars.push(feature);
                 }
             } else if record_ref.kind == "pirep" {
-                let Some(record) = metars
-                    .pireps
-                    .iter()
-                    .find(|record| record.id == record_ref.id)
-                else {
+                let Some(pireps) = pirep_payload else {
+                    continue;
+                };
+                let Some(record) = pireps.pireps_by_id.get(&record_ref.id) else {
                     continue;
                 };
                 let feature = visible_pirep_feature(
@@ -2953,6 +2972,7 @@ pub fn query_map_selection(
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
     offline_region_records: &[OfflineRegionRecord],
@@ -2971,6 +2991,7 @@ pub fn query_map_selection(
         vector_tile_cache,
         metar_tile_cache,
         metar_payload,
+        pirep_payload,
         taf_payload,
         notam_payload,
         offline_region_records,
@@ -2992,6 +3013,7 @@ pub fn query_map_selection_with_point_display_scale(
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
     offline_region_records: &[OfflineRegionRecord],
@@ -3010,6 +3032,7 @@ pub fn query_map_selection_with_point_display_scale(
         vector_tile_cache,
         metar_tile_cache,
         metar_payload,
+        pirep_payload,
         taf_payload,
         notam_payload,
         offline_region_records,
@@ -3029,6 +3052,7 @@ pub fn query_map_selection_for_surface(
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
     offline_region_records: &[OfflineRegionRecord],
@@ -3046,6 +3070,7 @@ pub fn query_map_selection_for_surface(
         vector_tile_cache,
         metar_tile_cache,
         metar_payload,
+        pirep_payload,
         taf_payload,
         notam_payload,
         &WeatherStationAirportAliases::default(),
@@ -3068,6 +3093,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
+    pirep_payload: Option<&PirepProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
     weather_station_airport_aliases: &WeatherStationAirportAliases,
@@ -3260,6 +3286,8 @@ pub fn query_map_selection_for_surface_in_time_zone(
             weather_station_airport_aliases,
             weather_age_reference_utc,
         ));
+    }
+    if let Some(pirep_payload) = pirep_payload {
         weather.extend(query_pirep_selection_matches(
             viewport,
             width_px,
@@ -3270,7 +3298,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
             click_screen,
             hit_radius_px,
             metar_tile_cache,
-            metar_payload,
+            pirep_payload,
         ));
     }
 
@@ -3421,7 +3449,7 @@ fn query_pirep_selection_matches(
     click_screen: WorldPoint,
     hit_radius_px: f64,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: &MetarProductPayload,
+    pirep_payload: &PirepProductPayload,
 ) -> Vec<MapSelectionPointMatch> {
     let Some(metar_zoom) = metar_tile_zoom else {
         return Vec::new();
@@ -3442,11 +3470,7 @@ fn query_pirep_selection_matches(
             if record_ref.kind != "pirep" {
                 continue;
             }
-            let Some(record) = metar_payload
-                .pireps
-                .iter()
-                .find(|record| record.id == record_ref.id)
-            else {
+            let Some(record) = pirep_payload.pireps_by_id.get(&record_ref.id) else {
                 continue;
             };
             let feature = visible_pirep_feature(
@@ -7191,6 +7215,7 @@ mod tests {
             &obstacle_tile_cache,
             &HashMap::new(),
             None,
+            None,
             airspace_feature_cache,
             None,
         )
@@ -7224,6 +7249,7 @@ mod tests {
             &vector_tile_cache,
             &obstacle_tile_cache,
             &HashMap::new(),
+            None,
             None,
             airspace_feature_cache,
             None,
@@ -7558,7 +7584,6 @@ mod tests {
                     test_metar_record(dense_station, position),
                 ),
             ]),
-            pireps: Vec::new(),
         };
         let config = test_map_overlay_config();
         let overlay_for = |metrics: &MapSurfaceMetrics| {
@@ -7573,6 +7598,7 @@ mod tests {
                 &HashMap::new(),
                 &metar_tile_cache,
                 Some(&metar_payload),
+                None,
                 &HashMap::new(),
                 None,
                 &[],
@@ -7604,6 +7630,7 @@ mod tests {
                 &HashMap::new(),
                 &metar_tile_cache,
                 Some(&metar_payload),
+                None,
                 None,
                 None,
                 &[],
@@ -8035,6 +8062,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            None,
             &HashMap::new(),
             None,
         );
@@ -8055,6 +8083,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            None,
             None,
             &HashMap::new(),
             None,
@@ -8225,7 +8254,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
-            pireps: Vec::new(),
         };
         let result = super::query_map_overlay(
             &viewport,
@@ -8240,6 +8268,7 @@ mod tests {
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
+            None,
             &HashMap::new(),
             None,
         );
@@ -8463,7 +8492,6 @@ mod tests {
                             latitude: 47.2,
                         },
                     )]),
-                    pireps: Vec::new(),
                 })
             } else {
                 None
@@ -8560,6 +8588,7 @@ mod tests {
                 &HashMap::new(),
                 &metar_tile_cache,
                 metar_product.as_ref(),
+                None,
                 &airspace_feature_cache,
                 tfr_product.as_ref(),
             );
@@ -8685,7 +8714,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
-            pireps: Vec::new(),
         };
         let taf_raw_text = "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030 FM010600 22008KT P6SM SCT050";
         let tafs = TafProductPayload {
@@ -8715,6 +8743,7 @@ mod tests {
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
+            None,
             Some(&tafs),
             None,
             &[],
@@ -8827,7 +8856,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station: HashMap::from([("K1S5".to_string(), metar.clone())]),
-            pireps: Vec::new(),
         };
 
         let detail = weather_detail_for_airport("1S5", &aliases, Some(&payload), None, None, None)
@@ -9245,7 +9273,6 @@ mod tests {
             observed_at_utc: None,
             metar_count: Some(1),
             metars_by_station,
-            pireps: Vec::new(),
         };
 
         let result = query_map_selection(
@@ -9261,6 +9288,7 @@ mod tests {
             &HashMap::new(),
             &metar_tile_cache,
             Some(&metars),
+            None,
             None,
             None,
             &[],
@@ -9334,6 +9362,7 @@ mod tests {
             LatLon { lat: 0.0, lon: 0.0 },
             &HashMap::new(),
             &HashMap::new(),
+            None,
             None,
             None,
             None,
@@ -9470,6 +9499,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             &HashMap::from([(feature.id.clone(), feature)]),
             None,
@@ -9543,6 +9573,7 @@ mod tests {
             LatLon { lat: 0.0, lon: 0.0 },
             &vector_cache,
             &HashMap::new(),
+            None,
             None,
             None,
             None,
@@ -10654,6 +10685,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             &HashMap::new(),
             None,
@@ -11056,6 +11088,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             &HashMap::new(),
             None,
@@ -11437,6 +11470,7 @@ mod tests {
             viewport.center,
             &vector_cache,
             &HashMap::new(),
+            None,
             None,
             None,
             None,

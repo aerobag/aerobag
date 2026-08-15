@@ -21,21 +21,22 @@ use sha2::{Digest, Sha256};
 
 use crate::winds_aloft::{build_atmosphere_dataset, BuildAtmosphereDatasetRequest};
 use crate::{
-    build_metar_dataset, build_taf_dataset, build_tfr_dataset,
+    build_metar_dataset, build_pirep_dataset, build_taf_dataset, build_tfr_dataset,
     engine::{
         read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
         LiveFeedStatePayload, LiveFeedStatusTimestamps, ProductBuilder, UpstreamEvent,
     },
     load_tfr_notam_ids, metar_content_fingerprint,
     notam_store::{NotamPersistentStore, NotamStateReader},
-    sanitize_notam_id, taf_content_fingerprint,
+    pirep_content_fingerprint, sanitize_notam_id, taf_content_fingerprint,
     tfr_detail_backfill::{TfrDetailBackfillStore, TfrDetailFetchTarget},
-    tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildTafRequest, BuildTfrRequest,
-    StructuredTfrNotamMetadata,
+    tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildPirepRequest, BuildTafRequest,
+    BuildTfrRequest, StructuredTfrNotamMetadata,
 };
 
 const METAR_XML_URL: &str = "https://aviationweather.gov/data/cache/metars.cache.xml.gz";
 const TAF_XML_URL: &str = "https://aviationweather.gov/data/cache/tafs.cache.xml.gz";
+const PIREP_XML_URL: &str = "https://aviationweather.gov/data/cache/aircraftreports.cache.xml.gz";
 const TFR_LIST_URL: &str = "https://tfr.faa.gov/tfrapi/exportTfrList";
 const TFR_GRAPHICS_URL: &str = concat!(
     "https://tfr.faa.gov/geoserver/TFR/ows?",
@@ -536,6 +537,67 @@ impl ProductBuilder for TafLiveFeedBuilder {
                 "tafs_by_station",
                 Some("taf_count"),
                 result.taf_count,
+            ),
+            generated_at_utc,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PirepLiveFeedBuilder {
+    fetch: LiveFeedFetchConfig,
+}
+
+impl PirepLiveFeedBuilder {
+    pub fn new(fetch: LiveFeedFetchConfig) -> Self {
+        Self { fetch }
+    }
+}
+
+impl ProductBuilder for PirepLiveFeedBuilder {
+    fn product_id(&self) -> &str {
+        "pireps"
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        scratch_dir: &Path,
+    ) -> anyhow::Result<BuiltLiveFeedState> {
+        let generated_at_utc = normalized_event_time(event.observed_at_utc);
+        let input_dir = fresh_dir(&scratch_dir.join("input"))?;
+        let output_dir = fresh_dir(&scratch_dir.join("output"))?;
+        let provenance_dir = scratch_dir.join("meta").join("provenance").join("pireps");
+        let requests = vec![PrefetchRequest::new(PIREP_XML_URL)
+            .with_logical_file_name("aircraftreports.cache.xml.gz")];
+        prefetch_archives_with_provenance(
+            &requests,
+            &input_dir,
+            self.fetch.fetch_jobs,
+            self.fetch.fetch_cache.as_ref(),
+            &provenance_dir,
+            "pireps",
+        )?;
+        run_gzip_decompress(&input_dir.join("aircraftreports.cache.xml.gz"))?;
+        let pirep_xml_path = input_dir.join("aircraftreports.cache.xml");
+        let fingerprint = pirep_content_fingerprint(&pirep_xml_path)?;
+        let version = content_version_label(&fingerprint);
+        let result = build_pirep_dataset(&BuildPirepRequest {
+            pirep_xml_path,
+            output_dir,
+            version_label: version.clone(),
+            generated_at_utc,
+        })?;
+        let state_value = read_json_value(&result.structured_json_path)?;
+        Ok(with_collected_at(
+            keyed_record_json_live_feed_state(
+                "pireps",
+                version,
+                result.structured_json_path,
+                state_value,
+                "pireps_by_id",
+                Some("pirep_count"),
+                result.pirep_count,
             ),
             generated_at_utc,
         ))

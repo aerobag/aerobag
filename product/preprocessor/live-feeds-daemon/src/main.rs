@@ -38,7 +38,7 @@ use preprocessor_live_feeds::{
     products::{
         fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
         NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
-        TafLiveFeedBuilder, TfrDetailBackfillRunSummary, TfrLiveFeedBuilder,
+        PirepLiveFeedBuilder, TafLiveFeedBuilder, TfrDetailBackfillRunSummary, TfrLiveFeedBuilder,
         WindsAloftLiveFeedBuilder,
     },
     simulation::{
@@ -1780,6 +1780,7 @@ fn production_tasks(
     vec![
         production_task("metars", MetarLiveFeedBuilder::new(fetch.clone())),
         production_task("tafs", TafLiveFeedBuilder::new(fetch.clone())),
+        production_task("pireps", PirepLiveFeedBuilder::new(fetch.clone())),
         production_task(
             "nexrad",
             NexradSourceGridLiveFeedBuilder::new(fetch.clone(), false),
@@ -2577,6 +2578,32 @@ mod tests {
         LiveFeedStatePayload,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn production_task_registry_includes_every_public_polling_product() {
+        let tasks = production_tasks(
+            LiveFeedFetchConfig::new(1, None),
+            None,
+            PathBuf::from("/tmp/unused-tfr-detail-state"),
+        );
+        let mut products = tasks
+            .iter()
+            .map(|task| task.product_id().to_string())
+            .collect::<Vec<_>>();
+        products.sort();
+        assert_eq!(
+            products,
+            [
+                "metars",
+                "nexrad",
+                "obstacles",
+                "pireps",
+                "tafs",
+                "tfrs",
+                "winds-aloft",
+            ]
+        );
+    }
 
     #[test]
     fn parses_production_config() -> anyhow::Result<()> {

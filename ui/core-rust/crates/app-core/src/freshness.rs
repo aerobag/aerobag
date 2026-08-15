@@ -19,6 +19,7 @@ pub struct CycleProductFreshnessPolicy {
 pub struct LiveFeedFreshnessPolicies {
     pub notams: AgeFreshnessPolicy,
     pub metars: AgeFreshnessPolicy,
+    pub pireps: AgeFreshnessPolicy,
     pub tafs: AgeFreshnessPolicy,
     pub nexrad: AgeFreshnessPolicy,
     pub obstacles: AgeFreshnessPolicy,
@@ -57,6 +58,10 @@ pub const DATA_FRESHNESS_POLICIES: DataFreshnessPolicies = DataFreshnessPolicies
             warning_after_ms: Some(DAY_MS),
         },
         metars: AgeFreshnessPolicy {
+            info_after_ms: None,
+            warning_after_ms: Some(30 * MINUTE_MS),
+        },
+        pireps: AgeFreshnessPolicy {
             info_after_ms: None,
             warning_after_ms: Some(30 * MINUTE_MS),
         },

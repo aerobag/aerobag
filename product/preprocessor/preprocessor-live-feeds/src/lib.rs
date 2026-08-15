@@ -27,6 +27,7 @@ mod winds_aloft;
 
 const METAR_PRODUCT_CONTRACT_VERSION: u32 = 9;
 const TAF_PRODUCT_CONTRACT_VERSION: u32 = 1;
+const PIREP_PRODUCT_CONTRACT_VERSION: u32 = 1;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]
@@ -77,6 +78,22 @@ pub struct BuildTafResult {
     pub structured_json_path: PathBuf,
     pub zip_path: PathBuf,
     pub taf_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildPirepRequest {
+    pub pirep_xml_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub version_label: String,
+    pub generated_at_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildPirepResult {
+    pub manifest_path: PathBuf,
+    pub structured_json_path: PathBuf,
+    pub zip_path: PathBuf,
+    pub pirep_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +159,28 @@ struct TafManifestFiles {
 #[derive(Debug, Clone, Serialize)]
 struct TafManifestCounts {
     tafs: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PirepManifest {
+    schema_version: u32,
+    version_label: String,
+    generated_at_utc: String,
+    files: PirepManifestFiles,
+    counts: PirepManifestCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PirepManifestFiles {
+    manifest: String,
+    structured_json: String,
+    pireps: String,
+    zip: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PirepManifestCounts {
+    pireps: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -346,6 +385,15 @@ enum TafTextMode {
     StationId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PirepTextMode {
+    RawText,
+    ObservationTime,
+    Latitude,
+    Longitude,
+    ReportType,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StructuredMetarDataset {
     schema_version: u32,
@@ -393,8 +441,10 @@ pub struct StructuredTafRecord {
 pub struct StructuredPirepDataset {
     schema_version: u32,
     version_label: String,
+    generated_at_utc: String,
+    observed_at_utc: String,
     pirep_count: usize,
-    pireps: Vec<StructuredPirepRecord>,
+    pireps_by_id: BTreeMap<String, StructuredPirepRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -420,6 +470,11 @@ struct TafProductModel {
     tafs_by_station: BTreeMap<String, StructuredTafRecord>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct PirepProductModel {
+    pireps_by_id: BTreeMap<String, StructuredPirepRecord>,
+}
+
 #[derive(Debug, Clone)]
 struct ParsedMetarRecord {
     raw_text: String,
@@ -435,6 +490,15 @@ struct ParsedTafRecord {
     raw_text: String,
     issue_time: String,
     station_id: String,
+    longitude: String,
+    latitude: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedPirepRecord {
+    raw_text: String,
+    observation_time: String,
+    report_type: String,
     longitude: String,
     latitude: String,
 }
@@ -1067,6 +1131,74 @@ pub fn build_taf_dataset(request: &BuildTafRequest) -> anyhow::Result<BuildTafRe
     })
 }
 
+pub fn build_pirep_dataset(request: &BuildPirepRequest) -> anyhow::Result<BuildPirepResult> {
+    if request.output_dir.exists() {
+        fs::remove_dir_all(&request.output_dir)
+            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
+    }
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let model = pirep_product_model(&request.pirep_xml_path)?;
+    let content_timestamp = pirep_product_content_timestamp(&model, request.generated_at_utc)?;
+    let content_timestamp_text = content_timestamp.to_rfc3339();
+    let pirep_count = model.pireps_by_id.len();
+    let structured_json_path = request.output_dir.join("pireps.json");
+    let canonical_manifest_path = request.output_dir.join("manifest.json");
+    let manifest_path = request
+        .output_dir
+        .join(format!("pireps_{}.manifest.json", request.version_label));
+    let zip_path = request
+        .output_dir
+        .join(format!("pireps_{}.zip", request.version_label));
+
+    write_json_pretty(
+        &structured_json_path,
+        &StructuredPirepDataset {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            generated_at_utc: content_timestamp_text.clone(),
+            observed_at_utc: content_timestamp_text.clone(),
+            pirep_count,
+            pireps_by_id: model.pireps_by_id.clone(),
+        },
+    )?;
+    let manifest = PirepManifest {
+        schema_version: PIREP_PRODUCT_CONTRACT_VERSION,
+        version_label: request.version_label.clone(),
+        generated_at_utc: content_timestamp_text,
+        files: PirepManifestFiles {
+            manifest: "manifest.json".to_string(),
+            structured_json: "pireps.json".to_string(),
+            pireps: "pireps.json".to_string(),
+            zip: zip_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        counts: PirepManifestCounts {
+            pireps: pirep_count,
+        },
+    };
+    write_json_pretty(&canonical_manifest_path, &manifest)?;
+    write_json_pretty(&manifest_path, &manifest)?;
+    write_zip(
+        &zip_path,
+        &[
+            ("pireps.json", &structured_json_path),
+            ("manifest.json", &canonical_manifest_path),
+        ],
+    )?;
+
+    Ok(BuildPirepResult {
+        manifest_path,
+        structured_json_path,
+        zip_path,
+        pirep_count,
+    })
+}
+
 pub fn metar_content_fingerprint(metar_xml_path: &Path) -> anyhow::Result<String> {
     let model = metar_product_model(metar_xml_path)?;
     let bytes = serde_json::to_vec(&(METAR_PRODUCT_CONTRACT_VERSION, model))
@@ -1078,6 +1210,13 @@ pub fn taf_content_fingerprint(taf_xml_path: &Path) -> anyhow::Result<String> {
     let model = taf_product_model(taf_xml_path)?;
     let bytes = serde_json::to_vec(&(TAF_PRODUCT_CONTRACT_VERSION, model))
         .context("failed to encode canonical TAF model")?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+pub fn pirep_content_fingerprint(pirep_xml_path: &Path) -> anyhow::Result<String> {
+    let model = pirep_product_model(pirep_xml_path)?;
+    let bytes = serde_json::to_vec(&(PIREP_PRODUCT_CONTRACT_VERSION, model))
+        .context("failed to encode canonical PIREP model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
@@ -1128,6 +1267,15 @@ fn taf_product_model(taf_xml_path: &Path) -> anyhow::Result<TafProductModel> {
     Ok(TafProductModel { tafs_by_station })
 }
 
+fn pirep_product_model(pirep_xml_path: &Path) -> anyhow::Result<PirepProductModel> {
+    Ok(PirepProductModel {
+        pireps_by_id: structured_pirep_records(pirep_xml_path)?
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect(),
+    })
+}
+
 fn metar_product_content_timestamp(
     model: &MetarProductModel,
     fallback: DateTime<Utc>,
@@ -1168,6 +1316,30 @@ fn taf_product_content_timestamp(
         }
         let parsed = DateTime::parse_from_rfc3339(value)
             .with_context(|| format!("failed to parse TAF source timestamp {value:?}"))?
+            .with_timezone(&Utc);
+        if latest.is_none_or(|current| parsed > current) {
+            latest = Some(parsed);
+        }
+    }
+    Ok(latest.unwrap_or(fallback))
+}
+
+fn pirep_product_content_timestamp(
+    model: &PirepProductModel,
+    fallback: DateTime<Utc>,
+) -> anyhow::Result<DateTime<Utc>> {
+    let mut latest = None;
+    for value in model
+        .pireps_by_id
+        .values()
+        .map(|record| record.observed_at_utc.as_str())
+    {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let parsed = DateTime::parse_from_rfc3339(value)
+            .with_context(|| format!("failed to parse PIREP source timestamp {value:?}"))?
             .with_timezone(&Utc);
         if latest.is_none_or(|current| parsed > current) {
             latest = Some(parsed);
@@ -1244,7 +1416,66 @@ fn structured_taf_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structure
         .collect()
 }
 
-#[cfg(test)]
+fn structured_pirep_records(input_xml_path: &Path) -> anyhow::Result<Vec<StructuredPirepRecord>> {
+    let mut records = parse_pirep_records(input_xml_path)?;
+    records.sort_by(|left, right| {
+        (
+            &left.observation_time,
+            &left.raw_text,
+            &left.report_type,
+            &left.longitude,
+            &left.latitude,
+        )
+            .cmp(&(
+                &right.observation_time,
+                &right.raw_text,
+                &right.report_type,
+                &right.longitude,
+                &right.latitude,
+            ))
+    });
+    records
+        .into_iter()
+        .scan(
+            BTreeMap::<String, usize>::new(),
+            |occurrence_counts, record| -> Option<anyhow::Result<StructuredPirepRecord>> {
+                let result = (|| -> anyhow::Result<StructuredPirepRecord> {
+                    let hazards = parse_pirep_hazards(&record.raw_text);
+                    let identity = serde_json::to_vec(&(
+                        &record.observation_time,
+                        &record.raw_text,
+                        &record.report_type,
+                        &record.longitude,
+                        &record.latitude,
+                    ))
+                    .context("failed to encode PIREP identity")?;
+                    let digest = format!("{:x}", Sha256::digest(identity));
+                    let base_id = format!("pirep:{}", &digest[..16]);
+                    let count = occurrence_counts.entry(base_id.clone()).or_insert(0);
+                    let id = if *count == 0 {
+                        base_id
+                    } else {
+                        format!("{base_id}:{}", *count)
+                    };
+                    *count += 1;
+                    Ok(StructuredPirepRecord {
+                        id,
+                        raw_text: record.raw_text,
+                        observed_at_utc: record.observation_time,
+                        report_type: empty_to_none(record.report_type),
+                        longitude: parse_optional_f64(&record.longitude)?,
+                        latitude: parse_optional_f64(&record.latitude)?,
+                        symbol: hazards.symbol().to_string(),
+                        icing: hazards.icing.as_str().to_string(),
+                        turbulence: hazards.turbulence.as_str().to_string(),
+                    })
+                })();
+                Some(result)
+            },
+        )
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PirepHazardSeverity {
     None,
@@ -1254,7 +1485,6 @@ enum PirepHazardSeverity {
     Severe,
 }
 
-#[cfg(test)]
 impl PirepHazardSeverity {
     fn as_str(self) -> &'static str {
         match self {
@@ -1271,14 +1501,12 @@ impl PirepHazardSeverity {
     }
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PirepHazards {
     icing: PirepHazardSeverity,
     turbulence: PirepHazardSeverity,
 }
 
-#[cfg(test)]
 impl PirepHazards {
     fn symbol(self) -> &'static str {
         match (self.icing.actionable(), self.turbulence.actionable()) {
@@ -1296,7 +1524,6 @@ impl PirepHazards {
     }
 }
 
-#[cfg(test)]
 fn pirep_symbol(severity: PirepHazardSeverity, hazard: &'static str) -> &'static str {
     match (severity, hazard) {
         (PirepHazardSeverity::Light, "icing") => "light-icing",
@@ -1309,7 +1536,6 @@ fn pirep_symbol(severity: PirepHazardSeverity, hazard: &'static str) -> &'static
     }
 }
 
-#[cfg(test)]
 fn parse_pirep_hazards(raw_text: &str) -> PirepHazards {
     let sections = pirep_hazard_sections(raw_text);
     let mut icing = PirepHazardSeverity::None;
@@ -1328,7 +1554,6 @@ fn parse_pirep_hazards(raw_text: &str) -> PirepHazards {
     PirepHazards { icing, turbulence }
 }
 
-#[cfg(test)]
 fn pirep_hazard_sections(raw_text: &str) -> Vec<String> {
     let upper = raw_text.to_ascii_uppercase();
     let slash_sections = upper
@@ -1342,7 +1567,6 @@ fn pirep_hazard_sections(raw_text: &str) -> Vec<String> {
     }
 }
 
-#[cfg(test)]
 fn pirep_hazard_tokens(section: &str) -> Vec<String> {
     section
         .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -1351,14 +1575,12 @@ fn pirep_hazard_tokens(section: &str) -> Vec<String> {
         .collect()
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PirepHazardKind {
     Icing,
     Turbulence,
 }
 
-#[cfg(test)]
 fn pirep_section_hazards(tokens: &[String]) -> PirepHazards {
     let anchors = tokens
         .iter()
@@ -1395,7 +1617,6 @@ fn pirep_section_hazards(tokens: &[String]) -> PirepHazards {
     PirepHazards { icing, turbulence }
 }
 
-#[cfg(test)]
 fn pirep_hazard_kind(token: &str) -> Option<PirepHazardKind> {
     match token {
         "IC" | "ICE" | "ICING" | "RIME" | "CLRICE" | "MXD" | "MXDICE" => {
@@ -1406,7 +1627,6 @@ fn pirep_hazard_kind(token: &str) -> Option<PirepHazardKind> {
     }
 }
 
-#[cfg(test)]
 fn pirep_hazard_severity(tokens: &[String]) -> PirepHazardSeverity {
     let mut saw_negative = false;
     let mut best = PirepHazardSeverity::Unknown;
@@ -2373,6 +2593,93 @@ fn push_taf_text(current: &mut ParsedTafRecord, mode: Option<TafTextMode>, text:
         Some(TafTextMode::Latitude) => current.latitude.push_str(text),
         Some(TafTextMode::Longitude) => current.longitude.push_str(text),
         Some(TafTextMode::StationId) => current.station_id.push_str(text),
+        None => {}
+    }
+}
+
+fn parse_pirep_records(path: &Path) -> anyhow::Result<Vec<ParsedPirepRecord>> {
+    let xml =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut records = Vec::new();
+    let mut in_report = false;
+    let mut mode = None;
+    let mut current = ParsedPirepRecord {
+        raw_text: String::new(),
+        observation_time: String::new(),
+        report_type: String::new(),
+        longitude: String::new(),
+        latitude: String::new(),
+    };
+
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(event)) => match event.name().as_ref() {
+                b"AircraftReport" => {
+                    in_report = true;
+                    current = ParsedPirepRecord {
+                        raw_text: String::new(),
+                        observation_time: String::new(),
+                        report_type: String::new(),
+                        longitude: String::new(),
+                        latitude: String::new(),
+                    };
+                    mode = None;
+                }
+                b"raw_text" if in_report => mode = Some(PirepTextMode::RawText),
+                b"observation_time" if in_report => mode = Some(PirepTextMode::ObservationTime),
+                b"latitude" if in_report => mode = Some(PirepTextMode::Latitude),
+                b"longitude" if in_report => mode = Some(PirepTextMode::Longitude),
+                b"report_type" if in_report => mode = Some(PirepTextMode::ReportType),
+                _ => {}
+            },
+            Ok(Event::End(event)) => match event.name().as_ref() {
+                b"AircraftReport" if in_report => {
+                    if !current.raw_text.is_empty() {
+                        records.push(current.clone());
+                    }
+                    in_report = false;
+                    mode = None;
+                }
+                b"raw_text" | b"observation_time" | b"latitude" | b"longitude" | b"report_type" => {
+                    mode = None
+                }
+                _ => {}
+            },
+            Ok(Event::Text(event)) if in_report => {
+                let text = event
+                    .xml_content()
+                    .context("failed to decode aircraft report XML text")?
+                    .into_owned();
+                push_pirep_text(&mut current, mode, &text);
+            }
+            Ok(Event::CData(event)) if in_report => {
+                let text = event
+                    .xml_content()
+                    .context("failed to decode aircraft report XML cdata")?
+                    .into_owned();
+                push_pirep_text(&mut current, mode, &text);
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to parse {}", path.display()));
+            }
+        }
+        buffer.clear();
+    }
+
+    Ok(records)
+}
+
+fn push_pirep_text(current: &mut ParsedPirepRecord, mode: Option<PirepTextMode>, text: &str) {
+    match mode {
+        Some(PirepTextMode::RawText) => current.raw_text.push_str(text),
+        Some(PirepTextMode::ObservationTime) => current.observation_time.push_str(text),
+        Some(PirepTextMode::Latitude) => current.latitude.push_str(text),
+        Some(PirepTextMode::Longitude) => current.longitude.push_str(text),
+        Some(PirepTextMode::ReportType) => current.report_type.push_str(text),
         None => {}
     }
 }
@@ -3500,6 +3807,70 @@ mod tests {
             assert_eq!(hazards.icing.as_str(), icing, "{raw_text}");
             assert_eq!(hazards.turbulence.as_str(), turbulence, "{raw_text}");
         }
+    }
+
+    #[test]
+    fn pirep_dataset_is_keyed_stable_and_independent_from_metars() -> anyhow::Result<()> {
+        let temp = TempDir::new().context("failed to create temp dir")?;
+        let first = temp.path().join("first-pireps.xml");
+        let second = temp.path().join("second-pireps.xml");
+        let report_a = r#"<AircraftReport><observation_time>2026-08-14T16:00:00.000Z</observation_time><latitude>47.5</latitude><longitude>-122.3</longitude><report_type>PIREP</report_type><raw_text>SEA UA /OV SEA/TM 1600/FL080/IC LGT/TB NEG</raw_text></AircraftReport>"#;
+        let report_b = r#"<AircraftReport><observation_time>2026-08-14T16:05:00.000Z</observation_time><latitude>46.9</latitude><longitude>-121.8</longitude><report_type>AIREP</report_type><raw_text>SEA UUA /OV SEA/TM 1605/FL120/IC NEG/TB MOD</raw_text></AircraftReport>"#;
+        fs::write(
+            &first,
+            format!(
+                r#"<?xml version="1.0"?><response><data>{report_b}{report_a}</data></response>"#
+            ),
+        )?;
+        fs::write(
+            &second,
+            format!(
+                r#"<?xml version="1.0"?><response><data>{report_a}{report_b}</data></response>"#
+            ),
+        )?;
+
+        let first_fingerprint = pirep_content_fingerprint(&first)?;
+        let second_fingerprint = pirep_content_fingerprint(&second)?;
+        assert_eq!(first_fingerprint, second_fingerprint);
+        let version_label = first_fingerprint.chars().take(16).collect::<String>();
+        let generated_at_utc =
+            DateTime::parse_from_rfc3339("2026-08-14T16:10:00Z")?.with_timezone(&Utc);
+        let first_result = build_pirep_dataset(&BuildPirepRequest {
+            pirep_xml_path: first,
+            output_dir: temp.path().join("first-out"),
+            version_label: version_label.clone(),
+            generated_at_utc,
+        })?;
+        let second_result = build_pirep_dataset(&BuildPirepRequest {
+            pirep_xml_path: second,
+            output_dir: temp.path().join("second-out"),
+            version_label,
+            generated_at_utc,
+        })?;
+
+        assert_eq!(
+            fs::read(&first_result.structured_json_path)?,
+            fs::read(&second_result.structured_json_path)?,
+        );
+        let dataset: Value =
+            serde_json::from_slice(&fs::read(&first_result.structured_json_path)?)?;
+        let records = dataset
+            .get("pireps_by_id")
+            .and_then(Value::as_object)
+            .context("PIREP dataset should be keyed by stable report id")?;
+        assert_eq!(records.len(), 2);
+        assert_eq!(dataset["pirep_count"], 2);
+        assert!(dataset.get("metars_by_station").is_none());
+        assert!(records
+            .values()
+            .any(|record| record["symbol"] == "light-icing"));
+        assert!(records
+            .values()
+            .any(|record| record["symbol"] == "moderate-turbulence"));
+        let manifest: Value = serde_json::from_slice(&fs::read(&first_result.manifest_path)?)?;
+        assert_eq!(manifest["files"]["pireps"], "pireps.json");
+        assert_eq!(manifest["counts"]["pireps"], 2);
+        Ok(())
     }
 
     #[test]

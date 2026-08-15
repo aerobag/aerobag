@@ -978,6 +978,11 @@ pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
             records_key: "tafs_by_station".to_string(),
             count_key: Some("taf_count".to_string()),
         },
+        LiveFeedProductDriver::RecordJson {
+            product: "pireps".to_string(),
+            records_key: "pireps_by_id".to_string(),
+            count_key: Some("pirep_count".to_string()),
+        },
         LiveFeedProductDriver::Notam {
             product: "notams".to_string(),
         },
@@ -2236,6 +2241,10 @@ mod tests {
         assert_eq!(
             registry.record_json_delta_schema("tafs"),
             Some(("tafs_by_station".to_string(), Some("taf_count".to_string())))
+        );
+        assert_eq!(
+            registry.record_json_delta_schema("pireps"),
+            Some(("pireps_by_id".to_string(), Some("pirep_count".to_string())))
         );
         assert_eq!(registry.record_json_delta_schema("notams"), None);
         assert_eq!(registry.record_json_delta_schema("tfrs"), None);

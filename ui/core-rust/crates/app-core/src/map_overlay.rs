@@ -4218,11 +4218,14 @@ fn taf_token_is_from_time_group(token: &str) -> bool {
 }
 
 fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelectionItem {
+    let label = airspace_selection_label(feature);
+    let published_name = feature.name.trim();
     MapSelectionItem {
         id: feature.id.clone(),
-        label: airspace_selection_label(feature),
+        description: (!published_name.is_empty() && published_name != label)
+            .then(|| published_name.to_string()),
+        label,
         sublabel: feature.ident.trim().to_string(),
-        description: None,
         distance: None,
         secondary_description: None,
         position: None,
@@ -4246,6 +4249,11 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
 }
 
 fn airspace_selection_label(feature: &AirspaceFeaturePayload) -> String {
+    let ident = feature.ident.trim();
+    let airspace_class = feature.airspace_class.trim().to_ascii_uppercase();
+    if !ident.is_empty() && matches!(airspace_class.as_str(), "B" | "C" | "D") {
+        return format!("{} {airspace_class}", ident.to_ascii_uppercase());
+    }
     let name = feature.name.trim();
     if !name.is_empty() {
         name.to_string()
@@ -9522,6 +9530,7 @@ mod tests {
 
         assert_eq!(item.label, "HANFORD NSA, WA");
         assert_eq!(item.sublabel, "NHANFORD");
+        assert_eq!(item.description, None);
         assert_eq!(
             item.actions
                 .iter()
@@ -9533,6 +9542,31 @@ mod tests {
                 style_key: "national_security".to_string(),
                 color_key: "class_c_magenta".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn controlled_airspace_selection_uses_ident_and_class_as_compact_label() {
+        let feature = AirspaceFeaturePayload {
+            schema_version: 1,
+            id: "airspace:data_2608:d:bfi:class_d:1".to_string(),
+            kind: "airspace".to_string(),
+            name: "SEATTLE, BOEING FIELD/KING COUNTY INT. AIRPORT CLASS D".to_string(),
+            ident: "BFI".to_string(),
+            airspace_class: "D".to_string(),
+            style_hint: "class_d".to_string(),
+            vertical: test_airspace_vertical("25", "SFC"),
+            bbox: [-122.4, 47.4, -122.2, 47.6],
+            paths: vec![],
+        };
+
+        let item = selection_item_for_airspace(&feature);
+
+        assert_eq!(item.label, "BFI D");
+        assert_eq!(item.sublabel, "BFI");
+        assert_eq!(
+            item.description.as_deref(),
+            Some("SEATTLE, BOEING FIELD/KING COUNTY INT. AIRPORT CLASS D")
         );
     }
 

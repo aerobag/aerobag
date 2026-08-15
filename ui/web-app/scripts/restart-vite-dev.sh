@@ -7,7 +7,7 @@
 set -euo pipefail
 
 HOST="${HOST:-0.0.0.0}"
-DEV_SCRIPT="${AEROBAG_DEV_SCRIPT:-inner:dev}"
+DEV_SCRIPT_OVERRIDE="${AEROBAG_DEV_SCRIPT:-}"
 ONLY_TEAR_DOWN=0
 
 while [ "$#" -gt 0 ]; do
@@ -32,6 +32,7 @@ fi
 
 # shellcheck source=/dev/null
 source "$INSTANCE_CONFIG"
+DEV_SCRIPT="${DEV_SCRIPT_OVERRIDE:-${AEROBAG_DEV_SCRIPT:-inner:dev}}"
 
 if [ -z "${WEB_PORT:-}" ]; then
   echo "WEB_PORT must be defined in $INSTANCE_CONFIG" >&2

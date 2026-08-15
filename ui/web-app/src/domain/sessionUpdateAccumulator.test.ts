@@ -65,4 +65,33 @@ describe("SessionUpdateAccumulator", () => {
     expect(loadFullSnapshot).toHaveBeenCalledOnce();
     expect(accumulator.snapshot).toEqual(fullSnapshot);
   });
+
+  it("applies bootstrap mutation patches without replacing the creation snapshot", async () => {
+    const accumulator = new SessionUpdateAccumulator(
+      conformance.initial_snapshot,
+      conformance.expected_contract_version,
+    );
+    const loadFullSnapshot = vi.fn(async () => {
+      throw new Error("bootstrap patches should be contiguous");
+    });
+
+    await expect(accumulator.applyProjectionResult({
+      ui_contract_version: 1,
+      session_revision: 8,
+      application: { version: 1, fields: { content_policy: "PreferRemote" } },
+    }, loadFullSnapshot)).resolves.toBe("applied");
+    await expect(accumulator.applyProjectionResult({
+      ui_contract_version: 1,
+      session_revision: 9,
+      map: { version: 1, fields: { map_layer_state: { terrain_warning: true } } },
+    }, loadFullSnapshot)).resolves.toBe("applied");
+
+    expect(loadFullSnapshot).not.toHaveBeenCalled();
+    expect(accumulator.snapshot).toMatchObject({
+      ...conformance.initial_snapshot,
+      session_revision: 9,
+      content_policy: "PreferRemote",
+      map_layer_state: { terrain_warning: true },
+    });
+  });
 });

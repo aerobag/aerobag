@@ -1108,12 +1108,31 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       const created = createdEnvelope.result ?? createdEnvelope;
       assertUiContractVersion(created.snapshot);
-      await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
-      await debugTiming("startup.session.set_resource_policy", () =>
-        module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked")),
+      const snapshotAccumulator = new SessionUpdateAccumulator(
+        created.snapshot,
+        UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
       );
-      await debugTiming("startup.session.configure_platform", () =>
-        module.configure_platform_capabilities_in_session(
+      const loadFullSnapshot = () => runSessionOperationForHandle<unknown>(created.handle, () =>
+        this.module.get_session_snapshot_paged(created.handle));
+      const applyBootstrapProjection = async (value: unknown) => {
+        await snapshotAccumulator.applyProjectionResult(value, loadFullSnapshot);
+      };
+      const applyDirectBootstrapMutation = async (responseJson: string) => {
+        const response = JSON.parse(responseJson) as { state: string; result?: unknown };
+        if (response.state !== "complete" || response.result === undefined) {
+          throw new Error(`bootstrap session mutation unexpectedly returned ${response.state}`);
+        }
+        await applyBootstrapProjection(response.result);
+      };
+      await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
+      await debugTiming("startup.session.set_resource_policy", async () =>
+        applyDirectBootstrapMutation(await module.set_resource_policy_in_session(
+          created.handle,
+          JSON.stringify("public_unpacked"),
+        )),
+      );
+      await debugTiming("startup.session.configure_platform", async () =>
+        applyDirectBootstrapMutation(await module.configure_platform_capabilities_in_session(
           created.handle,
           JSON.stringify({
             display_policy: null,
@@ -1129,17 +1148,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
             local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
-        ),
+        )),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
-      const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
+      const catalogedProjection = await debugTiming("startup.session.load_raster_catalog", () =>
         runSessionOperationForHandle<unknown>(created.handle, () =>
           module.load_raster_map_catalog_in_session(created.handle),
         ));
-      const snapshotAccumulator = new SessionUpdateAccumulator(
-        catalogedSnapshot,
-        UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
-      );
+      await applyBootstrapProjection(catalogedProjection);
       return {
         ...created,
         snapshot: assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot),

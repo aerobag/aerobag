@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import threading
 import time
@@ -25,15 +26,22 @@ from urllib.request import Request, urlopen
 
 
 SCHEMA_VERSION = 1
+HISTORY_SCHEMA_VERSION = 2
 DEFAULT_LISTEN = "127.0.0.1:8098"
 DEFAULT_POLL_SECONDS = 60
-HISTORY_RECORD_LIMIT = 24 * 60
-DASHBOARD_SERIES_LIMIT = HISTORY_RECORD_LIMIT
+HISTORY_RECORD_LIMIT = 2 * 24 * 60 + 10
 HISTORY_LOOKBACK_DAYS = 14
+HISTORY_RETENTION_DAYS = HISTORY_LOOKBACK_DAYS
 HISTORY_TAIL_CHUNK_BYTES = 64 * 1024
-HISTORY_TAIL_MAX_BYTES = 16 * 1024 * 1024
+HISTORY_TAIL_MAX_BYTES = 32 * 1024 * 1024
+DASHBOARD_WINDOW_SECONDS = 24 * 60 * 60
+DASHBOARD_BUCKET_SECONDS = 5 * 60
+DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
+
+_history_maintenance_dates: dict[Path, date] = {}
+_history_maintenance_lock = threading.Lock()
 
 LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "tafs": (60 * 60, 3 * 60 * 60),
@@ -1009,6 +1017,137 @@ def parse_history_line(line: bytes) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def graphable_scalar(value: object) -> bool | int | float | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return None
+
+
+def compact_evaluation_metrics(evaluation: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    metrics = evaluation.get("metrics")
+    if not isinstance(metrics, list):
+        return compact
+    for metric in metrics:
+        if not isinstance(metric, dict) or not isinstance(metric.get("id"), str):
+            continue
+        value = graphable_scalar(metric.get("value"))
+        if value is None:
+            continue
+        severity = metric.get("severity", "ok")
+        compact[metric["id"]] = (
+            value
+            if severity == "ok"
+            else {
+                "value": value,
+                "severity": severity,
+            }
+        )
+    return compact
+
+
+def history_metric_values(record: dict[str, Any]) -> dict[str, Any]:
+    metrics = record.get("metrics")
+    if isinstance(metrics, dict):
+        return metrics
+    evaluation = record.get("evaluation")
+    if isinstance(evaluation, dict):
+        return compact_evaluation_metrics(evaluation)
+    return {}
+
+
+def compact_existing_history_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    sampled_at = record.get("sampled_at_utc")
+    if not isinstance(sampled_at, str):
+        return None
+    compact = {
+        "schema_version": SCHEMA_VERSION,
+        "history_schema_version": HISTORY_SCHEMA_VERSION,
+        "sampled_at_utc": sampled_at,
+        "metrics": history_metric_values(record),
+    }
+    product_key = record.get("product_facts_key")
+    if isinstance(product_key, list):
+        compact["product_facts_key"] = product_key
+    product_counts = record.get("product_counts")
+    if isinstance(product_counts, dict):
+        compact["product_counts"] = product_counts
+    return compact
+
+
+def history_date_from_path(path: Path) -> date | None:
+    prefix = "pipeline_health-"
+    if not path.name.startswith(prefix) or path.suffix != ".jsonl":
+        return None
+    return parse_date(path.name[len(prefix) : -len(path.suffix)])
+
+
+def prune_history_files(
+    health_root: Path,
+    now: datetime,
+    retention_days: int = HISTORY_RETENTION_DAYS,
+) -> list[Path]:
+    if retention_days <= 0:
+        return []
+    cutoff = now.date() - timedelta(days=retention_days - 1)
+    removed: list[Path] = []
+    for path in health_root.glob("pipeline_health-*.jsonl"):
+        file_date = history_date_from_path(path)
+        if file_date is not None and file_date < cutoff:
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
+def history_file_is_compact(path: Path) -> bool:
+    with path.open("rb") as stream:
+        for line in stream:
+            record = parse_history_line(line)
+            if record is not None:
+                return record.get("history_schema_version") == HISTORY_SCHEMA_VERSION
+    return True
+
+
+def migrate_history_file(path: Path) -> bool:
+    if history_file_is_compact(path):
+        return False
+    temporary = path.with_name(f".{path.name}.compact.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        with path.open("rb") as source, temporary.open("w", encoding="utf-8") as output:
+            for line in source:
+                record = parse_history_line(line)
+                if record is None:
+                    continue
+                compact = compact_existing_history_record(record)
+                if compact is None:
+                    continue
+                output.write(
+                    json.dumps(compact, sort_keys=True, separators=(",", ":")) + "\n"
+                )
+        temporary.replace(path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return True
+
+
+def maintain_history(health_root: Path, now: datetime) -> None:
+    key = health_root.resolve()
+    with _history_maintenance_lock:
+        if _history_maintenance_dates.get(key) == now.date():
+            return
+        health_root.mkdir(parents=True, exist_ok=True)
+        prune_history_files(health_root, now)
+        for path in history_paths_newest_first(health_root, now):
+            migrate_history_file(path)
+        _history_maintenance_dates[key] = now.date()
+
+
 def read_history_file_tail(
     path: Path,
     limit: int,
@@ -1080,12 +1219,25 @@ def read_history(
 def append_history(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, sort_keys=True) + "\n")
+        stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 def compact_history_record(
     facts: dict[str, Any],
     evaluation: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "history_schema_version": HISTORY_SCHEMA_VERSION,
+        "sampled_at_utc": facts["sampled_at_utc"],
+        "metrics": compact_evaluation_metrics(evaluation),
+        "product_facts_key": list(product_facts_publication_key(facts)),
+        "product_counts": aggregate_product_counts(facts),
+    }
+
+
+def current_health_record(
+    facts: dict[str, Any], evaluation: dict[str, Any]
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1105,14 +1257,16 @@ def write_current(path: Path, record: dict[str, Any]) -> None:
 
 def run_sample(config: MonitorConfig) -> dict[str, Any]:
     now = utc_now()
+    maintain_history(config.health_root, now)
     history_path = history_path_for_date(config.health_root, now.date())
     previous = read_history(config.health_root, now=now).records
     facts = collect_facts(config, now)
     evaluation = evaluate_health(facts, previous, now)
-    record = compact_history_record(facts, evaluation)
-    append_history(history_path, record)
-    write_current(config.health_root / "pipeline-health-current.json", record)
-    return record
+    history_record = compact_history_record(facts, evaluation)
+    current_record = current_health_record(facts, evaluation)
+    append_history(history_path, history_record)
+    write_current(config.health_root / "pipeline-health-current.json", current_record)
+    return current_record
 
 
 def sample_age_seconds(record: dict[str, Any], now: datetime) -> int | None:
@@ -1133,42 +1287,106 @@ def current_record_for_response(config: MonitorConfig) -> dict[str, Any]:
     response = dict(record)
     response["served_at_utc"] = iso_utc(served_at)
     response["sample_age_seconds"] = sample_age_seconds(record, served_at)
+    response["monitor_poll_seconds"] = config.poll_seconds
     return response
 
 
-def compact_metric_series(records: list[dict[str, Any]]) -> dict[str, Any]:
-    samples: list[dict[str, Any]] = []
+def stored_metric_value(metric: Any) -> tuple[bool | int | float | None, str]:
+    if isinstance(metric, dict):
+        value = graphable_scalar(metric.get("value"))
+        severity = metric.get("severity", "ok")
+        return value, severity if isinstance(severity, str) else "ok"
+    return graphable_scalar(metric), "ok"
+
+
+def compact_metric_series(
+    records: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+    window_seconds: int = DASHBOARD_WINDOW_SECONDS,
+    bucket_seconds: int = DASHBOARD_BUCKET_SECONDS,
+) -> dict[str, Any]:
+    now = now or utc_now()
+    bucket_limit = max(1, math.ceil(window_seconds / bucket_seconds))
+    window_start = now - timedelta(seconds=window_seconds)
+    buckets: dict[int, dict[str, dict[str, Any]]] = {}
+    source_records = 0
+    latest_sampled_at: datetime | None = None
     for record in records:
-        evaluation = record.get("evaluation")
-        if not isinstance(evaluation, dict):
+        sampled_at = parse_time(record.get("sampled_at_utc"))
+        if sampled_at is None or sampled_at < window_start or sampled_at > now:
             continue
-        metrics = evaluation.get("metrics")
-        if not isinstance(metrics, list):
-            continue
-        metric_values: dict[str, dict[str, Any]] = {}
-        for metric in metrics:
-            if not isinstance(metric, dict) or not isinstance(metric.get("id"), str):
+        source_records += 1
+        if latest_sampled_at is None or sampled_at > latest_sampled_at:
+            latest_sampled_at = sampled_at
+        bucket_epoch = int(sampled_at.timestamp()) // bucket_seconds * bucket_seconds
+        bucket = buckets.setdefault(bucket_epoch, {})
+        for metric_id, stored in history_metric_values(record).items():
+            if not isinstance(metric_id, str):
                 continue
-            value = metric.get("value")
-            severity = metric.get("severity", "ok")
-            metric_values[metric["id"]] = (
-                value
-                if severity == "ok"
-                else {
-                    "value": value,
-                    "severity": severity,
+            value, severity = stored_metric_value(stored)
+            if value is None:
+                continue
+            numeric = int(value) if isinstance(value, bool) else value
+            aggregate = bucket.get(metric_id)
+            if aggregate is None:
+                bucket[metric_id] = {
+                    "first": numeric,
+                    "last": numeric,
+                    "min": numeric,
+                    "max": numeric,
+                    "severity": SEVERITY_RANK.get(severity, 0),
+                    "first_at": sampled_at,
+                    "last_at": sampled_at,
                 }
+                continue
+            if sampled_at < aggregate["first_at"]:
+                aggregate["first"] = numeric
+                aggregate["first_at"] = sampled_at
+            if sampled_at >= aggregate["last_at"]:
+                aggregate["last"] = numeric
+                aggregate["last_at"] = sampled_at
+            aggregate["min"] = min(aggregate["min"], numeric)
+            aggregate["max"] = max(aggregate["max"], numeric)
+            aggregate["severity"] = max(
+                aggregate["severity"], SEVERITY_RANK.get(severity, 0)
             )
-        samples.append(
-            {
-                "sampled_at_utc": record.get("sampled_at_utc"),
-                "metrics": metric_values,
-            }
-        )
+
+    bucket_epochs = sorted(buckets)[-bucket_limit:]
+    metric_ids = sorted(
+        {
+            metric_id
+            for bucket_epoch in bucket_epochs
+            for metric_id in buckets[bucket_epoch]
+        }
+    )
+    series: dict[str, dict[str, list[Any]]] = {}
+    for metric_id in metric_ids:
+        columns = {
+            "first": [],
+            "last": [],
+            "min": [],
+            "max": [],
+            "severity": [],
+        }
+        for bucket_epoch in bucket_epochs:
+            aggregate = buckets[bucket_epoch].get(metric_id)
+            for name in columns:
+                columns[name].append(aggregate.get(name) if aggregate is not None else None)
+        series[metric_id] = columns
+
     return {
         "schema_version": SCHEMA_VERSION,
-        "generated_at_utc": iso_utc(utc_now()),
-        "samples": samples,
+        "generated_at_utc": iso_utc(now),
+        "window_seconds": window_seconds,
+        "bucket_seconds": bucket_seconds,
+        "bucket_limit": bucket_limit,
+        "source_records": source_records,
+        "latest_sampled_at_utc": (
+            iso_utc(latest_sampled_at) if latest_sampled_at is not None else None
+        ),
+        "times": [iso_utc(datetime.fromtimestamp(value, timezone.utc)) for value in bucket_epochs],
+        "series": series,
     }
 
 
@@ -1255,14 +1473,8 @@ def serve(config: MonitorConfig) -> None:
                 )
                 return
             if path == "/pipeline-health/series.json":
-                query = parse_qs(urlparse(self.path).query)
-                limit = parse_record_limit(
-                    query.get("limit", [str(DASHBOARD_SERIES_LIMIT)])[0],
-                    DASHBOARD_SERIES_LIMIT,
-                )
-                history = read_history(config.health_root, limit)
+                history = read_history(config.health_root, HISTORY_RECORD_LIMIT)
                 response = compact_metric_series(history.records)
-                response["record_limit"] = limit
                 response["records_returned"] = len(history.records)
                 response["history_files"] = history.files
                 response["truncated"] = history.truncated
@@ -1342,6 +1554,7 @@ def dashboard_html() -> str:
     .metric-id { color:var(--muted); overflow-wrap:anywhere; font-size:12px; margin-bottom:10px; }
     .metric-value { font-size:24px; font-weight:700; margin-bottom:6px; }
     .metric-message { color:var(--muted); overflow-wrap:anywhere; }
+    .metric-details-host { grid-column:1 / -1; }
     .metric-details { grid-column:1 / -1; margin-top:2px; color:var(--muted); user-select:text; }
     .metric-details summary { cursor:pointer; color:var(--text); }
     .metric-details table { margin-top:8px; font-size:12px; }
@@ -1377,7 +1590,19 @@ def dashboard_html() -> str:
 <script>
 const cls = (severity) => severity === "critical" ? "critical" : severity === "warning" ? "warning" : "ok";
 const severityRank = { ok: 0, warning: 1, critical: 2 };
+const severityNames = ["ok", "warning", "critical"];
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const dashboard = {
+  current: null,
+  series: null,
+  rows: new Map(),
+  plots: new Map(),
+  observer: null,
+  rowOrder: [],
+  refreshTimer: null,
+  refreshInFlight: false,
+  forceSeriesReload: false,
+};
 async function loadJson(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`${path}: ${response.status}`);
@@ -1388,19 +1613,12 @@ function graphValue(value) {
   if (typeof value === "boolean") return value ? 1 : 0;
   return null;
 }
-function seriesValue(metric) {
-  if (metric && typeof metric === "object" && Object.hasOwn(metric, "value")) return metric.value;
-  return metric;
-}
-function seriesSeverity(metric) {
-  if (metric && typeof metric === "object" && typeof metric.severity === "string") return metric.severity;
-  return "ok";
-}
 function severityTrace(points, severity) {
   const x = [], y = [];
   for (let index = 1; index < points.length; index += 1) {
     const previous = points[index - 1];
     const current = points[index];
+    if (!previous || !current) continue;
     const segmentSeverity = (severityRank[current.severity] || 0) >= (severityRank[previous.severity] || 0)
       ? current.severity
       : previous.severity;
@@ -1458,19 +1676,8 @@ function renderMetricDetails(metric) {
     : "";
   return `<details class="metric-details"><summary>Failure details</summary>${last}${table}</details>`;
 }
-function graphableMetrics(metrics, series) {
-  const idsWithSeries = new Set();
-  for (const sample of series.samples || []) {
-    for (const [id, metric] of Object.entries(sample.metrics || {})) {
-      if (graphValue(seriesValue(metric)) !== null) idsWithSeries.add(id);
-    }
-  }
-  return (metrics || [])
-    .filter((metric) => graphValue(metric.value) !== null || idsWithSeries.has(metric.id))
-    .sort((a, b) => {
-      const severity = (severityRank[b.severity || "ok"] || 0) - (severityRank[a.severity || "ok"] || 0);
-      return severity || String(a.id).localeCompare(String(b.id));
-    });
+function graphableMetrics(metrics) {
+  return (metrics || []).filter((metric) => graphValue(metric.value) !== null);
 }
 function renderCurrent(record) {
   const evaln = record.evaluation;
@@ -1485,52 +1692,140 @@ function renderCurrent(record) {
     ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td>${esc(a.metric_id)}</td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">No alerts.</div>`;
 }
-function purgeMetricPlots(container) {
-  if (!window.Plotly) return;
-  for (const plot of container.querySelectorAll(".js-plotly-plot")) {
-    Plotly.purge(plot);
+function updateMetricRow(row, metric) {
+  row.metric = metric;
+  row.title.textContent = metric.label || metric.id;
+  row.pill.textContent = metric.severity || "ok";
+  row.pill.className = `pill ${cls(metric.severity)}`;
+  row.value.innerHTML = `${esc(formatValue(metric))}${metric.unit ? ` <span class="muted">${esc(metric.unit)}</span>` : ""}`;
+  row.message.textContent = metric.message || "";
+  row.details.innerHTML = renderMetricDetails(metric);
+}
+function deactivatePlot(metricId) {
+  const row = dashboard.rows.get(metricId);
+  if (!row || !dashboard.plots.has(metricId)) return;
+  if (window.Plotly) Plotly.purge(row.plot);
+  row.plot.replaceChildren();
+  dashboard.plots.delete(metricId);
+}
+function purgeAllPlots() {
+  for (const metricId of [...dashboard.plots.keys()]) {
+    deactivatePlot(metricId);
   }
 }
-function renderMetricRows(current, series) {
-  const metrics = graphableMetrics(current.evaluation?.metrics || [], series);
+function buildMetricRows(metrics) {
   const container = document.getElementById("metricRows");
-  purgeMetricPlots(container);
+  if (dashboard.observer) dashboard.observer.disconnect();
+  purgeAllPlots();
+  dashboard.rows.clear();
   container.innerHTML = metrics.length
     ? metrics.map((metric, index) => `<section class="metric-row">
         <div>
-          <div class="metric-title"><h3>${esc(metric.label || metric.id)}</h3><span class="pill ${cls(metric.severity)}">${esc(metric.severity || "ok")}</span></div>
+          <div class="metric-title"><h3></h3><span class="pill"></span></div>
           <div class="metric-id">${esc(metric.id)}</div>
-          <div class="metric-value">${esc(formatValue(metric))}${metric.unit ? ` <span class="muted">${esc(metric.unit)}</span>` : ""}</div>
-          <div class="metric-message">${esc(metric.message || "")}</div>
+          <div class="metric-value"></div>
+          <div class="metric-message"></div>
         </div>
         <div id="metricPlot${index}" class="plot"></div>
-        ${renderMetricDetails(metric)}
+        <div class="metric-details-host"></div>
       </section>`).join("")
     : `<section><div class="muted">No graphable metrics yet.</div></section>`;
-  if (!window.Plotly) return;
+  dashboard.observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const metricId = entry.target.dataset.metricId;
+      if (!metricId) continue;
+      if (entry.isIntersecting) activatePlot(metricId);
+      else deactivatePlot(metricId);
+    }
+  }, { rootMargin:"500px 0px" });
   metrics.forEach((metric, index) => {
-    const points = [];
-    for (const sample of series.samples || []) {
-      const historicalMetric = sample.metrics?.[metric.id];
-      const value = graphValue(seriesValue(historicalMetric));
-      if (value !== null && sample.sampled_at_utc) {
-        points.push({
-          x:sample.sampled_at_utc,
-          y:value,
-          severity:seriesSeverity(historicalMetric),
-        });
-      }
-    }
-    const traces = ["ok", "warning", "critical"]
-      .map((severity) => severityTrace(points, severity))
-      .filter((trace) => trace !== null);
-    if (typeof metric.warning_threshold === "number" && points.length) {
-      traces.push({ type:"scatter", mode:"lines", name:"warning threshold", x:[points[0].x, points[points.length - 1].x], y:[metric.warning_threshold, metric.warning_threshold], line:{color:"#f0c85a", width:1, dash:"dot"} });
-    }
-    if (typeof metric.critical_threshold === "number" && points.length) {
-      traces.push({ type:"scatter", mode:"lines", name:"critical threshold", x:[points[0].x, points[points.length - 1].x], y:[metric.critical_threshold, metric.critical_threshold], line:{color:"#ff6b6b", width:1, dash:"dot"} });
-    }
-    Plotly.react(`metricPlot${index}`, traces, {
+    const element = container.children[index];
+    element.dataset.metricId = metric.id;
+    const row = {
+      element,
+      plot: element.querySelector(".plot"),
+      title: element.querySelector("h3"),
+      pill: element.querySelector(".pill"),
+      value: element.querySelector(".metric-value"),
+      message: element.querySelector(".metric-message"),
+      details: element.querySelector(".metric-details-host"),
+      metric,
+    };
+    dashboard.rows.set(metric.id, row);
+    updateMetricRow(row, metric);
+    dashboard.observer.observe(element);
+  });
+  dashboard.rowOrder = metrics.map((metric) => metric.id);
+}
+function ensureMetricRows(current) {
+  const metrics = graphableMetrics(current.evaluation?.metrics || []);
+  const ids = metrics.map((metric) => metric.id).sort();
+  const existingIds = [...dashboard.rowOrder].sort();
+  const changed = ids.length !== existingIds.length || ids.some((id, index) => id !== existingIds[index]);
+  if (changed) {
+    const ordered = [...metrics].sort((a, b) => {
+      const severity = (severityRank[b.severity || "ok"] || 0) - (severityRank[a.severity || "ok"] || 0);
+      return severity || String(a.id).localeCompare(String(b.id));
+    });
+    buildMetricRows(ordered);
+  }
+  for (const metric of metrics) {
+    const row = dashboard.rows.get(metric.id);
+    if (row) updateMetricRow(row, metric);
+  }
+}
+function metricPlotData(metricId) {
+  const columns = dashboard.series?.series?.[metricId];
+  const times = dashboard.series?.times || [];
+  if (!columns) return { points:[], envelopeX:[], minimums:[], maximums:[] };
+  const points = [], envelopeX = [], minimums = [], maximums = [];
+  let previousBucketStart = null;
+  const bucketMilliseconds = Number(dashboard.series.bucket_seconds || 300) * 1000;
+  for (let index = 0; index < times.length; index += 1) {
+    const first = graphValue(columns.first?.[index]);
+    const last = graphValue(columns.last?.[index]);
+    const minimum = graphValue(columns.min?.[index]);
+    const maximum = graphValue(columns.max?.[index]);
+    if (first === null || last === null || minimum === null || maximum === null) continue;
+    const bucketStart = Date.parse(times[index]);
+    if (!Number.isFinite(bucketStart)) continue;
+    if (previousBucketStart !== null && bucketStart - previousBucketStart > bucketMilliseconds * 1.5) points.push(null);
+    const severity = severityNames[columns.severity?.[index] || 0] || "ok";
+    points.push(
+      { x:new Date(bucketStart).toISOString(), y:first, severity },
+      { x:new Date(bucketStart + bucketMilliseconds).toISOString(), y:last, severity },
+    );
+    envelopeX.push(new Date(bucketStart + bucketMilliseconds / 2).toISOString());
+    minimums.push(minimum);
+    maximums.push(maximum);
+    previousBucketStart = bucketStart;
+  }
+  return { points, envelopeX, minimums, maximums };
+}
+function renderPlot(metricId) {
+  if (!window.Plotly || !dashboard.plots.has(metricId)) return;
+  const row = dashboard.rows.get(metricId);
+  if (!row) return;
+  const metric = row.metric;
+  const { points, envelopeX, minimums, maximums } = metricPlotData(metricId);
+  const traces = [];
+  if (envelopeX.length) {
+    traces.push(
+      { type:"scatter", mode:"lines", name:"range maximum", x:envelopeX, y:maximums, line:{width:0}, hoverinfo:"skip", showlegend:false },
+      { type:"scatter", mode:"lines", name:"observed range", x:envelopeX, y:minimums, line:{width:0}, fill:"tonexty", fillcolor:"rgba(169,181,173,0.14)", hoverinfo:"skip", showlegend:false },
+    );
+  }
+  traces.push(...["ok", "warning", "critical"]
+    .map((severity) => severityTrace(points, severity))
+    .filter((trace) => trace !== null));
+  const nonNullPoints = points.filter(Boolean);
+  if (typeof metric.warning_threshold === "number" && nonNullPoints.length) {
+    traces.push({ type:"scatter", mode:"lines", name:"warning threshold", x:[nonNullPoints[0].x, nonNullPoints[nonNullPoints.length - 1].x], y:[metric.warning_threshold, metric.warning_threshold], line:{color:"#f0c85a", width:1, dash:"dot"} });
+  }
+  if (typeof metric.critical_threshold === "number" && nonNullPoints.length) {
+    traces.push({ type:"scatter", mode:"lines", name:"critical threshold", x:[nonNullPoints[0].x, nonNullPoints[nonNullPoints.length - 1].x], y:[metric.critical_threshold, metric.critical_threshold], line:{color:"#ff6b6b", width:1, dash:"dot"} });
+  }
+  Plotly.react(row.plot, traces, {
       paper_bgcolor:"#171b19",
       plot_bgcolor:"#171b19",
       font:{color:"#edf3ee", size:11},
@@ -1538,28 +1833,124 @@ function renderMetricRows(current, series) {
       xaxis:{type:"date", gridcolor:"#303833"},
       yaxis:{title:metric.unit || "", gridcolor:"#303833", rangemode:"tozero"},
       showlegend:traces.length > 1,
-      legend:{orientation:"h", x:0, y:1.18}
+      legend:{orientation:"h", x:0, y:1.18},
+      uirevision:metricId,
     }, { responsive:true, displaylogo:false });
-  });
 }
-async function refresh() {
-  const [current, series] = await Promise.all([
-    loadJson("/pipeline-health/current.json"),
-    loadJson("/pipeline-health/series.json?limit=1440"),
-  ]);
+function activatePlot(metricId) {
+  const row = dashboard.rows.get(metricId);
+  if (!row || dashboard.plots.has(metricId)) return;
+  dashboard.plots.set(metricId, row.plot);
+  renderPlot(metricId);
+}
+function renderActivePlots() {
+  for (const metricId of dashboard.plots.keys()) renderPlot(metricId);
+}
+function emptyColumns(length) {
+  return {
+    first:Array(length).fill(null),
+    last:Array(length).fill(null),
+    min:Array(length).fill(null),
+    max:Array(length).fill(null),
+    severity:Array(length).fill(null),
+  };
+}
+function ensureSeriesColumns(metricId) {
+  const series = dashboard.series;
+  if (!series.series[metricId]) series.series[metricId] = emptyColumns(series.times.length);
+  return series.series[metricId];
+}
+function appendSeriesBucket(bucketTime) {
+  dashboard.series.times.push(bucketTime);
+  for (const columns of Object.values(dashboard.series.series)) {
+    for (const values of Object.values(columns)) values.push(null);
+  }
+  const limit = Number(dashboard.series.bucket_limit || 288);
+  while (dashboard.series.times.length > limit) {
+    dashboard.series.times.shift();
+    for (const columns of Object.values(dashboard.series.series)) {
+      for (const values of Object.values(columns)) values.shift();
+    }
+  }
+}
+function mergeCurrentSample(current) {
+  const sampledAt = Date.parse(current.sampled_at_utc);
+  if (!Number.isFinite(sampledAt) || !dashboard.series) return false;
+  const latest = Date.parse(dashboard.series.latest_sampled_at_utc || "");
+  if (Number.isFinite(latest) && sampledAt <= latest) return false;
+  const bucketSeconds = Number(dashboard.series.bucket_seconds || 300);
+  const bucketMilliseconds = bucketSeconds * 1000;
+  const bucketTime = new Date(Math.floor(sampledAt / bucketMilliseconds) * bucketMilliseconds).toISOString();
+  let index = dashboard.series.times.indexOf(bucketTime);
+  if (index < 0) {
+    const lastTime = dashboard.series.times.at(-1);
+    if (lastTime && bucketTime < lastTime) return false;
+    appendSeriesBucket(bucketTime);
+    index = dashboard.series.times.length - 1;
+  }
+  for (const metric of current.evaluation?.metrics || []) {
+    const value = graphValue(metric.value);
+    if (value === null) continue;
+    const columns = ensureSeriesColumns(metric.id);
+    if (columns.first[index] === null || columns.first[index] === undefined) {
+      columns.first[index] = value;
+      columns.min[index] = value;
+      columns.max[index] = value;
+      columns.severity[index] = severityRank[metric.severity || "ok"] || 0;
+    } else {
+      columns.min[index] = Math.min(columns.min[index], value);
+      columns.max[index] = Math.max(columns.max[index], value);
+      columns.severity[index] = Math.max(columns.severity[index] || 0, severityRank[metric.severity || "ok"] || 0);
+    }
+    columns.last[index] = value;
+  }
+  dashboard.series.latest_sampled_at_utc = current.sampled_at_utc;
+  return true;
+}
+function shouldReloadSeries(current) {
+  if (!dashboard.series) return true;
+  const sampledAt = Date.parse(current.sampled_at_utc);
+  const latest = Date.parse(dashboard.series.latest_sampled_at_utc || "");
+  if (!Number.isFinite(sampledAt)) return false;
+  if (!Number.isFinite(latest)) return true;
+  if (sampledAt <= latest) return false;
+  const pollMilliseconds = Number(current.monitor_poll_seconds || 60) * 1000;
+  return sampledAt - latest > pollMilliseconds * 1.5 + 5000;
+}
+async function refresh(forceSeriesReload = false) {
+  const current = await loadJson("/pipeline-health/current.json");
+  if (forceSeriesReload || shouldReloadSeries(current)) {
+    dashboard.series = await loadJson("/pipeline-health/series.json");
+  }
+  dashboard.current = current;
+  mergeCurrentSample(current);
   renderCurrent(current);
-  renderMetricRows(current, series);
+  ensureMetricRows(current);
+  renderActivePlots();
 }
-async function refreshLoop() {
+async function refreshLoop(forceSeriesReload = false) {
+  if (dashboard.refreshInFlight) {
+    dashboard.forceSeriesReload ||= forceSeriesReload;
+    return;
+  }
+  dashboard.refreshInFlight = true;
   try {
-    await refresh();
+    await refresh(forceSeriesReload || dashboard.forceSeriesReload);
+    dashboard.forceSeriesReload = false;
   } catch (error) {
     document.getElementById("sampleAge").textContent = String(error);
   } finally {
-    setTimeout(refreshLoop, 30000);
+    dashboard.refreshInFlight = false;
+    clearTimeout(dashboard.refreshTimer);
+    dashboard.refreshTimer = setTimeout(refreshLoop, 30000);
   }
 }
-refreshLoop();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  clearTimeout(dashboard.refreshTimer);
+  void refreshLoop(true);
+});
+void refreshLoop(true);
 </script>
 </body>
 </html>

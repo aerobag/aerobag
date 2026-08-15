@@ -10,7 +10,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -30,14 +30,20 @@ class PipelineHealthTests(unittest.TestCase):
             "Bearer oAvfo7uXmJVexL5TLb2Uwt5nQZ7smFsvuqkN6YXikFg",
         )
 
-    def test_dashboard_disposes_plots_and_serializes_refreshes(self) -> None:
+    def test_dashboard_lazily_reuses_plots_and_serializes_refreshes(self) -> None:
         html = pipeline_health.dashboard_html()
 
-        self.assertIn("Plotly.purge(plot)", html)
+        self.assertIn("new IntersectionObserver", html)
+        self.assertIn("Plotly.purge(row.plot)", html)
+        self.assertIn("Plotly.react(row.plot", html)
+        self.assertIn("mergeCurrentSample(current)", html)
         self.assertIn("severityTrace(points, severity)", html)
         self.assertIn('warning:"#f0c85a"', html)
         self.assertIn('critical:"#ff6b6b"', html)
         self.assertIn("setTimeout(refreshLoop, 30000)", html)
+        self.assertEqual(
+            html.count('loadJson("/pipeline-health/series.json")'), 1
+        )
         self.assertNotIn("setInterval(", html)
 
     def test_aerobag_cloud_uses_server_reported_limits_and_mode(self) -> None:
@@ -745,7 +751,21 @@ class PipelineHealthTests(unittest.TestCase):
             "schema_version": 1,
             "generated_at_utc": "2026-06-19T12:00:00Z",
             "top_line_status": "ok",
-            "metrics": [],
+            "metrics": [
+                {
+                    "id": "live_feed.metars.stale_seconds",
+                    "label": "METAR age",
+                    "value": 123,
+                    "severity": "warning",
+                    "message": "large repeated message",
+                    "details": {"large": "z" * 100_000},
+                },
+                {
+                    "id": "cycle_build.latest_result",
+                    "value": "pass",
+                    "severity": "ok",
+                },
+            ],
             "alerts": [],
         }
 
@@ -754,43 +774,130 @@ class PipelineHealthTests(unittest.TestCase):
 
         self.assertNotIn("facts", record)
         self.assertNotIn("payload", encoded)
+        self.assertNotIn("evaluation", record)
+        self.assertNotIn("large repeated message", encoded)
+        self.assertEqual(
+            record["metrics"]["live_feed.metars.stale_seconds"],
+            {"value": 123, "severity": "warning"},
+        )
+        self.assertNotIn("cycle_build.latest_result", record["metrics"])
         self.assertLess(len(encoded), 1_000)
 
-    def test_compact_metric_series_keeps_historical_values_and_severity(self) -> None:
+    def test_compact_metric_series_preserves_bucket_extrema_and_severity(self) -> None:
+        now = datetime(2026, 6, 19, 12, 5, 0, tzinfo=timezone.utc)
         series = pipeline_health.compact_metric_series(
             [
                 {
                     "sampled_at_utc": "2026-06-19T12:00:00Z",
-                    "evaluation": {
-                        "metrics": [
-                            {
-                                "id": "live_feed.metars.stale_seconds",
-                                "value": 123,
-                                "severity": "warning",
-                                "message": "not needed in series",
-                            },
-                            {
-                                "id": "live_feed.metars.consecutive_failures",
-                                "value": 0,
-                                "severity": "ok",
-                            },
-                        ]
+                    "metrics": {
+                        "live_feed.metars.stale_seconds": 10,
                     },
-                }
-            ]
+                },
+                {
+                    "sampled_at_utc": "2026-06-19T12:02:00Z",
+                    "metrics": {
+                        "live_feed.metars.stale_seconds": {
+                            "value": 123,
+                            "severity": "critical",
+                        },
+                    },
+                },
+                {
+                    "sampled_at_utc": "2026-06-19T12:04:00Z",
+                    "metrics": {
+                        "live_feed.metars.stale_seconds": 20,
+                    },
+                },
+            ],
+            now=now,
         )
 
+        self.assertEqual(series["times"], ["2026-06-19T12:00:00Z"])
+        columns = series["series"]["live_feed.metars.stale_seconds"]
+        self.assertEqual(columns["first"], [10])
+        self.assertEqual(columns["last"], [20])
+        self.assertEqual(columns["min"], [10])
+        self.assertEqual(columns["max"], [123])
+        self.assertEqual(columns["severity"], [2])
+
+    def test_compact_metric_series_is_bounded_to_one_day_of_buckets(self) -> None:
+        now = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
+        records = []
+        for index in range(pipeline_health.DASHBOARD_BUCKET_LIMIT + 20):
+            sampled_at = now - timedelta(minutes=5 * index)
+            records.append(
+                {
+                    "sampled_at_utc": pipeline_health.iso_utc(sampled_at),
+                    "metrics": {"metric": index},
+                }
+            )
+
+        series = pipeline_health.compact_metric_series(records, now=now)
+
+        self.assertLessEqual(
+            len(series["times"]), pipeline_health.DASHBOARD_BUCKET_LIMIT
+        )
+        self.assertEqual(len(series["series"]["metric"]["last"]), 288)
+
+    def test_history_migration_removes_full_evaluation_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "pipeline_health-2026-06-19.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "sampled_at_utc": "2026-06-19T12:00:00Z",
+                        "evaluation": {
+                            "metrics": [
+                                {
+                                    "id": "metric",
+                                    "value": 7,
+                                    "severity": "warning",
+                                    "message": "discard me",
+                                }
+                            ]
+                        },
+                        "product_facts_key": ["publication"],
+                        "product_counts": {"error_count": 1, "warning_count": 2},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(pipeline_health.migrate_history_file(path))
+            migrated = json.loads(path.read_text(encoding="utf-8"))
+
         self.assertEqual(
-            series["samples"][0]["metrics"]["live_feed.metars.stale_seconds"],
-            {"value": 123, "severity": "warning"},
+            migrated["history_schema_version"],
+            pipeline_health.HISTORY_SCHEMA_VERSION,
         )
         self.assertEqual(
-            series["samples"][0]["metrics"][
-                "live_feed.metars.consecutive_failures"
-            ],
-            0,
+            migrated["metrics"]["metric"],
+            {"value": 7, "severity": "warning"},
         )
-        self.assertNotIn("not needed in series", json.dumps(series))
+        self.assertEqual(migrated["product_facts_key"], ["publication"])
+        self.assertNotIn("evaluation", migrated)
+        self.assertNotIn("discard me", json.dumps(migrated))
+
+    def test_history_retention_removes_only_expired_daily_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health_root = Path(temp_dir)
+            expired = health_root / "pipeline_health-2026-06-14.jsonl"
+            retained = health_root / "pipeline_health-2026-06-15.jsonl"
+            unrelated = health_root / "status.json"
+            for path in (expired, retained, unrelated):
+                path.write_text("{}\n", encoding="utf-8")
+
+            removed = pipeline_health.prune_history_files(
+                health_root,
+                datetime(2026, 6, 28, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(removed, [expired])
+            self.assertFalse(expired.exists())
+            self.assertTrue(retained.exists())
+            self.assertTrue(unrelated.exists())
 
     def test_daily_history_reader_bounds_record_count_across_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

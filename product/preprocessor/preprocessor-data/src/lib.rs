@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -30,7 +30,8 @@ const TABLES: &[&str] = &[
     "airportcontacts",
     "airportfreq",
     "airportrunways",
-    "nav",
+    "enroute_navaids",
+    "procedure_navaids",
     "fix",
     "awos",
     "saa",
@@ -246,8 +247,8 @@ CREATE TABLE airport_aliases(alias_id Text, airport_id Text, UNIQUE(alias_id));
 CREATE TABLE airportcontacts(LocationID Text,Type Text, Phone Text);
 CREATE TABLE airportfreq(LocationID Text,Type Text, Freq Text);
 CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,LEIdent Text,HEIdent Text,LELatitude Text,HELatitude Text,LELongitude Text,HELongitude Text,LEElevation Text,HEElevation Text,LEHeadingT Text,HEHeading Text,LEDT Text,HEDT Text,LELights Text,HELights Text,LEILS Text,HEILS Text,LEVGSI Text,HEVGSI Text,LEPattern Text, HEPattern Text);
-CREATE TABLE nav(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation TinyInt,Class Text,Hiwas Text,Elevation Text);
-CREATE TABLE arinc_navaids(identifier Text,icao_code Text,section_code Text,subsection_code Text,airport_id Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation float,Elevation Text,UNIQUE(identifier,icao_code,section_code,subsection_code,airport_id));
+CREATE TABLE enroute_navaids(identifier Text PRIMARY KEY,latitude float NOT NULL,longitude float NOT NULL,kind Text NOT NULL,facility_name Text NOT NULL,variation float,class Text,hiwas Text,elevation Text);
+CREATE TABLE procedure_navaids(identifier Text,icao_code Text,section_code Text,subsection_code Text,airport_id Text,latitude float NOT NULL,longitude float NOT NULL,kind Text NOT NULL,facility_name Text NOT NULL,variation float,elevation Text,PRIMARY KEY(identifier,icao_code,section_code,subsection_code,airport_id));
 CREATE TABLE fix(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text);
 CREATE TABLE fix_usage(LocationID Text,Usage Text);
 CREATE TABLE awos(LocationID Text, Type Text, Status Text, Latitude float,Longitude float, Elevation Text, Frequency1 Text, Frequency2 Text, Telephone1 Text, Telephone2 Text, Remark Text);
@@ -525,29 +526,76 @@ fn insert_runways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> 
     Ok(count)
 }
 
-fn insert_nav(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+#[derive(Debug, Clone)]
+struct EnrouteNavaid {
+    identifier: String,
+    latitude: f64,
+    longitude: f64,
+    kind: String,
+    facility_name: String,
+    variation: f64,
+    class: String,
+    hiwas: String,
+    elevation: String,
+}
+
+fn insert_enroute_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     let path = input_dir.join("NAV.txt");
     let text = read_text_lossy(&path)?;
-    let mut stmt = conn.prepare("INSERT INTO nav VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
-    let mut count = 0;
+    let mut candidates = BTreeMap::<String, Option<EnrouteNavaid>>::new();
     for raw in text.lines() {
         if !raw.starts_with("NAV1") {
             continue;
         }
-        let id = trim(field(raw, 4, 4)).to_string();
+        let identifier = trim(field(raw, 4, 4)).to_ascii_uppercase();
         let kind = trim(field(raw, 8, 10)).to_string();
-        let name =
+        if identifier.is_empty() || !preprocessor_core::is_enroute_navaid_type(&kind) {
+            continue;
+        }
+        let facility_name =
             format!("{} {}", trim(field(raw, 42, 30)), trim(field(raw, 533, 7))).replace(',', ";");
-        let lat = nav_fix_lat(trim(field(raw, 371, 13)));
-        let lon = nav_fix_lon(trim(field(raw, 396, 14)));
+        let latitude = nav_fix_lat(trim(field(raw, 371, 13)));
+        let longitude = nav_fix_lon(trim(field(raw, 396, 14)));
         let var = trim(field(raw, 479, 5));
         let var_last = var.chars().last().unwrap_or(' ');
         let variation = perl_num(var) * if var_last == 'E' { 1.0 } else { -1.0 };
-        let class = trim(field(raw, 281, 1)).to_string();
-        let hiwas = trim(field(raw, 800, 1)).to_string();
-        let elevation = trim(field(raw, 472, 7)).to_string();
+        let record = EnrouteNavaid {
+            identifier: identifier.clone(),
+            latitude,
+            longitude,
+            kind,
+            facility_name,
+            variation,
+            class: trim(field(raw, 281, 1)).to_string(),
+            hiwas: trim(field(raw, 800, 1)).to_string(),
+            elevation: trim(field(raw, 472, 7)).to_string(),
+        };
+        match candidates.entry(identifier) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(record));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                // A bare enroute identifier is valid only when the FAA source resolves it
+                // to one VOR-class facility. Procedures retain qualified alternatives.
+                entry.insert(None);
+            }
+        }
+    }
+
+    let mut stmt =
+        conn.prepare("INSERT INTO enroute_navaids VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+    let mut count = 0;
+    for record in candidates.into_values().flatten() {
         stmt.execute(params![
-            id, lat, lon, kind, name, variation, class, hiwas, elevation
+            record.identifier,
+            record.latitude,
+            record.longitude,
+            record.kind,
+            record.facility_name,
+            record.variation,
+            record.class,
+            record.hiwas,
+            record.elevation,
         ])?;
         count += 1;
     }
@@ -1153,29 +1201,17 @@ fn cifp_signed_tenths_value(value: &str) -> Option<f64> {
     Some(sign * magnitude)
 }
 
-#[derive(Debug, Clone)]
-struct CifpProcedureNavaid {
-    id: String,
-    lat: f64,
-    lon: f64,
-    kind: String,
-    variation: f64,
-    class: String,
-    hiwas: String,
-    elevation: String,
-}
-
-#[derive(Debug, Clone)]
-struct CifpArincNavaid {
-    id: String,
+#[derive(Debug, Clone, PartialEq)]
+struct QualifiedProcedureNavaid {
+    identifier: String,
     icao_code: String,
     section_code: String,
     subsection_code: String,
     airport_id: String,
-    lat: f64,
-    lon: f64,
+    latitude: f64,
+    longitude: f64,
     kind: String,
-    name: String,
+    facility_name: String,
     variation: f64,
     elevation: String,
 }
@@ -1273,35 +1309,65 @@ fn insert_missing_cifp_terminal_waypoints(
     Ok(inserted)
 }
 
-fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
+fn parse_qualified_procedure_navaid(line: &str) -> Option<QualifiedProcedureNavaid> {
     if line.len() < 132 {
         return None;
     }
     let section = field(line, 4, 1);
-    let subsection = field(line, 5, 1);
-    if !(section == "D" || (section == "P" && subsection == "N")) {
+    let subsection = if section == "P" && field(line, 5, 1) == "N" {
+        "N"
+    } else if section == "P" {
+        field(line, 12, 1)
+    } else {
+        field(line, 5, 1)
+    };
+    if !(section == "D" || (section == "P" && matches!(subsection, "I" | "N"))) {
         return None;
     }
-    let id = trim(field(line, 13, 6)).to_ascii_uppercase();
-    let icao_code = trim(field(line, 19, 2)).to_ascii_uppercase();
-    if id.is_empty() || icao_code.is_empty() {
+    let identifier = if section == "P" && subsection == "I" {
+        cifp_localizer_id(field(line, 13, 6))
+    } else {
+        trim(field(line, 13, 6)).to_ascii_uppercase()
+    };
+    let icao_code = trim(field(
+        line,
+        if section == "P" && subsection == "I" {
+            10
+        } else {
+            19
+        },
+        2,
+    ))
+    .to_ascii_uppercase();
+    if identifier.is_empty() || icao_code.is_empty() {
         return None;
     }
 
-    // FAA public CIFP is ARINC 424-format data. Navaid-like records carry their
-    // own ICAO/section/subsection identity; procedure rows refer back to that
-    // tuple, so keep it instead of collapsing duplicate navaid identifiers like
-    // JN/K5 and JN/K7 or AB/D/B and AB/P/N into a single LocationID.
-    let (lat, lon) = cifp_compact_coord_lat(field(line, 32, 9))
-        .zip(cifp_compact_coord_lon(field(line, 41, 10)))
-        .or_else(|| {
-            cifp_compact_coord_lat(field(line, 55, 9))
-                .zip(cifp_compact_coord_lon(field(line, 64, 10)))
-        })?;
-    let variation = cifp_signed_tenths_value(field(line, 74, 5)).unwrap_or_default();
-    let name = trim(field(line, 93, 30)).to_string();
-    Some(CifpArincNavaid {
-        id,
+    // CIFP procedure rows refer to the full ARINC identity. Preserve that scope
+    // for NDBs and localizers rather than introducing ambiguous bare identifiers.
+    let primary_position =
+        cifp_compact_coord_lat(field(line, 32, 9)).zip(cifp_compact_coord_lon(field(line, 41, 10)));
+    let alternate_position =
+        cifp_compact_coord_lat(field(line, 55, 9)).zip(cifp_compact_coord_lon(field(line, 64, 10)));
+    let (latitude, longitude) = primary_position.or(alternate_position)?;
+    let is_terminal_localizer = section == "P" && subsection == "I";
+    // CIFP section-D localizer cross-references have an I-prefixed identifier
+    // and put their facility position in the alternate coordinate fields.
+    let is_section_d_localizer = section == "D"
+        && identifier.starts_with('I')
+        && primary_position.is_none()
+        && alternate_position.is_some();
+    let is_localizer = is_terminal_localizer || is_section_d_localizer;
+    let variation =
+        cifp_signed_tenths_value(field(line, if is_terminal_localizer { 90 } else { 74 }, 5))
+            .unwrap_or_default();
+    let facility_name = if is_terminal_localizer {
+        format!("{identifier} CIFP")
+    } else {
+        trim(field(line, 93, 30)).to_string()
+    };
+    Some(QualifiedProcedureNavaid {
+        identifier,
         icao_code,
         section_code: section.to_string(),
         subsection_code: subsection.to_string(),
@@ -1310,180 +1376,66 @@ fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
         } else {
             String::new()
         },
-        lat,
-        lon,
-        kind: match subsection {
-            "B" | "N" => "NDB".to_string(),
-            _ => "NAVAID".to_string(),
+        latitude,
+        longitude,
+        kind: if is_localizer {
+            "LOCALIZER".to_string()
+        } else if matches!(subsection, "B" | "N") {
+            "NDB".to_string()
+        } else {
+            "NAVAID".to_string()
         },
-        name,
+        facility_name,
         variation,
-        elevation: trim(field(line, 79, 5)).to_string(),
+        elevation: trim(field(line, if is_terminal_localizer { 94 } else { 79 }, 5)).to_string(),
     })
 }
 
-fn parse_cifp_procedure_navaid(line: &str) -> Option<CifpProcedureNavaid> {
-    if line.len() < 132 {
-        return None;
-    }
-    let section = field(line, 4, 1);
-    let subsection = field(line, 12, 1);
-
-    if section == "P" && subsection == "I" {
-        let id = cifp_localizer_id(field(line, 13, 6));
-        let lat = cifp_compact_coord_lat(field(line, 32, 9))?;
-        let lon = cifp_compact_coord_lon(field(line, 41, 10))?;
-        let variation = cifp_signed_tenths_value(field(line, 90, 5)).unwrap_or_default();
-        return Some(CifpProcedureNavaid {
-            id,
-            lat,
-            lon,
-            kind: "ILS".to_string(),
-            variation,
-            class: String::new(),
-            hiwas: String::new(),
-            elevation: trim(field(line, 94, 5)).to_string(),
-        });
-    }
-
-    if section == "D" {
-        let id = cifp_localizer_id(field(line, 13, 6));
-        if !id.starts_with('I') {
-            return None;
-        }
-        let lat = cifp_compact_coord_lat(field(line, 55, 9))?;
-        let lon = cifp_compact_coord_lon(field(line, 64, 10))?;
-        let variation = cifp_signed_tenths_value(field(line, 74, 5)).unwrap_or_default();
-        return Some(CifpProcedureNavaid {
-            id,
-            lat,
-            lon,
-            kind: "ILS".to_string(),
-            variation,
-            class: String::new(),
-            hiwas: String::new(),
-            elevation: trim(field(line, 79, 5)).to_string(),
-        });
-    }
-
-    None
-}
-
-fn insert_cifp_arinc_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
+fn insert_qualified_procedure_navaids(
+    conn: &Connection,
+    input_dir: &Path,
+) -> anyhow::Result<usize> {
     let path = input_dir.join("FAACIFP18");
     let text = read_text_lossy(&path)?;
     let mut stmt = conn.prepare(
-        "INSERT OR IGNORE INTO arinc_navaids VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO procedure_navaids VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     let mut count = 0;
-    let mut seen = BTreeMap::<(String, String, String, String, String), (f64, f64)>::new();
+    let mut seen =
+        BTreeMap::<(String, String, String, String, String), QualifiedProcedureNavaid>::new();
     for line in text.lines() {
-        let Some(record) = parse_cifp_arinc_navaid(line) else {
+        let Some(record) = parse_qualified_procedure_navaid(line) else {
             continue;
         };
         let key = (
-            record.id.clone(),
+            record.identifier.clone(),
             record.icao_code.clone(),
             record.section_code.clone(),
             record.subsection_code.clone(),
             record.airport_id.clone(),
         );
-        if let Some((lat, lon)) = seen.get(&key) {
+        if let Some(existing) = seen.get(&key) {
             anyhow::ensure!(
-                (lat - record.lat).abs() < 1e-7 && (lon - record.lon).abs() < 1e-7,
-                "conflicting CIFP navaid records for scoped key {:?}: ({lat},{lon}) vs ({},{})",
-                key,
-                record.lat,
-                record.lon
+                existing == &record,
+                "conflicting CIFP navaid records for scoped key {key:?}: {existing:?} vs {record:?}"
             );
+            continue;
         } else {
-            seen.insert(key, (record.lat, record.lon));
+            seen.insert(key, record.clone());
         }
         count += stmt.execute(params![
-            record.id,
+            record.identifier,
             record.icao_code,
             record.section_code,
             record.subsection_code,
             record.airport_id,
-            record.lat,
-            record.lon,
+            record.latitude,
+            record.longitude,
             record.kind,
-            record.name,
+            record.facility_name,
             record.variation,
             record.elevation,
         ])?;
-    }
-    Ok(count)
-}
-
-fn insert_cifp_procedure_navaids(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
-    let needed = {
-        let mut stmt = conn.prepare(
-            "
-            SELECT DISTINCT trim(recommended_navaid)
-            FROM cifp_sid_star_app
-            WHERE trim(recommended_navaid) <> ''
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut ids = BTreeSet::new();
-        for row in rows {
-            let id = row?.trim().to_ascii_uppercase();
-            if !id.is_empty() {
-                ids.insert(id);
-            }
-        }
-        ids
-    };
-    if needed.is_empty() {
-        return Ok(0);
-    }
-
-    let existing_nav = {
-        let mut stmt = conn.prepare(
-            "
-            SELECT trim(LocationID)
-            FROM nav
-            WHERE trim(LocationID) <> ''
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut ids = BTreeSet::new();
-        for row in rows {
-            ids.insert(row?.trim().to_ascii_uppercase());
-        }
-        ids
-    };
-
-    let path = input_dir.join("FAACIFP18");
-    let text = read_text_lossy(&path)?;
-    let mut stmt = conn.prepare("INSERT INTO nav VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
-    let mut count = 0;
-    let mut inserted = BTreeSet::<String>::new();
-    for line in text.lines() {
-        let Some(record) = parse_cifp_procedure_navaid(line) else {
-            continue;
-        };
-        let id = record.id.trim().to_ascii_uppercase();
-        if id.is_empty()
-            || !needed.contains(&id)
-            || existing_nav.contains(&id)
-            || !inserted.insert(id.clone())
-        {
-            continue;
-        }
-        stmt.execute(params![
-            id,
-            record.lat,
-            record.lon,
-            record.kind,
-            format!("{id} CIFP"),
-            record.variation,
-            record.class,
-            record.hiwas,
-            record.elevation,
-        ])?;
-        count += 1;
     }
     Ok(count)
 }
@@ -1524,7 +1476,10 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         "airportrunways".to_string(),
         insert_runways(&tx, &request.input_dir)?,
     );
-    row_counts.insert("nav".to_string(), insert_nav(&tx, &request.input_dir)?);
+    row_counts.insert(
+        "enroute_navaids".to_string(),
+        insert_enroute_navaids(&tx, &request.input_dir)?,
+    );
     row_counts.insert("fix".to_string(), insert_fix(&tx, &request.input_dir)?);
     row_counts.insert(
         "cifp_terminal_waypoint_fixes".to_string(),
@@ -1548,12 +1503,8 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         insert_cifp_with_ids(&tx, &request.input_dir, &airport_ids)?,
     );
     row_counts.insert(
-        "arinc_navaids".to_string(),
-        insert_cifp_arinc_navaids(&tx, &request.input_dir)?,
-    );
-    row_counts.insert(
-        "cifp_procedure_navaids".to_string(),
-        insert_cifp_procedure_navaids(&tx, &request.input_dir)?,
+        "procedure_navaids".to_string(),
+        insert_qualified_procedure_navaids(&tx, &request.input_dir)?,
     );
     tx.commit()?;
 
@@ -1728,6 +1679,30 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
+    fn build_nav1_line(
+        id: &str,
+        kind: &str,
+        name: &str,
+        latitude: &str,
+        longitude: &str,
+        variation: &str,
+        frequency: &str,
+    ) -> String {
+        let mut line = vec![b' '; 801];
+        put_field(&mut line, 0, 4, "NAV1");
+        put_field(&mut line, 4, 4, id);
+        put_field(&mut line, 8, 10, kind);
+        put_field(&mut line, 42, 30, name);
+        put_field(&mut line, 281, 1, "H");
+        put_field(&mut line, 371, 13, latitude);
+        put_field(&mut line, 396, 14, longitude);
+        put_field(&mut line, 472, 7, "001000");
+        put_field(&mut line, 479, 5, variation);
+        put_field(&mut line, 533, 7, frequency);
+        put_field(&mut line, 800, 1, "N");
+        String::from_utf8(line).unwrap()
+    }
+
     fn build_fix5_line(id: &str, usage: &str) -> String {
         let mut line = vec![b' '; 120];
         put_field(&mut line, 0, 4, "FIX5");
@@ -1793,7 +1768,7 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
-    fn build_cifp_arinc_ndb_record(id: &str, icao_code: &str, name: &str) -> String {
+    fn build_cifp_qualified_ndb_record(id: &str, icao_code: &str, name: &str) -> String {
         let mut line = vec![b' '; 132];
         put_field(&mut line, 0, 4, "SUSA");
         put_field(&mut line, 4, 1, "D");
@@ -2195,7 +2170,7 @@ mod tests {
     }
 
     #[test]
-    fn build_data_package_imports_cifp_localizer_navaids_into_nav() {
+    fn build_data_package_keeps_localizers_in_the_qualified_procedure_domain() {
         let dir = tempdir().unwrap();
         let input_dir = dir.path().join("input");
         let output_dir = dir.path().join("output");
@@ -2229,8 +2204,9 @@ mod tests {
 
         let iltt = conn
             .query_row(
-                "SELECT CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), CAST(Variation AS REAL)
-                 FROM nav WHERE trim(LocationID)='ILTT'",
+                "SELECT latitude, longitude, trim(kind), variation,
+                        trim(airport_id), trim(icao_code), trim(section_code), trim(subsection_code)
+                 FROM procedure_navaids WHERE trim(identifier)='ILTT'",
                 [],
                 |row| {
                     Ok((
@@ -2238,19 +2214,33 @@ mod tests {
                         row.get::<_, f64>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, f64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
             .unwrap();
-        assert_eq!(iltt.2, "ILS");
+        assert_eq!(iltt.2, "LOCALIZER");
         assert!((iltt.0 - 39.8612972222).abs() < 1e-6);
         assert!((iltt.1 - -104.6872222222).abs() < 1e-6);
         assert!((iltt.3 - 8.0).abs() < 1e-6);
+        assert_eq!(
+            (&iltt.4, &iltt.5, &iltt.6, &iltt.7),
+            (
+                &"KDEN".to_string(),
+                &"K2".to_string(),
+                &"P".to_string(),
+                &"I".to_string()
+            )
+        );
 
         let iadq = conn
             .query_row(
-                "SELECT CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), CAST(Variation AS REAL)
-                 FROM nav WHERE trim(LocationID)='IADQ'",
+                "SELECT latitude, longitude, trim(kind), variation,
+                        trim(airport_id), trim(icao_code), trim(section_code), trim(subsection_code)
+                 FROM procedure_navaids WHERE trim(identifier)='IADQ'",
                 [],
                 |row| {
                     Ok((
@@ -2258,14 +2248,146 @@ mod tests {
                         row.get::<_, f64>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, f64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
             .unwrap();
-        assert_eq!(iadq.2, "ILS");
+        assert_eq!(iadq.2, "LOCALIZER");
         assert!((iadq.0 - 57.7516888889).abs() < 1e-6);
         assert!((iadq.1 - -152.5211444444).abs() < 1e-6);
         assert!((iadq.3 - 14.0).abs() < 1e-6);
+        assert_eq!(
+            (&iadq.4, &iadq.5, &iadq.6, &iadq.7),
+            (
+                &"".to_string(),
+                &"P".to_string(),
+                &"D".to_string(),
+                &"".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn enroute_navaid_ingestion_excludes_ndbs_and_ambiguous_vor_idents() {
+        let rbg_ndb = build_nav1_line(
+            "RBG",
+            "NDB",
+            "ROSEBURG",
+            "43-14-06.917N",
+            "123-21-28.864W",
+            "13E",
+            "400",
+        );
+        let rbg_vor = build_nav1_line(
+            "RBG",
+            "VOR/DME",
+            "ROSEBURG",
+            "43-10-56.695N",
+            "123-21-08.071W",
+            "14E",
+            "114.45",
+        );
+        let sea_vor = build_nav1_line(
+            "SEA",
+            "VORTAC",
+            "SEATTLE",
+            "47-26-07.400N",
+            "122-18-34.600W",
+            "15E",
+            "116.80",
+        );
+        let ndb_only = build_nav1_line(
+            "RNT",
+            "NDB",
+            "RENTON",
+            "47-29-35.300N",
+            "122-12-56.700W",
+            "15E",
+            "353",
+        );
+        let duplicate_vor_a = build_nav1_line(
+            "DUP",
+            "VOR",
+            "DUPLICATE ONE",
+            "40-00-00.000N",
+            "120-00-00.000W",
+            "10E",
+            "110.00",
+        );
+        let duplicate_vor_b = build_nav1_line(
+            "DUP",
+            "VORTAC",
+            "DUPLICATE TWO",
+            "41-00-00.000N",
+            "121-00-00.000W",
+            "11E",
+            "111.00",
+        );
+
+        for rows in [
+            vec![
+                &rbg_ndb,
+                &rbg_vor,
+                &sea_vor,
+                &ndb_only,
+                &duplicate_vor_a,
+                &duplicate_vor_b,
+            ],
+            vec![
+                &duplicate_vor_b,
+                &duplicate_vor_a,
+                &ndb_only,
+                &sea_vor,
+                &rbg_vor,
+                &rbg_ndb,
+            ],
+        ] {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("NAV.txt"),
+                rows.iter()
+                    .map(|row| row.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+            let connection = Connection::open_in_memory().unwrap();
+            setup_schema(&connection).unwrap();
+
+            assert_eq!(insert_enroute_navaids(&connection, dir.path()).unwrap(), 2);
+            let records = connection
+                .prepare(
+                    "SELECT identifier, kind, latitude, longitude
+                     FROM enroute_navaids ORDER BY identifier",
+                )
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, f64>(2)?,
+                        row.get::<_, f64>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(records.len(), 2);
+            assert_eq!(
+                (&records[0].0, &records[0].1),
+                (&"RBG".to_string(), &"VOR/DME".to_string())
+            );
+            assert!((records[0].2 - 43.1824152778).abs() < 1e-8);
+            assert!((records[0].3 + 123.3522419444).abs() < 1e-8);
+            assert_eq!(
+                (&records[1].0, &records[1].1),
+                (&"SEA".to_string(), &"VORTAC".to_string())
+            );
+        }
     }
 
     #[test]
@@ -2282,7 +2404,7 @@ mod tests {
             input_dir.join("FAACIFP18"),
             format!(
                 "{}\n{}\n",
-                build_cifp_arinc_ndb_record("JN", "K7", "JURLY"),
+                build_cifp_qualified_ndb_record("JN", "K7", "JURLY"),
                 build_cifp_procedure_ndb_record(
                     "KABI",
                     "AB",
@@ -2309,9 +2431,8 @@ mod tests {
         let scoped = conn
             .query_row(
                 "SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-                        CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), trim(FacilityName),
-                        CAST(Variation AS REAL)
-                 FROM arinc_navaids
+                        latitude, longitude, trim(kind), trim(facility_name), variation
+                 FROM procedure_navaids
                  WHERE trim(identifier)='JN' AND trim(icao_code)='K7'",
                 [],
                 |row| {
@@ -2342,9 +2463,8 @@ mod tests {
         let procedure_scoped = conn
             .query_row(
                 "SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-                        CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type), trim(FacilityName),
-                        CAST(Variation AS REAL)
-                 FROM arinc_navaids
+                        latitude, longitude, trim(kind), trim(facility_name), variation
+                 FROM procedure_navaids
                  WHERE trim(identifier)='AB' AND trim(icao_code)='K4'
                    AND trim(section_code)='P' AND trim(subsection_code)='N'",
                 [],
@@ -2422,7 +2542,7 @@ mod tests {
         let count: usize = conn
             .query_row(
                 "SELECT COUNT(*)
-                 FROM arinc_navaids
+                 FROM procedure_navaids
                  WHERE trim(identifier)='GM'
                    AND trim(icao_code)='K7'
                    AND trim(section_code)='P'

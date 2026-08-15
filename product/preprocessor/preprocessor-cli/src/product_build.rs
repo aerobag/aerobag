@@ -4168,12 +4168,13 @@ mod tests {
                     ARPLatitude REAL,
                     ARPLongitude REAL
                 );
-                CREATE TABLE nav (
-                    LocationID TEXT,
-                    FacilityName TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Type TEXT
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY,
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -4226,7 +4227,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_waypoint_search_values_are_slim_and_exclude_vot_navaids() {
+    fn nav_kv_waypoint_search_values_are_slim_and_use_the_enroute_domain() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -4239,12 +4240,13 @@ mod tests {
                     ARPLatitude REAL,
                     ARPLongitude REAL
                 );
-                CREATE TABLE nav (
-                    LocationID TEXT,
-                    FacilityName TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Type TEXT
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY,
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -4252,9 +4254,7 @@ mod tests {
                     ARPLatitude REAL,
                     ARPLongitude REAL
                 );
-                INSERT INTO nav VALUES ('SEA', 'Seattle 116.80', 47.43538888888889, -122.30961111111111, 'VORTAC');
-                INSERT INTO nav VALUES ('SEA', 'Seattle VOT 117.50', 47.4, -122.3, 'VOT');
-                INSERT INTO nav VALUES ('RNT', 'Renton NDB', 47.49313888888889, -122.215750055, 'NDB');
+                INSERT INTO enroute_navaids VALUES ('SEA', 47.43538888888889, -122.30961111111111, 'VORTAC', 'Seattle 116.80', 15.0);
                 ",
             )
             .unwrap();
@@ -4305,21 +4305,27 @@ mod tests {
                     MagneticVariation TEXT,
                     ARPElevation TEXT
                 );
-                CREATE TABLE nav (
-                    LocationID TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Variation TEXT
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY,
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL
                 );
-                CREATE TABLE arinc_navaids (
+                CREATE TABLE procedure_navaids (
                     identifier TEXT,
                     icao_code TEXT,
                     section_code TEXT,
                     subsection_code TEXT,
                     airport_id TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Variation TEXT
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL,
+                    elevation TEXT,
+                    PRIMARY KEY(identifier, icao_code, section_code, subsection_code, airport_id)
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -4339,6 +4345,17 @@ mod tests {
                     HELatitude REAL,
                     HELongitude REAL
                 );
+                CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    fix_identifier TEXT,
+                    icao_code_2 TEXT,
+                    section_code_2 TEXT,
+                    subsection_code_2 TEXT,
+                    recommended_navaid TEXT,
+                    icao_code_3 TEXT,
+                    recd_nav_section TEXT,
+                    recd_nav_subsection TEXT
+                );
                 CREATE TABLE airways_branch (
                     name TEXT,
                     branch_key TEXT,
@@ -4352,11 +4369,11 @@ mod tests {
                 INSERT INTO fix VALUES ('CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO fix VALUES ('HARPR', 42.480555555555554, -122.88376111111111);
                 INSERT INTO fix VALUES ('PDT', 45.0, -118.0);
-                INSERT INTO nav VALUES ('PDT', 45.0, -118.0, '14.0');
-                INSERT INTO nav VALUES ('ILA', 39.0711736111111, -122.027269722222, '14.0');
-                INSERT INTO nav VALUES ('OAK', 37.7259255555556, -122.223591944444, '14.0');
+                INSERT INTO enroute_navaids VALUES ('PDT', 45.0, -118.0, 'VORTAC', 'PENDLETON', 14.0);
+                INSERT INTO enroute_navaids VALUES ('ILA', 39.0711736111111, -122.027269722222, 'VORTAC', 'WILLIAMS', 14.0);
+                INSERT INTO enroute_navaids VALUES ('OAK', 37.7259255555556, -122.223591944444, 'VORTAC', 'OAKLAND', 14.0);
                 -- BYI's longitude exposed inconsistent keys when only stored positions were rounded.
-                INSERT INTO nav VALUES ('BYI', 42.58023944444444453, -113.86585749999998995, '14.0');
+                INSERT INTO enroute_navaids VALUES ('BYI', 42.58023944444444453, -113.86585749999998995, 'VOR/DME', 'BURLEY', 14.0);
                 INSERT INTO airways_branch VALUES ('V23', '', 690, '690', 'RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO airways_branch VALUES ('V23', '', 700, '700', 'CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO airways_branch VALUES ('V23', '', 710, '710', 'NAMEDBUTMISSING', 45.4, -122.7);
@@ -4378,11 +4395,11 @@ mod tests {
                 .prepare(
                     "
                     SELECT trim(a.name), trim(a.branch_key),
-                           CAST(a.sequence_number AS INTEGER), trim(n.LocationID)
+                           CAST(a.sequence_number AS INTEGER), trim(n.identifier)
                     FROM airways_branch a
-                    JOIN nav n
-                      ON CAST(a.Latitude AS REAL) = CAST(n.ARPLatitude AS REAL)
-                     AND CAST(a.Longitude AS REAL) = CAST(n.ARPLongitude AS REAL)
+                    JOIN enroute_navaids n
+                      ON CAST(a.Latitude AS REAL) = CAST(n.latitude AS REAL)
+                     AND CAST(a.Longitude AS REAL) = CAST(n.longitude AS REAL)
                     ",
                 )
                 .unwrap();
@@ -4530,21 +4547,27 @@ mod tests {
                     MagneticVariation TEXT,
                     ARPElevation TEXT
                 );
-                CREATE TABLE nav (
-                    LocationID TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Variation TEXT
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY,
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL
                 );
-                CREATE TABLE arinc_navaids (
+                CREATE TABLE procedure_navaids (
                     identifier TEXT,
                     icao_code TEXT,
                     section_code TEXT,
                     subsection_code TEXT,
                     airport_id TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Variation TEXT
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL,
+                    elevation TEXT,
+                    PRIMARY KEY(identifier, icao_code, section_code, subsection_code, airport_id)
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -4586,9 +4609,7 @@ mod tests {
                 INSERT INTO airports VALUES ('44C', 42.4978, -88.9676, 'W0030', '823');
                 INSERT INTO airports VALUES ('KPAE', 47.9063, -122.2816, 'E0150', '606');
                 INSERT INTO airportrunways VALUES ('KPAE', '16L', 47.9218, -122.2855, '34R', 47.8908, -122.2768);
-                INSERT INTO nav VALUES ('JVL', 42.6151230555556, -89.0412775, '3.0');
-                INSERT INTO nav VALUES ('JVL', 42.5580080555556, -89.1052575, '3.0');
-                INSERT INTO arinc_navaids VALUES ('JVL', 'K5', 'D', '', '', 42.5580083333333, -89.1052583333333, '3.0');
+                INSERT INTO procedure_navaids VALUES ('JVL', 'K5', 'D', '', '', 42.5580083333333, -89.1052583333333, 'NAVAID', 'JANESVILLE', 3.0, '');
                 INSERT INTO fix VALUES ('MADMY', 42.5000, -89.0000);
                 INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'F', 'A', 'JVL', '010', 'JVL', 'K5', 'D', '', '', '', '', '', '', '', 'IF', '', '', '', '');
                 INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'F', 'A', 'JVL', '020', 'JVL', 'K5', 'D', '', 'JVL', 'K5', 'D', '', '', '', 'PI', '', '', '', '');
@@ -5419,7 +5440,6 @@ mod tests {
                 "RWF".to_string(),
                 serde_json::json!({ "lat": 44.46727361111111, "lon": -95.12823 }),
             )]),
-            navaid_identifier_counts: BTreeMap::from([("RWF".to_string(), 1)]),
             arinc_navaid_positions: BTreeMap::new(),
             terminal_navaid_positions: BTreeMap::new(),
             fix_positions: BTreeMap::new(),
@@ -5454,20 +5474,8 @@ mod tests {
         let procedure_key = TerminalNavaidKey::new("KABI", "AB", "K4", "P", "N");
         let context = NavLookupContext {
             airport_positions: BTreeMap::new(),
-            navaid_positions: BTreeMap::from([
-                (
-                    "JN".to_string(),
-                    serde_json::json!({ "lat": 40.1809228, "lon": -85.3209822 }),
-                ),
-                (
-                    "AB".to_string(),
-                    serde_json::json!({ "lat": 31.4561477777778, "lon": -84.2761588888889 }),
-                ),
-            ]),
-            navaid_identifier_counts: BTreeMap::from([
-                ("JN".to_string(), 2),
-                ("AB".to_string(), 3),
-            ]),
+            // Ambiguous identifiers have no bare NavRef; qualified records remain usable.
+            navaid_positions: BTreeMap::new(),
             arinc_navaid_positions: BTreeMap::from([(
                 key.clone(),
                 serde_json::json!({ "lat": 35.4749992, "lon": -78.4252856 }),

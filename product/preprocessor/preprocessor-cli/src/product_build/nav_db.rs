@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::*;
+use preprocessor_core::is_enroute_navaid_type;
 use preprocessor_core::runway::{
     parse_airport_magnetic_variation, parse_optional_position, resolve_true_heading,
     RunwayHeadingInput,
@@ -2957,7 +2958,7 @@ pub(super) fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<V
     pairs.extend(build_nav_kv_airport_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_airport_info_pairs(&connection)?);
     pairs.extend(build_nav_kv_navaid_navref_pairs(&connection)?);
-    pairs.extend(build_nav_kv_arinc_navaid_navref_pairs(&connection)?);
+    pairs.extend(build_nav_kv_procedure_navaid_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_fix_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_runway_position_pairs(&connection)?);
     pairs.extend(build_nav_kv_waypoint_lookup_pairs(&connection)?);
@@ -2969,15 +2970,22 @@ pub(super) fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<V
         None,
     )?);
     pairs.extend(build_nav_kv_airway_pairs(&connection)?);
-    let mut deduped = BTreeMap::<String, Vec<u8>>::new();
-    for pair in pairs {
-        deduped.entry(pair.key).or_insert(pair.value);
-    }
-    validate_airway_navrefs_resolve(&deduped)?;
-    Ok(deduped
+    let unique = collect_unique_nav_kv_pairs(pairs)?;
+    validate_airway_navrefs_resolve(&unique)?;
+    Ok(unique
         .into_iter()
         .map(|(key, value)| NavKvPair { key, value })
         .collect())
+}
+
+fn collect_unique_nav_kv_pairs(pairs: Vec<NavKvPair>) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
+    let mut unique = BTreeMap::new();
+    for pair in pairs {
+        if unique.insert(pair.key.clone(), pair.value).is_some() {
+            anyhow::bail!("nav_kv producer emitted duplicate key {}", pair.key);
+        }
+    }
+    Ok(unique)
 }
 
 pub(super) fn validate_airway_navrefs_resolve(
@@ -3782,12 +3790,45 @@ fn is_contiguous_us_state(state: &str) -> bool {
 pub(super) fn build_nav_kv_navaid_navref_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut pairs = Vec::new();
+    for (id, navaid) in load_enroute_navaids(connection)? {
+        let key_id = had_upper_key_component(&id);
+        pairs.push(json_pair(
+            format!("navref/position/navaid/{key_id}"),
+            &nav_lat_lon_json(navaid.lat, navaid.lon),
+            "navref navaid position",
+        )?);
+        pairs.push(json_pair(
+            format!("navref/symbol/navaid/{key_id}"),
+            &serde_json::json!({
+                "kind": navaid.kind.to_ascii_lowercase(),
+                "label": navaid_display_label(&id, &navaid.facility_name),
+                "symbol_kind": "nav",
+                "style_class": "nav",
+            }),
+            "navref navaid symbol",
+        )?);
+    }
+    Ok(pairs)
+}
+
+#[derive(Debug, Clone)]
+struct EnrouteNavaidRecord {
+    lat: f64,
+    lon: f64,
+    facility_name: String,
+    kind: String,
+    variation: Option<f64>,
+}
+
+fn load_enroute_navaids(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<String, EnrouteNavaidRecord>> {
     let mut stmt = connection.prepare(
         "
-        SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
-               trim(FacilityName), trim(Type)
-        FROM nav
-        WHERE trim(LocationID) <> ''
+        SELECT trim(identifier), latitude, longitude,
+               trim(facility_name), trim(kind), variation
+        FROM enroute_navaids
         ",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -3797,90 +3838,67 @@ pub(super) fn build_nav_kv_navaid_navref_pairs(
             row.get::<_, f64>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
+            row.get::<_, Option<f64>>(5)?,
         ))
     })?;
-    let mut pairs = Vec::new();
+    let mut navaids = BTreeMap::new();
     for row in rows {
-        let (id, lat, lon, facility_name, kind) = row?;
-        let key_id = had_upper_key_component(&id);
-        pairs.push(json_pair(
-            format!("navref/position/navaid/{key_id}"),
-            &nav_lat_lon_json(lat, lon),
-            "navref navaid position",
-        )?);
-        if navaid_is_waypoint_symbol_eligible(&kind) {
-            pairs.push(json_pair(
-                format!("navref/symbol/navaid/{key_id}"),
-                &serde_json::json!({
-                    "kind": kind.to_ascii_lowercase(),
-                    "label": navaid_display_label(&id, &facility_name),
-                    "symbol_kind": "nav",
-                    "style_class": "nav",
-                }),
-                "navref navaid symbol",
-            )?);
-        }
+        let (id, lat, lon, facility_name, kind, variation) = row?;
+        anyhow::ensure!(
+            is_enroute_navaid_type(&kind),
+            "enroute_navaids contains unsupported kind {kind} for {id}"
+        );
+        let id = id.trim().to_ascii_uppercase();
+        let record = EnrouteNavaidRecord {
+            lat,
+            lon,
+            facility_name,
+            kind,
+            variation,
+        };
+        anyhow::ensure!(
+            navaids.insert(id.clone(), record).is_none(),
+            "duplicate enroute navaid identifier {id}"
+        );
     }
-    Ok(pairs)
+    Ok(navaids)
 }
 
-pub(super) fn build_nav_kv_arinc_navaid_navref_pairs(
+pub(super) fn build_nav_kv_procedure_navaid_navref_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-               trim(airport_id),
-               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
-        FROM arinc_navaids
-        WHERE trim(identifier) <> ''
-          AND trim(icao_code) <> ''
-          AND trim(section_code) <> ''
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, f64>(5)?,
-            row.get::<_, f64>(6)?,
-        ))
-    })?;
     let mut pairs = Vec::new();
-    for row in rows {
-        let (identifier, icao_code, section_code, subsection_code, airport_id, lat, lon) = row?;
-        let position = nav_lat_lon_json(lat, lon);
-        if section_code.trim().eq_ignore_ascii_case("P")
-            && subsection_code.trim().eq_ignore_ascii_case("N")
-            && !airport_id.trim().is_empty()
-        {
-            pairs.push(json_pair(
+    for (key, record) in load_referenced_procedure_navaids(connection)? {
+        let position = nav_lat_lon_json(record.lat, record.lon);
+        match key {
+            QualifiedProcedureNavaidKey::Terminal(key) => pairs.push(json_pair(
                 format!(
                     "navref/position/terminal-navaid/{}",
                     terminal_navaid_had_key(
-                        &airport_id,
-                        &identifier,
-                        &icao_code,
-                        &section_code,
-                        &subsection_code
+                        &key.airport_id,
+                        &key.identifier,
+                        &key.icao_code,
+                        &key.section_code,
+                        &key.subsection_code,
                     )
                 ),
                 &position,
                 "navref terminal navaid position",
-            )?);
-            continue;
+            )?),
+            QualifiedProcedureNavaidKey::Arinc(key) => pairs.push(json_pair(
+                format!(
+                    "navref/position/arinc-navaid/{}",
+                    arinc_navaid_had_key(
+                        &key.identifier,
+                        &key.icao_code,
+                        &key.section_code,
+                        &key.subsection_code,
+                    )
+                ),
+                &position,
+                "navref ARINC navaid position",
+            )?),
         }
-        pairs.push(json_pair(
-            format!(
-                "navref/position/arinc-navaid/{}",
-                arinc_navaid_had_key(&identifier, &icao_code, &section_code, &subsection_code)
-            ),
-            &position,
-            "navref ARINC navaid position",
-        )?);
     }
     Ok(pairs)
 }
@@ -3986,7 +4004,7 @@ pub(super) fn build_nav_kv_waypoint_lookup_pairs(
     )?;
     collect_waypoint_candidates(
         connection,
-        "nav",
+        "enroute_navaids",
         "navaid",
         &mut candidates,
         &mut kind_by_identifier,
@@ -4113,20 +4131,28 @@ pub(super) fn collect_waypoint_candidates(
     candidates: &mut Vec<WaypointSearchCandidate>,
     kind_by_identifier: &mut BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
+    if kind == "navaid" {
+        for (identifier, navaid) in load_enroute_navaids(connection)? {
+            record_waypoint_identifier_kind(kind_by_identifier, &identifier, kind)?;
+            candidates.push(WaypointSearchCandidate {
+                search_terms: BTreeMap::from([(
+                    identifier.clone(),
+                    WaypointSearchMatchKind::Identifier,
+                )]),
+                identifier,
+                kind: kind.to_string(),
+                display_name: navaid.facility_name,
+                lat: round_nav_coordinate(navaid.lat),
+                lon: round_nav_coordinate(navaid.lon),
+            });
+        }
+        return Ok(());
+    }
     let sql = if kind == "airport" {
         format!(
             "
         SELECT trim(LocationID), trim(City), trim(State), trim(FacilityName),
                CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), ''
-        FROM {table}
-        WHERE trim(LocationID) <> ''
-        "
-        )
-    } else if kind == "navaid" {
-        format!(
-            "
-        SELECT trim(LocationID), '', '', trim(FacilityName),
-               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type)
         FROM {table}
         WHERE trim(LocationID) <> ''
         "
@@ -4154,12 +4180,9 @@ pub(super) fn collect_waypoint_candidates(
         ))
     })?;
     for row in rows {
-        let (identifier, city, state, facility_name, lat, lon, navaid_type) = row?;
+        let (identifier, city, state, facility_name, lat, lon, _unused) = row?;
         let identifier = identifier.trim().to_ascii_uppercase();
         if identifier.is_empty() {
-            continue;
-        }
-        if kind == "navaid" && !navaid_is_waypoint_symbol_eligible(&navaid_type) {
             continue;
         }
         record_waypoint_identifier_kind(kind_by_identifier, &identifier, kind)?;
@@ -4221,13 +4244,6 @@ pub(super) fn waypoint_identifier_display_name(
     } else {
         kind.to_string()
     }
-}
-
-pub(super) fn navaid_is_waypoint_symbol_eligible(kind: &str) -> bool {
-    matches!(
-        kind.trim().to_ascii_uppercase().as_str(),
-        "VOR" | "VOR/DME" | "VORTAC"
-    )
 }
 
 #[derive(Debug, Default, Clone)]
@@ -4841,7 +4857,6 @@ pub(super) fn load_nav_kv_procedure_rows(
 pub(super) struct NavLookupContext {
     pub(super) airport_positions: BTreeMap<String, serde_json::Value>,
     pub(super) navaid_positions: BTreeMap<String, serde_json::Value>,
-    pub(super) navaid_identifier_counts: BTreeMap<String, usize>,
     pub(super) arinc_navaid_positions: BTreeMap<ArincNavaidKey, serde_json::Value>,
     pub(super) terminal_navaid_positions: BTreeMap<TerminalNavaidKey, serde_json::Value>,
     pub(super) fix_positions: BTreeMap<String, serde_json::Value>,
@@ -4921,6 +4936,165 @@ impl TerminalNavaidKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum QualifiedProcedureNavaidKey {
+    Arinc(ArincNavaidKey),
+    Terminal(TerminalNavaidKey),
+}
+
+#[derive(Debug, Clone)]
+struct QualifiedProcedureNavaidRecord {
+    lat: f64,
+    lon: f64,
+    variation: Option<f64>,
+}
+
+fn qualified_procedure_navaid_key(
+    airport_id: &str,
+    identifier: &str,
+    icao_code: &str,
+    section_code: &str,
+    subsection_code: &str,
+) -> Option<QualifiedProcedureNavaidKey> {
+    if section_code.trim().eq_ignore_ascii_case("P") {
+        let key = TerminalNavaidKey::new(
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        );
+        key.is_complete()
+            .then_some(QualifiedProcedureNavaidKey::Terminal(key))
+    } else {
+        let key = ArincNavaidKey::new(identifier, icao_code, section_code, subsection_code);
+        key.is_complete()
+            .then_some(QualifiedProcedureNavaidKey::Arinc(key))
+    }
+}
+
+fn load_referenced_procedure_navaid_keys(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeSet<QualifiedProcedureNavaidKey>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(airport_identifier),
+               trim(fix_identifier), trim(icao_code_2), trim(section_code_2), trim(subsection_code_2),
+               trim(recommended_navaid), trim(icao_code_3), trim(recd_nav_section), trim(recd_nav_subsection)
+        FROM cifp_sid_star_app
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+        ))
+    })?;
+    let mut keys = BTreeSet::new();
+    for row in rows {
+        let (
+            airport,
+            fix,
+            fix_icao,
+            fix_section,
+            fix_subsection,
+            rec,
+            rec_icao,
+            rec_section,
+            rec_subsection,
+        ) = row?;
+        if let Some(key) =
+            qualified_procedure_navaid_key(&airport, &fix, &fix_icao, &fix_section, &fix_subsection)
+        {
+            keys.insert(key);
+        }
+        if let Some(key) =
+            qualified_procedure_navaid_key(&airport, &rec, &rec_icao, &rec_section, &rec_subsection)
+        {
+            keys.insert(key);
+        }
+    }
+    Ok(keys)
+}
+
+fn load_referenced_procedure_navaids(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<QualifiedProcedureNavaidKey, QualifiedProcedureNavaidRecord>> {
+    let referenced = load_referenced_procedure_navaid_keys(connection)?;
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(airport_id), trim(identifier), trim(icao_code),
+               trim(section_code), trim(subsection_code), latitude, longitude,
+               variation, trim(kind)
+        FROM procedure_navaids
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+            row.get::<_, Option<f64>>(7)?,
+            row.get::<_, String>(8)?,
+        ))
+    })?;
+    let mut records = BTreeMap::new();
+    for row in rows {
+        let (airport, identifier, icao, section, subsection, lat, lon, variation, kind) = row?;
+        let Some(key) =
+            qualified_procedure_navaid_key(&airport, &identifier, &icao, &section, &subsection)
+        else {
+            anyhow::bail!(
+                "procedure_navaids contains incomplete identity {airport}/{section}/{subsection}/{icao}/{identifier}"
+            );
+        };
+        let kind_is_valid = if subsection.trim().eq_ignore_ascii_case("I") {
+            kind.eq_ignore_ascii_case("LOCALIZER")
+        } else if matches!(subsection.trim().to_ascii_uppercase().as_str(), "B" | "N") {
+            kind.eq_ignore_ascii_case("NDB")
+        } else if section.trim().eq_ignore_ascii_case("D") {
+            matches!(
+                kind.trim().to_ascii_uppercase().as_str(),
+                "NAVAID" | "LOCALIZER"
+            )
+        } else {
+            kind.eq_ignore_ascii_case("NAVAID")
+        };
+        anyhow::ensure!(
+            kind_is_valid,
+            "procedure navaid {key:?} has kind {kind} inconsistent with its qualified identity"
+        );
+        if !referenced.contains(&key) {
+            continue;
+        }
+        anyhow::ensure!(
+            records
+                .insert(
+                    key.clone(),
+                    QualifiedProcedureNavaidRecord {
+                        lat,
+                        lon,
+                        variation,
+                    },
+                )
+                .is_none(),
+            "duplicate qualified procedure navaid {key:?}"
+        );
+    }
+    Ok(records)
+}
+
 pub(super) fn is_runway_identifier(identifier: &str) -> bool {
     let trimmed = identifier.trim().to_ascii_uppercase();
     let suffix = match trimmed.strip_prefix("RW") {
@@ -4941,13 +5115,33 @@ impl NavLookupContext {
     fn load(connection: &rusqlite::Connection) -> anyhow::Result<Self> {
         let airport_positions =
             load_nav_position_map(connection, "airports", "ARPLatitude", "ARPLongitude")?;
-        let navaid_positions =
-            load_nav_position_map(connection, "nav", "ARPLatitude", "ARPLongitude")?;
-        let navaid_identifier_counts = load_nav_identifier_counts(connection)?;
-        let arinc_navaid_positions = load_arinc_navaid_position_map(connection)?;
-        let arinc_navaid_variation = load_arinc_navaid_variation_map(connection)?;
-        let terminal_navaid_positions = load_terminal_navaid_position_map(connection)?;
-        let terminal_navaid_variation = load_terminal_navaid_variation_map(connection)?;
+        let enroute_navaids = load_enroute_navaids(connection)?;
+        let navaid_positions = enroute_navaids
+            .iter()
+            .map(|(id, navaid)| (id.clone(), nav_lat_lon_json(navaid.lat, navaid.lon)))
+            .collect::<BTreeMap<_, _>>();
+        let navaid_variation = enroute_navaids
+            .into_iter()
+            .map(|(id, navaid)| (id, navaid.variation))
+            .collect::<BTreeMap<_, _>>();
+        let procedure_navaids = load_referenced_procedure_navaids(connection)?;
+        let mut arinc_navaid_positions = BTreeMap::new();
+        let mut arinc_navaid_variation = BTreeMap::new();
+        let mut terminal_navaid_positions = BTreeMap::new();
+        let mut terminal_navaid_variation = BTreeMap::new();
+        for (key, record) in procedure_navaids {
+            let position = nav_lat_lon_json(record.lat, record.lon);
+            match key {
+                QualifiedProcedureNavaidKey::Arinc(key) => {
+                    arinc_navaid_positions.insert(key.clone(), position);
+                    arinc_navaid_variation.insert(key, record.variation);
+                }
+                QualifiedProcedureNavaidKey::Terminal(key) => {
+                    terminal_navaid_positions.insert(key.clone(), position);
+                    terminal_navaid_variation.insert(key, record.variation);
+                }
+            }
+        }
         let fix_positions =
             load_nav_position_map(connection, "fix", "ARPLatitude", "ARPLongitude")?;
         Ok(Self {
@@ -4956,12 +5150,11 @@ impl NavLookupContext {
             fix_positions_by_coord: build_position_lookup(&fix_positions),
             airport_positions,
             navaid_positions,
-            navaid_identifier_counts,
             arinc_navaid_positions,
             terminal_navaid_positions,
             fix_positions,
             runway_positions: load_runway_position_map(connection)?,
-            navaid_variation: load_variation_map(connection, "nav", "Variation", false)?,
+            navaid_variation,
             arinc_navaid_variation,
             terminal_navaid_variation,
             airport_variation: load_variation_map(
@@ -4997,13 +5190,6 @@ impl NavLookupContext {
             return serde_json::json!({ "Fix": trimmed });
         }
         serde_json::Value::Null
-    }
-
-    fn navaid_identifier_count(&self, identifier: &str) -> usize {
-        self.navaid_identifier_counts
-            .get(identifier)
-            .copied()
-            .unwrap_or(0)
     }
 
     pub(super) fn classify_cifp_reference_json(
@@ -5056,9 +5242,7 @@ impl NavLookupContext {
 
         match section_code.trim().to_ascii_uppercase().as_str() {
             "D" => {
-                if self.navaid_positions.contains_key(&trimmed)
-                    && self.navaid_identifier_count(&trimmed) <= 1
-                {
+                if self.navaid_positions.contains_key(&trimmed) {
                     return serde_json::json!({ "Navaid": trimmed });
                 }
             }
@@ -5078,9 +5262,7 @@ impl NavLookupContext {
             _ => {}
         }
 
-        if self.navaid_positions.contains_key(&trimmed)
-            && self.navaid_identifier_count(&trimmed) <= 1
-        {
+        if self.navaid_positions.contains_key(&trimmed) {
             return serde_json::json!({ "Navaid": trimmed });
         }
         if self.airport_positions.contains_key(&trimmed) {
@@ -5287,169 +5469,6 @@ pub(super) fn load_nav_position_map(
     for row in rows {
         let (id, lat, lon) = row?;
         map.entry(id).or_insert_with(|| nav_lat_lon_json(lat, lon));
-    }
-    Ok(map)
-}
-
-pub(super) fn load_nav_identifier_counts(
-    connection: &rusqlite::Connection,
-) -> anyhow::Result<BTreeMap<String, usize>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(LocationID), COUNT(*)
-        FROM nav
-        WHERE trim(LocationID) <> ''
-        GROUP BY trim(LocationID)
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?.trim().to_ascii_uppercase(),
-            row.get::<_, i64>(1)?,
-        ))
-    })?;
-    let mut map = BTreeMap::new();
-    for row in rows {
-        let (id, count) = row?;
-        map.insert(id, usize::try_from(count).unwrap_or(usize::MAX));
-    }
-    Ok(map)
-}
-
-pub(super) fn load_arinc_navaid_position_map(
-    connection: &rusqlite::Connection,
-) -> anyhow::Result<BTreeMap<ArincNavaidKey, serde_json::Value>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
-        FROM arinc_navaids
-        WHERE trim(identifier) <> ''
-          AND trim(icao_code) <> ''
-          AND trim(section_code) <> ''
-          AND NOT (upper(trim(section_code)) = 'P' AND upper(trim(subsection_code)) = 'N')
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            ArincNavaidKey::new(
-                &row.get::<_, String>(0)?,
-                &row.get::<_, String>(1)?,
-                &row.get::<_, String>(2)?,
-                &row.get::<_, String>(3)?,
-            ),
-            row.get::<_, f64>(4)?,
-            row.get::<_, f64>(5)?,
-        ))
-    })?;
-    let mut map = BTreeMap::new();
-    for row in rows {
-        let (key, lat, lon) = row?;
-        map.entry(key).or_insert_with(|| nav_lat_lon_json(lat, lon));
-    }
-    Ok(map)
-}
-
-pub(super) fn load_terminal_navaid_position_map(
-    connection: &rusqlite::Connection,
-) -> anyhow::Result<BTreeMap<TerminalNavaidKey, serde_json::Value>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(airport_id), trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL)
-        FROM arinc_navaids
-        WHERE trim(airport_id) <> ''
-          AND trim(identifier) <> ''
-          AND trim(icao_code) <> ''
-          AND upper(trim(section_code)) = 'P'
-          AND upper(trim(subsection_code)) = 'N'
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            TerminalNavaidKey::new(
-                &row.get::<_, String>(0)?,
-                &row.get::<_, String>(1)?,
-                &row.get::<_, String>(2)?,
-                &row.get::<_, String>(3)?,
-                &row.get::<_, String>(4)?,
-            ),
-            row.get::<_, f64>(5)?,
-            row.get::<_, f64>(6)?,
-        ))
-    })?;
-    let mut map = BTreeMap::new();
-    for row in rows {
-        let (key, lat, lon) = row?;
-        map.entry(key).or_insert_with(|| nav_lat_lon_json(lat, lon));
-    }
-    Ok(map)
-}
-
-pub(super) fn load_arinc_navaid_variation_map(
-    connection: &rusqlite::Connection,
-) -> anyhow::Result<BTreeMap<ArincNavaidKey, Option<f64>>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-               CAST(Variation AS REAL)
-        FROM arinc_navaids
-        WHERE trim(identifier) <> ''
-          AND trim(icao_code) <> ''
-          AND trim(section_code) <> ''
-          AND NOT (upper(trim(section_code)) = 'P' AND upper(trim(subsection_code)) = 'N')
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            ArincNavaidKey::new(
-                &row.get::<_, String>(0)?,
-                &row.get::<_, String>(1)?,
-                &row.get::<_, String>(2)?,
-                &row.get::<_, String>(3)?,
-            ),
-            row.get::<_, Option<f64>>(4)?,
-        ))
-    })?;
-    let mut map = BTreeMap::new();
-    for row in rows {
-        let (key, variation) = row?;
-        map.entry(key).or_insert(variation);
-    }
-    Ok(map)
-}
-
-pub(super) fn load_terminal_navaid_variation_map(
-    connection: &rusqlite::Connection,
-) -> anyhow::Result<BTreeMap<TerminalNavaidKey, Option<f64>>> {
-    let mut stmt = connection.prepare(
-        "
-        SELECT trim(airport_id), trim(identifier), trim(icao_code), trim(section_code), trim(subsection_code),
-               CAST(Variation AS REAL)
-        FROM arinc_navaids
-        WHERE trim(airport_id) <> ''
-          AND trim(identifier) <> ''
-          AND trim(icao_code) <> ''
-          AND upper(trim(section_code)) = 'P'
-          AND upper(trim(subsection_code)) = 'N'
-        ",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            TerminalNavaidKey::new(
-                &row.get::<_, String>(0)?,
-                &row.get::<_, String>(1)?,
-                &row.get::<_, String>(2)?,
-                &row.get::<_, String>(3)?,
-                &row.get::<_, String>(4)?,
-            ),
-            row.get::<_, Option<f64>>(5)?,
-        ))
-    })?;
-    let mut map = BTreeMap::new();
-    for row in rows {
-        let (key, variation) = row?;
-        map.entry(key).or_insert(variation);
     }
     Ok(map)
 }
@@ -6081,6 +6100,53 @@ pub(super) fn max_zoom_for_levels(
 mod tests {
     use super::*;
 
+    fn rbg_enroute_connection() -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE airports (
+                    LocationID TEXT, City TEXT, State TEXT, FacilityName TEXT,
+                    ARPLatitude REAL, ARPLongitude REAL,
+                    MagneticVariation TEXT, ARPElevation TEXT
+                );
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY, latitude REAL, longitude REAL,
+                    kind TEXT, facility_name TEXT, variation REAL
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT, FacilityName TEXT,
+                    ARPLatitude REAL, ARPLongitude REAL
+                );
+                CREATE TABLE procedure_navaids (
+                    identifier TEXT, icao_code TEXT, section_code TEXT, subsection_code TEXT,
+                    airport_id TEXT, latitude REAL, longitude REAL, kind TEXT,
+                    facility_name TEXT, variation REAL, elevation TEXT,
+                    PRIMARY KEY(identifier, icao_code, section_code, subsection_code, airport_id)
+                );
+                CREATE TABLE airportrunways (
+                    LocationID TEXT, LEIdent TEXT, LELatitude REAL, LELongitude REAL,
+                    HEIdent TEXT, HELatitude REAL, HELongitude REAL
+                );
+                CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    fix_identifier TEXT, icao_code_2 TEXT,
+                    section_code_2 TEXT, subsection_code_2 TEXT,
+                    recommended_navaid TEXT, icao_code_3 TEXT,
+                    recd_nav_section TEXT, recd_nav_subsection TEXT
+                );
+                ",
+            )
+            .expect("schema");
+        connection
+            .execute(
+                "INSERT INTO enroute_navaids VALUES ('RBG', 43.18241527777778, -123.35224194444444, 'VOR/DME', 'ROSEBURG 114.45', 14.0)",
+                [],
+            )
+            .expect("RBG VOR/DME");
+        connection
+    }
+
     #[test]
     fn bundled_aircraft_definitions_are_content_addressed_and_prefetched() {
         let (pairs, prefetch_keys) = build_nav_kv_aircraft_pairs().expect("aircraft pairs");
@@ -6109,6 +6175,141 @@ mod tests {
     }
 
     #[test]
+    fn rbg_enroute_identity_has_one_consistent_vor_dme_record() {
+        let connection = rbg_enroute_connection();
+        let enroute = load_enroute_navaids(&connection).expect("enroute navaids");
+        let rbg = enroute.get("RBG").expect("RBG VOR/DME");
+        assert_eq!(rbg.kind, "VOR/DME");
+        assert!((rbg.lat - 43.18241527777778).abs() < 1e-12);
+        assert!((rbg.lon + 123.35224194444444).abs() < 1e-12);
+        assert_eq!(rbg.variation, Some(14.0));
+
+        let navref_pairs = build_nav_kv_navaid_navref_pairs(&connection).expect("navref pairs");
+        let position_pairs = navref_pairs
+            .iter()
+            .filter(|pair| pair.key == "navref/position/navaid/RBG")
+            .collect::<Vec<_>>();
+        assert_eq!(position_pairs.len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&position_pairs[0].value).unwrap(),
+            serde_json::json!({ "lat": 43.1824153, "lon": -123.3522419 })
+        );
+        let symbol = navref_pairs
+            .iter()
+            .find(|pair| pair.key == "navref/symbol/navaid/RBG")
+            .expect("RBG symbol");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&symbol.value).unwrap(),
+            serde_json::json!({
+                "kind": "vor/dme",
+                "label": "RBG 114.45",
+                "symbol_kind": "nav",
+                "style_class": "nav",
+            })
+        );
+
+        let waypoint_pairs =
+            build_nav_kv_waypoint_lookup_pairs(&connection).expect("waypoint pairs");
+        let identifier = waypoint_pairs
+            .iter()
+            .find(|pair| pair.key == "waypoint/identifier/RBG")
+            .expect("RBG identifier");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&identifier.value).unwrap(),
+            serde_json::json!({ "Navaid": "RBG" })
+        );
+
+        let context = NavLookupContext::load(&connection).expect("nav lookup context");
+        assert_eq!(
+            context.resolve_position_json(&serde_json::json!({ "Navaid": "RBG" }), None),
+            serde_json::json!({ "lat": 43.1824153, "lon": -123.3522419 })
+        );
+        assert_eq!(
+            context.variation_for_nav_ref(&serde_json::json!({ "Navaid": "RBG" })),
+            serde_json::json!(14.0)
+        );
+    }
+
+    #[test]
+    fn enroute_domain_rejects_non_vor_class_records() {
+        let connection = rbg_enroute_connection();
+        connection
+            .execute(
+                "INSERT INTO enroute_navaids VALUES ('NDB1', 44.0, -123.0, 'NDB', 'NDB ONLY', 15.0)",
+                [],
+            )
+            .unwrap();
+
+        let error = load_enroute_navaids(&connection).expect_err("NDB must violate the domain");
+        assert!(error
+            .to_string()
+            .contains("enroute_navaids contains unsupported kind NDB for NDB1"));
+    }
+
+    #[test]
+    fn procedure_navaids_emit_only_fully_qualified_navrefs() {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE procedure_navaids (
+                    identifier TEXT, icao_code TEXT, section_code TEXT, subsection_code TEXT,
+                    airport_id TEXT, latitude REAL, longitude REAL, kind TEXT,
+                    facility_name TEXT, variation REAL, elevation TEXT,
+                    PRIMARY KEY(identifier, icao_code, section_code, subsection_code, airport_id)
+                );
+                CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    fix_identifier TEXT, icao_code_2 TEXT,
+                    section_code_2 TEXT, subsection_code_2 TEXT,
+                    recommended_navaid TEXT, icao_code_3 TEXT,
+                    recd_nav_section TEXT, recd_nav_subsection TEXT
+                );
+                INSERT INTO procedure_navaids VALUES
+                    ('ILTT', 'K2', 'P', 'I', 'KDEN', 39.8612972, -104.6872222, 'LOCALIZER', 'DENVER LOCALIZER', 8.0, '5605'),
+                    ('JN', 'K7', 'D', 'B', '', 35.475, -78.4252869, 'NDB', 'JURLY', -9.0, '');
+                INSERT INTO cifp_sid_star_app VALUES
+                    ('KDEN', '', '', '', '', 'ILTT', 'K2', 'P', 'I'),
+                    ('KABI', 'JN', 'K7', 'D', 'B', '', '', '', '');
+                ",
+            )
+            .expect("schema and records");
+
+        let pairs =
+            build_nav_kv_procedure_navaid_navref_pairs(&connection).expect("procedure navaids");
+        assert_eq!(pairs.len(), 2);
+        let terminal_key = format!(
+            "navref/position/terminal-navaid/{}",
+            terminal_navaid_had_key("KDEN", "ILTT", "K2", "P", "I")
+        );
+        let arinc_key = format!(
+            "navref/position/arinc-navaid/{}",
+            arinc_navaid_had_key("JN", "K7", "D", "B")
+        );
+        assert!(pairs.iter().any(|pair| pair.key == terminal_key));
+        assert!(pairs.iter().any(|pair| pair.key == arinc_key));
+        assert!(pairs.iter().all(|pair| !pair.key.contains("/navaid/")));
+    }
+
+    #[test]
+    fn nav_kv_pair_collection_rejects_duplicate_keys() {
+        let error = collect_unique_nav_kv_pairs(vec![
+            NavKvPair {
+                key: "duplicate".to_string(),
+                value: vec![1],
+            },
+            NavKvPair {
+                key: "duplicate".to_string(),
+                value: vec![2],
+            },
+        ])
+        .expect_err("duplicate NavKv key must fail the build");
+        assert!(error
+            .to_string()
+            .contains("nav_kv producer emitted duplicate key duplicate"));
+    }
+
+    #[test]
     fn waypoint_search_index_emits_identifier_city_and_airport_name_terms() {
         let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
         connection
@@ -6122,12 +6323,13 @@ mod tests {
                     ARPLatitude REAL,
                     ARPLongitude REAL
                 );
-                CREATE TABLE nav (
-                    LocationID TEXT,
-                    FacilityName TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    Type TEXT
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY,
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -6543,12 +6745,13 @@ mod tests {
                     LocationID TEXT,
                     Status TEXT
                 );
-                CREATE TABLE nav (
-                    LocationID TEXT,
-                    ARPLatitude REAL,
-                    ARPLongitude REAL,
-                    FacilityName TEXT,
-                    Type TEXT
+                CREATE TABLE enroute_navaids (
+                    identifier TEXT PRIMARY KEY,
+                    latitude REAL,
+                    longitude REAL,
+                    kind TEXT,
+                    facility_name TEXT,
+                    variation REAL
                 );
                 CREATE TABLE fix (
                     LocationID TEXT,
@@ -6559,8 +6762,8 @@ mod tests {
                 );
                 INSERT INTO airports VALUES
                     ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32', 'WA', '15E');
-                INSERT INTO nav VALUES
-                    ('SEA', 47.435, -122.310, 'Seattle', 'VORTAC');
+                INSERT INTO enroute_navaids VALUES
+                    ('SEA', 47.435, -122.310, 'VORTAC', 'Seattle', 15.0);
                 INSERT INTO fix VALUES
                     ('EPH', 47.374, -119.424, 'EPH', 'FIX');
                 "#,

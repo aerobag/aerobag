@@ -15,6 +15,13 @@ use anyhow::{bail, Context};
 pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
 pub const CHART_REFERENCE_MANIFEST_DIR: &str = "chart-references";
 
+pub fn is_enroute_navaid_type(kind: &str) -> bool {
+    matches!(
+        kind.trim().to_ascii_uppercase().as_str(),
+        "VOR" | "VOR/DME" | "VORTAC"
+    )
+}
+
 pub use had_nav_kv as nav_kv;
 pub mod runway;
 

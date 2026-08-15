@@ -1605,12 +1605,13 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             "airports",
             "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes, Use, ARPElevation FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
             "airport",
+            "airports",
         ),
         (
+            "enroute_navaids",
+            "SELECT identifier, latitude, longitude, facility_name, kind, NULL, NULL, NULL, NULL
+             FROM enroute_navaids",
             "nav",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, NULL, NULL, NULL, NULL
-             FROM nav
-             WHERE UPPER(TRIM(Type)) IN ('VOR', 'VOR/DME', 'VORTAC')",
             "nav",
         ),
         (
@@ -1646,10 +1647,11 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                  )
              )",
             "fix",
+            "fix",
         ),
     ];
 
-    for (table_name, sql, style_class) in point_sources {
+    for (table_name, sql, style_class, feature_namespace) in point_sources {
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
@@ -1715,7 +1717,12 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
             let airport_runway_info = (table_name == "airports")
                 .then(|| runway_info.get(&raw_id))
                 .flatten();
-            let id = dedup_id(&mut seen, &format!("{table_name}:{raw_id}"), lat, lon);
+            let id = dedup_id(
+                &mut seen,
+                &format!("{feature_namespace}:{raw_id}"),
+                lat,
+                lon,
+            );
             points.push(PointRecord {
                 id,
                 kind: kind.to_lowercase(),
@@ -5081,7 +5088,7 @@ mod tests {
     }
 
     #[test]
-    fn airport_points_include_arp_elevation() {
+    fn point_vectors_include_airport_elevation_and_only_enroute_navaids() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "
@@ -5097,12 +5104,12 @@ mod tests {
                 ARPElevation TEXT,
                 MagneticVariation TEXT
             );
-            CREATE TABLE nav (
-                LocationID TEXT,
-                ARPLatitude REAL,
-                ARPLongitude REAL,
-                FacilityName TEXT,
-                Type TEXT
+            CREATE TABLE enroute_navaids (
+                identifier TEXT PRIMARY KEY,
+                latitude REAL,
+                longitude REAL,
+                facility_name TEXT,
+                kind TEXT
             );
             CREATE TABLE fix (
                 LocationID TEXT,
@@ -5146,6 +5153,7 @@ mod tests {
                 HEHeading TEXT
             );
             INSERT INTO airports VALUES ('KRNT', 47.4931388888889, -122.21575, 'RENTON MUNI', 'AIRPORT', 'Y', '100LL', 'PU', '32.0', '15E');
+            INSERT INTO enroute_navaids VALUES ('RBG', 43.18241527777778, -123.35224194444444, 'ROSEBURG 114.45', 'VOR/DME');
             ",
         )
         .unwrap();
@@ -5158,6 +5166,14 @@ mod tests {
         assert_eq!(krnt.elevation_msl_ft, Some(32.0));
         let value = serde_json::to_value(krnt).unwrap();
         assert_eq!(value["elevation_msl_ft"], serde_json::json!(32.0));
+        let rbg = points
+            .iter()
+            .filter(|point| point.id.starts_with("nav:RBG"))
+            .collect::<Vec<_>>();
+        assert_eq!(rbg.len(), 1);
+        assert_eq!(rbg[0].kind, "vor/dme");
+        assert!((rbg[0].lat - 43.1824153).abs() < 1e-12);
+        assert!((rbg[0].lon + 123.3522419).abs() < 1e-12);
     }
 
     #[test]

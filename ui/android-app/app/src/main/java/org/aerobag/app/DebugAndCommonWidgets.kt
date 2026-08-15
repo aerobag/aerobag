@@ -724,7 +724,7 @@ internal fun CompactSquareButton(
                             .fillMaxWidth()
                             .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
                             .then(textModifier),
-                        style = renderedLabelStyle.copy(fontSize = 13.sp),
+                        style = renderedLabelStyle.copy(fontSize = IconButtonLabelFontSize),
                         maxLines = if (renderedLabel.contains('\n')) maxLines else 1,
                         color = resolvedContentColor,
                     )

@@ -652,7 +652,7 @@ impl AdsbSessionState {
                         airspace_icon: None,
                         actions: vec![MapSelectionAction {
                             id: "follow_as_ownship".to_string(),
-                            label: "Follow as ownship".to_string(),
+                            label: "Follow".to_string(),
                             enabled: follow_action.is_some(),
                             display_only: false,
                             detail_text: None,

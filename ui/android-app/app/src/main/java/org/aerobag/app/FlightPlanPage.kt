@@ -279,7 +279,7 @@ import org.aerobag.app.generated.airportFuelMarkerPath
 import org.aerobag.app.generated.airportOpenMarkerSymbol
 import org.aerobag.app.generated.fixTrianglePath
 import org.aerobag.app.generated.heliportHPath
-import org.aerobag.app.generated.hasFlightPlanActionSymbol
+import org.aerobag.app.generated.hasActionSymbol
 import org.aerobag.app.generated.mapSelectionSpotSymbol
 import org.aerobag.app.generated.metarBknSymbol
 import org.aerobag.app.generated.metarClearSymbol
@@ -1288,9 +1288,9 @@ internal fun FlightPlanPage(
                                     disabledReason = action.disabledReason,
                                     testTag = "parity:plan-row-action:${action.id}",
                                     width = waypointActionButtonWidth,
-                                    trailingContent = if (hasFlightPlanActionSymbol(action.id)) {
+                                    trailingContent = if (hasActionSymbol(action.id)) {
                                         {
-                                            FlightPlanActionIcon(
+                                            ActionIcon(
                                                 actionId = action.id,
                                                 enabled = action.enabled,
                                                 modifier = Modifier.size(ThumbSize * 0.62f),

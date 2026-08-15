@@ -14,11 +14,11 @@ const symbols = JSON.parse(
 const theme = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "ui/shared-fixtures/ui-theme.json"), "utf8"),
 );
-const outputPath = path.resolve(process.argv[2] ?? "/tmp/flight-plan-action-icons-contact-sheet.svg");
+const outputPath = path.resolve(process.argv[2] ?? "/tmp/action-icons-contact-sheet.svg");
 
 const labels = {
   activate_leg: "Activate Leg",
-  direct_to: "Direct-To",
+  direct_to: "Direct",
   insert_before: "Insert Before",
   move_up: "Move Up",
   insert_after: "Insert After",
@@ -31,7 +31,14 @@ const labels = {
   select_approach: "Select Approach",
   waypoint_info: "Airport Info",
   plates: "Plates",
+  show_plate: "Show Plate",
+  remove_procedure: "Remove Procedure",
   weather: "WX",
+  insert: "Insert",
+  remove_from_flight_plan: "Remove",
+  csup: "CSUP",
+  wx: "WX",
+  airport_info: "Airport Info",
 };
 
 const paintColors = {
@@ -84,7 +91,7 @@ function renderSymbol(symbolName, x, y) {
   return `<g transform="translate(${x} ${y})">${paths.join("")}</g>`;
 }
 
-const entries = Object.entries(symbols.flight_plan_action_symbols);
+const entries = Object.entries(symbols.action_symbols);
 const columns = 2;
 const rows = Math.ceil(entries.length / columns);
 const pagePadding = 28;
@@ -123,7 +130,7 @@ const svg = `<?xml version="1.0" encoding="UTF-8"?>
   <rect width="${width}" height="${height}" fill="#aebcc5" />
   <text x="${pagePadding}" y="${pagePadding + 22}" fill="#18272f"
     font-family="Avenir Next, Avenir, sans-serif" font-size="20" font-weight="800"
-    letter-spacing="0.7">FLIGHT PLAN ACTION SYMBOLS</text>
+    letter-spacing="0.7">ACTION SYMBOLS</text>
   <text x="${width - pagePadding}" y="${pagePadding + 22}" text-anchor="end" fill="#40545e"
     font-family="Avenir Next, Avenir, sans-serif" font-size="13" font-weight="600">48 PX SOURCE GEOMETRY</text>
   ${buttons}

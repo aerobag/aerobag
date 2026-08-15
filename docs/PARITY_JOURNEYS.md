@@ -43,7 +43,7 @@ Current shared journey:
 9. Return to CHART and inventory chart layer and map-family trays.
 10. Open PLATE and inventory airport, chart, and load-procedure controls/trays.
 11. Return to CHART, drag the map, search/recenter on `KBFI`, and open the chart inspector.
-12. Select `airport-KBFI`, inventory its action tray, execute `Insert in flight plan`, and verify `KBFI` appears in PLAN.
+12. Select `airport-KBFI`, inventory its action tray, execute `Insert`, and verify `KBFI` appears in PLAN.
 
 The `both` mode compares structured inventories and boolean checks between web
 and Android. It currently gates stable action IDs, enabled/disabled state,

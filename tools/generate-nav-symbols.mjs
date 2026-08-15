@@ -40,7 +40,7 @@ const androidOut =
   );
 
 const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
-const flightPlanActionSymbols = spec.flight_plan_action_symbols;
+const actionSymbols = spec.action_symbols;
 
 function fmtNumber(value) {
   if (Object.is(value, -0)) {
@@ -190,8 +190,8 @@ function ktSymbolLayers(name) {
     .join(",\n    ");
 }
 
-function ktFlightPlanActionSymbols() {
-  return Object.entries(flightPlanActionSymbols)
+function ktActionSymbols() {
+  return Object.entries(actionSymbols)
     .map(([actionId, symbolName]) => `"${actionId}" -> listOf(\n        ${ktSymbolLayers(symbolName).replaceAll("\n", "\n        ")}\n    )`)
     .join("\n    ");
 }
@@ -235,16 +235,16 @@ export const mapSelectionSpotPegPath = ${JSON.stringify(spec.paths.map_selection
 export const mapSelectionSpotDotPath = ${JSON.stringify(spec.paths.map_selection_spot_dot)};
 export const manualSequenceChevronPath = ${JSON.stringify(spec.paths.manual_sequence_chevron)};
 export const manualSequenceChevronSpacing = ${JSON.stringify(spec.manual_sequence.spacing)};
-export type FlightPlanActionSymbolId = ${Object.keys(flightPlanActionSymbols).map(JSON.stringify).join(" | ")};
-export const flightPlanActionSymbols = ${JSON.stringify(
+export type ActionSymbolId = ${Object.keys(actionSymbols).map(JSON.stringify).join(" | ")};
+export const actionSymbols = ${JSON.stringify(
   Object.fromEntries(
-    Object.entries(flightPlanActionSymbols).map(([actionId, symbolName]) => [actionId, symbolSource(symbolName)]),
+    Object.entries(actionSymbols).map(([actionId, symbolName]) => [actionId, symbolSource(symbolName)]),
   ),
   null,
   2,
-)} satisfies Record<FlightPlanActionSymbolId, readonly NavSymbolLayer[]>;
-export function flightPlanActionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
-  return (flightPlanActionSymbols as Record<string, readonly NavSymbolLayer[]>)[actionId];
+)} satisfies Record<ActionSymbolId, readonly NavSymbolLayer[]>;
+export function actionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
+  return (actionSymbols as Record<string, readonly NavSymbolLayer[]>)[actionId];
 }
 export const dataStatusWarningSymbol = ${JSON.stringify(symbolSource("data_status_warning"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const airportOpenMarkerSymbol = ${JSON.stringify(symbolSource("airport_open_marker"), null, 2)} satisfies readonly NavSymbolLayer[];
@@ -512,15 +512,15 @@ fun pirepSevereIcingSymbol(center: Offset, scale: Float): List<NavSymbolLayer> =
     ${ktSymbolLayers("pirep_severe_icing")}
 )
 
-fun flightPlanActionSymbol(actionId: String, center: Offset, scale: Float): List<NavSymbolLayer>? =
+fun actionSymbol(actionId: String, center: Offset, scale: Float): List<NavSymbolLayer>? =
     when (actionId) {
-        ${ktFlightPlanActionSymbols()}
+        ${ktActionSymbols()}
         else -> null
     }
 
-fun hasFlightPlanActionSymbol(actionId: String): Boolean =
+fun hasActionSymbol(actionId: String): Boolean =
     when (actionId) {
-        ${Object.keys(flightPlanActionSymbols).map((actionId) => `${JSON.stringify(actionId)} -> true`).join("\n        ")}
+        ${Object.keys(actionSymbols).map((actionId) => `${JSON.stringify(actionId)} -> true`).join("\n        ")}
         else -> false
     }
 

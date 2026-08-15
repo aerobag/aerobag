@@ -367,6 +367,7 @@ internal val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
 
 internal val ThumbSize = 56.dp
 internal val ThumbGap = 5.6.dp
+internal val IconButtonLabelFontSize = 13.sp
 internal val SituationDockOverlapWidth = ThumbSize * 10f
 internal val PrimaryNavigationDockWidth = (ThumbSize * 5f) + (ThumbGap * 2f)
 internal val BottomRightControlClearance = ThumbSize + (ThumbGap * 2f)

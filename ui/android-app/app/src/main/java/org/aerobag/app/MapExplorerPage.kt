@@ -318,6 +318,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.generated.airportCircleMarkerPath
 import org.aerobag.app.generated.airportFuelMarkerPath
 import org.aerobag.app.generated.airportOpenMarkerSymbol
+import org.aerobag.app.generated.hasActionSymbol
 import org.aerobag.app.generated.fixTrianglePath
 import org.aerobag.app.generated.heliportHPath
 import org.aerobag.app.generated.mapSelectionSpotSymbol
@@ -4985,7 +4986,10 @@ internal fun MapSelectionItemButton(
             MapSelectionItemIcon(item, Modifier.weight(1f).fillMaxWidth())
             Text(
                 text = item.label,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = IconButtonLabelFontSize,
+                    fontWeight = FontWeight.Bold,
+                ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
@@ -5152,18 +5156,34 @@ internal fun MapSelectionActionButton(
             lerp(containerColor, Color.Black, 0.22f),
         ),
     ) {
-        Box(modifier = Modifier.fillMaxSize().padding(4.dp), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.fillMaxSize().padding(3.dp)) {
             if (action.airspaceLimit != null) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     drawAirspaceLimitGlyph(uiTheme, action.airspaceLimit, Offset(size.width / 2f, size.height / 2f), 1.45f)
                 }
             } else {
-                Text(
-                    text = action.label,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    textAlign = TextAlign.Center,
+                if (hasActionSymbol(action.id)) {
+                    ActionIcon(
+                        actionId = action.id,
+                        enabled = enabled,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .size(ThumbSize * 0.68f),
+                    )
+                }
+                OutlinedButtonLabel(
+                    text = buttonLabel(action.label),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 1.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = IconButtonLabelFontSize,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = IconButtonLabelFontSize,
+                    ),
+                    color = uiTheme.controls.buttonFg,
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

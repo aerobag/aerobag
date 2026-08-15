@@ -9,7 +9,7 @@ node tools/parity/run-flight-plan-inspect-journey.mjs both --url http://127.0.0.
 The journey itself completes on both platforms. It now drives both surfaces
 through a mobile-width chart viewport, searches for `KBFI`, opens the chart
 inspection tray at the recentered map location, selects `airport-KBFI`, and
-executes `Insert in flight plan`.
+executes `Insert`.
 
 Current remaining divergence:
 
@@ -45,4 +45,4 @@ Resolved in this pass:
   procedure load options, matching web.
 - `chart.inspect.insert`: the journey now appends `KAWO`, then selects `KBFI`
   from chart inspection, so the selected airport is off-plan and both platforms
-  expose and execute `Insert in flight plan`.
+  expose and execute `Insert`.

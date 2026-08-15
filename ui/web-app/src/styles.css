@@ -1449,7 +1449,7 @@ button {
   right: calc(var(--thumb) * 0.05);
   bottom: calc(var(--thumb) * 0.06);
   overflow: hidden;
-  font-size: calc(var(--thumb) * 0.16);
+  font-size: var(--thumb-font-small);
   font-weight: 800;
   line-height: 1.05;
   text-overflow: clip;
@@ -1570,6 +1570,7 @@ button {
 }
 
 .mapSelectionAction {
+  position: relative;
   width: var(--thumb);
   height: var(--thumb);
   padding: calc(var(--thumb) * 0.08);
@@ -1580,6 +1581,38 @@ button {
   font-size: calc(var(--thumb) * 0.14);
   font-weight: 800;
   line-height: 1.05;
+  overflow: hidden;
+}
+
+.mapSelectionAction > .actionIcon {
+  position: absolute;
+  top: calc(var(--thumb) * 0.02);
+  left: 50%;
+  width: calc(var(--thumb) * 0.68);
+  height: calc(var(--thumb) * 0.68);
+  transform: translateX(-50%);
+}
+
+.mapSelectionActionLabel {
+  position: absolute;
+  right: calc(var(--thumb) * 0.025);
+  bottom: calc(var(--thumb) * 0.035);
+  left: calc(var(--thumb) * 0.025);
+  color: var(--theme-button-fg);
+  font-size: var(--thumb-font-small);
+  font-weight: 900;
+  line-height: 0.95;
+  text-align: center;
+  text-shadow:
+    -1px -1px 0 #000,
+    0 -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 0 0 #000,
+    1px 0 0 #000,
+    -1px 1px 0 #000,
+    0 1px 0 #000,
+    1px 1px 0 #000;
+  text-transform: uppercase;
 }
 
 .mapSelectionAirspaceLimitGlyph {
@@ -2048,7 +2081,7 @@ button {
   position: relative;
   z-index: 1;
   max-width: calc(var(--thumb) * 0.8);
-  font-size: calc(var(--thumb) * 0.22);
+  font-size: var(--thumb-font-small);
   font-weight: 700;
   letter-spacing: 0.04em;
   line-height: 1.05;
@@ -4442,15 +4475,17 @@ button {
   line-height: 1.04;
 }
 
-.flightPlanActionIcon {
+.actionIcon {
   display: block;
   width: calc(var(--thumb) * 0.62);
   height: calc(var(--thumb) * 0.62);
   overflow: visible;
 }
 
-.waypointActionGrid .airwayChoiceButton.isDisabled .flightPlanActionIcon,
-.waypointActionGrid .airwayChoiceButton:disabled .flightPlanActionIcon {
+.waypointActionGrid .airwayChoiceButton.isDisabled .actionIcon,
+.waypointActionGrid .airwayChoiceButton:disabled .actionIcon,
+.mapSelectionAction.isDisabled .actionIcon,
+.mapSelectionAction:disabled .actionIcon {
   opacity: var(--theme-button-disabled-icon-opacity);
   filter: saturate(var(--theme-button-disabled-icon-saturation));
 }

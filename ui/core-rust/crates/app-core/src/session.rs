@@ -24299,7 +24299,7 @@ mod tests {
                     airspace_icon: None,
                     actions: vec![MapSelectionAction {
                         id: "direct_to".to_string(),
-                        label: "Direct-to".to_string(),
+                        label: "Direct".to_string(),
                         enabled: true,
                         display_only: false,
                         detail_text: None,

@@ -39,6 +39,9 @@
     "action_row_above": "M -19 -15 H 19 V -7 H -19 Z",
     "action_insert_before_plus": "M -7 -5 H 7 M 0 -12 V 2",
     "action_insert_after_plus": "M -7 5 H 7 M 0 -2 V 12",
+    "action_insert_rows": "M -19 -18 H 19 V -10 H -19 Z M -19 10 H 19 V 18 H -19 Z",
+    "action_insert_shaft": "M 14 0 H -8",
+    "action_insert_arrow": "M -8 -7 L -19 0 L -8 7 Z",
     "action_move_up_shaft": "M 0 8 V -6",
     "action_move_up_arrow": "M -7 -6 L 0 -18 L 7 -6 Z",
     "action_move_down_shaft": "M 0 -8 V 6",
@@ -88,6 +91,11 @@
     "action_insert_after": [
       { "path": "action_row_above", "paint": "action_row", "fill": "button_icon_secondary" },
       { "path": "action_insert_after_plus", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" }
+    ],
+    "action_insert": [
+      { "path": "action_insert_rows", "paint": "action_rows", "fill": "button_icon_secondary" },
+      { "path": "action_insert_shaft", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" },
+      { "path": "action_insert_arrow", "paint": "action_arrow", "fill": "button_icon" }
     ],
     "action_move_down": [
       { "path": "action_row_above", "paint": "action_row", "fill": "button_icon_secondary" },
@@ -259,7 +267,7 @@
       { "path": "pirep_severe_icing", "paint": "pirep_glyph", "fill": "none", "stroke": "pirep_symbol", "stroke_width": 4.8, "line_cap": "round", "line_join": "round" }
     ]
   },
-  "flight_plan_action_symbols": {
+  "action_symbols": {
     "activate_leg": "action_activate_leg",
     "direct_to": "action_direct_to",
     "insert_before": "action_insert_before",
@@ -276,7 +284,12 @@
     "plates": "action_plates",
     "show_plate": "action_plates",
     "remove_procedure": "action_remove",
-    "weather": "action_weather"
+    "weather": "action_weather",
+    "insert": "action_insert",
+    "remove_from_flight_plan": "action_remove",
+    "csup": "action_plates",
+    "wx": "action_weather",
+    "airport_info": "action_waypoint_info"
   },
   "obstacle_dot": {
     "short_y": 4.8,

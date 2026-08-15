@@ -28,8 +28,8 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type FlightPlanActionSymbolId = "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather";
-export const flightPlanActionSymbols = {
+export type ActionSymbolId = "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info";
+export const actionSymbols = {
   "activate_leg": [
     {
       "path": "M 13 -17 H -11 V 10 H 9",
@@ -463,10 +463,130 @@ export const flightPlanActionSymbols = {
       "line_join": "round",
       "transform_degrees": null
     }
+  ],
+  "insert": [
+    {
+      "path": "M -19 -18 H 19 V -10 H -19 Z M -19 10 H 19 V 18 H -19 Z",
+      "paint": "action_rows",
+      "fill": "button_icon_secondary",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 14 0 H -8",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -8 -7 L -19 0 L -8 7 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "remove_from_flight_plan": [
+    {
+      "path": "M -9 -8 L -7 16 H 7 L 9 -8 Z M -4 -4 L -3 11 M 0 -4 V 11 M 4 -4 L 3 11",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -12 -13 H 12 M -5 -17 H 5",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "csup": [
+    {
+      "path": "M -13 -20 H 10 L 16 -14 V 20 H -13 Z M 10 -20 V -14 H 16",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 8 13 V 0 L 3 -5 L -1 -9 C -3.8 -11.8 0.4 -16 3.2 -13.2 L 8 -8 V 15",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.1,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "wx": [
+    {
+      "path": "M -14 -20 V 20 M -18 20 H -10 M -16 17 L -14 20 L -12 17",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -14 -17 L 3 -14.5 L 15.3 -3.8 L 12.7 -0.2 L 3 -5.5 L -14 -4 Z M -6 -15.8 V -5.1 M 2 -14.6 V -5.4 M 9.9 -9 L 6.1 -3.8",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    }
+  ],
+  "airport_info": [
+    {
+      "path": "M -20.6 -0.4 L 18.4 -9.4 L 20.6 0.4 L -18.4 9.4 Z",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -14.5 -0.7 L -8.7 -2.1 L -8.2 -0.1 L -14.1 1.2 Z M -13.2 5.1 L -7.3 3.7 L -6.9 5.7 L -12.7 7 Z M 6.9 -5.7 L 12.7 -7 L 13.2 -5.1 L 7.3 -3.7 Z M 8.2 0.1 L 14.1 -1.2 L 14.5 0.7 L 8.7 2.1 Z",
+      "paint": "action_markings",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
   ]
-} satisfies Record<FlightPlanActionSymbolId, readonly NavSymbolLayer[]>;
-export function flightPlanActionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
-  return (flightPlanActionSymbols as Record<string, readonly NavSymbolLayer[]>)[actionId];
+} satisfies Record<ActionSymbolId, readonly NavSymbolLayer[]>;
+export function actionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
+  return (actionSymbols as Record<string, readonly NavSymbolLayer[]>)[actionId];
 }
 export const dataStatusWarningSymbol = [
   {

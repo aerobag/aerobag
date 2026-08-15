@@ -3524,15 +3524,13 @@ fn selection_item_for_point(
         selection_flight_plan_row_action(plan, nav_ref, FlightPlanRowActionId::DirectTo)
     });
     let insert_action = match &nav_ref {
-        Some(nav_ref) if remove_row_action.is_some() => row_action(
-            "remove_from_flight_plan",
-            "Remove from flight plan",
-            remove_row_action,
-        ),
+        Some(nav_ref) if remove_row_action.is_some() => {
+            row_action("remove_from_flight_plan", "Remove", remove_row_action)
+        }
         Some(nav_ref) if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 => {
             disabled_action_with_reason(
                 "remove_from_flight_plan",
-                "Remove ambiguous",
+                "Remove",
                 "This waypoint appears more than once in the flight plan.",
             )
         }
@@ -3541,12 +3539,12 @@ fn selection_item_for_point(
         }
         Some(_) => disabled_action_with_reason(
             "insert",
-            "In grouped route",
+            "Insert",
             "Edit grouped routes from the Flight Plan page.",
         ),
         None => disabled_action_with_reason(
             "insert",
-            "Insert unavailable",
+            "Insert",
             "This item cannot be inserted into the flight plan.",
         ),
     };
@@ -3567,7 +3565,7 @@ fn selection_item_for_point(
             ),
             plate_target_action(
                 "csup",
-                "Chart Supp",
+                "CSUP",
                 airport_id,
                 "CSup",
                 airport_plate_availability.csup,
@@ -3683,15 +3681,11 @@ fn selection_item_for_nav_ref_point(
     let direct_to_row_action =
         selection_flight_plan_row_action(plan, nav_ref, FlightPlanRowActionId::DirectTo);
     let insert_action = if remove_row_action.is_some() {
-        row_action(
-            "remove_from_flight_plan",
-            "Remove from flight plan",
-            remove_row_action,
-        )
+        row_action("remove_from_flight_plan", "Remove", remove_row_action)
     } else if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 {
         disabled_action_with_reason(
             "remove_from_flight_plan",
-            "Remove ambiguous",
+            "Remove",
             "This waypoint appears more than once in the flight plan.",
         )
     } else if !selection_plan_contains_nav_ref(plan, nav_ref) {
@@ -3699,7 +3693,7 @@ fn selection_item_for_nav_ref_point(
     } else {
         disabled_action_with_reason(
             "insert",
-            "In grouped route",
+            "Insert",
             "Edit grouped routes from the Flight Plan page.",
         )
     };
@@ -3726,7 +3720,7 @@ fn selection_item_for_nav_ref_point(
                 "Folder",
                 availability.plates,
             ),
-            plate_target_action("csup", "Chart Supp", airport_id, "CSup", availability.csup),
+            plate_target_action("csup", "CSUP", airport_id, "CSup", availability.csup),
             weather_action(weather_detail.clone()),
             airport_info_action(airport_id),
         ]
@@ -3785,16 +3779,16 @@ fn insert_best_position_action(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> M
     let Some(plan) = plan else {
         return disabled_action_with_reason(
             "insert",
-            "Insert in flight plan",
+            "Insert",
             "Start a flight plan before inserting a waypoint.",
         );
     };
     if let Some(reason) = crate::had_ops::insert_waypoint_best_position_rejection(plan, nav_ref) {
-        return disabled_action_with_reason("insert", "Insert in flight plan", reason);
+        return disabled_action_with_reason("insert", "Insert", reason);
     }
     session_action(
         "insert",
-        "Insert in flight plan",
+        "Insert",
         MapSelectionSessionAction::InsertWaypointBestPosition {
             nav_ref: nav_ref.clone(),
         },
@@ -4309,7 +4303,7 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
                 "offline_region_mode",
                 &offline_region_mode_action_label(first),
             ),
-            enabled_action("offline_packages", "Offline\nPackages"),
+            enabled_action("offline_packages", "Offline\nPkgs"),
         ],
     }
 }
@@ -4534,7 +4528,7 @@ fn selection_item_for_tfr(
     )];
     let mut text_action = text_detail_action(
         "tfr_text",
-        "TFR text",
+        "Text",
         Some("TFR"),
         notam.and_then(tfr_notam_detail_text),
         "No TFR text is available for this area.",
@@ -4935,12 +4929,12 @@ fn direct_to_action(
     flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
 ) -> MapSelectionAction {
     if let Some(flight_plan_row_action) = flight_plan_row_action {
-        return row_action("direct_to", "Direct-to", Some(flight_plan_row_action));
+        return row_action("direct_to", "Direct", Some(flight_plan_row_action));
     }
     if let Some(nav_ref) = nav_ref {
         return session_action(
             "direct_to",
-            "Direct-to",
+            "Direct",
             MapSelectionSessionAction::ActivateDirectToNavRef {
                 nav_ref: nav_ref.clone(),
             },
@@ -4948,7 +4942,7 @@ fn direct_to_action(
     }
     disabled_action_with_reason(
         "direct_to",
-        "Direct-to",
+        "Direct",
         "Direct-to needs a selected waypoint, airport, or fix.",
     )
 }
@@ -10259,7 +10253,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "tfr_text")
             .expect("TFR text action");
-        assert_eq!(text_action.label, "TFR text");
+        assert_eq!(text_action.label, "Text");
         assert_eq!(text_action.detail_title.as_deref(), Some("TFR"));
         assert!(text_action.enabled);
         assert_eq!(
@@ -10976,7 +10970,7 @@ mod tests {
             .expect("remove action");
 
         assert_eq!(item.nav_ref, Some(NavRef::Airport("KSEA".to_string())));
-        assert_eq!(remove.label, "Remove from flight plan");
+        assert_eq!(remove.label, "Remove");
         assert!(remove.enabled);
         assert!(!remove.display_only);
         assert!(remove.flight_plan_row_action.is_some());
@@ -11032,7 +11026,7 @@ mod tests {
             .find(|action| action.id == "remove_from_flight_plan")
             .expect("remove action");
         assert!(!duplicate_remove.enabled);
-        assert_eq!(duplicate_remove.label, "Remove ambiguous");
+        assert_eq!(duplicate_remove.label, "Remove");
         assert!(duplicate_remove.flight_plan_row_action.is_none());
         let duplicate_direct_to = duplicate_item
             .actions
@@ -11040,7 +11034,7 @@ mod tests {
             .find(|action| action.id == "direct_to")
             .expect("direct-to action");
         assert!(duplicate_direct_to.enabled);
-        assert_eq!(duplicate_direct_to.label, "Direct-to");
+        assert_eq!(duplicate_direct_to.label, "Direct");
         assert!(duplicate_direct_to.flight_plan_row_action.is_none());
 
         let off_plan_item = selection_item_for_point(
@@ -11061,7 +11055,7 @@ mod tests {
             .find(|action| action.id == "insert")
             .expect("insert action");
         assert!(insert.enabled);
-        assert_eq!(insert.label, "Insert in flight plan");
+        assert_eq!(insert.label, "Insert");
         assert!(insert.flight_plan_row_action.is_none());
         assert_eq!(
             serde_json::from_str::<MapSelectionSessionAction>(

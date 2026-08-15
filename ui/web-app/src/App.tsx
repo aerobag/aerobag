@@ -47,7 +47,7 @@ import {
   airportOpenMarkerSymbol,
   compassSymbol,
   dataStatusWarningSymbol,
-  flightPlanActionSymbol,
+  actionSymbol,
   heliportHPath,
   mapSelectionSpotSymbol,
   manualSequenceChevronPath,
@@ -1717,10 +1717,10 @@ function RenderNavSymbolLayers(props: { layers: readonly { path: string; paint: 
   );
 }
 
-function FlightPlanActionIcon(props: { layers: NonNullable<ReturnType<typeof flightPlanActionSymbol>> }) {
+function ActionIcon(props: { layers: NonNullable<ReturnType<typeof actionSymbol>> }) {
   return (
     <svg
-      className="flightPlanActionIcon"
+      className="actionIcon"
       viewBox="-24 -24 48 48"
       aria-hidden="true"
       focusable="false"
@@ -10027,7 +10027,7 @@ function FlightPlanPage(props: {
                     {row.map((action) => {
                       const disabledReason = disabledReasonText(action.disabledReason);
                       const disabled = !action.enabled;
-                      const actionSymbol = flightPlanActionSymbol(action.id);
+                      const symbol = actionSymbol(action.id);
                       return (
                         <button
                           key={action.id}
@@ -10050,9 +10050,9 @@ function FlightPlanPage(props: {
                             action.onSelect();
                           }}
                         >
-                          <span className={`flightPlanActionButtonContent${actionSymbol ? " hasIcon" : ""}`}>
+                          <span className={`flightPlanActionButtonContent${symbol ? " hasIcon" : ""}`}>
                             <span className="flightPlanActionButtonLabel">{action.label}</span>
-                            {actionSymbol ? <FlightPlanActionIcon layers={actionSymbol} /> : null}
+                            {symbol ? <ActionIcon layers={symbol} /> : null}
                           </span>
                         </button>
                       );
@@ -10633,6 +10633,7 @@ function MapSelectionTray(props: {
         <div className="mapSelectionActionGrid">
           {visibleActionSlots.map((action) => {
             const disabledReason = action.disabled_reason?.trim() || null;
+            const symbol = actionSymbol(action.id);
             const inert = Boolean(
               action.placeholder || action.display_only || (!action.enabled && !disabledReason),
             );
@@ -10680,7 +10681,12 @@ function MapSelectionTray(props: {
                   <svg className="mapSelectionAirspaceLimitGlyph" viewBox="-32 -32 64 64" aria-hidden="true">
                     <AirspaceLimitGlyph glyph={action.airspace_limit} scale={1.45} />
                   </svg>
-                ) : action.label}
+                ) : (
+                  <>
+                    {symbol ? <ActionIcon layers={symbol} /> : null}
+                    <span className="mapSelectionActionLabel">{action.label}</span>
+                  </>
+                )}
               </button>
             );
           })}

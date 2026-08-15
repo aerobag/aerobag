@@ -150,6 +150,7 @@ import {
 } from "./domain/flightPlanRouteRender";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
+import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import {
   clampImageViewport,
   clampImageZoom,
@@ -4538,10 +4539,19 @@ function MapPage(props: {
             console.warn("terrain overlay unavailable", error);
             continue;
           }
-          const superseded = terrainScheduleRequestRef.current?.id !== request.id;
+          const latestRequest = terrainScheduleRequestRef.current;
+          const superseded = latestRequest?.id !== request.id;
           if (
             superseded
-            && (query.status.state !== "ready" || !supersededTerrainRequestCanLand(request))
+            && (
+              query.status.state !== "ready"
+              || !shouldLandCompletedCoalescedWork(
+                request,
+                latestRequest,
+                landedTerrainScheduleRequestIdRef.current,
+                terrainScheduleRequestsAreCompatible,
+              )
+            )
           ) {
             continue;
           }
@@ -4666,17 +4676,17 @@ function MapPage(props: {
     })();
   }
 
-  function supersededTerrainRequestCanLand(request: TerrainScheduleRequest) {
-    const current = terrainScheduleRequestRef.current;
+  function terrainScheduleRequestsAreCompatible(
+    completed: TerrainScheduleRequest,
+    latest: TerrainScheduleRequest,
+  ) {
     return (
-      current !== null
-      && request.id > landedTerrainScheduleRequestIdRef.current
-      && current.session === request.session
-      && current.navDataEpoch === request.navDataEpoch
-      && current.altitudeBucket === request.altitudeBucket
-      && current.width === request.width
-      && current.height === request.height
-      && Math.abs(current.viewport.zoom - request.viewport.zoom) < 0.001
+      latest.session === completed.session
+      && latest.navDataEpoch === completed.navDataEpoch
+      && latest.altitudeBucket === completed.altitudeBucket
+      && latest.width === completed.width
+      && latest.height === completed.height
+      && Math.abs(latest.viewport.zoom - completed.viewport.zoom) < 0.001
     );
   }
 
@@ -4860,8 +4870,14 @@ function MapPage(props: {
               request.width,
               request.height,
             );
-            const superseded = mapOverlayQueryRequestRef.current?.id !== request.id;
-            if (superseded && !supersededMapOverlayCanLand(request)) {
+            const latestRequest = mapOverlayQueryRequestRef.current;
+            const superseded = latestRequest?.id !== request.id;
+            if (superseded && !shouldLandCompletedCoalescedWork(
+              request,
+              latestRequest,
+              landedMapOverlayQueryRequestIdRef.current,
+              mapOverlayRequestsAreCompatible,
+            )) {
               perfDebugLog("map.overlay.query.stale_result", () => ({
                 request_id: request.id,
                 current_request_id: mapOverlayQueryRequestRef.current?.id ?? null,
@@ -4918,17 +4934,17 @@ function MapPage(props: {
     })();
   }
 
-  function supersededMapOverlayCanLand(request: NonNullable<typeof mapOverlayQueryRequestRef.current>) {
-    const current = mapOverlayQueryRequestRef.current;
+  function mapOverlayRequestsAreCompatible(
+    completed: NonNullable<typeof mapOverlayQueryRequestRef.current>,
+    latest: NonNullable<typeof mapOverlayQueryRequestRef.current>,
+  ) {
     return (
-      current !== null
-      && request.id > landedMapOverlayQueryRequestIdRef.current
-      && current.session === request.session
-      && current.navDataEpoch === request.navDataEpoch
-      && current.width === request.width
-      && current.height === request.height
-      && current.layerKey === request.layerKey
-      && Math.abs(current.viewport.zoom - request.viewport.zoom) < 0.001
+      latest.session === completed.session
+      && latest.navDataEpoch === completed.navDataEpoch
+      && latest.width === completed.width
+      && latest.height === completed.height
+      && latest.layerKey === completed.layerKey
+      && Math.abs(latest.viewport.zoom - completed.viewport.zoom) < 0.001
     );
   }
 
@@ -5186,17 +5202,17 @@ function MapPage(props: {
     });
   }, [onPageTilePaintTimingComplete, tiles.length]);
 
-  function supersededRasterPlanCanLand(request: NonNullable<typeof rasterTilePlanRequestRef.current>) {
-    const current = rasterTilePlanRequestRef.current;
+  function rasterPlanRequestsAreCompatible(
+    completed: NonNullable<typeof rasterTilePlanRequestRef.current>,
+    latest: NonNullable<typeof rasterTilePlanRequestRef.current>,
+  ) {
     return (
-      current !== null
-      && request.id > landedRasterTilePlanRequestIdRef.current
-      && current.session === request.session
-      && current.navDataEpoch === request.navDataEpoch
-      && current.selectedMapId === request.selectedMapId
-      && current.width === request.width
-      && current.height === request.height
-      && current.devicePixelRatio === request.devicePixelRatio
+      latest.session === completed.session
+      && latest.navDataEpoch === completed.navDataEpoch
+      && latest.selectedMapId === completed.selectedMapId
+      && latest.width === completed.width
+      && latest.height === completed.height
+      && latest.devicePixelRatio === completed.devicePixelRatio
     );
   }
 
@@ -5339,8 +5355,14 @@ function MapPage(props: {
               request.height,
               request.devicePixelRatio,
             );
-            const planSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
-            if (planSuperseded && !supersededRasterPlanCanLand(request)) {
+            const latestPlanRequest = rasterTilePlanRequestRef.current;
+            const planSuperseded = latestPlanRequest?.id !== request.id;
+            if (planSuperseded && !shouldLandCompletedCoalescedWork(
+              request,
+              latestPlanRequest,
+              landedRasterTilePlanRequestIdRef.current,
+              rasterPlanRequestsAreCompatible,
+            )) {
               perfDebugLog("map.raster.plan.stale_result", () => ({
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - startedAt),
@@ -5377,8 +5399,14 @@ function MapPage(props: {
             const nextTiles = plan.tiles.map((tile) =>
               renderTileFromCore(tile, 1 / request.devicePixelRatio),
             );
-            const urlsSuperseded = rasterTilePlanRequestRef.current?.id !== request.id;
-            if (urlsSuperseded && !supersededRasterPlanCanLand(request)) {
+            const latestUrlRequest = rasterTilePlanRequestRef.current;
+            const urlsSuperseded = latestUrlRequest?.id !== request.id;
+            if (urlsSuperseded && !shouldLandCompletedCoalescedWork(
+              request,
+              latestUrlRequest,
+              landedRasterTilePlanRequestIdRef.current,
+              rasterPlanRequestsAreCompatible,
+            )) {
               perfDebugLog("map.raster.tiles.stale_result", () => ({
                 id: request.id,
                 elapsed_ms: Math.round(performance.now() - resolveStartedAt),

@@ -136,13 +136,11 @@ impl UiSessionWorkScheduler {
         &mut self,
         active: UiSessionWorkRequest,
     ) -> UiSessionWorkCompletionDecision {
+        // Coalescing replaces pending viewport work; completed viewport work is
+        // still useful progress and must land before the newest request starts.
         let result_action = if active.kind.is_input_priority() && self.pending_input.is_some() {
             UiSessionWorkResultAction::Drop {
                 reason: "superseded_by_newer_input".to_string(),
-            }
-        } else if active.kind.is_viewport_coalesced() && self.pending_overlay.is_some() {
-            UiSessionWorkResultAction::Drop {
-                reason: "superseded_by_newer_overlay".to_string(),
             }
         } else {
             UiSessionWorkResultAction::Land
@@ -394,14 +392,55 @@ mod tests {
         assert_eq!(
             scheduler.complete(1),
             UiSessionWorkCompletionDecision {
-                result_action: UiSessionWorkResultAction::Drop {
-                    reason: "superseded_by_newer_overlay".to_string(),
-                },
+                result_action: UiSessionWorkResultAction::Land,
                 next: Some(work_request(3, UiSessionWorkKind::MapOverlay)),
             }
         );
         assert_eq!(
             scheduler.complete(3),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Land,
+                next: None,
+            }
+        );
+    }
+
+    #[test]
+    fn session_work_lands_progress_during_continuous_overlay_churn() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert!(matches!(
+            scheduler.request(work_request(1, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        for id in 2..=10 {
+            assert!(matches!(
+                scheduler.request(work_request(id, UiSessionWorkKind::MapOverlay)),
+                UiSessionWorkRequestDecision::Queued { .. }
+            ));
+        }
+
+        let first = scheduler.complete(1);
+        assert_eq!(first.result_action, UiSessionWorkResultAction::Land);
+        assert_eq!(
+            first.next,
+            Some(work_request(10, UiSessionWorkKind::MapOverlay))
+        );
+
+        for id in 11..=20 {
+            assert!(matches!(
+                scheduler.request(work_request(id, UiSessionWorkKind::MapOverlay)),
+                UiSessionWorkRequestDecision::Queued { .. }
+            ));
+        }
+
+        let second = scheduler.complete(10);
+        assert_eq!(second.result_action, UiSessionWorkResultAction::Land);
+        assert_eq!(
+            second.next,
+            Some(work_request(20, UiSessionWorkKind::MapOverlay))
+        );
+        assert_eq!(
+            scheduler.complete(20),
             UiSessionWorkCompletionDecision {
                 result_action: UiSessionWorkResultAction::Land,
                 next: None,
@@ -431,9 +470,7 @@ mod tests {
         assert_eq!(
             scheduler.complete(1),
             UiSessionWorkCompletionDecision {
-                result_action: UiSessionWorkResultAction::Drop {
-                    reason: "superseded_by_newer_overlay".to_string(),
-                },
+                result_action: UiSessionWorkResultAction::Land,
                 next: None,
             }
         );

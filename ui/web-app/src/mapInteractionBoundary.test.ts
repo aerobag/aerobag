@@ -154,14 +154,12 @@ describe("map interaction boundaries", () => {
     expect(planHeaders).toContain("props.onTimeDisplayAction(column.action_id!)");
   });
 
-  it("lands compatible terrain work before servicing the newest queued request", () => {
-    const pump = functionSource("pumpTerrainRenderQueue");
-    const compatibility = functionSource("supersededTerrainRequestCanLand");
-
-    expect(pump).toContain('query.status.state !== "ready" || !supersededTerrainRequestCanLand(request)');
-    expect(pump).toContain("requestId: request.id");
-    expect(compatibility).toContain("request.id > landedTerrainScheduleRequestIdRef.current");
-    expect(compatibility).toContain("current.navDataEpoch === request.navDataEpoch");
-    expect(compatibility).toContain("current.altitudeBucket === request.altitudeBucket");
+  it("routes raster, vector, and terrain work through the shared landing policy", () => {
+    expect(functionSource("pumpTerrainRenderQueue")).toContain("shouldLandCompletedCoalescedWork");
+    expect(functionSource("pumpMapOverlayQueryQueue")).toContain("shouldLandCompletedCoalescedWork");
+    expect(functionSource("pumpRasterTilePlanQueue")).toContain("shouldLandCompletedCoalescedWork");
+    expect(appSource).not.toContain("supersededTerrainRequestCanLand");
+    expect(appSource).not.toContain("supersededMapOverlayCanLand");
+    expect(appSource).not.toContain("supersededRasterPlanCanLand");
   });
 });

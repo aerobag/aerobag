@@ -371,6 +371,7 @@ export type FlightPlanDisplayRowUiView = {
   chart_airport_id: string | null;
   nav_ref: NavRef | null;
   symbol_feature: NavSymbolFeature | null;
+  weather_badge?: FlightPlanWeatherBadgeUiView | null;
   depth: number;
   active: boolean;
   enabled?: boolean;
@@ -387,6 +388,11 @@ export type FlightPlanDisplayRowUiView = {
   preceding_waypoint: NavRef | null;
   following_waypoint: NavRef | null;
   action_matrix?: FlightPlanRowActionUiView[][];
+};
+
+export type FlightPlanWeatherBadgeUiView = {
+  flight_category: string;
+  ceiling_amount: string;
 };
 
 export type NavSymbolFeature = {

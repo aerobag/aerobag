@@ -2264,6 +2264,7 @@ fn flight_plan_summary_row(
         chart_airport_id: None,
         nav_ref: None,
         symbol_feature: None,
+        weather_badge: None,
         depth: 0,
         active: false,
         enabled: false,

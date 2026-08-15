@@ -16,6 +16,7 @@ import type {
   FlightPlanRowNavigationAction,
   FlightPlanRouteSegment,
   FlightPlanUiState,
+  FlightPlanWeatherBadgeUiView,
   FlightDataBannerModel,
   LatLon,
   NavSymbolFeature,
@@ -1744,23 +1745,37 @@ function metarCategoryClass(category: string): string {
   }
 }
 
-function MetarSymbol(props: { feature: VisibleMetarFeature }) {
-  const { feature } = props;
-  const categoryClass = metarCategoryClass(feature.flight_category);
-  const layers = feature.ceiling_amount === "few"
+function MetarGlyph(props: {
+  flightCategory: string;
+  ceilingAmount: string;
+}) {
+  const categoryClass = metarCategoryClass(props.flightCategory);
+  const layers = props.ceilingAmount === "few"
     ? metarFewSymbol
-    : feature.ceiling_amount === "sct"
+    : props.ceilingAmount === "sct"
       ? metarSctSymbol
-      : feature.ceiling_amount === "bkn"
+      : props.ceilingAmount === "bkn"
         ? metarBknSymbol
-        : feature.ceiling_amount === "ovc"
+        : props.ceilingAmount === "ovc"
           ? metarOvcSymbol
-          : feature.ceiling_amount === "missing"
+          : props.ceilingAmount === "missing"
             ? metarMissingSymbol
             : metarClearSymbol;
   return (
-    <g className={`mapUpright metarSymbol ${categoryClass}`} aria-hidden="true">
+    <g className={`metarSymbol ${categoryClass}`} aria-hidden="true">
       <RenderNavSymbolLayers layers={layers} />
+    </g>
+  );
+}
+
+function MetarSymbol(props: { feature: VisibleMetarFeature }) {
+  const { feature } = props;
+  return (
+    <g className="mapUpright">
+      <MetarGlyph
+        flightCategory={feature.flight_category}
+        ceilingAmount={feature.ceiling_amount}
+      />
     </g>
   );
 }
@@ -1855,14 +1870,25 @@ function AdsbTrafficSymbol(props: { feature: MapOverlayQueryResult["visible_traf
   );
 }
 
-function PlanWaypointSymbol(props: { feature: NavSymbolFeature | null }) {
-  const { feature } = props;
+function PlanWaypointSymbol(props: {
+  feature: NavSymbolFeature | null;
+  weatherBadge?: FlightPlanWeatherBadgeUiView | null;
+}) {
+  const { feature, weatherBadge } = props;
   if (!feature) {
     return null;
   }
   return (
     <svg className="planWaypointSymbol" viewBox="-20 -20 40 40" aria-hidden="true">
       <VectorPointSymbol feature={feature} showLabel={false} />
+      {weatherBadge ? (
+        <g className="planWaypointWeatherBadge" transform="translate(10 10) scale(1)">
+          <MetarGlyph
+            flightCategory={weatherBadge.flight_category}
+            ceilingAmount={weatherBadge.ceiling_amount}
+          />
+        </g>
+      ) : null}
     </svg>
   );
 }
@@ -1886,6 +1912,7 @@ function waypointSuggestionDistance(suggestion: WaypointIdentifierSuggestion): s
 function WaypointButtonContent(props: {
   label: string;
   symbolFeature: NavSymbolFeature | null | undefined;
+  weatherBadge?: FlightPlanWeatherBadgeUiView | null;
   details?: Array<string | null | undefined>;
   indented?: boolean;
   fullWidthLabel?: boolean;
@@ -1905,7 +1932,12 @@ function WaypointButtonContent(props: {
           <span key={`${index}:${detail}`} className="waypointButtonDetail">{detail}</span>
         ))}
       </span>
-      {fullWidthLabel ? null : <PlanWaypointSymbol feature={props.symbolFeature ?? null} />}
+      {fullWidthLabel ? null : (
+        <PlanWaypointSymbol
+          feature={props.symbolFeature ?? null}
+          weatherBadge={props.weatherBadge}
+        />
+      )}
     </>
   );
 }
@@ -8916,6 +8948,7 @@ function FlightPlanPage(props: {
         destinationAnchor: row.destination_anchor,
         navRef: row.nav_ref,
         symbolFeature: row.symbol_feature,
+        weatherBadge: row.weather_badge ?? null,
         groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_uid!}` : null,
         componentKind: row.component_kind,
         procedureId: row.procedure_id,
@@ -9430,6 +9463,7 @@ function FlightPlanPage(props: {
                           <WaypointButtonContent
                             label={row.label}
                             symbolFeature={row.symbolFeature}
+                            weatherBadge={row.weatherBadge}
                             indented={row.depth > 0}
                             fullWidthLabel={procedureGroupCell}
                           />

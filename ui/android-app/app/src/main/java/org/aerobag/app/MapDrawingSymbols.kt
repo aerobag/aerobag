@@ -488,8 +488,24 @@ internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMetarSymbol(
     densityScale: Float,
     uiTheme: UiTheme,
 ) {
-    val fillColor = metarColor(feature.flightCategory)
-    val layers = when (feature.ceilingAmount.lowercase()) {
+    drawMetarDisc(
+        flightCategory = feature.flightCategory,
+        ceilingAmount = feature.ceilingAmount,
+        center = center,
+        densityScale = densityScale,
+        uiTheme = uiTheme,
+    )
+}
+
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMetarDisc(
+    flightCategory: String,
+    ceilingAmount: String,
+    center: Offset,
+    densityScale: Float,
+    uiTheme: UiTheme,
+) {
+    val fillColor = metarColor(flightCategory)
+    val layers = when (ceilingAmount.lowercase()) {
         "few" -> metarFewSymbol(center, densityScale)
         "sct" -> metarSctSymbol(center, densityScale)
         "bkn" -> metarBknSymbol(center, densityScale)

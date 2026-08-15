@@ -202,6 +202,7 @@ import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
+import org.aerobag.app.domain.FlightPlanWeatherBadgeUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
@@ -352,6 +353,7 @@ internal fun FlightPlanActionIcon(
 internal fun PlanWaypointSymbol(
     feature: org.aerobag.app.domain.NavSymbolFeature?,
     modifier: Modifier = Modifier,
+    weatherBadge: FlightPlanWeatherBadgeUiView? = null,
 ) {
     if (feature == null) {
         return
@@ -470,6 +472,15 @@ internal fun PlanWaypointSymbol(
                 drawPath(triangle, fixMarkerStrokeColor, style = Stroke(width = 2.5f * scale))
             }
         }
+        weatherBadge?.let { badge ->
+            drawMetarDisc(
+                flightCategory = badge.flightCategory,
+                ceilingAmount = badge.ceilingAmount,
+                center = Offset(center.x + 10f * scale, center.y + 10f * scale),
+                densityScale = scale,
+                uiTheme = uiTheme,
+            )
+        }
     }
 }
 
@@ -555,6 +566,7 @@ internal fun FlightPlanDataRow(
                 if (!procedureGroupCell && hasWaypointSymbol) {
                     PlanWaypointSymbol(
                         feature = row.symbolFeature,
+                        weatherBadge = row.weatherBadge,
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
                             .padding(end = ThumbSize * 0.12f)

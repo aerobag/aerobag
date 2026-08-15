@@ -4002,6 +4002,7 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     chartAirportId = chart_airport_id,
     navRef = nav_ref?.toUi(),
     symbolFeature = symbol_feature?.toUi(),
+    weatherBadge = weather_badge?.toUi(),
     depth = depth,
     active = active,
     enabled = enabled,
@@ -4033,6 +4034,7 @@ private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView
     chart_airport_id = chartAirportId,
     nav_ref = navRef?.toWire(),
     symbol_feature = symbolFeature?.toWire(),
+    weather_badge = weatherBadge?.toWire(),
     depth = depth,
     active = active,
     enabled = enabled,
@@ -4049,6 +4051,16 @@ private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView
     preceding_waypoint = precedingWaypoint?.toWire(),
     following_waypoint = followingWaypoint?.toWire(),
     action_matrix = actionMatrix.map { row -> row.map { it.toWire() } },
+)
+
+private fun WireFlightPlanWeatherBadgeUiView.toUi() = FlightPlanWeatherBadgeUiView(
+    flightCategory = flight_category,
+    ceilingAmount = ceiling_amount,
+)
+
+private fun FlightPlanWeatherBadgeUiView.toWire() = WireFlightPlanWeatherBadgeUiView(
+    flight_category = flightCategory,
+    ceiling_amount = ceilingAmount,
 )
 
 private fun WireFlightPlanDisplayRowKind.toUi() = when (this) {

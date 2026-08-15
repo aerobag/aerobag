@@ -582,6 +582,7 @@ internal data class FlightPlanDisplayRow(
     val chartAirportId: String? = null,
     val navRef: NavRef? = null,
     val symbolFeature: org.aerobag.app.domain.NavSymbolFeature? = null,
+    val weatherBadge: org.aerobag.app.domain.FlightPlanWeatherBadgeUiView? = null,
     val depth: Int = 0,
     val active: Boolean = false,
     val enabled: Boolean = true,

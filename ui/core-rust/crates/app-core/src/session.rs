@@ -11446,7 +11446,7 @@ fn project_session_app_ui_state(
         }
     }
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
-        enrich_flight_plan_weather_actions(session, active_plan);
+        enrich_flight_plan_weather(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
     }
     app_ui_state.flight_data_banner = project_flight_data_banner(
@@ -11458,7 +11458,7 @@ fn project_session_app_ui_state(
     Ok(app_ui_state)
 }
 
-fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut FlightPlanUiState) {
+fn enrich_flight_plan_weather(session: &UiSession, active_plan: &mut FlightPlanUiState) {
     let empty_aliases = WeatherStationAirportAliases::default();
     let aliases = session
         .weather
@@ -11482,6 +11482,14 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
                 session.weather.runtime().metar_payload.as_ref(),
                 session.weather.runtime().taf_payload.as_ref(),
                 session.weather.runtime().airport_notam_index.as_ref(),
+                Some(session_wall_clock_utc(session)),
+            )
+        });
+        row.weather_badge = airport_id.as_deref().and_then(|airport_id| {
+            crate::map_overlay::flight_plan_weather_badge_for_airport(
+                airport_id,
+                aliases,
+                session.weather.runtime().metar_payload.as_ref(),
                 Some(session_wall_clock_utc(session)),
             )
         });
@@ -18152,6 +18160,13 @@ mod tests {
             .find(|action| action.id == FlightPlanRowActionId::Weather)
             .expect("WX action");
 
+        assert_eq!(
+            row.weather_badge,
+            Some(crate::planning::FlightPlanWeatherBadgeUiView {
+                flight_category: "vfr".to_string(),
+                ceiling_amount: "missing".to_string(),
+            })
+        );
         assert!(wx.enabled);
         assert_eq!(wx.label, "WX");
         let detail = wx.weather_detail.as_ref().expect("weather detail");

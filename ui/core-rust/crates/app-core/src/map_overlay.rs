@@ -3974,8 +3974,22 @@ pub(crate) fn weather_detail_for_airport(
     if airport_id.is_empty() {
         return None;
     }
-    let aliased_station_id = aliases.station_id_for_airport(&airport_id);
-    let station_id = aliased_station_id
+    let station_id =
+        weather_station_id_for_airport(&airport_id, aliases, metar_payload, taf_payload);
+    let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
+    let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
+    let notams = airport_notam_views(&airport_id, notam_index);
+    weather_detail_from_records(&airport_id, metar, taf, notams, age_reference_utc)
+}
+
+fn weather_station_id_for_airport(
+    airport_id: &str,
+    aliases: &WeatherStationAirportAliases,
+    metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
+) -> String {
+    aliases
+        .station_id_for_airport(airport_id)
         .filter(|station_id| {
             let metar_matches = metar_payload
                 .and_then(|payload| payload.metars_by_station.get(*station_id))
@@ -3986,7 +4000,7 @@ pub(crate) fn weather_detail_for_airport(
                             lat: record.latitude,
                             lon: record.longitude,
                         },
-                    ) == Some(airport_id.as_str())
+                    ) == Some(airport_id)
                 });
             let taf_matches = taf_payload
                 .and_then(|payload| payload.tafs_by_station.get(*station_id))
@@ -3997,15 +4011,47 @@ pub(crate) fn weather_detail_for_airport(
                             lat: record.latitude,
                             lon: record.longitude,
                         },
-                    ) == Some(airport_id.as_str())
+                    ) == Some(airport_id)
                 });
             metar_matches || taf_matches
         })
-        .unwrap_or(&airport_id);
-    let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(station_id));
-    let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(station_id));
-    let notams = airport_notam_views(&airport_id, notam_index);
-    weather_detail_from_records(&airport_id, metar, taf, notams, age_reference_utc)
+        .unwrap_or(airport_id)
+        .to_string()
+}
+
+pub(crate) fn flight_plan_weather_badge_for_airport(
+    airport_id: &str,
+    aliases: &WeatherStationAirportAliases,
+    metar_payload: Option<&MetarProductPayload>,
+    age_reference_utc: Option<DateTime<Utc>>,
+) -> Option<crate::planning::FlightPlanWeatherBadgeUiView> {
+    let airport_id = airport_id.trim().to_ascii_uppercase();
+    if airport_id.is_empty() {
+        return None;
+    }
+    let station_id = weather_station_id_for_airport(&airport_id, aliases, metar_payload, None);
+    let record = metar_payload?.metars_by_station.get(&station_id)?;
+    let observed_at = record
+        .observed_at_utc
+        .as_deref()
+        .and_then(crate::freshness::parse_utc_instant)?;
+    let reference = age_reference_utc.filter(|value| *value > DateTime::<Utc>::UNIX_EPOCH)?;
+    if reference
+        .signed_duration_since(observed_at)
+        .num_milliseconds()
+        .max(0)
+        > FLIGHT_PLAN_METAR_BADGE_MAX_AGE_MS
+    {
+        return None;
+    }
+    let flight_category = normalized_metar_flight_category(record);
+    if flight_category == "missing" {
+        return None;
+    }
+    Some(crate::planning::FlightPlanWeatherBadgeUiView {
+        flight_category,
+        ceiling_amount: normalized_metar_ceiling_amount(record),
+    })
 }
 
 fn weather_detail_from_records(
@@ -4118,6 +4164,7 @@ const MINUTE_MS: i64 = 60_000;
 const HOUR_MS: i64 = 60 * MINUTE_MS;
 const DAY_MS: i64 = 24 * HOUR_MS;
 const METAR_AGE_WARNING_MS: i64 = HOUR_MS;
+const FLIGHT_PLAN_METAR_BADGE_MAX_AGE_MS: i64 = 90 * MINUTE_MS;
 const TAF_AGE_WARNING_MS: i64 = 6 * HOUR_MS;
 
 fn weather_age_status(
@@ -9213,6 +9260,57 @@ mod tests {
             !weather_age_status(Some("2026-05-03T06:00:00Z"), reference, TAF_AGE_WARNING_MS,).1
         );
         assert!(weather_age_status(Some("2026-05-03T05:59:59Z"), reference, TAF_AGE_WARNING_MS,).1);
+    }
+
+    #[test]
+    fn flight_plan_weather_badge_uses_aliases_and_expires_after_ninety_minutes() {
+        let aliases = WeatherStationAirportAliases::from_station_to_airport([(
+            "K1S5".to_string(),
+            "1S5".to_string(),
+            LatLon {
+                lat: 46.327,
+                lon: -119.970,
+            },
+        )]);
+        let payload = MetarProductPayload {
+            schema_version: 3,
+            version_label: "test".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            metar_count: Some(1),
+            metars_by_station: HashMap::from([(
+                "K1S5".to_string(),
+                MetarRecord {
+                    raw_text: "METAR K1S5 261500Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                    observed_at_utc: Some("2026-08-15T15:00:00Z".to_string()),
+                    station_id: "K1S5".to_string(),
+                    flight_category: Some("VFR".to_string()),
+                    clouds: Some(MetarClouds {
+                        symbol: Some("SCT".to_string()),
+                    }),
+                    longitude: -119.970,
+                    latitude: 46.327,
+                },
+            )]),
+        };
+
+        let fresh = flight_plan_weather_badge_for_airport(
+            "1S5",
+            &aliases,
+            Some(&payload),
+            crate::freshness::parse_utc_instant("2026-08-15T16:30:00Z"),
+        )
+        .expect("90-minute-old METAR remains eligible");
+        assert_eq!(fresh.flight_category, "vfr");
+        assert_eq!(fresh.ceiling_amount, "sct");
+
+        assert!(flight_plan_weather_badge_for_airport(
+            "1S5",
+            &aliases,
+            Some(&payload),
+            crate::freshness::parse_utc_instant("2026-08-15T16:30:00.001Z"),
+        )
+        .is_none());
     }
 
     #[test]

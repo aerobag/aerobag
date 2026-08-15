@@ -42,6 +42,18 @@ describe("flight plan layout CSS", () => {
     expect(flightPlanWaypointUsesFullWidthLabel(false, true)).toBe(false);
   });
 
+  it("overlays core-projected weather on the existing waypoint symbol cell", () => {
+    expect(appSource).toContain("weatherBadge: row.weather_badge ?? null");
+    expect(appSource).toContain("weatherBadge={row.weatherBadge}");
+    expect(appSource).toContain('<g className="planWaypointWeatherBadge" transform="translate(10 10) scale(1)">');
+
+    const symbolBlocks = [...styles.matchAll(/\.planWaypointSymbol\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(symbolBlocks).toContain("width: calc(var(--thumb) * 0.78)");
+    expect(symbolBlocks).toContain("height: calc(var(--thumb) * 0.78)");
+  });
+
   it("moves altitude planning to a standalone core-driven page", () => {
     const plannerPage = appSource.slice(
       appSource.indexOf("function AltitudePlannerPage("),

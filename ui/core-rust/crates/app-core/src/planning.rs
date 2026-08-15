@@ -1074,6 +1074,12 @@ pub struct FlightPlanRowActionUiView {
     pub procedure_kind: Option<ProcedureKind>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightPlanWeatherBadgeUiView {
+    pub flight_category: String,
+    pub ceiling_amount: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanDisplayRowUiView {
     #[serde(default)]
@@ -1096,6 +1102,8 @@ pub struct FlightPlanDisplayRowUiView {
     pub nav_ref: Option<NavRef>,
     #[serde(default)]
     pub symbol_feature: Option<NavSymbolFeature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather_badge: Option<FlightPlanWeatherBadgeUiView>,
     pub depth: usize,
     pub active: bool,
     #[serde(default = "default_true")]
@@ -2396,6 +2404,7 @@ fn project_display_rows(
                 chart_airport_id,
                 nav_ref,
                 symbol_feature: None,
+                weather_badge: None,
                 depth: 0,
                 active: component.active,
                 enabled: !direct_to_overlay,
@@ -2440,6 +2449,7 @@ fn project_display_rows(
                 chart_airport_id,
                 nav_ref: None,
                 symbol_feature: None,
+                weather_badge: None,
                 depth: 0,
                 active: component.active,
                 enabled: !direct_to_overlay,
@@ -2522,6 +2532,7 @@ fn project_display_rows(
                             chart_airport_id: airport_id_from_nav_ref(nav_ref),
                             nav_ref: Some(nav_ref.clone()),
                             symbol_feature: None,
+                            weather_badge: None,
                             depth: 1,
                             active: component.active,
                             enabled: !direct_to_overlay,
@@ -2576,6 +2587,7 @@ fn project_display_rows(
                             chart_airport_id: None,
                             nav_ref: None,
                             symbol_feature: None,
+                            weather_badge: None,
                             depth: 1,
                             active: false,
                             enabled: !direct_to_overlay,
@@ -2623,6 +2635,7 @@ fn project_display_rows(
             chart_airport_id,
             nav_ref: Some(direct_to.target.clone()),
             symbol_feature: None,
+            weather_badge: None,
             depth: 0,
             active: true,
             enabled: true,
@@ -9609,6 +9622,7 @@ mod tests {
             chart_airport_id: Some("KPAE".to_string()),
             nav_ref: None,
             symbol_feature: None,
+            weather_badge: None,
             depth: 0,
             active: false,
             enabled: true,

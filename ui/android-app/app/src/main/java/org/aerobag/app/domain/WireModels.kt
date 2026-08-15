@@ -1335,6 +1335,12 @@ data class WireFlightDataBannerModel(
 )
 
 @Serializable
+data class WireFlightPlanWeatherBadgeUiView(
+    val flight_category: String,
+    val ceiling_amount: String,
+)
+
+@Serializable
 data class WireFlightPlanDisplayRowUiView(
     val uid: String = "",
     val label: String,
@@ -1348,6 +1354,7 @@ data class WireFlightPlanDisplayRowUiView(
     val chart_airport_id: String? = null,
     val nav_ref: WireNavRef? = null,
     val symbol_feature: WireNavSymbolFeature? = null,
+    val weather_badge: WireFlightPlanWeatherBadgeUiView? = null,
     val depth: Int,
     val active: Boolean,
     val enabled: Boolean = true,

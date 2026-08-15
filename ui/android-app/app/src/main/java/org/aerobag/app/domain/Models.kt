@@ -421,6 +421,11 @@ data class FlightDataBannerModel(
     val cells: List<FlightDataCell> = emptyList(),
 )
 
+data class FlightPlanWeatherBadgeUiView(
+    val flightCategory: String,
+    val ceilingAmount: String,
+)
+
 data class FlightPlanDisplayRowUiView(
     val uid: String = "",
     val label: String,
@@ -434,6 +439,7 @@ data class FlightPlanDisplayRowUiView(
     val chartAirportId: String?,
     val navRef: NavRef?,
     val symbolFeature: NavSymbolFeature?,
+    val weatherBadge: FlightPlanWeatherBadgeUiView? = null,
     val depth: Int,
     val active: Boolean,
     val enabled: Boolean,

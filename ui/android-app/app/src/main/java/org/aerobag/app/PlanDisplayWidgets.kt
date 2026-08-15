@@ -369,6 +369,7 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
             chartAirportId = row.chartAirportId,
             navRef = row.navRef,
             symbolFeature = row.symbolFeature,
+            weatherBadge = row.weatherBadge,
             depth = row.depth,
             active = row.active,
             enabled = row.enabled,

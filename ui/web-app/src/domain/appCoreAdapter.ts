@@ -481,6 +481,8 @@ export type MapSelectionItem = {
   label: string;
   sublabel: string;
   description?: string | null;
+  distance?: string | null;
+  distance_target?: LatLon | null;
   secondary_description?: string | null;
   detail_text?: string | null;
   highlight: MapSelectionHighlight;
@@ -790,6 +792,7 @@ export interface UiSession {
   ingestAirspaceLabelTiles(tiles: AirspaceLabelTilePayload[]): Promise<void>;
   queryMapOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<MapOverlayQueryResult>;
   queryMapSelection(viewport: MapViewportState, widthPx: number, heightPx: number, click: LatLon): Promise<MapSelectionQueryResult>;
+  queryMapSelectionDistance(target: LatLon): Promise<string | null>;
   queryMapSelectionForNavRef(viewport: MapViewportState, widthPx: number, heightPx: number, navRef: NavRef): Promise<MapSelectionForNavRefResult>;
   queryTerrainOverlay(
     viewport: MapViewportState,
@@ -945,6 +948,7 @@ type WasmModule = {
   report_session_resource_failure_in_session_at_epoch_ms(handle: number, resourceId: string, message: string, nowEpochMs: number): Promise<string> | string;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
   get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, nowEpochMs: number): Promise<string> | string;
+  get_map_selection_distance_in_session(handle: number, targetJson: string): Promise<string> | string;
   get_map_selection_for_nav_ref_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, navRefJson: string, nowEpochMs: number): Promise<string> | string;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
   get_scheduled_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, decodedCacheKeysJson: string, inFlightCacheKeysJson: string, nowEpochMs: number): Promise<string> | string;
@@ -1808,6 +1812,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             Date.now(),
           ),
         ),
+      queryMapSelectionDistance: async (target) =>
+        JSON.parse(
+          await this.module.get_map_selection_distance_in_session(
+            handle,
+            JSON.stringify(target),
+          ),
+        ) as string | null,
       queryMapSelectionForNavRef: async (viewport, widthPx, heightPx, navRef) =>
         runSessionOperation<MapSelectionForNavRefResult>(() =>
           this.module.get_map_selection_for_nav_ref_in_session(
@@ -2125,6 +2136,7 @@ async function loadBestAvailableAdapterUncached(
     "ingest_airspace_label_tiles_in_session",
     "get_map_overlay_in_session",
     "get_map_selection_in_session",
+    "get_map_selection_distance_in_session",
     "get_map_selection_for_nav_ref_in_session",
     "get_terrain_overlay_in_session",
     "get_scheduled_terrain_overlay_in_session",

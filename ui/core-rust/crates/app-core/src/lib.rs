@@ -273,6 +273,7 @@ pub use session::{
     engage_map_follow_in_session, get_map_overlay_in_session,
     get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
     get_map_overlay_in_session_with_point_display_scale_at_epoch_ms,
+    get_map_selection_distance_in_session,
     get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_in_session, get_map_selection_in_session_at_epoch_ms,
     get_map_selection_in_session_with_point_display_scale,

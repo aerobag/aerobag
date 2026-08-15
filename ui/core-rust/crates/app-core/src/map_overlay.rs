@@ -1286,8 +1286,14 @@ pub struct MapSelectionItem {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    pub distance: Option<String>,
+    #[serde(default)]
     pub secondary_description: Option<String>,
-    #[serde(skip)]
+    #[serde(
+        default,
+        rename = "distance_target",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub position: Option<LatLon>,
     #[serde(skip)]
     pub elevation_msl_ft: Option<f64>,
@@ -3556,6 +3562,7 @@ fn selection_item_for_point(
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
         description: selection_item_description(record, is_airport),
+        distance: None,
         secondary_description: None,
         position: Some(LatLon {
             lat: record.lat,
@@ -3710,6 +3717,7 @@ fn selection_item_for_nav_ref_point(
         label,
         sublabel: point.symbol.kind.trim().to_ascii_uppercase(),
         description: None,
+        distance: None,
         secondary_description: None,
         position: Some(point.position),
         elevation_msl_ft: None,
@@ -3777,6 +3785,7 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
         label: "SPOT".to_string(),
         sublabel: coordinates.clone(),
         description: None,
+        distance: None,
         secondary_description: Some(coordinates),
         position: Some(click),
         elevation_msl_ft: None,
@@ -3827,6 +3836,7 @@ fn selection_item_for_metar(
         label: display_id.to_string(),
         sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
+        distance: None,
         secondary_description: None,
         position: Some(LatLon {
             lat: record.latitude,
@@ -3862,6 +3872,7 @@ fn selection_item_for_pirep(
             .unwrap_or("PIREP")
             .to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
+        distance: None,
         secondary_description: None,
         position: Some(LatLon {
             lat: record.latitude,
@@ -4147,6 +4158,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         label: airspace_selection_label(feature),
         sublabel: feature.ident.trim().to_string(),
         description: None,
+        distance: None,
         secondary_description: None,
         position: None,
         elevation_msl_ft: None,
@@ -4208,6 +4220,7 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
         label: first.region_id.to_ascii_uppercase(),
         sublabel: description.clone(),
         description: Some(description),
+        distance: None,
         secondary_description: None,
         position: None,
         elevation_msl_ft: None,
@@ -4463,6 +4476,7 @@ fn selection_item_for_tfr(
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
         description: Some(tfr_timing_description(timing)),
+        distance: None,
         secondary_description: None,
         position: None,
         elevation_msl_ft: None,
@@ -6964,6 +6978,7 @@ mod tests {
             label: id.to_string(),
             sublabel: String::new(),
             description: None,
+            distance: None,
             secondary_description: None,
             position: None,
             elevation_msl_ft: None,

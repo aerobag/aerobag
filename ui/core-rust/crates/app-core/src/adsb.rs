@@ -637,6 +637,7 @@ impl AdsbSessionState {
                             .unwrap_or_else(|| aircraft.id.to_ascii_uppercase()),
                         sublabel: "ADS-B traffic".to_string(),
                         description: Some(format!("{}  {detail}", visible.label)),
+                        distance: None,
                         secondary_description: aircraft.aircraft_type.clone(),
                         position: None,
                         elevation_msl_ft: None,

@@ -4408,6 +4408,79 @@ function MapPage(props: {
     selectedItem: MapSelectionItem | null;
     detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string; action_id?: string | null } | null } | { kind: "weather"; detail: WeatherDetailUiView } | { kind: "airport"; detail: AirportInfoUiView } | null;
   } | null>(null);
+  const mapSelectionDistanceItemId = mapSelection?.detailModal === null
+    ? mapSelection.selectedItem?.id ?? null
+    : null;
+  const mapSelectionDistanceTarget = mapSelection?.detailModal === null
+    ? mapSelection.selectedItem?.distance_target ?? null
+    : null;
+  useEffect(() => {
+    if (!uiSession || !mapSelectionDistanceItemId || !mapSelectionDistanceTarget) {
+      return;
+    }
+    const itemId = mapSelectionDistanceItemId;
+    const target = mapSelectionDistanceTarget;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const refresh = async () => {
+      try {
+        const distance = await uiSession.queryMapSelectionDistance(target);
+        if (cancelled) return;
+        setMapSelection((current) => {
+          const selected = current?.selectedItem;
+          const currentTarget = selected?.distance_target;
+          if (
+            !current ||
+            !selected ||
+            selected.id !== itemId ||
+            currentTarget?.lat !== target.lat ||
+            currentTarget?.lon !== target.lon ||
+            selected.distance === distance
+          ) {
+            return current;
+          }
+          const selectedItem = { ...selected, distance };
+          return {
+            ...current,
+            selectedItem,
+            result: {
+              ...current.result,
+              categories: current.result.categories.map((category) => ({
+                ...category,
+                items: category.items.map((item) =>
+                  item.id === itemId &&
+                  item.distance_target?.lat === target.lat &&
+                  item.distance_target?.lon === target.lon
+                    ? selectedItem
+                    : item
+                ),
+              })),
+            },
+          };
+        });
+      } catch (error) {
+        if (!cancelled) {
+          debugLog("map.selection.distance_refresh_failed", { error: errorMessage(error) });
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(refresh, 1_000);
+        }
+      }
+    };
+
+    timer = window.setTimeout(refresh, 1_000);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    uiSession,
+    mapSelectionDistanceItemId,
+    mapSelectionDistanceTarget?.lat,
+    mapSelectionDistanceTarget?.lon,
+  ]);
   const [hoverWeather, setHoverWeather] = useState<{
     stationId: string;
     point: ScreenPoint;
@@ -10458,8 +10531,10 @@ function MapSelectionTray(props: {
             {selectedItem ? (
               <>
                 <strong>{selectedItem.label}</strong>
-                {selectedItem.description ? (
-                  <span className="mapSelectionActionDescription"> · {selectedItem.description}</span>
+                {selectedItem.description || selectedItem.distance ? (
+                  <span className="mapSelectionActionDescription">
+                    {" · "}{[selectedItem.description, selectedItem.distance].filter(Boolean).join(" · ")}
+                  </span>
                 ) : null}
               </>
             ) : "\u00a0"}

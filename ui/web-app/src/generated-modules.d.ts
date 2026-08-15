@@ -60,6 +60,7 @@ declare module "@generated/app_wasm.js" {
   export const report_live_feed_connection_event_in_session: (...args: unknown[]) => string;
   export const get_map_overlay_in_session: (...args: unknown[]) => string;
   export const get_map_selection_in_session: (...args: unknown[]) => string;
+  export const get_map_selection_distance_in_session: (...args: unknown[]) => string;
   export const get_terrain_overlay_in_session: (...args: unknown[]) => string;
   export const get_scheduled_terrain_overlay_in_session: (...args: unknown[]) => string;
   export const render_terrain_overlay_tile_by_key_in_session: (...args: unknown[]) => Uint8Array;

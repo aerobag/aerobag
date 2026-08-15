@@ -474,6 +474,8 @@ interface NativeBridge {
         clickJson: String,
     ): String
 
+    fun getMapSelectionDistanceInSessionJson(handle: Long, targetJson: String): String
+
     fun getMapSelectionInSessionWithPointDisplayScaleJson(
         handle: Long,
         viewportJson: String,
@@ -1060,6 +1062,11 @@ object NativeBindings : NativeBridge {
         widthPx: Double,
         heightPx: Double,
         clickJson: String,
+    ): String
+
+    external override fun getMapSelectionDistanceInSessionJson(
+        handle: Long,
+        targetJson: String,
     ): String
 
     external override fun getMapSelectionInSessionWithPointDisplayScaleJson(

@@ -8710,6 +8710,18 @@ pub fn get_map_selection_in_session(
     get_map_selection_in_session_at_epoch_ms(handle, viewport, width_px, height_px, click, 0)
 }
 
+pub fn get_map_selection_distance_in_session(
+    handle: u32,
+    target: LatLon,
+) -> AppResult<Option<String>> {
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    Ok(map_selection_distance(
+        session_guard.situation.ownship().render.position,
+        target,
+    ))
+}
+
 pub fn get_map_selection_in_session_at_epoch_ms(
     handle: u32,
     viewport: MapViewport,
@@ -9136,10 +9148,6 @@ fn map_selection_with_ownship_distances(
     mut selection: MapSelectionQueryResult,
     ownship_position: Option<LatLon>,
 ) -> MapSelectionQueryResult {
-    let Some(ownship_position) = ownship_position else {
-        return selection;
-    };
-
     for item in selection
         .categories
         .iter_mut()
@@ -9148,15 +9156,20 @@ fn map_selection_with_ownship_distances(
         let Some(point_position) = item.position else {
             continue;
         };
-        let distance_nm = crate::great_circle_distance_nm(ownship_position, point_position);
-        if !distance_nm.is_finite() {
-            continue;
-        }
-        let distance = format!("{}nm", crate::flight_data::format_nm(distance_nm));
-        append_map_selection_description(&mut item.description, distance);
+        item.distance = map_selection_distance(ownship_position, point_position);
     }
 
     selection
+}
+
+fn map_selection_distance(
+    ownship_position: Option<LatLon>,
+    point_position: LatLon,
+) -> Option<String> {
+    let distance_nm = crate::great_circle_distance_nm(ownship_position?, point_position);
+    distance_nm
+        .is_finite()
+        .then(|| format!("{}nm", crate::flight_data::format_nm(distance_nm)))
 }
 
 fn map_selection_with_session_action_availability(
@@ -23729,6 +23742,7 @@ mod tests {
                     label: "KPWT".to_string(),
                     sublabel: "Airport".to_string(),
                     description: None,
+                    distance: None,
                     secondary_description: None,
                     position: None,
                     elevation_msl_ft: None,
@@ -23862,6 +23876,7 @@ mod tests {
             label: id.to_string(),
             sublabel: String::new(),
             description: description.map(str::to_string),
+            distance: None,
             secondary_description: None,
             position,
             elevation_msl_ft: None,
@@ -23905,7 +23920,11 @@ mod tests {
             crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point));
         assert_eq!(
             selection.categories[0].items[0].description,
-            Some(format!("Elev 36 · {expected_distance}nm"))
+            Some("Elev 36".to_string())
+        );
+        assert_eq!(
+            selection.categories[0].items[0].distance,
+            Some(format!("{expected_distance}nm"))
         );
         assert_eq!(
             selection.categories[0].items[0]
@@ -24102,7 +24121,7 @@ mod tests {
     }
 
     #[test]
-    fn map_selection_appends_ownship_distance_to_point_description() {
+    fn map_selection_exposes_ownship_distance_separately_from_point_description() {
         let ownship = LatLon { lat: 0.0, lon: 0.0 };
         let point = LatLon { lat: 0.0, lon: 0.3 };
         let selection = test_map_selection_with_items(vec![test_map_selection_item(
@@ -24116,7 +24135,11 @@ mod tests {
             crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point));
         assert_eq!(
             selection.categories[0].items[0].description,
-            Some(format!("Elev 36 · {expected_distance}nm"))
+            Some("Elev 36".to_string())
+        );
+        assert_eq!(
+            selection.categories[0].items[0].distance,
+            Some(format!("{expected_distance}nm"))
         );
     }
 
@@ -24130,7 +24153,7 @@ mod tests {
 
         let selection = map_selection_with_ownship_distances(selection, Some(ownship));
         assert_eq!(
-            selection.categories[0].items[0].description,
+            selection.categories[0].items[0].distance,
             Some(format!(
                 "{}nm",
                 crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point))
@@ -24158,6 +24181,63 @@ mod tests {
             selection.categories[0].items[0].description.as_deref(),
             Some("SFC-100")
         );
+        assert_eq!(selection.categories[0].items[0].distance, None);
+    }
+
+    #[test]
+    fn map_selection_distance_refresh_tracks_current_ownship_without_requerying_selection() {
+        let init = create_current_test_session();
+        let target = LatLon { lat: 0.0, lon: 1.0 };
+        assert_eq!(
+            get_map_selection_distance_in_session(init.handle, target)
+                .expect("distance without ownship"),
+            None
+        );
+
+        let first_ownship = LatLon { lat: 0.0, lon: 0.0 };
+        set_situation_in_session(
+            init.handle,
+            Situation {
+                position: SituationPosition::LatLon {
+                    lat: first_ownship.lat,
+                    lon: first_ownship.lon,
+                },
+                ..Situation::default()
+            },
+        )
+        .expect("set first ownship");
+        let first = get_map_selection_distance_in_session(init.handle, target)
+            .expect("first distance")
+            .expect("distance with ownship");
+
+        let second_ownship = LatLon { lat: 0.0, lon: 0.5 };
+        set_situation_in_session(
+            init.handle,
+            Situation {
+                position: SituationPosition::LatLon {
+                    lat: second_ownship.lat,
+                    lon: second_ownship.lon,
+                },
+                ..Situation::default()
+            },
+        )
+        .expect("set second ownship");
+        let second = get_map_selection_distance_in_session(init.handle, target)
+            .expect("second distance")
+            .expect("distance with moved ownship");
+
+        assert_ne!(first, second);
+        assert_eq!(
+            second,
+            format!(
+                "{}nm",
+                crate::flight_data::format_nm(crate::great_circle_distance_nm(
+                    second_ownship,
+                    target
+                ))
+            )
+        );
+        destroy_session(init.handle);
     }
 
     #[test]

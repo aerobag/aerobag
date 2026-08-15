@@ -334,6 +334,8 @@ data class MapSelectionItem(
     val label: String,
     val sublabel: String,
     val description: String?,
+    val distance: String?,
+    val distanceTarget: LatLonPoint?,
     val secondaryDescription: String?,
     val detailText: String?,
     val highlight: MapSelectionHighlight,
@@ -1622,6 +1624,14 @@ class NativeUiSession internal constructor(
         publishPagedInvalidations("queryMapSelection", result)
         return json.decodeFromJsonElement<WireMapSelectionQueryResult>(result.result).toUi()
     }
+
+    fun queryMapSelectionDistance(target: LatLonPoint): String? =
+        json.decodeFromString(
+            bridge.getMapSelectionDistanceInSessionJson(
+                handle,
+                json.encodeToString(target.toWire()),
+            ),
+        )
 
     @RawUiSessionWorkApi
     fun queryMapSelectionForNavRef(
@@ -3185,6 +3195,8 @@ private fun WireMapSelectionItem.toUi() = MapSelectionItem(
     label = label,
     sublabel = sublabel,
     description = description,
+    distance = distance,
+    distanceTarget = distance_target?.toUi(),
     secondaryDescription = secondary_description,
     detailText = detail_text,
     highlight = highlight.toUi(),

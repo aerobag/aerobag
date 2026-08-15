@@ -76,6 +76,12 @@ CHECKS = (
                 "background IO/render",
                 "Terrain is driven by a conflated render loop and executes on Dispatchers.IO.",
             ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "uiSession.queryMapSelectionDistance(",
+                "fast model read",
+                "The one-hertz inspector refresh performs one in-memory distance calculation on Dispatchers.IO and cannot page resources.",
+            ),
         ),
     ),
     Check(

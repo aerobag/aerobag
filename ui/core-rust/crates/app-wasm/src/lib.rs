@@ -1510,6 +1510,15 @@ pub fn get_map_selection_in_session(
 }
 
 #[wasm_bindgen]
+pub fn get_map_selection_distance_in_session(
+    handle: u32,
+    target_json: &str,
+) -> Result<String, JsValue> {
+    get_map_selection_distance_in_session_json(handle, target_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn get_map_selection_for_nav_ref_in_session(
     handle: u32,
     viewport_json: &str,
@@ -2202,6 +2211,17 @@ fn get_map_selection_in_session_json(
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&selection).map_err(|err| err.to_string())
+}
+
+fn get_map_selection_distance_in_session_json(
+    handle: u32,
+    target_json: &str,
+) -> Result<String, String> {
+    let target: app_core::LatLon =
+        serde_json::from_str(target_json).map_err(|err| err.to_string())?;
+    let distance = app_core::get_map_selection_distance_in_session(handle, target)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&distance).map_err(|err| err.to_string())
 }
 
 fn get_map_selection_for_nav_ref_in_session_json(

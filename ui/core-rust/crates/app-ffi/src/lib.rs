@@ -899,6 +899,17 @@ pub fn get_map_selection_in_session_json(
     )
 }
 
+pub fn get_map_selection_distance_in_session_json(
+    handle: u64,
+    target_json: &str,
+) -> Result<String, String> {
+    let target: app_core::LatLon =
+        serde_json::from_str(target_json).map_err(|err| err.to_string())?;
+    let distance = app_core::get_map_selection_distance_in_session(handle as u32, target)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&distance).map_err(|err| err.to_string())
+}
+
 pub fn get_map_selection_in_session_with_point_display_scale_json(
     handle: u64,
     viewport_json: &str,
@@ -4027,6 +4038,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapSelectio
         let viewport = get_java_string(&mut env, viewport_json)?;
         let click = get_java_string(&mut env, click_json)?;
         get_map_selection_in_session_json(handle as u64, &viewport, width_px, height_px, &click)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapSelectionDistanceInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    target_json: JString,
+) -> jstring {
+    let result = (|| {
+        let target = get_java_string(&mut env, target_json)?;
+        get_map_selection_distance_in_session_json(handle as u64, &target)
     })();
     return_string(&mut env, result)
 }

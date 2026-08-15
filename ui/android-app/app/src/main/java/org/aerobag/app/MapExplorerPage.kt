@@ -699,6 +699,47 @@ internal fun MapExplorerPage(
     var chartSearchError by remember { mutableStateOf<String?>(null) }
     var chartSearchSuggestions by remember { mutableStateOf<List<WaypointIdentifierSuggestion>>(emptyList()) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
+    val mapSelectionDistanceItemId = mapSelection?.takeIf { it.detailModal == null }?.selectedItem?.id
+    val mapSelectionDistanceTarget = mapSelection?.takeIf { it.detailModal == null }?.selectedItem?.distanceTarget
+    LaunchedEffect(uiSession, mapSelectionDistanceItemId, mapSelectionDistanceTarget) {
+        val itemId = mapSelectionDistanceItemId ?: return@LaunchedEffect
+        val target = mapSelectionDistanceTarget ?: return@LaunchedEffect
+        while (true) {
+            delay(1_000)
+            val distance = try {
+                withContext(Dispatchers.IO) {
+                    uiSession.queryMapSelectionDistance(target)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.w("AerobagSelection", "map selection distance refresh failed", error)
+                continue
+            }
+            val current = mapSelection ?: continue
+            val selected = current.selectedItem ?: continue
+            if (
+                selected.id != itemId ||
+                selected.distanceTarget != target ||
+                selected.distance == distance
+            ) {
+                continue
+            }
+            val selectedItem = selected.copy(distance = distance)
+            mapSelection = current.copy(
+                selectedItem = selectedItem,
+                result = current.result.copy(
+                    categories = current.result.categories.map { category ->
+                        category.copy(
+                            items = category.items.map { item ->
+                                if (item.id == itemId && item.distanceTarget == target) selectedItem else item
+                            },
+                        )
+                    },
+                ),
+            )
+        }
+    }
     val chartSearchInspectionGate = remember(uiSession) { ChartSearchInspectionGate() }
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
@@ -4256,7 +4297,10 @@ internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
             text = buildAnnotatedString {
                 if (selectedItem != null) {
                     withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(selectedItem.label) }
-                    selectedItem.description?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                    listOfNotNull(
+                        selectedItem.description?.takeIf { it.isNotBlank() },
+                        selectedItem.distance?.takeIf { it.isNotBlank() },
+                    ).takeIf { it.isNotEmpty() }?.let { append(" · ${it.joinToString(" · ")}") }
                 } else {
                     append(" ")
                 }

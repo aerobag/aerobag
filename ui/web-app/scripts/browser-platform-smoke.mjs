@@ -64,12 +64,13 @@ try {
   if (!/^-?\d+\.\d{4}, -?\d+\.\d{4}$/.test(selection.secondary)) {
     throw new Error(`selected point does not display four-decimal coordinates: ${JSON.stringify(selection)}`);
   }
+  const refreshedSelection = await verifyMapSelectionDistanceRefresh(page, selection);
   if (page.diagnostics.some((entry) => entry.method === "Runtime.exceptionThrown")) {
     throw new Error(`browser exceptions observed: ${JSON.stringify(page.diagnostics.slice(-10))}`);
   }
 
   process.stdout.write(
-    `browser platform smoke passed: ${JSON.stringify({ timeDisplay, rotatedRaster, selection })}\n`,
+    `browser platform smoke passed: ${JSON.stringify({ timeDisplay, rotatedRaster, selection, refreshedSelection })}\n`,
   );
 } finally {
   await browser?.close();
@@ -232,11 +233,13 @@ async function installSyntheticGeolocation(page) {
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `(() => {
       let heading = 45;
+      let latitude = 47.4931;
+      let longitude = -122.2157;
       const position = () => ({
         timestamp: Date.now(),
         coords: {
-          latitude: 47.4931,
-          longitude: -122.2157,
+          latitude,
+          longitude,
           accuracy: 3,
           altitude: 20,
           altitudeAccuracy: 5,
@@ -248,6 +251,13 @@ async function installSyntheticGeolocation(page) {
       const watchers = new Map();
       window.__aerobagSetSyntheticTrack = (nextHeading) => {
         heading = nextHeading;
+        for (const success of watchers.values()) {
+          setTimeout(() => success(position()), 0);
+        }
+      };
+      window.__aerobagSetSyntheticPosition = (nextLatitude, nextLongitude) => {
+        latitude = nextLatitude;
+        longitude = nextLongitude;
         for (const success of watchers.values()) {
           setTimeout(() => success(position()), 0);
         }
@@ -485,6 +495,25 @@ async function waitForMapSelection(page) {
     })()`),
     20000,
     `map click did not open a preselected inspector; diagnostics=${JSON.stringify(page.diagnostics.slice(-10))}`,
+    100,
+  );
+}
+
+async function verifyMapSelectionDistanceRefresh(page, initialSelection) {
+  const initialDistance = initialSelection.primary.match(/\b\d+(?:\.\d+)?nm\b/)?.[0];
+  if (!initialDistance) {
+    throw new Error(`selected point does not display ownship distance: ${JSON.stringify(initialSelection)}`);
+  }
+  await page.evaluate(`window.__aerobagSetSyntheticPosition?.(47.4931, -121.9157)`);
+  return await waitFor(
+    async () => await page.evaluate(`(() => {
+      const primary = document.querySelector('[data-testid="map-selection-tray"] .mapSelectionActionTitlePrimary')
+        ?.textContent?.trim() ?? "";
+      const distance = primary.match(/\\b\\d+(?:\\.\\d+)?nm\\b/)?.[0] ?? null;
+      return distance && distance !== ${JSON.stringify(initialDistance)} ? { primary, distance } : null;
+    })()`),
+    10000,
+    `map selection distance did not follow ownship movement from ${initialDistance}`,
     100,
   );
 }

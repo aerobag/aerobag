@@ -169,6 +169,7 @@ describe("loadBestAvailableAdapter", () => {
       resolve_chart_asset_resource_in_session: async () => JSON.stringify({ source: { kind: "unavailable", message: "test" } }),
       get_map_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"visible_features\":[],\"visible_metars\":[],\"visible_pireps\":[],\"airspace_paths\":[],\"tfr_paths\":[],\"airspace_labels\":[]}}",
       get_map_selection_in_session: async () => "{\"state\":\"complete\",\"result\":{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}}",
+      get_map_selection_distance_in_session: async () => "null",
       get_map_selection_for_nav_ref_in_session: async () => "{\"state\":\"complete\",\"result\":null}",
       get_terrain_overlay_in_session: async () => "{\"needed_terrain_tiles\":[],\"status\":\"hidden\"}",
       get_scheduled_terrain_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"status\":{\"state\":\"hidden\"},\"tile_requests\":[],\"altitude_bucket_ft\":null,\"frame_key\":null,\"schedule\":{\"cached_count\":0,\"in_flight_count\":0,\"missing_count\":0,\"frame_complete\":false,\"work_batch\":[]}}}",

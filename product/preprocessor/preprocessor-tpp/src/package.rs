@@ -1090,6 +1090,14 @@ mod tests {
                         <procuid>deleted-record</procuid>
                         <faanfd18>DELETED.LGD</faanfd18>
                       </record>
+                      <record>
+                        <chart_code>ODP</chart_code>
+                        <chart_name>LA GRANDE ONE (OBSTACLE)</chart_name>
+                        <useraction></useraction>
+                        <pdf_name>DELETED_JOB.PDF</pdf_name>
+                        <procuid>sentinel-record</procuid>
+                        <faanfd18>SENTINEL.LGD</faanfd18>
+                      </record>
                     </airport_name>
                   </city_name>
                 </state_code>

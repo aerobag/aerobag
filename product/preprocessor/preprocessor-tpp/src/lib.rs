@@ -46,13 +46,21 @@ const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 const TPP_RENDER_DPI: u32 = 225;
 const TPP_AIRPORT_DIAGRAM_GEOREF_SOURCE_DPI: f64 = 300.0;
+const TPP_DELETED_JOB_PDF_NAME: &str = "DELETED_JOB.PDF";
 
 fn tpp_record_is_deleted(record: roxmltree::Node<'_, '_>) -> bool {
-    record
+    let deleted_by_action = record
         .children()
         .find(|node| node.has_tag_name("useraction"))
         .and_then(|node| node.text())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("D"))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("D"));
+    let deleted_by_pdf_sentinel = record
+        .children()
+        .find(|node| node.has_tag_name("pdf_name"))
+        .and_then(|node| node.text())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(TPP_DELETED_JOB_PDF_NAME));
+
+    deleted_by_action || deleted_by_pdf_sentinel
 }
 
 #[derive(Debug, Clone)]
@@ -2441,7 +2449,7 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
     }
 
     #[test]
-    fn parse_region_plates_skips_deletion_actions_regardless_of_pdf_name() {
+    fn parse_region_plates_skips_both_faa_deletion_encodings() {
         let dir = tempfile::tempdir().unwrap();
         let xml_path = dir.path().join("d-TPP_Metafile.xml");
         fs::write(
@@ -2462,6 +2470,12 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
           <chart_name>DELETED PROCEDURE</chart_name>
           <useraction>D</useraction>
           <pdf_name>AN_ARBITRARY_TOMBSTONE_NAME.PDF</pdf_name>
+        </record>
+        <record>
+          <chart_code>IAP</chart_code>
+          <chart_name>LEGACY DELETED PROCEDURE</chart_name>
+          <useraction></useraction>
+          <pdf_name>DELETED_JOB.PDF</pdf_name>
         </record>
       </airport_name>
     </city_name>

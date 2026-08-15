@@ -32,6 +32,7 @@ import type {
   WeatherDetailUiView,
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
+import { UI_SESSION_UPDATE_GROUPS } from "../generated/sessionUpdateWire";
 import type {
   CloudAuthorizationRequest,
   CloudAuthorizationResponse,
@@ -108,11 +109,29 @@ export type {
 } from "../generated/sessionPageWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
-import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
+import {
+  debugLog,
+  debugTiming,
+  installRustDebugLogBridge,
+  isDebugLogEnabled,
+  perfDebugLog,
+} from "./debugLog";
 import { ingestPreparedLiveFeedResource, resetLiveFeedPrep } from "./liveFeedPrep";
 import { liveFeedSourceUrl } from "./liveFeedUrls";
 import { SessionUpdateAccumulator } from "./sessionUpdateAccumulator";
 export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
+
+function sessionUpdateGroupNames(value: unknown): string[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const update = value as Record<string, unknown>;
+  return UI_SESSION_UPDATE_GROUPS.filter((group) => update[group] != null);
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
 
 declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
 declare const __AEROBAG_CLOUD_SERVER_BASE_URL__: string | null;
@@ -1155,6 +1174,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       return snapshot;
     };
     const applySessionUpdate = async (value: unknown) => {
+      const measureLanding = isDebugLogEnabled();
+      const landingStartedAt = measureLanding ? performance.now() : 0;
+      const updateJson = measureLanding ? JSON.stringify(value) : null;
+      const changedGroups = measureLanding ? sessionUpdateGroupNames(value) : [];
       const disposition = await snapshotAccumulator.applyOrResync(
         value,
         async () => runSessionOperation<unknown>(() =>
@@ -1166,6 +1189,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         });
       }
       snapshot = decodeAccumulatedSnapshot();
+      if (measureLanding) {
+        debugLog("session.update.landed", {
+          disposition,
+          groups: changedGroups,
+          update_json_bytes: utf8ByteLength(updateJson ?? ""),
+          accumulated_snapshot_json_bytes: utf8ByteLength(JSON.stringify(snapshot)),
+          landing_ms: performance.now() - landingStartedAt,
+        });
+      }
       return snapshot;
     };
     const applyOptionalSessionUpdate = (update: unknown) =>

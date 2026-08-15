@@ -172,6 +172,8 @@ interface NativeBridge {
         selectedChartIdJson: String,
     ): String
 
+    fun sessionDiagnosticsJson(handle: Long): String
+
     fun configurePlatformCapabilitiesInSessionJson(
         handle: Long,
         capabilitiesJson: String,
@@ -761,6 +763,8 @@ object NativeBindings : NativeBridge {
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
     ): String
+
+    external override fun sessionDiagnosticsJson(handle: Long): String
 
     external override fun loadOfflinePackageLibraryCacheInSessionJson(
         handle: Long,

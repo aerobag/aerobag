@@ -4,6 +4,7 @@
 
 package org.aerobag.app.domain
 
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
@@ -19,6 +20,8 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.diagnosticLogInfo
+import org.aerobag.app.perfLogInfo
+import org.aerobag.app.VerbosePerfLogs
 import org.aerobag.app.generated.NexradOverlayQueryResult
 import org.aerobag.app.generated.CloudAuthorizationRequest
 import org.aerobag.app.generated.CloudAuthorizationResponse
@@ -50,12 +53,14 @@ import org.aerobag.app.generated.UiSettingsPageRow as WireUiSettingsPageRow
 import org.aerobag.app.generated.UiSettingsPageSection as WireUiSettingsPageSection
 import org.aerobag.app.generated.UiSettingsPageState as WireUiSettingsPageState
 import org.aerobag.app.generated.UiSettingsSliderStop as WireUiSettingsSliderStop
+import org.aerobag.app.generated.UiSessionUpdateGroup
 import org.aerobag.app.generated.UiStatusAction as WireUiStatusAction
 import org.aerobag.app.generated.UiStatusActionStyle as WireUiStatusActionStyle
 import org.aerobag.app.generated.UiStatusSeverity as WireUiStatusSeverity
 import org.aerobag.app.generated.UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION
 import java.time.ZoneId
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 data class VectorTileRequest(
     val layer: String,
@@ -645,6 +650,7 @@ class NativeUiSession internal constructor(
     private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)?,
     initialSnapshot: JsonObject,
 ) {
+    private val landedUpdateCount = AtomicLong(0)
     private val snapshotAccumulator = SessionUpdateAccumulator(
         initialSnapshot,
         UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
@@ -781,13 +787,52 @@ class NativeUiSession internal constructor(
     }
 
     private fun executePagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
+        val measureLanding = VerbosePerfLogs
+        val operationStartedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
         val outcome = executePagedOperation(operation)
-        if (outcome.resumedSnapshot) {
-            snapshotAccumulator.replaceFullSnapshot(outcome.result)
+        val operationFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
+        val updateJsonBytes = if (measureLanding) {
+            outcome.result.toString().toByteArray(Charsets.UTF_8).size
         } else {
-            applySessionUpdate(outcome.result)
+            0
         }
-        updateSnapshot(decodeAccumulatedSnapshot())
+        val changedGroups = if (measureLanding && !outcome.resumedSnapshot) {
+            val update = outcome.result as? JsonObject
+            UiSessionUpdateGroup.entries
+                .map(UiSessionUpdateGroup::wireName)
+                .filter { update?.get(it) !is JsonNull && update?.get(it) != null }
+        } else {
+            emptyList()
+        }
+        val applyStartedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
+        val disposition = if (outcome.resumedSnapshot) {
+            snapshotAccumulator.replaceFullSnapshot(outcome.result)
+            "resumed_snapshot"
+        } else {
+            applySessionUpdate(outcome.result).name
+        }
+        val applyFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
+        val decodeStartedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
+        val nextSnapshot = decodeAccumulatedSnapshot()
+        val decodeFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
+        updateSnapshot(nextSnapshot)
+        val publishFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
+        if (measureLanding) {
+            perfLogInfo("AerobagSessionUpdate") {
+                "command=$commandName disposition=$disposition groups=${changedGroups.joinToString(",")} " +
+                    "updateJsonBytes=$updateJsonBytes " +
+                    "accumulatedSnapshotJsonBytes=${snapshotAccumulator.snapshot.toString().toByteArray(Charsets.UTF_8).size} " +
+                    "operationAndPagingUs=${(operationFinishedAt - operationStartedAt) / 1_000} " +
+                    "applyUs=${(applyFinishedAt - applyStartedAt) / 1_000} " +
+                    "decodeUs=${(decodeFinishedAt - decodeStartedAt) / 1_000} " +
+                    "publishUs=${(publishFinishedAt - decodeFinishedAt) / 1_000}"
+            }
+            if (landedUpdateCount.incrementAndGet() % 32L == 0L) {
+                perfLogInfo("AerobagSessionDiagnostics") {
+                    bridge.sessionDiagnosticsJson(handle)
+                }
+            }
+        }
         publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)
         return snapshot
     }
@@ -830,7 +875,7 @@ class NativeUiSession internal constructor(
         updateSnapshot(decodeAccumulatedSnapshot())
     }
 
-    private fun applySessionUpdate(update: JsonElement) {
+    private fun applySessionUpdate(update: JsonElement): SessionUpdateDisposition {
         val disposition = snapshotAccumulator.applyOrResync(update) {
             executePagedOperation {
                 bridge.getSessionSnapshotPagedJson(handle)
@@ -842,6 +887,7 @@ class NativeUiSession internal constructor(
                 "session revision gap; requested a full snapshot",
             )
         }
+        return disposition
     }
 
     private fun publishPagedInvalidations(

@@ -32,9 +32,9 @@ pub use app_ui_contracts::{
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
         UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
-        UiPlaybackPanelState, UiSessionProjectionPatch, UiSessionUpdate, UiSettingsAction,
-        UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState,
-        UiSettingsSliderStop,
+        UiPlaybackPanelState, UiSessionProjectionPatch, UiSessionUpdate, UiSessionUpdateGroup,
+        UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection,
+        UiSettingsPageState, UiSettingsSliderStop,
     },
 };
 
@@ -260,8 +260,27 @@ pub struct UiSessionDiagnostics {
     pub data_status_revision: u64,
     pub data_status_projection_count: u64,
     pub last_session_payload_serialized_bytes: u64,
+    pub session_updates: UiSessionUpdateDiagnostics,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSessionUpdateDiagnostics {
+    pub projection_count: u64,
+    pub projection_total_us: u64,
+    pub projection_max_us: u64,
+    pub nav_data_count: u64,
+    pub application_count: u64,
+    pub situation_count: u64,
+    pub charts_count: u64,
+    pub map_count: u64,
+    pub status_count: u64,
+    pub settings_count: u64,
+    pub cloud_count: u64,
+    pub packages_count: u64,
+    pub home_count: u64,
+    pub debug_count: u64,
 }
 
 #[derive(Debug, Default)]
@@ -281,6 +300,10 @@ struct SessionDiagnosticsCounters {
     cloud_projection_count: AtomicU64,
     data_status_projection_count: AtomicU64,
     last_session_payload_serialized_bytes: AtomicU64,
+    session_update_projection_count: AtomicU64,
+    session_update_projection_total_us: AtomicU64,
+    session_update_projection_max_us: AtomicU64,
+    session_update_group_counts: [AtomicU64; UiSessionUpdateGroup::COUNT],
     transaction_commit_count: AtomicU64,
     transaction_rollback_count: AtomicU64,
 }
@@ -329,9 +352,49 @@ impl SessionDiagnosticsCounters {
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
+            session_updates: UiSessionUpdateDiagnostics {
+                projection_count: self.session_update_projection_count.load(Ordering::Relaxed),
+                projection_total_us: self
+                    .session_update_projection_total_us
+                    .load(Ordering::Relaxed),
+                projection_max_us: self
+                    .session_update_projection_max_us
+                    .load(Ordering::Relaxed),
+                nav_data_count: self.session_update_group_count(UiSessionUpdateGroup::NavData),
+                application_count: self
+                    .session_update_group_count(UiSessionUpdateGroup::Application),
+                situation_count: self.session_update_group_count(UiSessionUpdateGroup::Situation),
+                charts_count: self.session_update_group_count(UiSessionUpdateGroup::Charts),
+                map_count: self.session_update_group_count(UiSessionUpdateGroup::Map),
+                status_count: self.session_update_group_count(UiSessionUpdateGroup::Status),
+                settings_count: self.session_update_group_count(UiSessionUpdateGroup::Settings),
+                cloud_count: self.session_update_group_count(UiSessionUpdateGroup::Cloud),
+                packages_count: self.session_update_group_count(UiSessionUpdateGroup::Packages),
+                home_count: self.session_update_group_count(UiSessionUpdateGroup::Home),
+                debug_count: self.session_update_group_count(UiSessionUpdateGroup::Debug),
+            },
             transaction_commit_count: self.transaction_commit_count.load(Ordering::Relaxed),
             transaction_rollback_count: self.transaction_rollback_count.load(Ordering::Relaxed),
         }
+    }
+
+    fn record_session_update(&self, update: &UiSessionUpdate, projection_us: u64) {
+        self.session_update_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.session_update_projection_total_us
+            .fetch_add(projection_us, Ordering::Relaxed);
+        self.session_update_projection_max_us
+            .fetch_max(projection_us, Ordering::Relaxed);
+
+        for (group, patch) in update.projection_patches() {
+            if patch.is_some() {
+                self.session_update_group_counts[group as usize].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn session_update_group_count(&self, group: UiSessionUpdateGroup) -> u64 {
+        self.session_update_group_counts[group as usize].load(Ordering::Relaxed)
     }
 }
 
@@ -10771,6 +10834,7 @@ fn session_projection_dependencies(
             cloud_revision: session.cloud.revision(),
             weather_revision: session.weather.revision(),
             wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
+            time_display_mode: session.coordinator.time_display_mode,
             client_build: capabilities.client_build.clone(),
             cloud_available,
             next_freshness_check_epoch_ms: session
@@ -10813,13 +10877,14 @@ fn try_project_session_update(
     session: &mut UiSession,
     previous_versions: SessionProjectionVersions,
 ) -> Result<UiSessionUpdate, SessionSnapshotProjectionError> {
+    let started_at = crate::core_clock_ms();
     let snapshot = try_snapshot_for_session(session)?;
     let current_versions = session.projection_versions.versions();
-    Ok(assemble_session_update(
-        &snapshot,
-        previous_versions,
-        current_versions,
-    ))
+    let update = assemble_session_update(&snapshot, previous_versions, current_versions);
+    session
+        .diagnostics
+        .record_session_update(&update, debug_elapsed_us(started_at));
+    Ok(update)
 }
 
 fn changed_projection_patch(
@@ -13940,6 +14005,61 @@ mod tests {
         assert_eq!(
             repeated.data_status_projection_count,
             diagnostics.data_status_projection_count
+        );
+
+        let update = session_update_from_outcome(
+            set_map_layer_enabled_in_session(first.handle, MapLayerId::WorldBasemap, false)
+                .expect("map mutation"),
+        );
+        let measured = session_diagnostics(first.handle).expect("update diagnostics");
+        assert_eq!(measured.session_updates.projection_count, 1);
+        assert_eq!(
+            measured.session_updates.projection_max_us,
+            measured.session_updates.projection_total_us
+        );
+        assert_eq!(
+            measured.session_updates.nav_data_count,
+            u64::from(update.nav_data.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.application_count,
+            u64::from(update.application.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.situation_count,
+            u64::from(update.situation.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.charts_count,
+            u64::from(update.charts.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.map_count,
+            u64::from(update.map.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.status_count,
+            u64::from(update.status.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.settings_count,
+            u64::from(update.settings.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.cloud_count,
+            u64::from(update.cloud.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.packages_count,
+            u64::from(update.packages.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.home_count,
+            u64::from(update.home.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.debug_count,
+            u64::from(update.debug.is_some())
         );
 
         destroy_session(first.handle);
@@ -25723,7 +25843,6 @@ mod tests {
             },
         )
         .expect("push sample");
-
         let local_banner_eta = snapshot
             .app_ui_state
             .flight_data_banner
@@ -25745,12 +25864,18 @@ mod tests {
             .and_then(|row| row.facts.iter().find(|fact| fact.label == "Built"))
             .expect("local build time");
 
-        let zulu_snapshot = snapshot_from_outcome(
+        let zulu_update = session_update_from_outcome(
             perform_time_display_action_in_session(
                 init.handle,
                 crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
             )
             .expect("global time display remains toggleable during active guidance"),
+        );
+        assert!(zulu_update.application.is_some());
+        assert!(zulu_update.settings.is_some());
+        assert!(zulu_update.status.is_some());
+        let zulu_snapshot = snapshot_from_outcome(
+            super::get_session_snapshot(init.handle).expect("project Zulu snapshot"),
         );
         let zulu_banner_eta = zulu_snapshot
             .app_ui_state

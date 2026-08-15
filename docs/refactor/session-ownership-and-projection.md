@@ -429,14 +429,34 @@ accumulators test this recovery behavior, and core asserts that narrow mutation
 payloads contain no snapshot fields and are smaller than the corresponding full
 snapshot. NAVDB tests also reject any reintroduction of an embedded snapshot.
 
+## Completed Sixteenth Slice
+
+The sixteenth slice added core-owned aggregate diagnostics for update projection
+count, total and maximum projection time, and frequency of every generated
+update group. Android and web now have opt-in landing measurements for update
+bytes, accumulated snapshot bytes, merge time, full platform-model decode time,
+and publication or Worker-transfer timing. Android can read the same core
+diagnostics through its native boundary, and its injected core clock is now
+high-resolution and monotonic.
+
+The hermetic Android `KRNT KPWT` journey remained green. Its warm update sample
+showed that update JSON averaged 90% of accumulated full-snapshot JSON;
+`application`, `settings`, and `status` appeared in every sampled update, and
+Android continued decoding the full Kotlin model. The core checkpoint likewise
+showed those groups advancing much more often than the narrower `situation`
+group. Full methodology and results are in
+[`session-update-measurements.md`](session-update-measurements.md).
+
+This slice added no lock, thread, Worker, or platform domain policy.
+
 ## Next Slice
 
-Measure update group frequency, serialized bytes, and projection time in normal
-journeys now that full-snapshot duplication no longer obscures those costs. Use
-that evidence to decide whether the cross-domain `app_ui_state` group should be
-split and which large platform adapter surfaces should be decomposed first.
-Separately stage any measured expensive core operation behind prepare/validate/
-commit boundaries before considering a thread or Worker move.
+Split the cross-domain application update into generated nested projections,
+replace raw-clock dependency stamps with semantic/display-granularity tokens,
+and separate dynamic flight-data choices from static settings-page state. After
+the resulting payloads are demonstrably narrow, move web accumulation to the
+render-state side of the Worker boundary and introduce group-scoped Android
+decode/listener surfaces. Re-measure before staging or scheduling heavy work.
 
 ## Relationship To Work Scheduling
 

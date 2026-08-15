@@ -17,7 +17,7 @@ use std::io::Write;
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "android")]
 const ANDROID_LOG_INFO: c_int = 4;
@@ -35,7 +35,7 @@ unsafe extern "C" {
 
 pub fn install_core_debug_logger() {
     app_core::set_core_debug_logger(Some(log_core_debug));
-    app_core::set_core_clock_ms(Some(now_epoch_ms_f64));
+    app_core::set_core_clock_ms(Some(monotonic_clock_ms));
 }
 
 fn now_epoch_ms() -> i64 {
@@ -45,8 +45,9 @@ fn now_epoch_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn now_epoch_ms_f64() -> f64 {
-    now_epoch_ms() as f64
+fn monotonic_clock_ms() -> f64 {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64() * 1_000.0
 }
 
 #[cfg(target_os = "android")]
@@ -133,6 +134,12 @@ pub fn create_ui_session_json(
     let serialized = serde_json::to_string(&result).map_err(|err| err.to_string())?;
     app_core::record_session_serialized_payload_bytes(result.handle, serialized.len());
     Ok(serialized)
+}
+
+pub fn session_diagnostics_json(handle: u64) -> Result<String, String> {
+    let diagnostics =
+        app_core::session_diagnostics(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&diagnostics).map_err(|err| err.to_string())
 }
 
 pub fn set_resource_policy_in_session_json(
@@ -3092,6 +3099,15 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createUiSessio
         )
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionDiagnosticsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(&mut env, session_diagnostics_json(handle as u64))
 }
 
 #[unsafe(no_mangle)]

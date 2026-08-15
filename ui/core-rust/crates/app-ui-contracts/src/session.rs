@@ -487,3 +487,44 @@ pub struct UiSessionUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug: Option<UiSessionProjectionPatch>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum UiSessionUpdateGroup {
+    NavData,
+    Application,
+    Situation,
+    Charts,
+    Map,
+    Status,
+    Settings,
+    Cloud,
+    Packages,
+    Home,
+    Debug,
+}
+
+impl UiSessionUpdateGroup {
+    pub const COUNT: usize = 11;
+}
+
+impl UiSessionUpdate {
+    pub fn projection_patches(
+        &self,
+    ) -> [(UiSessionUpdateGroup, Option<&UiSessionProjectionPatch>); UiSessionUpdateGroup::COUNT]
+    {
+        [
+            (UiSessionUpdateGroup::NavData, self.nav_data.as_ref()),
+            (UiSessionUpdateGroup::Application, self.application.as_ref()),
+            (UiSessionUpdateGroup::Situation, self.situation.as_ref()),
+            (UiSessionUpdateGroup::Charts, self.charts.as_ref()),
+            (UiSessionUpdateGroup::Map, self.map.as_ref()),
+            (UiSessionUpdateGroup::Status, self.status.as_ref()),
+            (UiSessionUpdateGroup::Settings, self.settings.as_ref()),
+            (UiSessionUpdateGroup::Cloud, self.cloud.as_ref()),
+            (UiSessionUpdateGroup::Packages, self.packages.as_ref()),
+            (UiSessionUpdateGroup::Home, self.home.as_ref()),
+            (UiSessionUpdateGroup::Debug, self.debug.as_ref()),
+        ]
+    }
+}

@@ -979,6 +979,13 @@ pub fn create_ui_session_profiled(
 }
 
 #[wasm_bindgen]
+pub fn session_diagnostics(handle: u32) -> Result<String, JsValue> {
+    let diagnostics =
+        app_core::session_diagnostics(handle).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&diagnostics).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn set_resource_policy_in_session(handle: u32, policy_json: &str) -> Result<String, JsValue> {
     set_resource_policy_in_session_json(handle, policy_json).map_err(|err| JsValue::from_str(&err))
 }

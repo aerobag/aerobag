@@ -1066,6 +1066,7 @@ type TerrainOverlayUiState = {
 };
 
 type TerrainPendingFrame = {
+  requestId: number;
   query: TerrainOverlayQueryResult;
   frameKey: string;
 };
@@ -1076,6 +1077,8 @@ type TerrainScheduleRequest = {
   viewport: MapViewportState;
   width: number;
   height: number;
+  navDataEpoch: number;
+  altitudeBucket: number | null;
 };
 
 type TerrainTileCacheEntry = {
@@ -4319,6 +4322,7 @@ function MapPage(props: {
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
   const terrainScheduleRequestRef = useRef<TerrainScheduleRequest | null>(null);
   const terrainScheduleRequestIdRef = useRef(0);
+  const landedTerrainScheduleRequestIdRef = useRef(0);
   const terrainSchedulePendingRef = useRef(false);
   const terrainRenderPumpActiveRef = useRef(false);
   const terrainRendererRef = useRef<TerrainOverlayRenderer | null>(null);
@@ -4534,7 +4538,11 @@ function MapPage(props: {
             console.warn("terrain overlay unavailable", error);
             continue;
           }
-          if (terrainScheduleRequestRef.current?.id !== request.id) {
+          const superseded = terrainScheduleRequestRef.current?.id !== request.id;
+          if (
+            superseded
+            && (query.status.state !== "ready" || !supersededTerrainRequestCanLand(request))
+          ) {
             continue;
           }
           if (query.status.state !== "ready") {
@@ -4559,7 +4567,7 @@ function MapPage(props: {
             continue;
           }
           const frameKey = requireTerrainFrameKey(query);
-          terrainPendingFrameRef.current = { query, frameKey };
+          terrainPendingFrameRef.current = { requestId: request.id, query, frameKey };
           if (!terrainFrameStartRef.current.has(frameKey)) {
             terrainFrameStartRef.current.set(frameKey, performance.now());
             pruneTerrainFrameStarts(terrainFrameStartRef.current);
@@ -4658,6 +4666,20 @@ function MapPage(props: {
     })();
   }
 
+  function supersededTerrainRequestCanLand(request: TerrainScheduleRequest) {
+    const current = terrainScheduleRequestRef.current;
+    return (
+      current !== null
+      && request.id > landedTerrainScheduleRequestIdRef.current
+      && current.session === request.session
+      && current.navDataEpoch === request.navDataEpoch
+      && current.altitudeBucket === request.altitudeBucket
+      && current.width === request.width
+      && current.height === request.height
+      && Math.abs(current.viewport.zoom - request.viewport.zoom) < 0.001
+    );
+  }
+
   function commitTerrainFrameIfReady(frameKey: string, altitudeBucket: number) {
     const pendingFrame = terrainPendingFrameRef.current;
     if (!pendingFrame || pendingFrame.frameKey !== frameKey) {
@@ -4670,6 +4692,7 @@ function MapPage(props: {
     const frameStartedAt = terrainFrameStartRef.current.get(frameKey);
     terrainFrameStartRef.current.delete(frameKey);
     terrainPendingFrameRef.current = null;
+    landedTerrainScheduleRequestIdRef.current = pendingFrame.requestId;
     perfDebugLog("terrain.overlay.frame.ready", () => ({
       altitude_bucket: altitudeBucket,
       request_count: pendingFrame.query.tile_requests.length,
@@ -5565,10 +5588,12 @@ function MapPage(props: {
       viewport,
       width: planningSurfaceSize.width,
       height: planningSurfaceSize.height,
+      navDataEpoch,
+      altitudeBucket: terrainAltitudeBucket,
     };
     terrainSchedulePendingRef.current = true;
     pumpTerrainRenderQueue();
-  }, [mapIsVisible, mapLayerState.terrain_warning.visible, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
+  }, [mapIsVisible, mapLayerState.terrain_warning.visible, navDataEpoch, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
   useEffect(() => {
     nexradHasPaintableFrameRef.current = nexradOverlayFrame != null && nexradOverlay.tiles.length > 0;

@@ -61,6 +61,7 @@ async function main() {
     await page.waitForLoad();
     await waitForMapReady(page);
     await waitForQuiet(page, 1000);
+    await acceptDisclaimerIfPresent(page);
 
     await ensureTerrainLayerVisible(page);
     await selectReplaySource(page);
@@ -778,6 +779,16 @@ async function waitForQuiet(page, quietMs) {
   }
 }
 
+async function acceptDisclaimerIfPresent(page) {
+  const selector = '[data-testid="parity:disclaimer-accept-button"]';
+  const present = await page.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
+  if (!present) {
+    return;
+  }
+  await clickSelector(page, selector);
+  await waitForCondition(page, `!document.querySelector(${JSON.stringify(selector)})`, 10000);
+}
+
 async function ensureTerrainLayerVisible(page) {
   await clickByTestId(page, "layers-button");
   await waitForSelector(page, '[data-testid="tray-option-terrain_warning"]');
@@ -810,7 +821,7 @@ async function selectReplaySource(page) {
   if (!replayTestId) {
     throw new Error("replay ownship source option is not visible");
   }
-  await clickByTestId(page, replayTestId.replace(/^tray-option-/, "tray-option-"));
+  await page.evaluate(`document.querySelector(${JSON.stringify(`[data-testid="${replayTestId}"]`)})?.click()`);
   try {
     await waitForSelector(page, ".playbackWidgetInput");
   } catch (error) {

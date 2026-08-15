@@ -153,4 +153,15 @@ describe("map interaction boundaries", () => {
     expect(planHeaders).toContain("column.action_id");
     expect(planHeaders).toContain("props.onTimeDisplayAction(column.action_id!)");
   });
+
+  it("lands compatible terrain work before servicing the newest queued request", () => {
+    const pump = functionSource("pumpTerrainRenderQueue");
+    const compatibility = functionSource("supersededTerrainRequestCanLand");
+
+    expect(pump).toContain('query.status.state !== "ready" || !supersededTerrainRequestCanLand(request)');
+    expect(pump).toContain("requestId: request.id");
+    expect(compatibility).toContain("request.id > landedTerrainScheduleRequestIdRef.current");
+    expect(compatibility).toContain("current.navDataEpoch === request.navDataEpoch");
+    expect(compatibility).toContain("current.altitudeBucket === request.altitudeBucket");
+  });
 });

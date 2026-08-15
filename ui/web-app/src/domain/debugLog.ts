@@ -32,7 +32,7 @@ export const DebugLogDeveloperServerPath = "/__debug_log";
 export function setDebugLogDeveloperServerUploadEnabled(enabled: boolean): void {
   const wasEnabled = developerServerUploadEnabled;
   developerServerUploadEnabled = enabled;
-  if (!enabled) {
+  if (!shouldUploadDebugLog()) {
     queue.splice(0, queue.length);
     return;
   }
@@ -60,7 +60,7 @@ function scheduleFlush() {
 }
 
 async function flushQueue() {
-  if (!developerServerUploadEnabled) {
+  if (!shouldUploadDebugLog()) {
     queue.splice(0, queue.length);
     return;
   }
@@ -117,10 +117,14 @@ export function debugLog(tag: string, data?: unknown) {
       // Diagnostics must never perturb the code path being measured.
     }
   }
-  if (developerServerUploadEnabled) {
+  if (shouldUploadDebugLog()) {
     queue.push(record);
     scheduleFlush();
   }
+}
+
+function shouldUploadDebugLog(): boolean {
+  return developerServerUploadEnabled || currentDebugRunId() !== null;
 }
 
 export function isDebugLogEnabled(): boolean {
@@ -140,7 +144,7 @@ export function isDebugLogEnabled(): boolean {
 }
 
 export function perfDebugLog(tag: string, data?: () => unknown) {
-  if (!VERBOSE_PERF_DEBUG_LOGS) {
+  if (!VERBOSE_PERF_DEBUG_LOGS && currentDebugRunId() === null) {
     return;
   }
   debugLog(tag, data?.());

@@ -13,7 +13,6 @@ import {
 type JsonObject = Record<string, unknown>;
 
 export type SessionUpdateDisposition = "applied" | "stale" | "resync_required";
-export type SessionProjectionDisposition = SessionUpdateDisposition | "full_snapshot";
 
 export class SessionUpdateContractError extends Error {}
 
@@ -236,17 +235,6 @@ export class SessionUpdateAccumulator {
       this.replaceFullSnapshot(await loadFullSnapshot());
     }
     return disposition;
-  }
-
-  async applyProjectionResult(
-    value: unknown,
-    loadFullSnapshot: () => Promise<unknown>,
-  ): Promise<SessionProjectionDisposition> {
-    if (isJsonObject(value) && Object.hasOwn(value, "app_ui_state")) {
-      this.replaceFullSnapshot(value);
-      return "full_snapshot";
-    }
-    return this.applyOrResync(value, loadFullSnapshot);
   }
 
 }

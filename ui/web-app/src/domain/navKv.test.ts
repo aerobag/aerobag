@@ -2,8 +2,22 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { describe, expect, it } from "vitest";
-import { ResourceIngestCoordinator, resolvePublicResourceUrl } from "./navKv";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import {
+  ResourceIngestCoordinator,
+  resolvePublicResourceUrl,
+  type SessionMutationOperationJson,
+  type SessionResultOperationJson,
+  type SessionSnapshotOperationJson,
+} from "./navKv";
+
+describe("session operation wire types", () => {
+  it("keeps results, mutations, and snapshots nominally distinct", () => {
+    expectTypeOf<SessionResultOperationJson>().not.toMatchTypeOf<SessionMutationOperationJson>();
+    expectTypeOf<SessionResultOperationJson>().not.toMatchTypeOf<SessionSnapshotOperationJson>();
+    expectTypeOf<SessionMutationOperationJson>().not.toMatchTypeOf<SessionSnapshotOperationJson>();
+  });
+});
 
 describe("ResourceIngestCoordinator", () => {
   it("shares one in-flight ingestion between concurrent requesters", async () => {

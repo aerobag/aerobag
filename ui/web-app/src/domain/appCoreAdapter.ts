@@ -108,7 +108,23 @@ export type {
   UiStatusSeverity,
 } from "../generated/sessionPageWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
+import {
+  advanceSharedNavKvStore,
+  attachNavKvStoreToSession,
+  resolveChartAssetUrl,
+  runCoreHadOperation,
+  runCoreHadSessionMutationOperation,
+  runCoreHadSessionResultOperation,
+  runCoreHadSessionSnapshotOperation,
+  type SessionMutationOperation,
+  type SessionMutationOperationJson,
+  type SessionResultOperation,
+  type SessionResultOperationJson,
+  type SessionSnapshotOperation,
+  type SessionSnapshotOperationJson,
+  type UiInvalidation,
+  type UiInvalidationListener,
+} from "./navKv";
 import {
   debugLog,
   debugTiming,
@@ -906,65 +922,65 @@ type WasmModule = {
   situation_ring_candidates_json(): Promise<string> | string;
   create_ui_session(recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number): Promise<string> | string;
   create_ui_session_profiled?: (recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number) => Promise<string> | string;
-  maintain_nav_db_in_session_at_epoch_ms(handle: number, nowEpochMs: bigint): Promise<string> | string;
-  set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
-  configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<string> | string;
+  maintain_nav_db_in_session_at_epoch_ms(handle: number, nowEpochMs: bigint): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  set_resource_policy_in_session(handle: number, policyJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   should_prepare_live_feed_resource(resourceId: string): boolean;
-  set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
-  tick_bad_autopilot_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
-  engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
-  disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
-  set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<string> | string;
-  sync_map_follow_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<string> | string;
-  load_playback_trace_in_session_paged(handle: number, sourcePathJson: string, traceJson: string): Promise<string> | string;
-  play_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
-  pause_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
-  seek_playback_in_session_paged(handle: number, cursorSeconds: number, nowEpochMs: number): Promise<string> | string;
-  set_playback_rate_in_session_paged(handle: number, rate: number, nowEpochMs: number): Promise<string> | string;
-  tick_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
-  register_ownship_source_in_session_paged(handle: number, registrationJson: string): Promise<string> | string;
-  update_ownship_source_status_in_session_paged(handle: number, updateJson: string): Promise<string> | string;
-  push_situation_sample_in_session_paged(handle: number, sampleJson: string): Promise<string> | string;
-  select_ownship_source_in_session_paged(handle: number, selectionJson: string): Promise<string> | string;
-  perform_ownship_text_action_in_session(handle: number, actionId: string, value: string, nowEpochMs: bigint): Promise<string> | string;
-  apply_situation_control_input_in_session(handle: number, inputJson: string, nowEpochMs: number): Promise<string> | string;
-  set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
-  set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
-  set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
-  perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
+  set_situation_in_session_paged(handle: number, situationJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  tick_bad_autopilot_in_session_paged(handle: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  engage_map_follow_in_session(handle: number, viewportJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  disengage_map_follow_in_session(handle: number, viewportJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  set_map_follow_offset_in_session(handle: number, viewportJson: string, offsetXPx: number, offsetYPx: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  sync_map_follow_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  load_playback_trace_in_session_paged(handle: number, sourcePathJson: string, traceJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  play_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  pause_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  seek_playback_in_session_paged(handle: number, cursorSeconds: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  set_playback_rate_in_session_paged(handle: number, rate: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  tick_playback_in_session_paged(handle: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  register_ownship_source_in_session_paged(handle: number, registrationJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  update_ownship_source_status_in_session_paged(handle: number, updateJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  push_situation_sample_in_session_paged(handle: number, sampleJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  select_ownship_source_in_session_paged(handle: number, selectionJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_ownship_text_action_in_session(handle: number, actionId: string, value: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  apply_situation_control_input_in_session(handle: number, inputJson: string, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_settings_action_in_session(handle: number, actionJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   take_cloud_authorization_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
-  complete_cloud_authorization_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
-  perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<string> | string;
-  record_offline_package_preferences_in_session(handle: number, preferencesJson: string, nowEpochMs: bigint): Promise<string> | string;
+  complete_cloud_authorization_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  record_offline_package_preferences_in_session(handle: number, preferencesJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
-  complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
+  complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   cloud_event_stream_plan_in_session(handle: number): Promise<string> | string;
-  report_cloud_event_stream_event_in_session(handle: number, eventJson: string, nowEpochMs: bigint): Promise<string> | string;
-  accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
-  load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
-  sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
-  project_flight_plan_route_in_session(handle: number): Promise<string> | string;
-  select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
-  select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
+  report_cloud_event_stream_event_in_session(handle: number, eventJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  accept_disclaimer_in_session(handle: number, agreementId: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  load_raster_map_catalog_in_session(handle: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  sync_guidance_geometry_in_session(handle: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  project_flight_plan_route_in_session(handle: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  select_map_family_in_session(handle: number, familyIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_map_selection_action_in_session(
     sessionHandle: number,
     actionJson: string,
     nowEpochMs: bigint,
-  ): Promise<string> | string;
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_flight_plan_command_in_session(
     sessionHandle: number,
     commandJson: string,
     nowEpochMs: bigint,
-  ): Promise<string> | string;
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_time_display_action_in_session(
     sessionHandle: number,
     actionId: string,
-  ): Promise<string> | string;
-  query_flight_plan_in_session(sessionHandle: number, queryJson: string): Promise<string> | string;
-  perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
-  select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
-  select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
-  select_chart_reference_in_session(handle: number, familyIdJson: string, suggestedChartIdsJson: string): Promise<string> | string;
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  query_flight_plan_in_session(sessionHandle: number, queryJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  select_airport_in_session(handle: number, airportIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  select_chart_in_session(handle: number, chartIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  select_chart_reference_in_session(handle: number, familyIdJson: string, suggestedChartIdsJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
@@ -972,18 +988,18 @@ type WasmModule = {
   ingest_prepared_live_feed_resource_in_session(handle: number, resourceId: string, preparedResourceBytes: Uint8Array): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
-  report_session_resource_failure_in_session_at_epoch_ms(handle: number, resourceId: string, message: string, nowEpochMs: number): Promise<string> | string;
-  get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
-  get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, nowEpochMs: number): Promise<string> | string;
+  report_session_resource_failure_in_session_at_epoch_ms(handle: number, resourceId: string, message: string, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  get_map_selection_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, clickJson: string, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_map_selection_distance_in_session(handle: number, targetJson: string): Promise<string> | string;
-  get_map_selection_for_nav_ref_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, navRefJson: string, nowEpochMs: number): Promise<string> | string;
+  get_map_selection_for_nav_ref_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, navRefJson: string, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
-  get_scheduled_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, decodedCacheKeysJson: string, inFlightCacheKeysJson: string, nowEpochMs: number): Promise<string> | string;
-  get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
+  get_scheduled_terrain_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, decodedCacheKeysJson: string, inFlightCacheKeysJson: string, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  get_nexrad_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
-  get_session_snapshot_paged(handle: number): Promise<string> | string;
-  get_session_snapshot_at_epoch_ms_paged(handle: number, nowEpochMs: bigint): Promise<string> | string;
+  get_session_snapshot_paged(handle: number): Promise<SessionSnapshotOperationJson> | SessionSnapshotOperationJson;
+  get_session_snapshot_at_epoch_ms_paged(handle: number, nowEpochMs: bigint): Promise<SessionSnapshotOperationJson> | SessionSnapshotOperationJson;
   create_session_snapshot_refresh_scheduler(): Promise<number> | number;
   destroy_session_snapshot_refresh_scheduler(handle: number): Promise<void> | void;
   session_snapshot_refresh_scheduler_request(handle: number, priorityJson: string, reason: string): Promise<string> | string;
@@ -991,7 +1007,7 @@ type WasmModule = {
   session_snapshot_refresh_scheduler_viewport_activity(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_refresh_completed(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_poll(handle: number): Promise<string> | string;
-  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedReferenceFamilyIdJson: string, selectedChartIdJson: string, suggestedChartIdsJson: string): Promise<string> | string;
+  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedReferenceFamilyIdJson: string, selectedChartIdJson: string, suggestedChartIdsJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
   nav_db_open_controller_create(candidatesJson: string, nowEpochMs: bigint): Promise<number> | number;
@@ -1005,15 +1021,15 @@ type WasmModule = {
   attach_nav_kv_store_to_session(navKvHandle: number, sessionHandle: number): Promise<void> | void;
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
   drain_session_resource_effects(handle: number): Promise<string> | string;
-  sync_live_feeds_in_session(handle: number): Promise<string> | string;
+  sync_live_feeds_in_session(handle: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   configure_live_feed_source_in_session(handle: number, sourceRootUrl: string): Promise<void> | void;
   live_feed_events_url(sourceRootUrl: string): Promise<string> | string;
   live_feed_status_url(sourceRootUrl: string): Promise<string> | string;
   live_feed_runtime_decision_in_session(handle: number, inputJson: string): Promise<string> | string;
-  refresh_live_feed_current_in_session(handle: number): Promise<string> | string;
-  ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
-  ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<string> | string;
-  report_live_feed_connection_event_in_session(handle: number, eventJson: string): Promise<string> | string;
+  refresh_live_feed_current_in_session(handle: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  report_live_feed_connection_event_in_session(handle: number, eventJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
@@ -1075,25 +1091,50 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       await this.module.ingest_resource_in_session(sessionHandle, resourceId, resourceBytes);
     };
-    const runSessionOperationForHandle = <T>(
+    const sessionOperationOptionsForHandle = (
       sessionHandle: number,
-      operation: (navKvHandle: number) => Promise<string> | string,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
-      onSnapshotResume?: () => void,
-    ) => runCoreHadSessionOperation<T>(
-      sessionHandle,
-      operation,
-      ingestSessionResource ?? ((resourceId, resourceBytes) =>
+    ) => ({
+      ingestSessionResource: ingestSessionResource ?? ((resourceId, resourceBytes) =>
         ingestResourceForHandle(sessionHandle, resourceId, resourceBytes)),
-      publishInvalidations,
-      async (resourceId, message) => {
+      onInvalidations: publishInvalidations,
+      reportResourceFailure: async (resourceId: string, message: string) => {
         await reportSessionResourceFailure?.(resourceId, message);
       },
-      () => this.module.drain_session_resource_effects(sessionHandle),
+      drainSessionEffects: () => this.module.drain_session_resource_effects(sessionHandle),
       operationLabel,
-      () => this.module.get_session_snapshot_paged(sessionHandle),
-      onSnapshotResume,
+    });
+    const runSessionResultForHandle = <T>(
+      sessionHandle: number,
+      operation: SessionResultOperation,
+      ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+      operationLabel?: string,
+    ) => runCoreHadSessionResultOperation<T>(
+      sessionHandle,
+      operation,
+      sessionOperationOptionsForHandle(sessionHandle, ingestSessionResource, operationLabel),
+    );
+    const runSessionSnapshotForHandle = <T>(
+      sessionHandle: number,
+      operation: SessionSnapshotOperation,
+    ) => runCoreHadSessionSnapshotOperation<T>(
+      sessionHandle,
+      operation,
+      sessionOperationOptionsForHandle(sessionHandle),
+    );
+    const runSessionMutationForHandle = <TUpdate, TSnapshot>(
+      sessionHandle: number,
+      operation: SessionMutationOperation,
+      ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+      operationLabel?: string,
+    ) => runCoreHadSessionMutationOperation<TUpdate, TSnapshot>(
+      sessionHandle,
+      operation,
+      {
+        ...sessionOperationOptionsForHandle(sessionHandle, ingestSessionResource, operationLabel),
+        resumeSnapshot: () => this.module.get_session_snapshot_paged(sessionHandle),
+      },
     );
     const createSession = async (
       nextRecentAirportIds: string[],
@@ -1121,26 +1162,28 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         created.snapshot,
         UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
       );
-      const loadFullSnapshot = () => runSessionOperationForHandle<unknown>(created.handle, () =>
+      const loadFullSnapshot = () => runSessionSnapshotForHandle<unknown>(created.handle, () =>
         this.module.get_session_snapshot_paged(created.handle));
-      const applyBootstrapProjection = (value: unknown) =>
-        snapshotAccumulator.applyProjectionResult(value, loadFullSnapshot);
-      const applyDirectBootstrapMutation = async (responseJson: string) => {
-        const response = JSON.parse(responseJson) as { state: string; result?: unknown };
-        if (response.state !== "complete" || response.result === undefined) {
-          throw new Error(`bootstrap session mutation unexpectedly returned ${response.state}`);
+      const applyBootstrapMutation = async (operation: SessionMutationOperation) => {
+        const completion = await runSessionMutationForHandle<unknown, unknown>(
+          created.handle,
+          operation,
+        );
+        if (completion.kind === "session_snapshot") {
+          snapshotAccumulator.replaceFullSnapshot(completion.snapshot);
+        } else {
+          await snapshotAccumulator.applyOrResync(completion.update, loadFullSnapshot);
         }
-        await applyBootstrapProjection(response.result);
       };
       await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", async () =>
-        applyDirectBootstrapMutation(await module.set_resource_policy_in_session(
+        applyBootstrapMutation(() => module.set_resource_policy_in_session(
           created.handle,
           JSON.stringify("public_unpacked"),
         )),
       );
       await debugTiming("startup.session.configure_platform", async () =>
-        applyDirectBootstrapMutation(await module.configure_platform_capabilities_in_session(
+        applyBootstrapMutation(() => module.configure_platform_capabilities_in_session(
           created.handle,
           JSON.stringify({
             display_policy: null,
@@ -1159,11 +1202,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         )),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
-      const catalogedProjection = await debugTiming("startup.session.load_raster_catalog", () =>
-        runSessionOperationForHandle<unknown>(created.handle, () =>
-          module.load_raster_map_catalog_in_session(created.handle),
-        ));
-      await applyBootstrapProjection(catalogedProjection);
+      await debugTiming("startup.session.load_raster_catalog", () =>
+        applyBootstrapMutation(() => module.load_raster_map_catalog_in_session(created.handle)));
       return {
         ...created,
         snapshot: assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot),
@@ -1178,18 +1218,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       this.module.create_session_snapshot_refresh_scheduler(),
     );
     let destroyPromise: Promise<void> | null = null;
-    const runSessionOperation = <T>(
-      operation: (navKvHandle: number) => Promise<string> | string,
+    const runSessionResult = <T>(
+      operation: SessionResultOperation,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
-      onSnapshotResume?: () => void,
-    ) => runSessionOperationForHandle<T>(
+    ) => runSessionResultForHandle<T>(
       handle,
       operation,
       ingestSessionResource,
       operationLabel,
-      onSnapshotResume,
     );
+    const runSessionSnapshot = <T>(operation: SessionSnapshotOperation) =>
+      runSessionSnapshotForHandle<T>(handle, operation);
     const decodeAccumulatedSnapshot = () =>
       assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot);
     const installFullSnapshot = (value: unknown) => {
@@ -1205,7 +1245,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const changedGroups = measureLanding ? sessionUpdateGroupNames(value) : [];
       const disposition = await snapshotAccumulator.applyOrResync(
         value,
-        async () => runSessionOperation<unknown>(() =>
+        async () => runSessionSnapshot<unknown>(() =>
           this.module.get_session_snapshot_paged(handle)),
       );
       if (disposition === "resync_required") {
@@ -1233,20 +1273,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const applyOptionalSessionUpdate = (update: unknown) =>
       update === null || update === undefined ? Promise.resolve(snapshot) : applySessionUpdate(update);
     const runSessionMutation = async (
-      operation: (navKvHandle: number) => Promise<string> | string,
+      operation: SessionMutationOperation,
       ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
       operationLabel?: string,
     ) => {
-      let resumedWithFullSnapshot = false;
-      const result = await runSessionOperation<unknown>(
+      const completion = await runSessionMutationForHandle<unknown, unknown>(
+        handle,
         operation,
         ingestSessionResource,
         operationLabel,
-        () => { resumedWithFullSnapshot = true; },
       );
-      return resumedWithFullSnapshot
-        ? installFullSnapshot(result)
-        : applySessionUpdate(result);
+      return completion.kind === "session_snapshot"
+        ? installFullSnapshot(completion.snapshot)
+        : applySessionUpdate(completion.update);
     };
     const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
       JSON.parse(await json) as SessionSnapshotRefreshDecision;
@@ -1278,14 +1317,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       return sourceUrl;
     };
     const syncLiveFeeds = async () => {
-      await runSessionOperation<unknown>(
+      await runSessionResult<unknown>(
         () => this.module.sync_live_feeds_in_session(handle),
         (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
         "live_feeds.sync",
       );
     };
     const refreshLiveFeedCurrent = async () => {
-      await runSessionOperation<unknown>(
+      await runSessionResult<unknown>(
         () => this.module.refresh_live_feed_current_in_session(handle),
         (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
         "live_feeds.current_refresh",
@@ -1325,7 +1364,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         { reason });
       return snapshot;
     };
-    const runFlightPlanMutation = async (operation: () => Promise<string> | string) => {
+    const runFlightPlanMutation = async (operation: SessionMutationOperation) => {
       snapshot = await runSessionMutation(operation);
       return snapshot;
     };
@@ -1339,7 +1378,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
       );
     const queryFlightPlan = <T,>(query: Record<string, unknown>) =>
-      runSessionOperation<T>(
+      runSessionResult<T>(
         () => this.module.query_flight_plan_in_session(handle, JSON.stringify(query)),
       );
     await debugTiming("startup.session.sync_guidance_geometry.initial", () => syncGuidanceGeometry());
@@ -1352,12 +1391,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       initialSnapshot: () => snapshot,
       snapshot: async () => {
-        const fullSnapshot = await runSessionOperation<unknown>(() =>
+        const fullSnapshot = await runSessionSnapshot<unknown>(() =>
           this.module.get_session_snapshot_at_epoch_ms_paged(handle, BigInt(Date.now())));
         return installFullSnapshot(fullSnapshot);
       },
       maintainNavDb: async (nowEpochMs) => {
-        const maintenance = await runSessionOperation<{
+        const maintenance = await runSessionResult<{
           action: "none" | "attempt_advance";
           session_update?: unknown;
         }>(
@@ -1384,7 +1423,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             publishInvalidations,
             reportSessionResourceFailure,
             () => this.module.drain_session_resource_effects(handle),
-            () => this.module.get_session_snapshot_paged(handle),
           );
           await applyOptionalSessionUpdate(advanced.session_update);
         }
@@ -1853,7 +1891,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await this.module.ingest_airspace_label_tiles_in_session(handle, JSON.stringify(tiles));
       },
       queryMapOverlay: async (viewport, widthPx, heightPx) =>
-        runSessionOperation<MapOverlayQueryResult>(
+        runSessionResult<MapOverlayQueryResult>(
           () =>
             this.module.get_map_overlay_in_session(
               handle,
@@ -1866,7 +1904,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           "map.overlay",
         ),
       queryMapSelection: async (viewport, widthPx, heightPx, click) =>
-        runSessionOperation<MapSelectionQueryResult>(() =>
+        runSessionResult<MapSelectionQueryResult>(() =>
           this.module.get_map_selection_in_session(
             handle,
             JSON.stringify(coreViewportForMap(viewport)),
@@ -1884,7 +1922,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         ) as string | null,
       queryMapSelectionForNavRef: async (viewport, widthPx, heightPx, navRef) =>
-        runSessionOperation<MapSelectionForNavRefResult>(() =>
+        runSessionResult<MapSelectionForNavRefResult>(() =>
           this.module.get_map_selection_for_nav_ref_in_session(
             handle,
             JSON.stringify(coreViewportForMap(viewport)),
@@ -1895,7 +1933,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         ),
       queryTerrainOverlay: async (viewport, widthPx, heightPx, decodedCacheKeys, inFlightCacheKeys) =>
-        runSessionOperation<TerrainOverlayQueryResult>(
+        runSessionResult<TerrainOverlayQueryResult>(
           () =>
             this.module.get_scheduled_terrain_overlay_in_session(
               handle,
@@ -1909,7 +1947,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
         ),
       queryNexradOverlay: async (viewport, widthPx, heightPx) =>
-        runSessionOperation<NexradOverlayQueryResult>(
+        runSessionResult<NexradOverlayQueryResult>(
           () =>
             this.module.get_nexrad_overlay_in_session(
               handle,
@@ -1957,7 +1995,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       renderTerrainOverlayTileByKey: async (tileKey, aircraftAltitudeFt) =>
         new Uint8Array(await this.module.render_terrain_overlay_tile_by_key_in_session(handle, tileKey, aircraftAltitudeFt)),
       projectFlightPlanRoute: async () =>
-        runSessionOperation<FlightPlanRouteProjection>(() =>
+        runSessionResult<FlightPlanRouteProjection>(() =>
           this.module.project_flight_plan_route_in_session(handle),
         ),
       syncLiveFeeds,
@@ -1970,7 +2008,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           () => this.module.live_feed_events_url(liveFeedSourceUrl()),
           handleLiveFeedRuntimeEvent,
           async (events) => {
-            await runSessionOperation<unknown>(
+            await runSessionResult<unknown>(
               () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
               (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
               "live_feeds.sse_ingest",
@@ -1993,14 +2031,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         liveFeedSubscription = null;
       },
       ingestLiveFeedSseEvent: async (event) => {
-        await runSessionOperation<unknown>(
+        await runSessionResult<unknown>(
           () => this.module.ingest_live_feed_sse_event_in_session(handle, JSON.stringify(event)),
           (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           "live_feeds.sse_ingest",
         );
       },
       ingestLiveFeedSseEvents: async (events) => {
-        await runSessionOperation<unknown>(
+        await runSessionResult<unknown>(
           () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
           (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
         );

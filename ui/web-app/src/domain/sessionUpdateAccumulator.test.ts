@@ -72,7 +72,7 @@ describe("SessionUpdateAccumulator", () => {
     expect(accumulator.snapshot).toEqual(fullSnapshot);
   });
 
-  it("applies bootstrap mutation patches without replacing the creation snapshot", async () => {
+  it("applies contiguous bootstrap mutation patches without replacing the creation snapshot", async () => {
     const accumulator = new SessionUpdateAccumulator(
       conformance.initial_snapshot,
       conformance.expected_contract_version,
@@ -81,7 +81,7 @@ describe("SessionUpdateAccumulator", () => {
       throw new Error("bootstrap patches should be contiguous");
     });
 
-    await expect(accumulator.applyProjectionResult({
+    await expect(accumulator.applyOrResync({
       ui_contract_version: 2,
       session_revision: 8,
       application_shell: {
@@ -92,7 +92,7 @@ describe("SessionUpdateAccumulator", () => {
         }],
       },
     }, loadFullSnapshot)).resolves.toBe("applied");
-    await expect(accumulator.applyProjectionResult({
+    await expect(accumulator.applyOrResync({
       ui_contract_version: 2,
       session_revision: 9,
       map: {

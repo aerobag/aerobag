@@ -3,10 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
-
-const adapterSource = readFileSync(new URL("./appCoreAdapter.ts", import.meta.url), "utf8");
 
 const TEST_SSE_TRANSPORT_POLICY = {
   heartbeat_interval_ms: 30_000,
@@ -16,19 +13,9 @@ const TEST_SSE_TRANSPORT_POLICY = {
   reconnect_max_delay_ms: 65_000,
 };
 
-describe("session mutation boundary", () => {
-  it("never decodes a revisioned mutation result as a full session snapshot", () => {
-    expect(adapterSource).not.toMatch(/runSessionOperation\s*<\s*UiSessionSnapshot\s*>/);
-
-    const start = adapterSource.indexOf("performTimeDisplayAction: async");
-    const end = adapterSource.indexOf("performStatusAction: async", start);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    expect(adapterSource.slice(start, end)).toContain("runSessionMutation");
-  });
-});
-
 const snapshotJson = JSON.stringify({
+  ui_contract_version: 1,
+  session_revision: 0,
   app_ui_state: {
     active_plan: null,
     ownship: {
@@ -112,6 +99,21 @@ describe("loadBestAvailableAdapter", () => {
   });
 
   it("uses the wasm adapter when the generated module exports the expected API", async () => {
+    let sessionRevision = 0;
+    const mutationOutcomeJson = () => JSON.stringify({
+      state: "complete",
+      result: {
+        ui_contract_version: 1,
+        session_revision: ++sessionRevision,
+      },
+    });
+    const snapshotOutcomeJson = () => JSON.stringify({
+      state: "complete",
+      result: {
+        ...JSON.parse(snapshotJson),
+        session_revision: sessionRevision,
+      },
+    });
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
       create_ui_session: async (_recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
@@ -124,63 +126,63 @@ describe("loadBestAvailableAdapter", () => {
           snapshot: JSON.parse(snapshotJson),
         },
       }),
-      perform_map_selection_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      set_situation_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      tick_bad_autopilot_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      engage_map_follow_in_session: async () => snapshotJson,
-      disengage_map_follow_in_session: async () => snapshotJson,
-      set_map_follow_offset_in_session: async () => snapshotJson,
-      sync_map_follow_in_session: async () => snapshotJson,
-      load_playback_trace_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      play_playback_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      pause_playback_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      seek_playback_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      set_playback_rate_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      tick_playback_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      register_ownship_source_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      update_ownship_source_status_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      push_situation_sample_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      select_ownship_source_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      perform_ownship_text_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      apply_situation_control_input_in_session: async () => snapshotJson,
-      set_map_layer_visibility_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      set_map_layer_enabled_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      set_debug_flag_in_session: async () => snapshotJson,
-      perform_settings_action_in_session: async () => snapshotJson,
-      accept_disclaimer_in_session: async () => snapshotJson,
-      set_resource_policy_in_session: async () => snapshotJson,
-      configure_platform_capabilities_in_session: async () => snapshotJson,
+      perform_map_selection_action_in_session: async () => mutationOutcomeJson(),
+      set_situation_in_session_paged: async () => mutationOutcomeJson(),
+      tick_bad_autopilot_in_session_paged: async () => mutationOutcomeJson(),
+      engage_map_follow_in_session: async () => mutationOutcomeJson(),
+      disengage_map_follow_in_session: async () => mutationOutcomeJson(),
+      set_map_follow_offset_in_session: async () => mutationOutcomeJson(),
+      sync_map_follow_in_session: async () => mutationOutcomeJson(),
+      load_playback_trace_in_session_paged: async () => mutationOutcomeJson(),
+      play_playback_in_session_paged: async () => mutationOutcomeJson(),
+      pause_playback_in_session_paged: async () => mutationOutcomeJson(),
+      seek_playback_in_session_paged: async () => mutationOutcomeJson(),
+      set_playback_rate_in_session_paged: async () => mutationOutcomeJson(),
+      tick_playback_in_session_paged: async () => mutationOutcomeJson(),
+      register_ownship_source_in_session_paged: async () => mutationOutcomeJson(),
+      update_ownship_source_status_in_session_paged: async () => mutationOutcomeJson(),
+      push_situation_sample_in_session_paged: async () => mutationOutcomeJson(),
+      select_ownship_source_in_session_paged: async () => mutationOutcomeJson(),
+      perform_ownship_text_action_in_session: async () => mutationOutcomeJson(),
+      apply_situation_control_input_in_session: async () => mutationOutcomeJson(),
+      set_map_layer_visibility_in_session_paged: async () => mutationOutcomeJson(),
+      set_map_layer_enabled_in_session_paged: async () => mutationOutcomeJson(),
+      set_debug_flag_in_session: async () => mutationOutcomeJson(),
+      perform_settings_action_in_session: async () => mutationOutcomeJson(),
+      accept_disclaimer_in_session: async () => mutationOutcomeJson(),
+      set_resource_policy_in_session: async () => mutationOutcomeJson(),
+      configure_platform_capabilities_in_session: async () => mutationOutcomeJson(),
       take_cloud_authorization_request_in_session: async () => "null",
-      complete_cloud_authorization_in_session: async () => snapshotJson,
-      perform_cloud_ui_action_in_session: async () => snapshotJson,
-      record_offline_package_preferences_in_session: async () => snapshotJson,
+      complete_cloud_authorization_in_session: async () => mutationOutcomeJson(),
+      perform_cloud_ui_action_in_session: async () => mutationOutcomeJson(),
+      record_offline_package_preferences_in_session: async () => mutationOutcomeJson(),
       take_cloud_provider_request_in_session: async () => "null",
-      complete_cloud_provider_request_in_session: async () => snapshotJson,
+      complete_cloud_provider_request_in_session: async () => mutationOutcomeJson(),
       cloud_event_stream_plan_in_session: async () => "null",
-      report_cloud_event_stream_event_in_session: async () => snapshotJson,
+      report_cloud_event_stream_event_in_session: async () => mutationOutcomeJson(),
       should_prepare_live_feed_resource: () => true,
-      load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      select_map_family_in_session: async () => snapshotJson,
-      select_raster_map_in_session: async () => snapshotJson,
-      perform_flight_plan_command_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      perform_time_display_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      load_raster_map_catalog_in_session: async () => mutationOutcomeJson(),
+      select_map_family_in_session: async () => mutationOutcomeJson(),
+      select_raster_map_in_session: async () => mutationOutcomeJson(),
+      perform_flight_plan_command_in_session: async () => mutationOutcomeJson(),
+      perform_time_display_action_in_session: async () => mutationOutcomeJson(),
       query_flight_plan_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
-      perform_status_action_in_session: async () => snapshotJson,
-      sync_guidance_geometry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      perform_status_action_in_session: async () => mutationOutcomeJson(),
+      sync_guidance_geometry_in_session: async () => mutationOutcomeJson(),
       project_flight_plan_route_in_session: async () => JSON.stringify({
         state: "complete",
         result: { flight_plan_route_revision: 0, segments: [] },
       }),
-      select_airport_in_session: async () => snapshotJson,
-      select_chart_in_session: async () => snapshotJson,
-      select_chart_reference_in_session: async () => snapshotJson,
+      select_airport_in_session: async () => mutationOutcomeJson(),
+      select_chart_in_session: async () => mutationOutcomeJson(),
+      select_chart_reference_in_session: async () => mutationOutcomeJson(),
       ingest_point_tiles_in_session: async () => {},
       ingest_airspace_ref_tiles_in_session: async () => {},
       ingest_airspace_features_in_session: async () => {},
       ingest_airspace_label_tiles_in_session: async () => {},
       ingest_resource_in_session: async () => {},
-      report_session_resource_failure_in_session: async () => snapshotJson,
-      report_session_resource_failure_in_session_at_epoch_ms: async () => snapshotJson,
+      report_session_resource_failure_in_session: async () => mutationOutcomeJson(),
+      report_session_resource_failure_in_session_at_epoch_ms: async () => mutationOutcomeJson(),
       resolve_chart_asset_resource_in_session: async () => JSON.stringify({ source: { kind: "unavailable", message: "test" } }),
       get_map_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"visible_features\":[],\"visible_metars\":[],\"visible_pireps\":[],\"airspace_paths\":[],\"tfr_paths\":[],\"airspace_labels\":[]}}",
       get_map_selection_in_session: async () => "{\"state\":\"complete\",\"result\":{\"click_lat\":0,\"click_lon\":0,\"categories\":[]}}",
@@ -192,8 +194,8 @@ describe("loadBestAvailableAdapter", () => {
       get_raster_tile_plan_in_session: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       get_raster_tile_plan_in_session_with_display_scale: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       render_terrain_overlay_tile_by_key_in_session: async () => new Uint8Array(),
-      get_session_snapshot_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      get_session_snapshot_at_epoch_ms_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      get_session_snapshot_paged: async () => snapshotOutcomeJson(),
+      get_session_snapshot_at_epoch_ms_paged: async () => snapshotOutcomeJson(),
       create_session_snapshot_refresh_scheduler: async () => 1,
       destroy_session_snapshot_refresh_scheduler: async () => {},
       session_snapshot_refresh_scheduler_request: async () => JSON.stringify({ kind: "idle" }),
@@ -201,7 +203,7 @@ describe("loadBestAvailableAdapter", () => {
       session_snapshot_refresh_scheduler_viewport_activity: async () => JSON.stringify({ kind: "idle" }),
       session_snapshot_refresh_scheduler_refresh_completed: async () => JSON.stringify({ kind: "idle" }),
       session_snapshot_refresh_scheduler_poll: async () => JSON.stringify({ kind: "idle" }),
-      restore_chart_page_state_in_session: async () => snapshotJson,
+      restore_chart_page_state_in_session: async () => mutationOutcomeJson(),
       destroy_session: () => {},
       install_rust_debug_logger: () => {},
       nav_db_open_controller_create: async () => 1,
@@ -230,7 +232,7 @@ describe("loadBestAvailableAdapter", () => {
       },
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_events_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
-      report_live_feed_connection_event_in_session: async () => snapshotJson,
+      report_live_feed_connection_event_in_session: async () => mutationOutcomeJson(),
     }));
 
     expect(loaded.backend).toBe("wasm");

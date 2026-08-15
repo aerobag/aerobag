@@ -6,11 +6,63 @@ import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { resolveLiveFeedResourceUrl } from "./liveFeedUrls";
 import type { UiSessionUpdate } from "../generated/sessionUpdateWire";
 
+declare const sessionOperationJsonKind: unique symbol;
+
+export type SessionResultOperationJson = string & {
+  readonly [sessionOperationJsonKind]: "result";
+};
+export type SessionMutationOperationJson = string & {
+  readonly [sessionOperationJsonKind]: "mutation";
+};
+export type SessionSnapshotOperationJson = string & {
+  readonly [sessionOperationJsonKind]: "snapshot";
+};
+
+type SessionOperationJson =
+  | SessionResultOperationJson
+  | SessionMutationOperationJson
+  | SessionSnapshotOperationJson;
+type Awaitable<T> = Promise<T> | T;
+
+export type SessionResultOperation = (
+  navKvHandle: number,
+) => Awaitable<SessionResultOperationJson>;
+export type SessionMutationOperation = (
+  navKvHandle: number,
+) => Awaitable<SessionMutationOperationJson>;
+export type SessionSnapshotOperation = (
+  navKvHandle: number,
+) => Awaitable<SessionSnapshotOperationJson>;
+
+export type SessionMutationCompletion<TUpdate, TSnapshot> =
+  | { kind: "session_update"; update: TUpdate }
+  | { kind: "session_snapshot"; snapshot: TSnapshot };
+
+type PagedOperationCompletion<TResult, TSnapshot> =
+  | { kind: "operation_result"; result: TResult }
+  | { kind: "resumed_snapshot"; snapshot: TSnapshot };
+
+export type CoreSessionOperationOptions = {
+  ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void;
+  onInvalidations?: UiInvalidationListener;
+  reportResourceFailure?: ResourceFailureReporter;
+  drainSessionEffects?: () => Promise<string> | string;
+  operationLabel?: string;
+};
+
+export type CoreSessionMutationOptions = CoreSessionOperationOptions & {
+  resumeSnapshot: SessionSnapshotOperation;
+};
+
 type NavKvWasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
-  advance_nav_kv_store_in_session(handle: number, sessionHandle: number, installedPackageIdsJson: string): string;
-  core_had_operation(handle: number, operationJson: string): string;
+  advance_nav_kv_store_in_session(
+    handle: number,
+    sessionHandle: number,
+    installedPackageIdsJson: string,
+  ): SessionResultOperationJson;
+  core_had_operation(handle: number, operationJson: string): SessionResultOperationJson;
   drain_session_resource_effects(sessionHandle: number): Promise<string> | string;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   install_rust_debug_logger(): void;
@@ -226,39 +278,87 @@ export class NavKvStore {
   }
 
   async runCoreOperation<T>(operation: unknown): Promise<T> {
-    return this.withActiveOperation(() =>
-      this.runPagedOperation<T>(() => this.wasm.core_had_operation(this.handle, JSON.stringify(operation))));
+    return this.withActiveOperation(async () => {
+      const completion = await this.runPagedOperation<T, never>(
+        () => this.wasm.core_had_operation(this.handle, JSON.stringify(operation)),
+        {},
+      );
+      if (completion.kind !== "operation_result") {
+        throw new Error("core HAD operation unexpectedly resumed as a session snapshot");
+      }
+      return completion.result;
+    });
   }
 
-  async runCoreSessionOperation<T>(
-    operation: (navKvHandle: number) => Promise<string> | string,
-    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
-    onInvalidations?: UiInvalidationListener,
-    reportResourceFailure?: ResourceFailureReporter,
-    drainSessionEffects?: () => Promise<string> | string,
-    operationLabel?: string,
-    resumeSnapshot?: () => Promise<string> | string,
-    onSnapshotResume?: () => void,
+  async runCoreSessionResultOperation<T>(
+    operation: SessionResultOperation,
+    options: CoreSessionOperationOptions = {},
   ): Promise<T> {
     return this.withActiveOperation(async () => {
-      const result = await this.runPagedOperation<T>(
+      const completion = await this.runPagedOperation<T, never>(
         () => operation(this.handle),
-        ingestSessionResource,
-        onInvalidations,
-        reportResourceFailure,
-        operationLabel,
-        resumeSnapshot,
-        onSnapshotResume,
+        options,
       );
-      if (drainSessionEffects) {
+      if (completion.kind !== "operation_result") {
+        throw new Error("session result operation unexpectedly resumed as a snapshot");
+      }
+      if (options.drainSessionEffects) {
         this.launchSessionEffectPump(
-          drainSessionEffects,
-          ingestSessionResource,
-          onInvalidations,
-          reportResourceFailure,
+          options.drainSessionEffects,
+          options.ingestSessionResource,
+          options.onInvalidations,
+          options.reportResourceFailure,
         );
       }
-      return result;
+      return completion.result;
+    });
+  }
+
+  async runCoreSessionSnapshotOperation<TSnapshot>(
+    operation: SessionSnapshotOperation,
+    options: CoreSessionOperationOptions = {},
+  ): Promise<TSnapshot> {
+    return this.withActiveOperation(async () => {
+      const completion = await this.runPagedOperation<TSnapshot, never>(
+        () => operation(this.handle),
+        options,
+      );
+      if (completion.kind !== "operation_result") {
+        throw new Error("session snapshot operation unexpectedly resumed another snapshot");
+      }
+      if (options.drainSessionEffects) {
+        this.launchSessionEffectPump(
+          options.drainSessionEffects,
+          options.ingestSessionResource,
+          options.onInvalidations,
+          options.reportResourceFailure,
+        );
+      }
+      return completion.result;
+    });
+  }
+
+  async runCoreSessionMutationOperation<TUpdate, TSnapshot>(
+    operation: SessionMutationOperation,
+    options: CoreSessionMutationOptions,
+  ): Promise<SessionMutationCompletion<TUpdate, TSnapshot>> {
+    return this.withActiveOperation(async () => {
+      const completion = await this.runPagedOperation<TUpdate, TSnapshot>(
+        () => operation(this.handle),
+        options,
+        () => options.resumeSnapshot(this.handle),
+      );
+      if (options.drainSessionEffects) {
+        this.launchSessionEffectPump(
+          options.drainSessionEffects,
+          options.ingestSessionResource,
+          options.onInvalidations,
+          options.reportResourceFailure,
+        );
+      }
+      return completion.kind === "resumed_snapshot"
+        ? { kind: "session_snapshot", snapshot: completion.snapshot }
+        : { kind: "session_update", update: completion.result };
     });
   }
 
@@ -267,21 +367,21 @@ export class NavKvStore {
     ingestSessionResource: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
     reportResourceFailure?: ResourceFailureReporter,
     drainSessionEffects?: () => Promise<string> | string,
-    resumeSnapshot?: () => Promise<string> | string,
   ): Promise<{ result: NavDbAdvanceResult; invalidations: UiInvalidation[] }> {
     const invalidations = new Set<UiInvalidation>();
-    const result = await this.runCoreSessionOperation<NavDbAdvanceResult>(
+    const result = await this.runCoreSessionResultOperation<NavDbAdvanceResult>(
       (navKvHandle) => this.wasm.advance_nav_kv_store_in_session(
         navKvHandle,
         sessionHandle,
         "[]",
       ),
-      ingestSessionResource,
-      (next) => next.forEach((invalidation) => invalidations.add(invalidation)),
-      reportResourceFailure,
-      drainSessionEffects,
-      "nav_db.advance",
-      resumeSnapshot,
+      {
+        ingestSessionResource,
+        onInvalidations: (next) => next.forEach((invalidation) => invalidations.add(invalidation)),
+        reportResourceFailure,
+        drainSessionEffects,
+        operationLabel: "nav_db.advance",
+      },
     );
     return { result, invalidations: [...invalidations] };
   }
@@ -309,17 +409,14 @@ export class NavKvStore {
     });
   }
 
-  private async runPagedOperation<T>(
-    operation: () => Promise<string> | string,
-    ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
-    onInvalidations?: UiInvalidationListener,
-    reportResourceFailure?: ResourceFailureReporter,
-    operationLabel?: string,
-    resumeSnapshot?: () => Promise<string> | string,
-    onSnapshotResume?: () => void,
-  ): Promise<T> {
+  private async runPagedOperation<TResult, TSnapshot>(
+    operation: () => Awaitable<SessionOperationJson>,
+    options: CoreSessionOperationOptions,
+    resumeSnapshot?: () => Awaitable<SessionSnapshotOperationJson>,
+  ): Promise<PagedOperationCompletion<TResult, TSnapshot>> {
     let iteration = 0;
     let activeOperation = operation;
+    let resumingSnapshot = false;
     const pendingInvalidations = new Set<UiInvalidation>();
     for (;;) {
       iteration += 1;
@@ -328,12 +425,12 @@ export class NavKvStore {
       const operationMs = performance.now() - operationStartedAt;
       const parseStartedAt = performance.now();
       const response = JSON.parse(responseJson) as
-        | { state: "complete"; result: T; invalidations?: UiInvalidation[] }
+        | { state: "complete"; result: TResult | TSnapshot; invalidations?: UiInvalidation[] }
         | { state: "need_resources"; resources: CoreResourceRequest[] }
         | { state: "need_snapshot_resources"; resources: CoreResourceRequest[]; invalidations?: UiInvalidation[] };
       const parseMs = performance.now() - parseStartedAt;
-      if (operationLabel) {
-        debugLog(`${operationLabel}.core_had.step`, {
+      if (options.operationLabel) {
+        debugLog(`${options.operationLabel}.core_had.step`, {
           iteration,
           state: response.state,
           operation_ms: Math.round(operationMs),
@@ -353,12 +450,14 @@ export class NavKvStore {
           const invalidations = [...pendingInvalidations];
           debugLog("core.ui.invalidations.source", {
             source: "paged_operation_complete",
-            operation_label: operationLabel ?? null,
+            operation_label: options.operationLabel ?? null,
             invalidations,
           });
-          onInvalidations?.(invalidations);
+          options.onInvalidations?.(invalidations);
         }
-        return response.result;
+        return resumingSnapshot
+          ? { kind: "resumed_snapshot", snapshot: response.result as TSnapshot }
+          : { kind: "operation_result", result: response.result as TResult };
       }
       if (response.state === "need_snapshot_resources") {
         for (const invalidation of response.invalidations ?? []) {
@@ -367,12 +466,16 @@ export class NavKvStore {
         if (!resumeSnapshot) {
           throw new Error("committed session mutation requires a snapshot-resume operation");
         }
-        onSnapshotResume?.();
         activeOperation = resumeSnapshot;
+        resumingSnapshot = true;
       }
       await Promise.all(
         response.resources.map((resource) =>
-          this.ensureResource(resource, ingestSessionResource, reportResourceFailure),
+          this.ensureResource(
+            resource,
+            options.ingestSessionResource,
+            options.reportResourceFailure,
+          ),
         ),
       );
     }
@@ -858,31 +961,40 @@ export async function runCoreHadOperation<T>(operation: unknown): Promise<T> {
   }, trace);
 }
 
-export async function runCoreHadSessionOperation<T>(
+export async function runCoreHadSessionResultOperation<T>(
   sessionHandle: number,
-  operation: (navKvHandle: number) => Promise<string> | string,
-  ingestSessionResource?: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
-  onInvalidations?: UiInvalidationListener,
-  reportResourceFailure?: ResourceFailureReporter,
-  drainSessionEffects?: () => Promise<string> | string,
-  operationLabel?: string,
-  resumeSnapshot?: () => Promise<string> | string,
-  onSnapshotResume?: () => void,
+  operation: SessionResultOperation,
+  options: CoreSessionOperationOptions = {},
 ): Promise<T> {
   const store = await getNavKvStore(sessionHandle);
   if (!store) {
     throw new Error("nav_kv root is unavailable");
   }
-  return store.runCoreSessionOperation<T>(
-    operation,
-    ingestSessionResource,
-    onInvalidations,
-    reportResourceFailure,
-    drainSessionEffects,
-    operationLabel,
-    resumeSnapshot,
-    onSnapshotResume,
-  );
+  return store.runCoreSessionResultOperation<T>(operation, options);
+}
+
+export async function runCoreHadSessionSnapshotOperation<TSnapshot>(
+  sessionHandle: number,
+  operation: SessionSnapshotOperation,
+  options: CoreSessionOperationOptions = {},
+): Promise<TSnapshot> {
+  const store = await getNavKvStore(sessionHandle);
+  if (!store) {
+    throw new Error("nav_kv root is unavailable");
+  }
+  return store.runCoreSessionSnapshotOperation<TSnapshot>(operation, options);
+}
+
+export async function runCoreHadSessionMutationOperation<TUpdate, TSnapshot>(
+  sessionHandle: number,
+  operation: SessionMutationOperation,
+  options: CoreSessionMutationOptions,
+): Promise<SessionMutationCompletion<TUpdate, TSnapshot>> {
+  const store = await getNavKvStore(sessionHandle);
+  if (!store) {
+    throw new Error("nav_kv root is unavailable");
+  }
+  return store.runCoreSessionMutationOperation<TUpdate, TSnapshot>(operation, options);
 }
 
 export async function attachNavKvStoreToSession(sessionHandle: number): Promise<void> {
@@ -899,7 +1011,6 @@ export async function advanceSharedNavKvStore(
   onInvalidations: UiInvalidationListener,
   reportResourceFailure?: ResourceFailureReporter,
   drainSessionEffects?: () => Promise<string> | string,
-  resumeSnapshot?: () => Promise<string> | string,
 ): Promise<NavDbAdvanceResult> {
   if (navKvAdvancePromise) {
     return navKvAdvancePromise;
@@ -916,7 +1027,6 @@ export async function advanceSharedNavKvStore(
         ingestSessionResource,
         reportResourceFailure,
         drainSessionEffects,
-        resumeSnapshot,
       );
       if (advanced.result.disposition === "adopted") {
         sharedNavKvStorePromise = Promise.resolve(candidate);

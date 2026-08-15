@@ -162,17 +162,34 @@ async function verifyTimeDisplayActions(page) {
   if (bannerLocal.includes('LCL')) {
     throw new Error(`ETA flight-data cell exposed generic local label: ${bannerLocal}`);
   }
+  const clockLocal = await waitFor(
+    async () => await page.evaluate(`(() => {
+      const cell = [...document.querySelectorAll('.flightDataCell')]
+        .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.startsWith('TIME '));
+      if (!(cell instanceof HTMLElement)
+        || cell.getAttribute('role') !== 'button'
+        || getComputedStyle(cell).pointerEvents !== 'auto') return null;
+      return cell.querySelector('.flightDataLabel')?.textContent?.trim() ?? null;
+    })()`),
+    10000,
+    "TIME flight-data cell did not become a clickable core action",
+    100,
+  );
   await page.evaluate(`(() => {
     const cell = [...document.querySelectorAll('.flightDataCell')]
-      .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.startsWith('ETA '));
+      .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.startsWith('TIME '));
     cell?.click();
   })()`);
-  const bannerZulu = await waitFor(
-    async () => await page.evaluate(`(() => [...document.querySelectorAll('.flightDataCell')]
-      .find((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.trim() === 'ETA Z')
-      ?.querySelector('.flightDataLabel')?.textContent?.trim() ?? null)()`),
+  const zuluBanner = await waitFor(
+    async () => await page.evaluate(`(() => {
+      const labels = [...document.querySelectorAll('.flightDataCell .flightDataLabel')]
+        .map((candidate) => candidate.textContent?.trim());
+      return labels.includes('ETA Z') && labels.includes('TIME Z')
+        ? { eta: 'ETA Z', clock: 'TIME Z' }
+        : null;
+    })()`),
     10000,
-    "ETA flight-data action did not switch the shared mode to Zulu",
+    "TIME flight-data action did not switch the shared mode to Zulu",
     100,
   );
   await page.evaluate(`(() => {
@@ -181,10 +198,14 @@ async function verifyTimeDisplayActions(page) {
     cell?.click();
   })()`);
   await waitFor(
-    async () => await page.evaluate(`(() => [...document.querySelectorAll('.flightDataCell')]
-      .some((candidate) => candidate.querySelector('.flightDataLabel')?.textContent?.trim() === ${JSON.stringify(bannerLocal)}))()`),
+    async () => await page.evaluate(`(() => {
+      const labels = [...document.querySelectorAll('.flightDataCell .flightDataLabel')]
+        .map((candidate) => candidate.textContent?.trim());
+      return labels.includes(${JSON.stringify(bannerLocal)})
+        && labels.includes(${JSON.stringify(clockLocal)});
+    })()`),
     10000,
-    "ETA flight-data action did not restore local mode",
+    "ETA flight-data action did not restore local mode after TIME toggled it",
     100,
   );
 
@@ -226,7 +247,7 @@ async function verifyTimeDisplayActions(page) {
   await page.evaluate(`document.querySelector('[data-testid="page-button-return-chart"]')?.click()`);
   await waitForMap(page);
 
-  return { bannerLocal, bannerZulu, columnLocal, columnZulu };
+  return { bannerLocal, clockLocal, zuluBanner, columnLocal, columnZulu };
 }
 
 async function installSyntheticGeolocation(page) {

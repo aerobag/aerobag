@@ -43,6 +43,7 @@ pub(crate) struct FlightPlanProjectionDependencies {
 pub(crate) struct FlightDataProjectionDependencies {
     pub banner: FlightDataBannerModel,
     pub settings_items: Vec<UiSettingsGridItem>,
+    pub next_refresh_epoch_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +242,7 @@ mod tests {
             flight_data: FlightDataProjectionDependencies {
                 banner: FlightDataBannerModel::default(),
                 settings_items: Vec::new(),
+                next_refresh_epoch_ms: 60_000,
             },
             situation: 0,
             charts: chart_state(),

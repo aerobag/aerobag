@@ -344,8 +344,9 @@ pub use terrain::{
     TerrainOverlayStatus, TerrainOverlayTileRequest, TerrainTileInfo,
 };
 pub use time_display::{
-    format_dated_time, format_time_of_day, time_zone_label, DatedTimeStyle, TimeDisplayMode,
-    TimeOfDayDisplay, TimeOfDayStyle, TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+    format_dated_time, format_time_of_day, next_time_display_refresh_epoch_ms, time_zone_label,
+    DatedTimeStyle, TimeDisplayMode, TimeOfDayDisplay, TimeOfDayStyle,
+    TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
 };
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,

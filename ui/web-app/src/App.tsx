@@ -2222,6 +2222,7 @@ export default function App() {
     },
     debug_state: initialDebugState,
     raster_map: null,
+    next_session_snapshot_refresh_epoch_ms: 0,
     next_cycle_product_freshness_check_epoch_ms: null,
   });
   const applySessionSnapshot = useCallback((nextSnapshot: UiSessionSnapshot, source: string) => {
@@ -2769,6 +2770,18 @@ export default function App() {
       uiSession.setInvalidationListener(null);
     };
   }, [requestSessionSnapshotRefresh, uiSession]);
+
+  useEffect(() => {
+    const deadline = sessionSnapshot.next_session_snapshot_refresh_epoch_ms;
+    const timer = window.setTimeout(
+      () => requestSessionSnapshotRefresh("low_priority", "core_deadline"),
+      Math.max(0, Math.min(deadline - Date.now(), 2_147_000_000)),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    requestSessionSnapshotRefresh,
+    sessionSnapshot.next_session_snapshot_refresh_epoch_ms,
+  ]);
 
   useEffect(() => {
     if (cycleProductFreshnessTimerRef.current !== null) {

@@ -2698,6 +2698,14 @@ internal fun AerobagApp(
             AerobagGpsService.pauseForOwnshipSelection(appContext)
         }
     }
+    LaunchedEffect(uiSession, sessionSnapshot.nextSessionSnapshotRefreshEpochMs) {
+        val deadlineEpochMs = sessionSnapshot.nextSessionSnapshotRefreshEpochMs
+        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
+        sessionSnapshotRefreshRunner.request(
+            priority = SessionSnapshotRefreshPriority.LowPriority,
+            reason = "core_deadline",
+        )
+    }
     LaunchedEffect(uiSession, sessionSnapshot.nextCycleProductFreshnessCheckEpochMs) {
         val nextCheckEpochMs = sessionSnapshot.nextCycleProductFreshnessCheckEpochMs ?: return@LaunchedEffect
         val delayMs = (nextCheckEpochMs - System.currentTimeMillis())

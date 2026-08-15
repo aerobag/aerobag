@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
+
+const adapterSource = readFileSync(new URL("./appCoreAdapter.ts", import.meta.url), "utf8");
 
 const TEST_SSE_TRANSPORT_POLICY = {
   heartbeat_interval_ms: 30_000,
@@ -12,6 +15,18 @@ const TEST_SSE_TRANSPORT_POLICY = {
   reconnect_initial_delay_ms: 5_000,
   reconnect_max_delay_ms: 65_000,
 };
+
+describe("session mutation boundary", () => {
+  it("never decodes a revisioned mutation result as a full session snapshot", () => {
+    expect(adapterSource).not.toMatch(/runSessionOperation\s*<\s*UiSessionSnapshot\s*>/);
+
+    const start = adapterSource.indexOf("performTimeDisplayAction: async");
+    const end = adapterSource.indexOf("performStatusAction: async", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(adapterSource.slice(start, end)).toContain("runSessionMutation");
+  });
+});
 
 const snapshotJson = JSON.stringify({
   app_ui_state: {

@@ -139,7 +139,7 @@ describe("map interaction boundaries", () => {
     expect(hoverPanelBlocks).toContain("pointer-events: none");
   });
 
-  it("keeps core-actionable ETA cells and the ETA column header clickable", () => {
+  it("keeps core-actionable time cells and the ETA column header clickable", () => {
     const actionableFlightDataBlocks = [...styles.matchAll(/\.flightDataCell\.isActionable\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");

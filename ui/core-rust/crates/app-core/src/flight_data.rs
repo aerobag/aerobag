@@ -49,6 +49,7 @@ enum FlightDataBannerField {
     FinalEte,
     FinalFuel,
     FinalEta,
+    Clock,
     NexradAge,
 }
 
@@ -61,7 +62,7 @@ struct FlightDataBannerCellDefinition {
 
 pub(crate) const FLIGHT_DATA_AGL_CELL_ID: &str = "agl";
 
-const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 13] = [
+const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 14] = [
     banner_cell(FlightDataBannerField::Altitude, "altitude", "MSL ft"),
     banner_cell(
         FlightDataBannerField::AboveGroundLevel,
@@ -90,6 +91,7 @@ const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 13] = [
     banner_cell(FlightDataBannerField::FinalEte, "final_ete", "F-ETE"),
     banner_cell(FlightDataBannerField::FinalFuel, "final_fuel", "F-FUEL gal"),
     banner_cell(FlightDataBannerField::FinalEta, "final_eta", "ETA"),
+    banner_cell(FlightDataBannerField::Clock, "clock", "TIME"),
     banner_cell(FlightDataBannerField::NexradAge, "nexrad_age", "NEXRAD"),
 ];
 
@@ -157,6 +159,14 @@ impl FlightDataComputer {
         let final_eta = input
             .final_distance_nm
             .and_then(|distance| self.format_eta(distance));
+        let clock = self.now_epoch_ms.map(|epoch_ms| {
+            crate::format_time_of_day(
+                epoch_ms,
+                self.time_display_mode,
+                self.local_time_zone,
+                crate::TimeOfDayStyle::Colon,
+            )
+        });
 
         FlightDataBannerModel {
             cells: FLIGHT_DATA_BANNER_CELLS
@@ -187,16 +197,25 @@ impl FlightDataComputer {
                         FlightDataBannerField::FinalEte => final_ete.clone(),
                         FlightDataBannerField::FinalFuel => final_fuel.clone(),
                         FlightDataBannerField::FinalEta => final_eta.clone(),
+                        FlightDataBannerField::Clock => {
+                            clock.as_ref().map(|display| display.value.clone())
+                        }
                         FlightDataBannerField::NexradAge => input.nexrad_age.clone(),
                     };
-                    let label = (definition.field == FlightDataBannerField::FinalEta)
-                        .then(|| self.eta_label());
+                    let label = match definition.field {
+                        FlightDataBannerField::FinalEta => Some(self.eta_label()),
+                        FlightDataBannerField::Clock => Some(self.clock_label()),
+                        _ => None,
+                    };
                     let mut cell = cell(
                         definition.id,
                         label.as_deref().unwrap_or(definition.label),
                         value,
                     );
-                    if definition.field == FlightDataBannerField::FinalEta {
+                    if matches!(
+                        definition.field,
+                        FlightDataBannerField::FinalEta | FlightDataBannerField::Clock
+                    ) {
                         cell.action_id =
                             Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string());
                     }
@@ -372,13 +391,20 @@ impl FlightDataComputer {
     }
 
     pub fn eta_label(&self) -> String {
-        let basis = match self.time_display_mode {
+        format!("ETA {}", self.time_basis_label())
+    }
+
+    fn clock_label(&self) -> String {
+        format!("TIME {}", self.time_basis_label())
+    }
+
+    fn time_basis_label(&self) -> String {
+        match self.time_display_mode {
             crate::TimeDisplayMode::Local => {
                 crate::time_zone_label(self.now_epoch_ms.unwrap_or_default(), self.local_time_zone)
             }
             crate::TimeDisplayMode::Utc => "Z".to_string(),
-        };
-        format!("ETA {basis}")
+        }
     }
 
     pub fn flight_plan_columns(&self) -> Vec<FlightDataColumn> {
@@ -785,6 +811,50 @@ mod tests {
     }
 
     #[test]
+    fn clock_uses_the_shared_time_mode_and_action() {
+        let now = DateTime::parse_from_rfc3339("2026-08-13T02:34:00Z")
+            .expect("instant")
+            .timestamp_millis();
+        let local = FlightDataComputer::with_fuel_flow_clock_and_time_display(
+            None,
+            None,
+            Some(now),
+            crate::TimeDisplayMode::Local,
+            chrono_tz::America::Los_Angeles,
+        )
+        .banner(FlightDataBannerInput::default());
+        let local_clock = local
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("clock cell");
+
+        assert_eq!(local_clock.label, "TIME PDT");
+        assert_eq!(local_clock.value.as_deref(), Some("19:34"));
+        assert_eq!(
+            local_clock.action_id.as_deref(),
+            Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
+        );
+
+        let zulu = FlightDataComputer::with_fuel_flow_clock_and_time_display(
+            None,
+            None,
+            Some(now),
+            crate::TimeDisplayMode::Utc,
+            chrono_tz::America::Los_Angeles,
+        )
+        .banner(FlightDataBannerInput::default());
+        let zulu_clock = zulu
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("clock cell");
+
+        assert_eq!(zulu_clock.label, "TIME Z");
+        assert_eq!(zulu_clock.value.as_deref(), Some("02:34"));
+    }
+
+    #[test]
     fn banner_reports_vertical_speed_when_supplied() {
         let computer = FlightDataComputer::default();
         let banner = computer.banner(FlightDataBannerInput {
@@ -803,13 +873,13 @@ mod tests {
     }
 
     #[test]
-    fn banner_uses_one_ordered_definition_set_for_all_thirteen_cells() {
+    fn banner_uses_one_ordered_definition_set_for_all_fourteen_cells() {
         let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
             nexrad_age: Some("4m".to_string()),
             ..FlightDataBannerInput::default()
         });
 
-        assert_eq!(banner.cells.len(), 13);
+        assert_eq!(banner.cells.len(), 14);
         assert_eq!(
             banner.cells.last().map(|cell| cell.id.as_str()),
             Some("nexrad_age")

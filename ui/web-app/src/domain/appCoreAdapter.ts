@@ -228,6 +228,7 @@ export type UiSessionSnapshot = {
     cycle_version: string | null;
   } | null;
   next_nav_db_maintenance_epoch_ms: number | null;
+  next_session_snapshot_refresh_epoch_ms: number;
   app_ui_state: AppUiState;
   playback_ui_state: PlaybackUiState;
   playback_panel_state: UiPlaybackPanelState;
@@ -1532,10 +1533,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         });
       },
       performTimeDisplayAction: async (actionId) => {
-        snapshot = await runSessionMutation(() =>
+        return runSessionMutation(() =>
           this.module.perform_time_display_action_in_session(handle, actionId),
         );
-        return snapshot;
       },
       performStatusAction: async (actionId) => {
         snapshot = await runSessionMutation(() =>

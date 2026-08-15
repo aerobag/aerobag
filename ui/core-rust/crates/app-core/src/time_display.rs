@@ -7,6 +7,7 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
 pub const TOGGLE_TIME_DISPLAY_MODE_ACTION_ID: &str = "toggle_time_display_mode";
+const TIME_DISPLAY_REFRESH_INTERVAL_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +80,13 @@ pub fn format_time_of_day(
             basis_label: "Z".to_string(),
         },
     }
+}
+
+pub fn next_time_display_refresh_epoch_ms(epoch_ms: i64) -> i64 {
+    epoch_ms
+        .div_euclid(TIME_DISPLAY_REFRESH_INTERVAL_MS)
+        .saturating_add(1)
+        .saturating_mul(TIME_DISPLAY_REFRESH_INTERVAL_MS)
 }
 
 pub fn format_dated_time(
@@ -197,5 +205,12 @@ mod tests {
             .timestamp_millis();
 
         assert_eq!(time_zone_label(epoch_ms, chrono_tz::Etc::GMTPlus3), "Z-3");
+    }
+
+    #[test]
+    fn next_refresh_is_the_next_minute_boundary() {
+        assert_eq!(next_time_display_refresh_epoch_ms(0), 60_000);
+        assert_eq!(next_time_display_refresh_epoch_ms(60_000), 120_000);
+        assert_eq!(next_time_display_refresh_epoch_ms(119_999), 120_000);
     }
 }

@@ -156,6 +156,7 @@ pub struct UiSessionSnapshot {
     pub nav_data_epoch: u64,
     pub active_nav_db: Option<UiNavDbIdentity>,
     pub next_nav_db_maintenance_epoch_ms: Option<i64>,
+    pub next_session_snapshot_refresh_epoch_ms: i64,
     // Unit tests inspect authoritative guidance internals after exercising the same
     // JSON outcome path. Production platform snapshots must never expose that state.
     #[cfg_attr(not(test), serde(skip))]
@@ -10716,6 +10717,7 @@ fn session_projection_dependencies(
                 .first()
                 .map(|row| row.items.clone())
                 .unwrap_or_default(),
+            next_refresh_epoch_ms: snapshot.next_session_snapshot_refresh_epoch_ms,
         },
         situation: session.situation.revision(),
         charts: session.coordinator.chart_page_state.clone(),
@@ -10832,6 +10834,8 @@ fn assemble_session_update(
         flight_data: changed_projection_patch(previous.flight_data, current.flight_data, || {
             let mut assignments = projection_assignments! {
                 ["app_ui_state", "flight_data_banner"] => snapshot.app_ui_state.flight_data_banner,
+                ["next_session_snapshot_refresh_epoch_ms"] => snapshot
+                    .next_session_snapshot_refresh_epoch_ms,
             };
             if !settings_changed {
                 if let Some(row) = snapshot.settings_page_state.rows.first() {
@@ -11039,6 +11043,9 @@ fn try_snapshot_for_session(
         nav_data_epoch: session.nav_data.epoch(),
         active_nav_db: session.nav_data.active_identity(),
         next_nav_db_maintenance_epoch_ms,
+        next_session_snapshot_refresh_epoch_ms: crate::next_time_display_refresh_epoch_ms(
+            session.coordinator.wall_clock_epoch_ms,
+        ),
         app_state: app_state_for_session(session),
         app_ui_state,
         playback_ui_state,
@@ -13165,7 +13172,10 @@ mod tests {
             ("ownship", BTreeSet::from(["app_ui_state/ownship"])),
             (
                 "flight_data",
-                BTreeSet::from(["app_ui_state/flight_data_banner"]),
+                BTreeSet::from([
+                    "app_ui_state/flight_data_banner",
+                    "next_session_snapshot_refresh_epoch_ms",
+                ]),
             ),
             (
                 "situation",
@@ -14803,8 +14813,9 @@ mod tests {
         let row = &snapshot.settings_page_state.rows[0];
         assert_eq!(row.id, "flight_data_visibility");
         assert_eq!(row.kind, "grid_choices");
-        assert_eq!(row.items.len(), 13);
+        assert_eq!(row.items.len(), 14);
         assert!(row.items.iter().all(|item| item.enabled));
+        assert!(row.items.iter().any(|item| item.cell.id == "clock"));
         assert_eq!(snapshot.settings_page_state.sections.len(), 1);
         let debug = &snapshot.settings_page_state.sections[0];
         assert_eq!(debug.id, "debug_diagnostics");
@@ -15148,27 +15159,27 @@ mod tests {
             Some(storage.clone()),
         )
         .expect("configure platform capabilities");
-        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 13);
+        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 14);
 
         let snapshot = perform_settings_action_in_session(
             init.handle,
             UiSettingsAction {
                 action_id: "flight_data_visibility".to_string(),
-                value_id: "nexrad_age".to_string(),
+                value_id: "clock".to_string(),
             },
         )
-        .expect("disable NEXRAD cell");
+        .expect("disable clock cell");
         assert!(!snapshot
             .app_ui_state
             .flight_data_banner
             .cells
             .iter()
-            .any(|cell| cell.id == "nexrad_age"));
+            .any(|cell| cell.id == "clock"));
         let settings_item = snapshot.settings_page_state.rows[0]
             .items
             .iter()
-            .find(|item| item.cell.id == "nexrad_age")
-            .expect("NEXRAD settings item");
+            .find(|item| item.cell.id == "clock")
+            .expect("clock settings item");
         assert!(!settings_item.enabled);
 
         let persisted = storage
@@ -15179,7 +15190,7 @@ mod tests {
             serde_json::from_slice(&persisted).expect("persisted json");
         assert_eq!(
             persisted_json["preferences"]["disabled_flight_data_cell_ids"][0],
-            "nexrad_age"
+            "clock"
         );
 
         let next =
@@ -15195,22 +15206,22 @@ mod tests {
             .flight_data_banner
             .cells
             .iter()
-            .any(|cell| cell.id == "nexrad_age"));
+            .any(|cell| cell.id == "clock"));
 
         let restored_snapshot = perform_settings_action_in_session(
             next.handle,
             UiSettingsAction {
                 action_id: "flight_data_visibility".to_string(),
-                value_id: "nexrad_age".to_string(),
+                value_id: "clock".to_string(),
             },
         )
-        .expect("re-enable NEXRAD cell");
+        .expect("re-enable clock cell");
         assert!(restored_snapshot
             .app_ui_state
             .flight_data_banner
             .cells
             .iter()
-            .any(|cell| cell.id == "nexrad_age"));
+            .any(|cell| cell.id == "clock"));
     }
 
     #[test]
@@ -25961,12 +25972,21 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "final_eta")
             .expect("final ETA cell");
+        let local_clock = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("local clock cell");
 
         assert!(
             local_banner_eta.value.is_some(),
             "synced active geometry should produce final ETA"
         );
         assert_eq!(local_banner_eta.label, "ETA PDT");
+        assert_eq!(local_clock.label, "TIME PDT");
+        assert_eq!(local_clock.value.as_deref(), Some("05:00"));
         let local_built = snapshot
             .data_status_page_state
             .rows
@@ -25996,8 +26016,17 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "final_eta")
             .expect("Zulu final ETA cell");
+        let zulu_clock = zulu_snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("Zulu clock cell");
         assert_eq!(zulu_banner_eta.label, "ETA Z");
         assert_ne!(zulu_banner_eta.value, local_banner_eta.value);
+        assert_eq!(zulu_clock.label, "TIME Z");
+        assert_eq!(zulu_clock.value.as_deref(), Some("12:00"));
         let zulu_built = zulu_snapshot
             .data_status_page_state
             .rows
@@ -26009,6 +26038,50 @@ mod tests {
         assert_eq!(
             zulu_built.action_id.as_deref(),
             Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
+        );
+    }
+
+    #[test]
+    fn session_clock_advances_at_the_core_supplied_refresh_deadline() {
+        let now = utc("2026-08-13T02:34:59Z").timestamp_millis();
+        let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, now)
+            .expect("create session");
+        let initial = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                local_time_zone: Some("America/Los_Angeles".to_string()),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure local time zone");
+        let deadline = initial.next_session_snapshot_refresh_epoch_ms;
+        let initial_clock = initial
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("initial clock");
+
+        assert_eq!(deadline, utc("2026-08-13T02:35:00Z").timestamp_millis());
+        assert_eq!(initial_clock.label, "TIME PDT");
+        assert_eq!(initial_clock.value.as_deref(), Some("19:34"));
+
+        let refreshed =
+            get_session_snapshot_at_epoch_ms(init.handle, deadline).expect("refresh at deadline");
+        let refreshed_clock = refreshed
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("refreshed clock");
+
+        assert_eq!(refreshed_clock.value.as_deref(), Some("19:35"));
+        assert_eq!(
+            refreshed.next_session_snapshot_refresh_epoch_ms,
+            utc("2026-08-13T02:36:00Z").timestamp_millis(),
         );
     }
 

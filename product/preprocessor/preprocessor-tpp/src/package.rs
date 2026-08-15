@@ -18,7 +18,7 @@ use preprocessor_fetch::{hash_file, hash_text, write_package_outputs_jsonl, Pack
 use preprocessor_tools::{command_output_diagnostic_summary, ToolInvocation};
 use serde::{Deserialize, Serialize};
 
-use crate::{calculate_cycle, thumbnail::write_tpp_thumbnail};
+use crate::{calculate_cycle, thumbnail::write_tpp_thumbnail, tpp_record_is_deleted};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TppPackagePlan {
@@ -502,6 +502,9 @@ fn load_tpp_asset_metadata(
                     .children()
                     .filter(|node| node.has_tag_name("record"))
                 {
+                    if tpp_record_is_deleted(record) {
+                        continue;
+                    }
                     let chart_name = record
                         .children()
                         .find(|node| node.has_tag_name("chart_name"))
@@ -1076,8 +1079,16 @@ mod tests {
                       <record>
                         <chart_code>ODP</chart_code>
                         <chart_name>LA GRANDE ONE (OBSTACLE)</chart_name>
+                        <useraction>C</useraction>
                         <procuid>40571</procuid>
                         <faanfd18>LGD1.LGD</faanfd18>
+                      </record>
+                      <record>
+                        <chart_code>ODP</chart_code>
+                        <chart_name>LA GRANDE ONE (OBSTACLE)</chart_name>
+                        <useraction>D</useraction>
+                        <procuid>deleted-record</procuid>
+                        <faanfd18>DELETED.LGD</faanfd18>
                       </record>
                     </airport_name>
                   </city_name>

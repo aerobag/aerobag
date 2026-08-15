@@ -46,7 +46,14 @@ const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 const TPP_RENDER_DPI: u32 = 225;
 const TPP_AIRPORT_DIAGRAM_GEOREF_SOURCE_DPI: f64 = 300.0;
-const TPP_DELETED_JOB_PDF_NAME: &str = "DELETED_JOB.PDF";
+
+fn tpp_record_is_deleted(record: roxmltree::Node<'_, '_>) -> bool {
+    record
+        .children()
+        .find(|node| node.has_tag_name("useraction"))
+        .and_then(|node| node.text())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("D"))
+}
 
 #[derive(Debug, Clone)]
 pub struct NativeTppRunRequest {
@@ -1111,6 +1118,9 @@ fn parse_region_plates(xml_path: &Path, region: Region) -> anyhow::Result<Vec<Pl
                     .children()
                     .filter(|node| node.has_tag_name("record"))
                 {
+                    if tpp_record_is_deleted(record) {
+                        continue;
+                    }
                     let chart_name = record
                         .children()
                         .find(|node| node.has_tag_name("chart_name"))
@@ -1133,9 +1143,6 @@ fn parse_region_plates(xml_path: &Path, region: Region) -> anyhow::Result<Vec<Pl
                         .trim()
                         .to_uppercase();
                     if chart_name.is_empty() || chart_code.is_empty() || pdf_name.is_empty() {
-                        continue;
-                    }
-                    if pdf_name == TPP_DELETED_JOB_PDF_NAME {
                         continue;
                     }
                     plates.push(PlateRecord {
@@ -2434,7 +2441,7 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
     }
 
     #[test]
-    fn parse_region_plates_skips_deleted_job_tombstones() {
+    fn parse_region_plates_skips_deletion_actions_regardless_of_pdf_name() {
         let dir = tempfile::tempdir().unwrap();
         let xml_path = dir.path().join("d-TPP_Metafile.xml");
         fs::write(
@@ -2447,12 +2454,14 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
         <record>
           <chart_code>IAP</chart_code>
           <chart_name>RNAV (GPS) RWY 16C</chart_name>
+          <useraction>C</useraction>
           <pdf_name>SEA-RNAV16C.PDF</pdf_name>
         </record>
         <record>
           <chart_code>IAP</chart_code>
           <chart_name>DELETED PROCEDURE</chart_name>
-          <pdf_name>DELETED_JOB.PDF</pdf_name>
+          <useraction>D</useraction>
+          <pdf_name>AN_ARBITRARY_TOMBSTONE_NAME.PDF</pdf_name>
         </record>
       </airport_name>
     </city_name>

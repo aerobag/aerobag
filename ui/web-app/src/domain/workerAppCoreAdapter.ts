@@ -9,10 +9,16 @@ import type {
   UiInvalidation,
   UiInvalidationListener,
   UiSession,
+  UiSessionProjectionLanding,
 } from "./appCoreAdapter";
 import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
 import { debugLog, getBrowserInstanceId, isDebugLogEnabled, type DebugLogRecord } from "./debugLog";
 import type { SituationRingCandidate } from "./types";
+import {
+  RenderSessionProjectionAccumulator,
+  type WorkerSessionSnapshotMarker,
+} from "./renderSessionProjectionAccumulator";
+import { WorkerSessionProjectionRouter } from "./workerSessionTransport";
 
 // Session facade objects outlive React hot updates. Reload rather than combining
 // an updated caller with a facade created from the previous method surface.
@@ -57,6 +63,12 @@ type WorkerSessionInvalidation = {
   invalidations: UiInvalidation[];
 };
 
+type WorkerSessionProjection = {
+  kind: "sessionProjection";
+  sessionId: number;
+  landing: UiSessionProjectionLanding;
+};
+
 type WorkerCoreSettingsChanged = {
   kind: "coreSettingsChanged";
   settingsJson: string | null;
@@ -67,7 +79,7 @@ type WorkerDebugLog = {
   record: DebugLogRecord;
 };
 
-type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged | WorkerDebugLog;
+type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerSessionProjection | WorkerCoreSettingsChanged | WorkerDebugLog;
 
 type WorkerErrorPayload = {
   name?: string;
@@ -96,6 +108,7 @@ class AppCoreWorkerClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingWorkerCall>();
   private readonly sessionInvalidationListeners = new Map<number, UiInvalidationListener>();
+  private readonly sessionProjections = new WorkerSessionProjectionRouter();
 
   constructor(private readonly worker: Worker) {
     worker.addEventListener("message", (event: MessageEvent<WorkerMessage>) => {
@@ -125,8 +138,17 @@ class AppCoreWorkerClient {
     }
   }
 
+  setSessionProjectionListener(
+    sessionId: number,
+    listener: ((landing: UiSessionProjectionLanding) => void) | null,
+  ): void {
+    this.sessionProjections.setListener(sessionId, listener);
+  }
+
   destroy(): void {
     this.rejectAll(new Error("app-core worker destroyed"));
+    this.sessionInvalidationListeners.clear();
+    this.sessionProjections.clear();
     this.worker.terminate();
   }
 
@@ -158,6 +180,10 @@ class AppCoreWorkerClient {
   private handleMessage(message: WorkerMessage): void {
     if (message.kind === "sessionInvalidation") {
       this.sessionInvalidationListeners.get(message.sessionId)?.(message.invalidations);
+      return;
+    }
+    if (message.kind === "sessionProjection") {
+      this.sessionProjections.deliver(message.sessionId, message.landing);
       return;
     }
     if (message.kind === "coreSettingsChanged") {
@@ -346,14 +372,28 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
 
 function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, initialSnapshot: UiSessionSnapshot): UiSession {
   const call = <T>(method: string, args: unknown[] = []) => client.callSession<T>(sessionId, method, args);
-  let latestSnapshot = initialSnapshot;
-  const updateSnapshot = async (promise: Promise<UiSessionSnapshot>) => {
-    latestSnapshot = await promise;
-    return latestSnapshot;
+  const landingAccumulator = new RenderSessionProjectionAccumulator(initialSnapshot);
+  let projectionListener: ((landing: UiSessionProjectionLanding) => void) | null = null;
+  let landingError: Error | null = null;
+  client.setSessionProjectionListener(sessionId, (landing) => {
+    try {
+      landingAccumulator.land(landing);
+      projectionListener?.(landing);
+    } catch (error) {
+      landingError = error instanceof Error ? error : new Error(String(error));
+    }
+  });
+  const updateSnapshot = async (promise: Promise<WorkerSessionSnapshotMarker>) => {
+    const marker = await promise;
+    if (landingError) throw landingError;
+    return landingAccumulator.complete(marker);
   };
   return {
     setInvalidationListener: (listener) => client.setSessionInvalidationListener(sessionId, listener),
-    initialSnapshot: () => latestSnapshot,
+    setProjectionListener: (listener) => {
+      projectionListener = listener;
+    },
+    initialSnapshot: () => landingAccumulator.snapshot,
     snapshot: () => updateSnapshot(call("snapshot")),
     maintainNavDb: (...args) => updateSnapshot(call("maintainNavDb", args)),
     requestSessionSnapshotRefresh: (...args) => call("requestSessionSnapshotRefresh", args),
@@ -447,7 +487,11 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     restoreChartPageState: (...args) => updateSnapshot(call("restoreChartPageState", args)),
     destroy: async () => {
       client.setSessionInvalidationListener(sessionId, null);
-      await call("destroy");
+      try {
+        await call("destroy");
+      } finally {
+        client.setSessionProjectionListener(sessionId, null);
+      }
     },
   };
 }

@@ -111,8 +111,7 @@ use crate::{
         SettingsProjectionDependencies, StatusProjectionDependencies,
     },
     settings_controller::{
-        debug_flag_settings_action, default_settings_page_state, SettingsController,
-        SettingsModelCheckpoint, SettingsProjection,
+        debug_flag_settings_action, SettingsController, SettingsModelCheckpoint, SettingsProjection,
     },
     situation_controller::{
         selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
@@ -2138,149 +2137,24 @@ fn create_ui_session_inner(
         selected_airport_id,
         selected_chart_id,
     );
-    let mut map = MapController::default();
-    let map_projection = map.project().projection;
-    let mut situation = SituationController::new(app_state.ownship.clone());
-    let situation_projection = situation.project().projection;
+    let map = MapController::default();
+    let situation = SituationController::new(app_state.ownship.clone());
     let guidance_leg_geometry =
         self_contained_guidance_leg_geometry_for_plan(&active_plan)?.unwrap_or_default();
-    let mut flight_plan = FlightPlanController::new(active_plan.clone(), guidance_leg_geometry)?;
-    let mut cloud = CloudController::default();
-    let aircraft_definitions_digest = cloud.aircraft_definitions_digest()?;
-    let flight_plan_projection = flight_plan
-        .project(
-            None,
-            &BTreeMap::new(),
-            FlightPlanProjectionInputs {
-                ownship_position: situation_projection.ownship.render.position,
-                ownship_speed_kt: situation_projection.ownship.render.speed_kt,
-                ownship_altitude_ft: situation_projection
-                    .ownship
-                    .render
-                    .pressure_altitude_ft
-                    .or(situation_projection.ownship.render.altitude_msl_ft),
-                now_epoch_ms: wall_clock_epoch_ms,
-                nav_data_generation: 0,
-                weather_revision: 0,
-                aircraft_definitions_digest,
-                local_time_zone: chrono_tz::UTC,
-                time_display_mode: crate::TimeDisplayMode::Local,
-            },
-            crate::had_ops::PlannerAtmosphereSelection::no_wind(false),
-        )
-        .map_err(|error| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: match error {
-                HadReadError::NeedPages(pages) => {
-                    format!("initial flight-plan projection unexpectedly needs pages: {pages:?}")
-                }
-                HadReadError::Fatal(message) => message,
-            },
-        })?
-        .projection;
+    let flight_plan = FlightPlanController::new(active_plan.clone(), guidance_leg_geometry)?;
+    let cloud = CloudController::default();
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_derive_chart_page_state");
     }
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_default_session_state");
-    }
     let debug_state = default_debug_state();
-    let mut app_ui_state = state::project_app_ui_state_from_ui_parts(
-        flight_plan_projection.ui_state,
-        situation_projection.ownship.clone(),
-        app_state.content_policy,
-        app_state.last_content_report.as_ref(),
-    );
-    project_bad_autopilot_availability_for_state(&debug_state, false, &mut app_ui_state);
-    project_internet_adsb_availability_for_state(&debug_state, &mut app_ui_state);
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_project_app_ui_state");
-    }
-    let playback_ui_state = situation_projection.playback_ui_state;
-    let playback_panel_state = situation_projection.playback_panel_state;
-    let map_follow_ui_state = situation_projection.map_follow_ui_state;
-    let map_follow_target_viewport = situation_projection.map_follow_target_viewport;
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_project_other_ui_state");
-    }
-    let mut data_status =
+    let data_status =
         DataStatusController::new(procedure_geometry_status_records_for_plan(&active_plan));
-    let data_status_state = data_status.project_state().state;
-    let data_status_page_state = default_data_status_page_state();
-    let settings_page_state = default_settings_page_state();
     let settings = SettingsController::default();
-    let cloud_page_state = cloud
-        .project(CloudProjectionInput {
-            now_epoch_ms: wall_clock_epoch_ms,
-            qr_scanner_available: false,
-        })
-        .projection
-        .page_state;
-    let mut packages = PackageController::default();
-    let offline_package_preferences_json = packages.project()?.offline_package_preferences_json;
+    let packages = PackageController::default();
     let platform_capabilities = PlatformCapabilities::default();
-    let home_page_state = project_home_page_state(&platform_capabilities);
-    let snapshot = UiSessionSnapshot {
-        ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
-        session_revision: 0,
-        flight_plan_route_revision: 0,
-        nav_data_epoch: 0,
-        active_nav_db: None,
-        next_nav_db_maintenance_epoch_ms: None,
-        app_state: app_state.clone(),
-        app_ui_state,
-        playback_ui_state,
-        playback_panel_state,
-        map_follow_ui_state,
-        map_follow_target_viewport,
-        chart_page_state: chart_page_state.clone(),
-        map_layer_state: project_map_layer_state_for_debug(
-            &map_projection.layer_state,
-            &debug_state,
-        ),
-        data_status_state: data_status_state.clone(),
-        data_status_page_state,
-        settings_page_state,
-        cloud_page_state,
-        offline_package_preferences_json,
-        home_page_state,
-        display_policy: None,
-        disclaimer_state: settings.disclaimer_state(),
-        debug_state: debug_state.clone(),
-        raster_map: map_projection.raster_map,
-        next_cycle_product_freshness_check_epoch_ms: None,
-    };
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     let generation = NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed);
     let diagnostics = Arc::new(SessionDiagnosticsCounters::default());
-    diagnostics
-        .snapshot_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .app_ui_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .settings_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .weather_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics.map_projection_count.store(1, Ordering::Relaxed);
-    diagnostics
-        .situation_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .flight_plan_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .package_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .cloud_projection_count
-        .store(1, Ordering::Relaxed);
-    diagnostics
-        .data_status_projection_count
-        .store(1, Ordering::Relaxed);
     let mut session = UiSession {
         coordinator: SessionCoordinatorModel {
             session_revision: 0,
@@ -2311,7 +2185,28 @@ fn create_ui_session_inner(
         runtime: SessionRuntime::default(),
         diagnostics,
     };
-    refresh_session_projection_versions(&mut session, &snapshot, None);
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_default_session_state");
+    }
+    let snapshot = try_snapshot_for_session(&mut session).map_err(|error| match error {
+        SessionSnapshotProjectionError::NeedResources(resources) => AppError {
+            kind: AppErrorKind::Internal,
+            message: format!(
+                "initial session projection unexpectedly needs resources: {resources:?}"
+            ),
+        },
+        SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages)) => AppError {
+            kind: AppErrorKind::Internal,
+            message: format!("initial session projection unexpectedly needs pages: {pages:?}"),
+        },
+        SessionSnapshotProjectionError::Had(HadReadError::Fatal(message)) => AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        },
+    })?;
+    if let Some(mark) = mark.as_deref_mut() {
+        mark("core_project_session_snapshot");
+    }
     lock_session_registry().insert(
         handle,
         Arc::new(SessionSlot::new(handle, generation, session)),
@@ -11307,14 +11202,6 @@ fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
     )
 }
 
-fn default_data_status_page_state() -> UiDataStatusPageState {
-    UiDataStatusPageState {
-        title: "Status".to_string(),
-        summary: "Status will appear after core session data loads.".to_string(),
-        rows: Vec::new(),
-    }
-}
-
 fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageState {
     let offline_packages_enabled = capabilities.offline_packages.is_some();
     let button = |destination: UiHomeDestination, label: &str| UiHomePageButton {
@@ -13073,6 +12960,129 @@ mod tests {
             .collect()
     }
 
+    fn apply_projection_assignment_for_test(
+        snapshot: &mut serde_json::Value,
+        assignment: &UiSessionProjectionAssignment,
+    ) {
+        let (field, parent_path) = assignment
+            .path
+            .split_last()
+            .expect("nonempty assignment path");
+        let mut parent = snapshot;
+        for segment in parent_path {
+            parent = match parent {
+                serde_json::Value::Object(object) => object.get_mut(segment).unwrap_or_else(|| {
+                    panic!("missing assignment parent {}", assignment.path.join("/"))
+                }),
+                serde_json::Value::Array(array) => array
+                    .get_mut(segment.parse::<usize>().expect("array path index"))
+                    .unwrap_or_else(|| {
+                        panic!("missing assignment parent {}", assignment.path.join("/"))
+                    }),
+                _ => panic!(
+                    "non-container assignment parent {}",
+                    assignment.path.join("/")
+                ),
+            };
+        }
+        match parent {
+            serde_json::Value::Object(object) => {
+                let target = object.get_mut(field).unwrap_or_else(|| {
+                    panic!("missing assignment target {}", assignment.path.join("/"))
+                });
+                *target = assignment.value.clone();
+            }
+            serde_json::Value::Array(array) => {
+                let target = array
+                    .get_mut(field.parse::<usize>().expect("array target index"))
+                    .unwrap_or_else(|| {
+                        panic!("missing assignment target {}", assignment.path.join("/"))
+                    });
+                *target = assignment.value.clone();
+            }
+            _ => panic!(
+                "non-container assignment target {}",
+                assignment.path.join("/")
+            ),
+        }
+    }
+
+    fn first_json_difference(
+        left: &serde_json::Value,
+        right: &serde_json::Value,
+        path: &str,
+    ) -> Option<String> {
+        match (left, right) {
+            (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+                for key in left.keys().chain(right.keys()).collect::<BTreeSet<_>>() {
+                    let next_path = format!("{path}/{key}");
+                    let (Some(left), Some(right)) = (left.get(key), right.get(key)) else {
+                        return Some(next_path);
+                    };
+                    if let Some(difference) = first_json_difference(left, right, &next_path) {
+                        return Some(difference);
+                    }
+                }
+                None
+            }
+            (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+                if left.len() != right.len() {
+                    return Some(format!("{path}/length"));
+                }
+                for (index, (left, right)) in left.iter().zip(right).enumerate() {
+                    if let Some(difference) =
+                        first_json_difference(left, right, &format!("{path}/{index}"))
+                    {
+                        return Some(difference);
+                    }
+                }
+                None
+            }
+            _ if left == right => None,
+            _ => Some(path.to_string()),
+        }
+    }
+
+    #[test]
+    fn creation_snapshot_accepts_every_assignment_in_the_first_revision() {
+        let init = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create bootstrap session");
+        let mut accumulated =
+            serde_json::to_value(&init.snapshot).expect("serialize creation snapshot");
+        let update = session_update_from_outcome(
+            super::set_resource_policy_in_session(init.handle, CoreResourcePolicy::PublicUnpacked)
+                .expect("first revision"),
+        );
+        let accumulated_object = accumulated
+            .as_object_mut()
+            .expect("creation snapshot object");
+        *accumulated_object
+            .get_mut("ui_contract_version")
+            .expect("creation contract version") = serde_json::json!(update.ui_contract_version);
+        *accumulated_object
+            .get_mut("session_revision")
+            .expect("creation session revision") = serde_json::json!(update.session_revision);
+
+        for (_, patch) in update.projection_patches() {
+            let Some(patch) = patch else { continue };
+            for assignment in &patch.assignments {
+                apply_projection_assignment_for_test(&mut accumulated, assignment);
+            }
+        }
+
+        let slot = session_slot(init.handle).expect("first revision session slot");
+        let mut guard = slot.lock_running().expect("first revision session lock");
+        let expected = serde_json::to_value(
+            try_snapshot_for_session(&mut guard).expect("first revision projection"),
+        )
+        .expect("serialize first revision projection");
+        assert_eq!(
+            first_json_difference(&accumulated, &expected, ""),
+            None,
+            "accumulated first revision differs from core snapshot",
+        );
+    }
+
     #[test]
     fn session_update_groups_partition_production_snapshot_fields() {
         let mut session = isolated_test_session(None);
@@ -14053,14 +14063,14 @@ mod tests {
         assert_eq!(diagnostics.operation_count, 1);
         assert_eq!(diagnostics.snapshot_projection_count, 2);
         assert_eq!(diagnostics.app_ui_projection_count, 2);
-        assert_eq!(diagnostics.settings_projection_count, 2);
-        assert_eq!(diagnostics.weather_projection_count, 2);
+        assert_eq!(diagnostics.settings_projection_count, 1);
+        assert_eq!(diagnostics.weather_projection_count, 1);
         assert_eq!(diagnostics.map_projection_count, 1);
         assert_eq!(diagnostics.situation_projection_count, 1);
         assert_eq!(diagnostics.flight_plan_projection_count, 1);
         assert_eq!(diagnostics.package_projection_count, 1);
         assert_eq!(diagnostics.cloud_projection_count, 1);
-        assert_eq!(diagnostics.data_status_projection_count, 3);
+        assert_eq!(diagnostics.data_status_projection_count, 4);
         assert_eq!(diagnostics.settings_revision, 0);
         assert_eq!(diagnostics.weather_revision, 0);
         assert_eq!(diagnostics.map_revision, 0);
@@ -14166,7 +14176,7 @@ mod tests {
         assert_eq!(configured.settings_revision, 0);
         assert_eq!(configured.settings_projection_count, 2);
         assert_eq!(configured.weather_revision, 0);
-        assert_eq!(configured.weather_projection_count, 2);
+        assert_eq!(configured.weather_projection_count, 1);
         assert_eq!(configured.map_revision, 0);
         assert_eq!(configured.map_projection_count, 1);
         assert_eq!(configured.situation_revision, 0);

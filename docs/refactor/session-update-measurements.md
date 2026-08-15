@@ -123,3 +123,39 @@ debug projection mean remained comparable to the baseline. The next measured
 target is platform landing work, beginning with group-scoped Android decode and
 publication and then moving web accumulation to the render-state side of the
 Worker boundary.
+
+## 2026-08-15 Platform-Landing Result
+
+The Android journey was repeated after the native adapter began decoding only
+changed assignment paths. This run included active live-feed work, so its
+payload mix differs slightly from the narrow-projection sample above; the
+landing timings remain directly useful.
+
+| Measurement | Result |
+|---|---:|
+| Mean update JSON | 3,042 bytes |
+| Mean accumulated snapshot JSON | 32,767 bytes |
+| Update/snapshot ratio | 9.3% |
+| Mean accumulator merge | 1,653 us |
+| Mean changed-group decode | 1,897 us |
+| Mean snapshot publication | 171 us |
+| Situation-only mean decode | 353 us |
+
+The prior full Kotlin decode averaged 4,195 us. Changed-group decoding reduced
+that mean by 55%; the common situation-only case was about 92% lower. No
+ordinary update invoked the full `WireUiSessionSnapshot` decoder. The sample's
+group counts were `situation=85`, `flight_data=37`, `status=20`,
+`flight_plan=6`, `map=6`, and `charts=1`; 21 updates changed no visible group.
+
+On web, the Worker now crosses one narrow projection message and returns a
+revision marker. A marker serializes to 30 bytes at a one-digit revision and 32
+bytes at revision 128, versus the roughly 33 KB accumulated snapshot previously
+returned for each mutation. The initial session and explicit recovery still
+cross as full snapshots. The headless Chrome platform journey passed with this
+transport, including repeated shared ETA-mode mutations, map rendering, and map
+inspection.
+
+These measurements do not justify another lock, thread, or Worker. The next
+candidate cost is aggregate UI publication: Android Compose and web React still
+receive one top-level snapshot for every relevant update even though decoding
+and transport are now narrow.

@@ -733,8 +733,15 @@ export type SessionSnapshotRefreshDecision =
   | { kind: "schedule"; delay_ms: number; reason: string }
   | { kind: "start"; reason: string };
 
+export type UiSessionProjectionLanding =
+  | { kind: "update"; value: unknown }
+  | { kind: "full_snapshot"; value: UiSessionSnapshot };
+
+export type UiSessionProjectionListener = (landing: UiSessionProjectionLanding) => void;
+
 export interface UiSession {
   setInvalidationListener(listener: UiInvalidationListener | null): void;
+  setProjectionListener(listener: UiSessionProjectionListener | null): void;
   initialSnapshot(): UiSessionSnapshot;
   snapshot(): Promise<UiSessionSnapshot>;
   maintainNavDb(nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -1032,6 +1039,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   ): Promise<UiSession> {
     const module = this.module;
     let invalidationListener: UiInvalidationListener | null = null;
+    let projectionListener: UiSessionProjectionListener | null = null;
     const publishInvalidations: UiInvalidationListener = (invalidations) => {
       if (invalidations.length === 0) {
         return;
@@ -1114,9 +1122,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       const loadFullSnapshot = () => runSessionOperationForHandle<unknown>(created.handle, () =>
         this.module.get_session_snapshot_paged(created.handle));
-      const applyBootstrapProjection = async (value: unknown) => {
-        await snapshotAccumulator.applyProjectionResult(value, loadFullSnapshot);
-      };
+      const applyBootstrapProjection = (value: unknown) =>
+        snapshotAccumulator.applyProjectionResult(value, loadFullSnapshot);
       const applyDirectBootstrapMutation = async (responseJson: string) => {
         const response = JSON.parse(responseJson) as { state: string; result?: unknown };
         if (response.state !== "complete" || response.result === undefined) {
@@ -1187,6 +1194,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const installFullSnapshot = (value: unknown) => {
       snapshotAccumulator.replaceFullSnapshot(value);
       snapshot = decodeAccumulatedSnapshot();
+      projectionListener?.({ kind: "full_snapshot", value: snapshot });
       return snapshot;
     };
     const applySessionUpdate = async (value: unknown) => {
@@ -1205,6 +1213,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         });
       }
       snapshot = decodeAccumulatedSnapshot();
+      if (disposition === "resync_required") {
+        projectionListener?.({ kind: "full_snapshot", value: snapshot });
+      } else if (disposition === "applied") {
+        projectionListener?.({ kind: "update", value });
+      }
       if (measureLanding) {
         debugLog("session.update.landed", {
           disposition,
@@ -1332,6 +1345,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return {
       setInvalidationListener: (listener) => {
         invalidationListener = listener;
+      },
+      setProjectionListener: (listener) => {
+        projectionListener = listener;
       },
       initialSnapshot: () => snapshot,
       snapshot: async () => {
@@ -1516,7 +1532,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         });
       },
       performTimeDisplayAction: async (actionId) => {
-        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+        snapshot = await runSessionMutation(() =>
           this.module.perform_time_display_action_in_session(handle, actionId),
         );
         return snapshot;

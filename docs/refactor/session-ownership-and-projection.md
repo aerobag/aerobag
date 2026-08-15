@@ -469,14 +469,39 @@ On the same 128-update Android journey, mean update size fell from 90.0% to
 7.9% of the accumulated snapshot. Full results are in
 [`session-update-measurements.md`](session-update-measurements.md).
 
+## Completed Eighteenth Slice
+
+The eighteenth slice exploited narrow patches at both platform landing
+boundaries. Android now decodes only the generated assignment paths carried by
+changed groups, preserves unchanged Kotlin submodels, and supports
+group-filtered snapshot listeners. Startup and explicit recovery still decode a
+complete snapshot. A 128-update emulator sample reduced mean model decode from
+4,195 us to 1,897 us overall and to 353 us for situation-only updates.
+
+Web sessions now send ordered narrow projection messages across the Worker
+boundary and accumulate them on the render-state side. Mutation responses carry
+only a 30-to-35-byte revision marker instead of structured-cloning the complete
+roughly 33 KB snapshot a second time. Projection messages received before the
+main-thread facade exists are queued and drained in order; a marker whose
+revision does not match the landed projection fails loudly. Explicit recovery
+continues to cross the boundary as a full snapshot.
+
+The browser journey exposed two contract bugs while exercising the real Worker.
+The creation snapshot used a special empty settings model that could not accept
+the first legal nested update, and the time-display action bypassed the common
+web mutation accumulator. A core regression now applies every first-revision
+assignment to the raw creation snapshot, and the unchanged browser smoke covers
+the time-display symptom. Full measurements are in
+[`session-update-measurements.md`](session-update-measurements.md).
+
 ## Next Slice
 
-Exploit the now-narrow patches at platform landing boundaries. Introduce
-group-scoped Android decode/listener surfaces so a situation-only patch does not
-decode and publish the complete Kotlin snapshot. Then move web accumulation to
-the render-state side of the Worker boundary so narrow core updates do not turn
-back into full snapshots before structured clone. Re-measure both platforms
-before staging or scheduling heavy work.
+Measure and then narrow UI render invalidation. Android's root activity still
+subscribes to all update groups and replaces one Compose snapshot state, while
+web React command handlers still publish one aggregate accumulated snapshot.
+Use the new group-aware boundaries to give page and overlay owners only the
+models they consume, beginning with high-rate situation updates, and compare
+actual recomposition/render work before considering another thread or Worker.
 
 ## Relationship To Work Scheduling
 

@@ -272,10 +272,6 @@ impl SettingsController {
             .contains(cell_id)
     }
 
-    pub fn disclaimer_state(&self) -> UiDisclaimerState {
-        project_disclaimer_state(&self.preferences)
-    }
-
     pub fn project(
         &mut self,
         display_policy_available: bool,
@@ -325,15 +321,6 @@ impl SettingsController {
             self.static_revision = self.static_revision.wrapping_add(1);
         }
         self.projection_cache = None;
-    }
-}
-
-pub(crate) fn default_settings_page_state() -> UiSettingsPageState {
-    UiSettingsPageState {
-        title: "Settings".to_string(),
-        summary: String::new(),
-        rows: Vec::new(),
-        sections: Vec::new(),
     }
 }
 
@@ -689,7 +676,7 @@ mod tests {
             .accept_disclaimer(NO_WARRANTY_DISCLAIMER_AGREEMENT_ID)
             .expect("accept disclaimer"));
         assert_eq!(controller.revision(), 1);
-        assert!(!controller.disclaimer_state().required);
+        assert!(!project_disclaimer_state(&controller.preferences).required);
         assert!(!controller
             .accept_disclaimer(NO_WARRANTY_DISCLAIMER_AGREEMENT_ID)
             .expect("accept disclaimer again"));

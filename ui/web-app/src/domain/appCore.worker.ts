@@ -2,9 +2,16 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { loadWasmAdapterOnThisThread, type AppCoreAdapter, type UiInvalidation, type UiSession } from "./appCoreAdapter";
+import {
+  loadWasmAdapterOnThisThread,
+  type AppCoreAdapter,
+  type UiInvalidation,
+  type UiSession,
+  type UiSessionProjectionLanding,
+} from "./appCoreAdapter";
 import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
 import { debugLog, observeDebugLog, setBrowserInstanceId, type DebugLogRecord } from "./debugLog";
+import { workerSessionResultForTransport } from "./workerSessionTransport";
 
 type WorkerCallTarget =
   | { kind: "adapter" }
@@ -40,6 +47,12 @@ type WorkerSessionInvalidation = {
   invalidations: UiInvalidation[];
 };
 
+type WorkerSessionProjection = {
+  kind: "sessionProjection";
+  sessionId: number;
+  landing: UiSessionProjectionLanding;
+};
+
 type WorkerCoreSettingsChanged = {
   kind: "coreSettingsChanged";
   settingsJson: string | null;
@@ -63,7 +76,7 @@ type WorkerSessionMarker = {
 
 type WorkerRuntime = {
   addEventListener(type: "message", listener: (event: MessageEvent<WorkerCallRequest>) => void): void;
-  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged | WorkerDebugLog, transfer?: Transferable[]): void;
+  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerSessionProjection | WorkerCoreSettingsChanged | WorkerDebugLog, transfer?: Transferable[]): void;
 };
 
 const ctx = self as unknown as WorkerRuntime;
@@ -180,6 +193,9 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
     session.setInvalidationListener((invalidations) => {
       postMessage({ kind: "sessionInvalidation", sessionId, invalidations });
     });
+    session.setProjectionListener((landing) => {
+      ctx.postMessage({ kind: "sessionProjection", sessionId, landing });
+    });
     return {
       __aerobagWorkerSessionId: sessionId,
       initialSnapshot: session.initialSnapshot(),
@@ -207,9 +223,10 @@ async function callSessionMethod(
         settingsJson: settingsAfter,
       });
     }
-    return result;
+    return workerSessionResultForTransport(result);
   } finally {
     if (method === "destroy") {
+      session.setProjectionListener(null);
       sessions.delete(sessionId);
     }
   }

@@ -184,6 +184,7 @@ pub(crate) struct DataStatusController {
     model: Arc<DataStatusModel>,
     state_cache: Option<DataStatusStateCache>,
     page_cache: Option<DataStatusPageCache>,
+    page_projection_revision: u64,
 }
 
 impl Default for DataStatusController {
@@ -205,11 +206,16 @@ impl DataStatusController {
             }),
             state_cache: None,
             page_cache: None,
+            page_projection_revision: 0,
         }
     }
 
     pub fn revision(&self) -> u64 {
         self.model.revision
+    }
+
+    pub fn page_projection_revision(&self) -> u64 {
+        self.page_projection_revision
     }
 
     pub fn checkpoint_model(&self) -> DataStatusModelCheckpoint {
@@ -220,8 +226,6 @@ impl DataStatusController {
 
     pub fn rollback_model(&mut self, checkpoint: DataStatusModelCheckpoint) {
         self.model = checkpoint.model;
-        self.state_cache = None;
-        self.page_cache = None;
     }
 
     pub fn contains(&self, id: &str) -> bool {
@@ -378,6 +382,13 @@ impl DataStatusController {
             }
         }
         let state = project_data_status_page_state(&self.model.records, &input);
+        if self
+            .page_cache
+            .as_ref()
+            .is_none_or(|cache| cache.state != state)
+        {
+            self.page_projection_revision = self.page_projection_revision.saturating_add(1);
+        }
         self.page_cache = Some(DataStatusPageCache {
             revision: self.model.revision,
             input,
@@ -397,8 +408,6 @@ impl DataStatusController {
     fn note_change(&mut self) {
         let model = Arc::make_mut(&mut self.model);
         model.revision = model.revision.saturating_add(1);
-        self.state_cache = None;
-        self.page_cache = None;
     }
 }
 
@@ -1978,6 +1987,7 @@ mod tests {
         let mut controller = DataStatusController::default();
         let input = page_input();
         assert!(controller.project_page(input.clone()).rebuilt);
+        let initial_projection_revision = controller.page_projection_revision();
         assert!(!controller.project_page(input.clone()).rebuilt);
         assert!(
             controller
@@ -1987,8 +1997,19 @@ mod tests {
                 })
                 .rebuilt
         );
+        assert_eq!(
+            controller.page_projection_revision(),
+            initial_projection_revision,
+        );
         controller.upsert(record("warning"));
         assert!(controller.project_page(input).rebuilt);
+        assert_eq!(
+            controller.page_projection_revision(),
+            initial_projection_revision,
+        );
+        controller.upsert(record(&format!("{PACKAGE_WARNING_STATUS_PREFIX}warning")));
+        assert!(controller.project_page(page_input()).rebuilt);
+        assert!(controller.page_projection_revision() > initial_projection_revision);
     }
 
     #[test]

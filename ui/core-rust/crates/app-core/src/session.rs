@@ -32,9 +32,9 @@ pub use app_ui_contracts::{
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
         UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
-        UiPlaybackPanelState, UiSessionProjectionPatch, UiSessionUpdate, UiSessionUpdateGroup,
-        UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection,
-        UiSettingsPageState, UiSettingsSliderStop,
+        UiPlaybackPanelState, UiSessionProjectionAssignment, UiSessionProjectionPatch,
+        UiSessionUpdate, UiSessionUpdateGroup, UiSettingsAction, UiSettingsGridItem,
+        UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop,
     },
 };
 
@@ -104,11 +104,11 @@ use crate::{
     publication::PublicationResolvedResource,
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
     session_projection::{
-        ApplicationProjectionDependencies, CloudProjectionDependencies,
-        FlightDataBannerProjectionDependencies, HomeProjectionDependencies,
-        MapProjectionDependencies, NavDataProjectionDependencies, SessionProjectionDependencies,
-        SessionProjectionVersionState, SessionProjectionVersions, SettingsProjectionDependencies,
-        StatusProjectionDependencies,
+        ApplicationShellProjectionDependencies, CloudProjectionDependencies,
+        FlightDataProjectionDependencies, FlightPlanProjectionDependencies,
+        HomeProjectionDependencies, MapProjectionDependencies, NavDataProjectionDependencies,
+        SessionProjectionDependencies, SessionProjectionVersionState, SessionProjectionVersions,
+        SettingsProjectionDependencies, StatusProjectionDependencies,
     },
     settings_controller::{
         debug_flag_settings_action, default_settings_page_state, SettingsController,
@@ -271,7 +271,10 @@ pub struct UiSessionUpdateDiagnostics {
     pub projection_total_us: u64,
     pub projection_max_us: u64,
     pub nav_data_count: u64,
-    pub application_count: u64,
+    pub application_shell_count: u64,
+    pub flight_plan_count: u64,
+    pub ownship_count: u64,
+    pub flight_data_count: u64,
     pub situation_count: u64,
     pub charts_count: u64,
     pub map_count: u64,
@@ -361,8 +364,13 @@ impl SessionDiagnosticsCounters {
                     .session_update_projection_max_us
                     .load(Ordering::Relaxed),
                 nav_data_count: self.session_update_group_count(UiSessionUpdateGroup::NavData),
-                application_count: self
-                    .session_update_group_count(UiSessionUpdateGroup::Application),
+                application_shell_count: self
+                    .session_update_group_count(UiSessionUpdateGroup::ApplicationShell),
+                flight_plan_count: self
+                    .session_update_group_count(UiSessionUpdateGroup::FlightPlan),
+                ownship_count: self.session_update_group_count(UiSessionUpdateGroup::Ownship),
+                flight_data_count: self
+                    .session_update_group_count(UiSessionUpdateGroup::FlightData),
                 situation_count: self.session_update_group_count(UiSessionUpdateGroup::Situation),
                 charts_count: self.session_update_group_count(UiSessionUpdateGroup::Charts),
                 map_count: self.session_update_group_count(UiSessionUpdateGroup::Map),
@@ -2303,7 +2311,7 @@ fn create_ui_session_inner(
         runtime: SessionRuntime::default(),
         diagnostics,
     };
-    refresh_session_projection_versions(&mut session, None);
+    refresh_session_projection_versions(&mut session, &snapshot, None);
     lock_session_registry().insert(
         handle,
         Arc::new(SessionSlot::new(handle, generation, session)),
@@ -10783,35 +10791,14 @@ fn session_snapshot_outcome_with_invalidations(
 
 fn session_projection_dependencies(
     session: &UiSession,
+    snapshot: &UiSessionSnapshot,
     next_nav_db_maintenance_epoch_ms: Option<i64>,
 ) -> SessionProjectionDependencies {
     let capabilities = &session.coordinator.platform_capabilities;
     let cloud_available = capabilities.cloud.is_some();
-    let flight_data_banner = FlightDataBannerProjectionDependencies {
-        flight_plan_revision: session.flight_plan.revision(),
-        flight_plan_route_revision: session.flight_plan.route_revision(),
-        situation_revision: session.situation.revision(),
-        weather_revision: session.weather.revision(),
-        map_revision: session.map.revision(),
-        nav_data_generation: session.nav_data.generation(),
-        cloud_revision: session.cloud.revision(),
-        wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
-        local_time_zone: capabilities.local_time_zone.clone(),
-        wind_selection: session.coordinator.altitude_planner_wind_selection,
-        time_display_mode: session.coordinator.time_display_mode,
-    };
-    let application = ApplicationProjectionDependencies {
-        flight_data_banner: flight_data_banner.clone(),
-        settings_revision: session.settings.revision(),
+    let application_shell = ApplicationShellProjectionDependencies {
         content_policy: session.coordinator.content_policy,
         last_content_report: session.coordinator.last_content_report.clone(),
-        bad_autopilot_enabled: session.coordinator.debug_state.bad_autopilot,
-        internet_adsb_enabled: session.coordinator.debug_state.internet_adsb,
-        internet_adsb_registration: session
-            .runtime
-            .adsb
-            .ownship_registration()
-            .map(str::to_string),
     };
     SessionProjectionDependencies {
         envelope: session.coordinator.session_revision,
@@ -10820,7 +10807,21 @@ fn session_projection_dependencies(
             package_revision: session.packages.revision(),
             next_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms,
         },
-        application,
+        application_shell,
+        flight_plan: FlightPlanProjectionDependencies {
+            route_revision: session.flight_plan.route_revision(),
+            active_plan: snapshot.app_ui_state.active_plan.clone(),
+        },
+        ownship: snapshot.app_ui_state.ownship.clone(),
+        flight_data: FlightDataProjectionDependencies {
+            banner: snapshot.app_ui_state.flight_data_banner.clone(),
+            settings_items: snapshot
+                .settings_page_state
+                .rows
+                .first()
+                .map(|row| row.items.clone())
+                .unwrap_or_default(),
+        },
         situation: session.situation.revision(),
         charts: session.coordinator.chart_page_state.clone(),
         map: MapProjectionDependencies {
@@ -10829,32 +10830,19 @@ fn session_projection_dependencies(
         },
         status: StatusProjectionDependencies {
             data_status_revision: session.data_status.revision(),
-            nav_data_revision: session.nav_data.revision(),
-            package_revision: session.packages.revision(),
-            cloud_revision: session.cloud.revision(),
-            weather_revision: session.weather.revision(),
-            wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
-            time_display_mode: session.coordinator.time_display_mode,
-            client_build: capabilities.client_build.clone(),
-            cloud_available,
+            page_projection_revision: session.data_status.page_projection_revision(),
             next_freshness_check_epoch_ms: session
                 .coordinator
                 .cycle_product_freshness
                 .next_check_epoch_ms,
         },
         settings: SettingsProjectionDependencies {
-            settings_revision: session.settings.revision(),
+            static_revision: session.settings.static_revision(),
             display_policy_available: capabilities.display_policy.is_some(),
-            flight_data_banner,
             debug_state: session.coordinator.debug_state.clone(),
         },
         cloud: CloudProjectionDependencies {
-            cloud_revision: session.cloud.revision(),
-            wall_clock_epoch_ms: session.coordinator.wall_clock_epoch_ms,
-            qr_scanner_available: capabilities
-                .cloud
-                .as_ref()
-                .is_some_and(|cloud| cloud.qr_scan),
+            projection_revision: session.cloud.projection_revision(),
         },
         packages: session.packages.revision(),
         home: HomeProjectionDependencies {
@@ -10867,9 +10855,11 @@ fn session_projection_dependencies(
 
 fn refresh_session_projection_versions(
     session: &mut UiSession,
+    snapshot: &UiSessionSnapshot,
     next_nav_db_maintenance_epoch_ms: Option<i64>,
 ) {
-    let dependencies = session_projection_dependencies(session, next_nav_db_maintenance_epoch_ms);
+    let dependencies =
+        session_projection_dependencies(session, snapshot, next_nav_db_maintenance_epoch_ms);
     session.projection_versions.observe(dependencies);
 }
 
@@ -10890,19 +10880,20 @@ fn try_project_session_update(
 fn changed_projection_patch(
     previous_version: u64,
     current_version: u64,
-    fields: impl FnOnce() -> serde_json::Map<String, serde_json::Value>,
+    assignments: impl FnOnce() -> Vec<UiSessionProjectionAssignment>,
 ) -> Option<UiSessionProjectionPatch> {
     (previous_version != current_version).then(|| UiSessionProjectionPatch {
         version: current_version,
-        fields: fields(),
+        assignments: assignments(),
     })
 }
 
-macro_rules! projection_fields {
-    ($($name:literal => $value:expr),* $(,)?) => {{
-        let mut fields = serde_json::Map::new();
-        $(fields.insert($name.to_string(), serde_json::json!($value));)*
-        fields
+macro_rules! projection_assignments {
+    ($([$($segment:literal),+] => $value:expr),* $(,)?) => {{
+        vec![$(UiSessionProjectionAssignment {
+            path: vec![$($segment.to_string()),+],
+            value: serde_json::json!($value),
+        }),*]
     }};
 }
 
@@ -10911,74 +10902,109 @@ fn assemble_session_update(
     previous: SessionProjectionVersions,
     current: SessionProjectionVersions,
 ) -> UiSessionUpdate {
+    let settings_changed = previous.settings != current.settings;
     UiSessionUpdate {
         ui_contract_version: snapshot.ui_contract_version,
         session_revision: snapshot.session_revision,
         nav_data: changed_projection_patch(previous.nav_data, current.nav_data, || {
-            projection_fields! {
-                "nav_data_epoch" => snapshot.nav_data_epoch,
-                "active_nav_db" => snapshot.active_nav_db,
-                "next_nav_db_maintenance_epoch_ms" => snapshot.next_nav_db_maintenance_epoch_ms,
+            projection_assignments! {
+                ["nav_data_epoch"] => snapshot.nav_data_epoch,
+                ["active_nav_db"] => snapshot.active_nav_db,
+                ["next_nav_db_maintenance_epoch_ms"] => snapshot.next_nav_db_maintenance_epoch_ms,
             }
         }),
-        application: changed_projection_patch(previous.application, current.application, || {
-            projection_fields! {
-                "flight_plan_route_revision" => snapshot.flight_plan_route_revision,
-                "app_ui_state" => snapshot.app_ui_state,
+        application_shell: changed_projection_patch(
+            previous.application_shell,
+            current.application_shell,
+            || {
+                projection_assignments! {
+                    ["app_ui_state", "content_policy"] => snapshot.app_ui_state.content_policy,
+                    ["app_ui_state", "last_content_report"] => snapshot.app_ui_state.last_content_report,
+                }
+            },
+        ),
+        flight_plan: changed_projection_patch(previous.flight_plan, current.flight_plan, || {
+            projection_assignments! {
+                ["flight_plan_route_revision"] => snapshot.flight_plan_route_revision,
+                ["app_ui_state", "active_plan"] => snapshot.app_ui_state.active_plan,
             }
+        }),
+        ownship: changed_projection_patch(previous.ownship, current.ownship, || {
+            projection_assignments! {
+                ["app_ui_state", "ownship"] => snapshot.app_ui_state.ownship,
+            }
+        }),
+        flight_data: changed_projection_patch(previous.flight_data, current.flight_data, || {
+            let mut assignments = projection_assignments! {
+                ["app_ui_state", "flight_data_banner"] => snapshot.app_ui_state.flight_data_banner,
+            };
+            if !settings_changed {
+                if let Some(row) = snapshot.settings_page_state.rows.first() {
+                    assignments.push(UiSessionProjectionAssignment {
+                        path: vec![
+                            "settings_page_state".to_string(),
+                            "rows".to_string(),
+                            "0".to_string(),
+                            "items".to_string(),
+                        ],
+                        value: serde_json::json!(row.items),
+                    });
+                }
+            }
+            assignments
         }),
         situation: changed_projection_patch(previous.situation, current.situation, || {
-            projection_fields! {
-                "playback_ui_state" => snapshot.playback_ui_state,
-                "playback_panel_state" => snapshot.playback_panel_state,
-                "map_follow_ui_state" => snapshot.map_follow_ui_state,
-                "map_follow_target_viewport" => snapshot.map_follow_target_viewport,
+            projection_assignments! {
+                ["playback_ui_state"] => snapshot.playback_ui_state,
+                ["playback_panel_state"] => snapshot.playback_panel_state,
+                ["map_follow_ui_state"] => snapshot.map_follow_ui_state,
+                ["map_follow_target_viewport"] => snapshot.map_follow_target_viewport,
             }
         }),
         charts: changed_projection_patch(previous.charts, current.charts, || {
-            projection_fields! {
-                "chart_page_state" => snapshot.chart_page_state,
+            projection_assignments! {
+                ["chart_page_state"] => snapshot.chart_page_state,
             }
         }),
         map: changed_projection_patch(previous.map, current.map, || {
-            projection_fields! {
-                "map_layer_state" => snapshot.map_layer_state,
-                "raster_map" => snapshot.raster_map,
+            projection_assignments! {
+                ["map_layer_state"] => snapshot.map_layer_state,
+                ["raster_map"] => snapshot.raster_map,
             }
         }),
         status: changed_projection_patch(previous.status, current.status, || {
-            projection_fields! {
-                "data_status_state" => snapshot.data_status_state,
-                "data_status_page_state" => snapshot.data_status_page_state,
-                "next_cycle_product_freshness_check_epoch_ms" => snapshot
+            projection_assignments! {
+                ["data_status_state"] => snapshot.data_status_state,
+                ["data_status_page_state"] => snapshot.data_status_page_state,
+                ["next_cycle_product_freshness_check_epoch_ms"] => snapshot
                     .next_cycle_product_freshness_check_epoch_ms,
             }
         }),
         settings: changed_projection_patch(previous.settings, current.settings, || {
-            projection_fields! {
-                "settings_page_state" => snapshot.settings_page_state,
-                "display_policy" => snapshot.display_policy,
-                "disclaimer_state" => snapshot.disclaimer_state,
+            projection_assignments! {
+                ["settings_page_state"] => snapshot.settings_page_state,
+                ["display_policy"] => snapshot.display_policy,
+                ["disclaimer_state"] => snapshot.disclaimer_state,
             }
         }),
         cloud: changed_projection_patch(previous.cloud, current.cloud, || {
-            projection_fields! {
-                "cloud_page_state" => snapshot.cloud_page_state,
+            projection_assignments! {
+                ["cloud_page_state"] => snapshot.cloud_page_state,
             }
         }),
         packages: changed_projection_patch(previous.packages, current.packages, || {
-            projection_fields! {
-                "offline_package_preferences_json" => snapshot.offline_package_preferences_json,
+            projection_assignments! {
+                ["offline_package_preferences_json"] => snapshot.offline_package_preferences_json,
             }
         }),
         home: changed_projection_patch(previous.home, current.home, || {
-            projection_fields! {
-                "home_page_state" => snapshot.home_page_state,
+            projection_assignments! {
+                ["home_page_state"] => snapshot.home_page_state,
             }
         }),
         debug: changed_projection_patch(previous.debug, current.debug, || {
-            projection_fields! {
-                "debug_state" => snapshot.debug_state,
+            projection_assignments! {
+                ["debug_state"] => snapshot.debug_state,
             }
         }),
     }
@@ -11141,7 +11167,7 @@ fn try_snapshot_for_session(
             .cycle_product_freshness
             .next_check_epoch_ms,
     };
-    refresh_session_projection_versions(session, next_nav_db_maintenance_epoch_ms);
+    refresh_session_projection_versions(session, &snapshot, next_nav_db_maintenance_epoch_ms);
     Ok(snapshot)
 }
 
@@ -13028,8 +13054,7 @@ mod tests {
     }
 
     fn observe_projection_versions(session: &mut UiSession) -> SessionProjectionVersions {
-        let next_nav_db_maintenance_epoch_ms = next_nav_db_maintenance_epoch_ms(session);
-        refresh_session_projection_versions(session, next_nav_db_maintenance_epoch_ms);
+        try_snapshot_for_session(session).expect("observe projection snapshot");
         session.projection_versions.versions()
     }
 
@@ -13040,8 +13065,12 @@ mod tests {
         serde_json::from_value(result).expect("session update")
     }
 
-    fn projection_field_names(patch: &UiSessionProjectionPatch) -> BTreeSet<&str> {
-        patch.fields.keys().map(String::as_str).collect()
+    fn projection_assignment_paths(patch: &UiSessionProjectionPatch) -> BTreeSet<String> {
+        patch
+            .assignments
+            .iter()
+            .map(|assignment| assignment.path.join("/"))
+            .collect()
     }
 
     #[test]
@@ -13052,7 +13081,10 @@ mod tests {
         let current = SessionProjectionVersions {
             envelope: previous.envelope.saturating_add(1),
             nav_data: previous.nav_data.saturating_add(1),
-            application: previous.application.saturating_add(1),
+            application_shell: previous.application_shell.saturating_add(1),
+            flight_plan: previous.flight_plan.saturating_add(1),
+            ownship: previous.ownship.saturating_add(1),
+            flight_data: previous.flight_data.saturating_add(1),
             situation: previous.situation.saturating_add(1),
             charts: previous.charts.saturating_add(1),
             map: previous.map.saturating_add(1),
@@ -13067,8 +13099,20 @@ mod tests {
         let groups = [
             ("nav_data", update.nav_data.as_ref().expect("nav data")),
             (
-                "application",
-                update.application.as_ref().expect("application"),
+                "application_shell",
+                update
+                    .application_shell
+                    .as_ref()
+                    .expect("application shell"),
+            ),
+            (
+                "flight_plan",
+                update.flight_plan.as_ref().expect("flight plan"),
+            ),
+            ("ownship", update.ownship.as_ref().expect("ownship")),
+            (
+                "flight_data",
+                update.flight_data.as_ref().expect("flight data"),
             ),
             ("situation", update.situation.as_ref().expect("situation")),
             ("charts", update.charts.as_ref().expect("charts")),
@@ -13090,8 +13134,20 @@ mod tests {
                 ]),
             ),
             (
-                "application",
-                BTreeSet::from(["app_ui_state", "flight_plan_route_revision"]),
+                "application_shell",
+                BTreeSet::from([
+                    "app_ui_state/content_policy",
+                    "app_ui_state/last_content_report",
+                ]),
+            ),
+            (
+                "flight_plan",
+                BTreeSet::from(["app_ui_state/active_plan", "flight_plan_route_revision"]),
+            ),
+            ("ownship", BTreeSet::from(["app_ui_state/ownship"])),
+            (
+                "flight_data",
+                BTreeSet::from(["app_ui_state/flight_data_banner"]),
             ),
             (
                 "situation",
@@ -13124,22 +13180,31 @@ mod tests {
             ("home", BTreeSet::from(["home_page_state"])),
             ("debug", BTreeSet::from(["debug_state"])),
         ]);
-        let mut all_fields = BTreeSet::new();
+        let mut all_paths = BTreeSet::new();
         for (group, patch) in groups {
-            let actual = projection_field_names(patch);
-            assert_eq!(actual, expected[group], "{group} field membership changed");
-            for field in actual {
+            let actual = projection_assignment_paths(patch);
+            let expected_paths = expected[group]
+                .iter()
+                .map(|path| path.to_string())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(actual, expected_paths, "{group} field membership changed");
+            for path in actual {
                 assert!(
-                    all_fields.insert(field),
-                    "snapshot field {field} belongs to more than one update group"
+                    all_paths.insert(path.clone()),
+                    "snapshot path {path} belongs to more than one update group"
                 );
             }
         }
-        assert_eq!(
-            all_fields,
-            expected.values().flatten().copied().collect(),
-            "every non-envelope production snapshot field must belong to one update group"
-        );
+        for left in &all_paths {
+            for right in &all_paths {
+                assert!(
+                    left == right
+                        || (!left.starts_with(&format!("{right}/"))
+                            && !right.starts_with(&format!("{left}/"))),
+                    "session assignment paths overlap: {left} and {right}",
+                );
+            }
+        }
         let mut snapshot_fields = serde_json::to_value(snapshot)
             .expect("serialize snapshot")
             .as_object()
@@ -13151,9 +13216,9 @@ mod tests {
         snapshot_fields.remove("session_revision");
         snapshot_fields.remove("app_state");
         assert_eq!(
-            all_fields
+            all_paths
                 .into_iter()
-                .map(str::to_string)
+                .map(|path| path.split('/').next().expect("nonempty path").to_string())
                 .collect::<BTreeSet<_>>(),
             snapshot_fields,
             "new production snapshot fields must be assigned to exactly one update group"
@@ -13172,11 +13237,14 @@ mod tests {
 
         assert_eq!(update.session_revision, 1);
         assert_eq!(
-            projection_field_names(update.charts.as_ref().expect("chart patch")),
-            BTreeSet::from(["chart_page_state"])
+            projection_assignment_paths(update.charts.as_ref().expect("chart patch")),
+            BTreeSet::from(["chart_page_state".to_string()])
         );
         assert!(update.nav_data.is_none());
-        assert!(update.application.is_none());
+        assert!(update.application_shell.is_none());
+        assert!(update.flight_plan.is_none());
+        assert!(update.ownship.is_none());
+        assert!(update.flight_data.is_none());
         assert!(update.situation.is_none());
         assert!(update.map.is_none());
         assert!(update.status.is_none());
@@ -13215,7 +13283,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_transaction_emits_declared_application_and_settings_patches() {
+    fn flight_data_visibility_transaction_emits_only_flight_data_patch() {
         let mut session = isolated_test_session(None);
         try_snapshot_for_session(&mut session).expect("initial snapshot");
 
@@ -13230,8 +13298,17 @@ mod tests {
         .expect("settings transaction");
         let update = session_update_from_outcome(outcome);
 
-        assert!(update.application.is_some());
-        assert!(update.settings.is_some());
+        assert_eq!(
+            projection_assignment_paths(update.flight_data.as_ref().expect("flight data patch")),
+            BTreeSet::from([
+                "app_ui_state/flight_data_banner".to_string(),
+                "settings_page_state/rows/0/items".to_string(),
+            ]),
+        );
+        assert!(update.application_shell.is_none());
+        assert!(update.flight_plan.is_none());
+        assert!(update.ownship.is_none());
+        assert!(update.settings.is_none());
         assert!(update.nav_data.is_none());
         assert!(update.situation.is_none());
         assert!(update.charts.is_none());
@@ -13279,28 +13356,21 @@ mod tests {
             observe_projection_versions(&mut session),
             SessionProjectionVersions {
                 envelope: 1,
-                application: 1,
-                settings: 1,
+                flight_data: 1,
                 ..SessionProjectionVersions::default()
             }
         );
     }
 
     #[test]
-    fn clock_change_advances_time_dependent_groups_without_mutation_envelope() {
+    fn clock_change_without_visible_change_advances_no_projection_group() {
         let mut session = isolated_test_session(None);
         observe_projection_versions(&mut session);
         advance_session_wall_clock(&mut session, 1_000);
 
         assert_eq!(
             observe_projection_versions(&mut session),
-            SessionProjectionVersions {
-                application: 1,
-                status: 1,
-                settings: 1,
-                cloud: 1,
-                ..SessionProjectionVersions::default()
-            }
+            SessionProjectionVersions::default()
         );
     }
 
@@ -14022,8 +14092,20 @@ mod tests {
             u64::from(update.nav_data.is_some())
         );
         assert_eq!(
-            measured.session_updates.application_count,
-            u64::from(update.application.is_some())
+            measured.session_updates.application_shell_count,
+            u64::from(update.application_shell.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.flight_plan_count,
+            u64::from(update.flight_plan.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.ownship_count,
+            u64::from(update.ownship.is_some())
+        );
+        assert_eq!(
+            measured.session_updates.flight_data_count,
+            u64::from(update.flight_data.is_some())
         );
         assert_eq!(
             measured.session_updates.situation_count,
@@ -14935,17 +15017,21 @@ mod tests {
         else {
             panic!("package preference update unexpectedly needed resources");
         };
+        let projected_preferences = result["packages"]["assignments"]
+            .as_array()
+            .expect("package assignments")
+            .iter()
+            .find(|assignment| {
+                assignment["path"] == serde_json::json!(["offline_package_preferences_json"])
+            })
+            .and_then(|assignment| assignment["value"].as_str())
+            .expect("projected preferences JSON");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                result["packages"]["fields"]["offline_package_preferences_json"]
-                    .as_str()
-                    .expect("projected preferences JSON"),
-            )
-            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(projected_preferences).unwrap(),
             serde_json::from_str::<serde_json::Value>(&preferences).unwrap()
         );
         assert!(result["packages"].is_object());
-        assert!(result["cloud"].is_object());
+        assert!(result.get("cloud").is_none());
         assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         let snapshot = get_session_snapshot(first.handle).expect("snapshot package profile");
         assert_eq!(
@@ -25871,8 +25957,9 @@ mod tests {
             )
             .expect("global time display remains toggleable during active guidance"),
         );
-        assert!(zulu_update.application.is_some());
-        assert!(zulu_update.settings.is_some());
+        assert!(zulu_update.flight_plan.is_some());
+        assert!(zulu_update.flight_data.is_some());
+        assert!(zulu_update.settings.is_none());
         assert!(zulu_update.status.is_some());
         let zulu_snapshot = snapshot_from_outcome(
             super::get_session_snapshot(init.handle).expect("project Zulu snapshot"),

@@ -968,7 +968,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 1,
+  "x-contract-version": 2,
   "x-export-order": [
     "FlightDataCellTone",
     "FlightEstimateKind",

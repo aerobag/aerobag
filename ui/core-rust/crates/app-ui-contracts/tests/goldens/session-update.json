@@ -1,12 +1,17 @@
 {
   "map": {
-    "fields": {
-      "map_layer_state": {
-        "example": true
+    "assignments": [
+      {
+        "path": [
+          "map_layer_state"
+        ],
+        "value": {
+          "example": true
+        }
       }
-    },
+    ],
     "version": 3
   },
   "session_revision": 7,
-  "ui_contract_version": 1
+  "ui_contract_version": 2
 }

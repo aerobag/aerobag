@@ -149,7 +149,10 @@ fn session_projection_versions_are_core_owned_and_transactional() {
     for group in [
         "envelope",
         "nav_data",
-        "application",
+        "application_shell",
+        "flight_plan",
+        "ownship",
+        "flight_data",
         "situation",
         "charts",
         "map",
@@ -193,7 +196,10 @@ fn session_updates_are_generated_and_assembled_from_core_projection_versions() {
 
     for group in [
         "nav_data",
-        "application",
+        "application_shell",
+        "flight_plan",
+        "ownship",
+        "flight_data",
         "situation",
         "charts",
         "map",

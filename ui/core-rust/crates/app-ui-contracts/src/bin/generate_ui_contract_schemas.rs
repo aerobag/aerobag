@@ -192,7 +192,11 @@ fn main() {
             filename: "session-update-wire.schema.json",
             id: "org.aerobag.ui-wire.session-update",
             description: "Core-owned revisioned partial session update contract.",
-            export_order: &["UiSessionProjectionPatch", "UiSessionUpdate"],
+            export_order: &[
+                "UiSessionProjectionAssignment",
+                "UiSessionProjectionPatch",
+                "UiSessionUpdate",
+            ],
             tagged_unions: &[],
             schema: schema::<session::UiSessionUpdate>,
         },

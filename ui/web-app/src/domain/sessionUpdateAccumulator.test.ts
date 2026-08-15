@@ -37,9 +37,12 @@ describe("SessionUpdateAccumulator", () => {
       conformance.expected_contract_version,
     );
     const update = {
-      ui_contract_version: 1,
+      ui_contract_version: 2,
       session_revision: 9,
-      map: { version: 3, fields: { map_layer_state: { nexrad: true } } },
+      map: {
+        version: 3,
+        assignments: [{ path: ["map_layer_state"], value: { nexrad: true } }],
+      },
     };
     expect(accumulator.apply(update)).toBe("resync_required");
     expect(accumulator.snapshot).toEqual(conformance.initial_snapshot);
@@ -58,9 +61,12 @@ describe("SessionUpdateAccumulator", () => {
     const loadFullSnapshot = vi.fn(async () => fullSnapshot);
 
     await expect(accumulator.applyOrResync({
-      ui_contract_version: 1,
+      ui_contract_version: 2,
       session_revision: 9,
-      map: { version: 3, fields: { map_layer_state: { nexrad: true } } },
+      map: {
+        version: 3,
+        assignments: [{ path: ["map_layer_state"], value: { nexrad: true } }],
+      },
     }, loadFullSnapshot)).resolves.toBe("resync_required");
     expect(loadFullSnapshot).toHaveBeenCalledOnce();
     expect(accumulator.snapshot).toEqual(fullSnapshot);
@@ -76,21 +82,36 @@ describe("SessionUpdateAccumulator", () => {
     });
 
     await expect(accumulator.applyProjectionResult({
-      ui_contract_version: 1,
+      ui_contract_version: 2,
       session_revision: 8,
-      application: { version: 1, fields: { content_policy: "PreferRemote" } },
+      application_shell: {
+        version: 1,
+        assignments: [{
+          path: ["app_ui_state", "ownship", "label"],
+          value: "GPS",
+        }],
+      },
     }, loadFullSnapshot)).resolves.toBe("applied");
     await expect(accumulator.applyProjectionResult({
-      ui_contract_version: 1,
+      ui_contract_version: 2,
       session_revision: 9,
-      map: { version: 1, fields: { map_layer_state: { terrain_warning: true } } },
+      map: {
+        version: 1,
+        assignments: [{
+          path: ["map_layer_state"],
+          value: { terrain_warning: true },
+        }],
+      },
     }, loadFullSnapshot)).resolves.toBe("applied");
 
     expect(loadFullSnapshot).not.toHaveBeenCalled();
     expect(accumulator.snapshot).toMatchObject({
       ...conformance.initial_snapshot,
       session_revision: 9,
-      content_policy: "PreferRemote",
+      app_ui_state: {
+        ...conformance.initial_snapshot.app_ui_state,
+        ownship: { label: "GPS" },
+      },
       map_layer_state: { terrain_warning: true },
     });
   });

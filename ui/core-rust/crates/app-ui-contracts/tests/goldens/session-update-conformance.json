@@ -1,9 +1,14 @@
 {
-  "expected_contract_version": 1,
+  "expected_contract_version": 2,
   "initial_snapshot": {
-    "ui_contract_version": 1,
+    "ui_contract_version": 2,
     "session_revision": 7,
     "map_layer_state": { "nexrad": false },
+    "app_ui_state": {
+      "ownship": { "label": "NO GPS" },
+      "flight_data_banner": { "cells": [] }
+    },
+    "settings_page_state": { "rows": [{ "items": [{ "enabled": false }] }] },
     "debug_state": { "tile_labels": false },
     "unchanged": "retained"
   },
@@ -11,18 +16,25 @@
     {
       "name": "applies one replacement group",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
         "map": {
           "version": 3,
-          "fields": { "map_layer_state": { "nexrad": true } }
+          "assignments": [
+            { "path": ["map_layer_state"], "value": { "nexrad": true } }
+          ]
         }
       },
       "disposition": "applied",
       "expected_snapshot": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
         "map_layer_state": { "nexrad": true },
+        "app_ui_state": {
+          "ownship": { "label": "NO GPS" },
+          "flight_data_banner": { "cells": [] }
+        },
+        "settings_page_state": { "rows": [{ "items": [{ "enabled": false }] }] },
         "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
@@ -30,61 +42,93 @@
     {
       "name": "ignores a duplicate response",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
         "map": {
           "version": 3,
-          "fields": { "map_layer_state": { "nexrad": true } }
+          "assignments": [
+            { "path": ["map_layer_state"], "value": { "nexrad": true } }
+          ]
         }
       },
       "disposition": "stale",
       "expected_snapshot": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
         "map_layer_state": { "nexrad": true },
+        "app_ui_state": {
+          "ownship": { "label": "NO GPS" },
+          "flight_data_banner": { "cells": [] }
+        },
+        "settings_page_state": { "rows": [{ "items": [{ "enabled": false }] }] },
         "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
     },
     {
-      "name": "applies multiple groups atomically",
+      "name": "applies top-level and nested groups atomically",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 9,
         "map": {
           "version": 4,
-          "fields": { "map_layer_state": { "nexrad": false } }
+          "assignments": [
+            { "path": ["map_layer_state"], "value": { "nexrad": false } }
+          ]
         },
-        "debug": {
+        "ownship": {
           "version": 11,
-          "fields": { "debug_state": { "tile_labels": true } }
+          "assignments": [
+            { "path": ["app_ui_state", "ownship", "label"], "value": "GPS" }
+          ]
+        },
+        "flight_data": {
+          "version": 5,
+          "assignments": [
+            {
+              "path": ["settings_page_state", "rows", "0", "items", "0", "enabled"],
+              "value": true
+            }
+          ]
         }
       },
       "disposition": "applied",
       "expected_snapshot": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 9,
         "map_layer_state": { "nexrad": false },
-        "debug_state": { "tile_labels": true },
+        "app_ui_state": {
+          "ownship": { "label": "GPS" },
+          "flight_data_banner": { "cells": [] }
+        },
+        "settings_page_state": { "rows": [{ "items": [{ "enabled": true }] }] },
+        "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
     },
     {
       "name": "requires resynchronization across a revision gap",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 11,
         "status": {
           "version": 2,
-          "fields": { "data_status_state": { "summary": "changed" } }
+          "assignments": [
+            { "path": ["debug_state"], "value": { "summary": "changed" } }
+          ]
         }
       },
       "disposition": "resync_required",
       "expected_snapshot": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 9,
         "map_layer_state": { "nexrad": false },
-        "debug_state": { "tile_labels": true },
+        "app_ui_state": {
+          "ownship": { "label": "GPS" },
+          "flight_data_banner": { "cells": [] }
+        },
+        "settings_page_state": { "rows": [{ "items": [{ "enabled": true }] }] },
+        "debug_state": { "tile_labels": false },
         "unchanged": "retained"
       }
     }
@@ -92,35 +136,63 @@
   "invalid_updates": [
     {
       "name": "rejects string revisions",
-      "update": { "ui_contract_version": 1, "session_revision": "8" }
+      "update": { "ui_contract_version": 2, "session_revision": "8" }
     },
     {
       "name": "rejects another contract",
-      "update": { "ui_contract_version": 2, "session_revision": 8 }
+      "update": { "ui_contract_version": 3, "session_revision": 8 }
     },
     {
-      "name": "rejects non-object fields",
+      "name": "rejects non-array assignments",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
-        "map": { "version": 3, "fields": [] }
+        "map": { "version": 3, "assignments": {} }
       }
     },
     {
       "name": "rejects envelope replacement",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
-        "map": { "version": 3, "fields": { "session_revision": 99 } }
+        "map": {
+          "version": 3,
+          "assignments": [
+            { "path": ["session_revision"], "value": 99 }
+          ]
+        }
       }
     },
     {
-      "name": "rejects fields repeated across groups",
+      "name": "rejects overlapping paths across groups",
       "update": {
-        "ui_contract_version": 1,
+        "ui_contract_version": 2,
         "session_revision": 8,
-        "map": { "version": 3, "fields": { "shared": 1 } },
-        "status": { "version": 2, "fields": { "shared": 2 } }
+        "ownship": {
+          "version": 3,
+          "assignments": [
+            { "path": ["app_ui_state", "ownship"], "value": {} }
+          ]
+        },
+        "flight_data": {
+          "version": 2,
+          "assignments": [
+            { "path": ["app_ui_state", "ownship", "label"], "value": "GPS" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "rejects a missing path",
+      "update": {
+        "ui_contract_version": 2,
+        "session_revision": 8,
+        "map": {
+          "version": 3,
+          "assignments": [
+            { "path": ["missing", "field"], "value": true }
+          ]
+        }
       }
     }
   ]

@@ -55,9 +55,11 @@ class SessionUpdateAccumulatorTest {
         val initial = conformance.getValue("initial_snapshot").jsonObject
         val update = json.parseToJsonElement(
             """{
-                "ui_contract_version":1,
+                "ui_contract_version":2,
                 "session_revision":9,
-                "map":{"version":3,"fields":{"map_layer_state":{"nexrad":true}}}
+                "map":{"version":3,"assignments":[
+                    {"path":["map_layer_state"],"value":{"nexrad":true}}
+                ]}
             }""".trimIndent(),
         )
         assertEquals(SessionUpdateDisposition.ResyncRequired, accumulator.apply(update))
@@ -70,9 +72,11 @@ class SessionUpdateAccumulatorTest {
         val initial = conformance.getValue("initial_snapshot").jsonObject
         val update = json.parseToJsonElement(
             """{
-                "ui_contract_version":1,
+                "ui_contract_version":2,
                 "session_revision":9,
-                "map":{"version":3,"fields":{"map_layer_state":{"nexrad":true}}}
+                "map":{"version":3,"assignments":[
+                    {"path":["map_layer_state"],"value":{"nexrad":true}}
+                ]}
             }""".trimIndent(),
         )
         val fullSnapshot = kotlinx.serialization.json.JsonObject(

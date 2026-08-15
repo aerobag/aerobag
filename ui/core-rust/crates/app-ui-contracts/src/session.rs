@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -455,7 +455,15 @@ pub struct UiSessionPageContracts {
 #[serde(deny_unknown_fields)]
 pub struct UiSessionProjectionPatch {
     pub version: u64,
-    pub fields: Map<String, Value>,
+    pub assignments: Vec<UiSessionProjectionAssignment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiSessionProjectionAssignment {
+    pub path: Vec<String>,
+    pub value: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,7 +475,13 @@ pub struct UiSessionUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nav_data: Option<UiSessionProjectionPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub application: Option<UiSessionProjectionPatch>,
+    pub application_shell: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flight_plan: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownship: Option<UiSessionProjectionPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flight_data: Option<UiSessionProjectionPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub situation: Option<UiSessionProjectionPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -492,7 +506,10 @@ pub struct UiSessionUpdate {
 #[repr(usize)]
 pub enum UiSessionUpdateGroup {
     NavData,
-    Application,
+    ApplicationShell,
+    FlightPlan,
+    Ownship,
+    FlightData,
     Situation,
     Charts,
     Map,
@@ -505,7 +522,7 @@ pub enum UiSessionUpdateGroup {
 }
 
 impl UiSessionUpdateGroup {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 14;
 }
 
 impl UiSessionUpdate {
@@ -515,7 +532,13 @@ impl UiSessionUpdate {
     {
         [
             (UiSessionUpdateGroup::NavData, self.nav_data.as_ref()),
-            (UiSessionUpdateGroup::Application, self.application.as_ref()),
+            (
+                UiSessionUpdateGroup::ApplicationShell,
+                self.application_shell.as_ref(),
+            ),
+            (UiSessionUpdateGroup::FlightPlan, self.flight_plan.as_ref()),
+            (UiSessionUpdateGroup::Ownship, self.ownship.as_ref()),
+            (UiSessionUpdateGroup::FlightData, self.flight_data.as_ref()),
             (UiSessionUpdateGroup::Situation, self.situation.as_ref()),
             (UiSessionUpdateGroup::Charts, self.charts.as_ref()),
             (UiSessionUpdateGroup::Map, self.map.as_ref()),

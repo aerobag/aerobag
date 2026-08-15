@@ -88,3 +88,38 @@ Narrow core projection scope first, then decompose platform landing:
    prepare/validate/commit boundary or another thread/Worker.
 
 No additional lock, thread, or Worker is justified by this baseline alone.
+
+## 2026-08-15 Narrow-Projection Result
+
+The same hermetic Android journey was repeated after replacing top-level field
+replacement with strict generated path assignments and splitting the aggregate
+application group into `application_shell`, `flight_plan`, `ownship`, and
+`flight_data`. Data Status and Cloud now advance their wire projections only
+when their rendered models change, and the settings group no longer owns
+dynamic flight-data values.
+
+A warm 128-update sample measured:
+
+| Measurement | Before | After |
+|---|---:|---:|
+| Mean update JSON | 30,352 bytes | 2,612 bytes |
+| Mean accumulated snapshot JSON | 33,714 bytes | 32,895 bytes |
+| Update/snapshot ratio | 90.0% | 7.9% |
+| Mean accumulator merge | 190 us | 488 us |
+| Mean full Kotlin model decode | 1,430 us | 4,195 us |
+| Mean snapshot publication | 26 us | 41 us |
+
+The after-sample group counts were `situation=61`, `status=25`,
+`flight_plan=6`, `map=5`, `flight_data=1`, and `charts=1`.
+`application_shell`, `settings`, and `cloud` did not appear. Unchanged rendered
+state commonly produced only a 48-byte revision envelope; routine situation
+updates were about 760 bytes.
+
+The emulator timing columns are noisy debug-build measurements and do not show
+an Android decode improvement yet. In fact, Android still decodes the complete
+accumulated Kotlin snapshot after every update. The payload result is the
+actionable result of this slice: wire volume fell by about 91%, while core's
+debug projection mean remained comparable to the baseline. The next measured
+target is platform landing work, beginning with group-scoped Android decode and
+publication and then moving web accumulation to the render-state side of the
+Worker boundary.

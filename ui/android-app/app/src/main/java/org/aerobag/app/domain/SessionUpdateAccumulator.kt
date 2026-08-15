@@ -5,6 +5,7 @@
 package org.aerobag.app.domain
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -67,10 +68,10 @@ internal class SessionUpdateAccumulator(
         if (update.sessionRevision <= currentRevision) return SessionUpdateDisposition.Stale
         if (update.sessionRevision != currentRevision + 1) return SessionUpdateDisposition.ResyncRequired
 
-        val nextFields = linkedMapOf<String, JsonElement>()
+        var nextSnapshot: JsonElement = snapshot
+        val assignedPaths = mutableListOf<List<String>>()
         val nextVersions = mutableListOf<Pair<UiSessionUpdateGroup, Long>>()
         for ((group, patch) in update.projectionPatches()) {
-            val fields = patch.fields
             val previousVersion = groupVersions[group]
             if (previousVersion != null && patch.version <= previousVersion) {
                 throw SessionUpdateContractException(
@@ -78,23 +79,35 @@ internal class SessionUpdateAccumulator(
                         "does not advance $previousVersion",
                 )
             }
-            for ((field, fieldValue) in fields) {
-                if (field in ENVELOPE_FIELDS) {
+            for ((index, assignment) in patch.assignments.withIndex()) {
+                val envelopeField = assignment.path.first()
+                if (envelopeField in ENVELOPE_FIELDS) {
                     throw SessionUpdateContractException(
-                        "session update ${group.wireName} cannot replace envelope field $field",
+                        "session update ${group.wireName} cannot replace envelope field $envelopeField",
                     )
                 }
-                if (nextFields.put(field, fieldValue) != null) {
+                val overlap = assignedPaths.firstOrNull { pathsOverlap(it, assignment.path) }
+                if (overlap != null) {
                     throw SessionUpdateContractException(
-                        "session update field $field appears in multiple groups",
+                        "session update path ${assignment.path.joinToString("/")} " +
+                            "overlaps ${overlap.joinToString("/")}",
                     )
                 }
+                nextSnapshot = replaceAtPath(
+                    nextSnapshot,
+                    assignment.path,
+                    0,
+                    assignment.value,
+                    "session update ${group.wireName} assignment $index",
+                )
+                assignedPaths += assignment.path
             }
             nextVersions += group to patch.version
         }
 
         snapshot = JsonObject(
-            snapshot + nextFields + mapOf(
+            (nextSnapshot as? JsonObject
+                ?: throw SessionUpdateContractException("session update result must be an object")) + mapOf(
                 "ui_contract_version" to JsonPrimitive(update.uiContractVersion),
                 "session_revision" to JsonPrimitive(update.sessionRevision),
             ),
@@ -123,17 +136,81 @@ internal class SessionUpdateAccumulator(
                 )
             rejectUnknownKeys(
                 patchObject,
-                setOf("version", "fields"),
+                setOf("version", "assignments"),
                 "session update ${group.wireName} patch",
             )
             patchObject.wireLong("version")
-            if (patchObject["fields"] !is JsonObject) {
+            val assignments = patchObject["assignments"] as? JsonArray
+            if (assignments == null) {
                 throw SessionUpdateContractException(
-                    "session update ${group.wireName} fields must be a JSON object",
+                    "session update ${group.wireName} assignments must be an array",
                 )
+            }
+            assignments.forEachIndexed { index, assignmentValue ->
+                val label = "session update ${group.wireName} assignment $index"
+                val assignment = assignmentValue as? JsonObject
+                    ?: throw SessionUpdateContractException("$label must be an object")
+                rejectUnknownKeys(assignment, setOf("path", "value"), label)
+                val path = assignment["path"] as? JsonArray
+                    ?: throw SessionUpdateContractException("$label path must be a nonempty array")
+                if (path.isEmpty()) {
+                    throw SessionUpdateContractException("$label path must be a nonempty array")
+                }
+                if (path.any { segment ->
+                        segment !is JsonPrimitive || !segment.isString || segment.content.isEmpty()
+                    }
+                ) {
+                    throw SessionUpdateContractException(
+                        "$label path segments must be nonempty strings",
+                    )
+                }
+                if ("value" !in assignment) {
+                    throw SessionUpdateContractException("$label must contain value")
+                }
             }
         }
         return json.decodeFromJsonElement(UiSessionUpdate.serializer(), update)
+    }
+
+    private fun pathsOverlap(left: List<String>, right: List<String>): Boolean =
+        (0 until minOf(left.size, right.size)).all { index -> left[index] == right[index] }
+
+    private fun replaceAtPath(
+        current: JsonElement,
+        path: List<String>,
+        offset: Int,
+        value: JsonElement,
+        label: String,
+    ): JsonElement {
+        if (offset == path.size) return value
+        val segment = path[offset]
+        return when (current) {
+            is JsonObject -> {
+                val child = current[segment]
+                    ?: throw SessionUpdateContractException(
+                        "$label path does not exist at $segment",
+                    )
+                JsonObject(current + (segment to replaceAtPath(child, path, offset + 1, value, label)))
+            }
+            is JsonArray -> {
+                val index = segment.toIntOrNull()
+                    ?.takeIf { it >= 0 && it.toString() == segment }
+                    ?: throw SessionUpdateContractException(
+                        "$label path segment $segment is not an array index",
+                    )
+                if (index !in current.indices) {
+                    throw SessionUpdateContractException("$label array index $index is out of range")
+                }
+                JsonArray(current.mapIndexed { childIndex, child ->
+                    if (childIndex == index) {
+                        replaceAtPath(child, path, offset + 1, value, label)
+                    } else {
+                        child
+                    }
+                })
+            }
+            else -> throw SessionUpdateContractException("$label path parent must be an object or array")
+        }
     }
 
     private fun sanitizeFullSnapshot(value: JsonElement): JsonObject {

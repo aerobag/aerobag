@@ -1,11 +1,30 @@
 {
   "$defs": {
+    "UiSessionProjectionAssignment": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "value": true
+      },
+      "required": [
+        "path",
+        "value"
+      ],
+      "type": "object"
+    },
     "UiSessionProjectionPatch": {
       "additionalProperties": false,
       "properties": {
-        "fields": {
-          "additionalProperties": true,
-          "type": "object"
+        "assignments": {
+          "items": {
+            "$ref": "#/$defs/UiSessionProjectionAssignment"
+          },
+          "type": "array"
         },
         "version": {
           "format": "uint64",
@@ -15,7 +34,7 @@
       },
       "required": [
         "version",
-        "fields"
+        "assignments"
       ],
       "type": "object"
     }
@@ -25,7 +44,7 @@
   "additionalProperties": false,
   "description": "Core-owned revisioned partial session update contract.",
   "properties": {
-    "application": {
+    "application_shell": {
       "anyOf": [
         {
           "$ref": "#/$defs/UiSessionProjectionPatch"
@@ -65,6 +84,26 @@
         }
       ]
     },
+    "flight_data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "flight_plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "home": {
       "anyOf": [
         {
@@ -86,6 +125,16 @@
       ]
     },
     "nav_data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionProjectionPatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ownship": {
       "anyOf": [
         {
           "$ref": "#/$defs/UiSessionProjectionPatch"
@@ -152,8 +201,9 @@
   ],
   "title": "UiSessionUpdate",
   "type": "object",
-  "x-contract-version": 1,
+  "x-contract-version": 2,
   "x-export-order": [
+    "UiSessionProjectionAssignment",
     "UiSessionProjectionPatch",
     "UiSessionUpdate"
   ]

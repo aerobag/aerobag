@@ -449,14 +449,34 @@ group. Full methodology and results are in
 
 This slice added no lock, thread, Worker, or platform domain policy.
 
+## Completed Seventeenth Slice
+
+The seventeenth slice made revisioned updates materially narrow. UI wire
+contract version 2 replaced top-level field maps with generated, validated path
+assignments. Core split `application` into `application_shell`, `flight_plan`,
+`ownship`, and `flight_data`; the latter also owns the dynamic flight-data row
+inside Settings. Static settings changes remain in the settings group.
+
+Cloud and Data Status controllers now retain semantic projection revisions:
+clock or model inputs can force a projection computation without advancing the
+wire group when the rendered output is unchanged. Application dependencies use
+the actual projected ownship, flight-plan, and flight-data models, so clock
+ticks likewise emit patches only when visible values change. Shared web and
+Android conformance data exercises top-level, nested-object, and nested-array
+assignments and rejects missing, envelope, duplicate, and overlapping paths.
+
+On the same 128-update Android journey, mean update size fell from 90.0% to
+7.9% of the accumulated snapshot. Full results are in
+[`session-update-measurements.md`](session-update-measurements.md).
+
 ## Next Slice
 
-Split the cross-domain application update into generated nested projections,
-replace raw-clock dependency stamps with semantic/display-granularity tokens,
-and separate dynamic flight-data choices from static settings-page state. After
-the resulting payloads are demonstrably narrow, move web accumulation to the
-render-state side of the Worker boundary and introduce group-scoped Android
-decode/listener surfaces. Re-measure before staging or scheduling heavy work.
+Exploit the now-narrow patches at platform landing boundaries. Introduce
+group-scoped Android decode/listener surfaces so a situation-only patch does not
+decode and publish the complete Kotlin snapshot. Then move web accumulation to
+the render-state side of the Worker boundary so narrow core updates do not turn
+back into full snapshots before structured clone. Re-measure both platforms
+before staging or scheduling heavy work.
 
 ## Relationship To Work Scheduling
 

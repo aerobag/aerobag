@@ -61,6 +61,7 @@ pub(crate) struct CloudDomainUpdates {
 pub(crate) struct CloudController {
     model: CloudModel,
     projection_cache: Option<CloudProjectionCache>,
+    projection_revision: u64,
 }
 
 impl Default for CloudController {
@@ -77,11 +78,16 @@ impl CloudController {
                 revision: 0,
             },
             projection_cache: None,
+            projection_revision: 0,
         }
     }
 
     pub fn revision(&self) -> u64 {
         self.model.revision
+    }
+
+    pub fn projection_revision(&self) -> u64 {
+        self.projection_revision
     }
 
     pub fn checkpoint_model(&self) -> CloudModelCheckpoint {
@@ -92,7 +98,6 @@ impl CloudController {
 
     pub fn rollback_model(&mut self, checkpoint: CloudModelCheckpoint) {
         self.model = checkpoint.model;
-        self.projection_cache = None;
     }
 
     pub fn persistent(&self) -> &CloudPersistentState {
@@ -281,6 +286,13 @@ impl CloudController {
             status_summary: self.engine().status_summary(input.now_epoch_ms),
             status_record: self.engine().status_record(input.now_epoch_ms),
         };
+        if self
+            .projection_cache
+            .as_ref()
+            .is_none_or(|cache| cache.projection != projection)
+        {
+            self.projection_revision = self.projection_revision.saturating_add(1);
+        }
         self.projection_cache = Some(CloudProjectionCache {
             revision: self.model.revision,
             input,
@@ -312,7 +324,6 @@ impl CloudController {
 
     fn note_change(&mut self) {
         self.model.revision = self.model.revision.saturating_add(1);
-        self.projection_cache = None;
     }
 }
 
@@ -329,6 +340,7 @@ mod tests {
             qr_scanner_available: false,
         };
         assert!(controller.project(input).rebuilt);
+        let initial_projection_revision = controller.projection_revision();
         assert!(!controller.project(input).rebuilt);
         assert!(
             controller
@@ -337,6 +349,10 @@ mod tests {
                     ..input
                 })
                 .rebuilt
+        );
+        assert_eq!(
+            controller.projection_revision(),
+            initial_projection_revision
         );
         assert!(
             controller

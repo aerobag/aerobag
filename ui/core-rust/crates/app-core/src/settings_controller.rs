@@ -148,12 +148,14 @@ struct SettingsProjectionCache {
 pub(crate) struct SettingsController {
     preferences: SettingsPreferences,
     revision: u64,
+    static_revision: u64,
     projection_cache: Option<SettingsProjectionCache>,
 }
 
 pub(crate) struct SettingsModelCheckpoint {
     preferences: SettingsPreferences,
     revision: u64,
+    static_revision: u64,
 }
 
 impl SettingsController {
@@ -161,16 +163,22 @@ impl SettingsController {
         self.revision
     }
 
+    pub fn static_revision(&self) -> u64 {
+        self.static_revision
+    }
+
     pub fn checkpoint_model(&self) -> SettingsModelCheckpoint {
         SettingsModelCheckpoint {
             preferences: self.preferences.clone(),
             revision: self.revision,
+            static_revision: self.static_revision,
         }
     }
 
     pub fn rollback_model(&mut self, checkpoint: SettingsModelCheckpoint) {
         self.preferences = checkpoint.preferences;
         self.revision = checkpoint.revision;
+        self.static_revision = checkpoint.static_revision;
         self.projection_cache = None;
     }
 
@@ -179,11 +187,17 @@ impl SettingsController {
     }
 
     pub fn restore_preferences(&mut self, preferences: SettingsPreferences) -> bool {
-        if self.preferences == preferences {
+        let static_changed = self.preferences.display_dim_timeout
+            != preferences.display_dim_timeout
+            || self.preferences.accepted_disclaimer_agreement_ids
+                != preferences.accepted_disclaimer_agreement_ids;
+        let flight_data_changed = self.preferences.disabled_flight_data_cell_ids
+            != preferences.disabled_flight_data_cell_ids;
+        if !static_changed && !flight_data_changed {
             return false;
         }
         self.preferences = preferences;
-        self.note_change();
+        self.note_change(static_changed);
         true
     }
 
@@ -192,7 +206,7 @@ impl SettingsController {
         action: &UiSettingsAction,
         display_policy_available: bool,
     ) -> AppResult<bool> {
-        let changed = match action.action_id.as_str() {
+        let (changed, static_changed) = match action.action_id.as_str() {
             DISPLAY_DIM_TIMEOUT_ACTION_ID => {
                 if !display_policy_available {
                     return Err(invalid_settings_action(&action.action_id));
@@ -202,10 +216,10 @@ impl SettingsController {
                         invalid_settings_action_value(&action.action_id, &action.value_id)
                     })?;
                 if self.preferences.display_dim_timeout == timeout {
-                    false
+                    (false, false)
                 } else {
                     self.preferences.display_dim_timeout = timeout;
-                    true
+                    (true, true)
                 }
             }
             FLIGHT_DATA_VISIBILITY_ACTION_ID => {
@@ -224,12 +238,12 @@ impl SettingsController {
                         .disabled_flight_data_cell_ids
                         .insert(action.value_id.clone());
                 }
-                true
+                (true, false)
             }
             _ => return Err(invalid_settings_action(&action.action_id)),
         };
         if changed {
-            self.note_change();
+            self.note_change(static_changed);
         }
         Ok(changed)
     }
@@ -246,7 +260,7 @@ impl SettingsController {
             .accepted_disclaimer_agreement_ids
             .insert(agreement_id.to_string());
         if changed {
-            self.note_change();
+            self.note_change(true);
         }
         Ok(changed)
     }
@@ -305,8 +319,11 @@ impl SettingsController {
         }
     }
 
-    fn note_change(&mut self) {
+    fn note_change(&mut self, static_changed: bool) {
         self.revision = self.revision.wrapping_add(1);
+        if static_changed {
+            self.static_revision = self.static_revision.wrapping_add(1);
+        }
         self.projection_cache = None;
     }
 }
@@ -621,6 +638,7 @@ mod tests {
             )
             .expect("display action"));
         assert_eq!(controller.revision(), 1);
+        assert_eq!(controller.static_revision(), 1);
         assert!(controller.project(true, &input, &debug).rebuilt);
 
         assert!(!controller
@@ -644,6 +662,7 @@ mod tests {
             )
             .expect("visibility action"));
         assert_eq!(controller.revision(), 2);
+        assert_eq!(controller.static_revision(), 1);
         let projection = controller.project(true, &input, &debug).projection;
         assert!(!projection
             .flight_data_banner

@@ -2,15 +2,20 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use app_ui_contracts::session::{ClientBuildInfo, UiChartPageState, UiDebugState};
+use app_ui_contracts::session::{UiChartPageState, UiDebugState, UiSettingsGridItem};
 
-use crate::{session::AltitudePlannerWindSelection, ContentPolicy, ContentReport, TimeDisplayMode};
+use crate::{
+    ContentPolicy, ContentReport, FlightDataBannerModel, FlightPlanUiState, OwnshipUiState,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SessionProjectionVersions {
     pub envelope: u64,
     pub nav_data: u64,
-    pub application: u64,
+    pub application_shell: u64,
+    pub flight_plan: u64,
+    pub ownship: u64,
+    pub flight_data: u64,
     pub situation: u64,
     pub charts: u64,
     pub map: u64,
@@ -23,29 +28,21 @@ pub(crate) struct SessionProjectionVersions {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FlightDataBannerProjectionDependencies {
-    pub flight_plan_revision: u64,
-    pub flight_plan_route_revision: u64,
-    pub situation_revision: u64,
-    pub weather_revision: u64,
-    pub map_revision: u64,
-    pub nav_data_generation: u64,
-    pub cloud_revision: u64,
-    pub wall_clock_epoch_ms: i64,
-    pub local_time_zone: Option<String>,
-    pub wind_selection: AltitudePlannerWindSelection,
-    pub time_display_mode: TimeDisplayMode,
+pub(crate) struct ApplicationShellProjectionDependencies {
+    pub content_policy: ContentPolicy,
+    pub last_content_report: Option<ContentReport>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ApplicationProjectionDependencies {
-    pub flight_data_banner: FlightDataBannerProjectionDependencies,
-    pub settings_revision: u64,
-    pub content_policy: ContentPolicy,
-    pub last_content_report: Option<ContentReport>,
-    pub bad_autopilot_enabled: bool,
-    pub internet_adsb_enabled: bool,
-    pub internet_adsb_registration: Option<String>,
+pub(crate) struct FlightPlanProjectionDependencies {
+    pub route_revision: u64,
+    pub active_plan: Option<FlightPlanUiState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FlightDataProjectionDependencies {
+    pub banner: FlightDataBannerModel,
+    pub settings_items: Vec<UiSettingsGridItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,30 +61,20 @@ pub(crate) struct MapProjectionDependencies {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StatusProjectionDependencies {
     pub data_status_revision: u64,
-    pub nav_data_revision: u64,
-    pub package_revision: u64,
-    pub cloud_revision: u64,
-    pub weather_revision: u64,
-    pub wall_clock_epoch_ms: i64,
-    pub time_display_mode: TimeDisplayMode,
-    pub client_build: Option<ClientBuildInfo>,
-    pub cloud_available: bool,
+    pub page_projection_revision: u64,
     pub next_freshness_check_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SettingsProjectionDependencies {
-    pub settings_revision: u64,
+    pub static_revision: u64,
     pub display_policy_available: bool,
-    pub flight_data_banner: FlightDataBannerProjectionDependencies,
     pub debug_state: UiDebugState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CloudProjectionDependencies {
-    pub cloud_revision: u64,
-    pub wall_clock_epoch_ms: i64,
-    pub qr_scanner_available: bool,
+    pub projection_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +87,10 @@ pub(crate) struct HomeProjectionDependencies {
 pub(crate) struct SessionProjectionDependencies {
     pub envelope: u64,
     pub nav_data: NavDataProjectionDependencies,
-    pub application: ApplicationProjectionDependencies,
+    pub application_shell: ApplicationShellProjectionDependencies,
+    pub flight_plan: FlightPlanProjectionDependencies,
+    pub ownship: OwnshipUiState,
+    pub flight_data: FlightDataProjectionDependencies,
     pub situation: u64,
     pub charts: UiChartPageState,
     pub map: MapProjectionDependencies,
@@ -139,9 +129,24 @@ impl SessionProjectionVersionState {
             &dependencies.nav_data,
         );
         advance_if_changed(
-            &mut self.versions.application,
-            &previous.application,
-            &dependencies.application,
+            &mut self.versions.application_shell,
+            &previous.application_shell,
+            &dependencies.application_shell,
+        );
+        advance_if_changed(
+            &mut self.versions.flight_plan,
+            &previous.flight_plan,
+            &dependencies.flight_plan,
+        );
+        advance_if_changed(
+            &mut self.versions.ownship,
+            &previous.ownship,
+            &dependencies.ownship,
+        );
+        advance_if_changed(
+            &mut self.versions.flight_data,
+            &previous.flight_data,
+            &dependencies.flight_data,
         );
         advance_if_changed(
             &mut self.versions.situation,
@@ -206,36 +211,14 @@ mod tests {
         }
     }
 
-    fn flight_data_banner_dependencies() -> FlightDataBannerProjectionDependencies {
-        FlightDataBannerProjectionDependencies {
-            flight_plan_revision: 0,
-            flight_plan_route_revision: 0,
-            situation_revision: 0,
-            weather_revision: 0,
-            map_revision: 0,
-            nav_data_generation: 0,
-            cloud_revision: 0,
-            wall_clock_epoch_ms: 0,
-            local_time_zone: None,
-            wind_selection: AltitudePlannerWindSelection::NoWind,
-            time_display_mode: TimeDisplayMode::Local,
-        }
-    }
-
-    fn application_dependencies() -> ApplicationProjectionDependencies {
-        ApplicationProjectionDependencies {
-            flight_data_banner: flight_data_banner_dependencies(),
-            settings_revision: 0,
+    fn application_shell_dependencies() -> ApplicationShellProjectionDependencies {
+        ApplicationShellProjectionDependencies {
             content_policy: ContentPolicy::PreferLocal,
             last_content_report: None,
-            bad_autopilot_enabled: false,
-            internet_adsb_enabled: false,
-            internet_adsb_registration: None,
         }
     }
 
     fn dependencies() -> SessionProjectionDependencies {
-        let application = application_dependencies();
         SessionProjectionDependencies {
             envelope: 0,
             nav_data: NavDataProjectionDependencies {
@@ -243,7 +226,22 @@ mod tests {
                 package_revision: 0,
                 next_maintenance_epoch_ms: None,
             },
-            application,
+            application_shell: application_shell_dependencies(),
+            flight_plan: FlightPlanProjectionDependencies {
+                route_revision: 0,
+                active_plan: None,
+            },
+            ownship: {
+                let ownship = crate::OwnshipState::default();
+                OwnshipUiState {
+                    render: ownship.render,
+                    controls: ownship.controls,
+                }
+            },
+            flight_data: FlightDataProjectionDependencies {
+                banner: FlightDataBannerModel::default(),
+                settings_items: Vec::new(),
+            },
             situation: 0,
             charts: chart_state(),
             map: MapProjectionDependencies {
@@ -252,20 +250,12 @@ mod tests {
             },
             status: StatusProjectionDependencies {
                 data_status_revision: 0,
-                nav_data_revision: 0,
-                package_revision: 0,
-                cloud_revision: 0,
-                weather_revision: 0,
-                wall_clock_epoch_ms: 0,
-                time_display_mode: TimeDisplayMode::Local,
-                client_build: None,
-                cloud_available: false,
+                page_projection_revision: 0,
                 next_freshness_check_epoch_ms: None,
             },
             settings: SettingsProjectionDependencies {
-                settings_revision: 0,
+                static_revision: 0,
                 display_policy_available: false,
-                flight_data_banner: flight_data_banner_dependencies(),
                 debug_state: UiDebugState {
                     tile_labels: false,
                     nexrad_tile_labels: false,
@@ -280,9 +270,7 @@ mod tests {
                 },
             },
             cloud: CloudProjectionDependencies {
-                cloud_revision: 0,
-                wall_clock_epoch_ms: 0,
-                qr_scanner_available: false,
+                projection_revision: 0,
             },
             packages: 0,
             home: HomeProjectionDependencies {
@@ -329,8 +317,31 @@ mod tests {
         assert_group_change!(nav_data, |value: &mut SessionProjectionDependencies| {
             value.nav_data.nav_data_revision += 1;
         });
-        assert_group_change!(application, |value: &mut SessionProjectionDependencies| {
-            value.application.settings_revision += 1;
+        assert_group_change!(
+            application_shell,
+            |value: &mut SessionProjectionDependencies| {
+                value.application_shell.content_policy = ContentPolicy::StreamAllowed;
+            }
+        );
+        assert_group_change!(flight_plan, |value: &mut SessionProjectionDependencies| {
+            value.flight_plan.route_revision += 1;
+        });
+        assert_group_change!(ownship, |value: &mut SessionProjectionDependencies| {
+            value.ownship.render.draw_aircraft = true;
+        });
+        assert_group_change!(flight_data, |value: &mut SessionProjectionDependencies| {
+            value
+                .flight_data
+                .banner
+                .cells
+                .push(app_ui_contracts::session::FlightDataCell {
+                    id: "ground_speed".to_string(),
+                    label: "GS".to_string(),
+                    value: Some("120".to_string()),
+                    action_id: None,
+                    tone: Default::default(),
+                    estimate_kind: Default::default(),
+                });
         });
         assert_group_change!(situation, |value: &mut SessionProjectionDependencies| {
             value.situation += 1;
@@ -345,10 +356,10 @@ mod tests {
             value.status.data_status_revision += 1;
         });
         assert_group_change!(settings, |value: &mut SessionProjectionDependencies| {
-            value.settings.settings_revision += 1;
+            value.settings.static_revision += 1;
         });
         assert_group_change!(cloud, |value: &mut SessionProjectionDependencies| {
-            value.cloud.cloud_revision += 1;
+            value.cloud.projection_revision += 1;
         });
         assert_group_change!(packages, |value: &mut SessionProjectionDependencies| {
             value.packages += 1;

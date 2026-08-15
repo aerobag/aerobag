@@ -1350,6 +1350,11 @@ internal fun OwnshipTextActionControl(
     LaunchedEffect(control.actionId, control.value) {
         value = control.value
     }
+    val submitAction = rememberCurrentAction {
+        if (control.enabled) {
+            onSubmit(control.actionId, value)
+        }
+    }
     val uiTheme = LocalAerobagUiTheme.current
     Column(
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1379,7 +1384,7 @@ internal fun OwnshipTextActionControl(
                     imeAction = ImeAction.Go,
                 ),
                 keyboardActions = KeyboardActions(
-                    onGo = { if (control.enabled) onSubmit(control.actionId, value) },
+                    onGo = { submitAction() },
                 ),
                 decorationBox = { innerTextField ->
                     Box(

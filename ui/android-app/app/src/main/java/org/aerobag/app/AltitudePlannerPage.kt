@@ -486,6 +486,7 @@ private fun DepartureTextField(
     onDone: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val doneAction = rememberCurrentAction(onDone)
     Surface(
         modifier = Modifier
             .width(ThumbSize * 0.9f)
@@ -513,7 +514,7 @@ private fun DepartureTextField(
                 textAlign = TextAlign.Center,
             ),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { onDone() }),
+            keyboardActions = KeyboardActions(onDone = { doneAction() }),
             decorationBox = { inner ->
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     inner()

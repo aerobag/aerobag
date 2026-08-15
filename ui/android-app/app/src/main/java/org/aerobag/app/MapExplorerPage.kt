@@ -5200,6 +5200,7 @@ internal fun AirportInsertPanel(
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val submitAction = rememberCurrentAction(onSubmit)
     LaunchedEffect(state.rowUid, state.before) {
         focusRequester.requestFocus()
         keyboardController?.show()
@@ -5242,7 +5243,7 @@ internal fun AirportInsertPanel(
                                     privateImeOptions = "com.google.android.inputmethod.latin.forceAscii",
                                 ),
                         ),
-                    keyboardActions = KeyboardActions(onDone = { onSubmit() }),
+                    keyboardActions = KeyboardActions(onDone = { submitAction() }),
                     textStyle =
                         MaterialTheme.typography.headlineMedium.copy(
                             color = Color(0xFF132129),
@@ -5259,7 +5260,7 @@ internal fun AirportInsertPanel(
                             .border(1.dp, Color(0x334E626C), RoundedCornerShape(ThumbRadius))
                             .padding(horizontal = ThumbGap, vertical = ThumbSize * 0.18f),
                 )
-                CompactSquareButton(label = "Enter", modifier = Modifier.width(ThumbSize * 1.4f).height(ThumbSize), onClick = onSubmit)
+                CompactSquareButton(label = "Enter", modifier = Modifier.width(ThumbSize * 1.4f).height(ThumbSize), onClick = submitAction)
             }
             if (state.error != null) {
                 Text(

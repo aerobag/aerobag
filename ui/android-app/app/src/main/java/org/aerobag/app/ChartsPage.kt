@@ -1408,6 +1408,10 @@ internal fun AndroidChartSearchBox(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val submitAction = rememberCurrentAction {
+        keyboardController?.hide()
+        onSubmit()
+    }
     val showTray = open && (text.isNotBlank() || loading || error != null || suggestions.isNotEmpty())
     Box {
         BasicTextField(
@@ -1428,8 +1432,7 @@ internal fun AndroidChartSearchBox(
             keyboardActions =
                 KeyboardActions(
                     onDone = {
-                        keyboardController?.hide()
-                        onSubmit()
+                        submitAction()
                     },
                 ),
             textStyle =
@@ -1451,8 +1454,7 @@ internal fun AndroidChartSearchBox(
                         if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN &&
                             event.nativeKeyEvent.keyCode == AndroidKeyEvent.KEYCODE_ENTER
                         ) {
-                            keyboardController?.hide()
-                            onSubmit()
+                            submitAction()
                             true
                         } else {
                             false

@@ -321,6 +321,12 @@ import kotlin.math.sin
 
 private var activeActionToast: Toast? = null
 
+@Composable
+internal fun rememberCurrentAction(action: () -> Unit): () -> Unit {
+    val currentAction = rememberUpdatedState(action)
+    return remember { { currentAction.value() } }
+}
+
 internal fun showActionToast(context: Context, message: String?, long: Boolean = false) {
     val text = message?.trim()?.takeIf { it.isNotEmpty() } ?: return
     activeActionToast?.cancel()

@@ -1545,6 +1545,7 @@ internal fun FlightPlanRouteEntryRow(
     onSubmit: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val submitAction = rememberCurrentAction(onSubmit)
     val fieldShape = RoundedCornerShape(ThumbRadius * 0.82f)
     val neutralTextColor = uiTheme.controls.panelFg
     val recognizedTextColor = Color(0xFF12683C)
@@ -1579,7 +1580,7 @@ internal fun FlightPlanRouteEntryRow(
                             privateImeOptions = "com.google.android.inputmethod.latin.forceAscii",
                         ),
                 ),
-            keyboardActions = KeyboardActions(onDone = { onSubmit() }),
+            keyboardActions = KeyboardActions(onDone = { submitAction() }),
             textStyle =
                 MaterialTheme.typography.titleMedium.copy(
                     color = neutralTextColor,
@@ -1605,7 +1606,7 @@ internal fun FlightPlanRouteEntryRow(
                             return@onPreviewKeyEvent false
                         }
                         if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN) {
-                            onSubmit()
+                            submitAction()
                         }
                         true
                     }

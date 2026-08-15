@@ -642,6 +642,159 @@ class NativeSessionCommandRejectedException(
     cause,
 )
 
+private fun landSessionUpdate(
+    previous: UiSessionSnapshot,
+    accumulatedSnapshot: JsonObject,
+    application: SessionUpdateApplication,
+    json: Json,
+): UiSessionSnapshot {
+    if (application.installedFullSnapshot) {
+        return json.decodeFromJsonElement<WireUiSessionSnapshot>(accumulatedSnapshot).toUi()
+    }
+    if (application.disposition != SessionUpdateDisposition.Applied) return previous
+
+    var next = previous.copy(
+        sessionRevision = accumulatedSnapshot.getValue("session_revision").jsonPrimitive.content.toLong(),
+    )
+    for (path in application.changedPaths.sortedBy { it.joinToString("/") }) {
+        val value = accumulatedSnapshot.valueAtPath(path)
+        next = when (path.first()) {
+            "flight_plan_route_revision" -> next.copy(
+                flightPlanRouteRevision = value.jsonPrimitive.content.toLong(),
+            )
+            "nav_data_epoch" -> next.copy(navDataEpoch = value.jsonPrimitive.content.toLong())
+            "active_nav_db" -> next.copy(
+                activeNavDb = json.decodeFromJsonElement<WireUiNavDbIdentity?>(value)?.toUi(),
+            )
+            "next_nav_db_maintenance_epoch_ms" -> next.copy(
+                nextNavDbMaintenanceEpochMs = json.decodeFromJsonElement<Long?>(value),
+            )
+            "app_ui_state" -> next.copy(
+                appUiState = landAppUiState(next.appUiState, path, value, json),
+            )
+            "playback_ui_state" -> next.copy(
+                playbackUiState = json.decodeFromJsonElement<WirePlaybackUiState>(value).toUi(),
+            )
+            "playback_panel_state" -> next.copy(
+                playbackPanelState = json.decodeFromJsonElement<WireUiPlaybackPanelState>(value).toUi(),
+            )
+            "map_follow_ui_state" -> next.copy(
+                mapFollowUiState = json.decodeFromJsonElement<WireMapFollowUiState>(value).toUi(),
+            )
+            "map_follow_target_viewport" -> next.copy(
+                mapFollowTargetViewport = json.decodeFromJsonElement<WireMapViewport?>(value)?.toUi(),
+            )
+            "chart_page_state" -> next.copy(
+                chartPageState = json.decodeFromJsonElement<WireUiChartPageState>(value).toUi(),
+            )
+            "map_layer_state" -> next.copy(
+                mapLayerState = json.decodeFromJsonElement<WireUiMapLayerState>(value).toUi(),
+            )
+            "data_status_state" -> next.copy(
+                dataStatusState = json.decodeFromJsonElement<WireUiDataStatusState>(value).toUi(),
+            )
+            "data_status_page_state" -> next.copy(
+                dataStatusPageState = json.decodeFromJsonElement<WireUiDataStatusPageState>(value).toUi(),
+            )
+            "settings_page_state" -> next.copy(
+                settingsPageState = landSettingsPageState(next.settingsPageState, path, value, json),
+            )
+            "cloud_page_state" -> next.copy(
+                cloudPageState = json.decodeFromJsonElement<UiCloudPageState>(value),
+            )
+            "offline_package_preferences_json" -> next.copy(
+                offlinePackagePreferencesJson = value.jsonPrimitive.content,
+            )
+            "home_page_state" -> next.copy(
+                homePageState = json.decodeFromJsonElement<UiHomePageState>(value),
+            )
+            "display_policy" -> next.copy(
+                displayPolicy = json.decodeFromJsonElement<WireUiDisplayPolicy?>(value)?.toUi(),
+            )
+            "disclaimer_state" -> next.copy(
+                disclaimerState = json.decodeFromJsonElement<WireUiDisclaimerState>(value).toUi(),
+            )
+            "debug_state" -> next.copy(
+                debugState = json.decodeFromJsonElement<WireUiDebugState>(value).toUi(),
+            )
+            "raster_map" -> next.copy(
+                rasterMap = json.decodeFromJsonElement<WireRasterMapUiState?>(value)?.toUi(),
+            )
+            "next_cycle_product_freshness_check_epoch_ms" -> next.copy(
+                nextCycleProductFreshnessCheckEpochMs = json.decodeFromJsonElement<Long?>(value),
+            )
+            else -> throw SessionUpdateContractException(
+                "Android has no model lander for session update path ${path.joinToString("/")}",
+            )
+        }
+    }
+    return next
+}
+
+private fun landAppUiState(
+    previous: AppUiState,
+    path: List<String>,
+    value: JsonElement,
+    json: Json,
+): AppUiState = when (path) {
+    listOf("app_ui_state") -> json.decodeFromJsonElement<WireAppUiState>(value).toUi()
+    listOf("app_ui_state", "active_plan") -> previous.copy(
+        activePlan = json.decodeFromJsonElement<WireFlightPlanUiState?>(value)?.toUi(),
+    )
+    listOf("app_ui_state", "ownship") -> previous.copy(
+        ownship = json.decodeFromJsonElement<WireOwnshipUiState>(value).toUi(),
+    )
+    listOf("app_ui_state", "flight_data_banner") -> previous.copy(
+        flightDataBanner = json.decodeFromJsonElement<WireFlightDataBannerModel>(value).toUi(),
+    )
+    listOf("app_ui_state", "content_policy"),
+    listOf("app_ui_state", "last_content_report"),
+    -> previous
+    else -> throw SessionUpdateContractException(
+        "Android has no app model lander for session update path ${path.joinToString("/")}",
+    )
+}
+
+private fun landSettingsPageState(
+    previous: UiSettingsPageState,
+    path: List<String>,
+    value: JsonElement,
+    json: Json,
+): UiSettingsPageState = when (path) {
+    listOf("settings_page_state") ->
+        json.decodeFromJsonElement<WireUiSettingsPageState>(value).toUi()
+    listOf("settings_page_state", "rows", "0", "items") -> {
+        val rows = previous.rows.toMutableList()
+        if (rows.isEmpty()) {
+            throw SessionUpdateContractException("settings flight-data row is missing")
+        }
+        rows[0] = rows[0].copy(
+            items = json.decodeFromJsonElement(
+                ListSerializer(WireUiSettingsGridItem.serializer()),
+                value,
+            ).map { it.toUi() },
+        )
+        previous.copy(rows = rows)
+    }
+    else -> throw SessionUpdateContractException(
+        "Android has no settings model lander for session update path ${path.joinToString("/")}",
+    )
+}
+
+private fun JsonObject.valueAtPath(path: List<String>): JsonElement {
+    var current: JsonElement = this
+    for (segment in path) {
+        current = when (current) {
+            is JsonObject -> current[segment]
+            is kotlinx.serialization.json.JsonArray -> segment.toIntOrNull()?.let(current::getOrNull)
+            else -> null
+        } ?: throw SessionUpdateContractException(
+            "accumulated session snapshot has no path ${path.joinToString("/")}",
+        )
+    }
+    return current
+}
+
 class NativeUiSession internal constructor(
     private val handle: Long,
     private val bridge: NativeBridge,
@@ -663,8 +816,12 @@ class NativeUiSession internal constructor(
 
     @Volatile
     private var invalidationListener: ((List<String>) -> Unit)? = null
-    @Volatile
-    private var snapshotListener: ((UiSessionSnapshot) -> Unit)? = null
+    private data class SnapshotListenerRegistration(
+        val groups: Set<UiSessionUpdateGroup>,
+        val listener: (UiSessionSnapshot) -> Unit,
+    )
+    private var nextSnapshotListenerId = 1L
+    private val snapshotListeners = mutableMapOf<Long, SnapshotListenerRegistration>()
     private val listenerLock = Any()
     private val sessionResourceEffectPump = navKvStore?.let { store ->
         AsyncSessionResourceEffectPump(
@@ -706,15 +863,23 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun subscribeSnapshots(listener: (UiSessionSnapshot) -> Unit): AutoCloseable {
-        val currentSnapshot = synchronized(listenerLock) {
-            snapshotListener = listener
-            snapshot
+    fun subscribeSnapshots(listener: (UiSessionSnapshot) -> Unit): AutoCloseable =
+        subscribeSnapshotGroups(UiSessionUpdateGroup.entries.toSet(), listener)
+
+    internal fun subscribeSnapshotGroups(
+        groups: Set<UiSessionUpdateGroup>,
+        listener: (UiSessionSnapshot) -> Unit,
+    ): AutoCloseable {
+        require(groups.isNotEmpty()) { "snapshot subscription requires at least one update group" }
+        val (listenerId, currentSnapshot) = synchronized(listenerLock) {
+            val id = nextSnapshotListenerId++
+            snapshotListeners[id] = SnapshotListenerRegistration(groups, listener)
+            id to snapshot
         }
         listener(currentSnapshot)
         return AutoCloseable {
             synchronized(listenerLock) {
-                if (snapshotListener === listener) snapshotListener = null
+                snapshotListeners.remove(listenerId)
             }
         }
     }
@@ -805,26 +970,36 @@ class NativeUiSession internal constructor(
             emptyList()
         }
         val applyStartedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
-        val disposition = if (outcome.resumedSnapshot) {
+        val application = if (outcome.resumedSnapshot) {
             snapshotAccumulator.replaceFullSnapshot(outcome.result)
-            "resumed_snapshot"
+            SessionUpdateApplication(
+                disposition = SessionUpdateDisposition.Applied,
+                changedGroups = UiSessionUpdateGroup.entries.toSet(),
+                installedFullSnapshot = true,
+            )
         } else {
-            applySessionUpdate(outcome.result).name
+            applySessionUpdate(outcome.result)
         }
         val applyFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
         val decodeStartedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
-        val nextSnapshot = decodeAccumulatedSnapshot()
+        val nextSnapshot = landSessionUpdate(
+            snapshot,
+            snapshotAccumulator.snapshot,
+            application,
+            json,
+        )
         val decodeFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
-        updateSnapshot(nextSnapshot)
+        updateSnapshot(nextSnapshot, application.changedGroups, application.installedFullSnapshot)
         val publishFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
         if (measureLanding) {
             perfLogInfo("AerobagSessionUpdate") {
-                "command=$commandName disposition=$disposition groups=${changedGroups.joinToString(",")} " +
+                "command=$commandName disposition=${application.disposition} " +
+                    "groups=${changedGroups.joinToString(",")} " +
                     "updateJsonBytes=$updateJsonBytes " +
                     "accumulatedSnapshotJsonBytes=${snapshotAccumulator.snapshot.toString().toByteArray(Charsets.UTF_8).size} " +
                     "operationAndPagingUs=${(operationFinishedAt - operationStartedAt) / 1_000} " +
                     "applyUs=${(applyFinishedAt - applyStartedAt) / 1_000} " +
-                    "decodeUs=${(decodeFinishedAt - decodeStartedAt) / 1_000} " +
+                    "groupDecodeUs=${(decodeFinishedAt - decodeStartedAt) / 1_000} " +
                     "publishUs=${(publishFinishedAt - decodeFinishedAt) / 1_000}"
             }
             if (landedUpdateCount.incrementAndGet() % 32L == 0L) {
@@ -840,7 +1015,11 @@ class NativeUiSession internal constructor(
     private fun executePagedFullSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val outcome = executePagedOperation(operation)
         snapshotAccumulator.replaceFullSnapshot(outcome.result)
-        updateSnapshot(decodeAccumulatedSnapshot())
+        updateSnapshot(
+            decodeAccumulatedSnapshot(),
+            UiSessionUpdateGroup.entries.toSet(),
+            fullSnapshot = true,
+        )
         publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)
         return snapshot
     }
@@ -871,23 +1050,28 @@ class NativeUiSession internal constructor(
 
     private fun applyOptionalSessionUpdate(update: JsonElement?) {
         if (update == null || update is JsonNull) return
-        applySessionUpdate(update)
-        updateSnapshot(decodeAccumulatedSnapshot())
+        val application = applySessionUpdate(update)
+        if (application.disposition == SessionUpdateDisposition.Stale) return
+        updateSnapshot(
+            landSessionUpdate(snapshot, snapshotAccumulator.snapshot, application, json),
+            application.changedGroups,
+            application.installedFullSnapshot,
+        )
     }
 
-    private fun applySessionUpdate(update: JsonElement): SessionUpdateDisposition {
-        val disposition = snapshotAccumulator.applyOrResync(update) {
+    private fun applySessionUpdate(update: JsonElement): SessionUpdateApplication {
+        val application = snapshotAccumulator.applyOrResyncDetailed(update) {
             executePagedOperation {
                 bridge.getSessionSnapshotPagedJson(handle)
             }.result
         }
-        if (disposition == SessionUpdateDisposition.ResyncRequired) {
+        if (application.disposition == SessionUpdateDisposition.ResyncRequired) {
             Log.w(
                 "AerobagSessionUpdate",
                 "session revision gap; requested a full snapshot",
             )
         }
-        return disposition
+        return application
     }
 
     private fun publishPagedInvalidations(
@@ -914,9 +1098,18 @@ class NativeUiSession internal constructor(
         invalidationListener?.invoke(invalidations)
     }
 
-    private fun updateSnapshot(nextSnapshot: UiSessionSnapshot) {
-        snapshot = nextSnapshot
-        snapshotListener?.invoke(nextSnapshot)
+    private fun updateSnapshot(
+        nextSnapshot: UiSessionSnapshot,
+        changedGroups: Set<UiSessionUpdateGroup> = UiSessionUpdateGroup.entries.toSet(),
+        fullSnapshot: Boolean = false,
+    ) {
+        val listeners = synchronized(listenerLock) {
+            snapshot = nextSnapshot
+            snapshotListeners.values
+                .filter { fullSnapshot || it.groups.any(changedGroups::contains) }
+                .map(SnapshotListenerRegistration::listener)
+        }
+        listeners.forEach { it(nextSnapshot) }
     }
 
     private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? =
@@ -2888,15 +3081,7 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
     sessionRevision = session_revision,
     flightPlanRouteRevision = flight_plan_route_revision,
     navDataEpoch = nav_data_epoch,
-    activeNavDb = active_nav_db?.let {
-        UiNavDbIdentity(
-            packageId = it.packageId,
-            filename = it.filename,
-            contractId = it.contractId,
-            cycle = it.cycle,
-            cycleVersion = it.cycleVersion,
-        )
-    },
+    activeNavDb = active_nav_db?.toUi(),
     nextNavDbMaintenanceEpochMs = next_nav_db_maintenance_epoch_ms,
     appUiState = app_ui_state.toUi(),
     playbackUiState = playback_ui_state.toUi(),
@@ -2918,6 +3103,14 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
         nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,
     )
 }
+
+private fun WireUiNavDbIdentity.toUi() = UiNavDbIdentity(
+    packageId = packageId,
+    filename = filename,
+    contractId = contractId,
+    cycle = cycle,
+    cycleVersion = cycleVersion,
+)
 
 internal fun WireDerivedChartAirport.toUi() = ChartAirport(
     id = id,

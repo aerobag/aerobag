@@ -10,7 +10,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionUpdateAccumulatorTest {
@@ -96,6 +98,46 @@ class SessionUpdateAccumulatorTest {
         )
         assertEquals(1, loads)
         assertEquals(fullSnapshot, accumulator.snapshot)
+    }
+
+    @Test
+    fun detailedApplicationReportsOnlyValidatedChangedGroupsAndPaths() {
+        val accumulator = accumulator()
+        val firstUpdate = conformance.getValue("steps").jsonArray.first().jsonObject.getValue("update")
+
+        val application = accumulator.applyDetailed(firstUpdate)
+
+        assertEquals(SessionUpdateDisposition.Applied, application.disposition)
+        assertEquals(setOf(org.aerobag.app.generated.UiSessionUpdateGroup.Map), application.changedGroups)
+        assertEquals(setOf(listOf("map_layer_state")), application.changedPaths)
+        assertFalse(application.installedFullSnapshot)
+    }
+
+    @Test
+    fun detailedRevisionGapMarksOnlyTheExplicitFullSnapshotRecovery() {
+        val accumulator = accumulator()
+        val update = json.parseToJsonElement(
+            """{
+                "ui_contract_version":2,
+                "session_revision":9,
+                "map":{"version":3,"assignments":[
+                    {"path":["map_layer_state"],"value":{"nexrad":true}}
+                ]}
+            }""".trimIndent(),
+        )
+
+        val application = accumulator.applyOrResyncDetailed(update) {
+            kotlinx.serialization.json.JsonObject(
+                conformance.getValue("initial_snapshot").jsonObject + mapOf(
+                    "session_revision" to json.parseToJsonElement("9"),
+                ),
+            )
+        }
+
+        assertEquals(SessionUpdateDisposition.ResyncRequired, application.disposition)
+        assertTrue(application.installedFullSnapshot)
+        assertTrue(application.changedGroups.isEmpty())
+        assertTrue(application.changedPaths.isEmpty())
     }
 
     private fun accumulator() = SessionUpdateAccumulator(

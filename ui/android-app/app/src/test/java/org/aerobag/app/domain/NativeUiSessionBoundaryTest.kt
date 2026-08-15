@@ -82,19 +82,22 @@ class NativeUiSessionBoundaryTest {
             Regex("""decodeSnapshot\(\s*bridge\.""").containsMatchIn(sessionBody),
         )
         assertTrue(
-            "NativeUiSession must have exactly one snapshot-wire decoder behind its accumulator.",
+            "NativeUiSession must reserve full snapshot decoding for startup and explicit recovery.",
             Regex("""decodeFromJsonElement<WireUiSessionSnapshot>""")
                 .findAll(sessionBody)
-                .count() == 1,
+                .count() == 1 &&
+                sessionBody.contains("landSessionUpdate(") &&
+                !balancedBlockAfterMarker(sessionBody, "private fun executePagedSnapshot(")
+                    .contains("decodeAccumulatedSnapshot()"),
         )
         assertTrue(
             "Ordinary mutations must apply core's generated update and full refreshes must explicitly reset it.",
-            sessionBody.contains("snapshotAccumulator.applyOrResync(update)") &&
+            sessionBody.contains("snapshotAccumulator.applyOrResyncDetailed(update)") &&
                 sessionBody.contains("snapshotAccumulator.replaceFullSnapshot"),
         )
         assertTrue(
             "A revision gap must recover through core's explicit paged full-snapshot API.",
-            sessionBody.contains("snapshotAccumulator.applyOrResync(update)") &&
+            sessionBody.contains("snapshotAccumulator.applyOrResyncDetailed(update)") &&
                 sessionBody.contains("bridge.getSessionSnapshotPagedJson(handle)"),
         )
         assertFalse(
@@ -120,9 +123,10 @@ class NativeUiSessionBoundaryTest {
             ) && sessionBody.contains("invalidations - \"session_snapshot\""),
         )
         assertTrue(
-            "Command snapshots must be delivered through the retained session boundary.",
+            "Command snapshots must support generated group-scoped retained-session delivery.",
             sessionBody.contains("fun subscribeSnapshots(") &&
-                sessionBody.contains("snapshotListener?.invoke(nextSnapshot)"),
+                sessionBody.contains("internal fun subscribeSnapshotGroups(") &&
+                sessionBody.contains("it.groups.any(changedGroups::contains)"),
         )
     }
 

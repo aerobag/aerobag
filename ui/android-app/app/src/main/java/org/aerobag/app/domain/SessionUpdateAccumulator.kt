@@ -22,6 +22,13 @@ internal enum class SessionUpdateDisposition {
     ResyncRequired,
 }
 
+internal data class SessionUpdateApplication(
+    val disposition: SessionUpdateDisposition,
+    val changedGroups: Set<UiSessionUpdateGroup> = emptySet(),
+    val changedPaths: Set<List<String>> = emptySet(),
+    val installedFullSnapshot: Boolean = false,
+)
+
 internal class SessionUpdateContractException(message: String) : IllegalArgumentException(message)
 
 internal class SessionUpdateAccumulator(
@@ -44,20 +51,29 @@ internal class SessionUpdateAccumulator(
         return snapshot
     }
 
-    fun apply(value: JsonElement): SessionUpdateDisposition = apply(parseSessionUpdate(value))
+    fun apply(value: JsonElement): SessionUpdateDisposition = applyDetailed(value).disposition
+
+    fun applyDetailed(value: JsonElement): SessionUpdateApplication =
+        applyDetailed(parseSessionUpdate(value))
 
     fun applyOrResync(
         value: JsonElement,
         loadFullSnapshot: () -> JsonElement,
-    ): SessionUpdateDisposition {
-        val disposition = apply(value)
-        if (disposition == SessionUpdateDisposition.ResyncRequired) {
+    ): SessionUpdateDisposition = applyOrResyncDetailed(value, loadFullSnapshot).disposition
+
+    fun applyOrResyncDetailed(
+        value: JsonElement,
+        loadFullSnapshot: () -> JsonElement,
+    ): SessionUpdateApplication {
+        val application = applyDetailed(value)
+        if (application.disposition == SessionUpdateDisposition.ResyncRequired) {
             replaceFullSnapshot(loadFullSnapshot())
+            return application.copy(installedFullSnapshot = true)
         }
-        return disposition
+        return application
     }
 
-    private fun apply(update: UiSessionUpdate): SessionUpdateDisposition {
+    private fun applyDetailed(update: UiSessionUpdate): SessionUpdateApplication {
         if (update.uiContractVersion != expectedContractVersion) {
             throw SessionUpdateContractException(
                 "UI wire contract ${update.uiContractVersion} is unsupported; " +
@@ -65,12 +81,17 @@ internal class SessionUpdateAccumulator(
             )
         }
         val currentRevision = snapshot.wireLong("session_revision")
-        if (update.sessionRevision <= currentRevision) return SessionUpdateDisposition.Stale
-        if (update.sessionRevision != currentRevision + 1) return SessionUpdateDisposition.ResyncRequired
+        if (update.sessionRevision <= currentRevision) {
+            return SessionUpdateApplication(SessionUpdateDisposition.Stale)
+        }
+        if (update.sessionRevision != currentRevision + 1) {
+            return SessionUpdateApplication(SessionUpdateDisposition.ResyncRequired)
+        }
 
         var nextSnapshot: JsonElement = snapshot
         val assignedPaths = mutableListOf<List<String>>()
         val nextVersions = mutableListOf<Pair<UiSessionUpdateGroup, Long>>()
+        val changedGroups = mutableSetOf<UiSessionUpdateGroup>()
         for ((group, patch) in update.projectionPatches()) {
             val previousVersion = groupVersions[group]
             if (previousVersion != null && patch.version <= previousVersion) {
@@ -103,6 +124,7 @@ internal class SessionUpdateAccumulator(
                 assignedPaths += assignment.path
             }
             nextVersions += group to patch.version
+            changedGroups += group
         }
 
         snapshot = JsonObject(
@@ -113,7 +135,11 @@ internal class SessionUpdateAccumulator(
             ),
         )
         nextVersions.forEach { (group, version) -> groupVersions[group] = version }
-        return SessionUpdateDisposition.Applied
+        return SessionUpdateApplication(
+            disposition = SessionUpdateDisposition.Applied,
+            changedGroups = changedGroups,
+            changedPaths = assignedPaths.toSet(),
+        )
     }
 
     private fun parseSessionUpdate(value: JsonElement): UiSessionUpdate {

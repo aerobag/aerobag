@@ -8997,7 +8997,7 @@ function AltitudePlannerPage(props: {
               ))}
             </div>
           ) : null}
-          {loading ? (
+          {loading && panel === null ? (
             <div className="altitudeComparisonLoading" role="status" aria-live="polite">
               <span className="altitudeComparisonSpinner" aria-hidden="true" />
               <span>Calculating…</span>

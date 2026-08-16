@@ -80,6 +80,7 @@ describe("flight plan layout CSS", () => {
     expect(plannerPage).toContain("row.cells.map");
     expect(plannerPage).toContain('className="altitudeComparisonRegion"');
     expect(plannerPage).toContain('className="altitudeComparisonLoading"');
+    expect(plannerPage).toContain("loading && panel === null");
     const controlTray = plannerPage.slice(
       plannerPage.indexOf('data-testid="altitude-planner-control-tray"'),
       plannerPage.indexOf("</header>"),

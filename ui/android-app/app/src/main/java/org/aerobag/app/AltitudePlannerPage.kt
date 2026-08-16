@@ -352,7 +352,7 @@ internal fun AltitudePlannerPage(
                         }
                     }
                 }
-                if (loading) {
+                if (loading && comparisonPanel == null) {
                     Row(
                         modifier = Modifier
                             .fillMaxSize()

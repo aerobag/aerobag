@@ -184,6 +184,48 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
+    fun expensiveMapResourceWorkIsOnlyCallableThroughTheScheduledRunner() {
+        val sessionSource =
+            sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        val runnerSource =
+            sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
+        val mapSource =
+            sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val scheduledMethods = listOf(
+            "queryMapOverlay",
+            "queryMapSelection",
+            "queryMapSelectionForNavRef",
+            "queryNexradOverlay",
+            "nexradTileBytes",
+            "queryTerrainOverlay",
+            "renderTerrainOverlayTile",
+        )
+
+        for (method in scheduledMethods) {
+            assertTrue(
+                "$method must remain an opt-in raw operation at the native-session boundary.",
+                Regex("""@RawUiSessionWorkApi\s+fun $method\(""").containsMatchIn(sessionSource),
+            )
+            assertTrue(
+                "$method must have exactly one sanctioned caller in UiSessionWorkRunner.",
+                runnerSource.split("uiSession.$method(").size - 1 == 1,
+            )
+            assertFalse(
+                "MapExplorerPage must not bypass UiSessionWorkRunner for $method.",
+                mapSource.contains("uiSession.$method("),
+            )
+        }
+        assertTrue(
+            "Distinct terrain tiles must not coalesce into one lossy background slot.",
+            runnerSource.contains("\"terrain_tile:\${request.cacheKey}\""),
+        )
+        assertTrue(
+            "Distinct NEXRAD resources must not coalesce into one lossy background slot.",
+            runnerSource.contains("\"nexrad_tile:\$src\""),
+        )
+    }
+
+    @Test
     fun mapPageUsesCoreInvalidationAndProjectionRevisions() {
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()

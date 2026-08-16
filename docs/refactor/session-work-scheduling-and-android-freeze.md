@@ -58,7 +58,12 @@ Patterns worth copying:
   debug logs against thresholds. Android needs the same discipline, not manual
   flight testing as the only detector.
 
-## Android Gaps
+## Original Android Gaps
+
+The items below describe the state that motivated this roadmap. Map overlay,
+map selection, nav-ref inspection, terrain planning/rendering, and NEXRAD
+planning/tile preparation now run through `UiSessionWorkRunner`; direct access
+to their low-level `NativeUiSession` methods requires an error-level opt-in.
 
 Current Android code has useful pieces, but no single enforced boundary:
 
@@ -297,19 +302,30 @@ Web regression tests:
 
 ## Implementation Phases
 
-1. Add instrumentation and debug assertions first. We need proof of where work
-   starts, waits, computes, fetches, serializes, and lands.
-2. Extract the web map-overlay pump policy into a core session-work scheduler,
-   reusing the shape of `SessionSnapshotRefreshScheduler`.
-3. Add Android `SessionWorkRunner` and route map overlay plus map selection
-   through it.
-4. Add automated Android repro workload and fail it on main-thread session work.
-5. Move nav-ref inspection, terrain, NEXRAD, and other paged session calls onto
-   the same runner.
-6. Update web to consume the shared scheduler while keeping the worker execution
-   boundary.
-7. Tighten the API so expensive `NativeUiSession` methods cannot be called from
-   UI packages directly.
+1. In progress: the Android stall watchdog, perf scenarios, and slow-call audit
+   reproduce the original freeze class. Complete queue/core/fetch/result timing
+   instrumentation as individual workloads need deeper diagnosis.
+2. Completed: introduce the core `UiSessionWorkScheduler`, reusing the shape of
+   `SessionSnapshotRefreshScheduler`.
+3. Completed: add Android `UiSessionWorkRunner` and route map overlay plus map
+   selection through it.
+4. Completed: add an automated Android map-selection freeze workload and fail it
+   on main-thread stalls.
+5. In progress: nav-ref inspection, terrain planning/rendering, and NEXRAD
+   planning/tile preparation now use the runner. Audit the remaining paged
+   session calls before deciding whether chart assets, live-feed maintenance,
+   or other service-owned operations belong on this UI scheduler.
+6. Pending: update web to consume the shared scheduler while keeping the Worker
+   execution boundary.
+7. In progress: the seven scheduled Android map operations carry an error-level
+   `RawUiSessionWorkApi` opt-in and a boundary test prevents UI code from calling
+   them directly. Extend the boundary only as phase 5 identifies more UI work.
+
+The background lane now retains one latest pending request per core-owned
+coalescing key and runs the oldest pending key next. Map churn can replace old
+map work without evicting or starving pending terrain or NEXRAD work. Input
+selection retains its separate priority lane and may start while background
+work is active.
 
 ## Open Questions
 

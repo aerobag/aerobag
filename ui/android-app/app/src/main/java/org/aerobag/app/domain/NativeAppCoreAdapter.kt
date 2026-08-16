@@ -1957,6 +1957,7 @@ class NativeUiSession internal constructor(
         return json.decodeFromJsonElement<WireMapSelectionForNavRefResult>(result.result).toUi()
     }
 
+    @RawUiSessionWorkApi
     fun queryTerrainOverlay(
         viewport: MapViewportState,
         widthPx: Double,
@@ -1989,6 +1990,7 @@ class NativeUiSession internal constructor(
         return json.decodeFromJsonElement<WireTerrainOverlayQueryResult>(result.result).toUi()
     }
 
+    @RawUiSessionWorkApi
     fun queryNexradOverlay(
         viewport: MapViewportState,
         widthPx: Double,
@@ -2048,6 +2050,7 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
     fun nexradTileBytes(
         src: String,
         fetchResource: (CoreResourceRequest) -> ByteArray,
@@ -2081,6 +2084,7 @@ class NativeUiSession internal constructor(
         )
     }
 
+    @RawUiSessionWorkApi
     fun renderTerrainOverlayTile(
         request: TerrainOverlayTileRequest,
         aircraftAltitudeFt: Double,

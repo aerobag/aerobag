@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -10,6 +12,10 @@ pub enum UiSessionWorkKind {
     MapOverlay,
     MapSelection,
     MapSelectionForNavRef,
+    NexradOverlay,
+    NexradTile,
+    TerrainOverlay,
+    TerrainTile,
 }
 
 impl UiSessionWorkKind {
@@ -20,8 +26,15 @@ impl UiSessionWorkKind {
         )
     }
 
-    fn is_viewport_coalesced(self) -> bool {
-        matches!(self, UiSessionWorkKind::MapOverlay)
+    fn is_background(self) -> bool {
+        matches!(
+            self,
+            UiSessionWorkKind::MapOverlay
+                | UiSessionWorkKind::NexradOverlay
+                | UiSessionWorkKind::NexradTile
+                | UiSessionWorkKind::TerrainOverlay
+                | UiSessionWorkKind::TerrainTile
+        )
     }
 }
 
@@ -56,9 +69,9 @@ pub struct UiSessionWorkCompletionDecision {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiSessionWorkScheduler {
     active_input: Option<UiSessionWorkRequest>,
-    active_overlay: Option<UiSessionWorkRequest>,
+    active_background: Option<UiSessionWorkRequest>,
     pending_input: Option<UiSessionWorkRequest>,
-    pending_overlay: Option<UiSessionWorkRequest>,
+    pending_background: BTreeMap<String, UiSessionWorkRequest>,
 }
 
 impl UiSessionWorkScheduler {
@@ -73,12 +86,16 @@ impl UiSessionWorkScheduler {
                 replaced_request_id,
             };
         }
-        if request.kind.is_viewport_coalesced() {
-            if self.active_overlay.is_none() && self.active_input.is_none() {
-                self.active_overlay = Some(request.clone());
+        if request.kind.is_background() {
+            if self.active_background.is_none() && self.active_input.is_none() {
+                self.active_background = Some(request.clone());
                 return UiSessionWorkRequestDecision::Start { request };
             }
-            let replaced_request_id = self.pending_overlay.replace(request).map(|old| old.id);
+            let coalesce_key = background_coalesce_key(&request);
+            let replaced_request_id = self
+                .pending_background
+                .insert(coalesce_key, request)
+                .map(|old| old.id);
             return UiSessionWorkRequestDecision::Queued {
                 replaced_request_id,
             };
@@ -106,17 +123,17 @@ impl UiSessionWorkScheduler {
             return self.complete_active_request(active);
         }
         if self
-            .active_overlay
+            .active_background
             .as_ref()
             .is_some_and(|active| active.id == request_id)
         {
             let active = self
-                .active_overlay
+                .active_background
                 .take()
-                .expect("active overlay checked above");
+                .expect("active background request checked above");
             return self.complete_active_request(active);
         }
-        if self.active_input.is_none() && self.active_overlay.is_none() {
+        if self.active_input.is_none() && self.active_background.is_none() {
             return UiSessionWorkCompletionDecision {
                 result_action: UiSessionWorkResultAction::Drop {
                     reason: "no_active_request".to_string(),
@@ -159,10 +176,19 @@ impl UiSessionWorkScheduler {
                 return Some(next_input);
             }
         }
-        if self.active_input.is_none() && self.active_overlay.is_none() {
-            if let Some(next_overlay) = self.pending_overlay.take() {
-                self.active_overlay = Some(next_overlay.clone());
-                return Some(next_overlay);
+        if self.active_input.is_none() && self.active_background.is_none() {
+            let next_key = self
+                .pending_background
+                .iter()
+                .min_by_key(|(_, request)| (request.requested_at_ms, request.id))
+                .map(|(key, _)| key.clone());
+            if let Some(next_key) = next_key {
+                let next_background = self
+                    .pending_background
+                    .remove(&next_key)
+                    .expect("pending background key selected above");
+                self.active_background = Some(next_background.clone());
+                return Some(next_background);
             }
         }
         None
@@ -171,8 +197,15 @@ impl UiSessionWorkScheduler {
     pub fn active_request(&self) -> Option<&UiSessionWorkRequest> {
         self.active_input
             .as_ref()
-            .or_else(|| self.active_overlay.as_ref())
+            .or_else(|| self.active_background.as_ref())
     }
+}
+
+fn background_coalesce_key(request: &UiSessionWorkRequest) -> String {
+    request
+        .coalesce_key
+        .clone()
+        .unwrap_or_else(|| format!("{:?}", request.kind))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,10 +382,18 @@ mod tests {
     use super::*;
 
     fn work_request(id: u64, kind: UiSessionWorkKind) -> UiSessionWorkRequest {
+        keyed_work_request(id, kind, format!("{kind:?}"))
+    }
+
+    fn keyed_work_request(
+        id: u64,
+        kind: UiSessionWorkKind,
+        coalesce_key: impl Into<String>,
+    ) -> UiSessionWorkRequest {
         UiSessionWorkRequest {
             id,
             kind,
-            coalesce_key: Some(format!("{kind:?}")),
+            coalesce_key: Some(coalesce_key.into()),
             requested_at_ms: id * 10,
         }
     }
@@ -446,6 +487,61 @@ mod tests {
                 next: None,
             }
         );
+    }
+
+    #[test]
+    fn session_work_retains_latest_pending_request_for_each_background_key() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        let active_map = keyed_work_request(1, UiSessionWorkKind::MapOverlay, "map");
+        let terrain = keyed_work_request(2, UiSessionWorkKind::TerrainOverlay, "terrain");
+        let newer_map = keyed_work_request(3, UiSessionWorkKind::MapOverlay, "map");
+        let nexrad = keyed_work_request(4, UiSessionWorkKind::NexradOverlay, "nexrad");
+
+        assert!(matches!(
+            scheduler.request(active_map),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        assert_eq!(
+            scheduler.request(terrain.clone()),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None,
+            }
+        );
+        assert_eq!(
+            scheduler.request(newer_map.clone()),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None,
+            }
+        );
+        assert_eq!(
+            scheduler.request(nexrad.clone()),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None,
+            }
+        );
+
+        assert_eq!(scheduler.complete(1).next, Some(terrain));
+        assert_eq!(scheduler.complete(2).next, Some(newer_map));
+        assert_eq!(scheduler.complete(3).next, Some(nexrad));
+    }
+
+    #[test]
+    fn continuous_map_churn_cannot_replace_or_starve_pending_terrain() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert!(matches!(
+            scheduler.request(keyed_work_request(1, UiSessionWorkKind::MapOverlay, "map")),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        let terrain = keyed_work_request(2, UiSessionWorkKind::TerrainOverlay, "terrain");
+        assert!(matches!(
+            scheduler.request(terrain.clone()),
+            UiSessionWorkRequestDecision::Queued { .. }
+        ));
+        for id in 3..=10 {
+            scheduler.request(keyed_work_request(id, UiSessionWorkKind::MapOverlay, "map"));
+        }
+
+        assert_eq!(scheduler.complete(1).next, Some(terrain));
     }
 
     #[test]

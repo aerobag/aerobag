@@ -2039,16 +2039,14 @@ internal fun MapExplorerPage(
                 var imageBytes = 0L
                 var fetchMs = 0L
                 var decodeMs = 0L
-                val overlay = withContext(Dispatchers.IO) {
-                    uiSession.queryNexradOverlay(
-                        latestViewport,
-                        latestSurfaceSize.width.toDouble(),
-                        latestSurfaceSize.height.toDouble(),
-                    ) { resource ->
-                        val fetchStartMs = SystemClock.elapsedRealtime()
-                        fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
-                            fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                        }
+                val overlay = sessionWorkRunner.queryNexradOverlay(
+                    latestViewport,
+                    latestSurfaceSize.width.toDouble(),
+                    latestSurfaceSize.height.toDouble(),
+                ) { resource ->
+                    val fetchStartMs = SystemClock.elapsedRealtime()
+                    fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
+                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                     }
                 }
                 if (overlay.tiles.isEmpty()) {
@@ -2064,7 +2062,7 @@ internal fun MapExplorerPage(
                 val images = withContext(Dispatchers.IO) {
                     overlay.tiles.map { tile ->
                         val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
-                            val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
+                            val bytes = sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
                                 val fetchStartMs = SystemClock.elapsedRealtime()
                                 fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
                                     fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
@@ -2158,16 +2156,14 @@ internal fun MapExplorerPage(
                 val latestSurfaceWidthPx = terrainSurfaceWidthPxState.value
                 val latestSurfaceHeightPx = terrainSurfaceHeightPxState.value
                 val query = try {
-                    withContext(Dispatchers.IO) {
-                        uiSession.queryTerrainOverlay(
-                            latestViewport,
-                            latestSurfaceWidthPx.toDouble(),
-                            latestSurfaceHeightPx.toDouble(),
-                            terrainTileBitmapCache.keys.toList(),
-                            terrainTileInFlightKeys.toList(),
-                        ) { resource ->
-                            fetchTerrainCoreResource(context, resource, devServerBaseUrl)
-                        }
+                    sessionWorkRunner.queryTerrainOverlay(
+                        latestViewport,
+                        latestSurfaceWidthPx.toDouble(),
+                        latestSurfaceHeightPx.toDouble(),
+                        terrainTileBitmapCache.keys.toList(),
+                        terrainTileInFlightKeys.toList(),
+                    ) { resource ->
+                        fetchTerrainCoreResource(context, resource, devServerBaseUrl)
                     }
                 } catch (error: Throwable) {
                     terrainOverlay = emptyList()
@@ -2250,16 +2246,17 @@ internal fun MapExplorerPage(
                     var rawBytesTotal = 0L
                     terrainTileInFlightKeys += request.cacheKey
                     try {
-                        val rawBytes = withContext(Dispatchers.IO) {
-                            val renderStartMs = SystemClock.elapsedRealtime()
-                            uiSession.renderTerrainOverlayTile(request, altitudeBucketFt) { resource ->
-                                val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchTerrainCoreResource(context, resource, devServerBaseUrl).also {
-                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                                }
-                            }.also {
-                                renderMs += SystemClock.elapsedRealtime() - renderStartMs
+                        val renderStartMs = SystemClock.elapsedRealtime()
+                        val rawBytes = sessionWorkRunner.renderTerrainOverlayTile(
+                            request,
+                            altitudeBucketFt,
+                        ) { resource ->
+                            val fetchStartMs = SystemClock.elapsedRealtime()
+                            fetchTerrainCoreResource(context, resource, devServerBaseUrl).also {
+                                fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                             }
+                        }.also {
+                            renderMs += SystemClock.elapsedRealtime() - renderStartMs
                         }
                         rawBytesTotal += rawBytes.size
                         val parseStartMs = SystemClock.elapsedRealtime()

@@ -23,6 +23,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.aerobag.app.generated.NexradOverlayQueryResult
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapOverlayQueryOutcome
@@ -33,6 +34,8 @@ import org.aerobag.app.domain.NativeBindings
 import org.aerobag.app.domain.NativeBridge
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavRef
+import org.aerobag.app.domain.TerrainOverlayQueryResult
+import org.aerobag.app.domain.TerrainOverlayTileRequest
 
 private const val UiSessionWorkLogTag = "AerobagSessionWork"
 
@@ -181,6 +184,92 @@ class UiSessionWorkRunner(
                 onDropped = onDropped,
             ),
         )
+    }
+
+    suspend fun queryTerrainOverlay(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        decodedCacheKeys: Collection<String>,
+        inFlightCacheKeys: Collection<String>,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): TerrainOverlayQueryResult = awaitPayload { onResult, onError, onDropped ->
+        TerrainOverlayPayload(
+            viewport = viewport,
+            widthPx = widthPx,
+            heightPx = heightPx,
+            decodedCacheKeys = decodedCacheKeys.toList(),
+            inFlightCacheKeys = inFlightCacheKeys.toList(),
+            fetchResource = fetchResource,
+            onResult = onResult,
+            onError = onError,
+            onDropped = onDropped,
+        )
+    }
+
+    suspend fun renderTerrainOverlayTile(
+        request: TerrainOverlayTileRequest,
+        aircraftAltitudeFt: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): ByteArray = awaitPayload { onResult, onError, onDropped ->
+        TerrainTilePayload(
+            request = request,
+            aircraftAltitudeFt = aircraftAltitudeFt,
+            fetchResource = fetchResource,
+            onResult = onResult,
+            onError = onError,
+            onDropped = onDropped,
+        )
+    }
+
+    suspend fun queryNexradOverlay(
+        viewport: MapViewportState,
+        widthPx: Double,
+        heightPx: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): NexradOverlayQueryResult = awaitPayload { onResult, onError, onDropped ->
+        NexradOverlayPayload(
+            viewport = viewport,
+            widthPx = widthPx,
+            heightPx = heightPx,
+            fetchResource = fetchResource,
+            onResult = onResult,
+            onError = onError,
+            onDropped = onDropped,
+        )
+    }
+
+    suspend fun nexradTileBytes(
+        src: String,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): ByteArray = awaitPayload { onResult, onError, onDropped ->
+        NexradTilePayload(
+            src = src,
+            fetchResource = fetchResource,
+            onResult = onResult,
+            onError = onError,
+            onDropped = onDropped,
+        )
+    }
+
+    private suspend fun <T> awaitPayload(
+        create: (
+            onResult: (T) -> Unit,
+            onError: (Throwable) -> Unit,
+            onDropped: (String) -> Unit,
+        ) -> WorkPayload,
+    ): T {
+        val deferred = CompletableDeferred<T>()
+        withContext(Dispatchers.Main.immediate) {
+            request(
+                create(
+                    { deferred.complete(it) },
+                    { deferred.completeExceptionally(it) },
+                    { reason -> deferred.completeExceptionally(CancellationException(reason)) },
+                ),
+            )
+        }
+        return deferred.await()
     }
 
     private fun request(payload: WorkPayload) {
@@ -396,10 +485,133 @@ private class MapSelectionForNavRefPayload(
     }
 }
 
+private class TerrainOverlayPayload(
+    private val viewport: MapViewportState,
+    private val widthPx: Double,
+    private val heightPx: Double,
+    private val decodedCacheKeys: List<String>,
+    private val inFlightCacheKeys: List<String>,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
+    private val onResult: (TerrainOverlayQueryResult) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onDropped: (String) -> Unit,
+) : WorkPayload("terrain_overlay", "terrain_overlay") {
+    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.TerrainOverlay(
+        uiSession.queryTerrainOverlay(
+            viewport = viewport,
+            widthPx = widthPx,
+            heightPx = heightPx,
+            decodedCacheKeys = decodedCacheKeys,
+            inFlightCacheKeys = inFlightCacheKeys,
+            fetchResource = fetchResource,
+        ),
+    )
+
+    override fun land(result: WorkResult) {
+        onResult((result as WorkResult.TerrainOverlay).result)
+    }
+
+    override fun failed(error: Throwable) {
+        onError(error)
+    }
+
+    override fun dropped(reason: String) {
+        super.dropped(reason)
+        onDropped(reason)
+    }
+}
+
+private class TerrainTilePayload(
+    private val request: TerrainOverlayTileRequest,
+    private val aircraftAltitudeFt: Double,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
+    private val onResult: (ByteArray) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onDropped: (String) -> Unit,
+) : WorkPayload("terrain_tile", "terrain_tile:${request.cacheKey}") {
+    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.TerrainTile(
+        uiSession.renderTerrainOverlayTile(request, aircraftAltitudeFt, fetchResource),
+    )
+
+    override fun land(result: WorkResult) {
+        onResult((result as WorkResult.TerrainTile).bytes)
+    }
+
+    override fun failed(error: Throwable) {
+        onError(error)
+    }
+
+    override fun dropped(reason: String) {
+        super.dropped(reason)
+        onDropped(reason)
+    }
+}
+
+private class NexradOverlayPayload(
+    private val viewport: MapViewportState,
+    private val widthPx: Double,
+    private val heightPx: Double,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
+    private val onResult: (NexradOverlayQueryResult) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onDropped: (String) -> Unit,
+) : WorkPayload("nexrad_overlay", "nexrad_overlay") {
+    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.NexradOverlay(
+        uiSession.queryNexradOverlay(
+            viewport = viewport,
+            widthPx = widthPx,
+            heightPx = heightPx,
+            fetchResource = fetchResource,
+        ),
+    )
+
+    override fun land(result: WorkResult) {
+        onResult((result as WorkResult.NexradOverlay).result)
+    }
+
+    override fun failed(error: Throwable) {
+        onError(error)
+    }
+
+    override fun dropped(reason: String) {
+        super.dropped(reason)
+        onDropped(reason)
+    }
+}
+
+private class NexradTilePayload(
+    private val src: String,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
+    private val onResult: (ByteArray) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onDropped: (String) -> Unit,
+) : WorkPayload("nexrad_tile", "nexrad_tile:$src") {
+    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.NexradTile(
+        uiSession.nexradTileBytes(src, fetchResource),
+    )
+
+    override fun land(result: WorkResult) {
+        onResult((result as WorkResult.NexradTile).bytes)
+    }
+
+    override fun failed(error: Throwable) {
+        onError(error)
+    }
+
+    override fun dropped(reason: String) {
+        super.dropped(reason)
+        onDropped(reason)
+    }
+}
+
 private sealed class WorkResult {
     data class Overlay(val outcome: MapOverlayQueryOutcome) : WorkResult()
     data class MapSelection(val result: MapSelectionQueryResult) : WorkResult()
     data class MapSelectionForNavRef(val result: MapSelectionForNavRefResult) : WorkResult()
+    data class NexradOverlay(val result: NexradOverlayQueryResult) : WorkResult()
+    data class NexradTile(val bytes: ByteArray) : WorkResult()
+    data class TerrainOverlay(val result: TerrainOverlayQueryResult) : WorkResult()
+    data class TerrainTile(val bytes: ByteArray) : WorkResult()
 }
 
 @Serializable

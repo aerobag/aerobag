@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiSessionWorkKind {
+    ChartAsset,
     MapOverlay,
     MapSelection,
     MapSelectionForNavRef,
@@ -29,7 +30,8 @@ impl UiSessionWorkKind {
     fn is_background(self) -> bool {
         matches!(
             self,
-            UiSessionWorkKind::MapOverlay
+            UiSessionWorkKind::ChartAsset
+                | UiSessionWorkKind::MapOverlay
                 | UiSessionWorkKind::NexradOverlay
                 | UiSessionWorkKind::NexradTile
                 | UiSessionWorkKind::TerrainOverlay
@@ -542,6 +544,33 @@ mod tests {
         }
 
         assert_eq!(scheduler.complete(1).next, Some(terrain));
+    }
+
+    #[test]
+    fn distinct_chart_assets_retain_independent_pending_work() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert!(matches!(
+            scheduler.request(keyed_work_request(1, UiSessionWorkKind::MapOverlay, "map")),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        let plate = keyed_work_request(2, UiSessionWorkKind::ChartAsset, "chart:asset:plate-a");
+        let thumbnail =
+            keyed_work_request(3, UiSessionWorkKind::ChartAsset, "chart:thumbnail:plate-b");
+
+        assert_eq!(
+            scheduler.request(plate.clone()),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None,
+            }
+        );
+        assert_eq!(
+            scheduler.request(thumbnail.clone()),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None,
+            }
+        );
+        assert_eq!(scheduler.complete(1).next, Some(plate));
+        assert_eq!(scheduler.complete(2).next, Some(thumbnail));
     }
 
     #[test]

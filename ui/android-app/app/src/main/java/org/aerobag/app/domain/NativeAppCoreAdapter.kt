@@ -2035,6 +2035,7 @@ class NativeUiSession internal constructor(
         )
     }
 
+    @RawUiSessionWorkApi
     fun chartAssetBytes(
         chartId: String,
         assetKind: String,

@@ -252,6 +252,21 @@ class UiSessionWorkRunner(
         )
     }
 
+    suspend fun chartAssetBytes(
+        chartId: String,
+        assetKind: String,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
+    ): ByteArray = awaitPayload { onResult, onError, onDropped ->
+        ChartAssetPayload(
+            chartId = chartId,
+            assetKind = assetKind,
+            fetchResource = fetchResource,
+            onResult = onResult,
+            onError = onError,
+            onDropped = onDropped,
+        )
+    }
+
     private suspend fun <T> awaitPayload(
         create: (
             onResult: (T) -> Unit,
@@ -260,7 +275,7 @@ class UiSessionWorkRunner(
         ) -> WorkPayload,
     ): T {
         val deferred = CompletableDeferred<T>()
-        withContext(Dispatchers.Main.immediate) {
+        val requestId = withContext(Dispatchers.Main.immediate) {
             request(
                 create(
                     { deferred.complete(it) },
@@ -269,13 +284,22 @@ class UiSessionWorkRunner(
                 ),
             )
         }
-        return deferred.await()
+        return try {
+            deferred.await()
+        } catch (error: CancellationException) {
+            if (requestId != null) {
+                scope.launch {
+                    payloads.remove(requestId)?.dropped("caller_cancelled")
+                }
+            }
+            throw error
+        }
     }
 
-    private fun request(payload: WorkPayload) {
+    private fun request(payload: WorkPayload): Long? {
         if (closed) {
             payload.dropped("runner_closed")
-            return
+            return null
         }
         val request = WorkRequestWire(
             id = nextRequestId++,
@@ -298,6 +322,7 @@ class UiSessionWorkRunner(
                 }
             }
         }
+        return request.id
     }
 
     private fun start(request: WorkRequestWire) {
@@ -306,7 +331,12 @@ class UiSessionWorkRunner(
         }
         val payload = payloads[request.id]
         if (payload == null) {
-            complete(request.id)
+            val completion = complete(request.id)
+            completion.next?.let { next ->
+                if (!closed) {
+                    start(next)
+                }
+            }
             return
         }
         scope.launch {
@@ -604,7 +634,34 @@ private class NexradTilePayload(
     }
 }
 
+private class ChartAssetPayload(
+    private val chartId: String,
+    private val assetKind: String,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
+    private val onResult: (ByteArray) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onDropped: (String) -> Unit,
+) : WorkPayload("chart_asset", "chart_asset:$assetKind:$chartId") {
+    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.ChartAsset(
+        uiSession.chartAssetBytes(chartId, assetKind, fetchResource),
+    )
+
+    override fun land(result: WorkResult) {
+        onResult((result as WorkResult.ChartAsset).bytes)
+    }
+
+    override fun failed(error: Throwable) {
+        onError(error)
+    }
+
+    override fun dropped(reason: String) {
+        super.dropped(reason)
+        onDropped(reason)
+    }
+}
+
 private sealed class WorkResult {
+    data class ChartAsset(val bytes: ByteArray) : WorkResult()
     data class Overlay(val outcome: MapOverlayQueryOutcome) : WorkResult()
     data class MapSelection(val result: MapSelectionQueryResult) : WorkResult()
     data class MapSelectionForNavRef(val result: MapSelectionForNavRefResult) : WorkResult()

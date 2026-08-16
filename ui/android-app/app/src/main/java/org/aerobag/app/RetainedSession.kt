@@ -25,6 +25,7 @@ internal class AerobagRetainedCoreSession(
     val decodedTileBitmapCache: DecodedTileBitmapCache,
     val liveFeedRuntime: RetainedLiveFeedRuntime,
     val sessionSnapshotRefreshRunner: SessionSnapshotRefreshRunner<UiSessionSnapshot>,
+    val uiSessionWorkRunner: UiSessionWorkRunner,
 ) {
     private var closed = false
 
@@ -35,6 +36,8 @@ internal class AerobagRetainedCoreSession(
             .onFailure { Log.w("AerobagRetainedState", "failed to close live-feed runtime", it) }
         runCatching { sessionSnapshotRefreshRunner.close() }
             .onFailure { Log.w("AerobagRetainedState", "failed to close snapshot refresh runner", it) }
+        runCatching { uiSessionWorkRunner.close() }
+            .onFailure { Log.w("AerobagRetainedState", "failed to close session work runner", it) }
         runCatching { uiSession.destroy() }
             .onFailure { Log.w("AerobagRetainedState", "failed to destroy retained UI session", it) }
         runCatching { runtimeContent.navKvStore.close() }
@@ -124,6 +127,7 @@ internal class AerobagRetainedModel : ViewModel() {
                 refresh = uiSession::refreshSnapshot,
                 resultExecutor = resultExecutor,
             ),
+            uiSessionWorkRunner = UiSessionWorkRunner(uiSession),
         ).also {
             coreSession = it
             it.liveFeedRuntime.start()

@@ -2636,6 +2636,7 @@ internal fun AerobagApp(
     val appCore = retainedCoreSession.appCore
     val situationRingCandidates = retainedCoreSession.situationRingCandidates
     val uiSession = retainedCoreSession.uiSession
+    val uiSessionWorkRunner = retainedCoreSession.uiSessionWorkRunner
     var page by remember {
         mutableStateOf(
             retainedModel.page ?: readStoredPage(prefs),
@@ -3346,6 +3347,7 @@ internal fun AerobagApp(
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
                         uiSession = uiSession,
+                        sessionWorkRunner = uiSessionWorkRunner,
                         shellSessionSnapshot = sessionSnapshot,
                         sessionRenderModel = sessionRenderModel,
                         sessionRenderDiagnostics = sessionRenderDiagnostics,
@@ -3492,6 +3494,7 @@ internal fun AerobagApp(
                         dataStatusState = sessionSnapshot.dataStatusState,
                         procedureGeometryStatus = derivedChartPageState.procedureGeometryStatus,
                         uiSession = uiSession,
+                        sessionWorkRunner = uiSessionWorkRunner,
                         navElement = navElement,
                         folderOpen = chartFolderOpen,
                         viewport = chartViewport,

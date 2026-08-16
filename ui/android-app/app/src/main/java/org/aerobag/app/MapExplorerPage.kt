@@ -617,6 +617,7 @@ internal fun MapExplorerPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
     shellSessionSnapshot: UiSessionSnapshot,
     sessionRenderModel: SessionRenderModel,
     sessionRenderDiagnostics: SessionRenderDiagnostics,
@@ -672,12 +673,6 @@ internal fun MapExplorerPage(
         decodedTileBitmapCache.clear()
     }
     val json = remember { Json { ignoreUnknownKeys = true } }
-    val sessionWorkRunner = remember(uiSession) { UiSessionWorkRunner(uiSession) }
-    DisposableEffect(sessionWorkRunner) {
-        onDispose {
-            sessionWorkRunner.close()
-        }
-    }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {

@@ -367,6 +367,7 @@ internal fun ChartsPage(
     dataStatusState: UiDataStatusState,
     procedureGeometryStatus: UiDataStatusState,
     uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
     navElement: NavElementUiView?,
     folderOpen: Boolean,
     viewport: ImageViewportState?,
@@ -420,7 +421,7 @@ internal fun ChartsPage(
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
         initialValue = null,
         bitmapLoadKey,
-        uiSession,
+        sessionWorkRunner,
         devServerBaseUrl,
     ) {
         val chartId = bitmapLoadKey.chartId
@@ -431,7 +432,7 @@ internal fun ChartsPage(
         var attemptedResource: CoreResourceRequest? = null
         val loadedBitmap = withContext(Dispatchers.IO) {
             runCatching {
-                val bytes = uiSession.chartAssetBytes(chartId, "asset") { resource ->
+                val bytes = sessionWorkRunner.chartAssetBytes(chartId, "asset") { resource ->
                     attemptedResource = resource
                     fetchCoreResource(context, resource, devServerBaseUrl)
                 }
@@ -683,7 +684,7 @@ internal fun ChartsPage(
                 charts = sortedCharts,
                 selectedChartId = selectedChart?.id,
                 suggestedChartIds = suggestedChartIds,
-                uiSession = uiSession,
+                sessionWorkRunner = sessionWorkRunner,
                 uiTheme = uiTheme,
                 devServerBaseUrl = devServerBaseUrl,
                 onSelectChart = {
@@ -1658,7 +1659,7 @@ internal fun PlateFolderGrid(
     charts: List<ChartAsset>,
     selectedChartId: String?,
     suggestedChartIds: List<String>,
-    uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
     uiTheme: UiTheme,
     devServerBaseUrl: String,
     onSelectChart: (String) -> Unit,
@@ -1671,12 +1672,12 @@ internal fun PlateFolderGrid(
         verticalArrangement = Arrangement.spacedBy(FolderThumbGutter),
     ) {
         lazyGridItems(charts, key = { it.id }) { chart ->
-            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.hasThumbnail, uiSession, devServerBaseUrl) {
+            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.hasThumbnail, sessionWorkRunner, devServerBaseUrl) {
                 value = if (chart.hasThumbnail) {
                     withContext(Dispatchers.IO) {
                         var attemptedResource: CoreResourceRequest? = null
                         runCatching {
-                            val bytes = uiSession.chartAssetBytes(chart.id, "thumbnail") { resource ->
+                            val bytes = sessionWorkRunner.chartAssetBytes(chart.id, "thumbnail") { resource ->
                                 attemptedResource = resource
                                 fetchCoreResource(context, resource, devServerBaseUrl)
                             }

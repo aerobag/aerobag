@@ -184,14 +184,17 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
-    fun expensiveMapResourceWorkIsOnlyCallableThroughTheScheduledRunner() {
+    fun expensiveUiSessionWorkIsOnlyCallableThroughTheScheduledRunner() {
         val sessionSource =
             sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
         val runnerSource =
             sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
         val mapSource =
             sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val chartsSource =
+            sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
         val scheduledMethods = listOf(
+            "chartAssetBytes",
             "queryMapOverlay",
             "queryMapSelection",
             "queryMapSelectionForNavRef",
@@ -211,10 +214,25 @@ class NativeUiSessionBoundaryTest {
                 runnerSource.split("uiSession.$method(").size - 1 == 1,
             )
             assertFalse(
-                "MapExplorerPage must not bypass UiSessionWorkRunner for $method.",
-                mapSource.contains("uiSession.$method("),
+                "UI pages must not bypass UiSessionWorkRunner for $method.",
+                mapSource.contains("uiSession.$method(") ||
+                    chartsSource.contains("uiSession.$method("),
             )
         }
+        assertTrue(
+            "Distinct chart assets must not coalesce into one lossy background slot.",
+            runnerSource.contains("\"chart_asset:\$assetKind:\$chartId\""),
+        )
+        assertTrue(
+            "Cancelled page work must discard its pending payload before it can consume I/O.",
+            runnerSource.contains("payloads.remove(requestId)?.dropped(\"caller_cancelled\")"),
+        )
+        val startBody = balancedBlockAfterMarker(runnerSource, "private fun start(")
+        assertTrue(
+            "Skipping a cancelled pending payload must continue draining the scheduler queue.",
+            Regex("""if \(payload == null\) \{[\s\S]*?val completion = complete\(request.id\)[\s\S]*?completion.next\?\.let""")
+                .containsMatchIn(startBody),
+        )
         assertTrue(
             "Distinct terrain tiles must not coalesce into one lossy background slot.",
             runnerSource.contains("\"terrain_tile:\${request.cacheKey}\""),
@@ -261,8 +279,17 @@ class NativeUiSessionBoundaryTest {
             "Snapshot scheduling and the complete live-feed runtime must survive activity recreation.",
             retainedSession.contains("val sessionSnapshotRefreshRunner:") &&
                 retainedSession.contains("val liveFeedRuntime: RetainedLiveFeedRuntime") &&
+                retainedSession.contains("val uiSessionWorkRunner: UiSessionWorkRunner") &&
                 retainedSession.contains("it.liveFeedRuntime.start()") &&
-                mainActivity.contains("retainedCoreSession.liveFeedRuntime"),
+                mainActivity.contains("retainedCoreSession.liveFeedRuntime") &&
+                mainActivity.contains("retainedCoreSession.uiSessionWorkRunner"),
+        )
+        assertFalse(
+            "Compose pages must not create page-scoped session work schedulers.",
+            mapPage.contains("UiSessionWorkRunner(uiSession)") ||
+                sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt")
+                    .readText()
+                    .contains("UiSessionWorkRunner(uiSession)"),
         )
         assertTrue(
             "The retained live-feed runtime must own one idempotent restore and connection pipeline.",

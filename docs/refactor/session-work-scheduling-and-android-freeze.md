@@ -62,8 +62,9 @@ Patterns worth copying:
 
 The items below describe the state that motivated this roadmap. Map overlay,
 map selection, nav-ref inspection, terrain planning/rendering, and NEXRAD
-planning/tile preparation now run through `UiSessionWorkRunner`; direct access
-to their low-level `NativeUiSession` methods requires an error-level opt-in.
+planning/tile preparation, and chart asset resolution/fetching now run through
+one retained `UiSessionWorkRunner`; direct access to their low-level
+`NativeUiSession` methods requires an error-level opt-in.
 
 Current Android code has useful pieces, but no single enforced boundary:
 
@@ -311,21 +312,27 @@ Web regression tests:
    selection through it.
 4. Completed: add an automated Android map-selection freeze workload and fail it
    on main-thread stalls.
-5. In progress: nav-ref inspection, terrain planning/rendering, and NEXRAD
-   planning/tile preparation now use the runner. Audit the remaining paged
-   session calls before deciding whether chart assets, live-feed maintenance,
-   or other service-owned operations belong on this UI scheduler.
+5. Completed for UI-owned paged work: nav-ref inspection, terrain
+   planning/rendering, NEXRAD planning/tile preparation, and chart assets now
+   use one retained runner. Raster planning and the one-hertz inspector-distance
+   refresh remain direct bounded reads: neither can page resources, and the
+   latter already executes on `Dispatchers.IO`. Live-feed maintenance and
+   offline package synchronization retain their service-owned schedulers.
 6. Pending: update web to consume the shared scheduler while keeping the Worker
    execution boundary.
-7. In progress: the seven scheduled Android map operations carry an error-level
-   `RawUiSessionWorkApi` opt-in and a boundary test prevents UI code from calling
-   them directly. Extend the boundary only as phase 5 identifies more UI work.
+7. Completed for the audited surface: the eight scheduled Android operations
+   carry an error-level `RawUiSessionWorkApi` opt-in and a boundary test prevents
+   UI code from calling them directly. The runner is owned by the retained core
+   session and closes before the native session, rather than being recreated by
+   individual Compose pages.
 
 The background lane now retains one latest pending request per core-owned
 coalescing key and runs the oldest pending key next. Map churn can replace old
 map work without evicting or starving pending terrain or NEXRAD work. Input
 selection retains its separate priority lane and may start while background
-work is active.
+work is active. If a page coroutine is cancelled while its request is still
+pending, the retained runner discards the payload so a stale thumbnail or map
+request cannot later consume resource I/O merely to be dropped.
 
 ## Open Questions
 

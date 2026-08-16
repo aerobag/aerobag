@@ -119,6 +119,10 @@ import {
 } from "./domain/cloudProviderRuntime";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
+  flightPlanHistoryAriaKeyShortcuts,
+  flightPlanHistoryControlForKey,
+} from "./domain/flightPlanHistoryShortcut";
+import {
   applyPinchGesture,
   compassNeedleRotationDegrees,
   createPinchSnapshot,
@@ -8842,6 +8846,27 @@ function FlightPlanPage(props: {
   }
   const guidance = planUiState.guidance ?? null;
   const planControls = planUiState.controls;
+  useEffect(() => {
+    if (props.page !== "plan") {
+      return;
+    }
+    const handleHistoryKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableTarget(event.target)) {
+        return;
+      }
+      const controlId = flightPlanHistoryControlForKey(event);
+      if (!controlId) {
+        return;
+      }
+      event.preventDefault();
+      if (!planControls.some((control) => control.id === controlId && control.enabled)) {
+        return;
+      }
+      void props.onPerformFlightPlanControl(controlId);
+    };
+    window.addEventListener("keydown", handleHistoryKeyDown);
+    return () => window.removeEventListener("keydown", handleHistoryKeyDown);
+  }, [planControls, props.onPerformFlightPlanControl, props.page]);
   const activeFromRowUid = guidance?.active_from_row_uid ?? null;
   const activeToRowUid = guidance?.active_to_row_uid ?? null;
   const activeGuidanceRowsKey = guidance?.active_leg
@@ -9609,6 +9634,7 @@ function FlightPlanPage(props: {
               data-testid={`plan-control-${control.id}`}
               disabled={disabled && !disabledReason}
               aria-disabled={disabled ? "true" : undefined}
+              aria-keyshortcuts={flightPlanHistoryAriaKeyShortcuts(control.id)}
               title={disabledReason ?? undefined}
               onClick={() => {
                 if (disabled) {

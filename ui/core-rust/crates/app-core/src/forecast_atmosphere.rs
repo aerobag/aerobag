@@ -24,6 +24,7 @@ pub(crate) struct InstalledForecastAtmosphere {
     manifest: AtmosphereManifest,
     store: NavKvStore,
     decoded_tiles: RefCell<HashMap<(u32, u32), Arc<AtmosphereTileV1>>>,
+    observed_missing_pages: RefCell<BTreeSet<u32>>,
 }
 
 impl InstalledForecastAtmosphere {
@@ -33,6 +34,7 @@ impl InstalledForecastAtmosphere {
             manifest,
             store,
             decoded_tiles: RefCell::new(HashMap::new()),
+            observed_missing_pages: RefCell::new(BTreeSet::new()),
         })
     }
 
@@ -46,6 +48,16 @@ impl InstalledForecastAtmosphere {
 
     pub(crate) fn insert_page(&mut self, page_index: u32, bytes: Vec<u8>) {
         self.store.insert_page(page_index, bytes);
+    }
+
+    pub(crate) fn clear_observed_missing_pages(&self) {
+        self.observed_missing_pages.borrow_mut().clear();
+    }
+
+    pub(crate) fn take_observed_missing_pages(&self) -> Vec<u32> {
+        std::mem::take(&mut *self.observed_missing_pages.borrow_mut())
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn missing_pages_for_paths(
@@ -108,9 +120,12 @@ impl InstalledForecastAtmosphere {
             NavKvLookup::Hit(bytes) => bytes,
             NavKvLookup::MissingKey => return Err(format!("forecast has no tile {key}")),
             NavKvLookup::MissingPages(pages) => {
+                self.observed_missing_pages
+                    .borrow_mut()
+                    .extend(pages.iter().copied());
                 return Err(format!(
                     "forecast tile {key} is missing installed NavKv pages {pages:?}"
-                ))
+                ));
             }
         };
         let tile = AtmosphereTileV1::decode_wire(&bytes)?;
@@ -496,6 +511,27 @@ pub(crate) mod tests {
                 500,
             )
             .expect("route pages make forecast sampleable");
+    }
+
+    #[test]
+    fn records_exact_nav_kv_page_faults_observed_while_sampling() {
+        let (manifest, root, _, _) = test_forecast_payload();
+        let store = NavKvStore::new(NavKvRoot::parse(&root).unwrap());
+        let forecast = InstalledForecastAtmosphere::new(manifest, store).unwrap();
+
+        let error = forecast
+            .sample(
+                LatLon {
+                    lat: 0.5,
+                    lon: 10.5,
+                },
+                500.0 / METERS_PER_FOOT,
+                500,
+            )
+            .expect_err("an unfaulted forecast must request its NavKv page");
+        assert!(error.contains("missing installed NavKv pages"));
+        assert!(!forecast.take_observed_missing_pages().is_empty());
+        assert!(forecast.take_observed_missing_pages().is_empty());
     }
 
     #[test]

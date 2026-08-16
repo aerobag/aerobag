@@ -4087,6 +4087,9 @@ fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
+    if let Some(forecast) = session.weather.runtime().forecast_atmosphere.as_ref() {
+        forecast.clear_observed_missing_pages();
+    }
     let private_aircraft_definitions = session_aircraft_definitions(session)?;
     let panel = match crate::had_ops::altitude_comparison_panel(
         session_nav_kv_store(session)?,
@@ -4108,8 +4111,38 @@ fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome
             })
         }
     };
+    let forecast_resources = observed_forecast_page_resources(session)?;
+    if !forecast_resources.is_empty() {
+        return Ok(HadOperationOutcome::NeedResources {
+            resources: forecast_resources,
+        });
+    }
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(panel).map_err(internal_json_error)?,
+    ))
+}
+
+fn observed_forecast_page_resources(session: &UiSession) -> AppResult<Vec<CoreResourceRequest>> {
+    let Some(forecast) = session.weather.runtime().forecast_atmosphere.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let missing_pages = forecast.take_observed_missing_pages();
+    if missing_pages.is_empty() {
+        return Ok(Vec::new());
+    }
+    let state = session
+        .weather
+        .runtime()
+        .forecast_atmosphere_state
+        .as_ref()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "installed winds-aloft forecast has no live NavKv source".to_string(),
+        })?;
+    Ok(live_nav_kv_page_resources(
+        session.weather.live_feeds(),
+        &state.source,
+        missing_pages,
     ))
 }
 
@@ -19732,6 +19765,32 @@ mod tests {
 
         ingest_resource_in_session(init.handle, &root_effect.resource.id, &root)
             .expect("atmosphere root");
+        let exact_fault_resources = {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            let forecast = session
+                .weather
+                .runtime()
+                .forecast_atmosphere
+                .as_ref()
+                .expect("forecast atmosphere");
+            crate::AtmosphereModel::sample(
+                forecast,
+                LatLon {
+                    lat: 0.5,
+                    lon: 10.5,
+                },
+                500.0 / 0.3048,
+                500,
+            )
+            .expect_err("unfaulted sample should expose its exact page dependency");
+            observed_forecast_page_resources(&session).expect("exact forecast page resources")
+        };
+        assert_eq!(exact_fault_resources.len(), 1);
+        assert_eq!(
+            exact_fault_resources[0].id,
+            format!("live_nav_kv/winds-aloft/{version}/page/0000")
+        );
         let snapshot = get_session_snapshot(init.handle).expect("snapshot with atmosphere root");
         let winds_status = snapshot
             .data_status_page_state

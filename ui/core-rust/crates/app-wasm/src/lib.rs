@@ -674,6 +674,19 @@ pub fn perform_time_display_action_in_session(
 }
 
 #[wasm_bindgen]
+pub fn perform_flight_plan_column_action_in_session(
+    session_handle: u32,
+    action_id: &str,
+) -> Result<String, JsValue> {
+    let outcome = app_core::perform_flight_plan_column_action_in_session(
+        session_handle,
+        action_id.to_string(),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn query_flight_plan_in_session(
     session_handle: u32,
     query_json: &str,

@@ -180,6 +180,7 @@ pub(crate) struct FlightPlanProjectionInputs {
     pub aircraft_definitions_digest: [u8; 32],
     pub local_time_zone: chrono_tz::Tz,
     pub time_display_mode: crate::TimeDisplayMode,
+    pub ete_scope: crate::FlightPlanEteScope,
 }
 
 #[derive(Debug, Clone)]
@@ -677,6 +678,14 @@ impl FlightPlanController {
             }
         }
 
+        let computer = FlightDataComputer::with_fuel_flow_clock_and_time_display(
+            inputs.ownship_speed_kt,
+            None,
+            Some(inputs.now_epoch_ms),
+            inputs.time_display_mode,
+            inputs.local_time_zone,
+        )
+        .with_flight_plan_ete_scope(inputs.ete_scope);
         let mut projection = match self.model.active_plan.as_ref() {
             None => FlightPlanProjection {
                 ui_state: None,
@@ -697,13 +706,7 @@ impl FlightPlanController {
                         private_aircraft_definitions,
                         plan.clone(),
                         ui_state,
-                        FlightDataComputer::with_fuel_flow_clock_and_time_display(
-                            inputs.ownship_speed_kt,
-                            None,
-                            Some(inputs.now_epoch_ms),
-                            inputs.time_display_mode,
-                            inputs.local_time_zone,
-                        ),
+                        computer,
                         FlightPlanLiveData {
                             ownship_position: inputs.ownship_position,
                             ownship_altitude_ft: inputs.ownship_altitude_ft,
@@ -734,6 +737,7 @@ impl FlightPlanController {
             }
         };
         if let Some(ui_state) = projection.ui_state.as_mut() {
+            ui_state.data_columns = computer.flight_plan_columns();
             crate::planning::apply_flight_plan_live_action_availability(
                 ui_state,
                 inputs.ownship_position.is_some(),
@@ -1146,6 +1150,7 @@ mod tests {
             weather_revision: 0,
             local_time_zone: chrono_tz::UTC,
             time_display_mode: crate::TimeDisplayMode::Local,
+            ete_scope: crate::FlightPlanEteScope::Cumulative,
         }
     }
 

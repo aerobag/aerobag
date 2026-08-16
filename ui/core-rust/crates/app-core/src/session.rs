@@ -4274,6 +4274,27 @@ pub fn perform_time_display_action_in_session(
     changed_session_update_outcome(session)
 }
 
+pub fn perform_flight_plan_column_action_in_session(
+    handle: u32,
+    action_id: String,
+) -> AppResult<HadOperationOutcome> {
+    if action_id == crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID {
+        return perform_time_display_action_in_session(handle, action_id);
+    }
+    if action_id != crate::TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unknown flight-plan column action: {action_id}"),
+        });
+    }
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    run_session_model_transaction(&mut session_guard, |session| {
+        session.settings.toggle_flight_plan_ete_scope();
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
+}
+
 pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_navigation_controller(handle, |controller| {
         controller.plan_after_activate_next_leg()
@@ -11520,6 +11541,7 @@ fn project_session_app_ui_state(
             aircraft_definitions_digest,
             local_time_zone,
             time_display_mode: session.coordinator.time_display_mode,
+            ete_scope: session.settings.flight_plan_ete_scope(),
         },
         atmosphere,
     )?;
@@ -14734,6 +14756,10 @@ mod tests {
         handle: u32,
         action: UiSettingsAction,
     ));
+    snapshot_wrapper!(perform_flight_plan_column_action_in_session(
+        handle: u32,
+        action_id: String,
+    ));
     snapshot_wrapper!(accept_disclaimer_in_session(
         handle: u32,
         agreement_id: &str,
@@ -15135,6 +15161,60 @@ mod tests {
                 .and_then(|policy| policy.dim_after_ms),
             Some(30_000)
         );
+    }
+
+    #[test]
+    fn flight_plan_ete_scope_action_is_core_owned_and_persistent() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let initial = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .expect("configure platform capabilities");
+        assert_eq!(flight_plan_ete_column(&initial).label, "ETE CUM");
+
+        let toggled = perform_flight_plan_column_action_in_session(
+            init.handle,
+            crate::TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID.to_string(),
+        )
+        .expect("toggle ETE scope");
+        assert_eq!(flight_plan_ete_column(&toggled).label, "ETE LEG");
+
+        let persisted = storage
+            .read_settings()
+            .expect("read settings")
+            .expect("persisted bytes");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("persisted json");
+        assert_eq!(
+            persisted_json["preferences"]["flight_plan_ete_scope"],
+            "leg"
+        );
+
+        let restored =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let restored = configure_platform_capabilities_in_session(
+            restored.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .expect("restore settings");
+        assert_eq!(flight_plan_ete_column(&restored).label, "ETE LEG");
+    }
+
+    fn flight_plan_ete_column(snapshot: &UiSessionSnapshot) -> &crate::FlightDataColumn {
+        snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("active plan")
+            .data_columns
+            .iter()
+            .find(|column| column.id == "waypoint_ete")
+            .expect("ETE column")
     }
 
     #[test]

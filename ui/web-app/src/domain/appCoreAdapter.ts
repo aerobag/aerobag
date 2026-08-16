@@ -796,6 +796,7 @@ export interface UiSession {
   altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
   performAltitudePlannerAction(actionUid: string): Promise<UiSessionSnapshot>;
   setAltitudePlannerDepartureInput(field: "time" | "when", input: string): Promise<UiSessionSnapshot>;
+  performFlightPlanColumnAction(actionId: string): Promise<UiSessionSnapshot>;
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
@@ -987,6 +988,10 @@ type WasmModule = {
     nowEpochMs: bigint,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_time_display_action_in_session(
+    sessionHandle: number,
+    actionId: string,
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_flight_plan_column_action_in_session(
     sessionHandle: number,
     actionId: string,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -1621,6 +1626,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_time_display_action_in_session(handle, actionId),
         );
       },
+      performFlightPlanColumnAction: async (actionId) => {
+        return runSessionMutation(() =>
+          this.module.perform_flight_plan_column_action_in_session(handle, actionId),
+        );
+      },
       performStatusAction: async (actionId) => {
         snapshot = await runSessionMutation(() =>
           this.module.perform_status_action_in_session(handle, actionId),
@@ -2237,6 +2247,7 @@ async function loadBestAvailableAdapterUncached(
     "configure_platform_capabilities_in_session",
     "should_prepare_live_feed_resource",
     "perform_flight_plan_command_in_session",
+    "perform_flight_plan_column_action_in_session",
     "perform_time_display_action_in_session",
     "query_flight_plan_in_session",
     "perform_status_action_in_session",

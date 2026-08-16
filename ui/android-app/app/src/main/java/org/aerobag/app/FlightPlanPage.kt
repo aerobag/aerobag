@@ -767,8 +767,8 @@ internal fun FlightPlanPage(
                         columns = planUiState.dataColumns,
                         dataScrollState = planDataScrollState,
                         onDataColumnAction = { actionId ->
-                            applySessionCommand("performTimeDisplayAction") {
-                                uiSession.performTimeDisplayAction(actionId)
+                            applySessionCommand("performFlightPlanColumnAction") {
+                                uiSession.performFlightPlanColumnAction(actionId)
                             }
                         },
                     )

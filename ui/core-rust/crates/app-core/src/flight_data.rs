@@ -7,6 +7,25 @@ pub use app_ui_contracts::session::{
 };
 use chrono_tz::Tz;
 
+pub const TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID: &str = "toggle_flight_plan_ete_scope";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanEteScope {
+    Leg,
+    #[default]
+    Cumulative,
+}
+
+impl FlightPlanEteScope {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Leg => Self::Cumulative,
+            Self::Cumulative => Self::Leg,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FlightDataComputer {
     ground_speed_kt: Option<f64>,
@@ -14,10 +33,12 @@ pub struct FlightDataComputer {
     now_epoch_ms: Option<i64>,
     time_display_mode: crate::TimeDisplayMode,
     local_time_zone: Tz,
+    flight_plan_ete_scope: FlightPlanEteScope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlightTimeFuelEstimate {
+    pub leg_ete_seconds: Option<f64>,
     pub cumulative_ete_seconds: Option<f64>,
     pub cumulative_fuel_gal: Option<f64>,
     pub estimate_kind: FlightEstimateKind,
@@ -82,14 +103,18 @@ const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 14] = [
         "waypoint_distance",
         "WPT nm",
     ),
-    banner_cell(FlightDataBannerField::WaypointEte, "waypoint_ete", "ETE"),
+    banner_cell(
+        FlightDataBannerField::WaypointEte,
+        "waypoint_ete",
+        "ETE NEXT",
+    ),
     banner_cell(
         FlightDataBannerField::FinalDistance,
         "final_distance",
         "FINAL nm",
     ),
-    banner_cell(FlightDataBannerField::FinalEte, "final_ete", "F-ETE"),
-    banner_cell(FlightDataBannerField::FinalFuel, "final_fuel", "F-FUEL gal"),
+    banner_cell(FlightDataBannerField::FinalEte, "final_ete", "ETE DEST"),
+    banner_cell(FlightDataBannerField::FinalFuel, "final_fuel", "FUEL DEST"),
     banner_cell(FlightDataBannerField::FinalEta, "final_eta", "ETA"),
     banner_cell(FlightDataBannerField::Clock, "clock", "TIME"),
     banner_cell(FlightDataBannerField::NexradAge, "nexrad_age", "NEXRAD"),
@@ -143,7 +168,22 @@ impl FlightDataComputer {
             now_epoch_ms,
             time_display_mode,
             local_time_zone,
+            flight_plan_ete_scope: FlightPlanEteScope::Cumulative,
         }
+    }
+
+    pub fn with_flight_plan_ete_scope(mut self, scope: FlightPlanEteScope) -> Self {
+        self.flight_plan_ete_scope = scope;
+        self
+    }
+
+    pub fn with_fuel_flow_gph(mut self, fuel_flow_gph: Option<f64>) -> Self {
+        self.fuel_flow_gph = fuel_flow_gph.filter(|fuel_flow| *fuel_flow > 0.0);
+        self
+    }
+
+    pub fn has_usable_ground_speed(&self) -> bool {
+        self.ground_speed_kt.is_some()
     }
 
     pub fn banner(&self, input: FlightDataBannerInput) -> FlightDataBannerModel {
@@ -235,6 +275,9 @@ impl FlightDataComputer {
         distance_tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
         let estimate = FlightTimeFuelEstimate {
+            leg_ete_seconds: segment_distance_nm
+                .and_then(|distance| self.ete_seconds(distance))
+                .map(|seconds| seconds as f64),
             cumulative_ete_seconds: cumulative_distance_nm
                 .and_then(|distance| self.ete_seconds(distance))
                 .map(|seconds| seconds as f64),
@@ -283,9 +326,11 @@ impl FlightDataComputer {
                 .collect();
         }
 
-        let ete_seconds = estimate
-            .cumulative_ete_seconds
-            .map(|seconds| seconds.round().max(0.0) as i64);
+        let ete_seconds = match self.flight_plan_ete_scope {
+            FlightPlanEteScope::Leg => estimate.leg_ete_seconds,
+            FlightPlanEteScope::Cumulative => estimate.cumulative_ete_seconds,
+        }
+        .map(|seconds| seconds.round().max(0.0) as i64);
         let ete = ete_seconds.map(format_ete_seconds);
         let eta = eta.or_else(|| {
             self.now_epoch_ms
@@ -294,6 +339,10 @@ impl FlightDataComputer {
         });
         let fuel = estimate.cumulative_fuel_gal.map(format_fuel_gal);
 
+        let ete_label = match self.flight_plan_ete_scope {
+            FlightPlanEteScope::Leg => "ETE LEG",
+            FlightPlanEteScope::Cumulative => "ETE CUM",
+        };
         vec![
             cell_with_tone(
                 "waypoint_distance",
@@ -308,8 +357,8 @@ impl FlightDataComputer {
                 estimate.estimate_kind,
                 crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
             ),
-            cell_with_estimate("waypoint_ete", "ETE", ete, estimate.estimate_kind),
-            cell_with_estimate("fuel", "FUEL gal", fuel, estimate.estimate_kind),
+            cell_with_estimate("waypoint_ete", ete_label, ete, estimate.estimate_kind),
+            cell_with_estimate("fuel", "FUEL CUM", fuel, estimate.estimate_kind),
             cell(
                 "desired_track",
                 "DTK",
@@ -324,6 +373,9 @@ impl FlightDataComputer {
         tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
         let estimate = FlightTimeFuelEstimate {
+            leg_ete_seconds: total_distance_nm
+                .and_then(|distance| self.ete_seconds(distance))
+                .map(|seconds| seconds as f64),
             cumulative_ete_seconds: total_distance_nm
                 .and_then(|distance| self.ete_seconds(distance))
                 .map(|seconds| seconds as f64),
@@ -343,7 +395,8 @@ impl FlightDataComputer {
         tone: FlightDataCellTone,
         estimate: FlightTimeFuelEstimate,
     ) -> Vec<FlightDataCell> {
-        self.flight_plan_row_cells_with_estimate(
+        let computer = (*self).with_flight_plan_ete_scope(FlightPlanEteScope::Cumulative);
+        computer.flight_plan_row_cells_with_estimate(
             true,
             total_distance_nm,
             None,
@@ -408,23 +461,31 @@ impl FlightDataComputer {
     }
 
     pub fn flight_plan_columns(&self) -> Vec<FlightDataColumn> {
-        flight_plan_columns_with_eta_label(&self.eta_label())
+        flight_plan_columns_with_labels(&self.eta_label(), self.flight_plan_ete_scope)
     }
 }
 
 pub fn flight_plan_columns() -> Vec<FlightDataColumn> {
-    flight_plan_columns_with_eta_label("ETA")
+    flight_plan_columns_with_labels("ETA", FlightPlanEteScope::Cumulative)
 }
 
-fn flight_plan_columns_with_eta_label(eta_label: &str) -> Vec<FlightDataColumn> {
+fn flight_plan_columns_with_labels(
+    eta_label: &str,
+    ete_scope: FlightPlanEteScope,
+) -> Vec<FlightDataColumn> {
+    let ete_label = match ete_scope {
+        FlightPlanEteScope::Leg => "ETE LEG",
+        FlightPlanEteScope::Cumulative => "ETE CUM",
+    };
     let mut columns = vec![
         column("waypoint_distance", "DIST nm"),
         column("final_eta", eta_label),
-        column("waypoint_ete", "ETE"),
-        column("fuel", "FUEL gal"),
+        column("waypoint_ete", ete_label),
+        column("fuel", "FUEL CUM"),
         column("desired_track", "DTK"),
     ];
     columns[1].action_id = Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string());
+    columns[2].action_id = Some(crate::TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID.to_string());
     columns
 }
 
@@ -656,6 +717,52 @@ mod tests {
     #[test]
     fn flight_plan_distance_column_is_named_dist() {
         assert_eq!(flight_plan_columns()[0].label, "DIST nm");
+    }
+
+    #[test]
+    fn flight_plan_ete_scope_changes_rows_but_not_destination_summary() {
+        let cumulative = FlightDataComputer::with_fuel_flow(Some(120.0), Some(10.0));
+        let leg = cumulative.with_flight_plan_ete_scope(FlightPlanEteScope::Leg);
+
+        let cumulative_cells = cumulative.flight_plan_row_cells(
+            true,
+            Some(12.0),
+            Some(30.0),
+            None,
+            None,
+            FlightDataCellTone::Planned,
+        );
+        let leg_cells = leg.flight_plan_row_cells(
+            true,
+            Some(12.0),
+            Some(30.0),
+            None,
+            None,
+            FlightDataCellTone::Planned,
+        );
+        let leg_summary = leg.flight_plan_summary_cells(Some(30.0), FlightDataCellTone::Planned);
+
+        assert_eq!(
+            cell_value(&cumulative_cells, "waypoint_ete"),
+            Some("15:00⏱️")
+        );
+        assert_eq!(cell_value(&leg_cells, "waypoint_ete"), Some("06:00⏱️"));
+        assert_eq!(cell_value(&leg_cells, "fuel"), Some("2.5"));
+        assert_eq!(cell_value(&leg_summary, "waypoint_ete"), Some("15:00⏱️"));
+        assert_eq!(cumulative.flight_plan_columns()[2].label, "ETE CUM");
+        assert_eq!(leg.flight_plan_columns()[2].label, "ETE LEG");
+        assert_eq!(
+            leg.flight_plan_columns()[2].action_id.as_deref(),
+            Some(TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID)
+        );
+    }
+
+    #[test]
+    fn grid_estimate_labels_name_next_and_destination_scope() {
+        let banner = FlightDataComputer::default().banner(FlightDataBannerInput::default());
+        assert_eq!(cell_label(&banner.cells, "waypoint_ete"), Some("ETE NEXT"));
+        assert_eq!(cell_label(&banner.cells, "final_ete"), Some("ETE DEST"));
+        assert_eq!(cell_label(&banner.cells, "final_fuel"), Some("FUEL DEST"));
     }
 
     #[test]
@@ -959,6 +1066,7 @@ mod tests {
             Some(270.0),
             FlightDataCellTone::Active,
             FlightTimeFuelEstimate {
+                leg_ete_seconds: Some(3.0 * 60.0 + 15.0),
                 cumulative_ete_seconds: Some(12.0 * 60.0 + 34.0),
                 cumulative_fuel_gal: Some(2.45),
                 estimate_kind: FlightEstimateKind::Modeled,
@@ -977,5 +1085,19 @@ mod tests {
         assert_eq!(fuel.estimate_kind, FlightEstimateKind::Modeled);
         assert_eq!(distance.estimate_kind, FlightEstimateKind::Basic);
         assert_eq!(distance.tone, FlightDataCellTone::Active);
+    }
+
+    fn cell_value<'a>(cells: &'a [FlightDataCell], id: &str) -> Option<&'a str> {
+        cells
+            .iter()
+            .find(|cell| cell.id == id)
+            .and_then(|cell| cell.value.as_deref())
+    }
+
+    fn cell_label<'a>(cells: &'a [FlightDataCell], id: &str) -> Option<&'a str> {
+        cells
+            .iter()
+            .find(|cell| cell.id == id)
+            .map(|cell| cell.label.as_str())
     }
 }

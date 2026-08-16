@@ -167,7 +167,7 @@ describe("map interaction boundaries", () => {
 
     const planHeaders = sourceBetween("planDataColumns.map((column)", "displayRows.map((row)");
     expect(planHeaders).toContain("column.action_id");
-    expect(planHeaders).toContain("props.onTimeDisplayAction(column.action_id!)");
+    expect(planHeaders).toContain("props.onFlightPlanColumnAction(column.action_id!)");
   });
 
   it("routes raster, vector, and terrain work through the shared landing policy", () => {

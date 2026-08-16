@@ -4107,6 +4107,13 @@ export default function App() {
               "time_display_mode",
             );
           }}
+          onFlightPlanColumnAction={async (actionId) => {
+            if (!uiSession) return;
+            applySessionSnapshot(
+              await uiSession.performFlightPlanColumnAction(actionId),
+              "flight_plan_column_action",
+            );
+          }}
         />
       </PageLayer>
 
@@ -9039,6 +9046,7 @@ function FlightPlanPage(props: {
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null) => void | Promise<void>;
+  onFlightPlanColumnAction: (actionId: string) => Promise<void>;
   onTimeDisplayAction: (actionId: string) => Promise<void>;
 }) {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
@@ -9675,11 +9683,11 @@ function FlightPlanPage(props: {
                     className={`planHeader${column.action_id ? " isActionable" : ""}`}
                     role={column.action_id ? "button" : undefined}
                     tabIndex={column.action_id ? 0 : undefined}
-                    onClick={column.action_id ? () => void props.onTimeDisplayAction(column.action_id!) : undefined}
+                    onClick={column.action_id ? () => void props.onFlightPlanColumnAction(column.action_id!) : undefined}
                     onKeyDown={column.action_id ? (event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        void props.onTimeDisplayAction(column.action_id!);
+                        void props.onFlightPlanColumnAction(column.action_id!);
                       }
                     } : undefined}
                   >

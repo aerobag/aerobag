@@ -1639,6 +1639,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun performFlightPlanColumnAction(actionId: String): UiSessionSnapshot {
+        return runPagedSnapshot("performFlightPlanColumnAction") {
+            bridge.performFlightPlanColumnActionInSessionJson(handle, actionId)
+        }
+    }
+
     fun performStatusAction(actionId: String): UiSessionSnapshot {
         return runPagedSnapshot("performStatusAction") {
             bridge.performStatusActionInSessionJson(handle, actionId)

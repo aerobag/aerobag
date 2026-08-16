@@ -350,6 +350,11 @@ interface NativeBridge {
         actionId: String,
     ): String
 
+    fun performFlightPlanColumnActionInSessionJson(
+        handle: Long,
+        actionId: String,
+    ): String
+
     fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
@@ -938,6 +943,11 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun performTimeDisplayActionInSessionJson(
+        handle: Long,
+        actionId: String,
+    ): String
+
+    external override fun performFlightPlanColumnActionInSessionJson(
         handle: Long,
         actionId: String,
     ): String

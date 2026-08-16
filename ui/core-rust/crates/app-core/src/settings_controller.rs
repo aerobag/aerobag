@@ -119,6 +119,8 @@ pub struct SettingsPreferences {
     #[serde(default)]
     pub disabled_flight_data_cell_ids: BTreeSet<String>,
     #[serde(default)]
+    pub flight_plan_ete_scope: crate::FlightPlanEteScope,
+    #[serde(default)]
     pub accepted_disclaimer_agreement_ids: BTreeSet<String>,
 }
 
@@ -192,7 +194,8 @@ impl SettingsController {
             || self.preferences.accepted_disclaimer_agreement_ids
                 != preferences.accepted_disclaimer_agreement_ids;
         let flight_data_changed = self.preferences.disabled_flight_data_cell_ids
-            != preferences.disabled_flight_data_cell_ids;
+            != preferences.disabled_flight_data_cell_ids
+            || self.preferences.flight_plan_ete_scope != preferences.flight_plan_ete_scope;
         if !static_changed && !flight_data_changed {
             return false;
         }
@@ -270,6 +273,15 @@ impl SettingsController {
             .preferences
             .disabled_flight_data_cell_ids
             .contains(cell_id)
+    }
+
+    pub fn flight_plan_ete_scope(&self) -> crate::FlightPlanEteScope {
+        self.preferences.flight_plan_ete_scope
+    }
+
+    pub fn toggle_flight_plan_ete_scope(&mut self) {
+        self.preferences.flight_plan_ete_scope = self.preferences.flight_plan_ete_scope.toggled();
+        self.note_change(false);
     }
 
     pub fn project(

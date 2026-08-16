@@ -1258,6 +1258,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "select_map_family_in_session",
         "perform_map_selection_action_in_session",
         "perform_flight_plan_command_in_session",
+        "perform_flight_plan_column_action_in_session",
         "perform_time_display_action_in_session",
         "query_flight_plan_in_session",
         "sync_guidance_geometry_in_session",
@@ -1288,6 +1289,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         if !window.contains("runCoreHadSessionOperation")
             && !window.contains("runSessionOperation")
             && !window.contains("runSessionResult")
+            && !window.contains("runSessionSnapshot")
             && !window.contains("runSessionMutation")
             && !window.contains("runFlightPlanMutation")
         {
@@ -1302,6 +1304,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "selectMapFamilyInSessionJson",
         "performMapSelectionActionInSessionJson",
         "performFlightPlanCommandInSessionJson",
+        "performFlightPlanColumnActionInSessionJson",
         "performTimeDisplayActionInSessionJson",
         "queryFlightPlanInSessionJson",
         "syncGuidanceGeometryInSessionJson",

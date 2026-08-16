@@ -72,7 +72,7 @@ pub use altitude_planner::{
     AltitudePlannerForecastUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
     AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
     AltitudePlannerWindFallback, AtmosphereModel, AtmosphereSample, CruisePerformancePoint,
-    FlightEstimateKind, FlightPlanEstimateModeUiView, NoWindIsaAtmosphere,
+    FlightEstimateKind, FlightPlanEstimateBasis, FlightPlanEstimateModeUiView, NoWindIsaAtmosphere,
     ParsedAltitudePlannerDeparture, PerformanceAirspeedBasis, TrajectoryLegPrediction,
     TrajectoryPlanInput, TrajectoryPlanner, TrajectoryPlannerError, TrajectoryPrediction,
     TrajectoryRouteLeg, VerticalPerformancePoint,
@@ -110,7 +110,8 @@ pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
     altitude_comparison_cells, altitude_comparison_columns, FlightDataBannerInput,
     FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn,
-    FlightDataComputer, FlightTimeFuelEstimate,
+    FlightDataComputer, FlightPlanEteScope, FlightTimeFuelEstimate,
+    TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID,
 };
 pub use flight_plan_controller::GuidanceLegGeometry;
 pub(crate) use forecast_atmosphere::InstalledForecastAtmosphere;
@@ -300,10 +301,11 @@ pub use session::{
     load_offline_package_library_cache_in_session, load_playback_trace_in_session,
     load_raster_map_catalog_in_session, maintain_nav_db_in_session_at_epoch_ms,
     nexrad_tile_bytes_in_session, pause_playback_in_session, perform_cloud_ui_action_in_session,
-    perform_flight_plan_command_in_session, perform_map_selection_action_in_session,
-    perform_ownship_text_action_in_session, perform_settings_action_in_session,
-    perform_status_action_in_session, perform_time_display_action_in_session,
-    play_playback_in_session, prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
+    perform_flight_plan_column_action_in_session, perform_flight_plan_command_in_session,
+    perform_map_selection_action_in_session, perform_ownship_text_action_in_session,
+    perform_settings_action_in_session, perform_status_action_in_session,
+    perform_time_display_action_in_session, play_playback_in_session,
+    prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
     push_situation_sample_in_session, query_flight_plan_in_session,
     record_offline_package_preferences_in_session, record_session_serialized_payload_bytes,
     refresh_live_feed_current_in_session, register_ownship_source_in_session,

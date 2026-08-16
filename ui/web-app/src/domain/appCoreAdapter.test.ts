@@ -198,6 +198,7 @@ describe("loadBestAvailableAdapter", () => {
       select_raster_map_in_session: async () => mutationOutcomeJson(),
       perform_flight_plan_command_in_session: async () => mutationOutcomeJson(),
       perform_time_display_action_in_session: async () => mutationOutcomeJson(),
+      perform_flight_plan_column_action_in_session: async () => mutationOutcomeJson(),
       query_flight_plan_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       perform_status_action_in_session: async () => mutationOutcomeJson(),
       sync_guidance_geometry_in_session: async () => mutationOutcomeJson(),

@@ -134,6 +134,14 @@ pub struct FlightPlanEstimateModeUiView {
     pub estimate_kind: FlightEstimateKind,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FlightPlanEstimateBasis {
+    #[default]
+    Unavailable,
+    LiveGroundSpeed,
+    AircraftModel,
+}
+
 impl Default for AltitudePlannerUiView {
     fn default() -> Self {
         project_altitude_planner_ui(AltitudePlannerUiInput::default())
@@ -157,7 +165,7 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_selectable: bool,
     pub wind_model_action_uid: Option<String>,
     pub modeled_prediction_error: Option<String>,
-    pub live_ground_speed_estimate_active: bool,
+    pub estimate_basis: FlightPlanEstimateBasis,
     pub departure_time_epoch_ms: Option<i64>,
     pub effective_departure_time_epoch_ms: i64,
     pub now_epoch_ms: i64,
@@ -199,7 +207,7 @@ impl Default for AltitudePlannerUiInput {
             wind_model_selectable: false,
             wind_model_action_uid: None,
             modeled_prediction_error: None,
-            live_ground_speed_estimate_active: false,
+            estimate_basis: FlightPlanEstimateBasis::Unavailable,
             departure_time_epoch_ms: None,
             effective_departure_time_epoch_ms: 0,
             now_epoch_ms: 0,
@@ -257,12 +265,11 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         ));
     }
 
-    let estimate_kind = if input.live_ground_speed_estimate_active {
-        FlightEstimateKind::Basic
-    } else if reasons.is_empty() {
-        FlightEstimateKind::Modeled
-    } else {
-        FlightEstimateKind::Basic
+    let estimate_kind = match input.estimate_basis {
+        FlightPlanEstimateBasis::AircraftModel => FlightEstimateKind::Modeled,
+        FlightPlanEstimateBasis::Unavailable | FlightPlanEstimateBasis::LiveGroundSpeed => {
+            FlightEstimateKind::Basic
+        }
     };
     let departure = project_departure_editor(&input);
     let aircraft_label = input
@@ -271,28 +278,28 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
     let aircraft_profile_label = input
         .aircraft_profile_label
         .unwrap_or_else(|| "BASIC".to_string());
-    let estimate_summary_label = if input.live_ground_speed_estimate_active {
-        "Estimate basis:\nGS extrapolated".to_string()
-    } else if estimate_kind == FlightEstimateKind::Modeled {
-        let wind_basis = if input.wind_fallback.is_some() {
-            "No-wind fallback"
-        } else {
-            match input.wind_model_label.as_str() {
-                "FORECAST" => "Forecast winds",
-                "NO WIND" => "No wind",
-                label => label,
-            }
-        };
-        format!(
-            "Estimate basis:\n{}\n{} cruise",
-            wind_basis,
-            input
-                .cruise_altitude_ft
-                .map(format_altitude_ft)
-                .unwrap_or_else(|| "—".to_string())
-        )
-    } else {
-        "Estimate basis:\nBasic estimate".to_string()
+    let estimate_summary_label = match input.estimate_basis {
+        FlightPlanEstimateBasis::LiveGroundSpeed => "Estimate basis:\nGS extrapolated".to_string(),
+        FlightPlanEstimateBasis::AircraftModel => {
+            let wind_basis = if input.wind_fallback.is_some() {
+                "No-wind fallback"
+            } else {
+                match input.wind_model_label.as_str() {
+                    "FORECAST" => "Forecast winds",
+                    "NO WIND" => "No wind",
+                    label => label,
+                }
+            };
+            format!(
+                "Estimate basis:\n{}\n{} cruise",
+                wind_basis,
+                input
+                    .cruise_altitude_ft
+                    .map(format_altitude_ft)
+                    .unwrap_or_else(|| "—".to_string())
+            )
+        }
+        FlightPlanEstimateBasis::Unavailable => "Estimate basis:\nUnavailable".to_string(),
     };
     let forecast = match input.wind_fallback.as_ref() {
         Some(AltitudePlannerWindFallback::ForecastCoverage {
@@ -787,6 +794,20 @@ pub struct AircraftPerformanceProfile {
     pub cruise: Vec<CruisePerformancePoint>,
     pub climb: Vec<VerticalPerformancePoint>,
     pub descent: Vec<VerticalPerformancePoint>,
+}
+
+impl AircraftPerformanceProfile {
+    pub fn cruise_performance_at(
+        &self,
+        pressure_altitude_ft: f64,
+    ) -> Result<CruisePerformancePoint, TrajectoryPlannerError> {
+        let performance = interpolate_cruise(&self.cruise, pressure_altitude_ft)?;
+        Ok(CruisePerformancePoint {
+            pressure_altitude_ft,
+            true_airspeed_kt: performance.true_airspeed_kt,
+            fuel_flow_gph: performance.fuel_flow_gph,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1813,6 +1834,7 @@ mod tests {
             navigation_active: true,
             ownship_altitude_available: true,
             plan_destination_altitude_available: true,
+            estimate_basis: FlightPlanEstimateBasis::AircraftModel,
             ..AltitudePlannerUiInput::default()
         });
 
@@ -1828,7 +1850,7 @@ mod tests {
             navigation_active: true,
             ownship_altitude_available: true,
             plan_destination_altitude_available: true,
-            live_ground_speed_estimate_active: true,
+            estimate_basis: FlightPlanEstimateBasis::LiveGroundSpeed,
             ..AltitudePlannerUiInput::default()
         });
 
@@ -1853,6 +1875,7 @@ mod tests {
             plan_destination_altitude_available: true,
             wind_model_label: "FORECAST".to_string(),
             wind_model_selected: true,
+            estimate_basis: FlightPlanEstimateBasis::AircraftModel,
             ..AltitudePlannerUiInput::default()
         });
 

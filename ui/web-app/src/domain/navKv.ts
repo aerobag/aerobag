@@ -170,7 +170,7 @@ export class NavKvStore {
     this.navKvPackageRoot = navKvRootUrl.replace(/\/root(?:[?#].*)?$/, "");
   }
 
-  static async open(sessionHandle: number): Promise<NavKvStore | null> {
+  static async open(sessionHandle: number, nowEpochMs: number = Date.now()): Promise<NavKvStore | null> {
     const wasm = await debugTiming("nav_kv.wasm.init", () => ensureWasmReady());
     const candidates = await debugTiming(
       "nav_kv.open.resolve_candidates",
@@ -186,7 +186,7 @@ export class NavKvStore {
     }
     const byFilename = new Map(candidates.map((candidate) => [candidate.filename, candidate]));
     const controllerHandle = debugTiming("nav_kv.open.controller_create", () =>
-      wasm.nav_db_open_controller_create(JSON.stringify(candidates), BigInt(Date.now())), {
+      wasm.nav_db_open_controller_create(JSON.stringify(candidates), BigInt(Math.trunc(nowEpochMs))), {
         candidate_count: candidates.length,
       });
     let finished = false;
@@ -1026,13 +1026,14 @@ export async function advanceSharedNavKvStore(
   onInvalidations: UiInvalidationListener,
   reportResourceFailure?: ResourceFailureReporter,
   drainSessionEffects?: () => Promise<string> | string,
+  nowEpochMs: number = Date.now(),
 ): Promise<NavDbAdvanceResult> {
   if (navKvAdvancePromise) {
     return navKvAdvancePromise;
   }
   navKvAdvancePromise = (async () => {
     const previous = await getNavKvStore(sessionHandle);
-    const candidate = await NavKvStore.open(sessionHandle);
+    const candidate = await NavKvStore.open(sessionHandle, nowEpochMs);
     if (!candidate) {
       throw new Error("publication has no readable NAVDB candidate");
     }

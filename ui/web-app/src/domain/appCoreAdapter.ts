@@ -1465,6 +1465,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             publishInvalidations,
             reportSessionResourceFailure,
             () => this.module.drain_session_resource_effects(handle),
+            nowEpochMs,
           );
           await applyOptionalSessionUpdate(advanced.session_update);
         }

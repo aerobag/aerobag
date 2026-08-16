@@ -56,7 +56,7 @@ async function runScenario(scenario) {
   const scenarioRoot = path.join(artifactRoot, scenario);
   const frameRoot = path.join(scenarioRoot, "frames");
   fs.mkdirSync(frameRoot, { recursive: true });
-  generatePublication(scenario, null);
+  generatePublication(scenario, Date.now() + 3_600_000);
   const lab = JSON.parse(fs.readFileSync(path.join(publicationRoot, "lab.json"), "utf8"));
   const transitionEpochMs = Date.parse(lab.transition_at);
   assert(Number.isFinite(transitionEpochMs), `invalid generated transition_at ${lab.transition_at}`);
@@ -114,9 +114,12 @@ async function runScenario(scenario) {
 
     await installStatusOverlay(page, scenario, transitionEpochMs);
     await capturePng(page, path.join(scenarioRoot, "before.png"));
+    await page.evalValue(
+      `window.__aerobagE2e.navDbMaintainAt(${Math.trunc(transitionEpochMs + 1)})`,
+    );
     const frames = [];
     let nextFrameAt = 0;
-    const transitionDeadline = transitionEpochMs + 120_000;
+    const transitionDeadline = Date.now() + 120_000;
     let after = before;
     while (Date.now() < transitionDeadline) {
       after = await navDbProbe(page);
@@ -509,6 +512,7 @@ function launchVite() {
       ...process.env,
       AEROBAG_REPO_ROOT: repoRoot,
       AEROBAG_ARTIFACT_READ_PATH: publicationRoot,
+      AEROBAG_E2E_ENABLED: "1",
       AEROBAG_LIVE_FEEDS_ORIGIN: "",
       AEROBAG_WEB_DEBUG_LOG_ENABLED: "1",
     },

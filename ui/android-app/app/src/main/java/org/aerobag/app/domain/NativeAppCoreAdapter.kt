@@ -766,19 +766,13 @@ private fun landSettingsPageState(
 ): UiSettingsPageState = when (path) {
     listOf("settings_page_state") ->
         json.decodeFromJsonElement<WireUiSettingsPageState>(value).toUi()
-    listOf("settings_page_state", "rows", "0", "items") -> {
-        val rows = previous.rows.toMutableList()
-        if (rows.isEmpty()) {
-            throw SessionUpdateContractException("settings flight-data row is missing")
-        }
-        rows[0] = rows[0].copy(
-            items = json.decodeFromJsonElement(
-                ListSerializer(WireUiSettingsGridItem.serializer()),
+    listOf("settings_page_state", "rows") ->
+        previous.copy(
+            rows = json.decodeFromJsonElement(
+                ListSerializer(WireUiSettingsPageRow.serializer()),
                 value,
             ).map { it.toUi() },
         )
-        previous.copy(rows = rows)
-    }
     else -> throw SessionUpdateContractException(
         "Android has no settings model lander for session update path ${path.joinToString("/")}",
     )

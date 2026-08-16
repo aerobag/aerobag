@@ -1204,9 +1204,12 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
   adb(serial, ["logcat", "-c"]);
   const pausedTranscript = [];
   const promotedTranscript = [];
+  let initialPipelineStartCount = 0;
   try {
     await launchFreshAndroidApp(serial, { clearUiPrefs: false, clearCoreSettings: false });
     await waitForLogcatMarker(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER);
+    initialPipelineStartCount = logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER);
+    adb(serial, ["logcat", "-c"]);
     recordStep(result, "persisted live-feed promotion paused at deterministic gate");
     await ensurePlanPage(serial, result);
     const restoredSignature = await waitForPlanSignature(serial, null, 15000);
@@ -1263,8 +1266,8 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
   recordCheck(
     result,
     "rotation.liveFeedPipelineStartedOnce",
-    logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER) === 1,
-    `marker count=${logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER)}`,
+    initialPipelineStartCount === 1 && logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER) === 0,
+    `initial marker count=${initialPipelineStartCount}; subsequent marker count=${logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER)}`,
   );
   await ensureChartPage(serial, result);
   await disengageMapFollowForRouteVisibility(serial, result);

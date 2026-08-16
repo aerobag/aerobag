@@ -205,6 +205,7 @@ declare global {
     __aerobagE2e?: {
       liveFeeds?: () => unknown;
       navDb?: () => unknown;
+      navDbMaintainAt?: (nowEpochMs: number) => Promise<void>;
       cloud?: {
         state: () => unknown;
         setOfflinePackagePreferences: (preferences: unknown) => Promise<void>;
@@ -3190,7 +3191,7 @@ export default function App() {
     sessionSnapshot.chart_page_state,
   ]);
   useEffect(() => {
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || !__AEROBAG_E2E_ENABLED__ || !uiSession) {
       return;
     }
     const navDb = () => ({
@@ -3220,21 +3221,31 @@ export default function App() {
         }
         : null,
     });
+    const navDbMaintainAt = async (nowEpochMs: number) => {
+      const nextSnapshot = await uiSession.maintainNavDb(nowEpochMs);
+      applySessionSnapshot(nextSnapshot, "e2e_nav_db_maintenance");
+    };
     window.__aerobagE2e = {
       ...(window.__aerobagE2e ?? {}),
       navDb,
+      navDbMaintainAt,
     };
     return () => {
       if (window.__aerobagE2e?.navDb === navDb) {
         delete window.__aerobagE2e.navDb;
       }
+      if (window.__aerobagE2e?.navDbMaintainAt === navDbMaintainAt) {
+        delete window.__aerobagE2e.navDbMaintainAt;
+      }
     };
   }, [
+    applySessionSnapshot,
     planUiState,
     sessionSnapshot.active_nav_db,
     sessionSnapshot.data_status_state.boxes,
     sessionSnapshot.nav_data_epoch,
     sessionSnapshot.next_nav_db_maintenance_epoch_ms,
+    uiSession,
   ]);
   const recentAirportIds = derivedChartPageState.recent_airport_ids;
   const selectedAirportId = derivedChartPageState.selected_airport_id;

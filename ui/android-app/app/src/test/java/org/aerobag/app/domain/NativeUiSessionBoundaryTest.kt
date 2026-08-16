@@ -5,11 +5,34 @@
 package org.aerobag.app.domain
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NativeUiSessionBoundaryTest {
+    @Test
+    fun everyMutableSessionSnapshotFieldHasAnUpdateLander() {
+        val source = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        val wireFields = source
+            .substringAfter("private data class WireUiSessionSnapshot(")
+            .substringBefore("\n)")
+            .lineSequence()
+            .mapNotNull { line -> Regex("""^\s*val ([a-z0-9_]+):""").find(line)?.groupValues?.get(1) }
+            .toSet() - setOf("ui_contract_version", "session_revision")
+        val landerBody = balancedBlockAfterMarker(source, "private fun landSessionUpdate(")
+        val landedFields = Regex("""^\s*"([a-z0-9_]+)"\s*->""", RegexOption.MULTILINE)
+            .findAll(landerBody)
+            .map { match -> match.groupValues[1] }
+            .toSet()
+
+        assertEquals(
+            "Every mutable top-level session field needs an explicit Android model lander.",
+            wireFields,
+            landedFields,
+        )
+    }
+
     @Test
     fun sessionSnapshotMutationsUseRecoverableNativeCommandBoundary() {
         val source = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
@@ -89,13 +112,6 @@ class NativeUiSessionBoundaryTest {
                 sessionBody.contains("landSessionUpdate(") &&
                 !balancedBlockAfterMarker(sessionBody, "private fun executePagedSnapshot(")
                     .contains("decodeAccumulatedSnapshot()"),
-        )
-        assertTrue(
-            "Every emitted session refresh deadline must land in Android's incremental model.",
-            source.contains(
-                "\"next_session_snapshot_refresh_epoch_ms\" -> next.copy(\n" +
-                    "                nextSessionSnapshotRefreshEpochMs = value.jsonPrimitive.content.toLong(),",
-            ),
         )
         assertTrue(
             "Ordinary mutations must apply core's generated update and full refreshes must explicitly reset it.",

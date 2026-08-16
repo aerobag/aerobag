@@ -26,7 +26,6 @@ import android.widget.Toast
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
 import androidx.annotation.DrawableRes
-import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -1596,7 +1595,7 @@ internal fun MapExplorerPage(
         }
     }
 
-    val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
+    val aircraftPlanViewPath = rememberAircraftPlanViewPath(sessionSnapshot.appUiState.aircraftPlanViewPath)
     val outlinePaint = remember {
         Paint().apply {
             isAntiAlias = true
@@ -2753,7 +2752,7 @@ internal fun MapExplorerPage(
             densityScale = density.density,
             labelStrokePaint = labelStrokePaint,
             labelFillPaint = labelFillPaint,
-            aircraftDrawable = aircraftDrawable,
+            aircraftPlanViewPath = aircraftPlanViewPath,
         )
         mapFollowProbeTag?.let { tag ->
             Box(
@@ -4119,7 +4118,7 @@ private fun SituationOverlayLayer(
     densityScale: Float,
     labelStrokePaint: Paint,
     labelFillPaint: Paint,
-    aircraftDrawable: android.graphics.drawable.Drawable?,
+    aircraftPlanViewPath: Path?,
 ) {
     if (situationOverlay == null) return
     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -4173,8 +4172,8 @@ private fun SituationOverlayLayer(
             drawPath(arrow, Color.White)
             drawPath(arrow, Color(0x66000000), style = Stroke(width = 1.5f))
         }
-        drawContext.canvas.nativeCanvas.apply {
-            if (ring != null) {
+        if (ring != null) {
+            drawContext.canvas.nativeCanvas.apply {
                 val labelPoint = ring.labelPointUnits
                 save()
                 rotate(ring.labelRotationDeg, labelPoint.x, labelPoint.y)
@@ -4184,16 +4183,14 @@ private fun SituationOverlayLayer(
                 drawText(ring.labelText, labelPoint.x, labelPoint.y + labelFillPaint.textSize * 0.33f, labelFillPaint)
                 restore()
             }
-            val iconSizePx = ThumbSize.toPx() * 0.72f
-            val left = (center.x - iconSizePx / 2f).roundToInt()
-            val top = (center.y - iconSizePx / 2f).roundToInt()
-            if (aircraftDrawable != null) {
-                save()
-                rotate(situationOverlay.headingDeg, center.x, center.y)
-                aircraftDrawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
-                aircraftDrawable.draw(this)
-                restore()
-            }
+        }
+        if (aircraftPlanViewPath != null) {
+            drawAircraftPlanView(
+                path = aircraftPlanViewPath,
+                center = center,
+                headingDeg = situationOverlay.headingDeg,
+                wingspanPx = ThumbSize.toPx() * 1.44f,
+            )
         }
     }
 }

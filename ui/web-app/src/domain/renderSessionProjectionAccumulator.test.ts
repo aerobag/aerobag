@@ -36,7 +36,7 @@ describe("RenderSessionProjectionAccumulator", () => {
       asSnapshot(conformance.initial_snapshot),
     );
     const gapUpdate = {
-      ui_contract_version: 2,
+      ui_contract_version: conformance.expected_contract_version,
       session_revision: 9,
       status: {
         version: 1,

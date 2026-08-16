@@ -7,10 +7,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const AIRCRAFT_DEFINITION_SCHEMA_VERSION: u32 = 1;
+pub const AIRCRAFT_DEFINITION_SCHEMA_VERSION: u32 = 2;
 pub const AIRCRAFT_DEFINITION_KEY_PREFIX: &str = "aircraft/definition/";
 pub const DEFAULT_AIRCRAFT_DEFINITION_HASH: &str =
-    "c562da5b150443962bc74ff304d519c2e286210e0dd4167626948b17e4572a5d";
+    "d3bb0ffe0b906f2adc10f0e1aecb97ac449f65a8b081f0502cd547a25cc9fc9b";
 pub const DEFAULT_AIRCRAFT_PROFILE_ID: &str = "normal-cruise";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -21,8 +21,7 @@ pub struct AircraftDefinition {
     pub manufacturer: String,
     pub model: String,
     pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub map_icon_path: Option<String>,
+    pub plan_view_path: String,
     pub default_profile_id: String,
     pub profiles: Vec<AircraftPerformanceProfileDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -132,6 +131,7 @@ impl AircraftDefinition {
         require_text("manufacturer", &self.manufacturer)?;
         require_text("model", &self.model)?;
         require_text("label", &self.label)?;
+        validate_plan_view_path(&self.plan_view_path)?;
         require_text("default_profile_id", &self.default_profile_id)?;
         if self.profiles.is_empty() {
             return Err("aircraft definition has no performance profiles".to_string());
@@ -150,8 +150,14 @@ impl AircraftDefinition {
                 self.default_profile_id
             ));
         }
+        let mut superseded_hashes = BTreeSet::new();
         for hash in &self.supersedes {
             validate_aircraft_definition_hash(hash)?;
+            if !superseded_hashes.insert(hash) {
+                return Err(format!(
+                    "duplicate superseded aircraft definition hash {hash}"
+                ));
+            }
         }
         Ok(())
     }
@@ -245,6 +251,91 @@ fn require_text(field: &str, value: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn validate_plan_view_path(path: &str) -> Result<(), String> {
+    const MAX_PATH_BYTES: usize = 16 * 1024;
+    if path.len() > MAX_PATH_BYTES {
+        return Err("aircraft definition plan_view_path is too large".to_string());
+    }
+    let tokens = path.split_ascii_whitespace().collect::<Vec<_>>();
+    if tokens.first() != Some(&"M") || tokens.last() != Some(&"Z") {
+        return Err(
+            "aircraft definition plan_view_path must start with M and end with Z".to_string(),
+        );
+    }
+    let mut index = 0usize;
+    let mut command_count = 0usize;
+    let mut minimum_x = f64::INFINITY;
+    let mut maximum_x = f64::NEG_INFINITY;
+    let mut minimum_y = f64::INFINITY;
+    let mut maximum_y = f64::NEG_INFINITY;
+    while index < tokens.len() {
+        let command = tokens[index];
+        index += 1;
+        let coordinate_count = match command {
+            "M" | "L" => 2,
+            "C" => 6,
+            "Z" => 0,
+            _ => {
+                return Err(format!(
+                    "aircraft definition plan_view_path has unsupported command {command}"
+                ))
+            }
+        };
+        if command == "M" && command_count != 0 {
+            return Err("aircraft definition plan_view_path must contain one outline".to_string());
+        }
+        if command == "Z" && index != tokens.len() {
+            return Err("aircraft definition plan_view_path must end after Z".to_string());
+        }
+        if index + coordinate_count > tokens.len() {
+            return Err(format!(
+                "aircraft definition plan_view_path command {command} is incomplete"
+            ));
+        }
+        for coordinate_index in 0..coordinate_count {
+            let token = tokens[index + coordinate_index];
+            let coordinate = token.parse::<f64>().map_err(|_| {
+                format!("aircraft definition plan_view_path has invalid coordinate {token}")
+            })?;
+            if !coordinate.is_finite() {
+                return Err(
+                    "aircraft definition plan_view_path has a non-finite coordinate".to_string(),
+                );
+            }
+            if token
+                .split_once('.')
+                .is_some_and(|(_, fraction)| fraction.len() > 3)
+            {
+                return Err("aircraft definition plan_view_path coordinates must use at most three decimal places".to_string());
+            }
+            if coordinate_index % 2 == 0 {
+                minimum_x = minimum_x.min(coordinate);
+                maximum_x = maximum_x.max(coordinate);
+            } else {
+                minimum_y = minimum_y.min(coordinate);
+                maximum_y = maximum_y.max(coordinate);
+            }
+        }
+        index += coordinate_count;
+        command_count += 1;
+    }
+    if command_count < 3 {
+        return Err("aircraft definition plan_view_path has no usable outline".to_string());
+    }
+    if minimum_x < -50.01 || maximum_x > 50.01 || minimum_x > -49.0 || maximum_x < 49.0 {
+        return Err(
+            "aircraft definition plan_view_path must normalize its wingspan to X=-50..50"
+                .to_string(),
+        );
+    }
+    if minimum_y >= 0.0 || maximum_y <= 0.0 {
+        return Err(
+            "aircraft definition plan_view_path must surround its rotation center".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_cruise_points(
@@ -373,7 +464,7 @@ mod tests {
             manufacturer: "Test".to_string(),
             model: "T1".to_string(),
             label: "TEST T1".to_string(),
-            map_icon_path: None,
+            plan_view_path: "M -50 0 L 0 -20 L 50 0 L 0 20 Z".to_string(),
             default_profile_id: "normal".to_string(),
             profiles: vec![AircraftPerformanceProfileDefinition {
                 id: "normal".to_string(),
@@ -430,5 +521,37 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("does not exist"));
+    }
+
+    #[test]
+    fn plan_view_path_accepts_only_normalized_absolute_outline_commands() {
+        let mut relative = definition();
+        relative.plan_view_path = "m -50 0 l 100 0 z".to_string();
+        assert!(relative.validate().unwrap_err().contains("start with M"));
+
+        let mut excess_precision = definition();
+        excess_precision.plan_view_path = "M -50.0001 0 L 0 -20 L 50 0 L 0 20 Z".to_string();
+        assert!(excess_precision
+            .validate()
+            .unwrap_err()
+            .contains("three decimal places"));
+
+        let mut unnormalized = definition();
+        unnormalized.plan_view_path = "M -40 0 L 0 -20 L 40 0 L 0 20 Z".to_string();
+        assert!(unnormalized
+            .validate()
+            .unwrap_err()
+            .contains("normalize its wingspan"));
+    }
+
+    #[test]
+    fn superseded_definition_hashes_must_be_unique() {
+        let mut definition = definition();
+        let predecessor = "1".repeat(64);
+        definition.supersedes = vec![predecessor.clone(), predecessor];
+        assert!(definition
+            .validate()
+            .unwrap_err()
+            .contains("duplicate superseded"));
     }
 }

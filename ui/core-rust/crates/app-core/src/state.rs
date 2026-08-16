@@ -25,6 +25,7 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUiState {
     pub active_plan: Option<FlightPlanUiState>,
+    pub aircraft_plan_view_path: String,
     pub ownship: OwnshipUiState,
     pub flight_data_banner: FlightDataBannerModel,
     pub content_policy: ContentPolicy,
@@ -145,6 +146,7 @@ pub(crate) fn project_app_ui_state_from_ui_parts(
 ) -> AppUiState {
     AppUiState {
         active_plan,
+        aircraft_plan_view_path: String::new(),
         ownship,
         flight_data_banner: FlightDataBannerModel::default(),
         content_policy,

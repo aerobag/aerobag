@@ -744,6 +744,9 @@ private fun landAppUiState(
     listOf("app_ui_state", "active_plan") -> previous.copy(
         activePlan = json.decodeFromJsonElement<WireFlightPlanUiState?>(value)?.toUi(),
     )
+    listOf("app_ui_state", "aircraft_plan_view_path") -> previous.copy(
+        aircraftPlanViewPath = value.jsonPrimitive.content,
+    )
     listOf("app_ui_state", "ownship") -> previous.copy(
         ownship = json.decodeFromJsonElement<WireOwnshipUiState>(value).toUi(),
     )
@@ -2228,6 +2231,7 @@ private fun OwnshipSourcePowerState.toWire(): WireOwnshipSourcePowerState = when
 
 private fun WireAppUiState.toUi() = AppUiState(
     activePlan = active_plan?.toUi(),
+    aircraftPlanViewPath = aircraft_plan_view_path,
     ownship = ownship.toUi(),
     flightDataBanner = flight_data_banner.toUi(),
 )

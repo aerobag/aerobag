@@ -10812,6 +10812,7 @@ fn session_projection_dependencies(
         flight_plan: FlightPlanProjectionDependencies {
             route_revision: session.flight_plan.route_revision(),
             active_plan: snapshot.app_ui_state.active_plan.clone(),
+            aircraft_plan_view_path: snapshot.app_ui_state.aircraft_plan_view_path.clone(),
         },
         ownship: snapshot.app_ui_state.ownship.clone(),
         flight_data: FlightDataProjectionDependencies {
@@ -10929,6 +10930,7 @@ fn assemble_session_update(
             projection_assignments! {
                 ["flight_plan_route_revision"] => snapshot.flight_plan_route_revision,
                 ["app_ui_state", "active_plan"] => snapshot.app_ui_state.active_plan,
+                ["app_ui_state", "aircraft_plan_view_path"] => snapshot.app_ui_state.aircraft_plan_view_path,
             }
         }),
         ownship: changed_projection_patch(previous.ownship, current.ownship, || {
@@ -11533,6 +11535,8 @@ fn project_session_app_ui_state(
         session.coordinator.content_policy,
         session.coordinator.last_content_report.as_ref(),
     );
+    app_ui_state.aircraft_plan_view_path =
+        flight_plan_projection.projection.aircraft_plan_view_path;
     let materialized_plan = flight_plan_projection.projection.materialized;
     project_bad_autopilot_availability(session, &mut app_ui_state);
     if let (Some(store), Some(position)) = (
@@ -13341,7 +13345,11 @@ mod tests {
             ),
             (
                 "flight_plan",
-                BTreeSet::from(["app_ui_state/active_plan", "flight_plan_route_revision"]),
+                BTreeSet::from([
+                    "app_ui_state/active_plan",
+                    "app_ui_state/aircraft_plan_view_path",
+                    "flight_plan_route_revision",
+                ]),
             ),
             ("ownship", BTreeSet::from(["app_ui_state/ownship"])),
             (
@@ -15785,6 +15793,11 @@ mod tests {
             Some(&selection)
         );
         drop(sessions);
+        let snapshot = get_session_snapshot(init.handle).expect("selected aircraft snapshot");
+        assert_eq!(
+            snapshot.app_ui_state.aircraft_plan_view_path,
+            definition.plan_view_path,
+        );
 
         let unavailable = product_contracts::AircraftSelection {
             definition_hash: "0".repeat(64),

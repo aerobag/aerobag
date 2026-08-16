@@ -40,7 +40,6 @@ import type {
 import uiTheme from "@shared-ui-theme";
 import aboutReadmeHtml from "./content/about-readme.html?raw";
 import noWarrantyHtml from "@shared/no-warranty.html?raw";
-import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   airportCircleMarkerPath,
   airportFuelMarkerPath,
@@ -196,6 +195,8 @@ import {
   publicationAffectsGroups,
 } from "./domain/sessionRenderStore";
 import type { UiSessionUpdateGroup } from "./generated/sessionUpdateWire";
+
+const FLIGHT_PLAN_SESSION_UPDATE_GROUPS = ["flight_plan"] as const satisfies readonly UiSessionUpdateGroup[];
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 declare const __AEROBAG_E2E_ENABLED__: boolean;
@@ -2241,6 +2242,7 @@ export default function App() {
     next_nav_db_maintenance_epoch_ms: null,
     app_ui_state: {
       active_plan: null,
+      aircraft_plan_view_path: "",
       ownship: {
         render: {
           mode: "none",
@@ -4426,7 +4428,12 @@ function MapPage(props: {
     props.sessionRenderStore,
     props.page === "map" ? HIGH_RATE_SESSION_UPDATE_GROUPS : NO_SESSION_UPDATE_GROUPS,
   );
+  const flightPlanSnapshot = useSessionSnapshotGroups(
+    props.sessionRenderStore,
+    props.page === "map" ? FLIGHT_PLAN_SESSION_UPDATE_GROUPS : NO_SESSION_UPDATE_GROUPS,
+  );
   const ownship = highRateSnapshot.app_ui_state.ownship.render;
+  const aircraftPlanViewPath = flightPlanSnapshot.app_ui_state.aircraft_plan_view_path;
   const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
   const flightDataBanner = highRateSnapshot.app_ui_state.flight_data_banner;
   const playbackUiState = highRateSnapshot.playback_ui_state;
@@ -7919,7 +7926,7 @@ function MapPage(props: {
                 </g>
               ) : null}
               <SituationAircraftSvg
-                iconSrc={planViewIcon}
+                pathData={aircraftPlanViewPath}
                 point={situationOverlay.point}
                 headingDeg={situationOverlay.headingDeg}
                 sizePx={thumbPixels(1.44)}
@@ -11415,7 +11422,12 @@ function ChartsPage(props: {
     props.sessionRenderStore,
     props.page === "charts" ? HIGH_RATE_SESSION_UPDATE_GROUPS : NO_SESSION_UPDATE_GROUPS,
   );
+  const flightPlanSnapshot = useSessionSnapshotGroups(
+    props.sessionRenderStore,
+    props.page === "charts" ? FLIGHT_PLAN_SESSION_UPDATE_GROUPS : NO_SESSION_UPDATE_GROUPS,
+  );
   const ownship = highRateSnapshot.app_ui_state.ownship.render;
+  const aircraftPlanViewPath = flightPlanSnapshot.app_ui_state.aircraft_plan_view_path;
   const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
   const playbackUiState = highRateSnapshot.playback_ui_state;
   const playbackPanelState = highRateSnapshot.playback_panel_state;
@@ -12088,7 +12100,7 @@ function ChartsPage(props: {
             ) : null}
             {plateOwnshipOverlay ? (
               <SituationAircraft
-                iconSrc={planViewIcon}
+                pathData={aircraftPlanViewPath}
                 point={plateOwnshipOverlay.point}
                 headingDeg={plateOwnshipOverlay.headingDeg}
               />
@@ -13424,21 +13436,22 @@ function sourceIdString(sourceId: { 0: string } | string): string {
 }
 
 function SituationAircraftSvg(props: {
-  iconSrc: string;
+  pathData: string;
   point: { x: number; y: number };
   headingDeg: number;
   sizePx: number;
 }) {
-  const half = props.sizePx / 2;
+  if (!props.pathData) return null;
+  const scale = props.sizePx / 100;
   return (
-    <g transform={`translate(${props.point.x} ${props.point.y}) rotate(${props.headingDeg})`}>
-      <image
-        href={props.iconSrc}
-        x={-half}
-        y={-half}
-        width={props.sizePx}
-        height={props.sizePx}
-        preserveAspectRatio="xMidYMid meet"
+    <g transform={`translate(${props.point.x} ${props.point.y}) rotate(${props.headingDeg}) scale(${scale})`}>
+      <path
+        d={props.pathData}
+        fill="#e6e6e6"
+        stroke="#000000"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         style={{
           pointerEvents: "none",
           userSelect: "none",
@@ -13450,20 +13463,21 @@ function SituationAircraftSvg(props: {
 }
 
 function SituationAircraft(props: {
-  iconSrc: string;
+  pathData: string;
   point: { x: number; y: number };
   headingDeg: number;
 }) {
+  if (!props.pathData) return null;
   return (
-    <img
-      src={props.iconSrc}
-      alt=""
-      draggable={false}
+    <svg
+      viewBox="-50 -50 100 100"
+      aria-hidden="true"
       style={{
         position: "absolute",
         zIndex: 2,
         width: `calc(var(--thumb) * 1.44)`,
-        height: "auto",
+        height: `calc(var(--thumb) * 1.44)`,
+        overflow: "visible",
         pointerEvents: "none",
         userSelect: "none",
         filter: "drop-shadow(0 1px 1px rgba(18, 26, 33, 0.45))",
@@ -13471,7 +13485,16 @@ function SituationAircraft(props: {
         top: `${props.point.y}px`,
         transform: `translate(-50%, -50%) rotate(${props.headingDeg}deg)`,
       }}
-    />
+    >
+      <path
+        d={props.pathData}
+        fill="#e6e6e6"
+        stroke="#000000"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

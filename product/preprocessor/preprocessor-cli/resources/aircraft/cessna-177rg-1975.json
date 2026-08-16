@@ -1,0 +1,105 @@
+{
+  "schema_version": 2,
+  "lineage_id": "cessna-177rg-1975",
+  "manufacturer": "Cessna",
+  "model": "177RG",
+  "label": "CESSNA 177RG CARDINAL RG (1975)",
+  "plan_view_path": "M 1.573 -22.349 C 1.573 -22.349 3.31 -22.21 3.943 -21.973 C 5.332 -17.577 5.448 -11.954 5.562 -5.118 L 48.512 -5.237 C 49.231 -5.247 49.519 -4.652 49.925 -1.564 L 50 5.904 L 5.296 10.223 C 4.463 18.824 2.839 27.44 1.411 36.052 L 15.842 36.167 C 16.084 36.168 16.477 36.432 16.476 36.723 L 16.451 44.418 L 0.432 44.409 L 0.395 47.843 C 0.401 48.071 0.238 48.229 -0.01 48.25 C -0.258 48.227 -0.42 48.069 -0.412 47.841 L -0.432 44.407 L -16.451 44.335 L -16.437 36.639 C -16.437 36.348 -16.042 36.087 -15.8 36.087 L -1.37 36.045 C -2.753 27.426 -4.334 18.802 -5.123 10.197 L -49.805 5.651 L -49.692 -1.816 C -49.27 -4.903 -48.979 -5.496 -48.26 -5.483 L -5.312 -5.146 C -5.163 -11.981 -5.018 -17.604 -3.607 -21.992 C -2.972 -22.226 -1.235 -22.356 -1.235 -22.356 C -1.141 -24.822 -0.526 -25.27 0.18 -26.492 C 0.791 -25.3 1.492 -24.815 1.573 -22.349 Z",
+  "default_profile_id": "economy-65",
+  "profiles": [
+    {
+      "id": "fast-cruise",
+      "label": "FAST CRUISE",
+      "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-4, extended-range-mixture cruise at 2,800 lb; fastest tabulated setting at each altitude, with sea-level values linearly extrapolated from 2,500/5,000 ft. Climb from Figure 6-3 at 2,800 lb; fuel-flow schedule derived from cumulative climb fuel after removing the 1.5 gal start/taxi/takeoff allowance. Descent is a rough planning assumption: cruise TAS + 5 KT and 500 FPM.",
+      "reference_weight_lb": 2800,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 144.3, "fuel_flow_gph": 10.3 },
+          { "pressure_altitude_ft": 2500, "true_airspeed_kt": 146.0, "fuel_flow_gph": 10.8 },
+          { "pressure_altitude_ft": 5000, "true_airspeed_kt": 147.7, "fuel_flow_gph": 11.3 },
+          { "pressure_altitude_ft": 7500, "true_airspeed_kt": 146.9, "fuel_flow_gph": 10.6 },
+          { "pressure_altitude_ft": 10000, "true_airspeed_kt": 143.4, "fuel_flow_gph": 9.5 },
+          { "pressure_altitude_ft": 12500, "true_airspeed_kt": 140.8, "fuel_flow_gph": 8.6 }
+        ]
+      },
+      "climb": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "airspeed_basis": "indicated", "airspeed_kt": 82.6, "fuel_flow_gph": 15.5, "vertical_speed_fpm": 925 },
+          { "pressure_altitude_ft": 5000, "airspeed_basis": "indicated", "airspeed_kt": 80.8, "fuel_flow_gph": 15.5, "vertical_speed_fpm": 685 },
+          { "pressure_altitude_ft": 10000, "airspeed_basis": "indicated", "airspeed_kt": 79.1, "fuel_flow_gph": 11.5, "vertical_speed_fpm": 440 },
+          { "pressure_altitude_ft": 15000, "airspeed_basis": "indicated", "airspeed_kt": 77.3, "fuel_flow_gph": 8.5, "vertical_speed_fpm": 200 }
+        ]
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 5,
+        "vertical_speed_fpm": -500
+      }
+    },
+    {
+      "id": "economy-65",
+      "label": "65% ECONOMY",
+      "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-4, extended-range-mixture cruise at 2,800 lb; setting closest to 65% BHP at each altitude (maximum tabulated power where 65% is unavailable), with sea-level values linearly extrapolated from 2,500/5,000 ft. Climb from Figure 6-3 at 2,800 lb; fuel-flow schedule derived from cumulative climb fuel after removing the 1.5 gal start/taxi/takeoff allowance. Descent is a rough planning assumption: cruise TAS + 5 KT and 500 FPM.",
+      "reference_weight_lb": 2800,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 134.8, "fuel_flow_gph": 9.8 },
+          { "pressure_altitude_ft": 2500, "true_airspeed_kt": 135.6, "fuel_flow_gph": 9.6 },
+          { "pressure_altitude_ft": 5000, "true_airspeed_kt": 136.4, "fuel_flow_gph": 9.4 },
+          { "pressure_altitude_ft": 7500, "true_airspeed_kt": 139.0, "fuel_flow_gph": 9.2 },
+          { "pressure_altitude_ft": 10000, "true_airspeed_kt": 143.4, "fuel_flow_gph": 9.5 },
+          { "pressure_altitude_ft": 12500, "true_airspeed_kt": 140.8, "fuel_flow_gph": 8.6 }
+        ]
+      },
+      "climb": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "airspeed_basis": "indicated", "airspeed_kt": 82.6, "fuel_flow_gph": 15.5, "vertical_speed_fpm": 925 },
+          { "pressure_altitude_ft": 5000, "airspeed_basis": "indicated", "airspeed_kt": 80.8, "fuel_flow_gph": 15.5, "vertical_speed_fpm": 685 },
+          { "pressure_altitude_ft": 10000, "airspeed_basis": "indicated", "airspeed_kt": 79.1, "fuel_flow_gph": 11.5, "vertical_speed_fpm": 440 },
+          { "pressure_altitude_ft": 15000, "airspeed_basis": "indicated", "airspeed_kt": 77.3, "fuel_flow_gph": 8.5, "vertical_speed_fpm": 200 }
+        ]
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 5,
+        "vertical_speed_fpm": -500
+      }
+    },
+    {
+      "id": "long-range-55",
+      "label": "55% LONG RANGE",
+      "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-4, extended-range-mixture cruise at 2,800 lb; setting closest to 55% BHP at each altitude, with sea-level values linearly extrapolated from 2,500/5,000 ft. Climb from Figure 6-3 at 2,800 lb; fuel-flow schedule derived from cumulative climb fuel after removing the 1.5 gal start/taxi/takeoff allowance. Descent is a rough planning assumption: cruise TAS + 5 KT and 500 FPM.",
+      "reference_weight_lb": 2800,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "true_airspeed_kt": 119.1, "fuel_flow_gph": 7.7 },
+          { "pressure_altitude_ft": 2500, "true_airspeed_kt": 123.4, "fuel_flow_gph": 7.9 },
+          { "pressure_altitude_ft": 5000, "true_airspeed_kt": 127.7, "fuel_flow_gph": 8.1 },
+          { "pressure_altitude_ft": 7500, "true_airspeed_kt": 129.5, "fuel_flow_gph": 8.0 },
+          { "pressure_altitude_ft": 10000, "true_airspeed_kt": 133.0, "fuel_flow_gph": 8.0 },
+          { "pressure_altitude_ft": 12500, "true_airspeed_kt": 136.4, "fuel_flow_gph": 8.1 }
+        ]
+      },
+      "climb": {
+        "model": "pressure_altitude_table",
+        "points": [
+          { "pressure_altitude_ft": 0, "airspeed_basis": "indicated", "airspeed_kt": 82.6, "fuel_flow_gph": 15.5, "vertical_speed_fpm": 925 },
+          { "pressure_altitude_ft": 5000, "airspeed_basis": "indicated", "airspeed_kt": 80.8, "fuel_flow_gph": 15.5, "vertical_speed_fpm": 685 },
+          { "pressure_altitude_ft": 10000, "airspeed_basis": "indicated", "airspeed_kt": 79.1, "fuel_flow_gph": 11.5, "vertical_speed_fpm": 440 },
+          { "pressure_altitude_ft": 15000, "airspeed_basis": "indicated", "airspeed_kt": 77.3, "fuel_flow_gph": 8.5, "vertical_speed_fpm": 200 }
+        ]
+      },
+      "descent": {
+        "model": "cruise_offset",
+        "tas_offset_kt": 5,
+        "vertical_speed_fpm": -500
+      }
+    }
+  ],
+  "supersedes": ["77575faf251d6b70aaa1179084d84155d5fa5c5b8407997f49e469ad828b9927"]
+}

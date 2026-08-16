@@ -24,12 +24,24 @@ const NAV_DB_DIAGNOSTICS_FORMAT: &str = "nav-db-diagnostics-v1";
 const DEFAULT_AIRCRAFT_LINEAGE_ID: &str = "cessna-172-generic";
 const BUNDLED_AIRCRAFT_DEFINITIONS: &[(&str, &str)] = &[
     (
+        "cessna-177rg-1975.json",
+        include_str!("../../resources/aircraft/cessna-177rg-1975.json"),
+    ),
+    (
         "cessna-172-generic.json",
         include_str!("../../resources/aircraft/cessna-172-generic.json"),
     ),
     (
         "piper-pa46-310p.json",
         include_str!("../../resources/aircraft/piper-pa46-310p.json"),
+    ),
+    (
+        "pipistrel-sinus.json",
+        include_str!("../../resources/aircraft/pipistrel-sinus.json"),
+    ),
+    (
+        "pipistrel-virus.json",
+        include_str!("../../resources/aircraft/pipistrel-virus.json"),
     ),
 ];
 
@@ -47,6 +59,17 @@ fn build_nav_kv_aircraft_pairs() -> anyhow::Result<(Vec<NavKvPair>, Vec<String>)
         definitions.push((hash, definition));
     }
     definitions.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut superseded_by = BTreeMap::new();
+    for (hash, definition) in &definitions {
+        for predecessor in &definition.supersedes {
+            if let Some(existing) = superseded_by.insert(predecessor.clone(), hash.clone()) {
+                anyhow::bail!(
+                    "aircraft definition {predecessor} is superseded by both {existing} and {hash}"
+                );
+            }
+        }
+    }
 
     let (default_hash, default_definition) = definitions
         .iter()
@@ -72,6 +95,8 @@ fn build_nav_kv_aircraft_pairs() -> anyhow::Result<(Vec<NavKvPair>, Vec<String>)
             "aircraft definition",
         )?);
     }
+    // The default C172 is required before the first flight plan exists, because
+    // it also supplies the initial ownship silhouette.
     Ok((pairs, vec![default_definition_key]))
 }
 
@@ -6154,6 +6179,7 @@ mod tests {
     fn bundled_aircraft_definitions_are_content_addressed_and_prefetched() {
         let (pairs, prefetch_keys) = build_nav_kv_aircraft_pairs().expect("aircraft pairs");
         let default = product_contracts::default_aircraft_selection();
+        assert_eq!(pairs.len(), BUNDLED_AIRCRAFT_DEFINITIONS.len());
         assert!(pairs.iter().any(|pair| {
             pair.key
                 == product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()
@@ -6161,6 +6187,102 @@ mod tests {
         assert!(prefetch_keys.contains(
             &product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()
         ));
+        assert_eq!(
+            prefetch_keys,
+            vec![product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()],
+            "startup prefetch must explicitly retain the default C172 definition",
+        );
+    }
+
+    #[test]
+    fn bundled_aircraft_plan_views_are_normalized_and_distinct() {
+        let (pairs, _) = build_nav_kv_aircraft_pairs().expect("aircraft pairs");
+        assert_eq!(pairs.len(), 5);
+        let mut paths = BTreeSet::new();
+        for pair in pairs {
+            let definition: product_contracts::AircraftDefinition =
+                serde_json::from_slice(&pair.value).expect("aircraft definition");
+            definition.validate().expect("valid aircraft definition");
+            assert!(paths.insert(definition.plan_view_path));
+        }
+    }
+
+    #[test]
+    fn bundled_pipistrel_profiles_preserve_poh_rows_and_descent_policy() {
+        for (filename, expected_fast_tas, expected_normal_tas, expected_economy_tas) in [
+            ("pipistrel-sinus.json", 110.0, 100.0, 96.0),
+            ("pipistrel-virus.json", 116.0, 105.0, 101.0),
+        ] {
+            let source = BUNDLED_AIRCRAFT_DEFINITIONS
+                .iter()
+                .find(|(candidate, _)| *candidate == filename)
+                .map(|(_, source)| *source)
+                .expect("bundled Pipistrel definition");
+            let definition: product_contracts::AircraftDefinition =
+                serde_json::from_str(source).expect("Pipistrel definition JSON");
+            definition.validate().expect("valid Pipistrel definition");
+            assert_eq!(definition.default_profile_id, "normal-5000");
+            for (profile_id, expected_tas) in [
+                ("fast-5500", expected_fast_tas),
+                ("normal-5000", expected_normal_tas),
+                ("economy-4800", expected_economy_tas),
+            ] {
+                let profile = definition.profile(profile_id).expect("Pipistrel profile");
+                let product_contracts::CruisePerformanceModel::PressureAltitudeTable { points } =
+                    &profile.cruise;
+                assert_eq!(points[1].pressure_altitude_ft, 7_500.0);
+                assert_eq!(points[1].true_airspeed_kt, expected_tas);
+                let product_contracts::DescentPerformanceModel::PressureAltitudeTable { points } =
+                    &profile.descent
+                else {
+                    panic!("Pipistrel descent must use an explicit table");
+                };
+                assert!(points.iter().all(|point| {
+                    point.airspeed_kt == 105.0
+                        && point.fuel_flow_gph == 2.0
+                        && point.vertical_speed_fpm == -500.0
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_cardinal_profile_preserves_poh_performance_rows() {
+        let source = BUNDLED_AIRCRAFT_DEFINITIONS
+            .iter()
+            .find(|(filename, _)| *filename == "cessna-177rg-1975.json")
+            .map(|(_, source)| *source)
+            .expect("bundled Cardinal definition");
+        let definition: product_contracts::AircraftDefinition =
+            serde_json::from_str(source).expect("Cardinal definition JSON");
+        definition.validate().expect("valid Cardinal definition");
+
+        assert_eq!(definition.lineage_id, "cessna-177rg-1975");
+        assert_eq!(definition.default_profile_id, "economy-65");
+        assert_eq!(definition.profiles.len(), 3);
+        let economy = definition
+            .profile("economy-65")
+            .expect("Cardinal economy profile");
+        assert_eq!(economy.reference_weight_lb, Some(2_800.0));
+        let product_contracts::CruisePerformanceModel::PressureAltitudeTable { points } =
+            &economy.cruise;
+        let cruise_7500 = points
+            .iter()
+            .find(|point| point.pressure_altitude_ft == 7_500.0)
+            .expect("7,500-foot cruise row");
+        assert_eq!(cruise_7500.true_airspeed_kt, 139.0);
+        assert_eq!(cruise_7500.fuel_flow_gph, 9.2);
+
+        let product_contracts::ClimbPerformanceModel::PressureAltitudeTable { points } =
+            &economy.climb
+        else {
+            panic!("Cardinal climb must retain the POH altitude table");
+        };
+        assert_eq!(points.len(), 4);
+        assert_eq!(points[0].vertical_speed_fpm, 925.0);
+        assert_eq!(points[1].vertical_speed_fpm, 685.0);
+        assert_eq!(points[2].vertical_speed_fpm, 440.0);
+        assert_eq!(points[3].vertical_speed_fpm, 200.0);
     }
 
     #[test]

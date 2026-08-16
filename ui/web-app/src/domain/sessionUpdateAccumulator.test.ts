@@ -37,7 +37,7 @@ describe("SessionUpdateAccumulator", () => {
       conformance.expected_contract_version,
     );
     const update = {
-      ui_contract_version: 2,
+      ui_contract_version: conformance.expected_contract_version,
       session_revision: 9,
       map: {
         version: 3,
@@ -61,7 +61,7 @@ describe("SessionUpdateAccumulator", () => {
     const loadFullSnapshot = vi.fn(async () => fullSnapshot);
 
     await expect(accumulator.applyOrResync({
-      ui_contract_version: 2,
+      ui_contract_version: conformance.expected_contract_version,
       session_revision: 9,
       map: {
         version: 3,
@@ -82,7 +82,7 @@ describe("SessionUpdateAccumulator", () => {
     });
 
     await expect(accumulator.applyOrResync({
-      ui_contract_version: 2,
+      ui_contract_version: conformance.expected_contract_version,
       session_revision: 8,
       application_shell: {
         version: 1,
@@ -93,7 +93,7 @@ describe("SessionUpdateAccumulator", () => {
       },
     }, loadFullSnapshot)).resolves.toBe("applied");
     await expect(accumulator.applyOrResync({
-      ui_contract_version: 2,
+      ui_contract_version: conformance.expected_contract_version,
       session_revision: 9,
       map: {
         version: 1,

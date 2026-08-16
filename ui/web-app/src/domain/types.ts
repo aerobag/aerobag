@@ -587,6 +587,7 @@ export type Situation = {
 
 export type AppUiState = {
   active_plan: FlightPlanUiState | null;
+  aircraft_plan_view_path: string;
   ownship: OwnshipUiState;
   flight_data_banner: FlightDataBannerModel;
   content_policy: ContentPolicy;

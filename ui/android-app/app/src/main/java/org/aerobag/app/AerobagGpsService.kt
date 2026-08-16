@@ -167,13 +167,13 @@ class AerobagGpsService : Service() {
 
     private fun buildActiveNotification() =
         NotificationCompat.Builder(this, NotificationChannelId)
-            .setSmallIcon(R.drawable.plan_view_icon)
+            .setSmallIcon(R.drawable.notification_aircraft)
             .setContentTitle("Aerobag GPS")
             .setContentText("High-precision GPS active")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .addAction(
-                R.drawable.plan_view_icon,
+                R.drawable.notification_aircraft,
                 "Pause GPS",
                 activityIntent(AndroidGpsPower.PauseAction, 1),
             )
@@ -189,13 +189,13 @@ class AerobagGpsService : Service() {
 
     private fun buildPausedNotification() =
         NotificationCompat.Builder(this, NotificationChannelId)
-            .setSmallIcon(R.drawable.plan_view_icon)
+            .setSmallIcon(R.drawable.notification_aircraft)
             .setContentTitle("GPS paused")
             .setContentText("GPS remains selected. Tap Resume GPS to continue.")
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .addAction(
-                R.drawable.plan_view_icon,
+                R.drawable.notification_aircraft,
                 "Resume GPS",
                 activityIntent(AndroidGpsPower.ResumeAction, 2),
             )

@@ -1289,6 +1289,7 @@ pub(crate) fn nav_symbol_feature(
 pub(crate) struct FlightPlanUiProjection {
     pub ui_state: FlightPlanUiState,
     pub materialized: crate::flight_plan_materialization::MaterializedFlightPlan,
+    pub aircraft_plan_view_path: String,
 }
 
 const DEFAULT_CRUISE_ALTITUDE_FT: i32 = 12_000;
@@ -1477,9 +1478,40 @@ fn planner_aircraft(
     }
 
     let requested = requested.unwrap_or(&default_selection);
-    let (selection, advisory) = match definitions.get(&requested.definition_hash) {
+    let superseding_hashes = if definitions.contains_key(&requested.definition_hash) {
+        Vec::new()
+    } else {
+        definitions
+            .iter()
+            .filter_map(|(hash, definition)| {
+                definition
+                    .supersedes
+                    .contains(&requested.definition_hash)
+                    .then_some(hash)
+            })
+            .collect::<Vec<_>>()
+    };
+    if superseding_hashes.len() > 1 {
+        return Err(HadReadError::Fatal(format!(
+            "aircraft definition {} is superseded ambiguously by {}",
+            requested.definition_hash,
+            superseding_hashes
+                .iter()
+                .map(|hash| hash.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    let resolved_requested = superseding_hashes
+        .first()
+        .map(|definition_hash| product_contracts::AircraftSelection {
+            definition_hash: (*definition_hash).clone(),
+            profile_id: requested.profile_id.clone(),
+        })
+        .unwrap_or_else(|| requested.clone());
+    let (selection, advisory) = match definitions.get(&resolved_requested.definition_hash) {
         Some(definition) if definition.profile(&requested.profile_id).is_some() => {
-            (requested.clone(), None)
+            (resolved_requested, None)
         }
         Some(_) => (
             default_selection.clone(),
@@ -1513,6 +1545,23 @@ fn planner_aircraft(
         definitions,
         advisory,
     })
+}
+
+pub(crate) fn default_aircraft_plan_view_path(
+    store: &NavKvStore,
+    private_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
+) -> Result<String, HadReadError> {
+    let selection = product_contracts::default_aircraft_selection();
+    let definition = match private_definitions.get(&selection.definition_hash) {
+        Some(definition) => definition.clone(),
+        None => {
+            let key = product_contracts::aircraft_definition_key(&selection.definition_hash)
+                .map_err(HadReadError::Fatal)?;
+            read_required_key(store, &key, "default aircraft definition")?
+        }
+    };
+    validate_aircraft_definition(&selection.definition_hash, &definition)?;
+    Ok(definition.plan_view_path)
 }
 
 fn validate_aircraft_definition(
@@ -2149,6 +2198,7 @@ pub(crate) fn flight_plan_ui_projection(
     Ok(FlightPlanUiProjection {
         ui_state,
         materialized,
+        aircraft_plan_view_path: aircraft.definition.plan_view_path,
     })
 }
 
@@ -5844,6 +5894,62 @@ mod tests {
             .expect("selection availability"),
             Some(12_000)
         );
+    }
+
+    #[test]
+    fn superseded_aircraft_selection_keeps_its_profile_on_the_new_definition() {
+        let store = test_nav_kv_store(&[]);
+        let definitions = test_aircraft_definitions();
+        let (current_hash, definition) = definitions
+            .iter()
+            .find(|(_, definition)| definition.lineage_id == "piper-pa46-310p-tsio-520-be")
+            .expect("PA46 definition");
+        let superseded_hash = definition
+            .supersedes
+            .first()
+            .expect("PA46 predecessor hash");
+        let requested = product_contracts::AircraftSelection {
+            definition_hash: superseded_hash.clone(),
+            profile_id: "economy-65".to_string(),
+        };
+
+        let resolved =
+            planner_aircraft(&store, Some(&requested), &definitions).expect("superseded selection");
+
+        assert_eq!(resolved.selection.definition_hash, *current_hash);
+        assert_eq!(resolved.selection.profile_id, requested.profile_id);
+        assert!(resolved.advisory.is_none());
+    }
+
+    #[test]
+    fn ambiguous_aircraft_supersession_is_fatal() {
+        let store = test_nav_kv_store(&[]);
+        let mut definitions = test_aircraft_definitions();
+        let predecessor = "1".repeat(64);
+        for suffix in ["a", "b"] {
+            let mut definition = definitions
+                .values()
+                .next()
+                .expect("aircraft fixture")
+                .clone();
+            definition.lineage_id = format!("ambiguous-{suffix}");
+            definition.label = format!("AMBIGUOUS {suffix}");
+            definition.supersedes = vec![predecessor.clone()];
+            let hash = definition.content_hash().expect("aircraft hash");
+            definitions.insert(hash, definition);
+        }
+        let requested = product_contracts::AircraftSelection {
+            definition_hash: predecessor,
+            profile_id: product_contracts::DEFAULT_AIRCRAFT_PROFILE_ID.to_string(),
+        };
+
+        let error = planner_aircraft(&store, Some(&requested), &definitions)
+            .expect_err("ambiguous supersession must fail");
+
+        let HadReadError::Fatal(message) = error else {
+            panic!("expected fatal ambiguity, got {error:?}");
+        };
+        assert!(message.contains("superseded ambiguously"));
     }
 
     #[test]

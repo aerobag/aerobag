@@ -21,7 +21,6 @@ import android.view.MotionEvent
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
 import androidx.annotation.DrawableRes
-import androidx.appcompat.content.res.AppCompatResources
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -384,13 +383,14 @@ internal fun ChartsPage(
     onSelectOwnshipSource: (String) -> Unit,
 ) {
     SideEffect(sessionRenderDiagnostics::recordCharts)
+    val shell by sessionRenderModel.shellSnapshotState
     val highRate by sessionRenderModel.highRateProjectionState
     val ownship = highRate.ownship.render
     val ownshipControls = highRate.ownship.controls
     val flightDataBanner = highRate.flightDataBanner
     val context = LocalContext.current
     val activity = context as? MainActivity
-    val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
+    val aircraftPlanViewPath = rememberAircraftPlanViewPath(shell.appUiState.aircraftPlanViewPath)
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
@@ -774,7 +774,7 @@ internal fun ChartsPage(
                         .fillMaxSize()
                         .testTag("parity:plate-ownship-overlay"),
                 ) {
-                    drawPlateOwnshipOverlay(plateOwnshipOverlay, aircraftDrawable)
+                    drawPlateOwnshipOverlay(plateOwnshipOverlay, aircraftPlanViewPath)
                 }
             }
         }
@@ -1079,24 +1079,16 @@ private fun plateImagePoint(position: LatLonPoint, georef: PlateGeoref): PlateIm
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateOwnshipOverlay(
     overlay: PlateOwnshipOverlay,
-    aircraftDrawable: android.graphics.drawable.Drawable?,
+    aircraftPlanViewPath: Path?,
 ) {
+    if (aircraftPlanViewPath == null) return
     val center = Offset(overlay.screenX, overlay.screenY)
-    val iconSizePx = ThumbSize.toPx() * 0.72f
-    if (aircraftDrawable == null) {
-        drawCircle(Color.White, radius = iconSizePx * 0.24f, center = center)
-        drawCircle(Color(0x66000000), radius = iconSizePx * 0.24f, center = center, style = Stroke(width = 2f))
-        return
-    }
-    val left = (center.x - iconSizePx / 2f).roundToInt()
-    val top = (center.y - iconSizePx / 2f).roundToInt()
-    drawContext.canvas.nativeCanvas.apply {
-        save()
-        rotate(overlay.headingDeg, center.x, center.y)
-        aircraftDrawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
-        aircraftDrawable.draw(this)
-        restore()
-    }
+    drawAircraftPlanView(
+        path = aircraftPlanViewPath,
+        center = center,
+        headingDeg = overlay.headingDeg,
+        wingspanPx = ThumbSize.toPx() * 1.44f,
+    )
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateFlightPlanOverlay(

@@ -1,0 +1,266 @@
+{
+  "schema_version": 2,
+  "lineage_id": "pipistrel-virus-rotax-912-ul-80",
+  "manufacturer": "Pipistrel",
+  "model": "Virus",
+  "label": "PIPISTREL VIRUS",
+  "plan_view_path": "M -0.18 30.58 L -1.245 31.935 L -11.414 30.629 L -11.437 29.167 L -0.977 26.988 C -0.977 26.988 -0.763 17.905 -1.517 14.362 C -2.271 10.819 -3.993 5.129 -3.993 5.129 L -29.852 5.153 C -29.852 5.153 -47.87 5.241 -48.445 5.32 C -48.925 5.529 -49.604 6.658 -49.604 6.658 C -49.978 4.442 -50 2.291 -49.584 0.225 C -49.392 -0.578 -47.435 -0.843 -46.622 -1.021 C -45.809 -1.2 -30 -2.536 -30 -2.536 L -4.174 -2.563 L -3.163 -8.33 C -2.694 -9.785 -2.205 -11.226 -1.674 -12.715 L -6.087 -12.656 C -6.411 -12.735 -6.42 -12.862 -6.311 -13.006 C -5.008 -13.241 -3.145 -13.257 -1.423 -13.329 C -1.423 -13.329 -0.832 -15.337 -0.001 -16.11 C 0.83 -15.337 1.42 -13.329 1.42 -13.329 C 3.142 -13.257 5.006 -13.241 6.309 -13.006 C 6.418 -12.862 6.408 -12.735 6.085 -12.656 L 1.671 -12.715 C 2.203 -11.226 2.691 -9.785 3.16 -8.33 L 4.172 -2.563 L 29.997 -2.536 C 29.997 -2.536 45.807 -1.2 46.62 -1.021 C 47.432 -0.843 49.389 -0.578 49.581 0.225 C 49.998 2.291 49.976 4.442 49.601 6.658 C 49.601 6.658 48.923 5.529 48.443 5.32 C 47.867 5.241 29.85 5.153 29.85 5.153 L 3.991 5.129 C 3.991 5.129 2.269 10.819 1.515 14.362 C 0.761 17.905 0.975 26.988 0.975 26.988 L 11.434 29.167 L 11.412 30.629 L 1.243 31.935 L 0.177 30.58 L -0.001 32.297 Z",
+  "default_profile_id": "normal-5000",
+  "profiles": [
+    {
+      "id": "fast-5500",
+      "label": "FAST 5500 RPM",
+      "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), short-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent.",
+      "reference_weight_lb": 1320,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "true_airspeed_kt": 116,
+            "fuel_flow_gph": 4.1
+          },
+          {
+            "pressure_altitude_ft": 7500,
+            "true_airspeed_kt": 116,
+            "fuel_flow_gph": 4.1
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "true_airspeed_kt": 116,
+            "fuel_flow_gph": 4.1
+          }
+        ]
+      },
+      "climb": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 860
+          },
+          {
+            "pressure_altitude_ft": 1600,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 796
+          },
+          {
+            "pressure_altitude_ft": 3300,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 749
+          },
+          {
+            "pressure_altitude_ft": 5000,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 717
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 245
+          }
+        ]
+      },
+      "descent": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "airspeed_basis": "true",
+            "airspeed_kt": 105,
+            "fuel_flow_gph": 2,
+            "vertical_speed_fpm": -500
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "airspeed_basis": "true",
+            "airspeed_kt": 105,
+            "fuel_flow_gph": 2,
+            "vertical_speed_fpm": -500
+          }
+        ]
+      }
+    },
+    {
+      "id": "normal-5000",
+      "label": "NORMAL 5000 RPM",
+      "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), short-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent.",
+      "reference_weight_lb": 1320,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "true_airspeed_kt": 105,
+            "fuel_flow_gph": 3.2
+          },
+          {
+            "pressure_altitude_ft": 7500,
+            "true_airspeed_kt": 105,
+            "fuel_flow_gph": 3.2
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "true_airspeed_kt": 105,
+            "fuel_flow_gph": 3.2
+          }
+        ]
+      },
+      "climb": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 860
+          },
+          {
+            "pressure_altitude_ft": 1600,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 796
+          },
+          {
+            "pressure_altitude_ft": 3300,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 749
+          },
+          {
+            "pressure_altitude_ft": 5000,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 717
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 245
+          }
+        ]
+      },
+      "descent": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "airspeed_basis": "true",
+            "airspeed_kt": 105,
+            "fuel_flow_gph": 2,
+            "vertical_speed_fpm": -500
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "airspeed_basis": "true",
+            "airspeed_kt": 105,
+            "fuel_flow_gph": 2,
+            "vertical_speed_fpm": -500
+          }
+        ]
+      }
+    },
+    {
+      "id": "economy-4800",
+      "label": "ECONOMY 4800 RPM",
+      "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), short-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent.",
+      "reference_weight_lb": 1320,
+      "cruise": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "true_airspeed_kt": 101,
+            "fuel_flow_gph": 2.9
+          },
+          {
+            "pressure_altitude_ft": 7500,
+            "true_airspeed_kt": 101,
+            "fuel_flow_gph": 2.9
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "true_airspeed_kt": 101,
+            "fuel_flow_gph": 2.9
+          }
+        ]
+      },
+      "climb": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 860
+          },
+          {
+            "pressure_altitude_ft": 1600,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 796
+          },
+          {
+            "pressure_altitude_ft": 3300,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 749
+          },
+          {
+            "pressure_altitude_ft": 5000,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 717
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "airspeed_basis": "indicated",
+            "airspeed_kt": 70,
+            "fuel_flow_gph": 4.1,
+            "vertical_speed_fpm": 245
+          }
+        ]
+      },
+      "descent": {
+        "model": "pressure_altitude_table",
+        "points": [
+          {
+            "pressure_altitude_ft": 0,
+            "airspeed_basis": "true",
+            "airspeed_kt": 105,
+            "fuel_flow_gph": 2,
+            "vertical_speed_fpm": -500
+          },
+          {
+            "pressure_altitude_ft": 12500,
+            "airspeed_basis": "true",
+            "airspeed_kt": 105,
+            "fuel_flow_gph": 2,
+            "vertical_speed_fpm": -500
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -46,6 +46,25 @@ applied to the TAS-based descent schedule. These assumptions complete all three
 PA46 profiles, but their source metadata preserves which values are POH-derived
 and which are rough planning choices.
 
+The bundled 1975 Cessna 177RG Cardinal RG model is reduced directly from the
+Owner's Manual extended-range-mixture cruise table and maximum-rate climb table
+at 2,800 pounds. It offers fast-cruise, approximately 65-percent economy, and
+approximately 55-percent long-range profiles from sea level through 12,500
+feet. Published cruise values begin at 2,500 feet, so the sea-level rows are
+linear extrapolations from the first two published rows. Climb airspeed and
+vertical speed come from the POH; climb fuel flow is derived from its cumulative
+fuel-used columns after removing the 1.5-gallon start, taxi, and takeoff
+allowance. Descent remains an explicit rough planning assumption of cruise TAS
+plus 5 KT at 500 FPM.
+
+The bundled Pipistrel Sinus and Virus definitions treat the long-tip and
+short-tip configurations as separate aircraft, although their source is the
+shared Sinus MAX 600 LSA manual. Each offers 5,500, 5,000, and 4,800 RPM cruise
+profiles. Published 7,500-foot TAS and fuel flow are held constant through the
+planning altitude range, climb performance follows the published schedule and
+is extrapolated toward the published absolute ceiling, and powered descent is
+the explicit Aerobag planning assumption of 105 KTAS, 500 FPM, and 2.0 GPH.
+
 The first end-to-end UI slice intentionally fixes the selected profile to 65
 percent economy and uses 12,000 feet when the plan has no cruise altitude. The
 wind control starts at no-wind ISA and, when an atmospheric package is

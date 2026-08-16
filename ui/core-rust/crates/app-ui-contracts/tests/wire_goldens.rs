@@ -108,7 +108,7 @@ fn contract_decoders_reject_unknown_fields() {
     assert!(serde_json::from_str::<session::MapLayerId>(r#""weather""#).is_err());
     assert!(serde_json::from_str::<session::DebugFlagId>(r#""diagnostics""#).is_err());
     assert!(serde_json::from_str::<session::UiSessionUpdate>(
-        r#"{"ui_contract_version":2,"session_revision":1,"unknown":true}"#,
+        r#"{"ui_contract_version":3,"session_revision":1,"unknown":true}"#,
     )
     .is_err());
 }

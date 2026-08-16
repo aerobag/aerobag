@@ -23,6 +23,8 @@ class SessionUpdateAccumulatorTest {
                 "session-update-conformance.json",
         ).readText(),
     ).jsonObject
+    private val contractVersion =
+        conformance.getValue("expected_contract_version").jsonPrimitive.content.toInt()
 
     @Test
     fun matchesSharedSessionUpdateConformanceSequence() {
@@ -57,7 +59,7 @@ class SessionUpdateAccumulatorTest {
         val initial = conformance.getValue("initial_snapshot").jsonObject
         val update = json.parseToJsonElement(
             """{
-                "ui_contract_version":2,
+                "ui_contract_version":$contractVersion,
                 "session_revision":9,
                 "map":{"version":3,"assignments":[
                     {"path":["map_layer_state"],"value":{"nexrad":true}}
@@ -74,7 +76,7 @@ class SessionUpdateAccumulatorTest {
         val initial = conformance.getValue("initial_snapshot").jsonObject
         val update = json.parseToJsonElement(
             """{
-                "ui_contract_version":2,
+                "ui_contract_version":$contractVersion,
                 "session_revision":9,
                 "map":{"version":3,"assignments":[
                     {"path":["map_layer_state"],"value":{"nexrad":true}}
@@ -118,7 +120,7 @@ class SessionUpdateAccumulatorTest {
         val accumulator = accumulator()
         val update = json.parseToJsonElement(
             """{
-                "ui_contract_version":2,
+                "ui_contract_version":$contractVersion,
                 "session_revision":9,
                 "map":{"version":3,"assignments":[
                     {"path":["map_layer_state"],"value":{"nexrad":true}}
@@ -142,7 +144,7 @@ class SessionUpdateAccumulatorTest {
 
     private fun accumulator() = SessionUpdateAccumulator(
         conformance.getValue("initial_snapshot").jsonObject,
-        conformance.getValue("expected_contract_version").jsonPrimitive.content.toInt(),
+        contractVersion,
         json,
     )
 

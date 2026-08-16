@@ -540,6 +540,7 @@ data class ChartPageFixture(
 
 data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
+    val aircraftPlanViewPath: String = "",
     val ownship: OwnshipUiState = OwnshipUiState(),
     val flightDataBanner: FlightDataBannerModel = FlightDataBannerModel(),
 )

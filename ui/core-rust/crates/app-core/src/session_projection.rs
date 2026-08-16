@@ -37,6 +37,7 @@ pub(crate) struct ApplicationShellProjectionDependencies {
 pub(crate) struct FlightPlanProjectionDependencies {
     pub route_revision: u64,
     pub active_plan: Option<FlightPlanUiState>,
+    pub aircraft_plan_view_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +232,7 @@ mod tests {
             flight_plan: FlightPlanProjectionDependencies {
                 route_revision: 0,
                 active_plan: None,
+                aircraft_plan_view_path: String::new(),
             },
             ownship: {
                 let ownship = crate::OwnshipState::default();

@@ -26,6 +26,7 @@ import kotlinx.serialization.json.jsonPrimitive
 @Serializable
 data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
+    val aircraft_plan_view_path: String = "",
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
     val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(),
 )

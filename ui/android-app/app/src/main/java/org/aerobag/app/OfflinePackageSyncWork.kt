@@ -578,7 +578,7 @@ internal fun buildOfflinePackageSyncNotification(
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
     return NotificationCompat.Builder(context, OfflinePackageSyncNotificationChannelId)
-        .setSmallIcon(R.drawable.plan_view_icon)
+        .setSmallIcon(R.drawable.notification_aircraft)
         .setContentTitle("Aerobag offline packages")
         .setContentText(text)
         .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -599,7 +599,7 @@ internal fun buildOfflinePackageSyncNotification(
             if (record.phase == DurableOfflinePackageSyncPhase.Queued ||
                 record.phase == DurableOfflinePackageSyncPhase.Running
             ) {
-                addAction(R.drawable.plan_view_icon, "Cancel", cancelIntent)
+                addAction(R.drawable.notification_aircraft, "Cancel", cancelIntent)
             }
         }
         .build()

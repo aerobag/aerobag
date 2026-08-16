@@ -143,4 +143,29 @@ mod tests {
             assert_eq!(descent.vertical_speed_fpm, -500.0);
         }
     }
+
+    #[test]
+    fn cardinal_poh_tables_convert_to_runtime_profile() {
+        let definition: AircraftDefinition = serde_json::from_str(include_str!(
+            "../../../../../product/preprocessor/preprocessor-cli/resources/aircraft/cessna-177rg-1975.json"
+        ))
+        .expect("bundled Cardinal definition");
+        let hash = definition.content_hash().expect("definition hash");
+        let profile = performance_profile_from_definition(&hash, &definition, "economy-65")
+            .expect("runtime Cardinal profile");
+
+        assert_eq!(profile.aircraft_model_id, "cessna-177rg-1975");
+        assert_eq!(profile.reference_weight_lb, Some(2_800.0));
+        assert_eq!(profile.cruise.len(), 6);
+        assert_eq!(profile.climb.len(), 4);
+        assert_eq!(profile.descent.len(), 6);
+        assert_eq!(profile.climb[0].airspeed_kt, 82.6);
+        assert_eq!(profile.climb[0].vertical_speed_fpm, 925.0);
+        assert_eq!(profile.climb[3].airspeed_kt, 77.3);
+        assert_eq!(profile.climb[3].vertical_speed_fpm, 200.0);
+        assert!(profile
+            .climb
+            .iter()
+            .all(|point| point.airspeed_basis == PerformanceAirspeedBasis::Indicated));
+    }
 }

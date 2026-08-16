@@ -7,4 +7,4 @@ pub mod home;
 pub mod nexrad;
 pub mod session;
 
-pub const UI_WIRE_CONTRACT_VERSION: u32 = 2;
+pub const UI_WIRE_CONTRACT_VERSION: u32 = 3;

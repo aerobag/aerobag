@@ -186,6 +186,7 @@ pub(crate) struct FlightPlanProjectionInputs {
 pub(crate) struct FlightPlanProjection {
     pub ui_state: Option<FlightPlanUiState>,
     pub materialized: Option<MaterializedFlightPlan>,
+    pub aircraft_plan_view_path: String,
 }
 
 pub(crate) struct FlightPlanProjectionResult {
@@ -680,6 +681,13 @@ impl FlightPlanController {
             None => FlightPlanProjection {
                 ui_state: None,
                 materialized: None,
+                aircraft_plan_view_path: match store {
+                    Some(store) => crate::had_ops::default_aircraft_plan_view_path(
+                        store,
+                        private_aircraft_definitions,
+                    )?,
+                    None => String::new(),
+                },
             },
             Some(plan) => {
                 let ui_state = crate::project_ui_state(plan);
@@ -708,6 +716,7 @@ impl FlightPlanController {
                     FlightPlanProjection {
                         ui_state: Some(projection.ui_state),
                         materialized: Some(projection.materialized),
+                        aircraft_plan_view_path: projection.aircraft_plan_view_path,
                     }
                 } else {
                     let materialized = MaterializedFlightPlan::build(
@@ -719,6 +728,7 @@ impl FlightPlanController {
                     FlightPlanProjection {
                         ui_state: Some(ui_state),
                         materialized: Some(materialized),
+                        aircraft_plan_view_path: String::new(),
                     }
                 }
             }

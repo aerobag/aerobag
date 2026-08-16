@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
+import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl, UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "./appCoreAdapter";
 import * as navKv from "./navKv";
 
 const TEST_SSE_TRANSPORT_POLICY = {
@@ -20,10 +20,11 @@ afterEach(() => {
 });
 
 const snapshotJson = JSON.stringify({
-  ui_contract_version: 2,
+  ui_contract_version: UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
   session_revision: 0,
   app_ui_state: {
     active_plan: null,
+    aircraft_plan_view_path: "",
     ownship: {
       render: {
         mode: "none",
@@ -130,7 +131,7 @@ describe("loadBestAvailableAdapter", () => {
     const mutationOutcomeJson = () => JSON.stringify({
       state: "complete",
       result: {
-        ui_contract_version: 2,
+        ui_contract_version: UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
         session_revision: ++sessionRevision,
       },
     });

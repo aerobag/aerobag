@@ -438,9 +438,158 @@ fn insert_airport_communications_with_ids(
     Ok(counts)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FixedWidthLayoutField {
+    start: usize,
+    width: usize,
+}
+
+impl FixedWidthLayoutField {
+    fn value<'a>(&self, line: &'a str) -> &'a str {
+        trim(field(line, self.start, self.width))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunwayRecordLayout {
+    length: FixedWidthLayoutField,
+    width: FixedWidthLayoutField,
+    surface: FixedWidthLayoutField,
+    end_ident: [FixedWidthLayoutField; 2],
+    end_latitude: [FixedWidthLayoutField; 2],
+    end_longitude: [FixedWidthLayoutField; 2],
+    end_elevation: [FixedWidthLayoutField; 2],
+    end_heading: [FixedWidthLayoutField; 2],
+    end_displaced_threshold: [FixedWidthLayoutField; 2],
+    end_lights: [FixedWidthLayoutField; 2],
+    end_ils: [FixedWidthLayoutField; 2],
+    end_vgsi: [FixedWidthLayoutField; 2],
+    end_pattern: [FixedWidthLayoutField; 2],
+}
+
+impl RunwayRecordLayout {
+    fn load(input_dir: &Path) -> anyhow::Result<Self> {
+        let path = input_dir.join("Layout_Data/apt_rf.txt");
+        let text = read_text_lossy(&path)?;
+        Self::parse(&text).with_context(|| format!("failed to parse {}", path.display()))
+    }
+
+    fn parse(text: &str) -> anyhow::Result<Self> {
+        let mut fields = BTreeMap::<String, Vec<FixedWidthLayoutField>>::new();
+        for line in text.lines() {
+            let mut columns = line.split_whitespace();
+            let Some(justification) = columns.next() else {
+                continue;
+            };
+            if !matches!(justification, "L" | "R") || columns.next() != Some("AN") {
+                continue;
+            }
+            let (Some(width), Some(start), Some(code)) =
+                (columns.next(), columns.next(), columns.next())
+            else {
+                continue;
+            };
+            let (Ok(width), Ok(start)) = (width.parse::<usize>(), start.parse::<usize>()) else {
+                continue;
+            };
+            anyhow::ensure!(start > 0, "layout field {code} has zero start column");
+            fields
+                .entry(code.to_string())
+                .or_default()
+                .push(FixedWidthLayoutField {
+                    start: start - 1,
+                    width,
+                });
+        }
+
+        fn one(
+            fields: &BTreeMap<String, Vec<FixedWidthLayoutField>>,
+            code: &str,
+        ) -> anyhow::Result<FixedWidthLayoutField> {
+            let matches = fields.get(code).map(Vec::as_slice).unwrap_or_default();
+            anyhow::ensure!(
+                matches.len() == 1,
+                "expected one {code} layout field, found {}",
+                matches.len()
+            );
+            Ok(matches[0])
+        }
+
+        fn runway_ends(
+            fields: &BTreeMap<String, Vec<FixedWidthLayoutField>>,
+            code: &str,
+        ) -> anyhow::Result<[FixedWidthLayoutField; 2]> {
+            let mut matches = fields
+                .get(code)
+                .into_iter()
+                .flatten()
+                .copied()
+                // A30A also occurs in the later arresting-system record layout.
+                .filter(|field| field.start >= 50)
+                .collect::<Vec<_>>();
+            matches.sort_by_key(|field| field.start);
+            anyhow::ensure!(
+                matches.len() == 2,
+                "expected two runway-end {code} layout fields, found {}",
+                matches.len()
+            );
+            Ok([matches[0], matches[1]])
+        }
+
+        Ok(Self {
+            length: one(&fields, "A31")?,
+            width: one(&fields, "A32")?,
+            surface: one(&fields, "A33")?,
+            end_ident: runway_ends(&fields, "A30A")?,
+            end_latitude: runway_ends(&fields, "E68")?,
+            end_longitude: runway_ends(&fields, "E69")?,
+            end_elevation: runway_ends(&fields, "E70")?,
+            end_heading: runway_ends(&fields, "E46")?,
+            end_displaced_threshold: runway_ends(&fields, "A51")?,
+            end_lights: runway_ends(&fields, "A49")?,
+            end_ils: runway_ends(&fields, "I22")?,
+            end_vgsi: runway_ends(&fields, "A43")?,
+            end_pattern: runway_ends(&fields, "A23")?,
+        })
+    }
+}
+
+fn runway_latitude(value: &str) -> anyhow::Result<String> {
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    anyhow::ensure!(
+        value.len() == 14 && matches!(value.as_bytes().last(), Some(b'N' | b'S')),
+        "invalid runway latitude {value:?}"
+    );
+    let latitude = apt_coord_lat(value);
+    anyhow::ensure!(latitude.abs() <= 90.0, "invalid runway latitude {value:?}");
+    Ok(latitude.to_string())
+}
+
+fn runway_longitude(value: &str) -> anyhow::Result<String> {
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    anyhow::ensure!(
+        value.len() == 15 && matches!(value.as_bytes().last(), Some(b'E' | b'W')),
+        "invalid runway longitude {value:?}"
+    );
+    let longitude = apt_coord_lon(value);
+    anyhow::ensure!(
+        longitude.abs() <= 180.0,
+        "invalid runway longitude {value:?}"
+    );
+    Ok(longitude.to_string())
+}
+
 fn insert_runways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
     let path = input_dir.join("APT.txt");
     let text = read_text_lossy(&path)?;
+    if !text.lines().any(|line| line.starts_with("RWY")) {
+        return Ok(0);
+    }
+    let layout = RunwayRecordLayout::load(input_dir)?;
     let mut stmt = conn.prepare("INSERT INTO airportrunways VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)")?;
     let mut id = String::new();
     let mut count = 0;
@@ -452,49 +601,37 @@ fn insert_runways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> 
         if !raw.starts_with("RWY") {
             continue;
         }
-        let len = trim(field(raw, 23, 5)).to_string();
-        let width = trim(field(raw, 28, 4)).to_string();
-        let surface = trim(field(raw, 32, 12)).to_string();
-        let run0 = trim(field(raw, 65, 3)).to_string();
-        let run0lat_s = trim(field(raw, 88, 14));
-        let run0lat = if run0lat_s.len() == 14 {
-            apt_coord_lat(run0lat_s).to_string()
-        } else {
-            String::new()
-        };
-        let run0lon_s = trim(field(raw, 115, 15));
-        let run0lon = if run0lon_s.len() == 15 {
-            apt_coord_lon(run0lon_s).to_string()
-        } else {
-            String::new()
-        };
-        let run0elev = trim(field(raw, 142, 7)).to_string();
-        let run0true = trim(field(raw, 68, 3)).to_string();
-        let run0dt = trim(field(raw, 217, 4)).to_string();
-        let run0light = trim(field(raw, 237, 8)).to_string();
-        let run0ils = trim(field(raw, 71, 10)).to_string();
-        let run0vgsi = trim(field(raw, 228, 5)).to_string();
-        let run0pattern = trim(field(raw, 81, 1)).to_string();
-        let run1 = trim(field(raw, 287, 3)).to_string();
-        let run1lat_s = trim(field(raw, 310, 14));
-        let run1lat = if run1lat_s.len() == 14 {
-            apt_coord_lat(run1lat_s).to_string()
-        } else {
-            String::new()
-        };
-        let run1lon_s = trim(field(raw, 337, 15));
-        let run1lon = if run1lon_s.len() == 15 {
-            apt_coord_lon(run1lon_s).to_string()
-        } else {
-            String::new()
-        };
-        let run1elev = trim(field(raw, 364, 7)).to_string();
-        let run1true = trim(field(raw, 290, 3)).to_string();
-        let run1dt = trim(field(raw, 439, 4)).to_string();
-        let run1light = trim(field(raw, 459, 8)).to_string();
-        let run1ils = trim(field(raw, 293, 10)).to_string();
-        let run1vgsi = trim(field(raw, 450, 5)).to_string();
-        let run1pattern = trim(field(raw, 303, 1)).to_string();
+        let len = layout.length.value(raw).to_string();
+        let width = layout.width.value(raw).to_string();
+        let surface = layout.surface.value(raw).to_string();
+        let run0 = layout.end_ident[0].value(raw).to_string();
+        let run0lat_s = layout.end_latitude[0].value(raw);
+        let run0lat =
+            runway_latitude(run0lat_s).with_context(|| format!("airport {id} runway {run0}"))?;
+        let run0lon_s = layout.end_longitude[0].value(raw);
+        let run0lon =
+            runway_longitude(run0lon_s).with_context(|| format!("airport {id} runway {run0}"))?;
+        let run0elev = layout.end_elevation[0].value(raw).to_string();
+        let run0true = layout.end_heading[0].value(raw).to_string();
+        let run0dt = layout.end_displaced_threshold[0].value(raw).to_string();
+        let run0light = layout.end_lights[0].value(raw).to_string();
+        let run0ils = layout.end_ils[0].value(raw).to_string();
+        let run0vgsi = layout.end_vgsi[0].value(raw).to_string();
+        let run0pattern = layout.end_pattern[0].value(raw).to_string();
+        let run1 = layout.end_ident[1].value(raw).to_string();
+        let run1lat_s = layout.end_latitude[1].value(raw);
+        let run1lat =
+            runway_latitude(run1lat_s).with_context(|| format!("airport {id} runway {run1}"))?;
+        let run1lon_s = layout.end_longitude[1].value(raw);
+        let run1lon =
+            runway_longitude(run1lon_s).with_context(|| format!("airport {id} runway {run1}"))?;
+        let run1elev = layout.end_elevation[1].value(raw).to_string();
+        let run1true = layout.end_heading[1].value(raw).to_string();
+        let run1dt = layout.end_displaced_threshold[1].value(raw).to_string();
+        let run1light = layout.end_lights[1].value(raw).to_string();
+        let run1ils = layout.end_ils[1].value(raw).to_string();
+        let run1vgsi = layout.end_vgsi[1].value(raw).to_string();
+        let run1pattern = layout.end_pattern[1].value(raw).to_string();
         stmt.execute(params![
             id,
             len,
@@ -1578,32 +1715,79 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
+    fn build_apt_runway_layout(runway_end_shift: usize) -> String {
+        let layout_fields = [
+            (5, 24, "A31"),
+            (4, 29, "A32"),
+            (12, 33, "A33"),
+            (3, 66 + runway_end_shift, "A30A"),
+            (3, 69 + runway_end_shift, "E46"),
+            (10, 72 + runway_end_shift, "I22"),
+            (1, 82 + runway_end_shift, "A23"),
+            (15, 89 + runway_end_shift, "E68"),
+            (15, 116 + runway_end_shift, "E69"),
+            (7, 143 + runway_end_shift, "E70"),
+            (4, 218 + runway_end_shift, "A51"),
+            (5, 229 + runway_end_shift, "A43"),
+            (8, 238 + runway_end_shift, "A49"),
+            (3, 288 + runway_end_shift, "A30A"),
+            (3, 291 + runway_end_shift, "E46"),
+            (10, 294 + runway_end_shift, "I22"),
+            (1, 304 + runway_end_shift, "A23"),
+            (15, 311 + runway_end_shift, "E68"),
+            (15, 338 + runway_end_shift, "E69"),
+            (7, 365 + runway_end_shift, "E70"),
+            (4, 440 + runway_end_shift, "A51"),
+            (5, 451 + runway_end_shift, "A43"),
+            (8, 460 + runway_end_shift, "A49"),
+        ];
+        layout_fields
+            .into_iter()
+            .map(|(width, start, code)| format!("L AN {width:04} {start:05}  {code}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn write_apt_runway_layout(input_dir: &Path, runway_end_shift: usize) {
+        let layout_dir = input_dir.join("Layout_Data");
+        fs::create_dir_all(&layout_dir).unwrap();
+        fs::write(
+            layout_dir.join("apt_rf.txt"),
+            build_apt_runway_layout(runway_end_shift),
+        )
+        .unwrap();
+    }
+
     fn build_rwy_line() -> String {
+        build_rwy_line_with_shift(0)
+    }
+
+    fn build_rwy_line_with_shift(runway_end_shift: usize) -> String {
         let mut line = vec![b' '; 500];
         put_field(&mut line, 0, 3, "RWY");
         put_field(&mut line, 23, 5, "5000");
         put_field(&mut line, 28, 4, "100");
         put_field(&mut line, 32, 12, "ASPH");
-        put_field(&mut line, 65, 3, "16L");
-        put_field(&mut line, 68, 3, "160");
-        put_field(&mut line, 71, 10, "ILS");
-        put_field(&mut line, 81, 1, "L");
-        put_field(&mut line, 88, 14, "47 29 51.00N");
-        put_field(&mut line, 115, 15, "122 12 34.00W");
-        put_field(&mut line, 142, 7, "0032");
-        put_field(&mut line, 217, 4, "1000");
-        put_field(&mut line, 228, 5, "PAPI");
-        put_field(&mut line, 237, 8, "MIRL");
-        put_field(&mut line, 287, 3, "34R");
-        put_field(&mut line, 290, 3, "340");
-        put_field(&mut line, 293, 10, "ILS");
-        put_field(&mut line, 303, 1, "R");
-        put_field(&mut line, 310, 14, "47 30 01.00N");
-        put_field(&mut line, 337, 15, "122 12 44.00W");
-        put_field(&mut line, 364, 7, "0032");
-        put_field(&mut line, 439, 4, "1000");
-        put_field(&mut line, 450, 5, "PAPI");
-        put_field(&mut line, 459, 8, "MIRL");
+        put_field(&mut line, 65 + runway_end_shift, 3, "16L");
+        put_field(&mut line, 68 + runway_end_shift, 3, "160");
+        put_field(&mut line, 71 + runway_end_shift, 10, "ILS");
+        put_field(&mut line, 81 + runway_end_shift, 1, "L");
+        put_field(&mut line, 88 + runway_end_shift, 14, "47-29-51.0000N");
+        put_field(&mut line, 115 + runway_end_shift, 15, "122-12-34.0000W");
+        put_field(&mut line, 142 + runway_end_shift, 7, "0032");
+        put_field(&mut line, 217 + runway_end_shift, 4, "1000");
+        put_field(&mut line, 228 + runway_end_shift, 5, "PAPI");
+        put_field(&mut line, 237 + runway_end_shift, 8, "MIRL");
+        put_field(&mut line, 287 + runway_end_shift, 3, "34R");
+        put_field(&mut line, 290 + runway_end_shift, 3, "340");
+        put_field(&mut line, 293 + runway_end_shift, 10, "ILS");
+        put_field(&mut line, 303 + runway_end_shift, 1, "R");
+        put_field(&mut line, 310 + runway_end_shift, 14, "47-30-01.0000N");
+        put_field(&mut line, 337 + runway_end_shift, 15, "122-12-44.0000W");
+        put_field(&mut line, 364 + runway_end_shift, 7, "0032");
+        put_field(&mut line, 439 + runway_end_shift, 4, "1000");
+        put_field(&mut line, 450 + runway_end_shift, 5, "PAPI");
+        put_field(&mut line, 459 + runway_end_shift, 8, "MIRL");
         String::from_utf8(line).unwrap()
     }
 
@@ -1845,6 +2029,51 @@ mod tests {
     }
 
     #[test]
+    fn runway_import_uses_positions_declared_by_current_apt_layout() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        fs::create_dir_all(&input_dir).unwrap();
+        fs::write(
+            input_dir.join("APT.txt"),
+            format!(
+                "{}\n{}\n",
+                build_apt_airport("00U", "", "12385.2*A"),
+                build_rwy_line_with_shift(5)
+            ),
+        )
+        .unwrap();
+        write_apt_runway_layout(&input_dir, 5);
+
+        let connection = Connection::open_in_memory().unwrap();
+        setup_schema(&connection).unwrap();
+        assert_eq!(insert_runways(&connection, &input_dir).unwrap(), 1);
+        let runway = connection
+            .query_row(
+                "SELECT LocationID, LEIdent, HEIdent, LELatitude, LELongitude, HELatitude, HELongitude FROM airportrunways",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(runway.0, "00U");
+        assert_eq!(runway.1, "16L");
+        assert_eq!(runway.2, "34R");
+        assert_eq!(runway.3.parse::<f64>().unwrap(), 47.4975);
+        assert_eq!(runway.4.parse::<f64>().unwrap(), -122.20944444444444);
+        assert_eq!(runway.5.parse::<f64>().unwrap(), 47.500277777777775);
+        assert_eq!(runway.6.parse::<f64>().unwrap(), -122.21222222222222);
+    }
+
+    #[test]
     fn build_data_package_canonicalizes_airport_linked_tables() {
         let dir = tempdir().unwrap();
         let input_dir = dir.path().join("input");
@@ -1860,6 +2089,7 @@ mod tests {
             ),
         )
         .unwrap();
+        write_apt_runway_layout(&input_dir, 0);
         fs::write(
             input_dir.join("TWR.txt"),
             format!(

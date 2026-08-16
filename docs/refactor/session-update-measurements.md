@@ -192,3 +192,31 @@ React StrictMode deliberately invokes renders more than once in development.
 The actionable result is that root and inactive-page work tracks the much lower
 shell publication rate rather than the ownship stream. Map-local fan-out is now
 the next measured target; these results still do not justify another Worker.
+
+## 2026-08-16 Active-Map Result
+
+The browser journey was instrumented at commit level after the application
+shell and high-rate session scopes were separated. For 20 synthetic ownship
+samples, the representative baseline produced 54 active-map commits:
+
+| Commit source | Count |
+|---|---:|
+| High-rate session snapshot | 20 |
+| Followed viewport | 8 |
+| Vector overlay and frame | 8 |
+| Terrain overlay | 8 |
+| Raster tile frame | 3 |
+| Other or parent-local work | 9 |
+
+Some sources land in the same commit, so the source counts are not additive.
+The nested React Profilers showed that `VectorLayer` reconciled on all 54 map
+commits and used about 197 ms of the 232 ms `MapSurface` duration. `RasterLayer`
+also reconciled 54 times but used only about 4 ms, so commit count alone would
+have selected the wrong target.
+
+After isolating vector reconciliation behind its actual inputs, the same
+journey produced 15 vector commits, about 75 ms of vector duration, and about
+124 ms of total map-surface duration. Durations are development-build Chrome
+measurements and vary between runs; the stable regression is that vector commit
+count must fit a budget derived from viewport, vector-overlay, route, and shell
+changes rather than total map commits.

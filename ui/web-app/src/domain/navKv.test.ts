@@ -4,6 +4,7 @@
 
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+  completeResourceFreeSessionMutation,
   ResourceIngestCoordinator,
   resolvePublicResourceUrl,
   type SessionMutationOperationJson,
@@ -16,6 +17,26 @@ describe("session operation wire types", () => {
     expectTypeOf<SessionResultOperationJson>().not.toMatchTypeOf<SessionMutationOperationJson>();
     expectTypeOf<SessionResultOperationJson>().not.toMatchTypeOf<SessionSnapshotOperationJson>();
     expectTypeOf<SessionMutationOperationJson>().not.toMatchTypeOf<SessionSnapshotOperationJson>();
+  });
+
+  it("completes pre-NAVKV mutations without opening the resource pager", async () => {
+    const completion = JSON.stringify({
+      state: "complete",
+      result: { ui_contract_version: 2, session_revision: 1 },
+    }) as SessionMutationOperationJson;
+
+    await expect(completeResourceFreeSessionMutation(completion, "test.bootstrap"))
+      .resolves.toEqual({ ui_contract_version: 2, session_revision: 1 });
+  });
+
+  it("rejects a resource request from a pre-NAVKV mutation", async () => {
+    const needsResources = JSON.stringify({
+      state: "need_resources",
+      resources: [{ id: "nav_db/artifact/0/root" }],
+    }) as SessionMutationOperationJson;
+
+    await expect(completeResourceFreeSessionMutation(needsResources, "test.bootstrap"))
+      .rejects.toThrow("test.bootstrap must complete before NAVKV resource paging");
   });
 });
 

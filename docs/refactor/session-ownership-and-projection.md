@@ -519,13 +519,38 @@ begin driving root or hidden-page work directly.
 
 This slice added no lock, thread, Worker, or platform-specific domain policy.
 
+## Completed Twentieth Slice
+
+The twentieth slice measured active-map commits by source and accumulated the
+existing React Profiler durations during the synthetic-ownship browser journey.
+The baseline produced 54 map commits. Direct high-rate publication accounted
+for 20, followed viewport movement for 8, vector-overlay landing for 8, terrain
+landing for 8, and raster landing for 3. The vector surface nevertheless
+reconciled on all 54 commits and consumed about 197 ms of the 232 ms measured
+map-surface duration.
+
+The vector surface now has an explicit shallow dependency boundary. It
+reconciles for viewport, vector model, route, selection, size, and vector debug
+changes, but not for unrelated ownship, terrain, raster, or shell-local work.
+The same journey reduced vector commits from 54 to 15, vector duration from
+about 197 ms to 75 ms, and total map-surface duration from about 232 ms to 124
+ms. The E2E budget is derived from observed vector-relevant commit sources and
+fails if unrelated map-local work again reconciles that surface.
+
+While starting the measurement, the browser journey exposed a lifecycle cycle
+introduced by typed session-operation hardening: pre-NAVKV resource-policy
+configuration had been routed through the NAVKV pager, while opening NAVKV
+already required that policy. Pre-NAVKV configuration now uses a nominally
+typed resource-free mutation completion and fails if it requests paging;
+post-attach mutations retain the typed paged runner and snapshot continuation.
+
 ## Next Slice
 
-Profile the active map subtree. The render boundary is now narrow, but the web
-journey still observed several `MapPage` render attempts per ownship sample.
-Measure which map-local stores and effects account for that fan-out before
-splitting map overlays or drawing surfaces further. Keep the work on the current
-thread unless those measurements identify a separate scheduling bottleneck.
+Profile the remaining active map work. The vector drawing surface is now scoped
+to vector-relevant inputs, but terrain completion and the high-rate map chrome
+still schedule the page owner independently. Measure their render duration
+before moving another surface or controller; raw commit count alone is not a
+reason to split ownership.
 
 ## Relationship To Work Scheduling
 

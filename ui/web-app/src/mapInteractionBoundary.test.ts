@@ -111,7 +111,10 @@ describe("map interaction boundaries", () => {
   });
 
   it("uses lightweight hover weather for METAR symbols without opening the map inspector", () => {
-    const hoverSource = functionSource("handleMetarHoverEnter");
+    const hoverSource = sourceBetween(
+      "const handleMetarHoverEnter",
+      "const handleMetarHoverLeave",
+    );
     expect(hoverSource).toContain('event.pointerType !== "mouse"');
     expect(hoverSource).toContain("queryMapSelection");
     expect(hoverSource).toContain("weatherDetailForMetarSelection");

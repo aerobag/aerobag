@@ -173,10 +173,36 @@ async function verifyOwnshipRenderInvalidation(page) {
   }
   await new Promise((resolve) => setTimeout(resolve, 100));
   const after = await page.evaluate("window.__aerobagE2e.render()");
+  const mapCommitSources = Object.fromEntries(
+    [...new Set([
+      ...Object.keys(baseline.mapCommitSources ?? {}),
+      ...Object.keys(after.mapCommitSources ?? {}),
+    ])].map((source) => [source, 0]),
+  );
+  for (const source of Object.keys(mapCommitSources)) {
+    mapCommitSources[source] =
+      (after.mapCommitSources?.[source] ?? 0) - (baseline.mapCommitSources?.[source] ?? 0);
+  }
+  const profilerDeltas = Object.fromEntries(
+    [...new Set([
+      ...Object.keys(baseline.profilers ?? {}),
+      ...Object.keys(after.profilers ?? {}),
+    ])].map((id) => {
+      const before = baseline.profilers?.[id] ?? { commits: 0, actualDurationMs: 0 };
+      const next = after.profilers?.[id] ?? { commits: 0, actualDurationMs: 0 };
+      return [id, {
+        commits: next.commits - before.commits,
+        actualDurationMs: Math.round((next.actualDurationMs - before.actualDurationMs) * 100) / 100,
+      }];
+    }),
+  );
   const result = {
     samples: sampleCount,
     appRenderDelta: after.app - baseline.app,
     mapRenderDelta: after.map - baseline.map,
+    mapCommitDelta: after.mapCommits - baseline.mapCommits,
+    mapCommitSources,
+    profilerDeltas,
     chartsRenderDelta: after.charts - baseline.charts,
     shellPublicationDelta: after.store.shellPublications - baseline.store.shellPublications,
     highRatePublicationDelta: after.store.highRatePublications - baseline.store.highRatePublications,
@@ -193,6 +219,24 @@ async function verifyOwnshipRenderInvalidation(page) {
   }
   if (result.mapRenderDelta < sampleCount / 2) {
     throw new Error(`ownship updates did not render the active map: ${JSON.stringify(result)}`);
+  }
+  const vectorCommits = result.profilerDeltas.VectorLayer?.commits;
+  if (typeof vectorCommits !== "number") {
+    throw new Error(`vector-layer profiler did not report commits: ${JSON.stringify(result)}`);
+  }
+  const vectorCommitBudget =
+    (result.mapCommitSources.viewport ?? 0)
+    + Math.max(
+      result.mapCommitSources.map_overlay ?? 0,
+      result.mapCommitSources.map_overlay_frame ?? 0,
+    )
+    + (result.mapCommitSources.flight_plan_route ?? 0)
+    + result.shellPublicationDelta * 2
+    + 6;
+  if (vectorCommits > vectorCommitBudget) {
+    throw new Error(
+      `unrelated map-local updates repeatedly reconciled the vector layer: ${JSON.stringify({ vectorCommitBudget, ...result })}`,
+    );
   }
   const hiddenPageRenderBudget = result.shellPublicationDelta * 2 + 2;
   if (result.chartsRenderDelta > hiddenPageRenderBudget) {

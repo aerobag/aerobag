@@ -114,6 +114,7 @@ import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import {
   advanceSharedNavKvStore,
   attachNavKvStoreToSession,
+  completeResourceFreeSessionMutation,
   resolveChartAssetUrl,
   runCoreHadOperation,
   runCoreHadSessionMutationOperation,
@@ -1177,27 +1178,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       const loadFullSnapshot = () => runSessionSnapshotForHandle<unknown>(created.handle, () =>
         this.module.get_session_snapshot_paged(created.handle));
-      const applyPreNavBootstrapMutation = async (
-        operation: () => Promise<SessionMutationOperationJson> | SessionMutationOperationJson,
+      const applyResourceFreeBootstrapMutation = async (
+        responseJson: SessionMutationOperationJson | Promise<SessionMutationOperationJson>,
+        operationLabel: string,
       ) => {
-        const response = JSON.parse(await operation()) as {
-          state: string;
-          result?: unknown;
-        };
-        if (response.state !== "complete" || !Object.hasOwn(response, "result")) {
-          throw new Error(
-            `pre-NAV session bootstrap mutation unexpectedly returned ${response.state}; `
-            + "resource policy must be established before opening the NAV database",
-          );
-        }
-        const disposition = snapshotAccumulator.apply(response.result);
+        const update = await completeResourceFreeSessionMutation<unknown>(responseJson, operationLabel);
+        const disposition = snapshotAccumulator.apply(update);
         if (disposition === "resync_required") {
-          throw new Error(
-            "pre-NAV session bootstrap mutation requires a snapshot resync before the NAV database is available",
-          );
+          throw new Error(`${operationLabel} produced a bootstrap session revision gap`);
         }
       };
-      const applyBootstrapMutation = async (operation: SessionMutationOperation) => {
+      const applyPagedBootstrapMutation = async (operation: SessionMutationOperation) => {
         const completion = await runSessionMutationForHandle<unknown, unknown>(
           created.handle,
           operation,
@@ -1210,13 +1201,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       };
       await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", async () =>
-        applyPreNavBootstrapMutation(() => module.set_resource_policy_in_session(
+        applyResourceFreeBootstrapMutation(module.set_resource_policy_in_session(
           created.handle,
           JSON.stringify("public_unpacked"),
-        )),
+        ), "startup.session.set_resource_policy"),
       );
       await debugTiming("startup.session.configure_platform", async () =>
-        applyBootstrapMutation(() => module.configure_platform_capabilities_in_session(
+        applyResourceFreeBootstrapMutation(module.configure_platform_capabilities_in_session(
           created.handle,
           JSON.stringify({
             display_policy: null,
@@ -1232,11 +1223,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
             local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
-        )),
+        ), "startup.session.configure_platform"),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
       await debugTiming("startup.session.load_raster_catalog", () =>
-        applyBootstrapMutation(() => module.load_raster_map_catalog_in_session(created.handle)));
+        applyPagedBootstrapMutation(() => module.load_raster_map_catalog_in_session(created.handle)));
       return {
         ...created,
         snapshot: assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot),

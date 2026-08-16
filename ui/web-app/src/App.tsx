@@ -582,6 +582,14 @@ const reactProfilerActualDurationLogMs = 1;
 const reactProfilerCommitDelayLogMs = 8;
 const reactProfilerCommitDelayIds = new Set(["MapSurface", "RasterLayer", "VectorLayer"]);
 
+type ReactProfilerTotals = {
+  commits: number;
+  actualDurationMs: number;
+  maxActualDurationMs: number;
+};
+
+const webReactProfilerTotals: Record<string, ReactProfilerTotals> = {};
+
 const logReactProfilerRender: ProfilerOnRenderCallback = (
   id,
   phase,
@@ -590,6 +598,15 @@ const logReactProfilerRender: ProfilerOnRenderCallback = (
   startTime,
   commitTime,
 ) => {
+  const totals = webReactProfilerTotals[id] ?? {
+    commits: 0,
+    actualDurationMs: 0,
+    maxActualDurationMs: 0,
+  };
+  totals.commits += 1;
+  totals.actualDurationMs += actualDuration;
+  totals.maxActualDurationMs = Math.max(totals.maxActualDurationMs, actualDuration);
+  webReactProfilerTotals[id] = totals;
   if (!VERBOSE_PERF_DEBUG_LOGS) {
     return;
   }
@@ -2068,10 +2085,28 @@ const webSessionRenderCounts = {
   app: 0,
   map: 0,
   charts: 0,
+  mapCommits: 0,
+  mapCommitSources: {} as Record<string, number>,
 };
 
-function recordSessionRender(scope: keyof typeof webSessionRenderCounts) {
+function recordSessionRender(scope: "app" | "map" | "charts") {
   webSessionRenderCounts[scope] += 1;
+}
+
+function useMapCommitProbe(values: Record<string, unknown>) {
+  const previousRef = useRef<Record<string, unknown> | null>(null);
+  useLayoutEffect(() => {
+    const previous = previousRef.current;
+    previousRef.current = values;
+    webSessionRenderCounts.mapCommits += 1;
+    if (previous === null) return;
+    const changed = Object.keys(values).filter((key) => !Object.is(previous[key], values[key]));
+    const sources = changed.length > 0 ? changed : ["unattributed"];
+    for (const source of sources) {
+      webSessionRenderCounts.mapCommitSources[source] =
+        (webSessionRenderCounts.mapCommitSources[source] ?? 0) + 1;
+    }
+  });
 }
 
 function useSessionSnapshotGroups(
@@ -2109,6 +2144,18 @@ const PageLayer = memo(
     );
   },
   (previous, next) => !previous.active && !next.active,
+);
+
+const MapVectorRenderBoundary = memo(
+  function MapVectorRenderBoundary(props: {
+    dependencies: readonly unknown[];
+    render: () => ReactNode;
+  }) {
+    return props.render();
+  },
+  (previous, next) =>
+    previous.dependencies.length === next.dependencies.length
+    && previous.dependencies.every((value, index) => Object.is(value, next.dependencies[index])),
 );
 
 export default function App() {
@@ -2324,6 +2371,7 @@ export default function App() {
   useEffect(() => {
     const render = () => ({
       ...webSessionRenderCounts,
+      profilers: webReactProfilerTotals,
       store: sessionRenderStore.stats,
       session_revision: sessionRenderStore.snapshot.session_revision,
     });
@@ -6802,7 +6850,7 @@ function MapPage(props: {
     });
   }
 
-  function handleMetarHoverEnter(event: React.PointerEvent<SVGGElement>, feature: VisibleMetarFeature) {
+  const handleMetarHoverEnter = useCallback((event: React.PointerEvent<SVGGElement>, feature: VisibleMetarFeature) => {
     if (
       event.pointerType !== "mouse" ||
       !uiSession ||
@@ -6857,13 +6905,13 @@ function MapPage(props: {
           });
         }
       });
-  }
+  }, [mapSelection, surfaceSize.height, surfaceSize.width, trayGroup.scrimOpen, uiSession]);
 
-  function handleMetarHoverLeave(feature: VisibleMetarFeature) {
+  const handleMetarHoverLeave = useCallback((feature: VisibleMetarFeature) => {
     const stationId = normalizedStationId(feature.station_id);
     hoverWeatherRequestSerialRef.current += 1;
     setHoverWeather((current) => current?.stationId === stationId ? null : current);
-  }
+  }, []);
 
   function submitChartSearch() {
     const query = chartSearch.query;
@@ -6989,6 +7037,23 @@ function MapPage(props: {
   }));
   const centerHereDisabled = !mapFollowUiState.can_center_here && !mapFollowUiState.following;
   const centerHereDisabledReason = disabledReasonText(mapFollowUiState.disabled_reason);
+
+  useMapCommitProbe({
+    high_rate_snapshot: highRateSnapshot,
+    viewport,
+    ui_invalidations: uiInvalidationRevisions,
+    map_overlay: mapOverlay,
+    map_overlay_frame: mapOverlayFrame,
+    terrain_overlay: terrainOverlay,
+    nexrad_overlay: nexradOverlay,
+    nexrad_overlay_frame: nexradOverlayFrame,
+    raster_tile_frame: rasterTileFrame,
+    flight_plan_route: flightPlanRouteProjection,
+    follow_sync: followSyncPendingSerial,
+    follow_retry: followTargetRetryToken,
+    surface_size: surfaceSize,
+    map_selection: mapSelection,
+  });
 
   return (
     <section className="pageSurface">
@@ -7313,6 +7378,21 @@ function MapPage(props: {
               })}
             </svg>
           ) : null}
+          <MapVectorRenderBoundary
+            dependencies={[
+              debugState.sequencing_finish_lines,
+              handleMetarHoverEnter,
+              handleMetarHoverLeave,
+              mapIsVisible,
+              mapOverlay,
+              overlayTransform,
+              routeDistancePillLayouts,
+              routeScreenSegments,
+              selectedMapHighlight,
+              surfaceSize.height,
+              surfaceSize.width,
+            ]}
+            render={() => (
           <Profiler id="VectorLayer" onRender={logReactProfilerRender}>
             <>
               <>
@@ -7678,6 +7758,8 @@ function MapPage(props: {
               </>
             </>
           </Profiler>
+            )}
+          />
         {mapIsVisible && situationOverlay ? (
           <>
             <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">

@@ -38,6 +38,21 @@ export type SessionMutationCompletion<TUpdate, TSnapshot> =
   | { kind: "session_update"; update: TUpdate }
   | { kind: "session_snapshot"; snapshot: TSnapshot };
 
+export async function completeResourceFreeSessionMutation<TUpdate>(
+  responseJson: Awaitable<SessionMutationOperationJson>,
+  operationLabel: string,
+): Promise<TUpdate> {
+  const response = JSON.parse(await responseJson) as
+    | { state: "complete"; result: TUpdate }
+    | { state: "need_resources" | "need_snapshot_resources"; resources: CoreResourceRequest[] };
+  if (response.state !== "complete") {
+    throw new Error(
+      `${operationLabel} must complete before NAVKV resource paging; returned ${response.state}`,
+    );
+  }
+  return response.result;
+}
+
 type PagedOperationCompletion<TResult, TSnapshot> =
   | { kind: "operation_result"; result: TResult }
   | { kind: "resumed_snapshot"; snapshot: TSnapshot };

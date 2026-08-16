@@ -1309,17 +1309,23 @@ struct PlannedDirectToTarget {
 }
 
 fn planned_row_id_for_leg_index(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlanRowId> {
-    let mut matches = project_identity_rows(plan).into_iter().filter(|row| {
-        row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.leg_index == Some(leg_index)
-    });
+    let target_row_kind = plan
+        .resolved_legs
+        .get(leg_index)
+        .filter(|leg| resolved_leg_targets_vector_discontinuity_row(leg))
+        .map(|_| FlightPlanDisplayRowKind::Discontinuity)
+        .unwrap_or(FlightPlanDisplayRowKind::Waypoint);
+    let mut matches = project_identity_rows(plan)
+        .into_iter()
+        .filter(|row| row.row_kind == target_row_kind && row.leg_index == Some(leg_index));
     let row = matches.next().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
-        message: format!("resolved leg {leg_index} has no projected waypoint row"),
+        message: format!("resolved leg {leg_index} has no projected target row"),
     })?;
     if matches.next().is_some() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("resolved leg {leg_index} projects to multiple waypoint rows"),
+            message: format!("resolved leg {leg_index} projects to multiple target rows"),
         });
     }
     Ok(FlightPlanRowId(row.uid))
@@ -2256,11 +2262,15 @@ fn project_nav_element_ui(plan: &FlightPlan) -> NavElementUiView {
         active_leg_summary: active_leg
             .as_ref()
             .map(|leg| {
-                format!(
-                    "{} \u{2192} {}",
-                    nav_ref_label(&leg.from),
-                    nav_ref_label(&leg.to)
-                )
+                let target_label = plan
+                    .guidance
+                    .as_ref()
+                    .filter(|guidance| guidance.sequencing_mode != SequencingMode::DirectTo)
+                    .and_then(|guidance| plan.resolved_legs.get(guidance.active_leg_index))
+                    .filter(|leg| resolved_leg_targets_vector_discontinuity_row(leg))
+                    .map(|_| ProcedureDiscontinuity::Vectors.display_label().to_string())
+                    .unwrap_or_else(|| nav_ref_label(&leg.to));
+                format!("{} \u{2192} {}", nav_ref_label(&leg.from), target_label)
             })
             .unwrap_or_default(),
         cdi_indicator_dots: None,
@@ -2325,6 +2335,13 @@ pub(crate) fn resolved_leg_ends_in_manual_sequence(leg: &ResolvedLeg) -> bool {
     })
 }
 
+fn resolved_leg_targets_vector_discontinuity_row(leg: &ResolvedLeg) -> bool {
+    leg.from == leg.to
+        && leg.procedure_provenance.as_ref().is_some_and(|provenance| {
+            provenance.discontinuity_after == Some(ProcedureDiscontinuity::Vectors)
+        })
+}
+
 pub(crate) fn guidance_detail_is_manual_sequence(plan: &FlightPlan, detail_index: usize) -> bool {
     let Some(detail) = guidance_detail_ref_by_index(plan, detail_index) else {
         return false;
@@ -2353,6 +2370,7 @@ fn project_display_rows(
     let mut rows = Vec::new();
     let mut child_occurrences: BTreeMap<usize, usize> = BTreeMap::new();
     let mut child_waypoint_occurrences: BTreeMap<(usize, String), usize> = BTreeMap::new();
+    let mut child_vector_discontinuity_occurrences: BTreeMap<usize, usize> = BTreeMap::new();
     for component in components {
         let chart_airport_id = component.chart_airport_id.clone();
         if component.kind == RouteComponentViewKind::Waypoint {
@@ -2568,9 +2586,18 @@ fn project_display_rows(
                                 plan,
                                 component.component_index,
                             ),
-                            ProcedureDiscontinuity::Vectors | ProcedureDiscontinuity::Other(_) => {
-                                None
+                            ProcedureDiscontinuity::Vectors => {
+                                let occurrence = child_vector_discontinuity_occurrences
+                                    .entry(component.component_index)
+                                    .and_modify(|count| *count += 1)
+                                    .or_insert(0);
+                                vector_discontinuity_row_leg_index(
+                                    plan,
+                                    component.component_index,
+                                    *occurrence,
+                                )
                             }
+                            ProcedureDiscontinuity::Other(_) => None,
                         };
                         rows.push(FlightPlanDisplayRowUiView {
                             uid: uid.clone(),
@@ -2723,6 +2750,30 @@ fn active_guidance_row_uids(
     let Some(active_leg) = active_guidance_leg(plan) else {
         return (None, None);
     };
+
+    if guidance.sequencing_mode != SequencingMode::DirectTo
+        && plan
+            .resolved_legs
+            .get(guidance.active_leg_index)
+            .is_some_and(resolved_leg_targets_vector_discontinuity_row)
+    {
+        let to_index = rows.iter().position(|row| {
+            row.row_kind == FlightPlanDisplayRowKind::Discontinuity
+                && row.label == ProcedureDiscontinuity::Vectors.display_label()
+                && row.leg_index == Some(guidance.active_leg_index)
+        });
+        let Some(to_index) = to_index else {
+            return (None, None);
+        };
+        let from_index = rows[..to_index].iter().rposition(|row| {
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                && row.nav_ref.as_ref() == Some(&active_leg.from)
+        });
+        return (
+            from_index.map(|index| rows[index].uid.clone()),
+            Some(rows[to_index].uid.clone()),
+        );
+    }
 
     if let Some(hold_start_detail) =
         terminal_hold_start_detail_index_for_leg(plan, guidance.active_leg_index)
@@ -3278,6 +3329,7 @@ fn child_waypoint_row_leg_index(
             (matches!(leg.source, ResolvedLegSource::RouteComponent { component_index: source_component_index } if source_component_index == component_index)
                 || matches!(leg.source, ResolvedLegSource::SyntheticBridge { to_component_index, .. } if to_component_index == component_index))
                 && &leg.to == nav_ref
+                && !resolved_leg_targets_vector_discontinuity_row(leg)
         })
         .nth(waypoint_occurrence)
         .map(|(index, _)| index);
@@ -3302,6 +3354,25 @@ fn child_waypoint_row_leg_index(
                 .get(*previous_leg_index)
                 .is_some_and(|leg| &leg.to == nav_ref)
         })
+}
+
+fn vector_discontinuity_row_leg_index(
+    plan: &FlightPlan,
+    component_index: usize,
+    vector_discontinuity_occurrence: usize,
+) -> Option<usize> {
+    plan.resolved_legs
+        .iter()
+        .enumerate()
+        .filter(|(_, leg)| {
+            matches!(leg.source, ResolvedLegSource::RouteComponent { component_index: source_component_index } if source_component_index == component_index)
+                && leg.procedure_provenance.as_ref().is_some_and(|provenance| {
+                    provenance.discontinuity_after == Some(ProcedureDiscontinuity::Vectors)
+                })
+        })
+        .nth(vector_discontinuity_occurrence)
+        .filter(|(_, leg)| resolved_leg_targets_vector_discontinuity_row(leg))
+        .map(|(index, _)| index)
 }
 
 fn last_guidance_leg_index_for_component(
@@ -5912,9 +5983,11 @@ fn raw_component_ui_items(
                     nav_ref: first.from.clone(),
                 });
                 for leg in grouped_legs {
-                    items.push(ConcretizedNavItem::Waypoint {
-                        nav_ref: leg.to.clone(),
-                    });
+                    if !resolved_leg_targets_vector_discontinuity_row(&leg) {
+                        items.push(ConcretizedNavItem::Waypoint {
+                            nav_ref: leg.to.clone(),
+                        });
+                    }
                     last_leg_had_discontinuity = false;
                     if let Some(discontinuity) = leg
                         .procedure_provenance
@@ -7055,6 +7128,64 @@ mod tests {
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
+        }
+    }
+
+    fn sample_same_anchor_vector_procedure_plan() -> FlightPlan {
+        let runway = NavRef::Fix("RW34".to_string());
+        FlightPlan {
+            id: "plan-same-anchor-vectors".to_string(),
+            name: "KRNT BELVU4 RW34".to_string(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KRNT".to_string()),
+                        procedure_id: "BELVU4".to_string(),
+                        display_label: None,
+                        kind: ProcedureKind::Sid,
+                        runway_transition: Some("RW34".to_string()),
+                        enroute_transition: None,
+                        terminal_discontinuity: Some(ProcedureDiscontinuity::Vectors),
+                        data_quality: Vec::new(),
+                    },
+                },
+            ],
+            resolved_legs: vec![ResolvedLeg {
+                id: "belvu4-rw34-vectors".to_string(),
+                from: runway.clone(),
+                to: runway,
+                source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                procedure_provenance: Some(ProcedureLegProvenance {
+                    airport_id: "KRNT".to_string(),
+                    procedure_id: "BELVU4".to_string(),
+                    kind: ProcedureKind::Sid,
+                    role: ProcedureSegmentRole::RunwayTransition,
+                    path_termination: PathTermination::Other("VM".to_string()),
+                    leg_sequence: 10,
+                    discontinuity_after: Some(ProcedureDiscontinuity::Vectors),
+                    display_path: Some(LegDisplayPath {
+                        style: LegDisplayPathStyle::Solid,
+                        elements: vec![LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 47.4857953,
+                                lon: -122.2146313,
+                            },
+                            end: LatLon {
+                                lat: 47.551965,
+                                lon: -122.2026086,
+                            },
+                        }],
+                        effective_terminal_course_deg: Some(367.0),
+                        debug_element_sources: Vec::new(),
+                        debug_element_roles: Vec::new(),
+                    }),
+                }),
+            }],
+            departure: Some(AirportId("KRNT".to_string())),
+            ..FlightPlan::empty()
         }
     }
 
@@ -10795,6 +10926,161 @@ mod tests {
         assert!(direct_to.target_row.is_planned());
         assert_eq!(direct_to_target_leg_index(&activated, direct_to), None);
         assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(0));
+    }
+
+    #[test]
+    fn same_anchor_vector_leg_projects_one_anchor_and_an_activatable_vectors_target() {
+        let plan = sample_same_anchor_vector_procedure_plan().normalized();
+        let ui = project_ui_state(&plan);
+        let procedure_rows = ui
+            .display_rows
+            .iter()
+            .filter(|row| row.component_index == Some(1) && row.depth == 1)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            procedure_rows
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["RW34", "VECTORS"]
+        );
+        assert_eq!(procedure_rows[0].leg_index, None);
+        assert_eq!(
+            procedure_rows[0].nav_ref,
+            Some(NavRef::Fix("RW34".to_string()))
+        );
+        assert_eq!(procedure_rows[1].leg_index, Some(0));
+        assert_eq!(
+            procedure_rows[1].row_kind,
+            FlightPlanDisplayRowKind::Discontinuity
+        );
+
+        let runway_activate = flight_plan_row_actions(procedure_rows[0])
+            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+            .expect("runway activate-leg action");
+        let vectors_activate = flight_plan_row_actions(procedure_rows[1])
+            .find(|action| action.id == FlightPlanRowActionId::ActivateLeg)
+            .expect("vectors activate-leg action");
+        assert!(!runway_activate.enabled);
+        assert!(vectors_activate.enabled);
+        assert_eq!(
+            planned_row_id_for_leg_index(&plan, 0).expect("vector leg target row"),
+            FlightPlanRowId(procedure_rows[1].uid.clone())
+        );
+    }
+
+    #[test]
+    fn vectors_target_owns_same_fix_outbound_leg_after_an_inbound_leg() {
+        let mut plan = sample_same_anchor_vector_procedure_plan();
+        let mut vector_leg = plan.resolved_legs.remove(0);
+        vector_leg.id = "belvu4-belvu-vectors".to_string();
+        vector_leg.from = NavRef::Fix("BELVU".to_string());
+        vector_leg.to = NavRef::Fix("BELVU".to_string());
+        let mut inbound_leg = vector_leg.clone();
+        inbound_leg.id = "belvu4-rw34-belvu".to_string();
+        inbound_leg.from = NavRef::Fix("RW34".to_string());
+        inbound_leg
+            .procedure_provenance
+            .as_mut()
+            .expect("inbound provenance")
+            .path_termination = PathTermination::TrackToFix;
+        inbound_leg
+            .procedure_provenance
+            .as_mut()
+            .expect("inbound provenance")
+            .discontinuity_after = None;
+        plan.resolved_legs = vec![inbound_leg, vector_leg];
+
+        let ui = project_ui_state(&plan);
+        let procedure_rows = ui
+            .display_rows
+            .iter()
+            .filter(|row| row.component_index == Some(1) && row.depth == 1)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            procedure_rows
+                .iter()
+                .map(|row| (row.label.as_str(), row.leg_index))
+                .collect::<Vec<_>>(),
+            vec![("RW34", None), ("BELVU", Some(0)), ("VECTORS", Some(1))]
+        );
+    }
+
+    #[test]
+    fn active_same_anchor_vector_leg_projects_from_anchor_to_vectors() {
+        let mut plan = sample_same_anchor_vector_procedure_plan();
+        plan.guidance = Some(GuidanceState {
+            active_leg_index: 0,
+            active_detail_index: Some(0),
+            display_split_leg_id: Some("belvu4-rw34-vectors".to_string()),
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        });
+
+        let ui = project_ui_state(&plan);
+        let guidance = ui.guidance.as_ref().expect("vector guidance");
+        let from_row = ui
+            .display_rows
+            .iter()
+            .find(|row| guidance.active_from_row_uid.as_ref() == Some(&row.uid))
+            .expect("active runway row");
+        let to_row = ui
+            .display_rows
+            .iter()
+            .find(|row| guidance.active_to_row_uid.as_ref() == Some(&row.uid))
+            .expect("active vectors row");
+
+        assert_eq!(from_row.label, "RW34");
+        assert_eq!(to_row.label, "VECTORS");
+        assert_eq!(
+            guidance.nav_element.active_leg_summary,
+            "RW34 \u{2192} VECTORS"
+        );
+        assert!(flight_plan_row_actions(to_row)
+            .any(|action| { action.id == FlightPlanRowActionId::ActivateLeg && !action.enabled }));
+    }
+
+    #[test]
+    fn direct_to_same_anchor_vector_start_resumes_at_vectors_row() {
+        let plan = sample_same_anchor_vector_procedure_plan().normalized();
+        let runway_row = project_identity_rows(&plan)
+            .into_iter()
+            .find(|row| row.nav_ref == Some(NavRef::Fix("RW34".to_string())))
+            .expect("runway row");
+
+        let activated = activate_direct_to_row(
+            &plan,
+            LatLon {
+                lat: 47.48,
+                lon: -122.22,
+            },
+            &FlightPlanRowId(runway_row.uid),
+        )
+        .expect("direct-to runway");
+        let direct_to = activated
+            .guidance
+            .as_ref()
+            .and_then(|guidance| guidance.direct_to.as_ref())
+            .expect("direct-to state");
+
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), None);
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(0));
+
+        let ui = project_ui_state(&activated);
+        let guidance = ui.guidance.as_ref().expect("direct-to guidance");
+        let active_to_row = ui
+            .display_rows
+            .iter()
+            .find(|row| guidance.active_to_row_uid.as_ref() == Some(&row.uid))
+            .expect("direct-to runway row");
+        assert_eq!(active_to_row.label, "RW34");
+        assert!(guidance
+            .nav_element
+            .active_leg_summary
+            .ends_with("\u{2192} RW34"));
     }
 
     #[test]

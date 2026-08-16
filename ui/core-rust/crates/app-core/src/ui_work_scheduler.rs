@@ -197,7 +197,7 @@ impl UiSessionWorkScheduler {
     pub fn active_request(&self) -> Option<&UiSessionWorkRequest> {
         self.active_input
             .as_ref()
-            .or_else(|| self.active_background.as_ref())
+            .or(self.active_background.as_ref())
     }
 }
 

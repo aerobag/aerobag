@@ -1556,7 +1556,7 @@ fn static_package_group_status_page_row(
         status_fact("Products", family_list.clone()),
         status_fact("Packages", packages.len().to_string()),
     ];
-    for (_, (family_label, effective_utc)) in &newest_by_family {
+    for (family_label, effective_utc) in newest_by_family.values() {
         facts.push(status_time_fact(
             *family_label,
             *effective_utc,
@@ -1686,7 +1686,7 @@ fn nav_db_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
             facts,
         );
     }
-    if earliest_expiration.is_some() {
+    if let Some(earliest_expiration) = earliest_expiration {
         return status_page_row(
             "nav_db",
             "NAV DB",
@@ -1694,7 +1694,7 @@ fn nav_db_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
             UiStatusSeverity::Ok,
             format!(
                 "NAV DB valid until {}.",
-                format_status_time(earliest_expiration.expect("checked expiration"), input),
+                format_status_time(earliest_expiration, input),
             ),
             facts,
         );

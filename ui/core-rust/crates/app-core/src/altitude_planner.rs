@@ -446,7 +446,7 @@ fn project_departure_editor(
 
 fn format_departure_offset(offset_ms: i64) -> String {
     let negative = offset_ms < 0;
-    let total_minutes = (offset_ms.unsigned_abs().saturating_add(30_000) / 60_000) as u64;
+    let total_minutes = offset_ms.unsigned_abs().saturating_add(30_000) / 60_000;
     if total_minutes == 0 {
         return "now".to_string();
     }
@@ -700,7 +700,7 @@ fn format_altitude_ft(altitude_ft: i32) -> String {
     let digits = altitude_ft.abs().to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(digit);

@@ -829,7 +829,7 @@ impl LiveFeedInstalledState {
                 manifest,
                 root,
                 pages,
-            } => write_nav_kv_zip_bytes(&manifest, root, pages),
+            } => write_nav_kv_zip_bytes(manifest, root, pages),
             LiveFeedInstalledPayload::NotamResources { .. } => Err(cache_error(
                 "NOTAM resources must be persisted as immutable blobs".to_string(),
             )),
@@ -1665,10 +1665,9 @@ fn write_nav_kv_zip_bytes(manifest: &[u8], root: &[u8], pages: &[Vec<u8>]) -> Ap
     nav_kv_package::write_stored_xz_framed_package_bytes(manifest, root, pages).map_err(cache_error)
 }
 
-fn read_nav_kv_members_from_zip(
-    product: &str,
-    bytes: &[u8],
-) -> AppResult<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)> {
+type NavKvArchiveMembers = (Vec<u8>, Vec<u8>, Vec<Vec<u8>>);
+
+fn read_nav_kv_members_from_zip(product: &str, bytes: &[u8]) -> AppResult<NavKvArchiveMembers> {
     let members = nav_kv_package::read_package_bytes(product, bytes).map_err(cache_error)?;
     Ok((members.manifest, members.root, members.pages))
 }

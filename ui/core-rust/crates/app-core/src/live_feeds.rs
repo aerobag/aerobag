@@ -109,6 +109,17 @@ struct CurrentProductHistoryEntry {
     collected_at_utc: Option<String>,
 }
 
+struct ProductRegistration {
+    product: String,
+    version: String,
+    version_manifest_url: String,
+    state_url: String,
+    state_sha256: String,
+    published_at_utc: Option<String>,
+    collected_at_utc: Option<String>,
+    history: Vec<CurrentProductHistoryEntry>,
+}
+
 pub type LiveFeedPayloadRef = live_feeds_v3::PayloadRef;
 pub type LiveFeedDeltaRef = live_feeds_v3::DeltaRef;
 type VersionManifest = live_feeds_v3::VersionManifest;
@@ -435,16 +446,16 @@ impl LiveFeedsState {
             let payload = latest_current_by_product
                 .remove(product)
                 .expect("affected product came from latest_current_by_product");
-            self.register_product(
-                payload.product,
-                payload.version,
-                payload.version_manifest_url,
-                payload.state_url,
-                payload.state_sha256,
-                payload.published_at_utc,
-                payload.collected_at_utc,
-                project_current_history(payload.history),
-            )?;
+            self.register_product(ProductRegistration {
+                product: payload.product,
+                version: payload.version,
+                version_manifest_url: payload.version_manifest_url,
+                state_url: payload.state_url,
+                state_sha256: payload.state_sha256,
+                published_at_utc: payload.published_at_utc,
+                collected_at_utc: payload.collected_at_utc,
+                history: project_current_history(payload.history),
+            })?;
         }
         Ok(affected)
     }
@@ -464,16 +475,16 @@ impl LiveFeedsState {
             self.products
                 .retain(|product, _| products.contains_key(product));
             for (product, entry) in products {
-                self.register_product(
+                self.register_product(ProductRegistration {
                     product,
-                    entry.current,
-                    entry.version_manifest_url,
-                    entry.state_url,
-                    entry.state_sha256,
-                    entry.published_at_utc,
-                    entry.collected_at_utc,
-                    project_current_history(entry.history),
-                )?;
+                    version: entry.current,
+                    version_manifest_url: entry.version_manifest_url,
+                    state_url: entry.state_url,
+                    state_sha256: entry.state_sha256,
+                    published_at_utc: entry.published_at_utc,
+                    collected_at_utc: entry.collected_at_utc,
+                    history: project_current_history(entry.history),
+                })?;
             }
             return Ok(());
         }
@@ -873,10 +884,10 @@ impl LiveFeedsState {
 
     pub fn product_state_manifest(&self, product: &str) -> Option<&Value> {
         let entry = self.products.get(product)?;
-        if !entry
+        if entry
             .current_version
             .as_deref()
-            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+            .is_none_or(|version| entry.loaded_version.as_deref() != Some(version))
         {
             return None;
         }
@@ -889,10 +900,10 @@ impl LiveFeedsState {
 
     pub fn product_loaded_version(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
-        if !entry
+        if entry
             .current_version
             .as_deref()
-            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+            .is_none_or(|version| entry.loaded_version.as_deref() != Some(version))
         {
             return None;
         }
@@ -905,10 +916,10 @@ impl LiveFeedsState {
 
     pub fn product_published_at_utc(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
-        if !entry
+        if entry
             .current_version
             .as_deref()
-            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+            .is_none_or(|version| entry.loaded_version.as_deref() != Some(version))
         {
             return None;
         }
@@ -917,10 +928,10 @@ impl LiveFeedsState {
 
     pub fn product_collected_at_utc(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
-        if !entry
+        if entry
             .current_version
             .as_deref()
-            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+            .is_none_or(|version| entry.loaded_version.as_deref() != Some(version))
         {
             return None;
         }
@@ -945,10 +956,10 @@ impl LiveFeedsState {
 
     pub fn product_state_url(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
-        if !entry
+        if entry
             .current_version
             .as_deref()
-            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+            .is_none_or(|version| entry.loaded_version.as_deref() != Some(version))
         {
             return None;
         }
@@ -1029,17 +1040,17 @@ impl LiveFeedsState {
         self.retryable_resources(resources, epoch_ms)
     }
 
-    fn register_product(
-        &mut self,
-        product: String,
-        version: String,
-        version_manifest_url: String,
-        state_url: String,
-        state_sha256: String,
-        published_at_utc: Option<String>,
-        collected_at_utc: Option<String>,
-        history: Vec<CurrentProductHistoryEntry>,
-    ) -> AppResult<()> {
+    fn register_product(&mut self, registration: ProductRegistration) -> AppResult<()> {
+        let ProductRegistration {
+            product,
+            version,
+            version_manifest_url,
+            state_url,
+            state_sha256,
+            published_at_utc,
+            collected_at_utc,
+            history,
+        } = registration;
         validate_relative_url(&version_manifest_url)?;
         validate_relative_url(&state_url)?;
         let history = normalize_product_history(&product, history)?;
@@ -1176,15 +1187,17 @@ impl LiveFeedsState {
                 append_durable_nexrad_request(
                     self,
                     &mut requests,
-                    product,
-                    version,
-                    entry.version_manifest.as_ref(),
-                    entry.version_manifest_url.as_deref(),
-                    entry
-                        .install_state_ref
-                        .as_ref()
-                        .or(entry.state_ref.as_ref()),
-                    entry.expected_state_sha256.as_deref(),
+                    DurableNexradRequest {
+                        product,
+                        version,
+                        version_manifest: entry.version_manifest.as_ref(),
+                        version_manifest_url: entry.version_manifest_url.as_deref(),
+                        full_ref: entry
+                            .install_state_ref
+                            .as_ref()
+                            .or(entry.state_ref.as_ref()),
+                        expected_state_sha256: entry.expected_state_sha256.as_deref(),
+                    },
                     &installed_by_product_version,
                 );
                 let retained_history_count = NEXRAD_FRAME_WINDOW_SIZE.saturating_sub(1);
@@ -1194,15 +1207,17 @@ impl LiveFeedsState {
                     append_durable_nexrad_request(
                         self,
                         &mut requests,
-                        product,
-                        &history.version,
-                        history.version_manifest.as_ref(),
-                        history.version_manifest_url.as_deref(),
-                        history
-                            .install_state_ref
-                            .as_ref()
-                            .or(history.state_ref.as_ref()),
-                        history.expected_state_sha256.as_deref(),
+                        DurableNexradRequest {
+                            product,
+                            version: &history.version,
+                            version_manifest: history.version_manifest.as_ref(),
+                            version_manifest_url: history.version_manifest_url.as_deref(),
+                            full_ref: history
+                                .install_state_ref
+                                .as_ref()
+                                .or(history.state_ref.as_ref()),
+                            expected_state_sha256: history.expected_state_sha256.as_deref(),
+                        },
                         &installed_by_product_version,
                     );
                 }
@@ -1618,10 +1633,10 @@ impl LiveFeedsState {
             invalidations.push(UiInvalidation::DebugPanel);
         }
         for (product, entry) in &self.products {
-            if !entry
+            if entry
                 .current_version
                 .as_deref()
-                .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+                .is_none_or(|version| entry.loaded_version.as_deref() != Some(version))
             {
                 continue;
             }
@@ -1775,17 +1790,29 @@ impl LiveFeedProductState {
     }
 }
 
+struct DurableNexradRequest<'a> {
+    product: &'a str,
+    version: &'a str,
+    version_manifest: Option<&'a Value>,
+    version_manifest_url: Option<&'a str>,
+    full_ref: Option<&'a LiveFeedPayloadRef>,
+    expected_state_sha256: Option<&'a str>,
+}
+
 fn append_durable_nexrad_request(
     state: &LiveFeedsState,
     requests: &mut Vec<LiveFeedCacheRequest>,
-    product: &str,
-    version: &str,
-    version_manifest: Option<&Value>,
-    version_manifest_url: Option<&str>,
-    full_ref: Option<&LiveFeedPayloadRef>,
-    expected_state_sha256: Option<&str>,
+    request: DurableNexradRequest<'_>,
     installed: &HashMap<(String, String), LiveFeedDurableInstalledProduct>,
 ) {
+    let DurableNexradRequest {
+        product,
+        version,
+        version_manifest,
+        version_manifest_url,
+        full_ref,
+        expected_state_sha256,
+    } = request;
     if installed
         .get(&(product.to_string(), version.to_string()))
         .is_some_and(|installed| {

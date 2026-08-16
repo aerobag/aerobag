@@ -32,7 +32,7 @@ pub trait SettingsStorage: Send + Sync {
 
 pub type SettingsStorageHandle = Arc<dyn SettingsStorage>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DisplayDimTimeout {
     #[serde(rename = "10s")]
     TenSeconds,
@@ -41,6 +41,7 @@ pub enum DisplayDimTimeout {
     #[serde(rename = "1m")]
     OneMinute,
     #[serde(rename = "2m")]
+    #[default]
     TwoMinutes,
     #[serde(rename = "5m")]
     FiveMinutes,
@@ -103,12 +104,6 @@ impl DisplayDimTimeout {
             Self::FiveMinutes,
             Self::Never,
         ]
-    }
-}
-
-impl Default for DisplayDimTimeout {
-    fn default() -> Self {
-        Self::TwoMinutes
     }
 }
 

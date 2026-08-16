@@ -107,12 +107,6 @@ pub(crate) struct AdsbOwnshipUpdate {
     pub sample: Option<SituationSample>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum AdsbIngestOutcome {
-    Traffic,
-    Ownship(AdsbOwnshipUpdate),
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AdsbSessionState {
     aircraft: Vec<AdsbAircraft>,
@@ -337,15 +331,15 @@ impl AdsbSessionState {
         resource_id: &str,
         bytes: &[u8],
         received_epoch_ms: i64,
-    ) -> Result<AdsbIngestOutcome, String> {
+    ) -> Result<Option<AdsbOwnshipUpdate>, String> {
         if resource_id.starts_with(OWNSHIP_RESOURCE_PREFIX) {
             return self.ingest_ownship(resource_id, bytes, received_epoch_ms);
         }
         let Some(pending) = self.pending.as_ref() else {
-            return Ok(AdsbIngestOutcome::Traffic);
+            return Ok(None);
         };
         if pending.resource_id != resource_id {
-            return Ok(AdsbIngestOutcome::Traffic);
+            return Ok(None);
         }
         let payload: AirplanesLiveResponse = serde_json::from_slice(bytes).map_err(|error| {
             format!("failed to decode Airplanes.live traffic response: {error}")
@@ -367,7 +361,7 @@ impl AdsbSessionState {
         self.next_poll_epoch_ms = Some(received_epoch_ms.saturating_add(TRAFFIC_POLL_INTERVAL_MS));
         self.consecutive_failures = 0;
         self.last_error = None;
-        Ok(AdsbIngestOutcome::Traffic)
+        Ok(None)
     }
 
     fn ingest_ownship(
@@ -375,16 +369,16 @@ impl AdsbSessionState {
         resource_id: &str,
         bytes: &[u8],
         received_epoch_ms: i64,
-    ) -> Result<AdsbIngestOutcome, String> {
+    ) -> Result<Option<AdsbOwnshipUpdate>, String> {
         let Some(pending) = self.ownship_pending.as_ref() else {
-            return Ok(AdsbIngestOutcome::Ownship(AdsbOwnshipUpdate {
+            return Ok(Some(AdsbOwnshipUpdate {
                 connection_state: SourceConnectionState::Searching,
                 status_label: "Waiting for ADS-B target".to_string(),
                 sample: None,
             }));
         };
         if pending.resource_id != resource_id {
-            return Ok(AdsbIngestOutcome::Ownship(AdsbOwnshipUpdate {
+            return Ok(Some(AdsbOwnshipUpdate {
                 connection_state: SourceConnectionState::Searching,
                 status_label: format!("Searching for {}", pending.registration),
                 sample: None,
@@ -470,7 +464,7 @@ impl AdsbSessionState {
             },
         };
         self.complete_ownship_poll(received_epoch_ms, result);
-        Ok(AdsbIngestOutcome::Ownship(update))
+        Ok(Some(update))
     }
 
     fn complete_ownship_poll(&mut self, received_epoch_ms: i64, result: AdsbOwnshipLastResult) {
@@ -983,9 +977,7 @@ mod tests {
                 10_600,
             )
             .expect("ingest");
-        let AdsbIngestOutcome::Ownship(update) = outcome else {
-            panic!("expected ownship update");
-        };
+        let update = outcome.expect("expected ownship update");
         assert_eq!(update.connection_state, SourceConnectionState::Connected);
         let sample = update.sample.expect("sample");
         assert_eq!(sample.source_id.0, INTERNET_ADSB_SOURCE_ID);
@@ -1015,9 +1007,7 @@ mod tests {
         let outcome = state
             .ingest(&request.id, br#"{"now":10500,"ac":[]}"#, 10_600)
             .expect("ingest");
-        let AdsbIngestOutcome::Ownship(update) = outcome else {
-            panic!("expected ownship update");
-        };
+        let update = outcome.expect("expected ownship update");
         assert_eq!(update.connection_state, SourceConnectionState::Searching);
         assert!(update.sample.is_none());
         assert_eq!(
@@ -1038,9 +1028,7 @@ mod tests {
                 10_600,
             )
             .expect("ingest");
-        let AdsbIngestOutcome::Ownship(update) = outcome else {
-            panic!("expected ownship update");
-        };
+        let update = outcome.expect("expected ownship update");
         assert_eq!(update.connection_state, SourceConnectionState::Searching);
         assert!(update.sample.is_none());
         assert_eq!(
@@ -1061,9 +1049,7 @@ mod tests {
                 10_600,
             )
             .expect("ingest");
-        let AdsbIngestOutcome::Ownship(update) = outcome else {
-            panic!("expected ownship update");
-        };
+        let update = outcome.expect("expected ownship update");
         assert_eq!(update.connection_state, SourceConnectionState::Stale);
         assert!(update.sample.is_none());
         assert_eq!(

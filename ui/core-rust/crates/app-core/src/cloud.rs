@@ -416,6 +416,16 @@ enum PublicationPurpose {
     Publish,
 }
 
+struct StagePublicationRequest<'a> {
+    purpose: PublicationPurpose,
+    node_id: String,
+    page_id: String,
+    next_slot_id: String,
+    generation: u64,
+    parent: Option<&'a VerifiedTip>,
+    now_epoch_ms: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ReadPurpose {
@@ -639,9 +649,7 @@ impl CloudEngine {
             persistent.records.deferred_adoption.clear();
             persistent.force_poll = persistent.account.is_some();
         }
-        if persistent.account.is_some() {
-            persistent.selected_provider = None;
-        } else if persisted_version < CLOUD_PERSISTENCE_VERSION {
+        if persistent.account.is_some() || persisted_version < CLOUD_PERSISTENCE_VERSION {
             persistent.selected_provider = None;
         }
         Self {
@@ -1829,30 +1837,30 @@ impl CloudEngine {
         match workflow {
             CloudWorkflow::CreateAwaitIds => {
                 let ids = expect_allocated_ids(response, 3)?;
-                let staged = self.stage_publication(
-                    PublicationPurpose::CreateAccount,
-                    ids[0].clone(),
-                    ids[1].clone(),
-                    ids[2].clone(),
-                    0,
-                    None,
+                let staged = self.stage_publication(StagePublicationRequest {
+                    purpose: PublicationPurpose::CreateAccount,
+                    node_id: ids[0].clone(),
+                    page_id: ids[1].clone(),
+                    next_slot_id: ids[2].clone(),
+                    generation: 0,
+                    parent: None,
                     now_epoch_ms,
-                )?;
+                })?;
                 self.account_mut()?.genesis_id = staged.node_id.clone();
                 self.persistent.workflow = Some(CloudWorkflow::CreatePage { staged });
             }
             CloudWorkflow::PublishAwaitIds => {
                 let ids = expect_allocated_ids(response, 2)?;
                 let tip = self.tip()?.clone();
-                let staged = self.stage_publication(
-                    PublicationPurpose::Publish,
-                    tip.next_slot_id.clone(),
-                    ids[0].clone(),
-                    ids[1].clone(),
-                    tip.generation.saturating_add(1),
-                    Some(&tip),
+                let staged = self.stage_publication(StagePublicationRequest {
+                    purpose: PublicationPurpose::Publish,
+                    node_id: tip.next_slot_id.clone(),
+                    page_id: ids[0].clone(),
+                    next_slot_id: ids[1].clone(),
+                    generation: tip.generation.saturating_add(1),
+                    parent: Some(&tip),
                     now_epoch_ms,
-                )?;
+                })?;
                 self.persistent.workflow = Some(CloudWorkflow::CreatePage { staged });
             }
             CloudWorkflow::CreatePage { staged } => match response {
@@ -2239,14 +2247,17 @@ impl CloudEngine {
 
     fn stage_publication(
         &self,
-        purpose: PublicationPurpose,
-        node_id: String,
-        page_id: String,
-        next_slot_id: String,
-        generation: u64,
-        parent: Option<&VerifiedTip>,
-        now_epoch_ms: i64,
+        request: StagePublicationRequest<'_>,
     ) -> AppResult<StagedPublication> {
+        let StagePublicationRequest {
+            purpose,
+            node_id,
+            page_id,
+            next_slot_id,
+            generation,
+            parent,
+            now_epoch_ms,
+        } = request;
         let page = page_for_records(&self.persistent.records.cached);
         let page_bytes = self.encrypt(&page, "merkle_page")?;
         let page_hash = sha256_hex(&page_bytes);
@@ -3201,20 +3212,20 @@ impl CloudEngine {
         let summary = format!(
             "Backup Advice: Your Sync Account is set up. If it is removed from this device, it can only be recovered using your Device Setup Code. {provider} cannot recover it. Use the Back up Device Setup Code button and store your Device Setup Code in a password manager or another secure place."
         );
-        let actions = (state == UiCloudPanelState::Active)
-            .then(|| {
-                vec![
-                    cloud_action(
-                        CloudUiActionId::BackupSetupCode,
-                        "Back up Device Setup Code",
-                        true,
-                        "",
-                    ),
-                    cloud_action(CloudUiActionId::AddDevice, "Add another device", true, ""),
-                    cloud_action(CloudUiActionId::BeginUnlink, "Unlink this device", true, ""),
-                ]
-            })
-            .unwrap_or_default();
+        let actions = if state == UiCloudPanelState::Active {
+            vec![
+                cloud_action(
+                    CloudUiActionId::BackupSetupCode,
+                    "Back up Device Setup Code",
+                    true,
+                    "",
+                ),
+                cloud_action(CloudUiActionId::AddDevice, "Add another device", true, ""),
+                cloud_action(CloudUiActionId::BeginUnlink, "Unlink this device", true, ""),
+            ]
+        } else {
+            Vec::new()
+        };
         cloud_panel(
             "linked",
             "Sync Account linked",

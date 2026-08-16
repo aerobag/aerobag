@@ -34,8 +34,8 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
 }
 
 fn load_nav_kv_pages_from_zip(zip_path: &Path) -> (Vec<u8>, Vec<Vec<u8>>) {
-    let file = fs::File::open(&zip_path)
-        .unwrap_or_else(|err| panic!("open {}: {err}", zip_path.display()));
+    let file =
+        fs::File::open(zip_path).unwrap_or_else(|err| panic!("open {}: {err}", zip_path.display()));
     let mut archive = zip::ZipArchive::new(file)
         .unwrap_or_else(|err| panic!("parse {} as zip: {err}", zip_path.display()));
 

@@ -22,10 +22,11 @@ use app_core::{
     direct_to_fix_with_course_continuation_requirement, great_circle_distance_nm,
     initial_course_deg, reconcile_handoff, reentry_to_anchor_requirement,
     yieldable_course_to_fix_requirement, AirportId, AppError, AppErrorKind, AppResult,
-    ConcretizedNavItem, HandoffDecision, LatLon, LegDisplayElement, LegDisplayPath,
-    LegDisplayPathStyle, MaterializedProcedure, NavRef, PathTermination, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole, ProcedureSpecChoice,
-    ResolvedLeg, ResolvedLegSource, StartRequirement, TerminalState,
+    CommonResumeCandidateInput, ConcretizedNavItem, HandoffDecision, LatLon, LegDisplayElement,
+    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavRef, PathTermination,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureOptions, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureSpecChoice, ResolvedLeg, ResolvedLegSource, StartRequirement,
+    TerminalState,
 };
 #[cfg(test)]
 use app_core::{
@@ -5145,17 +5146,17 @@ fn first_resumable_common_candidate<'a>(
             break;
         }
         if matches!(
-            common_resume_candidate_decision(
-                current_position,
-                current_course_deg,
-                candidate.incoming_course_to_anchor_deg,
+            common_resume_candidate_decision(CommonResumeCandidateInput {
+                terminal_position: current_position,
+                terminal_course_deg: current_course_deg,
+                incoming_course_to_anchor_deg: candidate.incoming_course_to_anchor_deg,
                 previous_was_hold_like,
-                candidate.record.nav_ref.clone(),
-                candidate.course_deg,
-                candidate.course_anchor,
-                candidate.record.nav_ref.clone(),
-                candidate.fix,
-            ),
+                anchor: candidate.record.nav_ref.clone(),
+                course_deg: candidate.course_deg,
+                anchor_position: candidate.course_anchor,
+                target_anchor: candidate.record.nav_ref.clone(),
+                target_anchor_position: candidate.fix,
+            }),
             HandoffDecision::ResumeAtAnchor | HandoffDecision::ResumeThroughAnchorKink
         ) {
             return Some(candidate);

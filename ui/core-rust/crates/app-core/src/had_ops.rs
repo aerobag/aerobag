@@ -498,10 +498,10 @@ impl NavDbOpenController {
     }
 }
 
-pub fn select_preferred_nav_db_candidate<'a>(
-    candidates: &'a [NavDbArtifactCandidate],
+pub fn select_preferred_nav_db_candidate(
+    candidates: &[NavDbArtifactCandidate],
     now_epoch_ms: i64,
-) -> Option<&'a NavDbArtifactCandidate> {
+) -> Option<&NavDbArtifactCandidate> {
     select_preferred_effective_nav_db_candidate_index(candidates, 0..candidates.len(), now_epoch_ms)
         .and_then(|index| candidates.get(index))
 }
@@ -1413,44 +1413,44 @@ fn aircraft_control_options(
             .cmp(&right.1.label)
             .then_with(|| left.0.cmp(right.0))
     });
-    let aircraft_options = (definitions.len() > 1)
-        .then(|| {
-            definitions
-                .into_iter()
-                .map(|(hash, definition)| {
-                    let selection = product_contracts::AircraftSelection {
-                        definition_hash: hash.clone(),
-                        profile_id: definition.default_profile_id.clone(),
-                    };
-                    crate::AltitudePlannerControlOptionUiView {
-                        label: definition.label.clone(),
-                        action_uid: planner_aircraft_action_uid(&selection),
-                        selected: hash == &aircraft.selection.definition_hash,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let profile_options = (aircraft.definition.profiles.len() > 1)
-        .then(|| {
-            aircraft
-                .definition
-                .profiles
-                .iter()
-                .map(|profile| {
-                    let selection = product_contracts::AircraftSelection {
-                        definition_hash: aircraft.selection.definition_hash.clone(),
-                        profile_id: profile.id.clone(),
-                    };
-                    crate::AltitudePlannerControlOptionUiView {
-                        label: profile.label.clone(),
-                        action_uid: planner_aircraft_action_uid(&selection),
-                        selected: profile.id == aircraft.selection.profile_id,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let aircraft_options = if definitions.len() > 1 {
+        definitions
+            .into_iter()
+            .map(|(hash, definition)| {
+                let selection = product_contracts::AircraftSelection {
+                    definition_hash: hash.clone(),
+                    profile_id: definition.default_profile_id.clone(),
+                };
+                crate::AltitudePlannerControlOptionUiView {
+                    label: definition.label.clone(),
+                    action_uid: planner_aircraft_action_uid(&selection),
+                    selected: hash == &aircraft.selection.definition_hash,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let profile_options = if aircraft.definition.profiles.len() > 1 {
+        aircraft
+            .definition
+            .profiles
+            .iter()
+            .map(|profile| {
+                let selection = product_contracts::AircraftSelection {
+                    definition_hash: aircraft.selection.definition_hash.clone(),
+                    profile_id: profile.id.clone(),
+                };
+                crate::AltitudePlannerControlOptionUiView {
+                    label: profile.label.clone(),
+                    action_uid: planner_aircraft_action_uid(&selection),
+                    selected: profile.id == aircraft.selection.profile_id,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     (aircraft_options, profile_options)
 }
 
@@ -1840,16 +1840,30 @@ fn planner_forecast_ui(
     })
 }
 
-fn altitude_comparisons(
-    profile: &crate::AircraftPerformanceProfile,
-    materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
+struct AltitudeComparisonInput<'a> {
+    profile: &'a crate::AircraftPerformanceProfile,
+    materialized: &'a crate::flight_plan_materialization::MaterializedFlightPlan,
     live_data: FlightPlanLiveData,
     origin_altitude_ft: Option<f64>,
     destination_altitude_ft: Option<f64>,
     selected_altitude_ft: i32,
     departure_epoch_ms: i64,
-    atmosphere: PlannerAtmosphereSelection<'_>,
+    atmosphere: PlannerAtmosphereSelection<'a>,
+}
+
+fn altitude_comparisons(
+    input: AltitudeComparisonInput<'_>,
 ) -> Vec<crate::AltitudeComparisonUiView> {
+    let AltitudeComparisonInput {
+        profile,
+        materialized,
+        live_data,
+        origin_altitude_ft,
+        destination_altitude_ft,
+        selected_altitude_ft,
+        departure_epoch_ms,
+        atmosphere,
+    } = input;
     let navigation_active = materialized.active.is_some();
     let start_altitude_ft = if navigation_active {
         live_data.ownship_altitude_ft
@@ -2090,7 +2104,6 @@ pub(crate) fn flight_plan_ui_projection(
             planner_wind_fallback(prediction, atmosphere, departure_epoch_ms)
         }),
         aircraft_advisory: aircraft.advisory,
-        ..crate::AltitudePlannerUiInput::default()
     });
     let modeled_by_row_id = modeled_prediction
         .as_ref()
@@ -2291,17 +2304,18 @@ pub(crate) fn altitude_comparison_panel(
         plan.planned_departure_time_epoch_ms
             .unwrap_or_else(|| live_data.now_epoch_ms.unwrap_or_default())
     };
-    let rows = altitude_comparisons(
-        &aircraft.profile,
-        &materialized,
+    let rows = altitude_comparisons(AltitudeComparisonInput {
+        profile: &aircraft.profile,
+        materialized: &materialized,
         live_data,
         origin_altitude_ft,
         destination_altitude_ft,
-        plan.cruise_altitude_ft
+        selected_altitude_ft: plan
+            .cruise_altitude_ft
             .unwrap_or(DEFAULT_CRUISE_ALTITUDE_FT),
         departure_epoch_ms,
         atmosphere,
-    );
+    });
     let mut advisories = rows
         .iter()
         .filter_map(|row| row.advisory.clone())
@@ -2367,16 +2381,29 @@ fn flight_plan_summary_row(
     }
 }
 
+pub(crate) struct ChartPageQuery<'a> {
+    pub(crate) plan: &'a FlightPlan,
+    pub(crate) stored_recent_airport_ids: &'a [String],
+    pub(crate) plate_target_airport_id: Option<&'a str>,
+    pub(crate) candidate_airport_id: Option<&'a str>,
+    pub(crate) selected_reference_family_id: Option<&'a str>,
+    pub(crate) candidate_chart_id: Option<&'a str>,
+    pub(crate) suggested_chart_ids: &'a [String],
+}
+
 pub(crate) fn chart_page_state(
     store: &NavKvStore,
-    plan: &FlightPlan,
-    stored_recent_airport_ids: &[String],
-    plate_target_airport_id: Option<&str>,
-    candidate_airport_id: Option<&str>,
-    selected_reference_family_id: Option<&str>,
-    candidate_chart_id: Option<&str>,
-    suggested_chart_ids: &[String],
+    query: ChartPageQuery<'_>,
 ) -> Result<crate::DerivedChartPageState, HadReadError> {
+    let ChartPageQuery {
+        plan,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        candidate_airport_id,
+        selected_reference_family_id,
+        candidate_chart_id,
+        suggested_chart_ids,
+    } = query;
     let mut airports = Vec::new();
     for airport_id in chart_page_airport_candidates(
         plan,
@@ -2457,7 +2484,7 @@ fn resolve_chart_reference_families(
         let mut missing_pages = Vec::new();
         for chart_id in &record.chart_ids {
             match read_chart_asset_by_id(store, chart_id)? {
-                ChartAssetByIdRead::Hit(chart) => charts.push(chart.into()),
+                ChartAssetByIdRead::Hit(chart) => charts.push((*chart).into()),
                 ChartAssetByIdRead::MissingPages(pages) => missing_pages.extend(pages),
             }
         }
@@ -2491,7 +2518,7 @@ fn resolve_plate_airport(
     let mut missing_pages = Vec::new();
     for plate_id in &record.chart_ids {
         match read_chart_asset_by_id(store, plate_id)? {
-            ChartAssetByIdRead::Hit(chart) => charts.push(chart.into()),
+            ChartAssetByIdRead::Hit(chart) => charts.push((*chart).into()),
             ChartAssetByIdRead::MissingPages(pages) => missing_pages.extend(pages),
         }
     }
@@ -2507,7 +2534,7 @@ fn resolve_plate_airport(
 }
 
 enum ChartAssetByIdRead {
-    Hit(crate::ChartAssetRecord),
+    Hit(Box<crate::ChartAssetRecord>),
     MissingPages(Vec<u32>),
 }
 
@@ -2522,6 +2549,7 @@ fn read_chart_asset_by_id(
         .ok_or_else(|| HadReadError::Fatal("invalid plate id query".to_string()))?;
     match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
         NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
+            .map(Box::new)
             .map(ChartAssetByIdRead::Hit)
             .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
         NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
@@ -3060,7 +3088,7 @@ fn component_insert_anchor(
             if before {
                 legs.next().map(|leg| leg.from.clone())
             } else {
-                legs.last().map(|leg| leg.to.clone())
+                legs.next_back().map(|leg| leg.to.clone())
             }
         }
     };
@@ -4299,7 +4327,7 @@ pub(crate) fn insert_waypoint_best_position(
     }
 
     let insertion_index = best_top_level_insertion_index(store, plan, &waypoint)?;
-    insert_waypoint_at_top_level(plan, insertion_index, waypoint).map_err(Into::into)
+    insert_waypoint_at_top_level(plan, insertion_index, waypoint)
 }
 
 pub(crate) fn insert_waypoint_best_position_rejection(
@@ -5031,13 +5059,15 @@ mod tests {
 
         let state = chart_page_state(
             &store,
-            &FlightPlan::default(),
-            &[],
-            None,
-            None,
-            None,
-            None,
-            &[],
+            ChartPageQuery {
+                plan: &FlightPlan::default(),
+                stored_recent_airport_ids: &[],
+                plate_target_airport_id: None,
+                candidate_airport_id: None,
+                selected_reference_family_id: None,
+                candidate_chart_id: None,
+                suggested_chart_ids: &[],
+            },
         )
         .expect("derive chart page state");
         let family_ids = state
@@ -8056,8 +8086,8 @@ mod tests {
         println!("default displayed regions: {displayed_regions:?}");
 
         assert_eq!(state.selected_map_id, "tac:nw");
-        assert!(displayed_ids.iter().any(|id| *id == "sec:sc"));
-        assert!(displayed_ids.iter().any(|id| *id == "tac:sc"));
+        assert!(displayed_ids.contains(&"sec:sc"));
+        assert!(displayed_ids.contains(&"tac:sc"));
         let sec_sc = state
             .displayed_maps
             .iter()

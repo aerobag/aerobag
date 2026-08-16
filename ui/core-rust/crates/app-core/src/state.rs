@@ -51,7 +51,7 @@ pub enum AppEvent {
     PushSituationSample(SituationSample),
     SetOwnshipPolicy(OwnshipPolicy),
     SelectOwnshipSource(OwnshipSelectionCommand),
-    ReplaceFlightPlan(FlightPlan),
+    ReplaceFlightPlan(Box<FlightPlan>),
     RefreshContent { inventory: ContentInventory },
     ClearFlightPlan,
 }
@@ -79,7 +79,7 @@ pub fn reduce(state: &AppState, event: AppEvent) -> AppResult<AppState> {
             next.ownship = select_source(&next.ownship, selection);
         }
         AppEvent::ReplaceFlightPlan(plan) => {
-            let plan = crate::build_flight_plan(plan)?;
+            let plan = crate::build_flight_plan(*plan)?;
             next.active_plan = Some(plan);
             next.last_content_report = None;
         }
@@ -200,7 +200,11 @@ mod tests {
             ..AppState::default()
         };
 
-        let next = reduce(&initial, AppEvent::ReplaceFlightPlan(sample_plan())).unwrap();
+        let next = reduce(
+            &initial,
+            AppEvent::ReplaceFlightPlan(Box::new(sample_plan())),
+        )
+        .unwrap();
 
         assert!(next.active_plan.is_some());
         assert!(next.last_content_report.is_none());
@@ -247,7 +251,7 @@ mod tests {
     fn clear_flight_plan_drops_report() {
         let with_plan = reduce(
             &AppState::default(),
-            AppEvent::ReplaceFlightPlan(sample_plan()),
+            AppEvent::ReplaceFlightPlan(Box::new(sample_plan())),
         )
         .unwrap();
         let with_report = AppState {
@@ -290,7 +294,7 @@ mod tests {
     fn reducer_reuses_plan_validation() {
         let result = reduce(
             &AppState::default(),
-            AppEvent::ReplaceFlightPlan(FlightPlan {
+            AppEvent::ReplaceFlightPlan(Box::new(FlightPlan {
                 id: "bad".to_string(),
                 name: "bad".to_string(),
                 route_components: vec![
@@ -319,7 +323,7 @@ mod tests {
                 notes: None,
                 updated_at_epoch_ms: 0,
                 version: 1,
-            }),
+            })),
         );
 
         assert_eq!(result.unwrap_err().kind, AppErrorKind::InvalidFlightPlan);
@@ -341,7 +345,11 @@ mod tests {
             },
         });
 
-        let error = reduce(&AppState::default(), AppEvent::ReplaceFlightPlan(plan)).unwrap_err();
+        let error = reduce(
+            &AppState::default(),
+            AppEvent::ReplaceFlightPlan(Box::new(plan)),
+        )
+        .unwrap_err();
 
         assert_eq!(error.kind, AppErrorKind::InvalidFlightPlan);
         assert_eq!(
@@ -354,7 +362,7 @@ mod tests {
     fn project_app_ui_state_projects_active_plan() {
         let with_plan = reduce(
             &AppState::default(),
-            AppEvent::ReplaceFlightPlan(sample_plan()),
+            AppEvent::ReplaceFlightPlan(Box::new(sample_plan())),
         )
         .unwrap();
 

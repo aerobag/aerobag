@@ -37,7 +37,7 @@ pub(crate) struct PlanPreviewPointer {
     pub offset_nm: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct SituationModel {
     ownship: OwnshipState,
     playback: PlaybackSessionState,
@@ -45,19 +45,6 @@ struct SituationModel {
     bad_autopilot: BadAutopilotState,
     map_follow: MapFollowSessionState,
     revision: u64,
-}
-
-impl Default for SituationModel {
-    fn default() -> Self {
-        Self {
-            ownship: OwnshipState::default(),
-            playback: PlaybackSessionState::default(),
-            plan_preview: PlanPreviewState::default(),
-            bad_autopilot: BadAutopilotState::default(),
-            map_follow: MapFollowSessionState::default(),
-            revision: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

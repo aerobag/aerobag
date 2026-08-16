@@ -165,9 +165,7 @@ impl PlaybackSessionState {
     }
 
     pub fn play(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
-        if self.trace.is_none() {
-            return None;
-        }
+        self.trace.as_ref()?;
         self.status = PlaybackStatus::Playing;
         self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
         self.anchor_cursor_seconds = self.cursor_seconds;
@@ -175,9 +173,7 @@ impl PlaybackSessionState {
     }
 
     pub fn pause(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
-        if self.trace.is_none() {
-            return None;
-        }
+        self.trace.as_ref()?;
         self.advance_cursor(now_epoch_ms);
         self.status = PlaybackStatus::Paused;
         self.anchor_wallclock_epoch_ms = None;
@@ -869,7 +865,9 @@ mod tests {
             }
         );
         assert_eq!(situation.speed_kt, Some(150.0));
-        assert!(matches!(situation.orientation_deg, Some(value) if value > 359.0 || value < 1.0));
+        assert!(
+            matches!(situation.orientation_deg, Some(value) if !(1.0..=359.0).contains(&value))
+        );
     }
 
     #[test]

@@ -1042,18 +1042,13 @@ struct AirspaceInputScan {
     feature_ids: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VectorIdentLabelStyle {
+    #[default]
     Default,
     FlightPlan,
     ActiveFlightPlan,
-}
-
-impl Default for VectorIdentLabelStyle {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1925,78 +1920,85 @@ fn world_nm_per_unit(latitude_deg: f64) -> f64 {
     WORLD_SIZE / 360.0 * nm_per_degree_lon
 }
 
+pub struct MapOverlayQuery<'a> {
+    pub config: &'a MapOverlayConfig,
+    pub display_vectors: bool,
+    pub display_metars: bool,
+    pub offline_region_records: &'a [OfflineRegionRecord],
+    pub obstacle_context: Option<&'a ObstacleOverlayContext>,
+    pub vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+    pub obstacle_tile_cache: &'a HashMap<String, PointTilePayload>,
+    pub metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
+    pub metar_payload: Option<&'a MetarProductPayload>,
+    pub pirep_payload: Option<&'a PirepProductPayload>,
+    pub airspace_feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
+    pub tfr_payload: Option<&'a TfrProductPayload>,
+    pub protected_point_features: &'a [VisibleMapFeature],
+    pub tfr_reference_utc: Option<DateTime<Utc>>,
+}
+
+impl<'a> MapOverlayQuery<'a> {
+    pub fn new(
+        config: &'a MapOverlayConfig,
+        vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+        obstacle_tile_cache: &'a HashMap<String, PointTilePayload>,
+        metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
+        airspace_feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
+    ) -> Self {
+        Self {
+            config,
+            display_vectors: false,
+            display_metars: false,
+            offline_region_records: &[],
+            obstacle_context: None,
+            vector_tile_cache,
+            obstacle_tile_cache,
+            metar_tile_cache,
+            metar_payload: None,
+            pirep_payload: None,
+            airspace_feature_cache,
+            tfr_payload: None,
+            protected_point_features: &[],
+            tfr_reference_utc: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MapProjectionContext<'a> {
+    metrics: &'a MapSurfaceMetrics,
+    center_world: WorldPoint,
+    scale: f64,
+}
+
+impl<'a> MapProjectionContext<'a> {
+    fn new(metrics: &'a MapSurfaceMetrics) -> Self {
+        Self {
+            metrics,
+            center_world: lat_lon_to_world(metrics.viewport.center),
+            scale: 2.0_f64.powf(metrics.viewport.zoom),
+        }
+    }
+}
+
 pub fn query_map_overlay(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
-    display_vectors: bool,
-    display_metars: bool,
-    offline_region_records: &[OfflineRegionRecord],
-    obstacle_context: Option<&ObstacleOverlayContext>,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
+    query: MapOverlayQuery<'_>,
 ) -> MapOverlayQueryResult {
-    query_map_overlay_with_point_display_scale(
-        viewport,
-        width_px,
-        height_px,
-        config,
-        display_vectors,
-        display_metars,
-        offline_region_records,
-        obstacle_context,
-        vector_tile_cache,
-        obstacle_tile_cache,
-        metar_tile_cache,
-        metar_payload,
-        pirep_payload,
-        airspace_feature_cache,
-        tfr_payload,
-        1.0,
-    )
+    query_map_overlay_with_point_display_scale(viewport, width_px, height_px, 1.0, query)
 }
 
 pub fn query_map_overlay_with_point_display_scale(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
-    display_vectors: bool,
-    display_metars: bool,
-    offline_region_records: &[OfflineRegionRecord],
-    obstacle_context: Option<&ObstacleOverlayContext>,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
     point_display_scale: f64,
+    query: MapOverlayQuery<'_>,
 ) -> MapOverlayQueryResult {
     let metrics = MapSurfaceMetrics::new(*viewport, width_px, height_px, point_display_scale);
-    query_map_overlay_for_surface(
-        &metrics,
-        config,
-        display_vectors,
-        display_metars,
-        offline_region_records,
-        obstacle_context,
-        vector_tile_cache,
-        obstacle_tile_cache,
-        metar_tile_cache,
-        metar_payload,
-        pirep_payload,
-        airspace_feature_cache,
-        tfr_payload,
-        &[],
-    )
+    query_map_overlay_for_surface(&metrics, query)
 }
 
 pub fn vector_overlay_input_requests(
@@ -2082,22 +2084,9 @@ where
 
 pub fn query_map_overlay_for_surface(
     metrics: &MapSurfaceMetrics,
-    config: &MapOverlayConfig,
-    display_vectors: bool,
-    display_metars: bool,
-    offline_region_records: &[OfflineRegionRecord],
-    obstacle_context: Option<&ObstacleOverlayContext>,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
-    protected_point_features: &[VisibleMapFeature],
+    query: MapOverlayQuery<'_>,
 ) -> MapOverlayQueryResult {
-    query_map_overlay_for_surface_at(
-        metrics,
+    let MapOverlayQuery {
         config,
         display_vectors,
         display_metars,
@@ -2111,27 +2100,8 @@ pub fn query_map_overlay_for_surface(
         airspace_feature_cache,
         tfr_payload,
         protected_point_features,
-        None,
-    )
-}
-
-pub(crate) fn query_map_overlay_for_surface_at(
-    metrics: &MapSurfaceMetrics,
-    config: &MapOverlayConfig,
-    display_vectors: bool,
-    display_metars: bool,
-    offline_region_records: &[OfflineRegionRecord],
-    obstacle_context: Option<&ObstacleOverlayContext>,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
-    protected_point_features: &[VisibleMapFeature],
-    tfr_reference_utc: Option<DateTime<Utc>>,
-) -> MapOverlayQueryResult {
+        tfr_reference_utc,
+    } = query;
     let total_started_at = core_clock_ms();
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
@@ -2142,8 +2112,9 @@ pub(crate) fn query_map_overlay_for_surface_at(
     let mut visible_features = Vec::new();
     let mut vector_budget = VectorDisplayBudgetAudit::default();
     let mut vector_budget_buckets = vector_display_budget_buckets();
-    let center_world = lat_lon_to_world(viewport.center);
-    let scale = 2.0_f64.powf(viewport.zoom);
+    let projection = MapProjectionContext::new(metrics);
+    let center_world = projection.center_world;
+    let scale = projection.scale;
     let offline_started_at = core_clock_ms();
     let offline_regions = project_offline_regions(
         offline_region_records,
@@ -2317,15 +2288,12 @@ pub(crate) fn query_map_overlay_for_surface_at(
     let airspace_started_at = core_clock_ms();
     let airspace = if display_vectors {
         query_airspace_overlay(
-            viewport,
-            width_px,
-            height_px,
-            config,
-            center_world,
-            scale,
-            vector_tile_cache,
-            airspace_feature_cache,
-            point_display_scale,
+            &projection,
+            AirspaceOverlayInput {
+                config,
+                vector_tile_cache,
+                feature_cache: airspace_feature_cache,
+            },
         )
     } else {
         AirspaceOverlayProjection {
@@ -2340,16 +2308,13 @@ pub(crate) fn query_map_overlay_for_surface_at(
     let tfr_started_at = core_clock_ms();
     let tfrs = if display_vectors {
         query_tfr_overlay(
-            viewport,
-            width_px,
-            height_px,
-            center_world,
-            scale,
-            tfr_payload,
-            point_display_scale,
-            &visible_features,
-            protected_point_features,
-            tfr_reference_utc,
+            &projection,
+            TfrOverlayInput {
+                payload: tfr_payload,
+                point_features: &visible_features,
+                protected_point_features,
+                reference_utc: tfr_reference_utc,
+            },
         )
     } else {
         TfrOverlayProjection {
@@ -2362,15 +2327,13 @@ pub(crate) fn query_map_overlay_for_surface_at(
     let metar_started_at = core_clock_ms();
     let metars = if display_metars {
         query_metar_overlay(
-            viewport,
-            width_px,
-            height_px,
-            decision.metar_tile_zoom,
-            center_world,
-            scale,
-            metar_tile_cache,
-            metar_payload,
-            pirep_payload,
+            &projection,
+            MetarOverlayInput {
+                tile_zoom: decision.metar_tile_zoom,
+                tile_cache: metar_tile_cache,
+                metar_payload,
+                pirep_payload,
+            },
         )
     } else {
         MetarOverlayProjection {
@@ -2721,17 +2684,29 @@ enum WorldXProjection {
     DisplayCopyOffset(f64),
 }
 
+struct MetarOverlayInput<'a> {
+    tile_zoom: Option<u32>,
+    tile_cache: &'a HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&'a MetarProductPayload>,
+    pirep_payload: Option<&'a PirepProductPayload>,
+}
+
 fn query_metar_overlay(
-    viewport: &MapViewport,
-    width_px: f64,
-    height_px: f64,
-    metar_tile_zoom: Option<u32>,
-    center_world: WorldPoint,
-    scale: f64,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
+    projection: &MapProjectionContext<'_>,
+    input: MetarOverlayInput<'_>,
 ) -> MetarOverlayProjection {
+    let metrics = projection.metrics;
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let center_world = projection.center_world;
+    let scale = projection.scale;
+    let MetarOverlayInput {
+        tile_zoom: metar_tile_zoom,
+        tile_cache: metar_tile_cache,
+        metar_payload,
+        pirep_payload,
+    } = input;
     let Some(metar_zoom) = metar_tile_zoom else {
         return MetarOverlayProjection {
             needed_tiles: Vec::new(),
@@ -2964,108 +2939,100 @@ fn normalized_pirep_hazard(value: &str) -> String {
     }
 }
 
+pub struct MapSelectionQuery<'a> {
+    pub config: &'a MapOverlayConfig,
+    pub plan: Option<&'a FlightPlan>,
+    pub click: LatLon,
+    pub vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+    pub metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
+    pub metar_payload: Option<&'a MetarProductPayload>,
+    pub pirep_payload: Option<&'a PirepProductPayload>,
+    pub taf_payload: Option<&'a TafProductPayload>,
+    pub notam_payload: Option<&'a AirportNotamIndex>,
+    pub weather_station_airport_aliases: &'a WeatherStationAirportAliases,
+    pub offline_region_records: &'a [OfflineRegionRecord],
+    pub airspace_feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
+    pub tfr_payload: Option<&'a TfrProductPayload>,
+    pub supplemental_nav_ref_points: &'a [NavRefSelectionPoint],
+    pub airport_plate_availability: &'a mut dyn FnMut(&str) -> AirportPlateAvailability,
+    pub weather_age_reference_utc: Option<DateTime<Utc>>,
+    pub local_time_zone: Tz,
+    pub time_display_mode: crate::TimeDisplayMode,
+}
+
+impl<'a> MapSelectionQuery<'a> {
+    pub fn new(
+        config: &'a MapOverlayConfig,
+        click: LatLon,
+        vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+        metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
+        airspace_feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
+        weather_station_airport_aliases: &'a WeatherStationAirportAliases,
+        airport_plate_availability: &'a mut dyn FnMut(&str) -> AirportPlateAvailability,
+    ) -> Self {
+        Self {
+            config,
+            plan: None,
+            click,
+            vector_tile_cache,
+            metar_tile_cache,
+            metar_payload: None,
+            pirep_payload: None,
+            taf_payload: None,
+            notam_payload: None,
+            weather_station_airport_aliases,
+            offline_region_records: &[],
+            airspace_feature_cache,
+            tfr_payload: None,
+            supplemental_nav_ref_points: &[],
+            airport_plate_availability,
+            weather_age_reference_utc: None,
+            local_time_zone: chrono_tz::UTC,
+            time_display_mode: crate::TimeDisplayMode::Utc,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MapSelectionProjectionContext<'a> {
+    map: MapProjectionContext<'a>,
+    click_screen: WorldPoint,
+    hit_radius_px: f64,
+    metar_tile_zoom: Option<u32>,
+}
+
 pub fn query_map_selection(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
-    plan: Option<&FlightPlan>,
-    click: LatLon,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    offline_region_records: &[OfflineRegionRecord],
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
-    supplemental_nav_ref_points: &[NavRefSelectionPoint],
-    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+    query: MapSelectionQuery<'_>,
 ) -> MapSelectionQueryResult {
-    query_map_selection_with_point_display_scale(
-        viewport,
-        width_px,
-        height_px,
-        config,
-        plan,
-        click,
-        vector_tile_cache,
-        metar_tile_cache,
-        metar_payload,
-        pirep_payload,
-        taf_payload,
-        notam_payload,
-        offline_region_records,
-        airspace_feature_cache,
-        tfr_payload,
-        supplemental_nav_ref_points,
-        airport_plate_availability,
-        1.0,
-    )
+    query_map_selection_with_point_display_scale(viewport, width_px, height_px, 1.0, query)
 }
 
 pub fn query_map_selection_with_point_display_scale(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
-    plan: Option<&FlightPlan>,
-    click: LatLon,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    offline_region_records: &[OfflineRegionRecord],
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
-    supplemental_nav_ref_points: &[NavRefSelectionPoint],
-    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     point_display_scale: f64,
+    query: MapSelectionQuery<'_>,
 ) -> MapSelectionQueryResult {
     let metrics = MapSurfaceMetrics::new(*viewport, width_px, height_px, point_display_scale);
-    query_map_selection_for_surface(
-        &metrics,
-        config,
-        plan,
-        click,
-        vector_tile_cache,
-        metar_tile_cache,
-        metar_payload,
-        pirep_payload,
-        taf_payload,
-        notam_payload,
-        offline_region_records,
-        airspace_feature_cache,
-        tfr_payload,
-        supplemental_nav_ref_points,
-        airport_plate_availability,
-        None,
-    )
+    query_map_selection_for_surface(&metrics, query)
 }
 
 pub fn query_map_selection_for_surface(
     metrics: &MapSurfaceMetrics,
-    config: &MapOverlayConfig,
-    plan: Option<&FlightPlan>,
-    click: LatLon,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    offline_region_records: &[OfflineRegionRecord],
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
-    supplemental_nav_ref_points: &[NavRefSelectionPoint],
-    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
-    weather_age_reference_utc: Option<DateTime<Utc>>,
+    query: MapSelectionQuery<'_>,
 ) -> MapSelectionQueryResult {
-    query_map_selection_for_surface_in_time_zone(
-        metrics,
+    query_map_selection_for_surface_in_time_zone(metrics, query)
+}
+
+pub fn query_map_selection_for_surface_in_time_zone(
+    metrics: &MapSurfaceMetrics,
+    query: MapSelectionQuery<'_>,
+) -> MapSelectionQueryResult {
+    let MapSelectionQuery {
         config,
         plan,
         click,
@@ -3075,47 +3042,25 @@ pub fn query_map_selection_for_surface(
         pirep_payload,
         taf_payload,
         notam_payload,
-        &WeatherStationAirportAliases::default(),
+        weather_station_airport_aliases,
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
         supplemental_nav_ref_points,
         airport_plate_availability,
         weather_age_reference_utc,
-        chrono_tz::UTC,
-        crate::TimeDisplayMode::Utc,
-    )
-}
-
-pub fn query_map_selection_for_surface_in_time_zone(
-    metrics: &MapSurfaceMetrics,
-    config: &MapOverlayConfig,
-    plan: Option<&FlightPlan>,
-    click: LatLon,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: Option<&MetarProductPayload>,
-    pirep_payload: Option<&PirepProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    weather_station_airport_aliases: &WeatherStationAirportAliases,
-    offline_region_records: &[OfflineRegionRecord],
-    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<&TfrProductPayload>,
-    supplemental_nav_ref_points: &[NavRefSelectionPoint],
-    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
-    weather_age_reference_utc: Option<DateTime<Utc>>,
-    local_time_zone: Tz,
-    time_display_mode: crate::TimeDisplayMode,
-) -> MapSelectionQueryResult {
+        local_time_zone,
+        time_display_mode,
+    } = query;
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
     let point_display_scale = metrics.display_scale;
     let metar_tile_zoom = overlay_surface_decision(*metrics, config).metar_tile_zoom;
     let hit_radius_px = metrics.inspector_hit_radius_px();
-    let center_world = lat_lon_to_world(viewport.center);
-    let scale = 2.0_f64.powf(viewport.zoom);
+    let map_projection = MapProjectionContext::new(metrics);
+    let center_world = map_projection.center_world;
+    let scale = map_projection.scale;
     let click_screen = world_to_screen_projected(
         center_world,
         scale,
@@ -3124,6 +3069,12 @@ pub fn query_map_selection_for_surface_in_time_zone(
         click,
         WorldXProjection::DisplayCopyOffset(0.0),
     );
+    let selection_projection = MapSelectionProjectionContext {
+        map: map_projection,
+        click_screen,
+        hit_radius_px,
+        metar_tile_zoom,
+    };
     let mut airports = Vec::new();
     let mut navaids = Vec::new();
     let mut weather = Vec::new();
@@ -3220,21 +3171,20 @@ pub fn query_map_selection_for_surface_in_time_zone(
     }
 
     for matched in query_supplemental_nav_ref_selection_matches(
-        width_px,
-        height_px,
-        plan,
-        center_world,
-        scale,
-        click_screen,
-        hit_radius_px,
-        supplemental_nav_ref_points,
-        &matched_nav_refs,
-        metar_payload,
-        taf_payload,
-        notam_payload,
-        weather_station_airport_aliases,
-        airport_plate_availability,
-        weather_age_reference_utc,
+        &selection_projection,
+        SupplementalNavRefSelectionInput {
+            points: supplemental_nav_ref_points,
+            matched_nav_refs: &matched_nav_refs,
+            item_data: SelectionItemData {
+                plan,
+                metar_payload,
+                taf_payload,
+                notam_payload,
+                weather_station_airport_aliases,
+                weather_age_reference_utc,
+            },
+            airport_plate_availability,
+        },
     ) {
         if matches!(matched.item.nav_ref, Some(NavRef::Airport(_))) {
             airports.push(matched);
@@ -3273,32 +3223,20 @@ pub fn query_map_selection_for_surface_in_time_zone(
 
     if let Some(metar_payload) = metar_payload {
         weather.extend(query_metar_selection_matches(
-            viewport,
-            width_px,
-            height_px,
-            metar_tile_zoom,
-            center_world,
-            scale,
-            click_screen,
-            hit_radius_px,
-            metar_tile_cache,
-            metar_payload,
-            taf_payload,
-            notam_payload,
-            weather_station_airport_aliases,
-            weather_age_reference_utc,
+            &selection_projection,
+            MetarSelectionInput {
+                tile_cache: metar_tile_cache,
+                metar_payload,
+                taf_payload,
+                notam_payload,
+                weather_station_airport_aliases,
+                weather_age_reference_utc,
+            },
         ));
     }
     if let Some(pirep_payload) = pirep_payload {
         weather.extend(query_pirep_selection_matches(
-            viewport,
-            width_px,
-            height_px,
-            metar_tile_zoom,
-            center_world,
-            scale,
-            click_screen,
-            hit_radius_px,
+            &selection_projection,
             metar_tile_cache,
             pirep_payload,
         ));
@@ -3372,22 +3310,36 @@ pub fn query_map_selection_for_surface_in_time_zone(
     }
 }
 
-fn query_metar_selection_matches(
-    viewport: &MapViewport,
-    width_px: f64,
-    height_px: f64,
-    metar_tile_zoom: Option<u32>,
-    center_world: WorldPoint,
-    scale: f64,
-    click_screen: WorldPoint,
-    hit_radius_px: f64,
-    metar_tile_cache: &HashMap<String, MetarTilePayload>,
-    metar_payload: &MetarProductPayload,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    weather_station_airport_aliases: &WeatherStationAirportAliases,
+struct MetarSelectionInput<'a> {
+    tile_cache: &'a HashMap<String, MetarTilePayload>,
+    metar_payload: &'a MetarProductPayload,
+    taf_payload: Option<&'a TafProductPayload>,
+    notam_payload: Option<&'a AirportNotamIndex>,
+    weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
+}
+
+fn query_metar_selection_matches(
+    projection: &MapSelectionProjectionContext<'_>,
+    input: MetarSelectionInput<'_>,
 ) -> Vec<MapSelectionPointMatch> {
+    let metrics = projection.map.metrics;
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let center_world = projection.map.center_world;
+    let scale = projection.map.scale;
+    let click_screen = projection.click_screen;
+    let hit_radius_px = projection.hit_radius_px;
+    let metar_tile_zoom = projection.metar_tile_zoom;
+    let MetarSelectionInput {
+        tile_cache: metar_tile_cache,
+        metar_payload,
+        taf_payload,
+        notam_payload,
+        weather_station_airport_aliases,
+        weather_age_reference_utc,
+    } = input;
     let Some(metar_zoom) = metar_tile_zoom else {
         return Vec::new();
     };
@@ -3442,17 +3394,19 @@ fn query_metar_selection_matches(
 }
 
 fn query_pirep_selection_matches(
-    viewport: &MapViewport,
-    width_px: f64,
-    height_px: f64,
-    metar_tile_zoom: Option<u32>,
-    center_world: WorldPoint,
-    scale: f64,
-    click_screen: WorldPoint,
-    hit_radius_px: f64,
+    projection: &MapSelectionProjectionContext<'_>,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     pirep_payload: &PirepProductPayload,
 ) -> Vec<MapSelectionPointMatch> {
+    let metrics = projection.map.metrics;
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let center_world = projection.map.center_world;
+    let scale = projection.map.scale;
+    let click_screen = projection.click_screen;
+    let hit_radius_px = projection.hit_radius_px;
+    let metar_tile_zoom = projection.metar_tile_zoom;
     let Some(metar_zoom) = metar_tile_zoom else {
         return Vec::new();
     };
@@ -3614,23 +3568,39 @@ fn selection_item_for_point(
     }
 }
 
-fn query_supplemental_nav_ref_selection_matches(
-    width_px: f64,
-    height_px: f64,
-    plan: Option<&FlightPlan>,
-    center_world: WorldPoint,
-    scale: f64,
-    click_screen: WorldPoint,
-    hit_radius_px: f64,
-    points: &[NavRefSelectionPoint],
-    matched_nav_refs: &BTreeSet<String>,
-    metar_payload: Option<&MetarProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    weather_station_airport_aliases: &WeatherStationAirportAliases,
-    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+struct SelectionItemData<'a> {
+    plan: Option<&'a FlightPlan>,
+    metar_payload: Option<&'a MetarProductPayload>,
+    taf_payload: Option<&'a TafProductPayload>,
+    notam_payload: Option<&'a AirportNotamIndex>,
+    weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
+}
+
+struct SupplementalNavRefSelectionInput<'a> {
+    points: &'a [NavRefSelectionPoint],
+    matched_nav_refs: &'a BTreeSet<String>,
+    item_data: SelectionItemData<'a>,
+    airport_plate_availability: &'a mut dyn FnMut(&str) -> AirportPlateAvailability,
+}
+
+fn query_supplemental_nav_ref_selection_matches(
+    projection: &MapSelectionProjectionContext<'_>,
+    input: SupplementalNavRefSelectionInput<'_>,
 ) -> Vec<MapSelectionPointMatch> {
+    let metrics = projection.map.metrics;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let center_world = projection.map.center_world;
+    let scale = projection.map.scale;
+    let click_screen = projection.click_screen;
+    let hit_radius_px = projection.hit_radius_px;
+    let SupplementalNavRefSelectionInput {
+        points,
+        matched_nav_refs,
+        item_data,
+        airport_plate_availability,
+    } = input;
     let mut matches = Vec::new();
     for point in points {
         let Some(key) = nav_ref_match_key(Some(&point.nav_ref)) else {
@@ -3647,17 +3617,12 @@ fn query_supplemental_nav_ref_selection_matches(
         if distance_px > hit_radius_px {
             continue;
         }
+        let availability = match &point.nav_ref {
+            NavRef::Airport(airport_id) => airport_plate_availability(airport_id),
+            _ => AirportPlateAvailability::default(),
+        };
         matches.push(MapSelectionPointMatch {
-            item: selection_item_for_nav_ref_point(
-                point,
-                plan,
-                metar_payload,
-                taf_payload,
-                notam_payload,
-                weather_station_airport_aliases,
-                airport_plate_availability,
-                weather_age_reference_utc,
-            ),
+            item: selection_item_for_nav_ref_point(point, &item_data, availability),
             distance_px,
         });
     }
@@ -3666,14 +3631,10 @@ fn query_supplemental_nav_ref_selection_matches(
 
 fn selection_item_for_nav_ref_point(
     point: &NavRefSelectionPoint,
-    plan: Option<&FlightPlan>,
-    metar_payload: Option<&MetarProductPayload>,
-    taf_payload: Option<&TafProductPayload>,
-    notam_payload: Option<&AirportNotamIndex>,
-    weather_station_airport_aliases: &WeatherStationAirportAliases,
-    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
-    weather_age_reference_utc: Option<DateTime<Utc>>,
+    data: &SelectionItemData<'_>,
+    airport_plate_availability: AirportPlateAvailability,
 ) -> MapSelectionItem {
+    let plan = data.plan;
     let nav_ref = &point.nav_ref;
     let label = chart_ident_label_for_nav_ref_symbol(nav_ref, &point.symbol);
     let mut symbol_feature = point.symbol.clone();
@@ -3702,16 +3663,15 @@ fn selection_item_for_nav_ref_point(
     let weather_detail = match nav_ref {
         NavRef::Airport(airport_id) => weather_detail_for_airport(
             airport_id,
-            weather_station_airport_aliases,
-            metar_payload,
-            taf_payload,
-            notam_payload,
-            weather_age_reference_utc,
+            data.weather_station_airport_aliases,
+            data.metar_payload,
+            data.taf_payload,
+            data.notam_payload,
+            data.weather_age_reference_utc,
         ),
         _ => None,
     };
     let mut actions = if let NavRef::Airport(airport_id) = nav_ref {
-        let availability = airport_plate_availability(airport_id);
         vec![
             direct_to_action(plan, Some(nav_ref), direct_to_row_action),
             insert_action,
@@ -3720,9 +3680,15 @@ fn selection_item_for_nav_ref_point(
                 "Plates",
                 airport_id,
                 "Folder",
-                availability.plates,
+                airport_plate_availability.plates,
             ),
-            plate_target_action("csup", "CSUP", airport_id, "CSup", availability.csup),
+            plate_target_action(
+                "csup",
+                "CSUP",
+                airport_id,
+                "CSup",
+                airport_plate_availability.csup,
+            ),
             weather_action(weather_detail.clone()),
             airport_info_action(airport_id),
         ]
@@ -5398,9 +5364,7 @@ fn point_feature_label_rect(feature: &VisibleMapFeature, scale: f64) -> Option<L
     if text.is_empty() || !feature.screen_x.is_finite() || !feature.screen_y.is_finite() {
         return None;
     }
-    let label_y = if feature.symbol_kind == "airport" {
-        -24.0 * scale
-    } else if feature.symbol_kind == "nav" {
+    let label_y = if matches!(feature.symbol_kind.as_str(), "airport" | "nav") {
         -24.0 * scale
     } else if feature.symbol_kind == "obstacle" {
         -14.0 * scale
@@ -5436,18 +5400,30 @@ struct TfrOverlayProjection {
     labels: Vec<AirspaceDisplayLabel>,
 }
 
-fn query_tfr_overlay(
-    viewport: &MapViewport,
-    width_px: f64,
-    height_px: f64,
-    center_world: WorldPoint,
-    scale: f64,
-    tfr_payload: Option<&TfrProductPayload>,
-    display_scale: f64,
-    point_features: &[VisibleMapFeature],
-    protected_point_features: &[VisibleMapFeature],
+struct TfrOverlayInput<'a> {
+    payload: Option<&'a TfrProductPayload>,
+    point_features: &'a [VisibleMapFeature],
+    protected_point_features: &'a [VisibleMapFeature],
     reference_utc: Option<DateTime<Utc>>,
+}
+
+fn query_tfr_overlay(
+    projection: &MapProjectionContext<'_>,
+    input: TfrOverlayInput<'_>,
 ) -> TfrOverlayProjection {
+    let metrics = projection.metrics;
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let center_world = projection.center_world;
+    let scale = projection.scale;
+    let display_scale = metrics.display_scale;
+    let TfrOverlayInput {
+        payload: tfr_payload,
+        point_features,
+        protected_point_features,
+        reference_utc,
+    } = input;
     if width_px <= 0.0
         || height_px <= 0.0
         || effective_point_display_zoom(viewport, display_scale) < AIRSPACE_MIN_DISPLAY_ZOOM
@@ -5507,16 +5483,9 @@ fn query_tfr_overlay(
                 y: point.y,
             })
             .collect::<Vec<_>>();
-        if let Some(label_point) = tfr_label_screen_point(
-            area,
-            &projected_points,
-            center_world,
-            scale,
-            width_px,
-            height_px,
-            display_scale,
-            &point_obstacle_rects,
-        ) {
+        if let Some(label_point) =
+            tfr_label_screen_point(area, &projected_points, projection, &point_obstacle_rects)
+        {
             labels.push(AirspaceDisplayLabel {
                 feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
                 glyph: airspace_limit_glyph(
@@ -5567,18 +5536,24 @@ fn tfr_bbox(area: &TfrAreaPayload) -> Option<[f64; 4]> {
 fn tfr_label_screen_point(
     area: &TfrAreaPayload,
     projected_points: &[AirspaceScreenPoint],
-    center_world: WorldPoint,
-    scale: f64,
-    width_px: f64,
-    height_px: f64,
-    display_scale: f64,
+    projection: &MapProjectionContext<'_>,
     point_obstacle_rects: &[LabelRect],
 ) -> Option<AirspaceScreenPoint> {
+    let metrics = projection.metrics;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let display_scale = metrics.display_scale;
     if !tfr_polygon_can_fit_label(area, projected_points, display_scale) {
         return None;
     }
     let centroid = tfr_polygon_centroid(area)?;
-    let point = world_to_screen(center_world, scale, width_px, height_px, centroid);
+    let point = world_to_screen(
+        projection.center_world,
+        projection.scale,
+        width_px,
+        height_px,
+        centroid,
+    );
     if point.x < 0.0 || point.x > width_px || point.y < 0.0 || point.y > height_px {
         return None;
     }
@@ -5613,8 +5588,7 @@ fn tfr_label_screen_point(
         &upper,
         &lower,
         display_scale,
-        width_px,
-        height_px,
+        projection,
         point_obstacle_rects,
     )
     .or(Some(centroid_point))
@@ -5626,10 +5600,11 @@ fn tfr_decentered_label_point(
     upper: &str,
     lower: &str,
     display_scale: f64,
-    width_px: f64,
-    height_px: f64,
+    projection: &MapProjectionContext<'_>,
     point_obstacle_rects: &[LabelRect],
 ) -> Option<AirspaceScreenPoint> {
+    let width_px = projection.metrics.width_px;
+    let height_px = projection.metrics.height_px;
     let mut best_clear = None::<TfrLabelCandidateScore>;
     let mut best_any = None::<TfrLabelCandidateScore>;
     for candidate in tfr_half_radius_label_candidates(projected_points, centroid) {
@@ -6025,17 +6000,28 @@ enum AirspaceInteriorSideError {
     Invalid,
 }
 
+struct AirspaceOverlayInput<'a> {
+    config: &'a MapOverlayConfig,
+    vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+    feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
+}
+
 fn query_airspace_overlay(
-    viewport: &MapViewport,
-    width_px: f64,
-    height_px: f64,
-    config: &MapOverlayConfig,
-    center_world: WorldPoint,
-    scale: f64,
-    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
-    feature_cache: &HashMap<String, AirspaceFeaturePayload>,
-    point_display_scale: f64,
+    projection: &MapProjectionContext<'_>,
+    input: AirspaceOverlayInput<'_>,
 ) -> AirspaceOverlayProjection {
+    let metrics = projection.metrics;
+    let viewport = &metrics.viewport;
+    let width_px = metrics.width_px;
+    let height_px = metrics.height_px;
+    let center_world = projection.center_world;
+    let scale = projection.scale;
+    let point_display_scale = metrics.display_scale;
+    let AirspaceOverlayInput {
+        config,
+        vector_tile_cache,
+        feature_cache,
+    } = input;
     let effective_zoom = effective_point_display_zoom(viewport, point_display_scale);
     if effective_zoom < AIRSPACE_MIN_DISPLAY_ZOOM || width_px <= 0.0 || height_px <= 0.0 {
         return AirspaceOverlayProjection {
@@ -6453,7 +6439,7 @@ fn airspace_feathers_for_path(
                 round_screen_coordinate(base_x + nx * FEATHER_LENGTH_PX),
                 round_screen_coordinate(base_y + ny * FEATHER_LENGTH_PX),
             ];
-            if !screen_bounds.map_or(true, |bounds| bounds.intersects_segment(segment)) {
+            if !screen_bounds.is_none_or(|bounds| bounds.intersects_segment(segment)) {
                 next_feather_distance += FEATHER_SPACING_PX;
                 continue;
             }
@@ -6522,7 +6508,7 @@ fn airspace_bbox_may_intersect_screen(
 fn simplify_projected_points(points: Vec<AirspaceScreenPoint>) -> Vec<AirspaceScreenPoint> {
     let mut simplified: Vec<AirspaceScreenPoint> = Vec::with_capacity(points.len());
     for point in points {
-        let keep = simplified.last().map_or(true, |last| {
+        let keep = simplified.last().is_none_or(|last| {
             (point.x - last.x).abs() >= 0.35 || (point.y - last.y).abs() >= 0.35
         });
         if keep {
@@ -7253,34 +7239,31 @@ mod tests {
             airspace_label_tile_cache,
         );
         let obstacle_tile_cache = obstacle_test_tiles(point_tile_cache);
+        let config = test_map_overlay_config();
+        let metar_tile_cache = HashMap::new();
         super::query_map_overlay(
             viewport,
             width_px,
             height_px,
-            &test_map_overlay_config(),
-            true,
-            false,
-            &[],
-            None,
-            &vector_tile_cache,
-            &obstacle_tile_cache,
-            &HashMap::new(),
-            None,
-            None,
-            airspace_feature_cache,
-            None,
+            MapOverlayQuery {
+                display_vectors: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tile_cache,
+                    &obstacle_tile_cache,
+                    &metar_tile_cache,
+                    airspace_feature_cache,
+                )
+            },
         )
     }
 
     fn query_map_overlay_with_point_display_scale(
-        viewport: &MapViewport,
-        width_px: f64,
-        height_px: f64,
+        metrics: MapSurfaceMetrics,
         point_tile_cache: &HashMap<String, PointTilePayload>,
         airspace_ref_tile_cache: &HashMap<String, AirspaceReferenceTilePayload>,
         airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
         airspace_label_tile_cache: &HashMap<String, AirspaceLabelTilePayload>,
-        point_display_scale: f64,
     ) -> MapOverlayQueryResult {
         let vector_tile_cache = aggregate_test_vector_tiles(
             point_tile_cache,
@@ -7288,23 +7271,20 @@ mod tests {
             airspace_label_tile_cache,
         );
         let obstacle_tile_cache = obstacle_test_tiles(point_tile_cache);
-        super::query_map_overlay_with_point_display_scale(
-            viewport,
-            width_px,
-            height_px,
-            &test_map_overlay_config(),
-            true,
-            false,
-            &[],
-            None,
-            &vector_tile_cache,
-            &obstacle_tile_cache,
-            &HashMap::new(),
-            None,
-            None,
-            airspace_feature_cache,
-            None,
-            point_display_scale,
+        let config = test_map_overlay_config();
+        let metar_tile_cache = HashMap::new();
+        super::query_map_overlay_for_surface(
+            &metrics,
+            MapOverlayQuery {
+                display_vectors: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tile_cache,
+                    &obstacle_tile_cache,
+                    &metar_tile_cache,
+                    airspace_feature_cache,
+                )
+            },
         )
     }
 
@@ -7509,14 +7489,11 @@ mod tests {
         }
 
         let result = query_map_overlay_with_point_display_scale(
-            &viewport,
-            1024.0,
-            768.0,
+            MapSurfaceMetrics::new(viewport, 1024.0, 768.0, 4.0),
             &HashMap::new(),
             &ref_cache,
             &HashMap::from([(feature.id.clone(), feature)]),
             &label_cache,
-            4.0,
         );
 
         assert_eq!(result.airspace_paths.len(), 1);
@@ -7638,22 +7615,23 @@ mod tests {
             ]),
         };
         let config = test_map_overlay_config();
+        let empty_vector_tiles = HashMap::new();
+        let empty_obstacle_tiles = HashMap::new();
+        let empty_airspaces = HashMap::new();
         let overlay_for = |metrics: &MapSurfaceMetrics| {
             query_map_overlay_for_surface(
                 metrics,
-                &config,
-                false,
-                true,
-                &[],
-                None,
-                &HashMap::new(),
-                &HashMap::new(),
-                &metar_tile_cache,
-                Some(&metar_payload),
-                None,
-                &HashMap::new(),
-                None,
-                &[],
+                MapOverlayQuery {
+                    display_metars: true,
+                    metar_payload: Some(&metar_payload),
+                    ..MapOverlayQuery::new(
+                        &config,
+                        &empty_vector_tiles,
+                        &empty_obstacle_tiles,
+                        &metar_tile_cache,
+                        &empty_airspaces,
+                    )
+                },
             )
         };
 
@@ -7674,23 +7652,21 @@ mod tests {
 
         let selection_for = |metrics: &MapSurfaceMetrics| {
             let mut plate_availability = |_airport_id: &str| AirportPlateAvailability::default();
+            let aliases = WeatherStationAirportAliases::default();
             query_map_selection_for_surface(
                 metrics,
-                &config,
-                None,
-                position,
-                &HashMap::new(),
-                &metar_tile_cache,
-                Some(&metar_payload),
-                None,
-                None,
-                None,
-                &[],
-                &HashMap::new(),
-                None,
-                &[],
-                &mut plate_availability,
-                None,
+                MapSelectionQuery {
+                    metar_payload: Some(&metar_payload),
+                    ..MapSelectionQuery::new(
+                        &config,
+                        position,
+                        &empty_vector_tiles,
+                        &metar_tile_cache,
+                        &empty_airspaces,
+                        &aliases,
+                        &mut plate_availability,
+                    )
+                },
             )
         };
         let selected_stations = |selection: &MapSelectionQueryResult| {
@@ -7721,16 +7697,13 @@ mod tests {
         let (web_metrics, android_metrics) = captured_samsung_surface_metrics();
         let projection_for = |metrics: MapSurfaceMetrics| {
             query_tfr_overlay(
-                &metrics.viewport,
-                metrics.width_px,
-                metrics.height_px,
-                lat_lon_to_world(metrics.viewport.center),
-                2.0_f64.powf(metrics.viewport.zoom),
-                None,
-                metrics.display_scale,
-                &[],
-                &[],
-                None,
+                &MapProjectionContext::new(&metrics),
+                TfrOverlayInput {
+                    payload: None,
+                    point_features: &[],
+                    protected_point_features: &[],
+                    reference_utc: None,
+                },
             )
         };
 
@@ -8101,22 +8074,24 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
+        let vector_tiles = HashMap::new();
+        let obstacle_tiles = HashMap::new();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
         let low_zoom = super::query_map_overlay(
             &viewport,
             240.0,
             240.0,
-            &config,
-            false,
-            true,
-            &[],
-            None,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            None,
-            &HashMap::new(),
-            None,
+            MapOverlayQuery {
+                display_metars: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_tiles,
+                    &metar_tiles,
+                    &airspaces,
+                )
+            },
         );
         assert!(low_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 5));
 
@@ -8127,18 +8102,16 @@ mod tests {
             },
             240.0,
             240.0,
-            &config,
-            false,
-            true,
-            &[],
-            None,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            None,
-            &HashMap::new(),
-            None,
+            MapOverlayQuery {
+                display_metars: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_tiles,
+                    &metar_tiles,
+                    &airspaces,
+                )
+            },
         );
         assert!(high_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 7));
     }
@@ -8307,22 +8280,25 @@ mod tests {
             metar_count: Some(1),
             metars_by_station,
         };
+        let config = test_map_overlay_config();
+        let vector_tiles = HashMap::new();
+        let obstacle_tiles = HashMap::new();
+        let airspaces = HashMap::new();
         let result = super::query_map_overlay(
             &viewport,
             240.0,
             240.0,
-            &test_map_overlay_config(),
-            false,
-            true,
-            &[],
-            None,
-            &HashMap::new(),
-            &HashMap::new(),
-            &metar_tile_cache,
-            Some(&metars),
-            None,
-            &HashMap::new(),
-            None,
+            MapOverlayQuery {
+                display_metars: true,
+                metar_payload: Some(&metars),
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_tiles,
+                    &metar_tile_cache,
+                    &airspaces,
+                )
+            },
         );
 
         assert!(result.needed_metar_tiles.is_empty());
@@ -8628,22 +8604,26 @@ mod tests {
                 Vec::new()
             };
 
+            let config = test_map_overlay_config();
+            let obstacle_tile_cache = HashMap::new();
             let result = super::query_map_overlay(
                 &viewport,
                 width_px,
                 height_px,
-                &test_map_overlay_config(),
-                true,
-                true,
-                &offline_regions,
-                None,
-                &vector_tile_cache,
-                &HashMap::new(),
-                &metar_tile_cache,
-                metar_product.as_ref(),
-                None,
-                &airspace_feature_cache,
-                tfr_product.as_ref(),
+                MapOverlayQuery {
+                    display_vectors: true,
+                    display_metars: true,
+                    offline_region_records: &offline_regions,
+                    metar_payload: metar_product.as_ref(),
+                    tfr_payload: tfr_product.as_ref(),
+                    ..MapOverlayQuery::new(
+                        &config,
+                        &vector_tile_cache,
+                        &obstacle_tile_cache,
+                        &metar_tile_cache,
+                        &airspace_feature_cache,
+                    )
+                },
             );
 
             let case = format!("{mask:?}");
@@ -8785,25 +8765,28 @@ mod tests {
                 },
             )]),
         };
-
+        let config = test_map_overlay_config();
+        let vector_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let result = query_map_selection(
             &viewport,
             240.0,
             240.0,
-            &test_map_overlay_config(),
-            None,
-            viewport.center,
-            &HashMap::new(),
-            &metar_tile_cache,
-            Some(&metars),
-            None,
-            Some(&tafs),
-            None,
-            &[],
-            &HashMap::new(),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability::default(),
+            MapSelectionQuery {
+                metar_payload: Some(&metars),
+                taf_payload: Some(&tafs),
+                ..MapSelectionQuery::new(
+                    &config,
+                    viewport.center,
+                    &vector_tiles,
+                    &metar_tile_cache,
+                    &airspaces,
+                    &aliases,
+                    &mut availability,
+                )
+            },
         );
         let weather = result
             .categories
@@ -9378,28 +9361,29 @@ mod tests {
             metar_count: Some(1),
             metars_by_station,
         };
-
+        let vector_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let result = query_map_selection(
             &viewport,
             1024.0,
             256.0,
-            &config,
-            None,
-            LatLon {
-                lat: 0.0,
-                lon: 360.0,
+            MapSelectionQuery {
+                metar_payload: Some(&metars),
+                ..MapSelectionQuery::new(
+                    &config,
+                    LatLon {
+                        lat: 0.0,
+                        lon: 360.0,
+                    },
+                    &vector_tiles,
+                    &metar_tile_cache,
+                    &airspaces,
+                    &aliases,
+                    &mut availability,
+                )
             },
-            &HashMap::new(),
-            &metar_tile_cache,
-            Some(&metars),
-            None,
-            None,
-            None,
-            &[],
-            &HashMap::new(),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability::default(),
         );
         let weather = result
             .categories
@@ -9452,6 +9436,12 @@ mod tests {
         sw_plate_region.region_id = "sw".to_string();
         sw_plate_region.label = "SW Plates".to_string();
         let regions = vec![region, nw_plate_region, sw_plate_region];
+        let config = test_map_overlay_config();
+        let vector_tiles = HashMap::new();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let result = query_map_selection(
             &MapViewport {
                 center: LatLon { lat: 0.0, lon: 0.0 },
@@ -9461,20 +9451,18 @@ mod tests {
             },
             1024.0,
             768.0,
-            &test_map_overlay_config(),
-            None,
-            LatLon { lat: 0.0, lon: 0.0 },
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            &regions,
-            &HashMap::new(),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability::default(),
+            MapSelectionQuery {
+                offline_region_records: &regions,
+                ..MapSelectionQuery::new(
+                    &config,
+                    LatLon { lat: 0.0, lon: 0.0 },
+                    &vector_tiles,
+                    &metar_tiles,
+                    &airspaces,
+                    &aliases,
+                    &mut availability,
+                )
+            },
         );
         let offline = result
             .categories
@@ -9614,27 +9602,27 @@ mod tests {
                 },
             );
         }
+        let config = test_map_overlay_config();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::from([(feature.id.clone(), feature)]);
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let result = query_map_selection(
             &viewport,
             1024.0,
             256.0,
-            &test_map_overlay_config(),
-            None,
-            LatLon {
-                lat: 0.0,
-                lon: 360.0,
-            },
-            &vector_cache,
-            &HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            &HashMap::from([(feature.id.clone(), feature)]),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability::default(),
+            MapSelectionQuery::new(
+                &config,
+                LatLon {
+                    lat: 0.0,
+                    lon: 360.0,
+                },
+                &vector_cache,
+                &metar_tiles,
+                &airspaces,
+                &aliases,
+                &mut availability,
+            ),
         );
         let airspace = result
             .categories
@@ -9693,25 +9681,24 @@ mod tests {
                 },
             );
         }
-
+        let config = test_map_overlay_config();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::from([(detail.id.clone(), detail), (outline.id.clone(), outline)]);
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let result = query_map_selection(
             &viewport,
             1024.0,
             256.0,
-            &test_map_overlay_config(),
-            None,
-            LatLon { lat: 0.0, lon: 0.0 },
-            &vector_cache,
-            &HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            &HashMap::from([(detail.id.clone(), detail), (outline.id.clone(), outline)]),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability::default(),
+            MapSelectionQuery::new(
+                &config,
+                LatLon { lat: 0.0, lon: 0.0 },
+                &vector_cache,
+                &metar_tiles,
+                &airspaces,
+                &aliases,
+                &mut availability,
+            ),
         );
 
         let airspace = result
@@ -9954,8 +9941,7 @@ mod tests {
         };
         let width_px = 1200.0;
         let height_px = 900.0;
-        let scale = 2.0_f64.powf(viewport.zoom);
-        let center_world = lat_lon_to_world(viewport.center);
+        let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, 1.0);
         let payload = TfrProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
@@ -9998,16 +9984,13 @@ mod tests {
         };
 
         let result = query_tfr_overlay(
-            &viewport,
-            width_px,
-            height_px,
-            center_world,
-            scale,
-            Some(&payload),
-            1.0,
-            &[],
-            &[],
-            crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            &MapProjectionContext::new(&metrics),
+            TfrOverlayInput {
+                payload: Some(&payload),
+                point_features: &[],
+                protected_point_features: &[],
+                reference_utc: crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            },
         );
 
         assert_eq!(result.paths.len(), 1);
@@ -10033,8 +10016,7 @@ mod tests {
         };
         let width_px = 1200.0;
         let height_px = 900.0;
-        let scale = 2.0_f64.powf(viewport.zoom);
-        let center_world = lat_lon_to_world(viewport.center);
+        let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, 1.0);
         let payload = TfrProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
@@ -10106,16 +10088,13 @@ mod tests {
         );
 
         let result = query_tfr_overlay(
-            &viewport,
-            width_px,
-            height_px,
-            center_world,
-            scale,
-            Some(&payload),
-            1.0,
-            std::slice::from_ref(&airport),
-            &[],
-            crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            &MapProjectionContext::new(&metrics),
+            TfrOverlayInput {
+                payload: Some(&payload),
+                point_features: std::slice::from_ref(&airport),
+                protected_point_features: &[],
+                reference_utc: crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            },
         );
 
         assert_eq!(result.paths.len(), 1);
@@ -10156,8 +10135,7 @@ mod tests {
         };
         let width_px = 1200.0;
         let height_px = 900.0;
-        let scale = 2.0_f64.powf(viewport.zoom);
-        let center_world = lat_lon_to_world(viewport.center);
+        let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, 1.0);
         let payload = TfrProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
@@ -10213,16 +10191,13 @@ mod tests {
         };
 
         let result = query_tfr_overlay(
-            &viewport,
-            width_px,
-            height_px,
-            center_world,
-            scale,
-            Some(&payload),
-            1.0,
-            &[],
-            &[],
-            crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            &MapProjectionContext::new(&metrics),
+            TfrOverlayInput {
+                payload: Some(&payload),
+                point_features: &[],
+                protected_point_features: &[],
+                reference_utc: crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            },
         );
 
         assert_eq!(result.paths.len(), 1);
@@ -10383,8 +10358,7 @@ mod tests {
         };
         let width_px = 1200.0;
         let height_px = 900.0;
-        let scale = 2.0_f64.powf(viewport.zoom);
-        let center_world = lat_lon_to_world(viewport.center);
+        let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, 1.0);
         let payload = TfrProductPayload {
             schema_version: 1,
             version_label: "test".to_string(),
@@ -10427,16 +10401,13 @@ mod tests {
         };
 
         let result = query_tfr_overlay(
-            &viewport,
-            width_px,
-            height_px,
-            center_world,
-            scale,
-            Some(&payload),
-            1.0,
-            &[],
-            &[],
-            crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            &MapProjectionContext::new(&metrics),
+            TfrOverlayInput {
+                payload: Some(&payload),
+                point_features: &[],
+                protected_point_features: &[],
+                reference_utc: crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+            },
         );
 
         assert_eq!(result.paths.len(), 1);
@@ -10804,26 +10775,29 @@ mod tests {
         };
 
         let vector_cache = aggregate_test_vector_tiles(&cache, &HashMap::new(), &HashMap::new());
+        let config = test_map_overlay_config();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability {
+            plates: true,
+            csup: true,
+        };
         let result = query_map_selection(
             &viewport,
             1200.0,
             900.0,
-            &test_map_overlay_config(),
-            Some(&plan),
-            viewport.center,
-            &vector_cache,
-            &HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            &HashMap::new(),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability {
-                plates: true,
-                csup: true,
+            MapSelectionQuery {
+                plan: Some(&plan),
+                ..MapSelectionQuery::new(
+                    &config,
+                    viewport.center,
+                    &vector_cache,
+                    &metar_tiles,
+                    &airspaces,
+                    &aliases,
+                    &mut availability,
+                )
             },
         );
 
@@ -11218,46 +11192,51 @@ mod tests {
             pitch_deg: 0.0,
         };
         let nav_ref = NavRef::Fix("WIBAT".to_string());
+        let supplemental_nav_ref_points = [NavRefSelectionPoint {
+            feature_id: format!(
+                "flight-plan:{}",
+                serde_json::to_string(&nav_ref).expect("serialize NavRef")
+            ),
+            nav_ref: nav_ref.clone(),
+            position: viewport.center,
+            symbol: NavSymbolFeature {
+                kind: "fix".to_string(),
+                label: "WIBAT".to_string(),
+                symbol_kind: "fix".to_string(),
+                style_class: "fix".to_string(),
+                obstacle_variant: None,
+                obstacle_tone: None,
+                towered: false,
+                fuel_available: false,
+                has_paved_runway: None,
+                heliport: None,
+                has_water_runway: None,
+                runway_length_ratio: 0.0,
+                longest_runway_heading_true_deg: None,
+            },
+        }];
+        let config = test_map_overlay_config();
+        let vector_tiles = HashMap::new();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let selection = query_map_selection(
             &viewport,
             800.0,
             600.0,
-            &test_map_overlay_config(),
-            None,
-            viewport.center,
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            &HashMap::new(),
-            None,
-            &[NavRefSelectionPoint {
-                feature_id: format!(
-                    "flight-plan:{}",
-                    serde_json::to_string(&nav_ref).expect("serialize NavRef")
-                ),
-                nav_ref: nav_ref.clone(),
-                position: viewport.center,
-                symbol: NavSymbolFeature {
-                    kind: "fix".to_string(),
-                    label: "WIBAT".to_string(),
-                    symbol_kind: "fix".to_string(),
-                    style_class: "fix".to_string(),
-                    obstacle_variant: None,
-                    obstacle_tone: None,
-                    towered: false,
-                    fuel_available: false,
-                    has_paved_runway: None,
-                    heliport: None,
-                    has_water_runway: None,
-                    runway_length_ratio: 0.0,
-                    longest_runway_heading_true_deg: None,
-                },
-            }],
-            &mut |_| AirportPlateAvailability::default(),
+            MapSelectionQuery {
+                supplemental_nav_ref_points: &supplemental_nav_ref_points,
+                ..MapSelectionQuery::new(
+                    &config,
+                    viewport.center,
+                    &vector_tiles,
+                    &metar_tiles,
+                    &airspaces,
+                    &aliases,
+                    &mut availability,
+                )
+            },
         );
 
         let navaids = selection
@@ -11611,24 +11590,24 @@ mod tests {
         assert_eq!(result.visible_features[0].id, "airports:KSEA");
 
         let vector_cache = aggregate_test_vector_tiles(&cache, &HashMap::new(), &HashMap::new());
+        let config = test_map_overlay_config();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
         let selection = query_map_selection(
             &viewport,
             1200.0,
             900.0,
-            &test_map_overlay_config(),
-            None,
-            viewport.center,
-            &vector_cache,
-            &HashMap::new(),
-            None,
-            None,
-            None,
-            None,
-            &[],
-            &HashMap::new(),
-            None,
-            &[],
-            &mut |_| AirportPlateAvailability::default(),
+            MapSelectionQuery::new(
+                &config,
+                viewport.center,
+                &vector_cache,
+                &metar_tiles,
+                &airspaces,
+                &aliases,
+                &mut availability,
+            ),
         );
         let airport_ids = selection.categories[0]
             .items

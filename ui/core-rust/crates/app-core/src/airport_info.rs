@@ -726,14 +726,14 @@ fn runway_surface(surface: &str) -> (String, String) {
     if condition.is_some() {
         parts.pop();
     }
-    let color_key = if parts.iter().any(|part| *part == "WATER") {
+    let color_key = if parts.contains(&"WATER") {
         "airport_runway_water"
     } else if parts
         .iter()
         .any(|part| matches!(*part, "ASPH" | "CONC" | "BIT" | "PEM" | "MATS" | "TREATED"))
     {
         "airport_runway_paved"
-    } else if parts.iter().any(|part| *part == "TURF") {
+    } else if parts.contains(&"TURF") {
         "airport_runway_turf"
     } else {
         "airport_runway_unpaved"

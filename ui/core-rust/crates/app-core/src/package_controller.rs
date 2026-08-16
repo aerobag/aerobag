@@ -10,21 +10,11 @@ use crate::{
     OfflinePackagePreferences, OfflinePackagesLibraryCache,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PackageModel {
     installed_package_ids: BTreeSet<String>,
     preferences: OfflinePackagePreferences,
     revision: u64,
-}
-
-impl Default for PackageModel {
-    fn default() -> Self {
-        Self {
-            installed_package_ids: BTreeSet::new(),
-            preferences: OfflinePackagePreferences::default(),
-            revision: 0,
-        }
-    }
 }
 
 #[derive(Clone)]

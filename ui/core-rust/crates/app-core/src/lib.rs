@@ -150,7 +150,6 @@ pub use live_feeds::{
     PreparedPirepTile,
 };
 pub use map_follow::MapFollowUiState;
-pub(crate) use map_overlay::query_map_overlay_for_surface_at;
 pub use map_overlay::{
     aggregate_vector_tile_cache_key, airspace_feature_path, airspace_label_tile_key,
     airspace_ref_tile_key, chart_ident_label_for_nav_ref_symbol,
@@ -165,17 +164,18 @@ pub use map_overlay::{
     AirportPlateAvailability, AirspaceDisplayLabel, AirspaceDisplayPath, AirspaceDisplayStroke,
     AirspaceDisplayStyle, AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload,
     AirspaceFeatureRequest, AirspaceLabelRecord, AirspaceLabelTilePayload,
-    AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult,
-    MapSelectionAction, MapSelectionCategory, MapSelectionDetailStatus,
-    MapSelectionForNavRefResult, MapSelectionHighlight, MapSelectionItem, MapSelectionQueryResult,
-    MapSelectionSessionAction, MapSurfaceMetrics, MetarProductPayload, MetarRecord,
-    MetarTilePayload, NavSymbolFeature, NotamRecord, ObstacleOverlayContext, OfflineRegionCatalog,
-    OfflineRegionDisplay, OfflineRegionRecord, OverlaySurfaceDecision, PirepProductPayload,
-    PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord,
-    TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata, TfrProductPayload,
-    TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest,
-    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView,
-    WeatherStationAirportAliases, AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
+    AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig, MapOverlayQuery,
+    MapOverlayQueryResult, MapSelectionAction, MapSelectionCategory, MapSelectionDetailStatus,
+    MapSelectionForNavRefResult, MapSelectionHighlight, MapSelectionItem, MapSelectionQuery,
+    MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MetarProductPayload,
+    MetarRecord, MetarTilePayload, NavSymbolFeature, NotamRecord, ObstacleOverlayContext,
+    OfflineRegionCatalog, OfflineRegionDisplay, OfflineRegionRecord, OverlaySurfaceDecision,
+    PirepProductPayload, PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload,
+    TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata,
+    TfrProductPayload, TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    VectorTileRequest, VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature,
+    WeatherDetailUiView, WeatherStationAirportAliases, AIRSPACE_DISPLAY_FEATURE_LIMIT,
+    VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayPresentationPlan, AirwayPresentationPoint, AirwayPresentationSelection, AirwaySuggestion,
@@ -238,15 +238,15 @@ pub use planning::{
     terminal_hold_start_detail_index_for_leg, terminal_hold_start_element_index_for_leg,
     terminal_state_with_leg_characteristics, top_level_waypoint_component_count,
     top_level_waypoint_component_index, unsuspend_sequencing, yieldable_course_to_fix_requirement,
-    AirwaySegment, CodedFixSatisfaction, CommonSegmentTerminalState, ConcretizedNavItem,
-    DirectToState, DirectToTargetRow, DirectToUiView, FlightPlan, FlightPlanControlId,
-    FlightPlanControlUiView, FlightPlanDisplayRowKind, FlightPlanRowActionExecution,
-    FlightPlanRowActionId, FlightPlanRowId, FlightPlanUiState, GuidanceState, GuidanceUiView,
-    HandoffDecision, HoldTerminalState, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle,
-    NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState,
-    ResolvedLeg, ResolvedLegSource, RouteComponent, RouteComponentViewKind, SequencingMode,
-    StartRequirement, TerminalState,
+    AirwaySegment, CodedFixSatisfaction, CommonResumeCandidateInput, CommonSegmentTerminalState,
+    ConcretizedNavItem, DirectToState, DirectToTargetRow, DirectToUiView, FlightPlan,
+    FlightPlanControlId, FlightPlanControlUiView, FlightPlanDisplayRowKind,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanRowId, FlightPlanUiState,
+    GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement,
+    LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity,
+    ProcedureKind, ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole,
+    ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource, RouteComponent,
+    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use product_contracts::{AircraftDefinition, AircraftSelection};

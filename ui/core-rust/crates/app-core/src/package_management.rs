@@ -12,18 +12,13 @@ use product_contracts::versioned_json;
 pub const CHART_HIGH_RESOLUTION_PRODUCT_ID: &str = "chart-high-resolution";
 const WIDE_COVERAGE_REGION_ID: &str = "wide";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum OfflinePackageSelection {
     Unselected,
     Pause,
+    #[default]
     Play,
-}
-
-impl Default for OfflinePackageSelection {
-    fn default() -> Self {
-        Self::Play
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -836,16 +831,16 @@ pub fn initialize_offline_packages(
         suppressed_fetch_filenames: input.suppressed_fetch_filenames.clone(),
     });
     OfflinePackagesReduceResult {
-        ui_state: project_offline_packages_ui_state(
-            &state,
-            effective_now_epoch_ms,
-            &input.discovery_manifests,
-            &input.bundle_manifests_by_filename,
-            &input.installed,
-            &input.forced_gc_installed_filenames,
-            &input.suppressed_fetch_filenames,
-            None,
-        ),
+        ui_state: project_offline_packages_ui_state(OfflinePackagesProjectionInput {
+            state: &state,
+            now_epoch_ms: effective_now_epoch_ms,
+            discovery_manifests: &input.discovery_manifests,
+            bundle_manifests_by_filename: &input.bundle_manifests_by_filename,
+            installed: &input.installed,
+            forced_gc_installed_filenames: &input.forced_gc_installed_filenames,
+            suppressed_fetch_filenames: &input.suppressed_fetch_filenames,
+            sync_progress: None,
+        }),
         effective_now_epoch_ms,
         plan,
         bundle,
@@ -1322,20 +1317,21 @@ fn replan_controller_ui_state(
             .cloned()
             .collect(),
     });
-    let ui_state = project_offline_packages_ui_state(
-        &reduced.state,
-        reduced.effective_now_epoch_ms,
-        &library_cache.discovery_manifests,
-        &library_cache.bundle_manifests_by_filename,
+    let suppressed_fetch_filenames = state
+        .suppressed_fetch_filename_messages
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let ui_state = project_offline_packages_ui_state(OfflinePackagesProjectionInput {
+        state: &reduced.state,
+        now_epoch_ms: reduced.effective_now_epoch_ms,
+        discovery_manifests: &library_cache.discovery_manifests,
+        bundle_manifests_by_filename: &library_cache.bundle_manifests_by_filename,
         installed,
         forced_gc_installed_filenames,
-        &state
-            .suppressed_fetch_filename_messages
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>(),
-        state.sync_progress.as_ref(),
-    );
+        suppressed_fetch_filenames: &suppressed_fetch_filenames,
+        sync_progress: state.sync_progress.as_ref(),
+    });
     state.packages_state = Some(reduced.state);
     Some(ui_state)
 }
@@ -1651,16 +1647,30 @@ fn fetch_product_priority_from_artifact_id(artifact_id: &str) -> u8 {
     }
 }
 
-fn project_offline_packages_ui_state(
-    state: &OfflinePackagesState,
+struct OfflinePackagesProjectionInput<'a> {
+    state: &'a OfflinePackagesState,
     now_epoch_ms: i64,
-    discovery_manifests: &[CurrentArtifactsManifest],
-    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
-    installed: &[InstalledArtifact],
-    forced_gc_installed_filenames: &[String],
-    suppressed_fetch_filenames: &[String],
-    sync_progress: Option<&OfflinePackagesSyncProgress>,
+    discovery_manifests: &'a [CurrentArtifactsManifest],
+    bundle_manifests_by_filename: &'a BTreeMap<String, BundleManifest>,
+    installed: &'a [InstalledArtifact],
+    forced_gc_installed_filenames: &'a [String],
+    suppressed_fetch_filenames: &'a [String],
+    sync_progress: Option<&'a OfflinePackagesSyncProgress>,
+}
+
+fn project_offline_packages_ui_state(
+    input: OfflinePackagesProjectionInput<'_>,
 ) -> OfflinePackagesUiState {
+    let OfflinePackagesProjectionInput {
+        state,
+        now_epoch_ms,
+        discovery_manifests,
+        bundle_manifests_by_filename,
+        installed,
+        forced_gc_installed_filenames,
+        suppressed_fetch_filenames,
+        sync_progress,
+    } = input;
     let active_bundle = resolve_cycle_bundle_manifest(
         discovery_manifests,
         bundle_manifests_by_filename,

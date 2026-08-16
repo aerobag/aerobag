@@ -1071,12 +1071,11 @@ fn source_disabled_reason(source: &OwnshipSourceStatus) -> String {
     if !source.selectable {
         return "This ownship source cannot be selected.".to_string();
     }
-    source
-        .status_label
-        .trim()
-        .is_empty()
-        .then(|| "This ownship source is unavailable.".to_string())
-        .unwrap_or_else(|| source.status_label.clone())
+    if source.status_label.trim().is_empty() {
+        "This ownship source is unavailable.".to_string()
+    } else {
+        source.status_label.clone()
+    }
 }
 
 fn source_selected_by_policy(source: &OwnshipSourceStatus, policy: &OwnshipPolicy) -> bool {

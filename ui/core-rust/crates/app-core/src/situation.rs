@@ -6,17 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SituationPosition {
+    #[default]
     None,
-    LatLon { lat: f64, lon: f64 },
-}
-
-impl Default for SituationPosition {
-    fn default() -> Self {
-        Self::None
-    }
+    LatLon {
+        lat: f64,
+        lon: f64,
+    },
 }
 
 impl SituationPosition {

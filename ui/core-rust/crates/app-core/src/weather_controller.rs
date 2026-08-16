@@ -27,19 +27,14 @@ pub(crate) const NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS: i64 = 1_000;
 pub(crate) const NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS: i64 = 2_500;
 pub(crate) const NEXRAD_ANIMATION_BLANK_DWELL_MS: i64 = 500;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LiveFeedConnectionMode {
+    #[default]
     Unknown,
     Connecting,
     Connected,
     Error,
     Closed,
-}
-
-impl Default for LiveFeedConnectionMode {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

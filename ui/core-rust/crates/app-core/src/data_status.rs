@@ -149,7 +149,7 @@ pub fn project_data_status_state(
         .map(|box_| box_.severity)
         .max_by_key(|severity| severity_rank(*severity))
         .unwrap_or(UiStatusSeverity::Info);
-    let active_launcher_count = active_launcher_boxes.iter().count();
+    let active_launcher_count = active_launcher_boxes.len();
     UiDataStatusState {
         boxes,
         launcher_count: (active_launcher_count > 0).then(|| active_launcher_count.to_string()),

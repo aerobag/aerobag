@@ -678,17 +678,30 @@ pub fn start_requirement_from_leg_characteristics(
     }
 }
 
-pub fn common_resume_candidate_decision(
-    terminal_position: LatLon,
-    terminal_course_deg: f64,
-    incoming_course_to_anchor_deg: Option<f64>,
-    previous_was_hold_like: bool,
-    anchor: Option<NavRef>,
-    course_deg: f64,
-    anchor_position: LatLon,
-    target_anchor: Option<NavRef>,
-    target_anchor_position: LatLon,
-) -> HandoffDecision {
+pub struct CommonResumeCandidateInput {
+    pub terminal_position: LatLon,
+    pub terminal_course_deg: f64,
+    pub incoming_course_to_anchor_deg: Option<f64>,
+    pub previous_was_hold_like: bool,
+    pub anchor: Option<NavRef>,
+    pub course_deg: f64,
+    pub anchor_position: LatLon,
+    pub target_anchor: Option<NavRef>,
+    pub target_anchor_position: LatLon,
+}
+
+pub fn common_resume_candidate_decision(input: CommonResumeCandidateInput) -> HandoffDecision {
+    let CommonResumeCandidateInput {
+        terminal_position,
+        terminal_course_deg,
+        incoming_course_to_anchor_deg,
+        previous_was_hold_like,
+        anchor,
+        course_deg,
+        anchor_position,
+        target_anchor,
+        target_anchor_position,
+    } = input;
     let terminal_state = resume_probe_terminal_state(
         terminal_position,
         terminal_course_deg,
@@ -2130,7 +2143,7 @@ fn project_component_ui_views(
     plan: &FlightPlan,
     active_component_index: Option<usize>,
 ) -> Vec<RouteComponentUiView> {
-    let grouped_legs = grouped_component_legs(&plan);
+    let grouped_legs = grouped_component_legs(plan);
     let projected_items =
         dedupe_component_items_for_projection(&plan.route_components, &grouped_legs);
     plan.route_components
@@ -2146,9 +2159,9 @@ fn project_component_ui_views(
             let following_waypoint =
                 adjacent_waypoint_component(&plan.route_components, component_index, 1);
             let replace_procedure_component_index =
-                replaceable_procedure_component_before(&plan, component_index);
+                replaceable_procedure_component_before(plan, component_index);
             RouteComponentUiView {
-                uid: component_uid(&plan, component_index),
+                uid: component_uid(plan, component_index),
                 component_index,
                 kind: component_view_kind(component),
                 summary: component_summary(component),
@@ -2172,12 +2185,12 @@ fn project_component_ui_views(
                         waypoint: NavRef::Airport(_)
                     }
                 ) && (component_index + 1 == plan.route_components.len()
-                    || can_insert_procedure_before_component(&plan, component_index)
+                    || can_insert_procedure_before_component(plan, component_index)
                     || replace_procedure_component_index.is_some()),
-                can_remove: can_remove_component(&plan, component_index),
-                can_reorder: can_reorder_component(&plan, component_index),
-                can_reorder_up: can_reorder_component_in_direction(&plan, component_index, -1),
-                can_reorder_down: can_reorder_component_in_direction(&plan, component_index, 1),
+                can_remove: can_remove_component(plan, component_index),
+                can_reorder: can_reorder_component(plan, component_index),
+                can_reorder_up: can_reorder_component_in_direction(plan, component_index, -1),
+                can_reorder_down: can_reorder_component_in_direction(plan, component_index, 1),
                 replace_procedure_component_index,
                 preceding_waypoint,
                 following_waypoint,
@@ -2719,14 +2732,12 @@ fn project_display_rows(
                 let hold_row = row.row_kind == FlightPlanDisplayRowKind::Discontinuity
                     && row.label == ProcedureDiscontinuity::Hold.display_label();
                 for action in flight_plan_row_actions_mut(row) {
-                    if action.id == FlightPlanRowActionId::ActivateLeg {
-                        if (hold_row && active_in_terminal_hold)
-                            || (!hold_row && !active_in_terminal_hold)
-                        {
-                            action.enabled = false;
-                            action.disabled_reason =
-                                Some("This leg is already active.".to_string());
-                        }
+                    if action.id == FlightPlanRowActionId::ActivateLeg
+                        && ((hold_row && active_in_terminal_hold)
+                            || (!hold_row && !active_in_terminal_hold))
+                    {
+                        action.enabled = false;
+                        action.disabled_reason = Some("This leg is already active.".to_string());
                     }
                 }
             }
@@ -3601,7 +3612,7 @@ fn action_matrix_from_actions(
         })
         .collect::<Vec<_>>();
     for action in actions {
-        if !used.iter().any(|id| *id == action.id) {
+        if !used.contains(&action.id) {
             matrix.push(vec![action.clone()]);
         }
     }
@@ -7652,7 +7663,7 @@ mod tests {
             entry: NavRef::Navaid("OLM".to_string()),
             exit: NavRef::Fix("RAWER".to_string()),
         };
-        let points = vec![
+        let points = [
             NavRef::Navaid("OLM".to_string()),
             NavRef::Fix("CETRA".to_string()),
             NavRef::Fix("HOKBO".to_string()),

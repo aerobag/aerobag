@@ -102,7 +102,7 @@ use crate::{
     planning::NavElementUiView,
     project_nav_symbol_feature,
     publication::PublicationResolvedResource,
-    query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
+    query_map_overlay_for_surface, query_map_selection_for_surface_in_time_zone,
     session_projection::{
         ApplicationShellProjectionDependencies, CloudProjectionDependencies,
         FlightDataProjectionDependencies, FlightPlanProjectionDependencies,
@@ -129,14 +129,15 @@ use crate::{
     AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanRowActionId, FlightPlanUiState,
-    GuidanceLegGeometry, LatLon, MapOverlayQueryResult, MapSelectionForNavRefResult,
-    MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats,
-    NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState,
-    PointTilePayload, ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget,
-    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
-    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    GuidanceLegGeometry, LatLon, MapOverlayQuery, MapOverlayQueryResult,
+    MapSelectionForNavRefResult, MapSelectionQuery, MapSelectionQueryResult,
+    MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
+    MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
+    NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState, PointTilePayload,
+    ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget, RasterMapCatalog,
+    RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
@@ -316,15 +317,7 @@ impl SessionDiagnosticsCounters {
         &self,
         generation: u64,
         phase: UiSessionPhase,
-        settings_revision: u64,
-        weather_revision: u64,
-        map_revision: u64,
-        situation_revision: u64,
-        flight_plan_revision: u64,
-        nav_data_revision: u64,
-        package_revision: u64,
-        cloud_revision: u64,
-        data_status_revision: u64,
+        session: &UiSession,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -340,17 +333,17 @@ impl SessionDiagnosticsCounters {
             map_projection_count: self.map_projection_count.load(Ordering::Relaxed),
             situation_projection_count: self.situation_projection_count.load(Ordering::Relaxed),
             flight_plan_projection_count: self.flight_plan_projection_count.load(Ordering::Relaxed),
-            settings_revision,
-            weather_revision,
-            map_revision,
-            situation_revision,
-            flight_plan_revision,
-            nav_data_revision,
-            package_revision,
+            settings_revision: session.settings.revision(),
+            weather_revision: session.weather.revision(),
+            map_revision: session.map.revision(),
+            situation_revision: session.situation.revision(),
+            flight_plan_revision: session.flight_plan.revision(),
+            nav_data_revision: session.nav_data.revision(),
+            package_revision: session.packages.revision(),
             package_projection_count: self.package_projection_count.load(Ordering::Relaxed),
-            cloud_revision,
+            cloud_revision: session.cloud.revision(),
             cloud_projection_count: self.cloud_projection_count.load(Ordering::Relaxed),
-            data_status_revision,
+            data_status_revision: session.data_status.revision(),
             data_status_projection_count: self.data_status_projection_count.load(Ordering::Relaxed),
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
@@ -421,18 +414,10 @@ struct SessionCoordinatorModel {
     time_display_mode: crate::TimeDisplayMode,
 }
 
+#[derive(Default)]
 struct SessionRuntime {
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     adsb: crate::adsb::AdsbSessionState,
-}
-
-impl Default for SessionRuntime {
-    fn default() -> Self {
-        Self {
-            pending_resource_effects: Vec::new(),
-            adsb: crate::adsb::AdsbSessionState::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -646,19 +631,8 @@ impl SessionSlot {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.diagnostics.snapshot(
-            self.generation,
-            self.phase(),
-            session.settings.revision(),
-            session.weather.revision(),
-            session.map.revision(),
-            session.situation.revision(),
-            session.flight_plan.revision(),
-            session.nav_data.revision(),
-            session.packages.revision(),
-            session.cloud.revision(),
-            session.data_status.revision(),
-        )
+        self.diagnostics
+            .snapshot(self.generation, self.phase(), &session)
     }
 }
 
@@ -2120,7 +2094,7 @@ fn create_ui_session_inner(
 ) -> AppResult<UiSessionInitResult> {
     let app_state = state::reduce(
         &AppState::default(),
-        AppEvent::ReplaceFlightPlan(plan.clone()),
+        AppEvent::ReplaceFlightPlan(Box::new(plan.clone())),
     )?;
     let app_state = register_default_situation_sources(app_state)?;
     let app_state = register_bad_autopilot_source(app_state)?;
@@ -2212,7 +2186,7 @@ fn create_ui_session_inner(
         handle,
         Arc::new(SessionSlot::new(handle, generation, session)),
     );
-    if let Some(mark) = mark.as_deref_mut() {
+    if let Some(mark) = mark {
         mark("core_store_session");
     }
     Ok(UiSessionInitResult { handle, snapshot })
@@ -4009,13 +3983,16 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let compact = &session.coordinator.chart_page_state;
     let derived = match chart_page_state(
         session_nav_kv_store(session)?,
-        &plan,
-        &compact.recent_airport_ids,
-        compact.plate_target_airport_id.as_deref(),
-        Some(&compact.selected_airport_id),
-        compact.selected_reference_family_id.as_deref(),
-        (!compact.selected_chart_id.is_empty()).then_some(compact.selected_chart_id.as_str()),
-        &compact.suggested_chart_ids,
+        crate::had_ops::ChartPageQuery {
+            plan: &plan,
+            stored_recent_airport_ids: &compact.recent_airport_ids,
+            plate_target_airport_id: compact.plate_target_airport_id.as_deref(),
+            candidate_airport_id: Some(&compact.selected_airport_id),
+            selected_reference_family_id: compact.selected_reference_family_id.as_deref(),
+            candidate_chart_id: (!compact.selected_chart_id.is_empty())
+                .then_some(compact.selected_chart_id.as_str()),
+            suggested_chart_ids: &compact.suggested_chart_ids,
+        },
     ) {
         Ok(derived) => derived,
         Err(HadReadError::NeedPages(pages)) => {
@@ -4071,7 +4048,7 @@ fn session_aircraft_definitions(
             message: format!("cannot hash bundled default aircraft definition: {error}"),
         })?;
         definitions.entry(hash).or_insert(definition);
-        return Ok(definitions);
+        Ok(definitions)
     }
     #[cfg(not(test))]
     Ok(definitions)
@@ -5513,15 +5490,13 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
         if session
             .nav_data
             .insert_page_if_attached(store_id, page_index, page_bytes)
-        {
-            if session
+            && session
                 .coordinator
                 .cycle_product_freshness
                 .missing_nav_kv_pages
                 .remove(&page_index)
-            {
-                session.coordinator.cycle_product_freshness.dirty = true;
-            }
+        {
+            session.coordinator.cycle_product_freshness.dirty = true;
         }
     }
 }
@@ -6004,10 +5979,10 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             .adsb
             .ingest(resource_id, bytes, received_epoch_ms)
         {
-            Ok(crate::adsb::AdsbIngestOutcome::Traffic) => {
+            Ok(None) => {
                 clear_data_status_record(session, ADSB_TRAFFIC_STATUS_ID);
             }
-            Ok(crate::adsb::AdsbIngestOutcome::Ownship(update)) => {
+            Ok(Some(update)) => {
                 apply_adsb_ownship_update(session, update)?;
             }
             Err(message) => {
@@ -8115,7 +8090,7 @@ fn install_vector_manifest_config(
     session: &mut UiSession,
     manifest_json: &str,
 ) -> Result<(), String> {
-    let config = map_overlay_config_from_vector_manifest_json(&manifest_json)
+    let config = map_overlay_config_from_vector_manifest_json(manifest_json)
         .map_err(|err| err.to_string())?;
     session.map.install_vector_manifest_config(config);
     rebuild_metar_tile_cache(session);
@@ -8741,22 +8716,24 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     };
     let flight_plan_ms = elapsed_ms(flight_plan_started_at);
     let overlay_started_at = crate::core_clock_ms();
-    let mut overlay = query_map_overlay_for_surface_at(
+    let mut overlay = query_map_overlay_for_surface(
         &metrics,
-        session.map.overlay_config(),
-        display_vectors,
-        session.map.layer_state().metars.visible,
-        &offline_region_records,
-        ownship_overlay_context(session).as_ref(),
-        &session.map.runtime().vector_tile_cache,
-        &session.weather.runtime().obstacle_tile_cache,
-        &session.weather.runtime().metar_tile_cache,
-        session.weather.runtime().metar_payload.as_ref(),
-        session.weather.runtime().pirep_payload.as_ref(),
-        &session.map.runtime().airspace_feature_cache,
-        session.weather.runtime().tfr_payload.as_ref(),
-        &flight_plan_features,
-        Some(session_wall_clock_utc(session)),
+        MapOverlayQuery {
+            config: session.map.overlay_config(),
+            display_vectors,
+            display_metars: session.map.layer_state().metars.visible,
+            offline_region_records: &offline_region_records,
+            obstacle_context: ownship_overlay_context(session).as_ref(),
+            vector_tile_cache: &session.map.runtime().vector_tile_cache,
+            obstacle_tile_cache: &session.weather.runtime().obstacle_tile_cache,
+            metar_tile_cache: &session.weather.runtime().metar_tile_cache,
+            metar_payload: session.weather.runtime().metar_payload.as_ref(),
+            pirep_payload: session.weather.runtime().pirep_payload.as_ref(),
+            airspace_feature_cache: &session.map.runtime().airspace_feature_cache,
+            tfr_payload: session.weather.runtime().tfr_payload.as_ref(),
+            protected_point_features: &flight_plan_features,
+            tfr_reference_utc: Some(session_wall_clock_utc(session)),
+        },
     );
     let overlay_ms = elapsed_ms(overlay_started_at);
     overlay.flight_plan_features = flight_plan_features;
@@ -9114,7 +9091,7 @@ fn materialize_map_selection_in_session(
     click: LatLon,
     requested_nav_ref_point: Option<&NavRefSelectionPoint>,
 ) -> AppResult<MapSelectionMaterialization> {
-    if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
+    if let Err(err) = ensure_vector_inputs_loaded(session, metrics) {
         return had_read_error_to_map_selection_materialization(err);
     }
     if let Err(err) = ensure_weather_station_airport_aliases_loaded(session) {
@@ -9181,24 +9158,26 @@ fn materialize_map_selection_in_session(
         })?;
     let mut selection = query_map_selection_for_surface_in_time_zone(
         metrics,
-        session.map.overlay_config(),
-        plan,
-        click,
-        &session.map.runtime().vector_tile_cache,
-        &session.weather.runtime().metar_tile_cache,
-        session.weather.runtime().metar_payload.as_ref(),
-        session.weather.runtime().pirep_payload.as_ref(),
-        session.weather.runtime().taf_payload.as_ref(),
-        session.weather.runtime().airport_notam_index.as_ref(),
-        weather_station_airport_aliases,
-        &offline_region_records,
-        &session.map.runtime().airspace_feature_cache,
-        session.weather.runtime().tfr_payload.as_ref(),
-        &supplemental_nav_ref_points,
-        &mut availability,
-        Some(session_wall_clock_utc(session)),
-        local_time_zone,
-        session.coordinator.time_display_mode,
+        MapSelectionQuery {
+            config: session.map.overlay_config(),
+            plan,
+            click,
+            vector_tile_cache: &session.map.runtime().vector_tile_cache,
+            metar_tile_cache: &session.weather.runtime().metar_tile_cache,
+            metar_payload: session.weather.runtime().metar_payload.as_ref(),
+            pirep_payload: session.weather.runtime().pirep_payload.as_ref(),
+            taf_payload: session.weather.runtime().taf_payload.as_ref(),
+            notam_payload: session.weather.runtime().airport_notam_index.as_ref(),
+            weather_station_airport_aliases,
+            offline_region_records: &offline_region_records,
+            airspace_feature_cache: &session.map.runtime().airspace_feature_cache,
+            tfr_payload: session.weather.runtime().tfr_payload.as_ref(),
+            supplemental_nav_ref_points: &supplemental_nav_ref_points,
+            airport_plate_availability: &mut availability,
+            weather_age_reference_utc: Some(session_wall_clock_utc(session)),
+            local_time_zone,
+            time_display_mode: session.coordinator.time_display_mode,
+        },
     );
     if !missing_pages.is_empty() {
         return Ok(MapSelectionMaterialization::NeedResources(
@@ -9760,8 +9739,10 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             }
         }
         None => {
-            let mut stats = NexradOverlayStats::default();
-            stats.observed_at_utc = frames.last().and_then(|frame| frame.observed_at_utc);
+            let stats = NexradOverlayStats {
+                observed_at_utc: frames.last().and_then(|frame| frame.observed_at_utc),
+                ..NexradOverlayStats::default()
+            };
             NexradOverlayQueryResult {
                 status: NexradOverlayStatus::Ready { count: 0 },
                 tiles: Vec::new(),
@@ -9972,7 +9953,7 @@ fn nexrad_overlay_query(
     let viewport_bounds = viewport_lat_lon_bounds(viewport, width_px, height_px);
     let [origin_lon, pixel_lon, _rot_x, origin_lat, _rot_y, pixel_lat] =
         manifest.source_grid.geo_transform;
-    let observed_at_utc = manifest.observed_at_utc.clone();
+    let observed_at_utc = manifest.observed_at_utc;
     if pixel_lon == 0.0 || pixel_lat == 0.0 {
         return Ok(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Unavailable {
@@ -10045,6 +10026,15 @@ fn nexrad_overlay_query(
         observed_at_utc,
         ..NexradOverlayStats::default()
     };
+    let affine_projection = NexradAffineProjection {
+        viewport,
+        width_px,
+        height_px,
+        origin_lon,
+        level_pixel_lon,
+        origin_lat,
+        level_pixel_lat,
+    };
     for y in y_start..=y_end {
         for x in x_start..=x_end {
             let tile_level_x0 = x * manifest.tile_size;
@@ -10059,17 +10049,13 @@ fn nexrad_overlay_query(
             while let Some((source_x, source_y, source_width, source_height)) = stack.pop() {
                 stats.max_stack_depth = stats.max_stack_depth.max(stack.len() + 1);
                 let affine_error_px = nexrad_render_piece_affine_error_px(
-                    viewport,
-                    width_px,
-                    height_px,
-                    origin_lon,
-                    level_pixel_lon,
-                    origin_lat,
-                    level_pixel_lat,
-                    tile_level_x0 + source_x,
-                    tile_level_y0 + source_y,
-                    source_width,
-                    source_height,
+                    &affine_projection,
+                    NexradSourceRect {
+                        x: tile_level_x0 + source_x,
+                        y: tile_level_y0 + source_y,
+                        width: source_width,
+                        height: source_height,
+                    },
                 );
                 if source_width > 1
                     && (source_width > NEXRAD_RENDER_MAX_SOURCE_SLICE_PX
@@ -10144,19 +10130,44 @@ fn nexrad_overlay_query(
     })
 }
 
-fn nexrad_render_piece_affine_error_px(
-    viewport: &MapViewport,
+#[derive(Clone, Copy)]
+struct NexradAffineProjection<'a> {
+    viewport: &'a MapViewport,
     width_px: f64,
     height_px: f64,
     origin_lon: f64,
     level_pixel_lon: f64,
     origin_lat: f64,
     level_pixel_lat: f64,
-    level_x0: u32,
-    level_y0: u32,
-    source_width: u32,
-    source_height: u32,
+}
+
+#[derive(Clone, Copy)]
+struct NexradSourceRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+fn nexrad_render_piece_affine_error_px(
+    projection: &NexradAffineProjection<'_>,
+    source: NexradSourceRect,
 ) -> f64 {
+    let NexradAffineProjection {
+        viewport,
+        width_px,
+        height_px,
+        origin_lon,
+        level_pixel_lon,
+        origin_lat,
+        level_pixel_lat,
+    } = *projection;
+    let NexradSourceRect {
+        x: level_x0,
+        y: level_y0,
+        width: source_width,
+        height: source_height,
+    } = source;
     let lon0 = origin_lon + level_pixel_lon * level_x0 as f64;
     let lon1 = origin_lon + level_pixel_lon * (level_x0 + source_width) as f64;
     let lat0 = origin_lat + level_pixel_lat * level_y0 as f64;
@@ -11697,7 +11708,7 @@ fn project_flight_data_banner(
             waypoint_distance_nm = active.distance_remaining_nm;
             final_distance_nm = materialized.total_distance_remaining_nm;
             if let Some(geometry) = active.geometry.as_ref() {
-                desired_track_magnetic_deg = active_display_course_deg(&geometry, position, store)?;
+                desired_track_magnetic_deg = active_display_course_deg(geometry, position, store)?;
             }
         }
     }
@@ -14113,8 +14124,10 @@ mod tests {
                 row_uid: "must-roll-back".to_string(),
                 offset_nm: 4.0,
             });
-            let mut plan = FlightPlan::default();
-            plan.name = "must-roll-back".to_string();
+            let plan = FlightPlan {
+                name: "must-roll-back".to_string(),
+                ..FlightPlan::default()
+            };
             session
                 .flight_plan
                 .replace_plan(plan)
@@ -15742,21 +15755,21 @@ mod tests {
                 session.weather.runtime().obstacle_tile_cache.clone(),
             )
         };
+        let vector_tiles = HashMap::new();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
         let overlay = crate::query_map_overlay_for_surface(
             metrics,
-            &config,
-            true,
-            false,
-            &[],
-            None,
-            &HashMap::new(),
-            &obstacle_cache,
-            &HashMap::new(),
-            None,
-            None,
-            &HashMap::new(),
-            None,
-            &[],
+            MapOverlayQuery {
+                display_vectors: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_cache,
+                    &metar_tiles,
+                    &airspaces,
+                )
+            },
         );
         overlay
             .visible_features
@@ -17417,6 +17430,9 @@ mod tests {
             config.metar_layer.as_ref(),
             &HashSet::from(["KAAA".to_string()]),
         );
+        let vector_tiles = HashMap::new();
+        let obstacle_tiles = HashMap::new();
+        let airspaces = HashMap::new();
         let result = crate::query_map_overlay(
             &MapViewport {
                 center: LatLon { lat: 0.0, lon: 0.0 },
@@ -17426,18 +17442,17 @@ mod tests {
             },
             240.0,
             240.0,
-            &config,
-            false,
-            true,
-            &[],
-            None,
-            &HashMap::new(),
-            &HashMap::new(),
-            &metar_tile_cache,
-            Some(&payload),
-            None,
-            &HashMap::new(),
-            None,
+            MapOverlayQuery {
+                display_metars: true,
+                metar_payload: Some(&payload),
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_tiles,
+                    &metar_tile_cache,
+                    &airspaces,
+                )
+            },
         );
 
         assert_eq!(result.visible_metars.len(), 1);
@@ -19543,21 +19558,21 @@ mod tests {
                 session.weather.runtime().obstacle_tile_cache.clone(),
             )
         };
+        let vector_tiles = HashMap::new();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
         let overlay = crate::query_map_overlay_for_surface(
             &metrics,
-            &config,
-            true,
-            false,
-            &[],
-            None,
-            &HashMap::new(),
-            &obstacle_cache,
-            &HashMap::new(),
-            None,
-            None,
-            &HashMap::new(),
-            None,
-            &[],
+            MapOverlayQuery {
+                display_vectors: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_cache,
+                    &metar_tiles,
+                    &airspaces,
+                )
+            },
         );
 
         assert!(overlay
@@ -19763,12 +19778,9 @@ mod tests {
         ));
 
         let mut resource_rounds = 0;
-        loop {
-            let resources = match outcome {
-                HadOperationOutcome::NeedResources { resources }
-                | HadOperationOutcome::NeedSnapshotResources { resources, .. } => resources,
-                HadOperationOutcome::Complete { .. } => break,
-            };
+        while let HadOperationOutcome::NeedResources { resources }
+        | HadOperationOutcome::NeedSnapshotResources { resources, .. } = outcome
+        {
             resource_rounds += 1;
             assert!(resource_rounds <= 3, "forecast page faults must converge");
             assert!(drain_session_resource_effects(init.handle)
@@ -20003,21 +20015,21 @@ mod tests {
         };
         assert!(statuses.is_empty());
         assert!(effects.is_empty());
+        let vector_tiles = HashMap::new();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
         let overlay = crate::query_map_overlay_for_surface(
             &metrics,
-            &config,
-            true,
-            false,
-            &[],
-            None,
-            &HashMap::new(),
-            &obstacle_cache,
-            &HashMap::new(),
-            None,
-            None,
-            &HashMap::new(),
-            None,
-            &[],
+            MapOverlayQuery {
+                display_vectors: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_cache,
+                    &metar_tiles,
+                    &airspaces,
+                )
+            },
         );
 
         assert!(overlay
@@ -20852,7 +20864,7 @@ mod tests {
             resources[0].id,
             "live_feeds/nexrad_tile/state-v1/tiles/res3/0/0.png"
         );
-        assert_eq!(resources[0].optional, false);
+        assert!(!resources[0].optional);
         assert_eq!(
             resources[0].source,
             CoreResourceSource::PublicUrl {
@@ -22354,7 +22366,7 @@ mod tests {
     #[test]
     fn nav_db_family_warning_text_dedupes_regional_packages() {
         let init = create_current_test_session();
-        let packages = vec![
+        let packages = [
             serde_json::json!({
                 "id": "AK_ENR_H_ENH1_2605",
                 "family_id": "enr-h"
@@ -27978,11 +27990,32 @@ mod tests {
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
+        let projection = NexradAffineProjection {
+            viewport: &viewport,
+            width_px: 1024.0,
+            height_px: 768.0,
+            origin_lon: -130.0,
+            level_pixel_lon: 0.08,
+            origin_lat: 55.0,
+            level_pixel_lat: -0.08,
+        };
         let full_res3_error = nexrad_render_piece_affine_error_px(
-            &viewport, 1024.0, 768.0, -130.0, 0.08, 55.0, -0.08, 300, 80, 64, 64,
+            &projection,
+            NexradSourceRect {
+                x: 300,
+                y: 80,
+                width: 64,
+                height: 64,
+            },
         );
         let split_res3_error = nexrad_render_piece_affine_error_px(
-            &viewport, 1024.0, 768.0, -130.0, 0.08, 55.0, -0.08, 300, 80, 32, 32,
+            &projection,
+            NexradSourceRect {
+                x: 300,
+                y: 80,
+                width: 32,
+                height: 32,
+            },
         );
 
         assert!(

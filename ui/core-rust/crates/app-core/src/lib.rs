@@ -192,10 +192,11 @@ pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
     OwnshipBannerSeverity, OwnshipControlModel, OwnshipLauncherTextTone, OwnshipMode,
     OwnshipPolicy, OwnshipRenderState, OwnshipSelectionCommand, OwnshipSelectionPolicy,
-    OwnshipSourceId, OwnshipSourceKind, OwnshipSourceMenuItem, OwnshipSourceRegistration,
-    OwnshipSourceStatus, OwnshipSourceStatusUpdate, OwnshipState, OwnshipTextAction,
-    OwnshipUiState, ResolvedOwnshipState, SituationControlInput, SituationControlMenuItem,
-    SituationKinematics, SituationRingCandidate, SituationSample, SourceConnectionState,
+    OwnshipSourceId, OwnshipSourceKind, OwnshipSourceMenuItem, OwnshipSourcePowerState,
+    OwnshipSourceRegistration, OwnshipSourceStatus, OwnshipSourceStatusUpdate, OwnshipState,
+    OwnshipTextAction, OwnshipUiState, ResolvedOwnshipState, SituationControlInput,
+    SituationControlMenuItem, SituationKinematics, SituationRingCandidate, SituationSample,
+    SourceConnectionState,
 };
 pub use package_management::{
     current_artifacts_manifest_is_supported, decode_bundle_manifest,

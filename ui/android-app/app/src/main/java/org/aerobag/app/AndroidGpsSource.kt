@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.OwnshipSourceRegistration
+import org.aerobag.app.domain.OwnshipSourcePowerState
 import org.aerobag.app.domain.OwnshipSourceStatusUpdate
 import org.aerobag.app.domain.SourceConnectionState
 import org.aerobag.app.domain.SituationSample
@@ -21,21 +22,21 @@ object AndroidGpsSource {
     private val mutableSamples = MutableSharedFlow<SituationSample>(
         extraBufferCapacity = 32,
     )
-    private val mutableSourceSelectionRequests = MutableSharedFlow<String>(
-        extraBufferCapacity = 8,
-    )
 
     val status: StateFlow<OwnshipSourceStatusUpdate> = mutableStatus
     val samples: SharedFlow<SituationSample> = mutableSamples
-    val sourceSelectionRequests: SharedFlow<String> = mutableSourceSelectionRequests
-
-    fun registration() =
+    fun registration(paused: Boolean = false) =
         OwnshipSourceRegistration(
             sourceId = SourceId,
             sourceKind = OwnshipSourceKind.DeviceGps,
             displayName = "Android GPS",
             selectable = true,
             autoEligible = true,
+            powerState = if (paused) {
+                OwnshipSourcePowerState.Paused
+            } else {
+                OwnshipSourcePowerState.Running
+            },
         )
 
     fun publishStatus(update: OwnshipSourceStatusUpdate) {
@@ -44,10 +45,6 @@ object AndroidGpsSource {
 
     fun publishSample(sample: SituationSample) {
         mutableSamples.tryEmit(sample)
-    }
-
-    fun requestSourceSelection(sourceId: String) {
-        mutableSourceSelectionRequests.tryEmit(sourceId)
     }
 
     fun searchingStatus(label: String = "Searching") =

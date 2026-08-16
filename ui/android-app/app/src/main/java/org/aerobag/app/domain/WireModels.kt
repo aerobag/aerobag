@@ -160,6 +160,7 @@ data class WireOwnshipSourceMenuItem(
     val disabled_reason: String? = null,
     val active: Boolean,
     val status_label: String,
+    val power_state: WireOwnshipSourcePowerState? = null,
     val keep_tray_open_on_select: Boolean = false,
 )
 
@@ -184,6 +185,21 @@ enum class WireSituationControlInput {
 
     @SerialName("skip_forward")
     SkipForward,
+
+    @SerialName("pause")
+    Pause,
+
+    @SerialName("resume")
+    Resume,
+}
+
+@Serializable
+enum class WireOwnshipSourcePowerState {
+    @SerialName("running")
+    Running,
+
+    @SerialName("paused")
+    Paused,
 }
 
 @Serializable

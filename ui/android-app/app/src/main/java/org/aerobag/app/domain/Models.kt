@@ -592,11 +592,18 @@ enum class OwnshipLauncherTextTone {
     Unavailable,
 }
 
+enum class OwnshipSourcePowerState {
+    Running,
+    Paused,
+}
+
 enum class SituationControlInput {
     SkipBackward,
     FastRewind,
     FastForward,
     SkipForward,
+    Pause,
+    Resume,
 }
 
 data class OwnshipRenderState(
@@ -656,6 +663,7 @@ data class OwnshipSourceMenuItem(
     val disabledReason: String? = null,
     val active: Boolean,
     val statusLabel: String,
+    val powerState: OwnshipSourcePowerState? = null,
     val keepTrayOpenOnSelect: Boolean = false,
 )
 
@@ -688,6 +696,7 @@ data class OwnshipSourceRegistration(
     val displayName: String,
     val selectable: Boolean,
     val autoEligible: Boolean,
+    val powerState: OwnshipSourcePowerState? = null,
 )
 
 data class OwnshipSourceStatusUpdate(

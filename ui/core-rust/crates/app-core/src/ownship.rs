@@ -112,6 +112,13 @@ pub enum SourceConnectionState {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnshipSourcePowerState {
+    Running,
+    Paused,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SituationKinematics {
     pub position: LatLon,
@@ -163,6 +170,8 @@ pub struct OwnshipSourceStatus {
     pub provides_speed: bool,
     pub provides_altitude: bool,
     pub status_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_state: Option<OwnshipSourcePowerState>,
     pub latest_sample: Option<SituationSample>,
     #[serde(default)]
     pub recent_samples: Vec<SituationSample>,
@@ -264,6 +273,8 @@ pub struct OwnshipSourceMenuItem {
     pub disabled_reason: Option<String>,
     pub active: bool,
     pub status_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_state: Option<OwnshipSourcePowerState>,
     #[serde(default)]
     pub keep_tray_open_on_select: bool,
 }
@@ -352,6 +363,8 @@ pub struct OwnshipSourceRegistration {
     pub auto_eligible: bool,
     #[serde(default)]
     pub stale_after_ms: Option<i64>,
+    #[serde(default)]
+    pub power_state: Option<OwnshipSourcePowerState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -369,6 +382,8 @@ pub enum SituationControlInput {
     FastRewind,
     FastForward,
     SkipForward,
+    Pause,
+    Resume,
 }
 
 pub fn register_source(
@@ -397,6 +412,7 @@ pub fn register_source(
             existing.selectable = registration.selectable;
             existing.auto_eligible = registration.auto_eligible;
             existing.stale_after_ms = stale_after_ms;
+            existing.power_state = registration.power_state;
         }
         None => next.sources.push(OwnshipSourceStatus {
             source_id: registration.source_id,
@@ -426,9 +442,36 @@ pub fn register_source(
                     | OwnshipSourceKind::BadAutopilot
             ),
             status_label: "Unavailable".to_string(),
+            power_state: registration.power_state,
             latest_sample: None,
             recent_samples: Vec::new(),
         }),
+    }
+    refresh(&next)
+}
+
+pub fn set_source_power_paused(
+    state: &OwnshipState,
+    source_id: &OwnshipSourceId,
+    paused: bool,
+) -> OwnshipState {
+    let mut next = state.clone();
+    let Some(source) = next
+        .sources
+        .iter_mut()
+        .find(|source| source.source_id == *source_id && source.power_state.is_some())
+    else {
+        return next;
+    };
+    source.power_state = Some(if paused {
+        OwnshipSourcePowerState::Paused
+    } else {
+        OwnshipSourcePowerState::Running
+    });
+    if paused {
+        next.policy.selection = OwnshipSelectionPolicy::Manual {
+            source_id: source_id.clone(),
+        };
     }
     refresh(&next)
 }
@@ -495,6 +538,7 @@ pub fn push_sample(state: &OwnshipState, sample: SituationSample) -> OwnshipStat
                 provides_altitude: sample.altitude_msl_ft.is_some()
                     || sample.pressure_altitude_ft.is_some(),
                 status_label: "Connected".to_string(),
+                power_state: None,
                 latest_sample: None,
                 recent_samples: Vec::new(),
             };
@@ -539,8 +583,18 @@ fn prune_recent_samples(source: &mut OwnshipSourceStatus) {
 }
 
 fn refresh(state: &OwnshipState) -> OwnshipState {
+    let now_epoch_ms = state
+        .sources
+        .iter()
+        .filter_map(|source| source.last_received_time_epoch_ms)
+        .max()
+        .unwrap_or(0);
+    refresh_at(state, now_epoch_ms)
+}
+
+pub fn refresh_at(state: &OwnshipState, now_epoch_ms: i64) -> OwnshipState {
     let mut next = state.clone();
-    next.resolved = resolve_state(&next.policy, &mut next.sources);
+    next.resolved = resolve_state(&next.policy, &mut next.sources, now_epoch_ms);
     next.render = project_render_state(&next.resolved);
     next.controls = project_controls(&next.policy, &next.sources, next.resolved.mode);
     next
@@ -549,18 +603,25 @@ fn refresh(state: &OwnshipState) -> OwnshipState {
 fn resolve_state(
     policy: &OwnshipPolicy,
     sources: &mut [OwnshipSourceStatus],
+    now_epoch_ms: i64,
 ) -> ResolvedOwnshipState {
-    let now_epoch_ms = sources
-        .iter()
-        .filter_map(|source| source.last_received_time_epoch_ms)
-        .max()
-        .unwrap_or(0);
-
     for source in sources.iter_mut() {
         source.active = false;
         if source.enabled && source.latest_sample.is_some() && !is_fresh(source, now_epoch_ms) {
             source.connection_state = SourceConnectionState::Stale;
             source.status_label = "Stale".to_string();
+        }
+    }
+
+    if let OwnshipSelectionPolicy::Manual { source_id } = &policy.selection {
+        if sources.iter().any(|source| {
+            source.source_id == *source_id
+                && source.power_state == Some(OwnshipSourcePowerState::Paused)
+        }) {
+            return ResolvedOwnshipState {
+                banner_text: "GPS PAUSED".to_string(),
+                ..ResolvedOwnshipState::none()
+            };
         }
     }
 
@@ -651,6 +712,7 @@ fn pick_by_priority<'a>(
 
 fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool {
     source.enabled
+        && source.power_state != Some(OwnshipSourcePowerState::Paused)
         && source.selectable
         && source.connection_state == SourceConnectionState::Connected
         && source
@@ -662,6 +724,7 @@ fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool 
 
 fn is_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64, policy: &OwnshipPolicy) -> bool {
     source.enabled
+        && source.power_state != Some(OwnshipSourcePowerState::Paused)
         && source.auto_eligible
         && source.connection_state == SourceConnectionState::Connected
         && source
@@ -909,14 +972,17 @@ fn project_controls(
             .then_with(|| left.label.cmp(&right.label))
             .then_with(|| left.source_id.0.cmp(&right.source_id.0))
     });
-    let active = menu_sources.iter().find(|source| source.active);
-    let selected_mode = active
+    let selected = menu_sources.iter().find(|source| source.active).cloned();
+    let selected_mode = selected
+        .as_ref()
         .map(|source| mode_for_kind(source.source_kind))
         .unwrap_or(mode);
-    let launcher_label = active
+    let launcher_label = selected
+        .as_ref()
         .map(|source| source.launcher_label.clone())
         .unwrap_or_else(|| "No GPS".to_string());
-    let launcher_tone = active
+    let launcher_tone = selected
+        .as_ref()
         .map(|source| source.tone)
         .unwrap_or(OwnshipControlTone::Unavailable);
     let launcher_text_tone = launcher_text_tone_for_control_tone(launcher_tone);
@@ -933,9 +999,13 @@ fn project_controls(
         launcher_tone,
         launcher_text_tone,
         sources: menu_sources,
-        situation_controls: situation_control_handler_for_mode(selected_mode).menu_items(),
+        situation_controls: selected
+            .as_ref()
+            .filter(|source| source.power_state.is_some())
+            .map(power_control_menu_items)
+            .unwrap_or_else(|| situation_control_handler_for_mode(selected_mode).menu_items()),
         text_action: None,
-        next_refresh_epoch_ms: None,
+        next_refresh_epoch_ms: next_source_refresh_epoch_ms(sources),
     }
 }
 
@@ -955,9 +1025,46 @@ fn project_source_menu_item(
         disabled_reason: (!enabled).then(|| source_disabled_reason(source)),
         active: source.active || source_selected_by_policy(source, policy),
         status_label: source.status_label.clone(),
+        power_state: source.power_state,
         keep_tray_open_on_select: source.source_kind == OwnshipSourceKind::LiveNetworkTrack
             && source.connection_state == SourceConnectionState::Unavailable,
     }
+}
+
+fn power_control_menu_items(source: &OwnshipSourceMenuItem) -> Vec<SituationControlMenuItem> {
+    let paused = source.power_state == Some(OwnshipSourcePowerState::Paused);
+    vec![
+        SituationControlMenuItem {
+            input: SituationControlInput::Pause,
+            label: "⏸".to_string(),
+            enabled: !paused,
+            disabled_reason: paused.then(|| "GPS is already paused.".to_string()),
+        },
+        SituationControlMenuItem {
+            input: SituationControlInput::Resume,
+            label: "▶".to_string(),
+            enabled: paused,
+            disabled_reason: (!paused).then(|| "GPS is already running.".to_string()),
+        },
+    ]
+}
+
+fn next_source_refresh_epoch_ms(sources: &[OwnshipSourceStatus]) -> Option<i64> {
+    sources
+        .iter()
+        .filter(|source| {
+            source.enabled
+                && source.power_state != Some(OwnshipSourcePowerState::Paused)
+                && source.source_kind != OwnshipSourceKind::FlightPlanSimulator
+                && source.connection_state == SourceConnectionState::Connected
+        })
+        .filter_map(|source| {
+            source
+                .last_received_time_epoch_ms
+                .and_then(|received| received.checked_add(source.stale_after_ms))
+                .and_then(|deadline| deadline.checked_add(1))
+        })
+        .min()
 }
 
 fn source_disabled_reason(source: &OwnshipSourceStatus) -> String {
@@ -1076,6 +1183,9 @@ fn situation_control_handler_for_mode(mode: OwnshipMode) -> Box<dyn SituationCon
 }
 
 fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
+    if source.power_state == Some(OwnshipSourcePowerState::Paused) {
+        return "GPS PAUSED".to_string();
+    }
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
             gps_launcher_label(source).to_string()
@@ -1105,6 +1215,9 @@ fn gps_launcher_label(source: &OwnshipSourceStatus) -> &'static str {
 fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
     if !source.enabled {
         return OwnshipControlTone::Unavailable;
+    }
+    if source.power_state == Some(OwnshipSourcePowerState::Paused) {
+        return OwnshipControlTone::Neutral;
     }
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
@@ -1228,6 +1341,7 @@ mod tests {
                 selectable: true,
                 auto_eligible: true,
                 stale_after_ms: None,
+                power_state: None,
             },
         );
         let state = update_source_status(
@@ -1254,6 +1368,110 @@ mod tests {
     }
 
     #[test]
+    fn pausing_gps_keeps_it_selected_and_removes_live_ownship() {
+        let source_id = OwnshipSourceId("gps".to_string());
+        let state = register_source(
+            &OwnshipState::default(),
+            OwnshipSourceRegistration {
+                source_id: source_id.clone(),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                display_name: "GPS".to_string(),
+                selectable: true,
+                auto_eligible: true,
+                stale_after_ms: None,
+                power_state: Some(OwnshipSourcePowerState::Running),
+            },
+        );
+        let state = push_sample(
+            &state,
+            SituationSample {
+                source_id: source_id.clone(),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(2_000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        );
+
+        let paused = set_source_power_paused(&state, &source_id, true);
+
+        assert_eq!(
+            paused.policy.selection,
+            OwnshipSelectionPolicy::Manual {
+                source_id: source_id.clone(),
+            }
+        );
+        assert_eq!(paused.resolved.mode, OwnshipMode::None);
+        assert_eq!(paused.resolved.banner_text, "GPS PAUSED");
+        assert_eq!(paused.controls.launcher_label, "GPS PAUSED");
+        assert!(paused.controls.sources[0].active);
+        assert!(!paused.render.draw_aircraft);
+        assert_eq!(
+            paused
+                .controls
+                .situation_controls
+                .iter()
+                .filter(|control| control.enabled)
+                .map(|control| control.input)
+                .collect::<Vec<_>>(),
+            vec![SituationControlInput::Resume]
+        );
+
+        let resumed = set_source_power_paused(&paused, &source_id, false);
+        assert_eq!(resumed.resolved.mode, OwnshipMode::Live);
+        assert_eq!(resumed.controls.launcher_label, "GPS");
+        assert!(resumed.render.draw_aircraft);
+    }
+
+    #[test]
+    fn wall_clock_expires_a_silent_ownship_source() {
+        let state = push_sample(
+            &OwnshipState::default(),
+            SituationSample {
+                source_id: OwnshipSourceId("gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        );
+        assert_eq!(state.controls.next_refresh_epoch_ms, Some(6_001));
+        assert_eq!(state.resolved.mode, OwnshipMode::Live);
+
+        let stale = refresh_at(&state, 6_001);
+
+        assert_eq!(stale.resolved.mode, OwnshipMode::None);
+        assert_eq!(
+            stale.sources[0].connection_state,
+            SourceConnectionState::Stale
+        );
+        assert!(!stale.render.draw_aircraft);
+        assert_eq!(stale.controls.next_refresh_epoch_ms, None);
+    }
+
+    #[test]
     fn source_registration_can_align_freshness_with_its_polling_policy() {
         let state = register_source(
             &OwnshipState::default(),
@@ -1264,6 +1482,7 @@ mod tests {
                 selectable: true,
                 auto_eligible: false,
                 stale_after_ms: Some(120_000),
+                power_state: None,
             },
         );
 
@@ -1441,6 +1660,7 @@ mod tests {
                 selectable: true,
                 auto_eligible: false,
                 stale_after_ms: None,
+                power_state: None,
             },
         );
         let state = push_sample(

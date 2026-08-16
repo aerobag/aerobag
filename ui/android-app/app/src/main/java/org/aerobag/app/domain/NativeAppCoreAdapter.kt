@@ -2201,6 +2201,7 @@ private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     disabled_reason = disabledReason,
     active = active,
     status_label = statusLabel,
+    power_state = powerState?.toWire(),
     keep_tray_open_on_select = keepTrayOpenOnSelect,
 )
 
@@ -2216,6 +2217,13 @@ private fun SituationControlInput.toWire(): WireSituationControlInput = when (th
     SituationControlInput.FastRewind -> WireSituationControlInput.FastRewind
     SituationControlInput.FastForward -> WireSituationControlInput.FastForward
     SituationControlInput.SkipForward -> WireSituationControlInput.SkipForward
+    SituationControlInput.Pause -> WireSituationControlInput.Pause
+    SituationControlInput.Resume -> WireSituationControlInput.Resume
+}
+
+private fun OwnshipSourcePowerState.toWire(): WireOwnshipSourcePowerState = when (this) {
+    OwnshipSourcePowerState.Running -> WireOwnshipSourcePowerState.Running
+    OwnshipSourcePowerState.Paused -> WireOwnshipSourcePowerState.Paused
 }
 
 private fun WireAppUiState.toUi() = AppUiState(
@@ -2311,6 +2319,7 @@ private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     disabledReason = disabled_reason,
     active = active,
     statusLabel = status_label,
+    powerState = power_state?.toUi(),
     keepTrayOpenOnSelect = keep_tray_open_on_select,
 )
 
@@ -2326,6 +2335,13 @@ private fun WireSituationControlInput.toUi(): SituationControlInput = when (this
     WireSituationControlInput.FastRewind -> SituationControlInput.FastRewind
     WireSituationControlInput.FastForward -> SituationControlInput.FastForward
     WireSituationControlInput.SkipForward -> SituationControlInput.SkipForward
+    WireSituationControlInput.Pause -> SituationControlInput.Pause
+    WireSituationControlInput.Resume -> SituationControlInput.Resume
+}
+
+private fun WireOwnshipSourcePowerState.toUi(): OwnshipSourcePowerState = when (this) {
+    WireOwnshipSourcePowerState.Running -> OwnshipSourcePowerState.Running
+    WireOwnshipSourcePowerState.Paused -> OwnshipSourcePowerState.Paused
 }
 
 private fun WireOwnshipMode.toUi(): OwnshipMode = when (this) {
@@ -2427,6 +2443,7 @@ private fun OwnshipSourceRegistration.toCoreJson(json: Json): String =
         put("display_name", kotlinx.serialization.json.JsonPrimitive(displayName))
         put("selectable", kotlinx.serialization.json.JsonPrimitive(selectable))
         put("auto_eligible", kotlinx.serialization.json.JsonPrimitive(autoEligible))
+        powerState?.let { put("power_state", kotlinx.serialization.json.JsonPrimitive(it.toWireName())) }
     }.toString()
 
 private fun OwnshipSourceStatusUpdate.toCoreJson(json: Json): String =
@@ -2468,8 +2485,15 @@ private fun SituationControlInput.toCoreJson(json: Json): String =
             SituationControlInput.FastRewind -> "fast_rewind"
             SituationControlInput.FastForward -> "fast_forward"
             SituationControlInput.SkipForward -> "skip_forward"
+            SituationControlInput.Pause -> "pause"
+            SituationControlInput.Resume -> "resume"
         },
     )
+
+private fun OwnshipSourcePowerState.toWireName(): String = when (this) {
+    OwnshipSourcePowerState.Running -> "running"
+    OwnshipSourcePowerState.Paused -> "paused"
+}
 
 private fun CoreMapViewport.toCoreJson(json: Json): String =
     json.encodeToString(WireMapViewport.serializer(), toWire())

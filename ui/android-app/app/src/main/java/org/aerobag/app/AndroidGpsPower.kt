@@ -5,15 +5,12 @@
 package org.aerobag.app
 
 import android.content.Context
-
-// Must match DIRECT_SITUATION_SOURCE_ID in app-core's session source registration.
-internal const val PlanPreviewOwnshipSourceId = "__direct_situation__"
+import android.content.Intent
+import org.aerobag.app.domain.SituationControlInput
 
 internal object AndroidGpsPower {
-    fun shouldRunHighPrecisionGpsForSource(sourceId: String): Boolean =
-        sourceId == AndroidGpsSource.SourceId
-
-    fun batterySavingFallbackSourceId(): String = PlanPreviewOwnshipSourceId
+    const val PauseAction = "org.aerobag.app.action.PAUSE_GPS"
+    const val ResumeAction = "org.aerobag.app.action.RESUME_GPS"
 
     fun isGpsPaused(context: Context): Boolean =
         prefs(context).getBoolean(PausedKey, false)
@@ -30,32 +27,39 @@ internal object AndroidGpsPower {
             .apply()
     }
 
-    fun setPendingOwnshipSource(context: Context, sourceId: String) {
+    fun setPendingControl(context: Context, input: SituationControlInput) {
         prefs(context).edit()
-            .putString(PendingOwnshipSourceKey, sourceId)
+            .putString(PendingControlKey, input.name)
             .apply()
     }
 
-    fun clearPendingOwnshipSource(context: Context) {
+    fun clearPendingControl(context: Context) {
         prefs(context).edit()
-            .remove(PendingOwnshipSourceKey)
+            .remove(PendingControlKey)
             .apply()
     }
 
-    fun consumePendingOwnshipSource(context: Context): String? {
+    fun consumePendingControl(context: Context): SituationControlInput? {
         val sharedPrefs = prefs(context)
-        val sourceId = sharedPrefs.getString(PendingOwnshipSourceKey, null)?.takeIf { it.isNotBlank() }
-        if (sourceId != null) {
+        val input = sharedPrefs.getString(PendingControlKey, null)
+            ?.let { value -> runCatching { SituationControlInput.valueOf(value) }.getOrNull() }
+        if (input != null) {
             sharedPrefs.edit()
-                .remove(PendingOwnshipSourceKey)
+                .remove(PendingControlKey)
                 .apply()
         }
-        return sourceId
+        return input
+    }
+
+    fun controlInput(intent: Intent?): SituationControlInput? = when (intent?.action) {
+        PauseAction -> SituationControlInput.Pause
+        ResumeAction -> SituationControlInput.Resume
+        else -> null
     }
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
 
     private const val PausedKey = "android_gps_paused"
-    private const val PendingOwnshipSourceKey = "pending_ownship_source_id"
+    private const val PendingControlKey = "pending_gps_power_control"
 }

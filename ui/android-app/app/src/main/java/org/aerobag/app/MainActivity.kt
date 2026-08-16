@@ -253,6 +253,7 @@ import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.OwnshipSelection
 import org.aerobag.app.domain.OwnshipSourceKind
+import org.aerobag.app.domain.OwnshipSourcePowerState
 import org.aerobag.app.domain.OwnshipSourceRegistration
 import org.aerobag.app.domain.OwnshipSourceStatusUpdate
 import org.aerobag.app.domain.PackageZipStore
@@ -2134,6 +2135,7 @@ class MainActivity : ComponentActivity() {
             Log.w("AerobagGpsCapture", "failed to configure GPS capture log path", error)
         }
         val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]
+        routeGpsPowerIntent(intent)
         if (intent?.getBooleanExtra(OpenOfflinePackagesExtra, false) == true) {
             retainedModel.page = AppPage.OfflinePackages
             intent?.removeExtra(OpenOfflinePackagesExtra)
@@ -2166,10 +2168,21 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        routeGpsPowerIntent(intent)
         if (intent.getBooleanExtra(OpenOfflinePackagesExtra, false)) {
             intent.removeExtra(OpenOfflinePackagesExtra)
             ViewModelProvider(this)[AerobagRetainedModel::class.java].page = AppPage.OfflinePackages
             recreate()
+        }
+    }
+
+    private fun routeGpsPowerIntent(intent: Intent?) {
+        val input = AndroidGpsPower.controlInput(intent) ?: return
+        intent?.action = null
+        if (onSituationControlInput?.invoke(input) == true) {
+            AndroidGpsPower.clearPendingControl(this)
+        } else {
+            AndroidGpsPower.setPendingControl(this, input)
         }
     }
 
@@ -2715,12 +2728,6 @@ internal fun AerobagApp(
     fun selectOwnshipSource(sourceId: String) {
         applySessionCommand("selectOwnshipSource") {
             uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
-        } ?: return
-        AndroidGpsPower.clearPendingOwnshipSource(appContext)
-        if (AndroidGpsPower.shouldRunHighPrecisionGpsForSource(sourceId)) {
-            AerobagGpsService.startHighPrecisionGps(appContext)
-        } else {
-            AerobagGpsService.pauseForOwnshipSelection(appContext)
         }
     }
     LaunchedEffect(uiSession, sessionSnapshot.nextSessionSnapshotRefreshEpochMs) {
@@ -2762,6 +2769,19 @@ internal fun AerobagApp(
         }
     }
     val appUiState = sessionSnapshot.appUiState
+    val deviceGpsPowerState = appUiState.ownship.controls.sources
+        .firstOrNull { source ->
+            source.sourceId == AndroidGpsSource.SourceId &&
+                source.sourceKind == OwnshipSourceKind.DeviceGps
+        }
+        ?.powerState
+    LaunchedEffect(deviceGpsPowerState) {
+        val powerState = deviceGpsPowerState ?: return@LaunchedEffect
+        AerobagGpsService.applyCorePowerState(
+            appContext,
+            paused = powerState == OwnshipSourcePowerState.Paused,
+        )
+    }
     val sessionPlanUiState = requireNotNull(appUiState.activePlan) {
         "UiSessionSnapshot must provide active flight-plan UI state"
     }
@@ -2910,15 +2930,17 @@ internal fun AerobagApp(
             }
         }
         applyBackgroundSessionCommand("registerOwnshipSource", "AerobagOwnship") {
-            uiSession.registerOwnshipSource(AndroidGpsSource.registration())
+            uiSession.registerOwnshipSource(
+                AndroidGpsSource.registration(paused = AndroidGpsPower.isGpsPaused(appContext)),
+            )
         }
         applyBackgroundSessionCommand("updateOwnshipSourceStatus", "AerobagOwnship") {
             uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
         }
-        val startupOwnshipSource = AndroidGpsPower.consumePendingOwnshipSource(appContext)
-            ?: AndroidGpsPower.batterySavingFallbackSourceId().takeIf { AndroidGpsPower.isGpsPaused(appContext) }
-        if (startupOwnshipSource != null) {
-            selectOwnshipSource(startupOwnshipSource)
+        AndroidGpsPower.consumePendingControl(appContext)?.let { input ->
+            applyBackgroundSessionCommand("applySituationControlInput", "AerobagOwnship") {
+                uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+            }
         }
         launch {
             AndroidGpsSource.status.collect { status ->
@@ -2932,11 +2954,6 @@ internal fun AerobagApp(
                 applyBackgroundSessionCommand("pushSituationSample", "AerobagOwnship") {
                     uiSession.pushSituationSample(sample)
                 }
-            }
-        }
-        launch {
-            AndroidGpsSource.sourceSelectionRequests.collect { sourceId ->
-                selectOwnshipSource(sourceId)
             }
         }
     }

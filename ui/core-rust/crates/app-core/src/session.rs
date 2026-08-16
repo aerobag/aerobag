@@ -3442,7 +3442,14 @@ pub fn register_ownship_source_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    let initially_paused = registration.power_state == Some(crate::OwnshipSourcePowerState::Paused);
+    let source_id = registration.source_id.clone();
     session.situation.register_source(registration);
+    if initially_paused {
+        session
+            .situation
+            .select_source(crate::OwnshipSelectionCommand::Source { source_id });
+    }
     changed_session_update_outcome(session)
 }
 
@@ -3663,6 +3670,7 @@ pub fn apply_situation_control_input_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    advance_session_wall_clock(session, now_epoch_ms as i64);
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
     changed_session_update_outcome(session)
 }
@@ -11002,6 +11010,9 @@ fn assemble_session_update(
 fn try_snapshot_for_session(
     session: &mut UiSession,
 ) -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
+    session
+        .situation
+        .refresh_ownship_at(session.coordinator.wall_clock_epoch_ms);
     let resources = forecast_atmosphere_snapshot_resources(session);
     if !resources.is_empty() {
         return Err(SessionSnapshotProjectionError::NeedResources(resources));
@@ -11133,9 +11144,19 @@ fn try_snapshot_for_session(
         nav_data_epoch: session.nav_data.epoch(),
         active_nav_db: session.nav_data.active_identity(),
         next_nav_db_maintenance_epoch_ms,
-        next_session_snapshot_refresh_epoch_ms: crate::next_time_display_refresh_epoch_ms(
-            session.coordinator.wall_clock_epoch_ms,
-        ),
+        next_session_snapshot_refresh_epoch_ms: session
+            .situation
+            .ownship()
+            .controls
+            .next_refresh_epoch_ms
+            .map(|deadline| {
+                deadline.min(crate::next_time_display_refresh_epoch_ms(
+                    session.coordinator.wall_clock_epoch_ms,
+                ))
+            })
+            .unwrap_or_else(|| {
+                crate::next_time_display_refresh_epoch_ms(session.coordinator.wall_clock_epoch_ms)
+            }),
         app_state: app_state_for_session(session),
         app_ui_state,
         playback_ui_state,
@@ -11182,6 +11203,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             selectable: true,
             auto_eligible: false,
             stale_after_ms: None,
+            power_state: None,
         }),
     )?;
     let app_state = state::reduce(
@@ -11193,6 +11215,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             selectable: true,
             auto_eligible: false,
             stale_after_ms: None,
+            power_state: None,
         }),
     )?;
     let app_state = state::reduce(
@@ -11204,6 +11227,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             selectable: true,
             auto_eligible: false,
             stale_after_ms: Some(crate::adsb::OWNSHIP_STALE_AFTER_MS),
+            power_state: None,
         }),
     )?;
     state::reduce(
@@ -11286,6 +11310,7 @@ fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
             selectable: true,
             auto_eligible: true,
             stale_after_ms: None,
+            power_state: None,
         }),
     )?;
     state::reduce(
@@ -11732,6 +11757,14 @@ fn bad_autopilot_available(session: &UiSession) -> bool {
 }
 
 fn project_situation_controls(session: &UiSession) -> Vec<SituationControlMenuItem> {
+    if selected_power_controllable_source(session).is_some() {
+        return session
+            .situation
+            .ownship()
+            .controls
+            .situation_controls
+            .clone();
+    }
     situation_source_handler_for_session(session).menu_items(session)
 }
 
@@ -11789,7 +11822,47 @@ struct ReplaySituationSourceHandler;
 struct PlanPreviewSituationSourceHandler;
 
 impl SessionSituationSourceHandler for NullSituationSourceHandler {}
-impl SessionSituationSourceHandler for LiveSituationSourceHandler {}
+impl SessionSituationSourceHandler for LiveSituationSourceHandler {
+    fn apply_input(
+        &self,
+        session: &mut UiSession,
+        input: SituationControlInput,
+        _now_epoch_ms: f64,
+    ) -> AppResult<()> {
+        let Some(source_id) =
+            selected_power_controllable_source(session).map(|source| source.source_id.clone())
+        else {
+            return Ok(());
+        };
+        match input {
+            SituationControlInput::Pause => {
+                session.situation.set_source_power_paused(&source_id, true)
+            }
+            SituationControlInput::Resume => {
+                session.situation.set_source_power_paused(&source_id, false)
+            }
+            SituationControlInput::SkipBackward
+            | SituationControlInput::FastRewind
+            | SituationControlInput::FastForward
+            | SituationControlInput::SkipForward => {}
+        }
+        Ok(())
+    }
+}
+
+fn selected_power_controllable_source(session: &UiSession) -> Option<&crate::OwnshipSourceStatus> {
+    let ownship = session.situation.ownship();
+    match &ownship.policy.selection {
+        crate::OwnshipSelectionPolicy::Manual { source_id } => ownship
+            .sources
+            .iter()
+            .find(|source| source.source_id == *source_id && source.power_state.is_some()),
+        crate::OwnshipSelectionPolicy::Auto => ownship
+            .sources
+            .iter()
+            .find(|source| source.active && source.power_state.is_some()),
+    }
+}
 
 impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
     fn apply_input(
@@ -11803,6 +11876,7 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
             SituationControlInput::FastRewind => -30.0,
             SituationControlInput::FastForward => 30.0,
             SituationControlInput::SkipForward => 600.0,
+            SituationControlInput::Pause | SituationControlInput::Resume => return Ok(()),
         };
         if let Some(playback_state) = session
             .situation
@@ -11823,6 +11897,7 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
             SituationControlInput::FastForward | SituationControlInput::SkipForward => {
                 ui_state.duration_seconds - ui_state.cursor_seconds > 1e-6
             }
+            SituationControlInput::Pause | SituationControlInput::Resume => false,
         }
     }
 
@@ -11841,6 +11916,9 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
             }
             SituationControlInput::FastForward | SituationControlInput::SkipForward => {
                 Some("Already at the end of replay.".to_string())
+            }
+            SituationControlInput::Pause | SituationControlInput::Resume => {
+                Some("GPS power controls are not available during replay.".to_string())
             }
         }
     }
@@ -11861,6 +11939,7 @@ impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
         match input {
             SituationControlInput::SkipBackward | SituationControlInput::FastRewind => can_rewind,
             SituationControlInput::FastForward | SituationControlInput::SkipForward => can_forward,
+            SituationControlInput::Pause | SituationControlInput::Resume => false,
         }
     }
 
@@ -11883,6 +11962,9 @@ impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
             }
             SituationControlInput::FastForward | SituationControlInput::SkipForward => {
                 Some("Already at the end of plan preview.".to_string())
+            }
+            SituationControlInput::Pause | SituationControlInput::Resume => {
+                Some("GPS power controls are not available in plan preview.".to_string())
             }
         }
     }
@@ -12083,6 +12165,7 @@ fn apply_plan_preview_input(
                 offset_nm = PLAN_PREVIEW_FAST_STEP_NM.min(records[next_index].distance_nm);
             }
         }
+        SituationControlInput::Pause | SituationControlInput::Resume => return Ok(()),
     }
     let record = records[next_index].clone();
     session.situation.plan_preview_mut().pointer = Some(PlanPreviewPointer {
@@ -12537,6 +12620,7 @@ fn register_manual_ownship_source(
             selectable: true,
             auto_eligible: true,
             stale_after_ms: None,
+            power_state: None,
         });
     session.situation.set_policy(crate::OwnshipPolicy {
         selection: crate::OwnshipSelectionPolicy::Manual {
@@ -26505,6 +26589,136 @@ mod tests {
                 SituationControlInput::SkipForward,
             ],
         );
+    }
+
+    #[test]
+    fn gps_pause_and_resume_are_core_owned_situation_controls() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let source_id = OwnshipSourceId("device-gps".to_string());
+        register_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSourceRegistration {
+                source_id: source_id.clone(),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                display_name: "Device GPS".to_string(),
+                selectable: true,
+                auto_eligible: true,
+                stale_after_ms: None,
+                power_state: Some(crate::OwnshipSourcePowerState::Running),
+            },
+        )
+        .expect("register GPS");
+        update_ownship_source_status_in_session(
+            init.handle,
+            crate::OwnshipSourceStatusUpdate {
+                source_id: source_id.clone(),
+                connection_state: crate::SourceConnectionState::Connected,
+                enabled: true,
+                status_label: "GPS fix".to_string(),
+            },
+        )
+        .expect("connect GPS");
+        let live = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: source_id.clone(),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(2_000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push GPS fix");
+        assert_eq!(live.app_ui_state.ownship.controls.launcher_label, "GPS");
+
+        let paused = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::Pause,
+            1_100.0,
+        )
+        .expect("pause GPS");
+        assert_eq!(
+            paused.app_ui_state.ownship.controls.launcher_label,
+            "GPS PAUSED"
+        );
+        assert_eq!(paused.app_ui_state.ownship.render.banner_text, "GPS PAUSED");
+        assert!(!paused.app_ui_state.ownship.render.draw_aircraft);
+        assert_enabled_situation_controls(&paused, &[SituationControlInput::Resume]);
+
+        let resumed = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::Resume,
+            1_200.0,
+        )
+        .expect("resume GPS");
+        assert_eq!(resumed.app_ui_state.ownship.controls.launcher_label, "GPS");
+        assert!(resumed.app_ui_state.ownship.render.draw_aircraft);
+        assert_enabled_situation_controls(&resumed, &[SituationControlInput::Pause]);
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn session_refresh_deadline_expires_silent_gps_without_another_sample() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let source_id = OwnshipSourceId("device-gps".to_string());
+        register_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSourceRegistration {
+                source_id: source_id.clone(),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                display_name: "Device GPS".to_string(),
+                selectable: true,
+                auto_eligible: true,
+                stale_after_ms: Some(5_000),
+                power_state: Some(crate::OwnshipSourcePowerState::Running),
+            },
+        )
+        .expect("register GPS");
+        let live = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id,
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push GPS fix");
+        assert_eq!(live.next_session_snapshot_refresh_epoch_ms, 6_001);
+
+        let stale = get_session_snapshot_at_epoch_ms(init.handle, 6_001)
+            .expect("refresh at stale deadline");
+        assert_eq!(
+            stale.app_ui_state.ownship.render.mode,
+            crate::OwnshipMode::None
+        );
+        assert!(!stale.app_ui_state.ownship.render.draw_aircraft);
+        destroy_session(init.handle);
     }
 
     #[test]

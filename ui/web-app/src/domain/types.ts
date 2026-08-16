@@ -613,7 +613,15 @@ export type OwnshipBannerSeverity = "info" | "caution" | "warning";
 export type OwnshipControlTone = "ready" | "unavailable" | "neutral";
 export type OwnshipLauncherTextTone = "normal" | "unavailable";
 
-export type SituationControlInput = "skip_backward" | "fast_rewind" | "fast_forward" | "skip_forward";
+export type SituationControlInput =
+  | "skip_backward"
+  | "fast_rewind"
+  | "fast_forward"
+  | "skip_forward"
+  | "pause"
+  | "resume";
+
+export type OwnshipSourcePowerState = "running" | "paused";
 
 export type OwnshipSourceKind =
   | "device_gps"
@@ -653,6 +661,7 @@ export type OwnshipSourceRegistration = {
   display_name: string;
   selectable: boolean;
   auto_eligible: boolean;
+  power_state?: OwnshipSourcePowerState | null;
 };
 
 export type OwnshipSourceStatusUpdate = {
@@ -696,6 +705,7 @@ export type OwnshipControlModel = {
     disabled_reason?: string | null;
     active: boolean;
     status_label: string;
+    power_state?: OwnshipSourcePowerState | null;
     keep_tray_open_on_select?: boolean;
   }>;
   situation_controls: Array<{

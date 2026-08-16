@@ -49,15 +49,9 @@ class AerobagGpsService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ActionPauseGps -> {
-                pauseFromNotification()
+            ActionApplyPausedState -> {
+                pauseFromCore()
                 return START_NOT_STICKY
-            }
-            ActionResumeGps -> {
-                AndroidGpsPower.markGpsActive(this)
-                AndroidGpsPower.setPendingOwnshipSource(this, AndroidGpsSource.SourceId)
-                AndroidGpsSource.requestSourceSelection(AndroidGpsSource.SourceId)
-                dismissPausedNotification()
             }
         }
 
@@ -116,10 +110,8 @@ class AerobagGpsService : Service() {
         }
     }
 
-    private fun pauseFromNotification() {
+    private fun pauseFromCore() {
         AndroidGpsPower.markGpsPaused(this)
-        AndroidGpsPower.setPendingOwnshipSource(this, PlanPreviewOwnshipSourceId)
-        AndroidGpsSource.requestSourceSelection(PlanPreviewOwnshipSourceId)
         fusedLocationClient.removeLocationUpdates(locationCallback)
         publishFinalStatus(AndroidGpsSource.pausedStatus())
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -183,7 +175,7 @@ class AerobagGpsService : Service() {
             .addAction(
                 R.drawable.plan_view_icon,
                 "Pause GPS",
-                serviceIntent(ActionPauseGps, 1),
+                activityIntent(AndroidGpsPower.PauseAction, 1),
             )
             .setContentIntent(
                 PendingIntent.getActivity(
@@ -199,13 +191,13 @@ class AerobagGpsService : Service() {
         NotificationCompat.Builder(this, NotificationChannelId)
             .setSmallIcon(R.drawable.plan_view_icon)
             .setContentTitle("GPS paused")
-            .setContentText("Plan Preview active. Select GPS to resume live position.")
+            .setContentText("GPS remains selected. Tap Resume GPS to continue.")
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
             .addAction(
                 R.drawable.plan_view_icon,
                 "Resume GPS",
-                serviceIntent(ActionResumeGps, 2),
+                activityIntent(AndroidGpsPower.ResumeAction, 2),
             )
             .setContentIntent(
                 PendingIntent.getActivity(
@@ -217,11 +209,13 @@ class AerobagGpsService : Service() {
             )
             .build()
 
-    private fun serviceIntent(action: String, requestCode: Int): PendingIntent =
-        PendingIntent.getService(
+    private fun activityIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getActivity(
             this,
             requestCode,
-            Intent(this, AerobagGpsService::class.java).setAction(action),
+            Intent(this, MainActivity::class.java)
+                .setAction(action)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
@@ -233,10 +227,6 @@ class AerobagGpsService : Service() {
         }.onFailure { error ->
             Log.w(LogTag, "Failed to post paused GPS notification", error)
         }
-    }
-
-    private fun dismissPausedNotification() {
-        getSystemService(NotificationManager::class.java).cancel(PausedNotificationId)
     }
 
     private fun hasNotificationPermission(): Boolean =
@@ -267,8 +257,7 @@ class AerobagGpsService : Service() {
         private const val NotificationChannelId = "aerobag_gps"
         private const val NotificationId = 1001
         private const val PausedNotificationId = 1002
-        private const val ActionPauseGps = "org.aerobag.app.action.PAUSE_GPS"
-        private const val ActionResumeGps = "org.aerobag.app.action.RESUME_GPS"
+        private const val ActionApplyPausedState = "org.aerobag.app.action.APPLY_PAUSED_GPS_STATE"
         private const val UpdateIntervalMs = 1_000L
         private const val FastestUpdateIntervalMs = 500L
         private const val MetersToFeet = 3.280839895
@@ -284,11 +273,16 @@ class AerobagGpsService : Service() {
             )
         }
 
-        fun pauseForOwnshipSelection(context: Context) {
+        fun applyCorePowerState(context: Context, paused: Boolean) {
+            if (!paused) {
+                startHighPrecisionGps(context)
+                return
+            }
             AndroidGpsPower.markGpsPaused(context)
-            AndroidGpsPower.clearPendingOwnshipSource(context)
             AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
-            context.stopService(Intent(context, AerobagGpsService::class.java))
+            context.startService(
+                Intent(context, AerobagGpsService::class.java).setAction(ActionApplyPausedState),
+            )
         }
     }
 }

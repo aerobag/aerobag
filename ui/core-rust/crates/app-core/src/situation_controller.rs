@@ -7,10 +7,10 @@ use app_ui_contracts::session::UiPlaybackPanelState;
 use crate::{
     map_follow::{MapFollowSessionState, MapFollowUiState},
     ownship::{
-        push_sample, register_source, select_source, set_policy, update_source_status,
-        OwnshipPolicy, OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceKind,
-        OwnshipSourceRegistration, OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState,
-        SituationSample,
+        push_sample, refresh_at, register_source, select_source, set_policy,
+        set_source_power_paused, update_source_status, OwnshipPolicy, OwnshipSelectionCommand,
+        OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind, OwnshipSourceRegistration,
+        OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, SituationSample,
     },
     playback::PlaybackSessionState,
     LatLon, MapViewport, PlaybackUiState,
@@ -144,6 +144,22 @@ impl SituationController {
     pub fn push_sample(&mut self, sample: SituationSample) {
         self.model.ownship = push_sample(&self.model.ownship, sample);
         self.note_change();
+    }
+
+    pub fn set_source_power_paused(&mut self, source_id: &OwnshipSourceId, paused: bool) {
+        let next = set_source_power_paused(&self.model.ownship, source_id, paused);
+        if next != self.model.ownship {
+            self.model.ownship = next;
+            self.note_change();
+        }
+    }
+
+    pub fn refresh_ownship_at(&mut self, now_epoch_ms: i64) {
+        let next = refresh_at(&self.model.ownship, now_epoch_ms);
+        if next != self.model.ownship {
+            self.model.ownship = next;
+            self.note_change();
+        }
     }
 
     pub fn playback(&self) -> &PlaybackSessionState {
@@ -297,6 +313,7 @@ mod tests {
             selectable: true,
             auto_eligible: false,
             stale_after_ms: None,
+            power_state: None,
         });
         controller.update_source_status(OwnshipSourceStatusUpdate {
             source_id: source_id.clone(),

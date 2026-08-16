@@ -79,7 +79,100 @@ pub enum AirportNotamEffect {
     Other,
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV20";
+/// Cycle-independent identity used to join a procedure NOTAM to published plates.
+///
+/// Plate resource IDs remain cycle-specific. This key deliberately contains only
+/// FAA procedure semantics that both cycle preprocessing and live-feed ingestion
+/// can produce independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcedureRendezvousKind {
+    Departure,
+    Arrival,
+    Approach,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ProcedureRendezvousKey {
+    pub kind: ProcedureRendezvousKind,
+    pub procedure_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airport_id: Option<String>,
+}
+
+impl ProcedureRendezvousKey {
+    pub fn airport_scoped(
+        kind: ProcedureRendezvousKind,
+        airport_id: &str,
+        procedure_id: &str,
+    ) -> Result<Self, String> {
+        if kind == ProcedureRendezvousKind::Arrival {
+            return Err("arrival procedure rendezvous keys must use shared scope".to_string());
+        }
+        let key = Self {
+            kind,
+            procedure_id: canonical_procedure_component(procedure_id, "procedure ID")?,
+            airport_id: Some(canonical_procedure_component(airport_id, "airport ID")?),
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
+    pub fn shared_arrival(procedure_id: &str) -> Result<Self, String> {
+        let key = Self {
+            kind: ProcedureRendezvousKind::Arrival,
+            procedure_id: canonical_procedure_component(procedure_id, "procedure ID")?,
+            airport_id: None,
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let canonical_procedure_id =
+            canonical_procedure_component(&self.procedure_id, "procedure ID")?;
+        if canonical_procedure_id != self.procedure_id {
+            return Err(format!(
+                "procedure ID {:?} is not canonical; expected {:?}",
+                self.procedure_id, canonical_procedure_id
+            ));
+        }
+        match (self.kind, self.airport_id.as_deref()) {
+            (ProcedureRendezvousKind::Arrival, None) => Ok(()),
+            (ProcedureRendezvousKind::Arrival, Some(_)) => {
+                Err("arrival procedure rendezvous keys must use shared scope".to_string())
+            }
+            (_, Some(airport_id)) => {
+                let canonical_airport_id = canonical_procedure_component(airport_id, "airport ID")?;
+                if canonical_airport_id != airport_id {
+                    return Err(format!(
+                        "airport ID {airport_id:?} is not canonical; expected {canonical_airport_id:?}"
+                    ));
+                }
+                Ok(())
+            }
+            (_, None) => Err(
+                "approach and departure procedure rendezvous keys require an airport".to_string(),
+            ),
+        }
+    }
+}
+
+fn canonical_procedure_component(value: &str, label: &str) -> Result<String, String> {
+    let value = value.trim().to_ascii_uppercase();
+    if value.is_empty() {
+        return Err(format!("{label} is empty"));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        return Err(format!("{label} {value:?} contains unsupported characters"));
+    }
+    Ok(value)
+}
+
+pub const NAV_DB_CONTRACT_ID: &str = "NAV21";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -93,7 +186,7 @@ pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
-pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 3;
+pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 4;
 
 /// Transport timing shared by every Aerobag SSE producer and consumer.
 ///
@@ -205,5 +298,43 @@ mod tests {
             .map(|failure| AEROBAG_SSE_TRANSPORT_POLICY.reconnect_delay_ms(failure))
             .collect::<Vec<_>>();
         assert_eq!(delays, vec![5_000, 10_000, 20_000, 40_000, 65_000, 65_000]);
+    }
+
+    #[test]
+    fn procedure_rendezvous_keys_encode_scope_in_the_type_contract() {
+        assert_eq!(
+            ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Approach,
+                " kpae ",
+                " i16r ",
+            )
+            .unwrap(),
+            ProcedureRendezvousKey {
+                kind: ProcedureRendezvousKind::Approach,
+                procedure_id: "I16R".to_string(),
+                airport_id: Some("KPAE".to_string()),
+            }
+        );
+        assert_eq!(
+            ProcedureRendezvousKey::shared_arrival(" chins5 ").unwrap(),
+            ProcedureRendezvousKey {
+                kind: ProcedureRendezvousKind::Arrival,
+                procedure_id: "CHINS5".to_string(),
+                airport_id: None,
+            }
+        );
+        assert!(ProcedureRendezvousKey::airport_scoped(
+            ProcedureRendezvousKind::Arrival,
+            "KSEA",
+            "CHINS5"
+        )
+        .is_err());
+        assert!(ProcedureRendezvousKey {
+            kind: ProcedureRendezvousKind::Approach,
+            procedure_id: "I16R".to_string(),
+            airport_id: None,
+        }
+        .validate()
+        .is_err());
     }
 }

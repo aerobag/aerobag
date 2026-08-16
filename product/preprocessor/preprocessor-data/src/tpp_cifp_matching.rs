@@ -368,7 +368,7 @@ fn candidate_groups_for_plate(plate: &PlateRecord) -> Vec<BTreeSet<String>> {
         .cifp_procedure_id
         .as_ref()
         .map(|id| singleton_group(id.trim().to_ascii_uppercase()))
-        .unwrap_or_else(|| heuristic_candidate_groups(&plate.label))
+        .unwrap_or_else(|| faa_procedure_id_candidate_groups(&plate.label))
 }
 
 fn runway_pair_groups(
@@ -388,7 +388,13 @@ fn runway_pair_groups(
     groups
 }
 
-fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
+/// Converts an FAA procedure title into the CIFP identifiers it can denote.
+///
+/// Candidate alternatives are retained because a combined public plate can
+/// intentionally represent more than one CIFP procedure. Consumers must join
+/// these candidates against an authoritative CIFP/plate catalog rather than
+/// selecting one by preference.
+pub fn faa_procedure_id_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
     if let Some(candidate) = named_terminal_procedure_candidate(label) {
         return singleton_group(candidate);
     }
@@ -734,7 +740,12 @@ fn named_terminal_procedure_candidate(label: &str) -> Option<String> {
     if !matches!(prefix, "DP" | "ODP" | "STR") {
         return None;
     }
-    let body = TERMINAL_QUALIFIER_RE.replace_all(remainder, "");
+    faa_named_terminal_procedure_id(remainder)
+}
+
+pub fn faa_named_terminal_procedure_id(name: &str) -> Option<String> {
+    let uppercase = name.to_ascii_uppercase();
+    let body = TERMINAL_QUALIFIER_RE.replace_all(&uppercase, "");
     let mut words = body.split_whitespace().collect::<Vec<_>>();
     let revision = match words.last().copied()? {
         "ONE" => "1",
@@ -762,7 +773,7 @@ fn heuristic_candidate_groups_for_copter_plate(label: &str) -> Vec<BTreeSet<Stri
         .expect("valid copter regex")
         .replace(label, "$1")
         .to_string();
-    heuristic_candidate_groups(&stripped)
+    faa_procedure_id_candidate_groups(&stripped)
 }
 
 fn is_visual_plate(label: &str) -> bool {
@@ -1570,7 +1581,7 @@ mod tests {
     #[test]
     fn recognizes_gps_runway_as_p_family() {
         assert_eq!(
-            heuristic_candidate_groups("IAP-CA-GPS RWY 27"),
+            faa_procedure_id_candidate_groups("IAP-CA-GPS RWY 27"),
             vec![BTreeSet::from([String::from("P27")])]
         );
     }
@@ -1578,7 +1589,7 @@ mod tests {
     #[test]
     fn recognizes_named_departure_revision_as_cifp_sid() {
         assert_eq!(
-            heuristic_candidate_groups("DP-WA-BANGR NINE (RNAV)"),
+            faa_procedure_id_candidate_groups("DP-WA-BANGR NINE (RNAV)"),
             vec![BTreeSet::from([String::from("BANGR9")])]
         );
     }
@@ -1814,7 +1825,7 @@ mod tests {
     #[test]
     fn recognizes_vor_or_tacan_circling() {
         assert_eq!(
-            heuristic_candidate_groups("IAP-HI-VOR OR TACAN-B"),
+            faa_procedure_id_candidate_groups("IAP-HI-VOR OR TACAN-B"),
             vec![BTreeSet::from([String::from("VOR-B")])]
         );
     }

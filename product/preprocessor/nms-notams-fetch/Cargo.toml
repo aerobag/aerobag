@@ -11,6 +11,7 @@ chrono.workspace = true
 flate2.workspace = true
 libc = "0.2"
 preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }
+product-contracts = { path = "../../../crates/product-contracts" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

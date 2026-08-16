@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -40,6 +41,24 @@ fn main() -> anyhow::Result<()> {
             let input = File::open(&arguments.input_path)
                 .with_context(|| format!("failed to open {}", arguments.input_path.display()))?;
             let parsed = parse_nms_initial_load(BufReader::new(input), arguments.classification)?;
+            let procedure_notam_count = parsed
+                .records
+                .iter()
+                .filter(|record| !record.procedure_rendezvous_keys.is_empty())
+                .count();
+            let mut procedure_key_counts = BTreeMap::<&str, usize>::new();
+            for key in parsed
+                .records
+                .iter()
+                .flat_map(|record| &record.procedure_rendezvous_keys)
+            {
+                let kind = match key.kind {
+                    product_contracts::ProcedureRendezvousKind::Departure => "departure",
+                    product_contracts::ProcedureRendezvousKind::Arrival => "arrival",
+                    product_contracts::ProcedureRendezvousKind::Approach => "approach",
+                };
+                *procedure_key_counts.entry(kind).or_default() += 1;
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -48,6 +67,8 @@ fn main() -> anyhow::Result<()> {
                     "declared_record_count": parsed.declared_record_count,
                     "parsed_message_count": parsed.parsed_message_count,
                     "canonical_record_count": parsed.records.len(),
+                    "procedure_notam_count": procedure_notam_count,
+                    "procedure_key_counts": procedure_key_counts,
                     "duplicate_record_ids": parsed.duplicate_record_ids,
                     "rejections": parsed.rejections,
                 }))?

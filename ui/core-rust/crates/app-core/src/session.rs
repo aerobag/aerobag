@@ -18104,6 +18104,7 @@ mod tests {
             airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
                 .into_iter()
                 .collect(),
+            procedure_rendezvous_keys: Default::default(),
             notam_keyword: Some("AD".to_string()),
             effective_start_utc: None,
             effective_end_utc: None,
@@ -18196,6 +18197,7 @@ mod tests {
             airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
                 .into_iter()
                 .collect(),
+            procedure_rendezvous_keys: Default::default(),
             notam_keyword: Some("AD".to_string()),
             effective_start_utc: None,
             effective_end_utc: None,
@@ -18614,6 +18616,7 @@ mod tests {
                             airport_effects: BTreeSet::from([
                                 product_contracts::AirportNotamEffect::RunwayClosed,
                             ]),
+                            procedure_rendezvous_keys: BTreeSet::new(),
                             notam_keyword: Some("RWY".to_string()),
                             effective_start_utc: None,
                             effective_end_utc: None,

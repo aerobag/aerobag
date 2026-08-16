@@ -5,7 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use product_contracts::{
-    AirportNotamEffect, LIVE_FEEDS_SCHEMA_VERSION, NOTAM_LIVE_FEED_CONTRACT_VERSION,
+    AirportNotamEffect, ProcedureRendezvousKey, LIVE_FEEDS_SCHEMA_VERSION,
+    NOTAM_LIVE_FEED_CONTRACT_VERSION,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -30,6 +31,8 @@ pub struct NotamRecord {
     pub airport_id: Option<String>,
     #[serde(default)]
     pub airport_effects: BTreeSet<AirportNotamEffect>,
+    #[serde(default)]
+    pub procedure_rendezvous_keys: BTreeSet<ProcedureRendezvousKey>,
     #[serde(default)]
     pub notam_keyword: Option<String>,
     #[serde(default)]
@@ -876,6 +879,7 @@ mod tests {
             id: id.to_string(),
             airport_id: airport_id.map(str::to_string),
             airport_effects: BTreeSet::from([AirportNotamEffect::RoutineAdvisory]),
+            procedure_rendezvous_keys: BTreeSet::new(),
             notam_keyword: Some("AD".to_string()),
             effective_start_utc: Some("2026-07-22T00:00:00Z".to_string()),
             effective_end_utc: None,
@@ -1034,7 +1038,7 @@ mod tests {
         let record = record("A", Some("KSEA"), "RWY 16L CLSD");
         assert_eq!(
             String::from_utf8(canonical_record_bytes(&record).unwrap()).unwrap(),
-            r#"{"id":"A","airport_id":"KSEA","airport_effects":["routine_advisory"],"notam_keyword":"AD","effective_start_utc":"2026-07-22T00:00:00Z","effective_end_utc":null,"text":"RWY 16L CLSD","local_text":null,"icao_text":null}"#
+            r#"{"id":"A","airport_id":"KSEA","airport_effects":["routine_advisory"],"procedure_rendezvous_keys":[],"notam_keyword":"AD","effective_start_utc":"2026-07-22T00:00:00Z","effective_end_utc":null,"text":"RWY 16L CLSD","local_text":null,"icao_text":null}"#
         );
     }
 
@@ -1054,7 +1058,7 @@ mod tests {
         assert_eq!(bucket_for_id(&record.id), 342);
         assert_eq!(
             hash_hex(&record_leaf_hash(&record).unwrap()),
-            "f860df325f17dd90b4e060c7bc08b412ad7d022d427c554ef01f344ab7f99eb2"
+            "86325bf3578a7e4d5c4d657c54a0ae0bbb1dc88bcaca6863ee5f356963fb0172"
         );
         assert_eq!(
             hash_hex(&empty_buckets[0]),
@@ -1066,11 +1070,11 @@ mod tests {
         );
         assert_eq!(
             NotamState::empty().state_id(),
-            "fb2c6aa035e553522c03fda807fe182729b568fb6d13148e009010efdf6f42fb"
+            "a07c032de81a79c3428bae499ad9797d26708fef8cc847537ee0bfbd9fc76f62"
         );
         assert_eq!(
             state.state_id(),
-            "f69ba6b76f5de44e6a0c44c63cbb7002852a889b155d997a1abd1e0a25811f95"
+            "6b7d1256e8191f097fa0aa4ab6d2ecf57ade6861d2deae81272785d13c8ab3c3"
         );
     }
 

@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use notam_state::NotamRecord;
+use preprocessor_data::{faa_named_terminal_procedure_id, faa_procedure_id_candidate_groups};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
-use product_contracts::AirportNotamEffect;
+use product_contracts::{AirportNotamEffect, ProcedureRendezvousKey, ProcedureRendezvousKind};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
@@ -198,6 +199,8 @@ pub struct StructuredNotamRecord {
     pub airport_id: Option<String>,
     #[serde(default)]
     pub airport_effects: BTreeSet<AirportNotamEffect>,
+    #[serde(default)]
+    pub procedure_rendezvous_keys: BTreeSet<ProcedureRendezvousKey>,
     pub airport_name: Option<String>,
     pub airport_position: Option<StructuredPoint>,
     pub location: Option<String>,
@@ -228,6 +231,7 @@ pub fn published_notam_record(record: &StructuredNotamRecord) -> NotamRecord {
         id: record.id.clone(),
         airport_id: record.airport_id.clone(),
         airport_effects: record.airport_effects.clone(),
+        procedure_rendezvous_keys: record.procedure_rendezvous_keys.clone(),
         notam_keyword: record.notam_keyword.clone(),
         effective_start_utc: record.effective_start_utc.clone(),
         effective_end_utc: record.effective_end_utc.clone(),
@@ -1870,6 +1874,12 @@ fn normalize_notam_xml(
         location_designator.as_deref(),
         Some(identity.location.as_str()),
     );
+    let procedure_rendezvous_keys = procedure_rendezvous_keys_for_notam(
+        &xml,
+        notam_keyword.as_deref(),
+        airport_id.as_deref(),
+        text.as_deref(),
+    )?;
     let scenario = event_time_slice.and_then(|node| child_text(&node, "scenario"));
     let airport_effects = airport_id
         .as_ref()
@@ -1899,6 +1909,7 @@ fn normalize_notam_xml(
         icao_id,
         airport_id,
         airport_effects,
+        procedure_rendezvous_keys,
         airport_name: find_first_text(&xml, "airportname").or(find_first_text(&xml, "name")),
         airport_position,
         location: Some(identity.location.clone()),
@@ -1971,6 +1982,16 @@ pub(crate) fn canonicalize_structured_notam_record(
             )
         })
         .unwrap_or_default();
+    for key in &record.procedure_rendezvous_keys {
+        key.validate()
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!(
+                    "NOTAM {} has an invalid procedure rendezvous key",
+                    record.id
+                )
+            })?;
+    }
     Ok(record)
 }
 
@@ -2117,7 +2138,7 @@ fn canonical_notam_keyword(
 fn notam_keyword_from_text(text: &str) -> Option<String> {
     const KEYWORDS: &[&str] = &[
         "AD", "AIRSPACE", "APRON", "COM", "IAP", "NAV", "OBST", "ODP", "RWY", "SID", "SPECIAL",
-        "SVC", "TWY",
+        "STAR", "SVC", "TWY",
     ];
     let candidate = text
         .split_whitespace()
@@ -2125,6 +2146,169 @@ fn notam_keyword_from_text(text: &str) -> Option<String> {
         .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
         .to_ascii_uppercase();
     KEYWORDS.contains(&candidate.as_str()).then_some(candidate)
+}
+
+fn procedure_rendezvous_keys_for_notam(
+    document: &roxmltree::Document<'_>,
+    keyword: Option<&str>,
+    airport_id: Option<&str>,
+    text: Option<&str>,
+) -> anyhow::Result<BTreeSet<ProcedureRendezvousKey>> {
+    let mut keys = BTreeSet::new();
+    match keyword {
+        Some("IAP") => {
+            let Some(airport_id) = airport_id else {
+                return Ok(keys);
+            };
+            for time_slice in document.descendants().filter(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "InstrumentApproachProcedureTimeSlice"
+            }) {
+                let Some(name) = child_text(&time_slice, "name") else {
+                    continue;
+                };
+                for procedure_id in faa_procedure_id_candidate_groups(&name)
+                    .into_iter()
+                    .flatten()
+                {
+                    keys.insert(
+                        ProcedureRendezvousKey::airport_scoped(
+                            ProcedureRendezvousKind::Approach,
+                            airport_id,
+                            &procedure_id,
+                        )
+                        .map_err(anyhow::Error::msg)?,
+                    );
+                }
+            }
+        }
+        Some("SID") | Some("ODP") => {
+            let Some(airport_id) = airport_id else {
+                return Ok(keys);
+            };
+            for time_slice in document.descendants().filter(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "StandardInstrumentDepartureTimeSlice"
+            }) {
+                let procedure_id = descendant_text(&time_slice, "legacyControlNumber")
+                    .and_then(|control| terminal_control_procedure_id(&control, false))
+                    .or_else(|| {
+                        let name = child_text(&time_slice, "name")?;
+                        let revision = descendant_text(&time_slice, "printableVersionNumber")?;
+                        faa_named_terminal_procedure_id(&format!("{name} {revision}"))
+                    });
+                if let Some(procedure_id) = procedure_id {
+                    keys.insert(
+                        ProcedureRendezvousKey::airport_scoped(
+                            ProcedureRendezvousKind::Departure,
+                            airport_id,
+                            &procedure_id,
+                        )
+                        .map_err(anyhow::Error::msg)?,
+                    );
+                }
+            }
+        }
+        Some("STAR") => {
+            for time_slice in document.descendants().filter(|node| {
+                node.is_element() && node.tag_name().name() == "StandardInstrumentArrivalTimeSlice"
+            }) {
+                let procedure_id = descendant_text(&time_slice, "legacyControlNumber")
+                    .and_then(|control| terminal_control_procedure_id(&control, true))
+                    .or_else(|| {
+                        let name = child_text(&time_slice, "name")?;
+                        let revision = descendant_text(&time_slice, "printableVersionNumber")?;
+                        faa_named_terminal_procedure_id(&format!("{name} {revision}"))
+                    });
+                if let Some(procedure_id) = procedure_id {
+                    keys.insert(
+                        ProcedureRendezvousKey::shared_arrival(&procedure_id)
+                            .map_err(anyhow::Error::msg)?,
+                    );
+                }
+            }
+            for procedure_id in textual_star_procedure_ids(text.unwrap_or_default()) {
+                keys.insert(
+                    ProcedureRendezvousKey::shared_arrival(&procedure_id)
+                        .map_err(anyhow::Error::msg)?,
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(keys)
+}
+
+fn descendant_text(node: &roxmltree::Node<'_, '_>, local_name: &str) -> Option<String> {
+    node.descendants()
+        .find(|child| child.is_element() && child.tag_name().name() == local_name)
+        .and_then(text_content)
+}
+
+fn terminal_control_procedure_id(control: &str, arrival: bool) -> Option<String> {
+    let components = control
+        .trim()
+        .split('.')
+        .map(str::trim)
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    let candidate = if arrival {
+        components.last()
+    } else {
+        components.first()
+    }?;
+    candidate
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        .then(|| candidate.to_ascii_uppercase())
+}
+
+fn textual_star_procedure_ids(text: &str) -> BTreeSet<String> {
+    let uppercase = text.to_ascii_uppercase();
+    let mut ids = BTreeSet::new();
+
+    for parenthesized in uppercase
+        .split('(')
+        .skip(1)
+        .filter_map(|tail| tail.split_once(')'))
+    {
+        let candidate = parenthesized
+            .0
+            .split('.')
+            .next_back()
+            .map(str::trim)
+            .unwrap_or_default();
+        if candidate.len() >= 2
+            && candidate
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+            && candidate.chars().any(|ch| ch.is_ascii_digit())
+        {
+            ids.insert(candidate.to_string());
+        }
+    }
+
+    for line in uppercase.lines() {
+        let words = line
+            .split_whitespace()
+            .map(|word| word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric()))
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        for arrival_index in words
+            .iter()
+            .enumerate()
+            .filter_map(|(index, word)| (*word == "ARRIVAL").then_some(index))
+        {
+            if arrival_index < 2 {
+                continue;
+            }
+            let name = format!("{} {}", words[arrival_index - 2], words[arrival_index - 1]);
+            if let Some(procedure_id) = faa_named_terminal_procedure_id(&name) {
+                ids.insert(procedure_id);
+            }
+        }
+    }
+    ids
 }
 
 fn airport_id_for_notam(
@@ -3311,6 +3495,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nms_structured_procedures_emit_exact_rendezvous_candidates() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse(
+            r#"<root>
+                <InstrumentApproachProcedureTimeSlice>
+                  <name>ILS OR LOC RWY 34C</name>
+                </InstrumentApproachProcedureTimeSlice>
+                <StandardInstrumentDepartureTimeSlice>
+                  <name>KUSSO</name>
+                  <extension><legacyControlNumber>KUSSO3.KUSSO</legacyControlNumber></extension>
+                </StandardInstrumentDepartureTimeSlice>
+              </root>"#,
+        )?;
+
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(&xml, Some("IAP"), Some("KSEA"), None)?,
+            BTreeSet::from([
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Approach,
+                    "KSEA",
+                    "I34C",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Approach,
+                    "KSEA",
+                    "L34C",
+                )
+                .unwrap(),
+            ])
+        );
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(&xml, Some("SID"), Some("KTKI"), None)?,
+            BTreeSet::from([ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Departure,
+                "KTKI",
+                "KUSSO3",
+            )
+            .unwrap(),])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nms_star_text_emits_one_shared_key_for_every_served_airport() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse("<root/>")?;
+        let keys = procedure_rendezvous_keys_for_notam(
+            &xml,
+            Some("STAR"),
+            None,
+            Some("STAR SEA CHART CHINS FIVE ARRIVAL (CHINS.CHINS5) PROCEDURE NA"),
+        )?;
+        assert_eq!(
+            keys,
+            BTreeSet::from([ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap()])
+        );
+        assert_eq!(
+            notam_keyword_from_text("STAR CHINS FIVE ARRIVAL PROCEDURE NA").as_deref(),
+            Some("STAR")
+        );
+        Ok(())
+    }
+
     fn synthetic_geoid_height_feet(latitude: i32, longitude: i32) -> i32 {
         latitude * 2 + longitude
     }
@@ -3521,6 +3768,7 @@ mod tests {
             icao_id: None,
             airport_id: None,
             airport_effects: BTreeSet::new(),
+            procedure_rendezvous_keys: BTreeSet::new(),
             airport_name: None,
             airport_position: None,
             location: Some(facility.to_string()),

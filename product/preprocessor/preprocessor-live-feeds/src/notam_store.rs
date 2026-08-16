@@ -27,7 +27,7 @@ use crate::{
     validate_canonical_structured_notam_record, NotamProjectionAction, StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 7;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 8;
 const LEGACY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const STATE_ID_METADATA_KEY: &str = "notam_state_id";
@@ -1088,8 +1088,12 @@ impl NotamPersistentStore {
             .context("failed to query NOTAM sqlite schema version")?;
         match schema_version.as_deref() {
             None => self.migrate_incremental_schema(connection),
-            Some("7") => Ok(()),
-            Some("6") => self.migrate_schema_v6_to_v7(connection),
+            Some("8") => Ok(()),
+            Some("7") => self.migrate_incremental_schema(connection),
+            Some("6") => {
+                self.migrate_schema_v6_to_v7(connection)?;
+                self.migrate_incremental_schema(connection)
+            }
             Some("5") => self.migrate_incremental_schema(connection),
             Some("4") => {
                 connection
@@ -1136,7 +1140,7 @@ impl NotamPersistentStore {
         .context("failed to timestamp migrated published NOTAM journal rows")?;
         tx.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
-            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+            ["7"],
         )
         .context("failed to promote NOTAM sqlite schema 7")?;
         tx.commit()
@@ -2706,7 +2710,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v6_journal_migration_preserves_cursor_and_transitions() -> anyhow::Result<()> {
+    fn schema_v6_migration_rebuilds_state_for_the_current_contract() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         store.initialize()?;
@@ -2732,10 +2736,8 @@ mod tests {
 
         store.initialize()?;
 
-        assert_eq!(
-            store.publication_cursor()?.published_head_state_id,
-            Some(transition.to_state_id)
-        );
+        assert_eq!(store.publication_cursor()?.published_head_state_id, None);
+        assert!(store.pending_publication_transitions()?.is_empty());
         let connection = Connection::open(store.sqlite_path())?;
         assert_eq!(
             connection.query_row(
@@ -2745,13 +2747,22 @@ mod tests {
             )?,
             NOTAM_STORE_SCHEMA_VERSION.to_string()
         );
-        assert!(connection
-            .query_row(
-                "SELECT published_at_utc FROM notam_publication_journal",
+        assert_eq!(
+            connection.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notam_publication_journal')
+                 WHERE name = 'published_at_utc'",
                 [],
-                |row| row.get::<_, Option<String>>(0),
-            )?
-            .is_some());
+                |row| row.get::<_, i64>(0),
+            )?,
+            1
+        );
+        assert_eq!(
+            connection.query_row("SELECT COUNT(*) FROM notam_client_records", [], |row| row
+                .get::<_, i64>(
+                0
+            ),)?,
+            1
+        );
         Ok(())
     }
 

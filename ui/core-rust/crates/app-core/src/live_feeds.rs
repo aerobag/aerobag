@@ -2661,6 +2661,7 @@ mod tests {
             airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
                 .into_iter()
                 .collect(),
+            procedure_rendezvous_keys: Default::default(),
             notam_keyword: Some("AD".to_string()),
             effective_start_utc: Some("2026-07-23T00:00:00Z".to_string()),
             effective_end_utc: None,

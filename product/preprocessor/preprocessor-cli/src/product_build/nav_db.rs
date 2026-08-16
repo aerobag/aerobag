@@ -9,6 +9,7 @@ use preprocessor_core::runway::{
 };
 use preprocessor_core::{airport_location_label, is_enroute_navaid_type};
 use preprocessor_data::{cifp_procedure_kind_from_subsection, is_suppressed_cifp_procedure};
+use product_contracts::{ProcedureRendezvousKey, ProcedureRendezvousKind};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -1220,7 +1221,7 @@ pub(super) fn build_nav_kv_artifact(
                     wmm_metadata_path,
                     magvar_decimal_year,
                 )?);
-                attach_procedure_geometry_warnings_to_plate_pairs(&mut pairs)?;
+                attach_procedure_metadata_to_plate_pairs(&mut pairs)?;
                 let diagnostics = nav_db_build_diagnostics_from_pairs(&pairs)?;
                 fs::write(&diagnostics_path, serde_json::to_vec_pretty(&diagnostics)?)
                     .with_context(|| format!("failed to write {}", diagnostics_path.display()))?;
@@ -1409,7 +1410,7 @@ fn nav_db_build_diagnostics_from_pairs(
     Ok(diagnostics)
 }
 
-pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
+pub(super) fn attach_procedure_metadata_to_plate_pairs(
     pairs: &mut [NavKvPair],
 ) -> anyhow::Result<()> {
     let mut plate_ids_by_match_key = BTreeMap::<String, BTreeSet<String>>::new();
@@ -1484,22 +1485,69 @@ pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
         }
     }
 
+    let mut rendezvous_keys_by_plate = BTreeMap::<String, serde_json::Value>::new();
+    for pair in pairs
+        .iter()
+        .filter(|pair| pair.key.starts_with("plate/procedure-rendezvous/by-plate/"))
+    {
+        let plate_id = had_key::decode_component(
+            pair.key
+                .strip_prefix("plate/procedure-rendezvous/by-plate/")
+                .unwrap_or_default(),
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("failed to decode plate ID in {}", pair.key))?;
+        let keys: Vec<ProcedureRendezvousKey> = serde_json::from_slice(&pair.value)
+            .with_context(|| format!("failed to decode {}", pair.key))?;
+        if keys.is_empty() {
+            bail!("{} contains no procedure rendezvous keys", pair.key);
+        }
+        for key in &keys {
+            key.validate()
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("{} contains an invalid rendezvous key", pair.key))?;
+        }
+        rendezvous_keys_by_plate.insert(
+            plate_id,
+            serde_json::to_value(keys).context("failed to encode procedure rendezvous keys")?,
+        );
+    }
+
+    let mut plate_ids = BTreeSet::new();
     for pair in pairs
         .iter_mut()
         .filter(|pair| pair.key.starts_with("plate/by-id/"))
     {
         let mut value: serde_json::Value = serde_json::from_slice(&pair.value)
             .with_context(|| format!("failed to decode {}", pair.key))?;
-        let Some(plate_id) = value.get("id").and_then(|value| value.as_str()) else {
+        let Some(plate_id) = value
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+        else {
             continue;
         };
-        let Some(warnings) = warnings_by_plate.get(plate_id) else {
-            continue;
-        };
-        value["procedure_geometry_warning_count"] = serde_json::json!(warnings.len());
-        value["procedure_geometry_warnings"] = serde_json::json!(warnings);
+        plate_ids.insert(plate_id.clone());
+        if let Some(warnings) = warnings_by_plate.get(&plate_id) {
+            value["procedure_geometry_warning_count"] = serde_json::json!(warnings.len());
+            value["procedure_geometry_warnings"] = serde_json::json!(warnings);
+        }
+        if let Some(keys) = rendezvous_keys_by_plate.get(&plate_id) {
+            value["procedure_rendezvous_keys"] = keys.clone();
+        }
         pair.value =
             serde_json::to_vec(&value).with_context(|| format!("failed to encode {}", pair.key))?;
+    }
+    let missing_plates = rendezvous_keys_by_plate
+        .keys()
+        .filter(|plate_id| !plate_ids.contains(*plate_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_plates.is_empty() {
+        bail!(
+            "procedure rendezvous keys reference missing plate records: {}",
+            missing_plates.join(", ")
+        );
     }
     Ok(())
 }
@@ -4332,6 +4380,9 @@ pub(super) fn build_nav_kv_procedure_pairs(
     let cifp_matches = load_nav_kv_cifp_tpp_matches(connection)?;
     let mut matches_by_procedure = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
     let mut matches_by_plate = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    let mut matches_by_rendezvous =
+        BTreeMap::<ProcedureRendezvousKey, Vec<serde_json::Value>>::new();
+    let mut rendezvous_keys_by_plate = BTreeMap::<String, BTreeSet<ProcedureRendezvousKey>>::new();
     let mut approach_lists = BTreeMap::<String, BTreeSet<String>>::new();
     for row in cifp_matches {
         let airport_id = row
@@ -4347,12 +4398,23 @@ pub(super) fn build_nav_kv_procedure_pairs(
         let procedure_kind = row
             .get("procedure_kind")
             .and_then(|value| value.as_str())
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .to_string();
         let plate_id = row
             .get("plate_id")
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string();
+        let rendezvous_key =
+            procedure_rendezvous_key(&procedure_kind, airport_id.as_str(), cifp_id.as_str())?;
+        let mut row = row;
+        row.as_object_mut()
+            .context("CIFP/TPP match row is not an object")?
+            .insert(
+                "procedure_rendezvous_key".to_string(),
+                serde_json::to_value(&rendezvous_key)
+                    .context("failed to encode procedure rendezvous key")?,
+            );
         if !airport_id.is_empty() && !cifp_id.is_empty() {
             matches_by_procedure
                 .entry((airport_id.clone(), cifp_id.clone()))
@@ -4366,8 +4428,19 @@ pub(super) fn build_nav_kv_procedure_pairs(
             }
         }
         if !plate_id.is_empty() {
-            matches_by_plate.entry(plate_id).or_default().push(row);
+            matches_by_plate
+                .entry(plate_id.clone())
+                .or_default()
+                .push(row.clone());
+            rendezvous_keys_by_plate
+                .entry(plate_id)
+                .or_default()
+                .insert(rendezvous_key.clone());
         }
+        matches_by_rendezvous
+            .entry(rendezvous_key)
+            .or_default()
+            .push(row);
     }
     for ((airport_id, cifp_id), rows) in matches_by_procedure {
         pairs.push(json_pair(
@@ -4388,6 +4461,26 @@ pub(super) fn build_nav_kv_procedure_pairs(
             ),
             &serde_json::Value::Array(rows),
             "plate procedure candidates",
+        )?);
+    }
+    for (plate_id, keys) in rendezvous_keys_by_plate {
+        let keys = serde_json::to_value(keys)
+            .context("failed to encode plate procedure rendezvous keys")?;
+        pairs.push(json_pair(
+            format!(
+                "plate/procedure-rendezvous/by-plate/{}",
+                had_key_component(&plate_id)
+            ),
+            &keys,
+            "plate procedure rendezvous keys",
+        )?);
+    }
+    for (key, rows) in matches_by_rendezvous {
+        let rows = serde_json::Value::Array(rows);
+        pairs.push(json_pair(
+            procedure_rendezvous_nav_key(&key),
+            &rows,
+            "procedure rendezvous matches",
         )?);
     }
     let mut sid_lists = BTreeMap::<String, BTreeSet<String>>::new();
@@ -4470,6 +4563,45 @@ pub(super) fn build_nav_kv_procedure_pairs(
     pairs.extend(build_nav_kv_procedure_geometry_pairs(geometry_records)?);
 
     Ok(pairs)
+}
+
+fn procedure_rendezvous_key(
+    procedure_kind: &str,
+    airport_id: &str,
+    procedure_id: &str,
+) -> anyhow::Result<ProcedureRendezvousKey> {
+    let result = match procedure_kind {
+        "sid" => ProcedureRendezvousKey::airport_scoped(
+            ProcedureRendezvousKind::Departure,
+            airport_id,
+            procedure_id,
+        ),
+        "star" => ProcedureRendezvousKey::shared_arrival(procedure_id),
+        "approach" => ProcedureRendezvousKey::airport_scoped(
+            ProcedureRendezvousKind::Approach,
+            airport_id,
+            procedure_id,
+        ),
+        _ => anyhow::bail!("unsupported CIFP procedure kind {procedure_kind:?}"),
+    };
+    result.map_err(anyhow::Error::msg).with_context(|| {
+        format!("invalid procedure rendezvous key for {airport_id} {procedure_kind} {procedure_id}")
+    })
+}
+
+fn procedure_rendezvous_nav_key(key: &ProcedureRendezvousKey) -> String {
+    let kind = match key.kind {
+        ProcedureRendezvousKind::Departure => "DEPARTURE",
+        ProcedureRendezvousKind::Arrival => "ARRIVAL",
+        ProcedureRendezvousKind::Approach => "APPROACH",
+    };
+    let scope = key.airport_id.as_deref().unwrap_or("SHARED");
+    format!(
+        "plate/procedure-rendezvous/by-key/{}/{}/{}",
+        had_upper_key_component(kind),
+        had_upper_key_component(scope),
+        had_upper_key_component(&key.procedure_id),
+    )
 }
 
 fn audit_transition_matches(
@@ -6152,6 +6284,34 @@ pub(super) fn max_zoom_for_levels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cycle_procedures_emit_the_shared_rendezvous_contract() {
+        let approach = procedure_rendezvous_key("approach", "KPAE", "I16R").unwrap();
+        assert_eq!(
+            approach,
+            ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Approach,
+                "KPAE",
+                "I16R",
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            procedure_rendezvous_nav_key(&approach),
+            "plate/procedure-rendezvous/by-key/APPROACH/KPAE/I16R"
+        );
+
+        let arrival = procedure_rendezvous_key("star", "KSEA", "CHINS5").unwrap();
+        assert_eq!(
+            arrival,
+            ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap()
+        );
+        assert_eq!(
+            procedure_rendezvous_nav_key(&arrival),
+            "plate/procedure-rendezvous/by-key/ARRIVAL/SHARED/CHINS5"
+        );
+    }
 
     fn rbg_enroute_connection() -> rusqlite::Connection {
         let connection = rusqlite::Connection::open_in_memory().expect("sqlite");

@@ -1439,6 +1439,7 @@ mod tests {
             icao_id: Some("KAAA".to_string()),
             airport_id: None,
             airport_effects: BTreeSet::new(),
+            procedure_rendezvous_keys: BTreeSet::new(),
             airport_name: None,
             airport_position: None,
             location: Some("AAA".to_string()),

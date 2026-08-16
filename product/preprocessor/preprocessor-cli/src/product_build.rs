@@ -3904,7 +3904,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_plate_assets_receive_aggregate_procedure_geometry_warnings() {
+    fn nav_kv_plate_assets_receive_procedure_metadata() {
         let plate_id = "plate:KAAA:IAP-AA-VOR RWY 01.png";
         let mut pairs = vec![
             nav_db::json_pair(
@@ -3922,6 +3922,19 @@ mod tests {
                 format!("plate/by-id/{}", had_key_component(plate_id)),
                 &serde_json::json!({"id": plate_id, "label": "VOR 01"}),
                 "test plate",
+            )
+            .unwrap(),
+            nav_db::json_pair(
+                format!(
+                    "plate/procedure-rendezvous/by-plate/{}",
+                    had_key_component(plate_id)
+                ),
+                &serde_json::json!([{
+                    "kind": "approach",
+                    "procedure_id": "V01",
+                    "airport_id": "KAAA"
+                }]),
+                "test plate rendezvous",
             )
             .unwrap(),
             nav_db::json_pair(
@@ -3947,7 +3960,7 @@ mod tests {
             .unwrap(),
         ];
 
-        nav_db::attach_procedure_geometry_warnings_to_plate_pairs(&mut pairs).unwrap();
+        nav_db::attach_procedure_metadata_to_plate_pairs(&mut pairs).unwrap();
 
         let plate: serde_json::Value = serde_json::from_slice(
             &pairs
@@ -3976,6 +3989,14 @@ mod tests {
                     "messages": ["runway warning"]
                 }
             ]),
+        );
+        assert_eq!(
+            plate["procedure_rendezvous_keys"],
+            serde_json::json!([{
+                "kind": "approach",
+                "procedure_id": "V01",
+                "airport_id": "KAAA"
+            }])
         );
     }
 

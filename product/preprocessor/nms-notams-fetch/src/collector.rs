@@ -19,7 +19,7 @@ use crate::{
     InitialLoadCaptureSource, NmsApiSource,
 };
 
-const NMS_API_STORE_SCHEMA_VERSION: u32 = 1;
+const NMS_API_STORE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct CollectorOptions {
@@ -98,7 +98,7 @@ impl NmsApiCollectorStore {
             .with_context(|| format!("failed to create {}", self.root.display()))?;
         fs::create_dir_all(self.capture_root())
             .with_context(|| format!("failed to create {}", self.capture_root().display()))?;
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
         let schema_version = metadata(&connection, "schema_version")?;
         match schema_version.as_deref() {
             None => set_metadata(
@@ -106,7 +106,36 @@ impl NmsApiCollectorStore {
                 "schema_version",
                 &NMS_API_STORE_SCHEMA_VERSION.to_string(),
             ),
-            Some("1") => Ok(()),
+            Some("1") => {
+                // Version 2 adds semantic procedure keys derived from raw AIXM.
+                // Baseline rows do not retain enough source XML to backfill them,
+                // so force one authoritative Initial Load refresh.
+                let tx = connection
+                    .transaction()
+                    .context("failed to start NMS procedure-key schema migration")?;
+                tx.execute("DELETE FROM raw_updates", [])
+                    .context("failed to clear old NMS raw updates")?;
+                tx.execute("DELETE FROM poll_runs", [])
+                    .context("failed to clear old NMS poll history")?;
+                tx.execute("DELETE FROM current_notams", [])
+                    .context("failed to clear old NMS current state")?;
+                for key in [
+                    "baseline_capture_path",
+                    "baseline_installed_at_utc",
+                    "poll_cursor_utc",
+                ] {
+                    tx.execute("DELETE FROM metadata WHERE key = ?1", [key])
+                        .with_context(|| format!("failed to clear NMS migration metadata {key}"))?;
+                }
+                set_metadata(
+                    &tx,
+                    "schema_version",
+                    &NMS_API_STORE_SCHEMA_VERSION.to_string(),
+                )?;
+                tx.commit()
+                    .context("failed to commit NMS procedure-key schema migration")
+            }
+            Some("2") => Ok(()),
             Some(version) => bail!(
                 "unsupported NMS API collector schema {version}; required {NMS_API_STORE_SCHEMA_VERSION}"
             ),
@@ -957,6 +986,41 @@ mod tests {
         assert!(format!("{error:#}").contains("already locked"));
         drop(first);
         store.acquire_lock()?;
+        Ok(())
+    }
+
+    #[test]
+    fn schema_one_state_is_invalidated_for_procedure_key_reingestion() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let connection = store.open_connection()?;
+        set_metadata(&connection, "schema_version", "1")?;
+        set_metadata(
+            &connection,
+            "baseline_installed_at_utc",
+            "2026-07-24T15:30:04Z",
+        )?;
+        set_metadata(&connection, "poll_cursor_utc", "2026-07-24T15:30:04Z")?;
+        connection.execute(
+            "INSERT INTO current_notams(
+                id, human_identity, last_updated_utc, effective_end_utc,
+                record_json, updated_at_utc
+             ) VALUES ('old', 'old', '2026-07-24T15:30:04Z', NULL, '{}',
+                       '2026-07-24T15:30:04Z')",
+            [],
+        )?;
+        drop(connection);
+
+        store.initialize()?;
+
+        let connection = store.open_connection()?;
+        assert_eq!(
+            metadata(&connection, "schema_version")?.as_deref(),
+            Some("2")
+        );
+        assert!(!store.is_baseline_installed()?);
+        assert!(store.current_records()?.is_empty());
         Ok(())
     }
 

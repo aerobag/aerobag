@@ -5038,6 +5038,84 @@ mod tests {
     }
 
     #[test]
+    fn merge_does_not_repeat_producer_package_hashing() {
+        let temp = tempdir().unwrap();
+        let publish_dir = temp
+            .path()
+            .join("published")
+            .join("main")
+            .join("20260514T000000Z");
+        let packaged_root = publish_dir.join("packaged");
+        fs::create_dir_all(&packaged_root).unwrap();
+
+        let payload = b"valid package payload";
+        let nav_db_sha = sha256_hex(payload);
+        let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
+        let package_path = packaged_root.join(&nav_db_filename);
+        fs::write(&package_path, payload).unwrap();
+        let bundle = BundleManifest {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            bundle_id: "cycle_2605_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2605".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-05-14T00:00:00Z".to_string(),
+            effective_date: "2026-05-14".to_string(),
+            expiration_date: "2026-06-11".to_string(),
+            start_valid: "2026-05-14".to_string(),
+            end_valid: "2026-06-11".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2605_01"),
+                family_id: "nav-db".to_string(),
+                contract_id: NAV_DB_CONTRACT_ID.to_string(),
+                region_id: None,
+                filename: nav_db_filename.clone(),
+                relative_path: nav_db_filename,
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: nav_db_sha,
+                size_bytes: payload.len() as u64,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-05-14".to_string()),
+                expiration_date: Some("2026-06-11".to_string()),
+                warning_text: None,
+                metadata: BTreeMap::new(),
+            }],
+            ancillary: vec![],
+        };
+        let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
+        let product_manifest = CurrentArtifactsManifest {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
+            artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
+            as_of_date: "2026-05-14".to_string(),
+            as_of_utc: "2026-05-14T00:00:00Z".to_string(),
+            bundles: vec![current_bundle_entry_from_path(&bundle_path).unwrap()],
+            startup_prefetch: None,
+            diagnostics: None,
+        };
+        let product_path = publish_dir.join("product_artifacts.json");
+        fs::write(
+            &product_path,
+            serde_json::to_vec_pretty(&product_manifest).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!artifact_verification_is_cached(&package_path).unwrap());
+
+        merge_current_artifacts_manifests(
+            temp.path(),
+            Utc.with_ymd_and_hms(2026, 5, 14, 0, 1, 2).unwrap(),
+            &[product_path],
+        )
+        .unwrap();
+        assert!(!artifact_verification_is_cached(&package_path).unwrap());
+    }
+
+    #[test]
     fn merge_current_artifacts_validates_version_subroots() {
         let temp = tempdir().unwrap();
         let mut product_paths = Vec::new();

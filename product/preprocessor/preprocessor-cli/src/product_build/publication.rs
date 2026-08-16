@@ -1465,6 +1465,42 @@ pub(super) fn validate_bundle_manifest(
     packaged_root: &Path,
     bundle_path: &Path,
 ) -> anyhow::Result<BundleManifest> {
+    let bundle = validate_bundle_manifest_declaration(bundle_path)?;
+    for package in &bundle.packages {
+        verify_artifact_file(
+            &packaged_root.join(&package.filename),
+            &package.checksum_sha256,
+            package.size_bytes,
+            &format!("published package {}", package.id),
+        )?;
+    }
+    for artifact in &bundle.ancillary {
+        validate_bundle_artifact_ref(packaged_root, artifact)?;
+    }
+    Ok(bundle)
+}
+
+fn validate_bundle_manifest_for_merge(
+    packaged_root: &Path,
+    bundle_path: &Path,
+) -> anyhow::Result<BundleManifest> {
+    // build-product hashes the exact published bytes before reporting this manifest.
+    // The merger composes successful producer outputs and must not hash them again.
+    let bundle = validate_bundle_manifest_declaration(bundle_path)?;
+    for package in &bundle.packages {
+        validate_declared_artifact_metadata(
+            &packaged_root.join(&package.filename),
+            package.size_bytes,
+            &format!("published package {}", package.id),
+        )?;
+    }
+    for artifact in &bundle.ancillary {
+        validate_bundle_artifact_ref_for_merge(packaged_root, artifact)?;
+    }
+    Ok(bundle)
+}
+
+fn validate_bundle_manifest_declaration(bundle_path: &Path) -> anyhow::Result<BundleManifest> {
     validate_no_internal_paths_in_json(bundle_path)?;
     let (_, _, filename_hash) = parse_cycle_bundle_filename(bundle_path)?;
     let bundle_hash = hash_file(bundle_path)?;
@@ -1522,15 +1558,9 @@ pub(super) fn validate_bundle_manifest(
                 );
             }
         }
-        verify_artifact_file(
-            &packaged_root.join(&package.filename),
-            &package.checksum_sha256,
-            package.size_bytes,
-            &format!("published package {}", package.id),
-        )?;
     }
     for artifact in &bundle.ancillary {
-        validate_bundle_artifact_ref(packaged_root, artifact)?;
+        validate_bundle_artifact_declaration(artifact)?;
     }
     validate_bundle_contract_split(&bundle, bundle_path)?;
     Ok(bundle)
@@ -1588,7 +1618,7 @@ pub(super) fn validate_merged_current_artifacts(
             )?;
             let bundle_path = manifest_packaged_root.join(&bundle_ref.filename);
             ensure_public_file_exists(&bundle_path)?;
-            let bundle = validate_bundle_manifest(&manifest_packaged_root, &bundle_path)?;
+            let bundle = validate_bundle_manifest_for_merge(&manifest_packaged_root, &bundle_path)?;
             validate_bundle_contracts_match_current(&bundle, manifest)?;
         }
         if let Some(diagnostics) = &manifest.diagnostics {
@@ -1667,6 +1697,28 @@ pub(super) fn validate_bundle_artifact_ref(
     packaged_root: &Path,
     artifact: &BundleArtifact,
 ) -> anyhow::Result<()> {
+    validate_bundle_artifact_declaration(artifact)?;
+    verify_artifact_file(
+        &packaged_root.join(&artifact.filename),
+        &artifact.checksum_sha256,
+        artifact.size_bytes,
+        &format!("published ancillary artifact {}", artifact.filename),
+    )
+}
+
+fn validate_bundle_artifact_ref_for_merge(
+    packaged_root: &Path,
+    artifact: &BundleArtifact,
+) -> anyhow::Result<()> {
+    validate_bundle_artifact_declaration(artifact)?;
+    validate_declared_artifact_metadata(
+        &packaged_root.join(&artifact.filename),
+        artifact.size_bytes,
+        &format!("published ancillary artifact {}", artifact.filename),
+    )
+}
+
+fn validate_bundle_artifact_declaration(artifact: &BundleArtifact) -> anyhow::Result<()> {
     validate_public_filename(&artifact.filename, "bundle artifact filename")?;
     validate_public_filename(&artifact.relative_path, "bundle artifact relative_path")?;
     validate_embedded_sha256_filename(&artifact.filename, &artifact.checksum_sha256)?;
@@ -1677,12 +1729,31 @@ pub(super) fn validate_bundle_artifact_ref(
             artifact.relative_path
         );
     }
-    verify_artifact_file(
-        &packaged_root.join(&artifact.filename),
-        &artifact.checksum_sha256,
-        artifact.size_bytes,
-        &format!("published ancillary artifact {}", artifact.filename),
-    )
+    Ok(())
+}
+
+fn validate_declared_artifact_metadata(
+    path: &Path,
+    expected_size_bytes: u64,
+    label: &str,
+) -> anyhow::Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("missing {label} {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "expected {label} file, found non-file at {}",
+            path.display()
+        );
+    }
+    if metadata.len() != expected_size_bytes {
+        bail!(
+            "{label} size mismatch for {}: declared {} != actual {}",
+            path.display(),
+            expected_size_bytes,
+            metadata.len()
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

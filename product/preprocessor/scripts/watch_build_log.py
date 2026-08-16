@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import argparse
+import copy
 import curses
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -120,6 +121,9 @@ class BuildState:
         self.completed_task_names: set[str] = set()
         self.last_line = ""
         self.last_timestamp = ""
+        self.started_wall: str | None = None
+        self.last_wall: str | None = None
+        self.final_wall: str | None = None
 
     def apply_line(self, line: str) -> None:
         self.last_line = line
@@ -127,6 +131,8 @@ class BuildState:
         match = BEGIN_RE.match(line)
         if match:
             self._reset_for_new_run()
+            self.started_wall = match.group("wall")
+            self.last_wall = match.group("wall")
             self.header = f"{match.group('ts')} {match.group('rest')}"
             self.pid = parse_pid(match.group("rest"))
             self.build_root = parse_build_root(match.group("rest"))
@@ -140,6 +146,7 @@ class BuildState:
         match = CYCLE_RE.match(line)
         if match:
             self.last_timestamp = match.group("ts")
+            self.last_wall = match.group("wall")
             self.bundle_cycle = match.group("bundle")
             self.cycle_summary = match.group("rest")
             return
@@ -147,6 +154,7 @@ class BuildState:
         match = TASK_RE.match(line)
         if match:
             self.last_timestamp = match.group("ts")
+            self.last_wall = match.group("wall")
             fields, details = parse_task_payload(match.group("payload"))
             self._apply_task_event(
                 fields,
@@ -165,6 +173,8 @@ class BuildState:
         match = FINAL_RE.match(line)
         if match:
             self.last_timestamp = match.group("ts")
+            self.last_wall = match.group("wall")
+            self.final_wall = match.group("wall")
             self.final_result = match.group("result")
             self.final_details = match.group("rest").strip()
             self.final_at = match.group("ts")
@@ -252,6 +262,9 @@ class BuildState:
         self.completion_order = []
         self.completed_task_names = set()
         self.last_timestamp = ""
+        self.started_wall = None
+        self.last_wall = None
+        self.final_wall = None
 
     def active_tasks(self) -> list[TaskState]:
         return sorted(
@@ -277,6 +290,88 @@ def read_state(log_path: Path) -> BuildState:
     return state
 
 
+def parse_wall_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def coordinator_is_authoritative(
+    child: BuildState, coordinator: BuildState
+) -> bool:
+    if coordinator.started_wall is None:
+        return False
+    if coordinator.final_result is None:
+        return True
+    child_started = parse_wall_timestamp(child.started_wall)
+    coordinator_finished = parse_wall_timestamp(coordinator.final_wall)
+    if child_started is None or coordinator_finished is None:
+        return True
+    return child_started <= coordinator_finished
+
+
+def combine_build_states(child: BuildState, coordinator: BuildState) -> BuildState:
+    if not coordinator_is_authoritative(child, coordinator):
+        return child
+
+    coordinator_started = parse_wall_timestamp(coordinator.started_wall)
+    child_started = parse_wall_timestamp(child.started_wall)
+    child_belongs_to_publication = (
+        coordinator_started is not None
+        and child_started is not None
+        and child_started >= coordinator_started
+    )
+    if not child_belongs_to_publication:
+        return copy.deepcopy(coordinator)
+
+    combined = copy.deepcopy(child)
+    combined.pid = coordinator.pid
+    combined.build_root = coordinator.build_root or child.build_root
+    combined.publish_label = coordinator.publish_label or child.publish_label
+    combined.header = coordinator.header or child.header
+    combined.final_result = coordinator.final_result
+    combined.final_details = coordinator.final_details
+    combined.final_at = coordinator.final_at
+    combined.final_wall = coordinator.final_wall
+    combined.started_wall = coordinator.started_wall
+
+    for task_name, task in coordinator.tasks.items():
+        combined.tasks[task_name] = copy.deepcopy(task)
+    completed_names = {
+        task_name
+        for task_name, task in combined.tasks.items()
+        if task.status != "active"
+    }
+    combined.completion_order = sorted(
+        completed_names,
+        key=lambda task_name: (
+            parse_wall_timestamp(combined.tasks[task_name].completed_wall)
+            or datetime.min.replace(tzinfo=timezone.utc),
+            task_name,
+        ),
+    )
+    combined.completed_task_names = completed_names
+
+    child_last = parse_wall_timestamp(child.last_wall)
+    coordinator_last = parse_wall_timestamp(coordinator.last_wall)
+    if coordinator_last is not None and (
+        child_last is None or coordinator_last >= child_last
+    ):
+        combined.last_line = coordinator.last_line
+        combined.last_timestamp = coordinator.last_timestamp
+        combined.last_wall = coordinator.last_wall
+    return combined
+
+
+def default_coordinator_log_path(log_path: Path) -> Path:
+    if log_path.parent.name == "published" and log_path.parent.parent.name == "orchestrator":
+        return log_path.parent.parent / "publication" / log_path.name
+    return log_path.with_name(f"{log_path.stem}-publication{log_path.suffix}")
+
+
 class IncrementalLogSnapshotter:
     def __init__(self, log_path: Path) -> None:
         self.log_path = log_path
@@ -287,9 +382,13 @@ class IncrementalLogSnapshotter:
         self.lock = threading.Lock()
 
     def snapshot(self, completed_limit: int | None) -> dict:
+        state = self.current_state()
+        return state_snapshot(state, self.log_path, completed_limit)
+
+    def current_state(self) -> BuildState:
         with self.lock:
             self._read_appended_lines()
-            return state_snapshot(self.state, self.log_path, completed_limit)
+            return copy.deepcopy(self.state)
 
     def _read_appended_lines(self) -> None:
         try:
@@ -324,6 +423,26 @@ class IncrementalLogSnapshotter:
             self.partial_line = ""
         for raw_line in lines:
             self.state.apply_line(raw_line.rstrip("\r\n"))
+
+
+class CombinedLogSnapshotter:
+    def __init__(self, child_log_path: Path, coordinator_log_path: Path) -> None:
+        self.child = IncrementalLogSnapshotter(child_log_path)
+        self.coordinator = IncrementalLogSnapshotter(coordinator_log_path)
+        self.child_log_path = child_log_path
+        self.coordinator_log_path = coordinator_log_path
+
+    def snapshot(self, completed_limit: int | None) -> dict:
+        state = self.current_state()
+        snapshot = state_snapshot(state, self.child_log_path, completed_limit)
+        snapshot["log"]["coordinator_path"] = str(self.coordinator_log_path)
+        snapshot["log"]["coordinator_exists"] = self.coordinator_log_path.exists()
+        return snapshot
+
+    def current_state(self) -> BuildState:
+        return combine_build_states(
+            self.child.current_state(), self.coordinator.current_state()
+        )
 
 
 def parse_pid(header_rest: str) -> int | None:
@@ -743,7 +862,9 @@ def draw_line(stdscr, row: int, col: int, text: str, attr: int, max_x: int) -> N
     stdscr.addstr(row, col, clipped, attr)
 
 
-def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
+def run_ui(
+    stdscr, log_path: Path, coordinator_log_path: Path, refresh_seconds: float
+) -> None:
     curses.curs_set(0)
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_GREEN, -1)
@@ -752,8 +873,9 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
     curses.init_pair(4, curses.COLOR_YELLOW, -1)
     curses.init_pair(5, curses.COLOR_RED, -1)
 
+    snapshotter = CombinedLogSnapshotter(log_path, coordinator_log_path)
     while True:
-        state = read_state(log_path)
+        state = snapshotter.current_state()
         max_y, max_x = stdscr.getmaxyx()
         stdscr.erase()
 
@@ -915,14 +1037,24 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
             break
 
 
-def print_json_snapshot(log_path: Path, completed_limit: int | None) -> None:
-    snapshot = state_snapshot(read_state(log_path), log_path, completed_limit)
+def print_json_snapshot(
+    log_path: Path, coordinator_log_path: Path, completed_limit: int | None
+) -> None:
+    snapshot = CombinedLogSnapshotter(log_path, coordinator_log_path).snapshot(
+        completed_limit
+    )
     print(json.dumps(snapshot, indent=2, sort_keys=True))
 
 
-def run_json_watch(log_path: Path, refresh_seconds: float, completed_limit: int | None) -> None:
+def run_json_watch(
+    log_path: Path,
+    coordinator_log_path: Path,
+    refresh_seconds: float,
+    completed_limit: int | None,
+) -> None:
+    snapshotter = CombinedLogSnapshotter(log_path, coordinator_log_path)
     while True:
-        snapshot = state_snapshot(read_state(log_path), log_path, completed_limit)
+        snapshot = snapshotter.snapshot(completed_limit)
         try:
             print(json.dumps(snapshot, sort_keys=True), flush=True)
         except BrokenPipeError:
@@ -939,10 +1071,14 @@ def parse_listen_address(value: str) -> tuple[str, int]:
 
 
 def run_web_server(
-    log_path: Path, listen: str, refresh_seconds: float, completed_limit: int | None
+    log_path: Path,
+    coordinator_log_path: Path,
+    listen: str,
+    refresh_seconds: float,
+    completed_limit: int | None,
 ) -> None:
     host, port = parse_listen_address(listen)
-    snapshotter = IncrementalLogSnapshotter(log_path)
+    snapshotter = CombinedLogSnapshotter(log_path, coordinator_log_path)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "AerobagBuildWatch/1"
@@ -992,7 +1128,11 @@ def run_web_server(
                 self.wfile.write(body)
 
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"watch_build_log serving {log_path} on http://{host}:{port}/", flush=True)
+    print(
+        f"watch_build_log serving {log_path} with coordinator "
+        f"{coordinator_log_path} on http://{host}:{port}/",
+        flush=True,
+    )
     server.serve_forever()
 
 
@@ -1278,6 +1418,9 @@ def build_dashboard_html(refresh_seconds: float) -> str:
         }}
       }}
       add(`log_path=${{state.log.path}}${{state.log.exists ? "" : " (missing)"}}`);
+      if (state.log.coordinator_path) {{
+        add(`coordinator_log_path=${{state.log.coordinator_path}}${{state.log.coordinator_exists ? "" : " (missing)"}}`);
+      }}
       addTokens(state.build.header);
       addTokens(state.build.cycle_summary);
       return lines.join("\\n") || "(none)";
@@ -1346,6 +1489,13 @@ def main() -> int:
         help="Path to master.log",
     )
     parser.add_argument(
+        "--coordinator-log",
+        help=(
+            "Path to the multi-version publication coordinator log "
+            "(default: publication/master.log beside the child log tree)"
+        ),
+    )
+    parser.add_argument(
         "--refresh-seconds",
         type=float,
         default=2.0,
@@ -1376,17 +1526,30 @@ def main() -> int:
     args = parser.parse_args()
 
     log_path = Path(os.path.expanduser(args.log_path))
+    coordinator_log_path = (
+        Path(os.path.expanduser(args.coordinator_log))
+        if args.coordinator_log
+        else default_coordinator_log_path(log_path)
+    )
     completed_limit = None if args.recent_limit < 0 else args.recent_limit
     if args.json:
-        print_json_snapshot(log_path, completed_limit)
+        print_json_snapshot(log_path, coordinator_log_path, completed_limit)
         return 0
     if args.json_watch:
-        run_json_watch(log_path, args.refresh_seconds, completed_limit)
+        run_json_watch(
+            log_path, coordinator_log_path, args.refresh_seconds, completed_limit
+        )
         return 0
     if args.serve:
-        run_web_server(log_path, args.serve, args.refresh_seconds, completed_limit)
+        run_web_server(
+            log_path,
+            coordinator_log_path,
+            args.serve,
+            args.refresh_seconds,
+            completed_limit,
+        )
         return 0
-    curses.wrapper(run_ui, log_path, args.refresh_seconds)
+    curses.wrapper(run_ui, log_path, coordinator_log_path, args.refresh_seconds)
     return 0
 
 

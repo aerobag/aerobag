@@ -71,12 +71,18 @@ fn gc_artifact_retention_with_policy(
             policy.build_manifest_history_dirs,
         )?;
 
-    let log_root = build_root.join("logs/orchestrator/published");
-    let (retained_rotated_logs, log_candidates) = rotated_log_candidates(
-        &log_root,
-        policy.rotated_build_logs,
-        policy.rotated_build_log_max_bytes,
-    )?;
+    let mut retained_rotated_logs = 0;
+    let mut log_candidates = Vec::new();
+    for log_family in ["published", "publication"] {
+        let log_root = build_root.join("logs/orchestrator").join(log_family);
+        let (retained, mut candidates) = rotated_log_candidates(
+            &log_root,
+            policy.rotated_build_logs,
+            policy.rotated_build_log_max_bytes,
+        )?;
+        retained_rotated_logs += retained;
+        log_candidates.append(&mut candidates);
+    }
 
     let report = ArtifactRetentionGcReport {
         current_manifest_dirs,

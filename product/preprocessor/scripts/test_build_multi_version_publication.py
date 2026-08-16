@@ -13,6 +13,43 @@ import build_multi_version_publication as publication
 
 
 class MultiVersionPublicationWorktreeTests(unittest.TestCase):
+    def test_publication_log_records_parseable_task_lifecycle_and_rotates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "publication" / "master.log"
+            path.parent.mkdir(parents=True)
+            path.write_text("old log\n", encoding="utf-8")
+
+            log = publication.PublicationLog(path)
+            try:
+                log.log(
+                    "begin pid=1 build_root=/tmp/build publish_label=main "
+                    "scheduler=multi_version_publication"
+                )
+                with log.task("merge-current-artifacts", manifests=2):
+                    pass
+                log.log(
+                    "complete PASS current_artifacts=/tmp/build/published/current_artifacts.json"
+                )
+            finally:
+                log.close()
+
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertIn(" begin pid=1 ", lines[0])
+            self.assertIn(
+                " task event=start id=merge-current-artifacts "
+                "source=publication-coordinator manifests=2",
+                lines[1],
+            )
+            self.assertIn(
+                " task event=complete id=merge-current-artifacts "
+                "source=publication-coordinator status=PASS manifests=2",
+                lines[2],
+            )
+            self.assertIn(" complete PASS current_artifacts=", lines[3])
+            rotated = list(path.parent.glob("master-*.log"))
+            self.assertEqual(len(rotated), 1)
+            self.assertEqual(rotated[0].read_text(encoding="utf-8"), "old log\n")
+
     def test_abandoned_worktree_is_removed_before_new_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

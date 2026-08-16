@@ -71,6 +71,19 @@ pub(super) fn artifact_verification_stats() -> anyhow::Result<ArtifactVerificati
     process_artifact_verification_cache().stats()
 }
 
+#[cfg(test)]
+pub(super) fn artifact_verification_is_cached(path: &Path) -> anyhow::Result<bool> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to stat artifact {}", path.display()))?;
+    let identity = ArtifactFileIdentity::from_metadata(&metadata);
+    Ok(process_artifact_verification_cache()
+        .state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("artifact verification cache lock poisoned"))?
+        .entries
+        .contains_key(&identity))
+}
+
 impl ArtifactVerificationCache {
     fn stats(&self) -> anyhow::Result<ArtifactVerificationStats> {
         Ok(self

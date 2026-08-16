@@ -261,6 +261,102 @@ class WatchBuildLogTests(unittest.TestCase):
         self.assertEqual(completed.status, "failed")
         self.assertEqual(completed.details, "status=FAIL error=deliberate failure")
 
+    def test_coordinator_controls_result_while_child_tasks_remain_visible(self) -> None:
+        coordinator = watch_build_log.BuildState()
+        coordinator.apply_line(
+            "2026-08-16T19:00:00Z +0:00 begin pid=1 build_root=/tmp/build "
+            "publish_label=main scheduler=multi_version_publication refs=main"
+        )
+        coordinator.apply_line(
+            "2026-08-16T19:00:01Z +0:01 task event=start "
+            "id=build-ref-main-deadbeef source=publication-coordinator ref=main"
+        )
+
+        child = watch_build_log.BuildState()
+        child.apply_line(
+            "2026-08-16T19:00:02Z +0:00 begin pid=2 build_root=/tmp/build "
+            "publish_dir=/tmp/build/published/main/now publish_label=main "
+            "scheduler=product_weighted_dag"
+        )
+        child.apply_line(
+            "2026-08-16T19:00:03Z +0:01 task event=start id=nav-db "
+            "source=product-scheduler weight=8"
+        )
+        child.apply_line(
+            "2026-08-16T19:00:04Z +0:02 task event=complete id=nav-db "
+            "source=product-scheduler status=PASS -- published"
+        )
+        child.apply_line(
+            "2026-08-16T19:00:05Z +0:03 complete PASS "
+            "product_artifacts=/tmp/build/published/main/now/product_artifacts.json"
+        )
+
+        coordinator.apply_line(
+            "2026-08-16T19:00:06Z +0:06 task event=complete "
+            "id=build-ref-main-deadbeef source=publication-coordinator status=PASS ref=main"
+        )
+        coordinator.apply_line(
+            "2026-08-16T19:00:07Z +0:07 task event=start "
+            "id=merge-current-artifacts source=publication-coordinator manifests=1"
+        )
+
+        combined = watch_build_log.combine_build_states(child, coordinator)
+        snapshot = watch_build_log.state_snapshot(combined, Path("/tmp/child.log"))
+
+        self.assertEqual(snapshot["result"]["status"], "in_progress")
+        self.assertEqual(snapshot["process"]["pid"], 1)
+        self.assertEqual(snapshot["build"]["publish_label"], "main")
+        self.assertEqual(
+            [task["task"] for task in snapshot["tasks"]["active"]],
+            ["merge-current-artifacts"],
+        )
+        completed = {task["task"] for task in snapshot["tasks"]["completed"]}
+        self.assertIn("nav-db", completed)
+        self.assertIn("build-ref-main-deadbeef", completed)
+
+        coordinator.apply_line(
+            "2026-08-16T19:00:08Z +0:08 task event=complete "
+            "id=merge-current-artifacts source=publication-coordinator status=PASS manifests=1"
+        )
+        coordinator.apply_line(
+            "2026-08-16T19:00:09Z +0:09 complete PASS "
+            "current_artifacts=/tmp/build/published/current_artifacts.json"
+        )
+        combined = watch_build_log.combine_build_states(child, coordinator)
+        self.assertEqual(combined.final_result, "PASS")
+        self.assertEqual(
+            combined.final_details,
+            "current_artifacts=/tmp/build/published/current_artifacts.json",
+        )
+
+    def test_newer_standalone_build_supersedes_completed_coordinator(self) -> None:
+        coordinator = watch_build_log.BuildState()
+        coordinator.apply_line(
+            "2026-08-16T19:00:00Z +0:00 begin pid=1 build_root=/tmp/build "
+            "publish_label=main scheduler=multi_version_publication"
+        )
+        coordinator.apply_line(
+            "2026-08-16T19:00:10Z +0:10 complete PASS "
+            "current_artifacts=/tmp/build/published/current_artifacts.json"
+        )
+        child = watch_build_log.BuildState()
+        child.apply_line(
+            "2026-08-16T20:00:00Z +0:00 begin pid=2 build_root=/tmp/build "
+            "publish_label=manual scheduler=product_weighted_dag"
+        )
+
+        combined = watch_build_log.combine_build_states(child, coordinator)
+
+        self.assertEqual(combined.pid, 2)
+        self.assertEqual(combined.publish_label, "manual")
+
+    def test_default_coordinator_log_is_parallel_to_published_log(self) -> None:
+        child = Path("/tmp/artifacts/logs/orchestrator/published/master.log")
+        self.assertEqual(
+            watch_build_log.default_coordinator_log_path(child),
+            Path("/tmp/artifacts/logs/orchestrator/publication/master.log"),
+        )
+
     def test_incremental_snapshot_reads_only_appended_log_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "master.log"

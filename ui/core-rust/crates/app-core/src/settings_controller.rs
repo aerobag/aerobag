@@ -548,7 +548,7 @@ pub(crate) fn cloud_synced_settings_action(action: &UiSettingsAction) -> bool {
     action.action_id == INACTIVITY_SLEEP_TIMEOUT_ACTION_ID
 }
 
-fn all_debug_flags() -> [DebugFlagId; 10] {
+pub(crate) fn all_debug_flags() -> [DebugFlagId; 10] {
     [
         DebugFlagId::TileLabels,
         DebugFlagId::NexradTileLabels,
@@ -586,10 +586,14 @@ fn debug_flag_spec(flag_id: DebugFlagId) -> (&'static str, &'static str) {
     }
 }
 
-fn debug_flag_from_id(id: &str) -> Option<DebugFlagId> {
+pub(crate) fn debug_flag_id(flag_id: DebugFlagId) -> &'static str {
+    debug_flag_spec(flag_id).0
+}
+
+pub(crate) fn debug_flag_from_id(id: &str) -> Option<DebugFlagId> {
     all_debug_flags()
         .into_iter()
-        .find(|flag_id| debug_flag_spec(*flag_id).0 == id)
+        .find(|flag_id| debug_flag_id(*flag_id) == id)
 }
 
 fn debug_flag_enabled(state: &UiDebugState, flag_id: DebugFlagId) -> bool {

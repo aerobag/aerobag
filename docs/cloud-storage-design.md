@@ -677,6 +677,20 @@ merge selections, or initiate synchronization. Web has no package planner yet,
 but its generic record store preserves the same records while publishing other
 changes.
 
+## Debug Settings
+
+Every Settings-page debug flag follows the user across devices. Each flag is an
+independent synchronized boolean record under `settings/debug/<stable-id>`, so
+devices changing different flags concurrently do not replace one another's
+choices. Turning a flag off writes an explicit `false` record rather than
+deleting the key; otherwise an older `true` could reappear during a merge.
+
+Core owns the stable IDs, mutation timestamps, merge, persistence, and any flag
+side effects. Web and Android only invoke the ordinary Settings action and
+render the resulting session state. Unknown future flag records are retained
+but ignored by older clients, allowing a mixed-version account to converge
+without losing settings it does not understand.
+
 ## MVP Implementation Plan
 
 ### 1. Contracts And Test Provider

@@ -1280,16 +1280,6 @@ pub fn set_map_layer_enabled_in_session_paged(
 }
 
 #[wasm_bindgen]
-pub fn set_debug_flag_in_session(
-    handle: u32,
-    flag_id_json: &str,
-    enabled: bool,
-) -> Result<String, JsValue> {
-    set_debug_flag_in_session_json(handle, flag_id_json, enabled)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn load_raster_map_catalog_in_session(handle: u32) -> Result<String, JsValue> {
     load_raster_map_catalog_in_session_json(handle).map_err(|err| JsValue::from_str(&err))
 }
@@ -2131,18 +2121,6 @@ fn set_map_layer_enabled_in_session_paged_json(
     let outcome = app_core::set_map_layer_enabled_in_session(handle, layer_id, enabled)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn set_debug_flag_in_session_json(
-    handle: u32,
-    flag_id_json: &str,
-    enabled: bool,
-) -> Result<String, String> {
-    let flag_id: app_core::DebugFlagId =
-        serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_debug_flag_in_session(handle, flag_id, enabled)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn load_raster_map_catalog_in_session_json(handle: u32) -> Result<String, String> {

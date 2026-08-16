@@ -659,18 +659,6 @@ pub fn set_map_layer_enabled_in_session_paged_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn set_debug_flag_in_session_json(
-    handle: u64,
-    flag_id_json: &str,
-    enabled: bool,
-) -> Result<String, String> {
-    let flag_id: app_core::DebugFlagId =
-        serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_debug_flag_in_session(handle as u32, flag_id, enabled)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 pub fn load_raster_map_catalog_in_session_json(handle: u64) -> Result<String, String> {
     let outcome = app_core::load_raster_map_catalog_in_session(handle as u32)
         .map_err(|err| err.to_string())?;
@@ -3801,21 +3789,6 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerEna
     let result = (|| {
         let layer_id = get_java_string(&mut env, layer_id_json)?;
         set_map_layer_enabled_in_session_paged_json(handle as u64, &layer_id, enabled)
-    })();
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setDebugFlagInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    flag_id_json: JString,
-    enabled: bool,
-) -> jstring {
-    let result = (|| {
-        let flag_id = get_java_string(&mut env, flag_id_json)?;
-        set_debug_flag_in_session_json(handle as u64, &flag_id, enabled)
     })();
     return_string(&mut env, result)
 }

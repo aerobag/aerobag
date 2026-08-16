@@ -82,7 +82,6 @@ import {
   type AppCoreAdapter,
   type AirportInfoUiView,
   type DerivedChartPageState,
-  type DebugFlagId,
   type MapLayerId,
   type MapSelectionItem,
   type MapSelectionQueryResult,
@@ -3387,15 +3386,7 @@ export default function App() {
         return;
       }
       markStartupProgress("session.initial_snapshot", "Using initial session snapshot");
-      let createdSnapshot = debugTiming("startup.session.initial_snapshot", () => created.initialSnapshot());
-      for (const flagId of Object.keys(initialDebugState) as DebugFlagId[]) {
-        if (cancelled) {
-          return;
-        }
-        if (initialDebugState[flagId]) {
-          createdSnapshot = await created.setDebugFlag(flagId, true);
-        }
-      }
+      const createdSnapshot = debugTiming("startup.session.initial_snapshot", () => created.initialSnapshot());
       debugLog("session.create.snapshot", {
         plan_id: createdSnapshot.app_ui_state.active_plan?.plan_id ?? null,
         app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,

@@ -12,8 +12,8 @@ use crate::{
 use crate::{
     CloudAuthorizationRequest, CloudAuthorizationResponse, CloudEventStreamEvent,
     CloudEventStreamPlan, CloudHttpRequest, CloudHttpResponse, CloudPersistentState,
-    CloudStatusSummary, CloudUiActionId, CloudUiFieldValue, DataStatusRecord, FlightPlan,
-    InactivitySleepTimeout, OfflinePackagePreferences, UiCloudPageState,
+    CloudStatusSummary, CloudUiActionId, CloudUiFieldValue, DataStatusRecord, DebugFlagId,
+    FlightPlan, InactivitySleepTimeout, OfflinePackagePreferences, UiCloudPageState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +57,7 @@ pub(crate) struct CloudDomainUpdates {
     pub remote_flight_plan: Option<FlightPlan>,
     pub offline_package_preferences: Option<OfflinePackagePreferences>,
     pub inactivity_sleep_timeout: Option<InactivitySleepTimeout>,
+    pub debug_flags: Vec<(DebugFlagId, bool)>,
 }
 
 pub(crate) struct CloudController {
@@ -115,6 +116,10 @@ impl CloudController {
 
     pub fn inactivity_sleep_timeout(&self) -> AppResult<Option<InactivitySleepTimeout>> {
         self.engine().inactivity_sleep_timeout()
+    }
+
+    pub fn debug_flags(&self) -> AppResult<Vec<(DebugFlagId, bool)>> {
+        self.engine().debug_flags()
     }
 
     pub fn aircraft_definitions(
@@ -236,6 +241,21 @@ impl CloudController {
         Ok(changed)
     }
 
+    pub fn record_local_debug_flag(
+        &mut self,
+        flag_id: DebugFlagId,
+        enabled: bool,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        let changed = self
+            .engine_mut()
+            .record_local_debug_flag(flag_id, enabled, now_epoch_ms)?;
+        if changed {
+            self.note_change();
+        }
+        Ok(changed)
+    }
+
     pub fn take_provider_request(
         &mut self,
         now_epoch_ms: i64,
@@ -335,6 +355,7 @@ impl CloudController {
                 .then(|| self.inactivity_sleep_timeout())
                 .transpose()?
                 .flatten(),
+            debug_flags: completion.debug_flags()?,
         })
     }
 

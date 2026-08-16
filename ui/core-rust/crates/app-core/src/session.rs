@@ -2601,6 +2601,9 @@ pub fn complete_cloud_provider_request_in_session(
         if let Some(timeout) = updates.inactivity_sleep_timeout {
             session.settings.set_inactivity_sleep_timeout(timeout);
         }
+        for (flag_id, enabled) in updates.debug_flags {
+            apply_debug_flag(session, flag_id, enabled)?;
+        }
         let mut invalidations = vec![UiInvalidation::SessionSnapshot];
         if let Some(remote_plan) = updates.remote_flight_plan {
             let navigation_active = session
@@ -2838,6 +2841,9 @@ pub fn perform_settings_action_in_session(
     run_session_model_transaction(session, move |session| {
         if let Some((flag_id, enabled)) = debug_flag_settings_action(&action)? {
             apply_debug_flag(session, flag_id, enabled)?;
+            session
+                .cloud
+                .record_local_debug_flag(flag_id, enabled, now_epoch_ms)?;
         } else {
             let display_policy_available = session
                 .coordinator
@@ -5641,18 +5647,6 @@ pub fn restore_chart_page_state_in_session(
             candidate_chart_id: selected_chart_id,
             suggested_chart_ids,
         });
-    changed_session_update_outcome(session)
-}
-
-pub fn set_debug_flag_in_session(
-    handle: u32,
-    flag_id: DebugFlagId,
-    enabled: bool,
-) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
-    apply_debug_flag(session, flag_id, enabled)?;
     changed_session_update_outcome(session)
 }
 
@@ -11458,6 +11452,9 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     if let Some(timeout) = session.cloud.inactivity_sleep_timeout()? {
         session.settings.set_inactivity_sleep_timeout(timeout);
     }
+    for (flag_id, enabled) in session.cloud.debug_flags()? {
+        apply_debug_flag(session, flag_id, enabled)?;
+    }
     restore_package_preferences_from_cloud(session)?;
     if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
@@ -14918,11 +14915,6 @@ mod tests {
         selected_chart_id: Option<&str>,
         suggested_chart_ids: &[String],
     ));
-    snapshot_wrapper!(set_debug_flag_in_session(
-        handle: u32,
-        flag_id: DebugFlagId,
-        enabled: bool,
-    ));
     snapshot_wrapper!(report_live_feed_connection_event_in_session(
         handle: u32,
         event: LiveFeedConnectionEvent,
@@ -14962,6 +14954,24 @@ mod tests {
         epoch_ms: i64,
     ) -> AppResult<UiSessionSnapshot> {
         super::get_session_snapshot_at_epoch_ms(handle, epoch_ms).map(snapshot_from_outcome)
+    }
+
+    fn set_debug_flag_in_session(
+        handle: u32,
+        flag_id: DebugFlagId,
+        enabled: bool,
+    ) -> AppResult<UiSessionSnapshot> {
+        perform_settings_action_in_session(
+            handle,
+            UiSettingsAction {
+                action_id: format!(
+                    "debug_flag.{}",
+                    crate::settings_controller::debug_flag_id(flag_id)
+                ),
+                value_id: if enabled { "on" } else { "off" }.to_string(),
+            },
+            0,
+        )
     }
 
     #[derive(Default)]
@@ -15130,8 +15140,15 @@ mod tests {
             .expect("plate flight-plan settings row");
         assert_eq!(row.value_id, "on");
 
-        let disabled = set_debug_flag_in_session(init.handle, DebugFlagId::PlateFlightPlan, false)
-            .expect("disable through direct debug command");
+        let disabled = perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "debug_flag.plate_flight_plan".to_string(),
+                value_id: "off".to_string(),
+            },
+            101,
+        )
+        .expect("disable plate flight-plan diagnostics");
         assert!(!disabled.debug_state.plate_flight_plan);
         let row = disabled.settings_page_state.sections[0]
             .rows
@@ -15289,6 +15306,60 @@ mod tests {
                 .and_then(|policy| policy.allow_screen_off_after_ms),
             Some(7_200_000)
         );
+    }
+
+    #[test]
+    fn debug_flags_are_persisted_as_independent_cloud_records() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .expect("configure platform capabilities");
+
+        for (action_id, now_epoch_ms) in [
+            ("debug_flag.tile_labels", 1_234),
+            ("debug_flag.gps_capture", 1_235),
+        ] {
+            perform_settings_action_in_session(
+                init.handle,
+                UiSettingsAction {
+                    action_id: action_id.to_string(),
+                    value_id: "on".to_string(),
+                },
+                now_epoch_ms,
+            )
+            .expect("enable debug flag");
+        }
+
+        let persisted = storage
+            .read_settings()
+            .expect("read settings")
+            .expect("persisted bytes");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("persisted json");
+        assert_eq!(
+            persisted_json["cloud"]["records"]["cached"]["settings/debug/tile_labels"]["value"],
+            true
+        );
+        assert_eq!(
+            persisted_json["cloud"]["records"]["cached"]["settings/debug/gps_capture"]["value"],
+            true
+        );
+
+        let restored =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let restored = configure_platform_capabilities_in_session(
+            restored.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .expect("restore debug flags");
+        assert!(restored.debug_state.tile_labels);
+        assert!(restored.debug_state.gps_capture);
     }
 
     #[test]

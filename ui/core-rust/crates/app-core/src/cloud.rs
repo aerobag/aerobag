@@ -38,7 +38,8 @@ use crate::{
     device_setup_code::{
         decode_device_setup_code, encode_device_setup_code, DeviceSetupCode, DeviceSetupProvider,
     },
-    AppError, AppErrorKind, AppResult, FlightPlan, InactivitySleepTimeout,
+    settings_controller::{all_debug_flags, debug_flag_from_id, debug_flag_id},
+    AppError, AppErrorKind, AppResult, DebugFlagId, FlightPlan, InactivitySleepTimeout,
     OfflinePackagePreferences, OfflinePackageSelection,
 };
 
@@ -53,6 +54,8 @@ const OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX: &str = "offline_packages/product/";
 const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
 const INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY: &str = "settings/inactivity_sleep_timeout";
 const INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION: u32 = 1;
+const DEBUG_FLAG_RECORD_PREFIX: &str = "settings/debug/";
+const DEBUG_FLAG_SCHEMA_VERSION: u32 = 1;
 const AIRCRAFT_LIBRARY_RECORD_PREFIX: &str = "aircraft/library/";
 const AIRCRAFT_LIBRARY_SCHEMA_VERSION: u32 = 1;
 const LEGACY_UNKNOWN_MUTATION_EPOCH_MS: i64 = i64::MIN;
@@ -590,6 +593,18 @@ impl CloudCompletion {
     pub(crate) fn inactivity_sleep_timeout_changed(&self) -> bool {
         self.changed_records
             .contains_key(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
+    }
+
+    pub(crate) fn debug_flags(&self) -> AppResult<Vec<(DebugFlagId, bool)>> {
+        self.changed_records
+            .iter()
+            .filter_map(|(key, record)| {
+                let flag_id = key
+                    .strip_prefix(DEBUG_FLAG_RECORD_PREFIX)
+                    .and_then(debug_flag_from_id)?;
+                Some(debug_flag_from_record(record).map(|enabled| (flag_id, enabled)))
+            })
+            .collect()
     }
 }
 
@@ -1154,6 +1169,45 @@ impl CloudEngine {
             .get(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
             .map(inactivity_sleep_timeout_from_record)
             .transpose()
+    }
+
+    pub fn record_local_debug_flag(
+        &mut self,
+        flag_id: DebugFlagId,
+        enabled: bool,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        let key = debug_flag_record_key(flag_id);
+        let existing = self
+            .persistent
+            .records
+            .cached
+            .get(&key)
+            .map(debug_flag_from_record)
+            .transpose()?;
+        if existing == Some(enabled) {
+            return Ok(false);
+        }
+        let record = CloudRecord {
+            schema_version: DEBUG_FLAG_SCHEMA_VERSION,
+            modified_at_epoch_ms: Some(self.next_record_mutation_epoch_ms(&key, now_epoch_ms)),
+            value: serde_json::to_value(enabled).map_err(cloud_json_error)?,
+        };
+        self.record_local_cloud_record(&key, record);
+        Ok(true)
+    }
+
+    pub fn debug_flags(&self) -> AppResult<Vec<(DebugFlagId, bool)>> {
+        all_debug_flags()
+            .into_iter()
+            .filter_map(|flag_id| {
+                self.persistent
+                    .records
+                    .cached
+                    .get(&debug_flag_record_key(flag_id))
+                    .map(|record| debug_flag_from_record(record).map(|enabled| (flag_id, enabled)))
+            })
+            .collect()
     }
 
     pub fn offline_package_preferences(&self) -> AppResult<OfflinePackagePreferences> {
@@ -3873,6 +3927,23 @@ fn inactivity_sleep_timeout_from_record(record: &CloudRecord) -> AppResult<Inact
     serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
 }
 
+fn debug_flag_record_key(flag_id: DebugFlagId) -> String {
+    format!("{DEBUG_FLAG_RECORD_PREFIX}{}", debug_flag_id(flag_id))
+}
+
+fn debug_flag_from_record(record: &CloudRecord) -> AppResult<bool> {
+    if record.schema_version != DEBUG_FLAG_SCHEMA_VERSION {
+        return Err(cloud_error(format!(
+            "unsupported debug flag schema {}",
+            record.schema_version
+        )));
+    }
+    if record.modified_at_epoch_ms.is_none() {
+        return Err(cloud_error("debug flag has no user-mutation timestamp"));
+    }
+    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+}
+
 fn aircraft_definition_from_record(
     expected_hash: &str,
     record: &CloudRecord,
@@ -3921,6 +3992,11 @@ fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
         flight_plan_from_record(record)?;
     } else if key == INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY {
         inactivity_sleep_timeout_from_record(record)?;
+    } else if let Some(id) = key.strip_prefix(DEBUG_FLAG_RECORD_PREFIX) {
+        // Older clients preserve unknown settings records for forward compatibility.
+        if debug_flag_from_id(id).is_some() {
+            debug_flag_from_record(record)?;
+        }
     } else if key.starts_with(OFFLINE_PACKAGE_REGION_RECORD_PREFIX)
         || key.starts_with(OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX)
     {
@@ -5294,6 +5370,73 @@ mod tests {
         };
         assert_eq!(first.offline_package_preferences().unwrap(), expected);
         assert_eq!(second.offline_package_preferences().unwrap(), expected);
+    }
+
+    #[test]
+    fn independent_debug_flags_merge_and_false_is_synchronized() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut provider = MemoryProvider::default();
+        let mut first = CloudEngine::new(CloudPersistentState::default());
+        first
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        first
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut first);
+        first
+            .perform_action(CloudAction::CreateAccount, &initial)
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 10).is_empty());
+
+        let mut second = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut second);
+        second
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode {
+                    setup_code: first.device_setup_code().unwrap(),
+                },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(pump(&mut second, &mut provider, 20), vec![initial]);
+
+        first
+            .record_local_debug_flag(DebugFlagId::TileLabels, true, 100)
+            .unwrap();
+        second
+            .record_local_debug_flag(DebugFlagId::GpsCapture, true, 110)
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 120).is_empty());
+        assert!(pump(&mut second, &mut provider, 130).is_empty());
+        first
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 140).is_empty());
+
+        for engine in [&first, &second] {
+            let flags = engine.debug_flags().unwrap();
+            assert!(flags.contains(&(DebugFlagId::TileLabels, true)));
+            assert!(flags.contains(&(DebugFlagId::GpsCapture, true)));
+        }
+
+        second
+            .record_local_debug_flag(DebugFlagId::TileLabels, false, 150)
+            .unwrap();
+        assert!(pump(&mut second, &mut provider, 160).is_empty());
+        first
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 170).is_empty());
+        assert!(first
+            .debug_flags()
+            .unwrap()
+            .contains(&(DebugFlagId::TileLabels, false)));
     }
 
     #[test]

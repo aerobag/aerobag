@@ -605,6 +605,28 @@ fn durable_session_writes_are_owned_by_transaction_helpers() {
 }
 
 #[test]
+fn debug_flags_use_only_the_core_settings_action_boundary() {
+    for path in [
+        "ui/web-app/src/domain/appCoreAdapter.ts",
+        "ui/web-app/src/domain/workerAppCoreAdapter.ts",
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeBindings.kt",
+        "ui/core-rust/crates/app-wasm/src/lib.rs",
+        "ui/core-rust/crates/app-ffi/src/lib.rs",
+    ] {
+        let source = read_repo_file(path);
+        assert!(
+            !source.contains("setDebugFlag") && !source.contains("set_debug_flag_in_session"),
+            "{path} must not expose a second, unsynchronized debug-setting mutation path"
+        );
+    }
+
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let settings_action = function_body(&session, "perform_settings_action_in_session");
+    assert!(settings_action.contains("record_local_debug_flag"));
+}
+
+#[test]
 fn settings_state_and_projection_are_owned_by_settings_controller() {
     let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let session = strip_rust_tests(&session_text);

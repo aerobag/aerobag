@@ -323,12 +323,6 @@ interface NativeBridge {
         enabled: Boolean,
     ): String
 
-    fun setDebugFlagInSessionJson(
-        handle: Long,
-        flagIdJson: String,
-        enabled: Boolean,
-    ): String
-
     fun loadRasterMapCatalogInSessionJson(handle: Long): String
 
     fun selectMapFamilyInSessionJson(
@@ -925,12 +919,6 @@ object NativeBindings : NativeBridge {
     external override fun setMapLayerEnabledInSessionPagedJson(
         handle: Long,
         layerIdJson: String,
-        enabled: Boolean,
-    ): String
-
-    external override fun setDebugFlagInSessionJson(
-        handle: Long,
-        flagIdJson: String,
         enabled: Boolean,
     ): String
 

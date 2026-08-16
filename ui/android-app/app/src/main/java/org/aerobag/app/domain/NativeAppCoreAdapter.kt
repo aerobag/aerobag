@@ -236,8 +236,6 @@ data class NavSymbolFeature(
 )
 
 typealias MapLayerId = org.aerobag.app.generated.MapLayerId
-typealias DebugFlagId = org.aerobag.app.generated.DebugFlagId
-
 data class UiMapLayerToggleState(
     val visible: Boolean,
     val enabled: Boolean,
@@ -1560,12 +1558,6 @@ class NativeUiSession internal constructor(
     fun setMapLayerEnabled(layerId: MapLayerId, enabled: Boolean): UiSessionSnapshot {
         return runPagedSnapshot("setMapLayerEnabled") {
             bridge.setMapLayerEnabledInSessionPagedJson(handle, json.encodeToString(layerId), enabled)
-        }
-    }
-
-    fun setDebugFlag(flagId: DebugFlagId, enabled: Boolean): UiSessionSnapshot {
-        return runPagedSnapshot("setDebugFlag") {
-            bridge.setDebugFlagInSessionJson(handle, json.encodeToString(flagId), enabled)
         }
     }
 

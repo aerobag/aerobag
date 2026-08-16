@@ -211,7 +211,6 @@ import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
-import org.aerobag.app.domain.DebugFlagId
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightDataCell
@@ -502,14 +501,13 @@ internal const val UiPrefsRecentAirportsKey = "recent_airport_ids"
 internal const val UiPrefsOfflinePackagePreferencesKey = "offline_package_preferences"
 internal const val UiPrefsOfflinePackageLibraryCacheKey = "offline_package_library_cache"
 internal const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
-internal const val UiPrefsDebugGpsCaptureKey = "debug_gps_capture"
 internal const val UiPrefsMapOrientationModeKey = "map_orientation_mode"
 internal const val MapViewportLogTag = "MapViewport"
 internal const val MaxViewHistoryDepth = 64
 internal const val OverlayPlaneControls = 10f
 internal const val OverlayPlaneModalScrim = 80f
 internal const val OverlayPlaneModal = 90f
-internal fun defaultUiDebugState(gpsCapture: Boolean = false) = UiDebugState(
+internal fun defaultUiDebugState() = UiDebugState(
     tileLabels = false,
     nexradTileLabels = false,
     fastTiles = false,
@@ -517,7 +515,7 @@ internal fun defaultUiDebugState(gpsCapture: Boolean = false) = UiDebugState(
     plateFlightPlan = false,
     badAutopilot = false,
     internetAdsb = false,
-    gpsCapture = gpsCapture,
+    gpsCapture = false,
     debugLogToDeveloperServer = false,
 )
 internal val PackageManagementJson = Json {
@@ -2008,9 +2006,6 @@ internal fun readStoredPage(prefs: SharedPreferences): AppPage {
     return runCatching { AppPage.valueOf(stored) }.getOrDefault(AppPage.Map)
 }
 
-internal fun readStoredGpsCaptureDebugFlag(prefs: SharedPreferences): Boolean =
-    prefs.getBoolean(UiPrefsDebugGpsCaptureKey, false)
-
 internal fun readStoredMapOrientationMode(prefs: SharedPreferences): MapOrientationMode =
     if (prefs.getString(UiPrefsMapOrientationModeKey, null) == "track") {
         MapOrientationMode.Track
@@ -2022,10 +2017,6 @@ internal fun writeStoredMapOrientationMode(prefs: SharedPreferences, mode: MapOr
     prefs.edit()
         .putString(UiPrefsMapOrientationModeKey, if (mode == MapOrientationMode.Track) "track" else "north")
         .apply()
-}
-
-internal fun writeStoredGpsCaptureDebugFlag(prefs: SharedPreferences, enabled: Boolean) {
-    prefs.edit().putBoolean(UiPrefsDebugGpsCaptureKey, enabled).apply()
 }
 
 internal fun summarizeRuntimeLoadFailure(error: Throwable): String {
@@ -2579,7 +2570,7 @@ internal fun AerobagApp(
             page = AppPage.OfflinePackages,
             pageHistory = emptyList(),
             uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
-            debugState = defaultUiDebugState(gpsCapture = readStoredGpsCaptureDebugFlag(prefs)),
+            debugState = defaultUiDebugState(),
             navElement = null,
             onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
             onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
@@ -3012,11 +3003,6 @@ internal fun AerobagApp(
         derivedChartPageState = uiSession.deriveChartPageState()
     }
     LaunchedEffect(uiSession) {
-        if (readStoredGpsCaptureDebugFlag(prefs)) {
-            applyBackgroundSessionCommand("setDebugFlag", "AerobagDebug") {
-                uiSession.setDebugFlag(DebugFlagId.GpsCapture, true)
-            }
-        }
         applyBackgroundSessionCommand("registerOwnshipSource", "AerobagOwnship") {
             uiSession.registerOwnshipSource(
                 AndroidGpsSource.registration(paused = AndroidGpsPower.isGpsPaused(appContext)),
@@ -3653,11 +3639,8 @@ internal fun AerobagApp(
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
                         onSettingsAction = { actionId, valueId ->
-                            val snapshot = applySessionCommand("performSettingsAction") {
+                            applySessionCommand("performSettingsAction") {
                                 uiSession.performSettingsAction(actionId, valueId)
-                            }
-                            if (snapshot != null) {
-                                writeStoredGpsCaptureDebugFlag(prefs, snapshot.debugState.gpsCapture)
                             }
                         },
                     )

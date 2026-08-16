@@ -149,6 +149,7 @@ class NavKvStore private constructor(
     private val bridge: NativeBridge,
     private val json: Json,
     initialBackend: NavKvBackend,
+    private val resourceFrontierLoader: ResourceFrontierLoader,
 ) : AutoCloseable {
     private val backendLock = ReentrantReadWriteLock(true)
     private var backend = initialBackend
@@ -191,17 +192,33 @@ class NavKvStore private constructor(
                 encodeDefaults = true
                 ignoreUnknownKeys = true
             },
-        ): NavKvStore = NavKvStore(
-            bridge = bridge,
-            json = json,
-            initialBackend = openBackend(artifacts, libraryCacheJson, bridge, json),
-        )
+        ): NavKvStore {
+            val resourceFrontierLoader = ResourceFrontierLoader()
+            return try {
+                NavKvStore(
+                    bridge = bridge,
+                    json = json,
+                    initialBackend = openBackend(
+                        artifacts,
+                        libraryCacheJson,
+                        bridge,
+                        json,
+                        resourceFrontierLoader,
+                    ),
+                    resourceFrontierLoader = resourceFrontierLoader,
+                )
+            } catch (error: Throwable) {
+                resourceFrontierLoader.close()
+                throw error
+            }
+        }
 
         private fun openBackend(
             artifacts: List<InstalledPackageArtifact>,
             libraryCacheJson: String,
             bridge: NativeBridge,
             json: Json,
+            resourceFrontierLoader: ResourceFrontierLoader,
         ): NavKvBackend {
             val artifactsByFilename = artifacts.associateBy { it.filename }
             val controllerHandle = bridge.navDbOpenControllerCreateFromInstalledArtifacts(
@@ -226,18 +243,20 @@ class NavKvStore private constructor(
                             )
                         }
                         "need_resources" -> {
-                            for (resource in parseCoreResourceRequests(outcome)) {
-                                val bytes = try {
-                                    readInstalledArtifactResource(artifactsByFilename, resource)
-                                } catch (error: Throwable) {
-                                    if (resource.optional) {
-                                        diagnosticLogInfo(TAG) {
-                                            "optional resource ${resource.id} unavailable: ${error.message}"
-                                        }
-                                        ByteArray(0)
-                                    } else {
-                                        throw error
+                            val resources = parseCoreResourceRequests(outcome)
+                            val batch = resourceFrontierLoader.load(
+                                resources.map { resource ->
+                                    { readInstalledArtifactResource(artifactsByFilename, resource) }
+                                },
+                            )
+                            for ((resource, loaded) in resources.zip(batch.outcomes)) {
+                                val bytes = loaded.bytes ?: if (resource.optional) {
+                                    diagnosticLogInfo(TAG) {
+                                        "optional resource ${resource.id} unavailable: ${loaded.error?.message}"
                                     }
+                                    ByteArray(0)
+                                } else {
+                                    throw loaded.error ?: error("resource ${resource.id} failed without an error")
                                 }
                                 bridge.navDbOpenControllerIngestResource(controllerHandle, resource.id, bytes)
                             }
@@ -284,7 +303,13 @@ class NavKvStore private constructor(
         sessionHandle: Long,
         plannedGcFilenames: Set<String> = emptySet(),
     ): PagedSessionOperationResult {
-        val nextBackend = openBackend(artifacts, libraryCacheJson, bridge, json)
+        val nextBackend = openBackend(
+            artifacts,
+            libraryCacheJson,
+            bridge,
+            json,
+            resourceFrontierLoader,
+        )
         var previousBackend: NavKvBackend? = null
         try {
             val installedPackageIdsJson = json.encodeToString(
@@ -337,13 +362,10 @@ class NavKvStore private constructor(
                         return result
                     }
                     "need_resources" -> {
-                        var loadedAnyResource = false
-                        for (resource in parseCoreResourceRequests(outcome)) {
-                            require(resource.id.startsWith("nav_kv/page/")) {
-                                "NAVDB advance requested non-NAVKV resource ${resource.id}"
-                            }
-                            loadedAnyResource = ensureNavKvResource(nextBackend, resource) || loadedAnyResource
-                        }
+                        val loadedAnyResource = loadNavKvFrontier(
+                            nextBackend,
+                            parseCoreResourceRequests(outcome),
+                        )
                         check(loadedAnyResource) {
                             "NAVDB advance requested only already-loaded resources"
                         }
@@ -372,10 +394,10 @@ class NavKvStore private constructor(
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> outcome["result"] ?: JsonNull
                 "need_resources" -> {
-                    var loadedAnyResource = false
-                    for (resource in parseCoreResourceRequests(outcome)) {
-                        loadedAnyResource = ensureNavKvResource(activeBackend, resource) || loadedAnyResource
-                    }
+                    val loadedAnyResource = loadNavKvFrontier(
+                        activeBackend,
+                        parseCoreResourceRequests(outcome),
+                    )
                     if (!loadedAnyResource) {
                         error("HAD operation requested only already-loaded resources")
                     }
@@ -389,10 +411,12 @@ class NavKvStore private constructor(
     fun runPagedSessionOperationElement(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+        metrics: PagedSessionOperationMetrics? = null,
         operation: () -> String,
     ): JsonElement = runPagedSessionOperation(
         fetchSessionResource = fetchSessionResource,
         ingestSessionResource = ingestSessionResource,
+        metrics = metrics,
         operation = operation,
     ).result
 
@@ -400,6 +424,7 @@ class NavKvStore private constructor(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
         resumeSnapshot: (() -> String)? = null,
+        metrics: PagedSessionOperationMetrics? = null,
         operation: () -> String,
     ): PagedSessionOperationResult = backendLock.read {
         check(!closed) { "nav_kv store is closed" }
@@ -408,6 +433,7 @@ class NavKvStore private constructor(
             fetchSessionResource = fetchSessionResource,
             ingestSessionResource = ingestSessionResource,
             resumeSnapshot = resumeSnapshot,
+            metrics = metrics,
             operation = operation,
         )
     }
@@ -417,6 +443,7 @@ class NavKvStore private constructor(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
         resumeSnapshot: (() -> String)?,
+        metrics: PagedSessionOperationMetrics?,
         operation: () -> String,
     ): PagedSessionOperationResult {
         var activeOperation = operation
@@ -429,7 +456,8 @@ class NavKvStore private constructor(
         // satisfied it, but seeing the same request again proves core made no progress.
         val seenResourceRequests = mutableSetOf<Pair<String, List<String>>>()
         while (true) {
-            val outcome = json.parseToJsonElement(activeOperation()).jsonObject
+            val outcomeJson = metrics?.measureCoreCall(activeOperation) ?: activeOperation()
+            val outcome = json.parseToJsonElement(outcomeJson).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> {
                     PagedSessionOperationResult(
@@ -462,27 +490,32 @@ class NavKvStore private constructor(
                         "paged session operation repeated an already-satisfied resource request: " +
                             requestFingerprint.second.joinToString()
                     }
-                    for (resource in resources) {
-                        if (resource.id.startsWith("nav_kv/page/")) {
-                            ensureNavKvResource(activeBackend, resource)
-                        } else {
-                            val fetch = fetchSessionResource
-                                ?: error("session resource requested without fetcher: ${resource.id}")
-                            val ingest = ingestSessionResource
-                                ?: error("session resource requested without ingester: ${resource.id}")
-                            val bytes = try {
-                                fetch(resource)
-                            } catch (error: Throwable) {
-                                if (resource.optional) {
-                                    diagnosticLogInfo(TAG) {
-                                        "optional resource ${resource.id} unavailable: ${error.message}"
-                                    }
-                                    ingest(resource, ByteArray(0))
-                                    continue
-                                }
-                                throw error
-                            }
-                            ingest(resource, bytes)
+                    val roundIndex = metrics?.beginResourceRound(resources)
+                    try {
+                        val loads = resources.mapNotNull { resource ->
+                            prepareResourceLoad(
+                                activeBackend = activeBackend,
+                                resource = resource,
+                                fetchSessionResource = fetchSessionResource,
+                                metrics = metrics,
+                            )
+                        }
+                        val batch = resourceFrontierLoader.load(loads.map { it.load })
+                        if (roundIndex != null) {
+                            metrics?.recordResourceBatch(roundIndex, batch)
+                        }
+                        for ((load, loaded) in loads.zip(batch.outcomes)) {
+                            ingestResourceLoad(
+                                activeBackend = activeBackend,
+                                load = load,
+                                loaded = loaded,
+                                ingestSessionResource = ingestSessionResource,
+                                metrics = metrics,
+                            )
+                        }
+                    } finally {
+                        if (roundIndex != null) {
+                            metrics.finishResourceRound(roundIndex)
                         }
                     }
                     continue
@@ -521,25 +554,54 @@ class NavKvStore private constructor(
             if (effects.isEmpty()) {
                 return invalidations.toList()
             }
-            for (effect in effects) {
+            val prepared = effects.map { effect ->
                 try {
-                    ensureSessionEffectResource(
-                        activeBackend = activeBackend,
-                        resource = effect.resource,
-                        fetchSessionResource = fetchSessionResource,
-                        ingestSessionResource = ingestSessionResource,
+                    PreparedSessionResourceEffect(
+                        effect = effect,
+                        load = prepareResourceLoad(
+                            activeBackend = activeBackend,
+                            resource = effect.resource,
+                            fetchSessionResource = fetchSessionResource,
+                            metrics = null,
+                        ),
                     )
-                    invalidations.addAll(effect.completionInvalidations)
                 } catch (error: Throwable) {
+                    PreparedSessionResourceEffect(effect = effect, error = error)
+                }
+            }
+            val loads = prepared.mapNotNull(PreparedSessionResourceEffect::load)
+            val batch = resourceFrontierLoader.load(loads.map(PendingResourceLoad::load))
+            val loadedResults = batch.outcomes.iterator()
+            for (preparedEffect in prepared) {
+                val effect = preparedEffect.effect
+                val error = preparedEffect.error ?: preparedEffect.load?.let { load ->
+                    val loaded = loadedResults.next()
+                    runCatching {
+                        ingestResourceLoad(
+                            activeBackend = activeBackend,
+                            load = load,
+                            loaded = loaded,
+                            ingestSessionResource = ingestSessionResource,
+                            metrics = null,
+                        )
+                    }.exceptionOrNull()
+                }
+                if (error != null) {
                     reportSessionResourceFailure?.invoke(effect.resource, error)
-                    invalidations.addAll(effect.completionInvalidations)
                     diagnosticLogInfo(TAG) {
                         "session resource effect failed resource=${effect.resource.id}: ${error.message}"
                     }
                 }
+                invalidations.addAll(effect.completionInvalidations)
             }
         }
     }
+
+    private data class PreparedSessionResourceEffect(
+        val effect: CoreSessionResourceEffect,
+        val load: PendingResourceLoad? = null,
+        val error: Throwable? = null,
+    )
 
     private fun parseCoreSessionResourceEffects(effectsJson: String): List<CoreSessionResourceEffect> =
         json.parseToJsonElement(effectsJson).jsonArray.map { element ->
@@ -553,35 +615,6 @@ class NavKvStore private constructor(
             )
         }
 
-    private fun ensureSessionEffectResource(
-        activeBackend: NavKvBackend,
-        resource: CoreResourceRequest,
-        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
-        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
-    ) {
-        if (resource.id.startsWith("nav_kv/page/")) {
-            ensureNavKvResource(activeBackend, resource)
-            return
-        }
-        val fetch = fetchSessionResource
-            ?: error("session resource effect requested without fetcher: ${resource.id}")
-        val ingest = ingestSessionResource
-            ?: error("session resource effect requested without ingester: ${resource.id}")
-        val bytes = try {
-            fetch(resource)
-        } catch (error: Throwable) {
-            if (resource.optional) {
-                diagnosticLogInfo(TAG) {
-                    "optional session resource effect ${resource.id} unavailable: ${error.message}"
-                }
-                ByteArray(0)
-            } else {
-                throw error
-            }
-        }
-        ingest(resource, bytes)
-    }
-
     fun <T> runCoreOperation(operation: JsonObject, serializer: KSerializer<T>): T =
         json.decodeFromJsonElement(serializer, runCoreOperationElement(operation))
 
@@ -593,40 +626,112 @@ class NavKvStore private constructor(
         }
     }
 
-    private fun ensureNavKvResource(activeBackend: NavKvBackend, resource: CoreResourceRequest): Boolean {
+    private data class PendingResourceLoad(
+        val resource: CoreResourceRequest,
+        val navPageIndex: Int?,
+        val load: () -> ByteArray,
+    )
+
+    private fun prepareResourceLoad(
+        activeBackend: NavKvBackend,
+        resource: CoreResourceRequest,
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
+        metrics: PagedSessionOperationMetrics?,
+    ): PendingResourceLoad? {
+        if (!resource.id.startsWith("nav_kv/page/")) {
+            val fetch = fetchSessionResource
+                ?: error("session resource requested without fetcher: ${resource.id}")
+            return PendingResourceLoad(resource, navPageIndex = null) { fetch(resource) }
+        }
         val pageIndex = resource.id.removePrefix("nav_kv/page/").toIntOrNull()
             ?: error("unsupported nav_kv resource id: ${resource.id}")
-        return ensurePage(activeBackend, pageIndex, resource)
-    }
-
-    private fun ensurePage(
-        activeBackend: NavKvBackend,
-        pageIndex: Int,
-        resource: CoreResourceRequest,
-    ): Boolean = synchronized(activeBackend.pageLock) {
-        if (activeBackend.loadedPages.contains(pageIndex)) {
-            return@synchronized false
-        }
-        val startMs = System.nanoTime() / 1_000_000L
         val source = resource.source
         require(source is CoreResourceSource.NavKvMember && source.memberPath.isNotBlank()) {
             "Android nav_kv paging expected nav_kv_member for ${resource.id}, got ${source.kindForLog()}"
         }
-        try {
-            val pageBytes = InstalledPackages.readZipEntryBytes(activeBackend.navDbArtifact.file, source.memberPath)
-            bridge.navKvInsertResource(activeBackend.handle, resource.id, pageBytes)
-            activeBackend.loadedPages.add(pageIndex)
-        } catch (error: Throwable) {
-            diagnosticLogInfo(TAG) {
-                "ensurePage($pageIndex) failed resource=${resource.id} source=${source.describeForLog()}: ${error.message}"
+        synchronized(activeBackend.pageLock) {
+            if (activeBackend.loadedPages.contains(pageIndex)) {
+                metrics?.recordResourceCacheHit()
+                return null
             }
-            throw error
         }
-        val elapsedMs = (System.nanoTime() / 1_000_000L) - startMs
-        if (elapsedMs >= 10) {
-            perfLogInfo(TAG) { "ensurePage($pageIndex) took ${elapsedMs}ms" }
+        return PendingResourceLoad(resource, navPageIndex = pageIndex) {
+            InstalledPackages.readZipEntryBytes(activeBackend.navDbArtifact.file, source.memberPath)
         }
-        true
+    }
+
+    private fun ingestResourceLoad(
+        activeBackend: NavKvBackend,
+        load: PendingResourceLoad,
+        loaded: ResourceFrontierLoadOutcome,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
+        metrics: PagedSessionOperationMetrics?,
+    ) {
+        val resource = load.resource
+        val bytes = loaded.bytes ?: if (resource.optional) {
+            diagnosticLogInfo(TAG) {
+                "optional resource ${resource.id} unavailable: ${loaded.error?.message}"
+            }
+            ByteArray(0)
+        } else {
+            throw loaded.error ?: error("resource ${resource.id} failed without an error")
+        }
+        val pageIndex = load.navPageIndex
+        if (pageIndex == null) {
+            val ingest = ingestSessionResource
+                ?: error("session resource requested without ingester: ${resource.id}")
+            metrics?.measureResourceIngest {
+                ingest(resource, bytes)
+            } ?: ingest(resource, bytes)
+            return
+        }
+        synchronized(activeBackend.pageLock) {
+            if (activeBackend.loadedPages.contains(pageIndex)) {
+                return
+            }
+            try {
+                metrics?.measureResourceIngest {
+                    bridge.navKvInsertResource(activeBackend.handle, resource.id, bytes)
+                } ?: bridge.navKvInsertResource(activeBackend.handle, resource.id, bytes)
+                activeBackend.loadedPages.add(pageIndex)
+            } catch (error: Throwable) {
+                diagnosticLogInfo(TAG) {
+                    "ingest page $pageIndex failed resource=${resource.id} source=${resource.source.describeForLog()}: ${error.message}"
+                }
+                throw error
+            }
+        }
+    }
+
+    private fun loadNavKvFrontier(
+        activeBackend: NavKvBackend,
+        resources: List<CoreResourceRequest>,
+        metrics: PagedSessionOperationMetrics? = null,
+    ): Boolean {
+        resources.forEach { resource ->
+            require(resource.id.startsWith("nav_kv/page/")) {
+                "NAVKV operation requested non-NAVKV resource ${resource.id}"
+            }
+        }
+        val loads = resources.mapNotNull { resource ->
+            prepareResourceLoad(
+                activeBackend = activeBackend,
+                resource = resource,
+                fetchSessionResource = null,
+                metrics = metrics,
+            )
+        }
+        val batch = resourceFrontierLoader.load(loads.map(PendingResourceLoad::load))
+        for ((load, loaded) in loads.zip(batch.outcomes)) {
+            ingestResourceLoad(
+                activeBackend = activeBackend,
+                load = load,
+                loaded = loaded,
+                ingestSessionResource = null,
+                metrics = metrics,
+            )
+        }
+        return loads.isNotEmpty()
     }
 
     fun debugDropAttachedSessionPages() {
@@ -644,7 +749,11 @@ class NavKvStore private constructor(
             attachedSessionHandles.clear()
             backend
         }
-        bridge.navKvDestroy(closedBackend.handle)
+        try {
+            bridge.navKvDestroy(closedBackend.handle)
+        } finally {
+            resourceFrontierLoader.close()
+        }
     }
 }
 

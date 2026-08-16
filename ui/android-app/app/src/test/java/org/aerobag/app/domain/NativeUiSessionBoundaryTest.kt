@@ -225,12 +225,13 @@ class NativeUiSessionBoundaryTest {
         )
         assertTrue(
             "Cancelled page work must discard its pending payload before it can consume I/O.",
-            runnerSource.contains("payloads.remove(requestId)?.dropped(\"caller_cancelled\")"),
+            runnerSource.contains("payloads.remove(requestId)?.let { retained ->") &&
+                runnerSource.contains("retained.payload.dropped(\"caller_cancelled\")"),
         )
         val startBody = balancedBlockAfterMarker(runnerSource, "private fun start(")
         assertTrue(
             "Skipping a cancelled pending payload must continue draining the scheduler queue.",
-            Regex("""if \(payload == null\) \{[\s\S]*?val completion = complete\(request.id\)[\s\S]*?completion.next\?\.let""")
+            Regex("""if \(retained == null\) \{[\s\S]*?val completion = complete\(request.id\)[\s\S]*?completion.next\?\.let""")
                 .containsMatchIn(startBody),
         )
         assertTrue(

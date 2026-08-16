@@ -1910,6 +1910,7 @@ class NativeUiSession internal constructor(
         heightPx: Double,
         pointDisplayScale: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): MapOverlayQueryOutcome {
         val viewportJson = json.encodeToString(viewport.toWire())
         val store = navKvStore ?: error("session missing nav_db for map overlay")
@@ -1927,6 +1928,7 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         )
         val invalidations = publishPagedInvalidations("queryMapOverlay", outcome)
         return MapOverlayQueryOutcome(
@@ -1943,6 +1945,7 @@ class NativeUiSession internal constructor(
         click: LatLonPoint,
         pointDisplayScale: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): MapSelectionQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val clickJson = json.encodeToString(click.toWire())
@@ -1952,6 +1955,7 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         ) {
                 bridge.getMapSelectionInSessionWithPointDisplayScaleJson(
                     handle,
@@ -1982,6 +1986,7 @@ class NativeUiSession internal constructor(
         navRef: NavRef,
         pointDisplayScale: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): MapSelectionForNavRefResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val navRefJson = json.encodeToString(navRef.toWire())
@@ -1991,6 +1996,7 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         ) {
                 bridge.getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
                     handle,
@@ -2013,6 +2019,7 @@ class NativeUiSession internal constructor(
         decodedCacheKeys: Collection<String>,
         inFlightCacheKeys: Collection<String>,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): TerrainOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val decodedCacheKeysJson = json.encodeToString(decodedCacheKeys.toList())
@@ -2033,6 +2040,7 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         )
         publishPagedInvalidations("queryTerrainOverlay", result)
         return json.decodeFromJsonElement<WireTerrainOverlayQueryResult>(result.result).toUi()
@@ -2044,6 +2052,7 @@ class NativeUiSession internal constructor(
         widthPx: Double,
         heightPx: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): NexradOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val result = navKvStore?.runPagedSessionOperation(
@@ -2054,6 +2063,7 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         ) ?: error("session missing nav_db for NEXRAD overlay")
         publishPagedInvalidations("queryNexradOverlay", result)
         return json.decodeFromJsonElement(
@@ -2066,6 +2076,7 @@ class NativeUiSession internal constructor(
         chartId: String,
         assetKind: String,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): ByteArray {
         require(assetKind == "asset" || assetKind == "thumbnail") {
             "unsupported chart asset kind: $assetKind"
@@ -2076,6 +2087,7 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         ) {
             bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
         }
@@ -2084,7 +2096,9 @@ class NativeUiSession internal constructor(
         val source = parseCoreResourceSource(resultJson.getValue("source").jsonObject)
         val resource = CoreResourceRequest("chart_asset/$assetKind/$chartId", source, false)
         return try {
-            fetchResource(resource).also { bytes ->
+            (metrics?.measureResourceLoad(ByteArray::size) {
+                fetchResource(resource)
+            } ?: fetchResource(resource)).also { bytes ->
                 Log.i(
                     "AerobagCharts",
                     "plate asset loaded chart=$chartId kind=$assetKind " +
@@ -2103,6 +2117,7 @@ class NativeUiSession internal constructor(
     fun nexradTileBytes(
         src: String,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): ByteArray {
         val store = navKvStore ?: error("session missing nav_db for NEXRAD tile fetch")
         val result = store.runPagedSessionOperation(
@@ -2110,11 +2125,14 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
+            metrics = metrics,
         ) {
             bridge.prepareNexradTileInSessionJson(handle, src)
         }
         publishPagedInvalidations("nexradTileBytes", result)
-        return bridge.nexradTileBytesInSession(handle, src)
+        return metrics?.measureCoreCall {
+            bridge.nexradTileBytesInSession(handle, src)
+        } ?: bridge.nexradTileBytesInSession(handle, src)
     }
 
     fun queryRasterTilePlanJson(
@@ -2138,6 +2156,7 @@ class NativeUiSession internal constructor(
         request: TerrainOverlayTileRequest,
         aircraftAltitudeFt: Double,
         fetchResource: (CoreResourceRequest) -> ByteArray,
+        metrics: PagedSessionOperationMetrics? = null,
     ): ByteArray {
         val resources = request.sourceTiles
             .mapNotNull { it.resource }
@@ -2146,9 +2165,16 @@ class NativeUiSession internal constructor(
             "terrain request ${request.key} has no core source resources"
         }
         resources.forEach { resource ->
-            bridge.ingestResourceInSession(handle, resource.id, fetchResource(resource))
+            val bytes = metrics?.measureResourceLoad(ByteArray::size) {
+                fetchResource(resource)
+            } ?: fetchResource(resource)
+            metrics?.measureResourceIngest {
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            } ?: bridge.ingestResourceInSession(handle, resource.id, bytes)
         }
-        return bridge.renderTerrainOverlayTileByKeyInSession(handle, request.key, aircraftAltitudeFt)
+        return metrics?.measureCoreCall {
+            bridge.renderTerrainOverlayTileByKeyInSession(handle, request.key, aircraftAltitudeFt)
+        } ?: bridge.renderTerrainOverlayTileByKeyInSession(handle, request.key, aircraftAltitudeFt)
     }
 
     fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {

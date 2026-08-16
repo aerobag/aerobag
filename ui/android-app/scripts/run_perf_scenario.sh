@@ -24,6 +24,7 @@ APP_ID="org.aerobag.app"
 ACTIVITY="$APP_ID/.MainActivity"
 SCENARIO="${1:-map_selection_freeze}"
 WAIT_SECONDS="${WAIT_SECONDS:-22}"
+LOG_PATH="${LOG_PATH:-/tmp/aerobag-android-perf-${SCENARIO}.log}"
 
 echo "target=$ANDROID_SERIAL"
 echo "scenario=$SCENARIO"
@@ -33,17 +34,7 @@ adb -s "$ANDROID_SERIAL" shell am force-stop "$APP_ID"
 adb -s "$ANDROID_SERIAL" shell am start -W -n "$ACTIVITY" --es aerobag_perf_scenario "$SCENARIO"
 sleep "$WAIT_SECONDS"
 
-LOG="$(adb -s "$ANDROID_SERIAL" logcat -d -v threadtime AndroidRuntime:E AerobagPerfScenario:V ActivityManager:I '*:S')"
-printf '%s\n' "$LOG"
-
-if ! grep -q "AerobagPerfScenario: done scenario=$SCENARIO" <<<"$LOG"; then
-  echo "RESULT: scenario did not complete" >&2
-  exit 1
-fi
-
-if grep -q "AerobagPerfScenario: threshold_violation" <<<"$LOG"; then
-  echo "RESULT: threshold violation" >&2
-  exit 2
-fi
-
-echo "RESULT: scenario passed"
+LOG="$(adb -s "$ANDROID_SERIAL" logcat -d -v threadtime AndroidRuntime:E AerobagPerfScenario:V AerobagSessionWork:V ActivityManager:I '*:S')"
+printf '%s\n' "$LOG" >"$LOG_PATH"
+echo "log=$LOG_PATH"
+python3 "$ROOT/ui/android-app/scripts/analyze_perf_scenario.py" --scenario "$SCENARIO" --log "$LOG_PATH"

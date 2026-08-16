@@ -256,6 +256,55 @@ Required logs:
 - frame gaps or input callback latency
 - active worker count per session
 
+Implemented for `map_selection_freeze`:
+
+- `UiSessionWorkRunner` emits request, queue, start, and terminal records only
+  while an explicit Android perf scenario is active.
+- Terminal records separate scheduler queue time, coroutine-dispatch wait,
+  worker execution, worker-to-main delivery, scheduler completion, and UI
+  landing.
+- `NavKvStore` accounts for core calls, resource request rounds, cache hits,
+  loaded bytes, fetch time, and ingest time inside each scheduled request.
+- `AndroidFrameGapMonitor` records p95/maximum frame spacing and reports gaps
+  beyond the scenario threshold.
+- `scripts/analyze_perf_scenario.py` validates the lifecycle and prints
+  per-kind p50/p95/maximum timings; `run_perf_scenario.sh` retains the complete
+  log under `/tmp` for investigation.
+
+Resource paging now treats each core `need_resources` response as a dependency
+frontier:
+
+- Core map selection probes all independently knowable prerequisites before it
+  returns, deduplicates their missing NAVKV pages, and emits their union. It
+  still returns before following dependencies that cannot be discovered until
+  an earlier frontier is available, such as plate availability and terrain.
+- Android launches every uncached load in a frontier immediately on a bounded
+  16-worker loader. It then ingests results serially in request order because
+  the native stores have deterministic mutation boundaries. NAVDB open, direct
+  HAD operations, cycle replacement, session operations, and asynchronous
+  session resource effects all use this policy.
+- Web already fetched a returned frontier with `Promise.all`; it now emits the
+  same debug frontier shape instead of changing that execution policy.
+- Perf records include frontier IDs and source kinds, fetch critical-path wall
+  time, summed fetch work, observed concurrency, and serial ingest time.
+
+In two emulator runs before this change, map selection took 318 ms and 205 ms.
+The corresponding post-change runs took 185 ms and 127 ms, a roughly 40 percent
+reduction in this small sample. The NAVKV portion fell from five dependency
+rounds to three; the fourth remaining round fetches terrain. In the slower pair,
+core time fell from 79 ms to 39 ms, summed resource fetch time from 157 ms to
+89 ms, and ingest time from 54 ms to 38 ms.
+
+A separate map-overlay request demonstrated the platform concurrency directly:
+its 16-page NAVKV frontier took 8 ms of fetch wall time for 30 ms of summed fetch
+work with 16 concurrent loads. This is evidence that sibling reads overlap, not
+an additional map-selection measurement. More repetitions are required before
+treating either result as a stable benchmark.
+
+The broader stress scenario still detected a separate 879 ms map-overlay core
+outlier and a 1,183 ms frame gap; this optimization does not conceal or relax
+that existing threshold failure.
+
 Pass/fail thresholds should start conservative:
 
 - No expensive session work starts on Android main thread.
@@ -304,8 +353,10 @@ Web regression tests:
 ## Implementation Phases
 
 1. In progress: the Android stall watchdog, perf scenarios, and slow-call audit
-   reproduce the original freeze class. Complete queue/core/fetch/result timing
-   instrumentation as individual workloads need deeper diagnosis.
+   reproduce the original freeze class. The dense map-selection workload now
+   has queue/core/resource/delivery/landing timings and frame-gap thresholds;
+   extend the same instrumentation to additional workloads when they need
+   deeper diagnosis.
 2. Completed: introduce the core `UiSessionWorkScheduler`, reusing the shape of
    `SessionSnapshotRefreshScheduler`.
 3. Completed: add Android `UiSessionWorkRunner` and route map overlay plus map
@@ -331,6 +382,10 @@ Web regression tests:
    UI code from calling them directly. The runner is owned by the retained core
    session and closes before the native session, rather than being recreated by
    individual Compose pages.
+8. Completed: resource-frontier instrumentation distinguishes dependency depth
+   from frontier width. Android fetches each known frontier concurrently and
+   ingests deterministically; core map selection combines independent first-level
+   prerequisites so platform scheduling can exploit that concurrency.
 
 The background lane now retains one latest pending request per core-owned
 coalescing key and runs the oldest pending key next. Map churn can replace old

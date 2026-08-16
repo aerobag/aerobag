@@ -6,6 +6,7 @@
 
 package org.aerobag.app
 
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -29,6 +30,8 @@ import org.aerobag.app.domain.NativeBindings
 import org.aerobag.app.domain.NativeBridge
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavRef
+import org.aerobag.app.domain.PagedSessionOperationMetrics
+import org.aerobag.app.domain.PagedSessionOperationMetricsSnapshot
 import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
 import org.aerobag.app.generated.NexradOverlayQueryResult
@@ -46,15 +49,29 @@ class UiSessionWorkRunner(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val schedulerHandle = bridge.createUiSessionWorkScheduler()
-    private val payloads = mutableMapOf<Long, WorkPayload>()
+    private val payloads = mutableMapOf<Long, RetainedWork>()
+    private val activeRequestIds = mutableSetOf<Long>()
     private var nextRequestId = 1L
     private var closed = false
+    private var perfMetricsEnabled = false
+
+    fun setPerfMetricsEnabled(enabled: Boolean) {
+        if (perfMetricsEnabled == enabled) return
+        perfMetricsEnabled = enabled
+        if (enabled) {
+            Log.i(UiSessionWorkLogTag, "event=instrumentation_enabled")
+        }
+    }
 
     fun close() {
         if (closed) return
         closed = true
-        payloads.values.forEach { it.dropped("runner_closed") }
+        payloads.values.forEach { retained ->
+            retained.payload.dropped("runner_closed")
+            logFinished(retained, "runner_closed", outcome = "cancelled")
+        }
         payloads.clear()
+        activeRequestIds.clear()
         scope.cancel()
         bridge.destroyUiSessionWorkScheduler(schedulerHandle)
     }
@@ -290,7 +307,10 @@ class UiSessionWorkRunner(
         } catch (error: CancellationException) {
             if (requestId != null) {
                 scope.launch {
-                    payloads.remove(requestId)?.dropped("caller_cancelled")
+                    payloads.remove(requestId)?.let { retained ->
+                        retained.payload.dropped("caller_cancelled")
+                        logFinished(retained, "caller_cancelled", outcome = "cancelled")
+                    }
                 }
             }
             throw error
@@ -308,7 +328,13 @@ class UiSessionWorkRunner(
             coalesceKey = payload.coalesceKey,
             requestedAtMs = SystemClock.elapsedRealtime(),
         )
-        payloads[request.id] = payload
+        val retained = RetainedWork(request = request, payload = payload)
+        payloads[request.id] = retained
+        logEvent(
+            "requested",
+            retained,
+            "retained_count" to payloads.size,
+        )
         val decision = json.decodeFromString<UiSessionWorkRequestDecision>(
             bridge.uiSessionWorkSchedulerRequestJson(
                 schedulerHandle,
@@ -318,8 +344,21 @@ class UiSessionWorkRunner(
         when (decision) {
             is UiSessionWorkRequestDecision.Start -> start(decision.request)
             is UiSessionWorkRequestDecision.Queued -> {
+                logEvent(
+                    "queued",
+                    retained,
+                    "replaced_request_id" to (decision.replacedRequestId ?: 0L),
+                    "retained_count" to payloads.size,
+                )
                 decision.replacedRequestId?.let { replacedRequestId ->
-                    payloads.remove(replacedRequestId)?.dropped("replaced_by_newer_pending")
+                    payloads.remove(replacedRequestId)?.let { replaced ->
+                        replaced.payload.dropped("replaced_by_newer_pending")
+                        logFinished(
+                            replaced,
+                            action = "replaced_by_newer_pending",
+                            outcome = "cancelled",
+                        )
+                    }
                 }
             }
         }
@@ -330,8 +369,8 @@ class UiSessionWorkRunner(
         if (closed) {
             return
         }
-        val payload = payloads[request.id]
-        if (payload == null) {
+        val retained = payloads[request.id]
+        if (retained == null) {
             val completion = complete(request.id)
             completion.next?.let { next ->
                 if (!closed) {
@@ -340,31 +379,102 @@ class UiSessionWorkRunner(
             }
             return
         }
+        retained.startedAtMs = SystemClock.elapsedRealtime()
+        activeRequestIds += request.id
+        logEvent(
+            "started",
+            retained,
+            "queue_ms" to (retained.startedAtMs - request.requestedAtMs).coerceAtLeast(0L),
+            "active_count" to activeRequestIds.size,
+            "retained_count" to payloads.size,
+        )
         scope.launch {
+            val operationMetrics = if (perfMetricsEnabled) PagedSessionOperationMetrics() else null
+            val dispatchedAtMs = SystemClock.elapsedRealtime()
+            var workerStartedAtMs = dispatchedAtMs
+            var workerFinishedAtMs = dispatchedAtMs
+            var executionThread = "unknown"
+            var executionOnMainThread = false
             val outcome = runCatching {
                 withContext(Dispatchers.IO) {
-                    payload.run(uiSession)
+                    workerStartedAtMs = SystemClock.elapsedRealtime()
+                    executionThread = Thread.currentThread().name.replace(' ', '_')
+                    executionOnMainThread = Looper.myLooper() == Looper.getMainLooper()
+                    try {
+                        retained.payload.run(uiSession, operationMetrics)
+                    } finally {
+                        workerFinishedAtMs = SystemClock.elapsedRealtime()
+                    }
                 }
             }
             if (closed) {
                 payloads.remove(request.id)
+                activeRequestIds -= request.id
                 return@launch
             }
+            val workerReturnedAtMs = SystemClock.elapsedRealtime()
+            val schedulerStartedAtMs = workerReturnedAtMs
             val completion = complete(request.id)
+            val schedulerMs = SystemClock.elapsedRealtime() - schedulerStartedAtMs
             payloads.remove(request.id)
+            activeRequestIds -= request.id
             if (closed) {
                 return@launch
             }
+            val landingStartedAtMs = SystemClock.elapsedRealtime()
+            val action: String
             when (completion.resultAction) {
                 is UiSessionWorkResultAction.Land -> {
+                    action = if (outcome.isSuccess) "land" else "failed"
                     outcome
-                        .onSuccess { payload.land(it) }
-                        .onFailure { payload.failed(it) }
+                        .onSuccess { retained.payload.land(it) }
+                        .onFailure { retained.payload.failed(it) }
                 }
                 is UiSessionWorkResultAction.Drop -> {
-                    payload.dropped(completion.resultAction.reason)
+                    action = completion.resultAction.reason
+                    retained.payload.dropped(completion.resultAction.reason)
                 }
             }
+            val finishedAtMs = SystemClock.elapsedRealtime()
+            val operationMetricsSnapshot = operationMetrics?.snapshot()
+            operationMetricsSnapshot?.resourceRounds?.forEach { round ->
+                logEvent(
+                    "resource_frontier",
+                    retained,
+                    "round" to round.index,
+                    "width" to round.resourceIds.size,
+                    "source_kinds" to round.sourceKinds.entries.joinToString("+") { (kind, count) ->
+                        "$kind:$count"
+                    },
+                    "resource_ids" to round.resourceIds.joinToString("+"),
+                    "fetch_wall_us" to round.fetchWallUs,
+                    "fetch_work_us" to round.fetchWorkUs,
+                    "max_concurrency" to round.maxConcurrency,
+                    "ingest_us" to round.ingestUs,
+                )
+            }
+            logFinished(
+                retained = retained,
+                action = action,
+                outcome = if (outcome.isSuccess) "success" else "error",
+                extra = arrayOf<Pair<String, Any?>>(
+                    "queue_ms" to (retained.startedAtMs - request.requestedAtMs).coerceAtLeast(0L),
+                    "dispatcher_wait_ms" to (workerStartedAtMs - dispatchedAtMs).coerceAtLeast(0L),
+                    "work_ms" to (workerFinishedAtMs - workerStartedAtMs).coerceAtLeast(0L),
+                    "delivery_ms" to (workerReturnedAtMs - workerFinishedAtMs).coerceAtLeast(0L),
+                    "scheduler_ms" to schedulerMs.coerceAtLeast(0L),
+                    "landing_ms" to (finishedAtMs - landingStartedAtMs).coerceAtLeast(0L),
+                    "total_ms" to (finishedAtMs - request.requestedAtMs).coerceAtLeast(0L),
+                    "execution_thread" to executionThread,
+                    "main_thread" to executionOnMainThread,
+                    "active_count" to activeRequestIds.size,
+                    "retained_count" to payloads.size,
+                ) + (
+                    operationMetricsSnapshot
+                        ?.let(::operationMetricFields)
+                        ?: emptyArray()
+                    ),
+            )
             completion.next?.let { next ->
                 if (!closed) {
                     start(next)
@@ -384,7 +494,55 @@ class UiSessionWorkRunner(
             ),
         )
     }
+
+    private fun logFinished(
+        retained: RetainedWork,
+        action: String,
+        outcome: String,
+        extra: Array<Pair<String, Any?>> = emptyArray(),
+    ) {
+        logEvent("finished", retained, "action" to action, "outcome" to outcome, *extra)
+    }
+
+    private fun logEvent(
+        event: String,
+        retained: RetainedWork,
+        vararg fields: Pair<String, Any?>,
+    ) {
+        if (!perfMetricsEnabled) return
+        val request = retained.request
+        val base = listOf(
+            "event=$event",
+            "request_id=${request.id}",
+            "kind=${json.encodeToString(request.kind).removeSurrounding("\"")}",
+            "coalesce_key=${request.coalesceKey ?: "-"}",
+        )
+        val encodedFields = fields.map { (name, value) -> "$name=${value ?: "-"}" }
+        Log.i(UiSessionWorkLogTag, (base + encodedFields).joinToString(" "))
+    }
 }
+
+private data class RetainedWork(
+    val request: UiSessionWorkRequest,
+    val payload: WorkPayload,
+    var startedAtMs: Long = request.requestedAtMs,
+)
+
+private fun operationMetricFields(
+    metrics: PagedSessionOperationMetricsSnapshot,
+): Array<Pair<String, Any?>> = arrayOf(
+    "core_calls" to metrics.coreCallCount,
+    "core_us" to metrics.coreCallUs,
+    "resource_rounds" to metrics.resourceRoundCount,
+    "resource_requests" to metrics.resourceRequestCount,
+    "resource_loads" to metrics.resourceLoadCount,
+    "resource_cache_hits" to metrics.resourceCacheHitCount,
+    "resource_bytes" to metrics.resourceBytes,
+    "resource_fetch_us" to metrics.resourceFetchUs,
+    "resource_fetch_wall_us" to metrics.resourceRounds.sumOf { it.fetchWallUs },
+    "resource_max_concurrency" to (metrics.resourceRounds.maxOfOrNull { it.maxConcurrency } ?: 0),
+    "resource_ingest_us" to metrics.resourceIngestUs,
+)
 
 private fun droppedCompletion(reason: String): UiSessionWorkCompletionDecision =
     UiSessionWorkCompletionDecision(
@@ -396,11 +554,13 @@ private sealed class WorkPayload(
     val kind: UiSessionWorkKind,
     val coalesceKey: String?,
 ) {
-    abstract fun run(uiSession: NativeUiSession): WorkResult
+    abstract fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult
     abstract fun land(result: WorkResult)
     abstract fun failed(error: Throwable)
     open fun dropped(reason: String) {
-        Log.d(UiSessionWorkLogTag, "dropped kind=$kind reason=$reason")
     }
 }
 
@@ -414,7 +574,10 @@ private class OverlayPayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.MapOverlay, "map_overlay") {
-    override fun run(uiSession: NativeUiSession): WorkResult {
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult {
         return WorkResult.Overlay(
             uiSession.queryMapOverlay(
                 viewport = viewport,
@@ -422,6 +585,7 @@ private class OverlayPayload(
                 heightPx = heightPx,
                 pointDisplayScale = pointDisplayScale,
                 fetchResource = fetchResource,
+                metrics = metrics,
             ),
         )
     }
@@ -451,7 +615,10 @@ private class MapSelectionPayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.MapSelection, "map_selection") {
-    override fun run(uiSession: NativeUiSession): WorkResult {
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult {
         return WorkResult.MapSelection(
             uiSession.queryMapSelection(
                 viewport = viewport,
@@ -460,6 +627,7 @@ private class MapSelectionPayload(
                 click = click,
                 pointDisplayScale = pointDisplayScale,
                 fetchResource = fetchResource,
+                metrics = metrics,
             ),
         )
     }
@@ -489,7 +657,10 @@ private class MapSelectionForNavRefPayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.MapSelectionForNavRef, "map_selection_for_nav_ref") {
-    override fun run(uiSession: NativeUiSession): WorkResult {
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult {
         return WorkResult.MapSelectionForNavRef(
             uiSession.queryMapSelectionForNavRef(
                 viewport = viewport,
@@ -498,6 +669,7 @@ private class MapSelectionForNavRefPayload(
                 navRef = navRef,
                 pointDisplayScale = pointDisplayScale,
                 fetchResource = fetchResource,
+                metrics = metrics,
             ),
         )
     }
@@ -527,7 +699,10 @@ private class TerrainOverlayPayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.TerrainOverlay, "terrain_overlay") {
-    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.TerrainOverlay(
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult = WorkResult.TerrainOverlay(
         uiSession.queryTerrainOverlay(
             viewport = viewport,
             widthPx = widthPx,
@@ -535,6 +710,7 @@ private class TerrainOverlayPayload(
             decodedCacheKeys = decodedCacheKeys,
             inFlightCacheKeys = inFlightCacheKeys,
             fetchResource = fetchResource,
+            metrics = metrics,
         ),
     )
 
@@ -560,8 +736,11 @@ private class TerrainTilePayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.TerrainTile, "terrain_tile:${request.cacheKey}") {
-    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.TerrainTile(
-        uiSession.renderTerrainOverlayTile(request, aircraftAltitudeFt, fetchResource),
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult = WorkResult.TerrainTile(
+        uiSession.renderTerrainOverlayTile(request, aircraftAltitudeFt, fetchResource, metrics),
     )
 
     override fun land(result: WorkResult) {
@@ -587,12 +766,16 @@ private class NexradOverlayPayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.NexradOverlay, "nexrad_overlay") {
-    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.NexradOverlay(
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult = WorkResult.NexradOverlay(
         uiSession.queryNexradOverlay(
             viewport = viewport,
             widthPx = widthPx,
             heightPx = heightPx,
             fetchResource = fetchResource,
+            metrics = metrics,
         ),
     )
 
@@ -617,8 +800,11 @@ private class NexradTilePayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.NexradTile, "nexrad_tile:$src") {
-    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.NexradTile(
-        uiSession.nexradTileBytes(src, fetchResource),
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult = WorkResult.NexradTile(
+        uiSession.nexradTileBytes(src, fetchResource, metrics),
     )
 
     override fun land(result: WorkResult) {
@@ -643,8 +829,11 @@ private class ChartAssetPayload(
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
 ) : WorkPayload(UiSessionWorkKind.ChartAsset, "chart_asset:$assetKind:$chartId") {
-    override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.ChartAsset(
-        uiSession.chartAssetBytes(chartId, assetKind, fetchResource),
+    override fun run(
+        uiSession: NativeUiSession,
+        metrics: PagedSessionOperationMetrics?,
+    ): WorkResult = WorkResult.ChartAsset(
+        uiSession.chartAssetBytes(chartId, assetKind, fetchResource, metrics),
     )
 
     override fun land(result: WorkResult) {

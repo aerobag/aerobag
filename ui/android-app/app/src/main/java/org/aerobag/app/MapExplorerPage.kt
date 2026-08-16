@@ -1195,7 +1195,9 @@ internal fun MapExplorerPage(
         }
         perfScenarioStarted = true
         val watchdog = AndroidMainThreadStallWatchdog(scenario)
+        val frameGapMonitor = AndroidFrameGapMonitor(scenario)
         watchdog.start()
+        frameGapMonitor.start()
         val scenarioStartMs = SystemClock.elapsedRealtime()
         try {
             suspend fun forcePerfSelection(selectionViewport: MapViewportState, stepLabel: String) {
@@ -1322,6 +1324,7 @@ internal fun MapExplorerPage(
                 error,
             )
         } finally {
+            frameGapMonitor.stop()
             watchdog.stop()
         }
     }

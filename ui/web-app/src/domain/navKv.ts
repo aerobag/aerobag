@@ -484,14 +484,27 @@ export class NavKvStore {
         activeOperation = resumeSnapshot;
         resumingSnapshot = true;
       }
-      await Promise.all(
-        response.resources.map((resource) =>
-          this.ensureResource(
-            resource,
-            options.ingestSessionResource,
-            options.reportResourceFailure,
+      const sourceKinds = response.resources.reduce<Record<string, number>>((counts, resource) => {
+        counts[resource.source.kind] = (counts[resource.source.kind] ?? 0) + 1;
+        return counts;
+      }, {});
+      await debugTiming(
+        `${options.operationLabel ?? "core.resource"}.frontier`,
+        () => Promise.all(
+          response.resources.map((resource) =>
+            this.ensureResource(
+              resource,
+              options.ingestSessionResource,
+              options.reportResourceFailure,
+            ),
           ),
         ),
+        {
+          iteration,
+          width: response.resources.length,
+          source_kinds: sourceKinds,
+          resources: response.resources.map((resource) => resource.id),
+        },
       );
     }
   }

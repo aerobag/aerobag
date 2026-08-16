@@ -9135,23 +9135,40 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
     let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let store = session_nav_kv_store(session)?;
-    let position = match nav_ref_position(store, &nav_ref, None) {
-        Ok(position) => position,
-        Err(err) => return had_read_error_to_overlay_outcome(err),
+    let mut prerequisite_missing_pages = BTreeSet::new();
+    let position = collect_map_selection_prerequisite(
+        nav_ref_position(store, &nav_ref, None),
+        &mut prerequisite_missing_pages,
+    )?;
+    let positional_nav_ref = matches!(nav_ref, NavRef::LatLon(_) | NavRef::Spot(_));
+    let symbol = if positional_nav_ref {
+        Some(None)
+    } else {
+        collect_map_selection_prerequisite(
+            nav_symbol_feature(store, &nav_ref),
+            &mut prerequisite_missing_pages,
+        )?
     };
-    let requested_nav_ref_point = if matches!(nav_ref, NavRef::LatLon(_) | NavRef::Spot(_)) {
+    if !prerequisite_missing_pages.is_empty() {
+        return Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(prerequisite_missing_pages.into_iter().collect()),
+        });
+    }
+    let position = position.ok_or_else(|| AppError {
+        kind: AppErrorKind::Internal,
+        message: "map-selection nav-ref position did not materialize".to_string(),
+    })?;
+    let symbol = symbol.ok_or_else(|| AppError {
+        kind: AppErrorKind::Internal,
+        message: "map-selection nav-ref symbol did not materialize".to_string(),
+    })?;
+    let requested_nav_ref_point = if positional_nav_ref {
         None
     } else {
-        let symbol = match nav_symbol_feature(store, &nav_ref) {
-            Ok(Some(symbol)) => symbol,
-            Ok(None) => {
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidCatalog,
-                    message: format!("NAVDB is missing the symbol for {nav_ref:?}"),
-                });
-            }
-            Err(err) => return had_read_error_to_overlay_outcome(err),
-        };
+        let symbol = symbol.ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("NAVDB is missing the symbol for {nav_ref:?}"),
+        })?;
         Some(NavRefSelectionPoint {
             feature_id: format!("nav-ref:{}", nav_ref_overlay_key(&nav_ref)),
             nav_ref: nav_ref.clone(),
@@ -9201,14 +9218,24 @@ enum MapSelectionMaterialization {
     NeedResources(Vec<CoreResourceRequest>),
 }
 
-fn had_read_error_to_map_selection_materialization(
-    err: HadReadError,
-) -> AppResult<MapSelectionMaterialization> {
-    match err {
-        HadReadError::NeedPages(pages) => Ok(MapSelectionMaterialization::NeedResources(
-            nav_kv_page_resources(pages),
-        )),
-        HadReadError::Fatal(message) => Err(AppError {
+fn collect_map_selection_prerequisite<T>(
+    result: Result<T, HadReadError>,
+    missing_pages: &mut BTreeSet<u32>,
+) -> AppResult<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(HadReadError::NeedPages(pages)) => {
+            if pages.is_empty() {
+                return Err(AppError {
+                    kind: AppErrorKind::Internal,
+                    message: "map-selection prerequisite requested an empty NAVKV page frontier"
+                        .to_string(),
+                });
+            }
+            missing_pages.extend(pages);
+            Ok(None)
+        }
+        Err(HadReadError::Fatal(message)) => Err(AppError {
             kind: AppErrorKind::Internal,
             message,
         }),
@@ -9221,11 +9248,40 @@ fn materialize_map_selection_in_session(
     click: LatLon,
     requested_nav_ref_point: Option<&NavRefSelectionPoint>,
 ) -> AppResult<MapSelectionMaterialization> {
-    if let Err(err) = ensure_vector_inputs_loaded(session, metrics) {
-        return had_read_error_to_map_selection_materialization(err);
-    }
-    if let Err(err) = ensure_weather_station_airport_aliases_loaded(session) {
-        return had_read_error_to_map_selection_materialization(err);
+    let mut prerequisite_missing_pages = BTreeSet::new();
+    collect_map_selection_prerequisite(
+        ensure_vector_inputs_loaded(session, metrics),
+        &mut prerequisite_missing_pages,
+    )?;
+    collect_map_selection_prerequisite(
+        ensure_weather_station_airport_aliases_loaded(session),
+        &mut prerequisite_missing_pages,
+    )?;
+    let offline_region_records = if session.map.layer_state().offline_regions.visible {
+        let store = session_nav_kv_store(session)?;
+        collect_map_selection_prerequisite(
+            read_attached_json_optional::<crate::OfflineRegionCatalog>(
+                store,
+                NavKvQuery::OfflineRegionCatalog,
+            ),
+            &mut prerequisite_missing_pages,
+        )?
+        .map(|catalog| catalog.map_or_else(Vec::new, |catalog| catalog.regions))
+    } else {
+        Some(Vec::new())
+    };
+    let plan = session.flight_plan.active_plan();
+    let supplemental_nav_ref_points = match plan {
+        Some(plan) => collect_map_selection_prerequisite(
+            flight_plan_selection_points(session, plan),
+            &mut prerequisite_missing_pages,
+        )?,
+        None => Some(Vec::new()),
+    };
+    if !prerequisite_missing_pages.is_empty() {
+        return Ok(MapSelectionMaterialization::NeedResources(
+            nav_kv_page_resources(prerequisite_missing_pages.into_iter().collect()),
+        ));
     }
     let weather_station_airport_aliases = session
         .weather
@@ -9236,7 +9292,6 @@ fn materialize_map_selection_in_session(
             kind: AppErrorKind::Internal,
             message: "weather station airport aliases did not load".to_string(),
         })?;
-    let plan = session.flight_plan.active_plan();
     let store = session_nav_kv_store(session)?;
     let mut missing_pages = Vec::new();
     let mut availability = |airport_id: &str| match airport_plate_availability(store, airport_id) {
@@ -9247,27 +9302,8 @@ fn materialize_map_selection_in_session(
         }
         Err(HadReadError::Fatal(_)) => AirportPlateAvailability::default(),
     };
-    let offline_region_records = if session.map.layer_state().offline_regions.visible {
-        match read_attached_json_optional::<crate::OfflineRegionCatalog>(
-            store,
-            NavKvQuery::OfflineRegionCatalog,
-        ) {
-            Ok(Some(catalog)) => catalog.regions,
-            Ok(None) => Vec::new(),
-            Err(err) => {
-                return had_read_error_to_map_selection_materialization(err);
-            }
-        }
-    } else {
-        Vec::new()
-    };
-    let mut supplemental_nav_ref_points = match plan {
-        Some(plan) => match flight_plan_selection_points(session, plan) {
-            Ok(points) => points,
-            Err(err) => return had_read_error_to_map_selection_materialization(err),
-        },
-        None => Vec::new(),
-    };
+    let offline_region_records = offline_region_records.unwrap_or_default();
+    let mut supplemental_nav_ref_points = supplemental_nav_ref_points.unwrap_or_default();
     if let Some(point) = requested_nav_ref_point {
         if !supplemental_nav_ref_points
             .iter()
@@ -19499,6 +19535,96 @@ mod tests {
                 .metar_station_importance_status
                 .is_none());
         }
+    }
+
+    #[test]
+    fn map_selection_first_frontier_combines_independent_nav_db_prerequisites() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let filler = vec![b'x'; 420];
+        let manifest = minimal_vector_manifest_json();
+        let aliases = br#"{"schema_version":1,"aliases":{}}"#;
+        let entries = [
+            ("vector/manifest", manifest.as_bytes()),
+            ("vector/zz01", filler.as_slice()),
+            ("vector/zz02", filler.as_slice()),
+            ("vector/zz03", filler.as_slice()),
+            ("vector/zz04", filler.as_slice()),
+            ("weather/station-airport-aliases", aliases.as_slice()),
+        ];
+        let (mut store, pages) =
+            crate::navkv::nav_kv_store_without_pages_and_pages_for_test(&entries, 512);
+        let touched_pages = |key: &str| {
+            let mut touched = BTreeSet::new();
+            store.root().get_value_range(key, |page| {
+                touched.insert(page);
+                pages.get(page as usize).cloned()
+            });
+            touched
+        };
+        let vector_path = touched_pages("vector/manifest");
+        let aliases_path = touched_pages("weather/station-airport-aliases");
+        let shared_pages = vector_path
+            .intersection(&aliases_path)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert!(
+            vector_path.difference(&shared_pages).next().is_some()
+                && aliases_path.difference(&shared_pages).next().is_some(),
+            "fixture must place vector and alias records behind distinct NAVKV pages",
+        );
+        for page in shared_pages {
+            store.insert_page(page, pages[page as usize].clone());
+        }
+        let vector_missing = match store
+            .get_bytes("vector/manifest")
+            .expect("probe vector manifest")
+        {
+            NavKvLookup::MissingPages(pages) => pages,
+            other => panic!("vector manifest should need a page: {other:?}"),
+        };
+        let aliases_missing = match store
+            .get_bytes("weather/station-airport-aliases")
+            .expect("probe weather aliases")
+        {
+            NavKvLookup::MissingPages(pages) => pages,
+            other => panic!("weather aliases should need a page: {other:?}"),
+        };
+        let expected = vector_missing
+            .into_iter()
+            .chain(aliases_missing)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            expected.len() >= 2,
+            "fixture must expose independent missing pages"
+        );
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+
+        let outcome = get_map_selection_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 9.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            240.0,
+            240.0,
+            LatLon { lat: 0.0, lon: 0.0 },
+        )
+        .expect("selection outcome");
+        let HadOperationOutcome::NeedResources { resources } = outcome else {
+            panic!("selection should request its first dependency frontier: {outcome:?}");
+        };
+        let actual = resources
+            .iter()
+            .map(|resource| {
+                crate::nav_kv_page_index_from_resource_id(&resource.id)
+                    .expect("NAVKV page resource")
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

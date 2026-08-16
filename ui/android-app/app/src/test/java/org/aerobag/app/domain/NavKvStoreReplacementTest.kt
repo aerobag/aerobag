@@ -4,8 +4,10 @@ import java.io.File
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.serialization.json.Json
@@ -20,6 +22,68 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavKvStoreReplacementTest {
+    @Test
+    fun pagedOperationFetchesAFrontierConcurrentlyAndIngestsInRequestOrder() {
+        val directory = Files.createTempDirectory("nav-kv-concurrent-frontier-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val bridge = FakeNavKvBridge()
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", bridge.nativeBridge)
+        val caller = Executors.newSingleThreadExecutor()
+        val allStarted = CountDownLatch(4)
+        val release = CountDownLatch(1)
+        val active = AtomicInteger(0)
+        val peak = AtomicInteger(0)
+        val ingested = CopyOnWriteArrayList<String>()
+        var operationCalls = 0
+
+        try {
+            val result = caller.submit<PagedSessionOperationResult> {
+                store.runPagedSessionOperation(
+                    fetchSessionResource = { resource ->
+                        val concurrency = active.incrementAndGet()
+                        peak.updateAndGet { previous -> maxOf(previous, concurrency) }
+                        allStarted.countDown()
+                        try {
+                            check(release.await(2, TimeUnit.SECONDS))
+                            resource.id.encodeToByteArray()
+                        } finally {
+                            active.decrementAndGet()
+                        }
+                    },
+                    ingestSessionResource = { resource, _ -> ingested += resource.id },
+                    operation = {
+                        operationCalls += 1
+                        if (operationCalls == 1) {
+                            """{"state":"need_resources","resources":[
+                                {"id":"resource/one","source":{"kind":"public_url","url":"/one"}},
+                                {"id":"resource/two","source":{"kind":"public_url","url":"/two"}},
+                                {"id":"resource/three","source":{"kind":"public_url","url":"/three"}},
+                                {"id":"resource/four","source":{"kind":"public_url","url":"/four"}}
+                            ]}"""
+                        } else {
+                            """{"state":"complete","result":"done"}"""
+                        }
+                    },
+                )
+            }
+
+            assertTrue(allStarted.await(2, TimeUnit.SECONDS))
+            release.countDown()
+            assertEquals("done", result.get(2, TimeUnit.SECONDS).result.jsonPrimitive.content)
+            assertEquals(4, peak.get())
+            assertEquals(
+                listOf("resource/one", "resource/two", "resource/three", "resource/four"),
+                ingested.toList(),
+            )
+        } finally {
+            release.countDown()
+            caller.shutdownNow()
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
+
     @Test
     fun failedSessionResourceEffectIsReportedAndInvalidatesItsConsumers() {
         val directory = Files.createTempDirectory("nav-kv-resource-effect-failure-test").toFile()

@@ -9,6 +9,8 @@ import android.os.Looper
 import android.os.Debug
 import android.os.SystemClock
 import android.util.Log
+import android.view.Choreographer
+import kotlin.math.ceil
 
 internal const val AndroidPerfScenarioExtra = "aerobag_perf_scenario"
 internal const val AndroidPerfScenarioMapSelectionFreeze = "map_selection_freeze"
@@ -19,12 +21,68 @@ internal const val AndroidPerfScenarioTag = "AerobagPerfScenario"
 internal data class AndroidPerfScenario(
     val id: String,
     val mainThreadStallThresholdMs: Long = 750L,
+    val frameGapThresholdMs: Long = 250L,
     val slowSelectionThresholdMs: Long = 250L,
     val overlayFanout: Int = 64,
     val memorySampleIntervalMs: Long = 1_000L,
     val memoryStressDurationMs: Long = 30_000L,
     val memoryGrowthThresholdBytes: Long = 384L * 1024L * 1024L,
 )
+
+internal class AndroidFrameGapMonitor(
+    private val scenario: AndroidPerfScenario,
+    private val choreographer: Choreographer = Choreographer.getInstance(),
+) {
+    private val intervalsMs = mutableListOf<Long>()
+    private var running = false
+    private var previousFrameTimeNs = 0L
+
+    private val callback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!running) return
+            if (previousFrameTimeNs != 0L) {
+                val gapMs = ((frameTimeNanos - previousFrameTimeNs).coerceAtLeast(0L) + 500_000L) /
+                    1_000_000L
+                intervalsMs += gapMs
+                if (gapMs > scenario.frameGapThresholdMs) {
+                    Log.w(
+                        AndroidPerfScenarioTag,
+                        "threshold_violation scenario=${scenario.id} kind=frame_gap " +
+                            "gapMs=$gapMs thresholdMs=${scenario.frameGapThresholdMs}",
+                    )
+                }
+            }
+            previousFrameTimeNs = frameTimeNanos
+            choreographer.postFrameCallback(this)
+        }
+    }
+
+    fun start() {
+        if (running) return
+        running = true
+        previousFrameTimeNs = 0L
+        intervalsMs.clear()
+        choreographer.postFrameCallback(callback)
+    }
+
+    fun stop() {
+        if (!running) return
+        running = false
+        choreographer.removeFrameCallback(callback)
+        val sorted = intervalsMs.sorted()
+        val p95Index = if (sorted.isEmpty()) {
+            0
+        } else {
+            (ceil(sorted.size * 0.95).toInt() - 1).coerceIn(sorted.indices)
+        }
+        Log.i(
+            AndroidPerfScenarioTag,
+            "frame_summary scenario=${scenario.id} frames=${sorted.size} " +
+                "p95Ms=${sorted.getOrNull(p95Index) ?: 0L} maxMs=${sorted.lastOrNull() ?: 0L} " +
+                "thresholdMs=${scenario.frameGapThresholdMs}",
+        )
+    }
+}
 
 internal fun androidPerfScenarioFromIntentValue(value: String?): AndroidPerfScenario? =
     when (value) {

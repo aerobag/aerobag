@@ -2632,6 +2632,7 @@ internal fun AerobagApp(
     val situationRingCandidates = retainedCoreSession.situationRingCandidates
     val uiSession = retainedCoreSession.uiSession
     val uiSessionWorkRunner = retainedCoreSession.uiSessionWorkRunner
+    uiSessionWorkRunner.setPerfMetricsEnabled(perfScenario != null)
     var page by remember {
         mutableStateOf(
             retainedModel.page ?: readStoredPage(prefs),

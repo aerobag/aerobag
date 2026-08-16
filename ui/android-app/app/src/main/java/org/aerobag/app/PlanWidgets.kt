@@ -35,6 +35,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -56,6 +57,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -488,6 +491,7 @@ internal fun PlanWaypointSymbol(
 internal fun FlightPlanDataRow(
     row: FlightPlanDisplayRow,
     selected: Boolean,
+    dataScrollState: ScrollState,
     modifier: Modifier = Modifier,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onWaypointClick: () -> Unit,
@@ -495,7 +499,7 @@ internal fun FlightPlanDataRow(
 ) {
     val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
-    val targetIndent = ThumbSize * (row.depth * 0.5f)
+    val targetIndent = PlanChildWaypointIndent * row.depth
     val indent by animateDpAsState(targetValue = targetIndent, label = "planRowIndent")
     val cellHeight = ThumbSize
     val rowBoundsModifier =
@@ -523,63 +527,75 @@ internal fun FlightPlanDataRow(
     val hasWaypointSymbol = row.symbolFeature != null
     val fullWidthLabel =
         flightPlanWaypointUsesFullWidthLabel(procedureGroupCell, hasWaypointSymbol)
-    Row(modifier = modifier.then(rowBoundsModifier), horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
-        Box(modifier = Modifier.width(ThumbSize * 2.5f).height(cellHeight)) {
-            if (row.rowKind == "summary") {
-                PlanCell(
-                    row.label,
-                    modifier = Modifier
-                        .height(cellHeight)
-                        .width(ThumbSize * 2.5f)
-                        .align(Alignment.CenterEnd),
-                    cellHeight = cellHeight,
-                    muted = true,
-                )
-            } else {
-                CompactSquareButton(
-                    label = row.label,
-                    modifier =
-                        Modifier
-                            .height(cellHeight)
-                            .width(ThumbSize * 2.5f - indent)
-                            .align(Alignment.CenterEnd)
-                            .alpha(1f),
-                    testTag = "parity:plan-row:${row.id}",
-                    centered = false,
-                    textStartPadding = 10.dp,
-                    backgroundColor = defaultButtonColor,
-                    selected = selected,
-                    selectedColor = selectedButtonColor,
-                    enabled = row.enabled || row.syntheticDirectTo,
-                    onDisabledClick = row.disabledReason?.let { reason ->
-                        { showDisabledActionToast(context, reason) }
-                    },
-                    maxLines = if (procedureGroupCell) 3 else 2,
-                    textModifier =
-                        if (fullWidthLabel) {
-                            Modifier.fillMaxWidth()
-                        } else {
-                            Modifier.padding(end = ThumbSize * 0.78f)
-                        },
-                    onClick = onWaypointClick,
-                )
-                if (!procedureGroupCell && hasWaypointSymbol) {
-                    PlanWaypointSymbol(
-                        feature = row.symbolFeature,
-                        weatherBadge = row.weatherBadge,
+    PlanGridRow(
+        dataColumnCount = row.dataCells.size,
+        dataScrollState = dataScrollState,
+        modifier = modifier.then(rowBoundsModifier),
+        waypointContent = {
+            Box(modifier = Modifier.width(PlanWaypointColumnWidth).height(cellHeight)) {
+                if (row.rowKind == "summary") {
+                    PlanCell(
+                        row.label,
                         modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(end = ThumbSize * 0.12f)
-                            .alpha(1f),
+                            .height(cellHeight)
+                            .width(PlanWaypointColumnWidth)
+                            .align(Alignment.CenterEnd),
+                        cellHeight = cellHeight,
+                        muted = true,
                     )
+                } else {
+                    CompactSquareButton(
+                        label = row.label,
+                        modifier =
+                            Modifier
+                                .height(cellHeight)
+                                .width(PlanWaypointColumnWidth - indent)
+                                .align(Alignment.CenterEnd)
+                                .alpha(1f),
+                        testTag = "parity:plan-row:${row.id}",
+                        centered = false,
+                        textStartPadding = 10.dp,
+                        backgroundColor = defaultButtonColor,
+                        selected = selected,
+                        selectedColor = selectedButtonColor,
+                        enabled = row.enabled || row.syntheticDirectTo,
+                        onDisabledClick = row.disabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
+                        maxLines = if (procedureGroupCell) 3 else 2,
+                        textModifier =
+                            if (fullWidthLabel) {
+                                Modifier.fillMaxWidth()
+                            } else {
+                                Modifier.padding(
+                                    end = if (row.depth > 0) {
+                                        PlanChildWaypointSymbolTextReserve
+                                    } else {
+                                        PlanWaypointSymbolTextReserve
+                                    },
+                                )
+                            },
+                        onClick = onWaypointClick,
+                    )
+                    if (!procedureGroupCell && hasWaypointSymbol) {
+                        PlanWaypointSymbol(
+                            feature = row.symbolFeature,
+                            weatherBadge = row.weatherBadge,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = ThumbSize * 0.12f)
+                                .alpha(1f),
+                        )
+                    }
                 }
             }
-        }
+        },
+    ) { dataColumnWidth ->
         row.dataCells.forEach { cell ->
             PlanCell(
                 cell.value ?: "—",
                 Modifier
-                    .weight(1f)
+                    .width(dataColumnWidth)
                     .then(cell.actionId?.let { actionId ->
                         Modifier.clickable { onDataCellAction(actionId) }
                     } ?: Modifier),
@@ -600,6 +616,7 @@ internal fun flightPlanWaypointUsesFullWidthLabel(
 internal fun FlightPlanGroupBlock(
     header: FlightPlanDisplayRow,
     headerSelected: Boolean,
+    dataScrollState: ScrollState,
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onHeaderClick: () -> Unit,
     children: List<Pair<Int, FlightPlanDisplayRow>>,
@@ -632,11 +649,12 @@ internal fun FlightPlanGroupBlock(
                     style = Stroke(width = 2.dp.toPx()),
                 )
             }
-            .padding(top = 8.dp, end = 8.dp, bottom = 8.dp),
+            .padding(vertical = 8.dp),
     ) {
         FlightPlanDataRow(
             row = header,
             selected = headerSelected,
+            dataScrollState = dataScrollState,
             structuredRowBounds = structuredRowBounds,
             onWaypointClick = onHeaderClick,
             onDataCellAction = onDataCellAction,
@@ -645,10 +663,49 @@ internal fun FlightPlanGroupBlock(
             FlightPlanDataRow(
                 row = childRow,
                 selected = selectedWaypointUid == childRow.id,
+                dataScrollState = dataScrollState,
                 structuredRowBounds = structuredRowBounds,
                 onWaypointClick = { onChildClick(childRow) },
                 onDataCellAction = onDataCellAction,
             )
+        }
+    }
+}
+
+internal val PlanWaypointColumnWidth = ThumbSize * 2f
+internal val PlanChildWaypointIndent = ThumbSize * 0.2f
+internal val PlanWaypointSymbolTextReserve = ThumbSize * 0.78f
+internal val PlanChildWaypointSymbolTextReserve = ThumbSize * 0.54f
+internal val PlanMinimumDataColumnWidth = ThumbSize
+
+internal fun planDataColumnWidth(rowWidth: Dp, dataColumnCount: Int): Dp {
+    if (dataColumnCount <= 0) return PlanMinimumDataColumnWidth
+    val totalGaps = PlanGridGap * dataColumnCount
+    val evenlyFilledWidth = (rowWidth - PlanWaypointColumnWidth - totalGaps) / dataColumnCount
+    return maxOf(PlanMinimumDataColumnWidth, evenlyFilledWidth)
+}
+
+@Composable
+internal fun PlanGridRow(
+    dataColumnCount: Int,
+    dataScrollState: ScrollState,
+    modifier: Modifier = Modifier,
+    waypointContent: @Composable () -> Unit,
+    dataContent: @Composable RowScope.(Dp) -> Unit,
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val dataColumnWidth = planDataColumnWidth(maxWidth, dataColumnCount)
+        Row(modifier = Modifier.fillMaxWidth()) {
+            waypointContent()
+            Spacer(modifier = Modifier.width(PlanGridGap))
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(dataScrollState),
+                horizontalArrangement = Arrangement.spacedBy(PlanGridGap),
+            ) {
+                dataContent(dataColumnWidth)
+            }
         }
     }
 }
@@ -665,15 +722,15 @@ internal fun PlanCell(
     estimateKind: String = "basic",
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val resolvedCellHeight = cellHeight ?: if (isHeader) ThumbSize * 0.5f else ThumbSize
+    val resolvedCellHeight = cellHeight ?: if (isHeader) ThumbSize * 0.68f else ThumbSize
     Box(
         modifier = modifier
             .height(resolvedCellHeight)
             .alpha(alpha)
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
             .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
-            .padding(horizontal = 10.dp),
-        contentAlignment = Alignment.CenterStart,
+            .padding(horizontal = ThumbSize * 0.12f),
+        contentAlignment = if (isHeader) Alignment.CenterStart else Alignment.CenterEnd,
     ) {
         Text(
             value,
@@ -688,7 +745,8 @@ internal fun PlanCell(
                     else -> uiTheme.controls.panelFg
                 },
             fontWeight = if (isHeader) FontWeight.Bold else FontWeight.Medium,
-            maxLines = 1,
+            maxLines = 2,
+            textAlign = if (isHeader) TextAlign.Start else TextAlign.End,
             overflow = TextOverflow.Ellipsis,
         )
     }

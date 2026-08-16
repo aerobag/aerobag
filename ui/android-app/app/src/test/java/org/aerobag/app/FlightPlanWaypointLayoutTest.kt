@@ -6,6 +6,7 @@ package org.aerobag.app
 
 import java.io.File
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -15,6 +16,34 @@ class FlightPlanWaypointLayoutTest {
         assertTrue(flightPlanWaypointUsesFullWidthLabel(false, false))
         assertTrue(flightPlanWaypointUsesFullWidthLabel(true, true))
         assertFalse(flightPlanWaypointUsesFullWidthLabel(false, true))
+    }
+
+    @Test
+    fun dataGridPinsWaypointsAndScrollsReadableDataColumnsTogether() {
+        assertEquals(ThumbSize * 2f, PlanWaypointColumnWidth)
+        assertEquals(ThumbSize * 0.2f, PlanChildWaypointIndent)
+        assertEquals(ThumbSize * 0.78f, PlanWaypointSymbolTextReserve)
+        assertEquals(ThumbSize * 0.54f, PlanChildWaypointSymbolTextReserve)
+        assertEquals(
+            ThumbSize.value * 1.8f,
+            (PlanWaypointColumnWidth - PlanChildWaypointIndent).value,
+            0.001f,
+        )
+        assertEquals(ThumbSize, PlanMinimumDataColumnWidth)
+        assertEquals(ThumbSize, planDataColumnWidth(ThumbSize * 6f, 5))
+        assertEquals(
+            ThumbSize.value * 1.2f,
+            planDataColumnWidth(ThumbSize * 8f + PlanGridGap * 5, 5).value,
+            0.001f,
+        )
+
+        val page = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
+        val display = sourceFile("src/main/java/org/aerobag/app/PlanDisplayWidgets.kt").readText()
+        val widgets = sourceFile("src/main/java/org/aerobag/app/PlanWidgets.kt").readText()
+        assertTrue(page.contains("val planDataScrollState = rememberScrollState()"))
+        assertTrue(display.contains("dataScrollState = dataScrollState"))
+        assertTrue(widgets.contains(".horizontalScroll(dataScrollState)"))
+        assertTrue(widgets.contains(".width(dataColumnWidth)"))
     }
 
     @Test

@@ -362,6 +362,7 @@ internal fun FlightPlanPage(
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
+    val planDataScrollState = rememberScrollState()
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
@@ -764,6 +765,7 @@ internal fun FlightPlanPage(
                 ) {
                     PlanHeaderRow(
                         columns = planUiState.dataColumns,
+                        dataScrollState = planDataScrollState,
                         onDataColumnAction = { actionId ->
                             applySessionCommand("performTimeDisplayAction") {
                                 uiSession.performTimeDisplayAction(actionId)
@@ -784,6 +786,7 @@ internal fun FlightPlanPage(
                                     FlightPlanDataRow(
                                         row = block.row,
                                         selected = selectedWaypointUid == block.row.id,
+                                        dataScrollState = planDataScrollState,
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
@@ -810,6 +813,7 @@ internal fun FlightPlanPage(
                                     FlightPlanGroupBlock(
                                         header = block.header,
                                         headerSelected = selectedWaypointUid == block.header.id,
+                                        dataScrollState = planDataScrollState,
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()

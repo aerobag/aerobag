@@ -76,6 +76,7 @@ X11VNC_LOG="${STATE_DIR}/x11vnc.log"
 EMULATOR_LOG="${STATE_DIR}/emulator.log"
 DISPLAY_READY_TIMEOUT="${DISPLAY_READY_TIMEOUT:-15}"
 ADB_DEVICE_READY_TIMEOUT="${ADB_DEVICE_READY_TIMEOUT:-120}"
+BROADCAST_IDLE_TIMEOUT="${BROADCAST_IDLE_TIMEOUT:-180}"
 
 mkdir -p "$STATE_DIR"
 
@@ -255,6 +256,12 @@ for _ in $(seq 1 180); do
   boot_completed="$(adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
   if [[ "$boot_completed" == "1" ]]; then
     echo "emulator boot completed"
+    echo "waiting for Android boot broadcasts to become idle"
+    if ! timeout "${BROADCAST_IDLE_TIMEOUT}s" \
+      adb -s "$ANDROID_SERIAL" shell am wait-for-broadcast-idle; then
+      echo "Android boot broadcasts did not become idle within ${BROADCAST_IDLE_TIMEOUT}s" >&2
+      exit 1
+    fi
     if [[ "$ANDROID_PACKAGE_SOURCE_REVERSE" == "1" ]]; then
       adb -s "$ANDROID_SERIAL" reverse "tcp:${PACKAGE_SOURCE_PORT}" "tcp:${PACKAGE_SOURCE_PORT}" >/dev/null
       echo "PACKAGE_SOURCE_REVERSE=tcp:${PACKAGE_SOURCE_PORT}->tcp:${PACKAGE_SOURCE_PORT}"

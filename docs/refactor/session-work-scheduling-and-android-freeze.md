@@ -318,8 +318,14 @@ Web regression tests:
    refresh remain direct bounded reads: neither can page resources, and the
    latter already executes on `Dispatchers.IO`. Live-feed maintenance and
    offline package synchronization retain their service-owned schedulers.
-6. Pending: update web to consume the shared scheduler while keeping the Worker
-   execution boundary.
+6. Completed: each web WASM UI session retains a runner backed by the same core
+   scheduler. Chart resolution, map overlay/selection, terrain planning, the
+   legacy terrain-tile entry point, and NEXRAD planning are scheduled inside the
+   existing app-core Worker. Raster planning and inspector-distance refresh
+   retain the same bounded-read exceptions as Android; browser-loaded NEXRAD
+   image URLs do not cross the session resource-work boundary. Scheduler wire
+   requests and decisions live in `app-ui-contracts`; generated TypeScript and
+   Kotlin types prevent the two runners from copying that protocol.
 7. Completed for the audited surface: the eight scheduled Android operations
    carry an error-level `RawUiSessionWorkApi` opt-in and a boundary test prevents
    UI code from calling them directly. The runner is owned by the retained core
@@ -332,7 +338,9 @@ map work without evicting or starving pending terrain or NEXRAD work. Input
 selection retains its separate priority lane and may start while background
 work is active. If a page coroutine is cancelled while its request is still
 pending, the retained runner discards the payload so a stale thumbnail or map
-request cannot later consume resource I/O merely to be dropped.
+request cannot later consume resource I/O merely to be dropped. The web runner
+rejects replaced promises with a typed cancellation and completes failed active
+work through core before starting the next retained request.
 
 ## Open Questions
 

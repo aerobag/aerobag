@@ -89,6 +89,9 @@ static NEXT_SESSION_SNAPSHOT_REFRESH_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::ne
 static SESSION_SNAPSHOT_REFRESH_SCHEDULERS: OnceLock<
     Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>>,
 > = OnceLock::new();
+static NEXT_UI_SESSION_WORK_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::new(1);
+static UI_SESSION_WORK_SCHEDULERS: OnceLock<Mutex<HashMap<u32, app_core::UiSessionWorkScheduler>>> =
+    OnceLock::new();
 static LIVE_FEED_PREP_STATES: OnceLock<Mutex<HashMap<(String, String), serde_json::Value>>> =
     OnceLock::new();
 static NOTAM_PROJECTION_PREPARER: OnceLock<Mutex<app_core::NotamProjectionPreparer>> =
@@ -117,6 +120,14 @@ fn session_snapshot_refresh_schedulers(
 fn lock_session_snapshot_refresh_schedulers(
 ) -> MutexGuard<'static, HashMap<u32, app_core::SessionSnapshotRefreshScheduler>> {
     session_snapshot_refresh_schedulers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_ui_session_work_schedulers(
+) -> MutexGuard<'static, HashMap<u32, app_core::UiSessionWorkScheduler>> {
+    UI_SESSION_WORK_SCHEDULERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -415,6 +426,50 @@ pub fn create_session_snapshot_refresh_scheduler() -> u32 {
 #[wasm_bindgen]
 pub fn destroy_session_snapshot_refresh_scheduler(handle: u32) {
     let _ = lock_session_snapshot_refresh_schedulers().remove(&handle);
+}
+
+#[wasm_bindgen]
+pub fn create_ui_session_work_scheduler() -> u32 {
+    let handle = NEXT_UI_SESSION_WORK_SCHEDULER_HANDLE.fetch_add(1, Ordering::Relaxed);
+    lock_ui_session_work_schedulers().insert(handle, app_core::UiSessionWorkScheduler::default());
+    handle
+}
+
+#[wasm_bindgen]
+pub fn destroy_ui_session_work_scheduler(handle: u32) {
+    let _ = lock_ui_session_work_schedulers().remove(&handle);
+}
+
+#[wasm_bindgen]
+pub fn ui_session_work_scheduler_request(
+    handle: u32,
+    request_json: &str,
+) -> Result<String, JsValue> {
+    let request: app_core::UiSessionWorkRequest =
+        serde_json::from_str(request_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let mut schedulers = lock_ui_session_work_schedulers();
+    let scheduler = schedulers.get_mut(&handle).ok_or_else(|| {
+        JsValue::from_str(&format!(
+            "invalid ui session work scheduler handle: {handle}"
+        ))
+    })?;
+    serde_json::to_string(&scheduler.request(request))
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn ui_session_work_scheduler_complete(handle: u32, request_id: u32) -> Result<String, JsValue> {
+    let mut schedulers = lock_ui_session_work_schedulers();
+    let decision = match schedulers.get_mut(&handle) {
+        Some(scheduler) => scheduler.complete(u64::from(request_id)),
+        None => app_core::UiSessionWorkCompletionDecision {
+            result_action: app_core::UiSessionWorkResultAction::Drop {
+                reason: "scheduler_destroyed".to_string(),
+            },
+            next: None,
+        },
+    };
+    serde_json::to_string(&decision).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]
@@ -2423,6 +2478,58 @@ fn destroy_session_json(handle: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_session_work_scheduler_bridge_preserves_core_decisions() {
+        let handle = create_ui_session_work_scheduler();
+        let first = app_core::UiSessionWorkRequest {
+            id: 1,
+            kind: app_core::UiSessionWorkKind::MapOverlay,
+            coalesce_key: Some("map_overlay".to_string()),
+            requested_at_ms: 10,
+        };
+        let second = app_core::UiSessionWorkRequest {
+            id: 2,
+            kind: app_core::UiSessionWorkKind::TerrainOverlay,
+            coalesce_key: Some("terrain_overlay".to_string()),
+            requested_at_ms: 20,
+        };
+
+        let first_decision: app_core::UiSessionWorkRequestDecision = serde_json::from_str(
+            &ui_session_work_scheduler_request(
+                handle,
+                &serde_json::to_string(&first).expect("serialize first request"),
+            )
+            .expect("schedule first request"),
+        )
+        .expect("decode first decision");
+        assert!(matches!(
+            first_decision,
+            app_core::UiSessionWorkRequestDecision::Start { request } if request == first
+        ));
+
+        let second_decision: app_core::UiSessionWorkRequestDecision = serde_json::from_str(
+            &ui_session_work_scheduler_request(
+                handle,
+                &serde_json::to_string(&second).expect("serialize second request"),
+            )
+            .expect("schedule second request"),
+        )
+        .expect("decode second decision");
+        assert_eq!(
+            second_decision,
+            app_core::UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None,
+            }
+        );
+
+        let completion: app_core::UiSessionWorkCompletionDecision = serde_json::from_str(
+            &ui_session_work_scheduler_complete(handle, 1).expect("complete first request"),
+        )
+        .expect("decode completion");
+        assert_eq!(completion.next, Some(second));
+        destroy_ui_session_work_scheduler(handle);
+    }
 
     #[test]
     fn unpacks_interleaved_packed_terrain_tiles() {

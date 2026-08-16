@@ -1,0 +1,12 @@
+{
+  "result_action": {
+    "kind": "drop",
+    "reason": "superseded_by_newer_input"
+  },
+  "next": {
+    "id": 7,
+    "kind": "map_selection",
+    "coalesce_key": "map_selection",
+    "requested_at_ms": 1234
+  }
+}

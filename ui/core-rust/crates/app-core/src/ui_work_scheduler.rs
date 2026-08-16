@@ -4,69 +4,11 @@
 
 use std::collections::BTreeMap;
 
+pub use app_ui_contracts::work::{
+    UiSessionWorkCompletionDecision, UiSessionWorkKind, UiSessionWorkRequest,
+    UiSessionWorkRequestDecision, UiSessionWorkResultAction,
+};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiSessionWorkKind {
-    ChartAsset,
-    MapOverlay,
-    MapSelection,
-    MapSelectionForNavRef,
-    NexradOverlay,
-    NexradTile,
-    TerrainOverlay,
-    TerrainTile,
-}
-
-impl UiSessionWorkKind {
-    fn is_input_priority(self) -> bool {
-        matches!(
-            self,
-            UiSessionWorkKind::MapSelection | UiSessionWorkKind::MapSelectionForNavRef
-        )
-    }
-
-    fn is_background(self) -> bool {
-        matches!(
-            self,
-            UiSessionWorkKind::ChartAsset
-                | UiSessionWorkKind::MapOverlay
-                | UiSessionWorkKind::NexradOverlay
-                | UiSessionWorkKind::NexradTile
-                | UiSessionWorkKind::TerrainOverlay
-                | UiSessionWorkKind::TerrainTile
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiSessionWorkRequest {
-    pub id: u64,
-    pub kind: UiSessionWorkKind,
-    pub coalesce_key: Option<String>,
-    pub requested_at_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum UiSessionWorkRequestDecision {
-    Start { request: UiSessionWorkRequest },
-    Queued { replaced_request_id: Option<u64> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum UiSessionWorkResultAction {
-    Land,
-    Drop { reason: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiSessionWorkCompletionDecision {
-    pub result_action: UiSessionWorkResultAction,
-    pub next: Option<UiSessionWorkRequest>,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiSessionWorkScheduler {
@@ -78,7 +20,7 @@ pub struct UiSessionWorkScheduler {
 
 impl UiSessionWorkScheduler {
     pub fn request(&mut self, request: UiSessionWorkRequest) -> UiSessionWorkRequestDecision {
-        if request.kind.is_input_priority() {
+        if is_input_priority(request.kind) {
             if self.active_input.is_none() {
                 self.active_input = Some(request.clone());
                 return UiSessionWorkRequestDecision::Start { request };
@@ -88,7 +30,7 @@ impl UiSessionWorkScheduler {
                 replaced_request_id,
             };
         }
-        if request.kind.is_background() {
+        if is_background(request.kind) {
             if self.active_background.is_none() && self.active_input.is_none() {
                 self.active_background = Some(request.clone());
                 return UiSessionWorkRequestDecision::Start { request };
@@ -157,7 +99,7 @@ impl UiSessionWorkScheduler {
     ) -> UiSessionWorkCompletionDecision {
         // Coalescing replaces pending viewport work; completed viewport work is
         // still useful progress and must land before the newest request starts.
-        let result_action = if active.kind.is_input_priority() && self.pending_input.is_some() {
+        let result_action = if is_input_priority(active.kind) && self.pending_input.is_some() {
             UiSessionWorkResultAction::Drop {
                 reason: "superseded_by_newer_input".to_string(),
             }
@@ -201,6 +143,25 @@ impl UiSessionWorkScheduler {
             .as_ref()
             .or(self.active_background.as_ref())
     }
+}
+
+fn is_input_priority(kind: UiSessionWorkKind) -> bool {
+    matches!(
+        kind,
+        UiSessionWorkKind::MapSelection | UiSessionWorkKind::MapSelectionForNavRef
+    )
+}
+
+fn is_background(kind: UiSessionWorkKind) -> bool {
+    matches!(
+        kind,
+        UiSessionWorkKind::ChartAsset
+            | UiSessionWorkKind::MapOverlay
+            | UiSessionWorkKind::NexradOverlay
+            | UiSessionWorkKind::NexradTile
+            | UiSessionWorkKind::TerrainOverlay
+            | UiSessionWorkKind::TerrainTile
+    )
 }
 
 fn background_coalesce_key(request: &UiSessionWorkRequest) -> String {

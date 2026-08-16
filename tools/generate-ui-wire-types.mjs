@@ -14,6 +14,7 @@ const cloudSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/cloud-wire.sch
 const homePageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/home-page-wire.schema.json");
 const sessionPageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-page-wire.schema.json");
 const sessionUpdateSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-update-wire.schema.json");
+const sessionWorkSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-work-wire.schema.json");
 const sessionUpdateConformancePath = path.join(
   repoRoot,
   "ui/core-rust/crates/app-ui-contracts/tests/goldens/session-update-conformance.json",
@@ -48,6 +49,8 @@ const sessionPageWebOut =
   args.get("--session-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionPageWire.ts");
 const sessionUpdateWebOut =
   args.get("--session-update-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionUpdateWire.ts");
+const sessionWorkWebOut =
+  args.get("--session-work-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionWorkWire.ts");
 const sessionUpdateConformanceWebOut =
   args.get("--session-update-conformance-web-out")
     ?? path.join(repoRoot, "ui/web-app/src/generated/sessionUpdateConformance.json");
@@ -422,3 +425,7 @@ writeOrCheck(
   sessionUpdateConformanceWebOut,
   fs.readFileSync(sessionUpdateConformancePath, "utf8"),
 );
+
+loadSchema(sessionWorkSchemaPath);
+writeOrCheck(path.join(androidOut, "SessionWorkWire.kt"), androidSource());
+writeOrCheck(sessionWorkWebOut, webSource());

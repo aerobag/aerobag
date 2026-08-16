@@ -16,14 +16,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import org.aerobag.app.generated.NexradOverlayQueryResult
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapOverlayQueryOutcome
@@ -36,6 +31,12 @@ import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavRef
 import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
+import org.aerobag.app.generated.NexradOverlayQueryResult
+import org.aerobag.app.generated.UiSessionWorkCompletionDecision
+import org.aerobag.app.generated.UiSessionWorkKind
+import org.aerobag.app.generated.UiSessionWorkRequest
+import org.aerobag.app.generated.UiSessionWorkRequestDecision
+import org.aerobag.app.generated.UiSessionWorkResultAction
 
 private const val UiSessionWorkLogTag = "AerobagSessionWork"
 
@@ -301,22 +302,22 @@ class UiSessionWorkRunner(
             payload.dropped("runner_closed")
             return null
         }
-        val request = WorkRequestWire(
+        val request = UiSessionWorkRequest(
             id = nextRequestId++,
             kind = payload.kind,
             coalesceKey = payload.coalesceKey,
             requestedAtMs = SystemClock.elapsedRealtime(),
         )
         payloads[request.id] = payload
-        val decision = decodeRequestDecision(
+        val decision = json.decodeFromString<UiSessionWorkRequestDecision>(
             bridge.uiSessionWorkSchedulerRequestJson(
                 schedulerHandle,
                 json.encodeToString(request),
             ),
         )
         when (decision) {
-            is RequestDecision.Start -> start(decision.request)
-            is RequestDecision.Queued -> {
+            is UiSessionWorkRequestDecision.Start -> start(decision.request)
+            is UiSessionWorkRequestDecision.Queued -> {
                 decision.replacedRequestId?.let { replacedRequestId ->
                     payloads.remove(replacedRequestId)?.dropped("replaced_by_newer_pending")
                 }
@@ -325,7 +326,7 @@ class UiSessionWorkRunner(
         return request.id
     }
 
-    private fun start(request: WorkRequestWire) {
+    private fun start(request: UiSessionWorkRequest) {
         if (closed) {
             return
         }
@@ -355,12 +356,12 @@ class UiSessionWorkRunner(
                 return@launch
             }
             when (completion.resultAction) {
-                is ResultAction.Land -> {
+                is UiSessionWorkResultAction.Land -> {
                     outcome
                         .onSuccess { payload.land(it) }
                         .onFailure { payload.failed(it) }
                 }
-                is ResultAction.Drop -> {
+                is UiSessionWorkResultAction.Drop -> {
                     payload.dropped(completion.resultAction.reason)
                 }
             }
@@ -372,11 +373,11 @@ class UiSessionWorkRunner(
         }
     }
 
-    private fun complete(requestId: Long): CompletionDecision {
+    private fun complete(requestId: Long): UiSessionWorkCompletionDecision {
         if (closed) {
             return droppedCompletion("runner_closed")
         }
-        return decodeCompletionDecision(
+        return json.decodeFromString<UiSessionWorkCompletionDecision>(
             bridge.uiSessionWorkSchedulerCompleteJson(
                 schedulerHandle,
                 requestId,
@@ -385,14 +386,14 @@ class UiSessionWorkRunner(
     }
 }
 
-private fun droppedCompletion(reason: String): CompletionDecision =
-    CompletionDecision(
-        resultAction = ResultAction.Drop(reason),
+private fun droppedCompletion(reason: String): UiSessionWorkCompletionDecision =
+    UiSessionWorkCompletionDecision(
+        resultAction = UiSessionWorkResultAction.Drop(reason),
         next = null,
     )
 
 private sealed class WorkPayload(
-    val kind: String,
+    val kind: UiSessionWorkKind,
     val coalesceKey: String?,
 ) {
     abstract fun run(uiSession: NativeUiSession): WorkResult
@@ -412,7 +413,7 @@ private class OverlayPayload(
     private val onResult: (MapOverlayQueryOutcome) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("map_overlay", "map_overlay") {
+) : WorkPayload(UiSessionWorkKind.MapOverlay, "map_overlay") {
     override fun run(uiSession: NativeUiSession): WorkResult {
         return WorkResult.Overlay(
             uiSession.queryMapOverlay(
@@ -449,7 +450,7 @@ private class MapSelectionPayload(
     private val onResult: (MapSelectionQueryResult) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("map_selection", "map_selection") {
+) : WorkPayload(UiSessionWorkKind.MapSelection, "map_selection") {
     override fun run(uiSession: NativeUiSession): WorkResult {
         return WorkResult.MapSelection(
             uiSession.queryMapSelection(
@@ -487,7 +488,7 @@ private class MapSelectionForNavRefPayload(
     private val onResult: (MapSelectionForNavRefResult) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("map_selection_for_nav_ref", "map_selection_for_nav_ref") {
+) : WorkPayload(UiSessionWorkKind.MapSelectionForNavRef, "map_selection_for_nav_ref") {
     override fun run(uiSession: NativeUiSession): WorkResult {
         return WorkResult.MapSelectionForNavRef(
             uiSession.queryMapSelectionForNavRef(
@@ -525,7 +526,7 @@ private class TerrainOverlayPayload(
     private val onResult: (TerrainOverlayQueryResult) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("terrain_overlay", "terrain_overlay") {
+) : WorkPayload(UiSessionWorkKind.TerrainOverlay, "terrain_overlay") {
     override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.TerrainOverlay(
         uiSession.queryTerrainOverlay(
             viewport = viewport,
@@ -558,7 +559,7 @@ private class TerrainTilePayload(
     private val onResult: (ByteArray) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("terrain_tile", "terrain_tile:${request.cacheKey}") {
+) : WorkPayload(UiSessionWorkKind.TerrainTile, "terrain_tile:${request.cacheKey}") {
     override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.TerrainTile(
         uiSession.renderTerrainOverlayTile(request, aircraftAltitudeFt, fetchResource),
     )
@@ -585,7 +586,7 @@ private class NexradOverlayPayload(
     private val onResult: (NexradOverlayQueryResult) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("nexrad_overlay", "nexrad_overlay") {
+) : WorkPayload(UiSessionWorkKind.NexradOverlay, "nexrad_overlay") {
     override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.NexradOverlay(
         uiSession.queryNexradOverlay(
             viewport = viewport,
@@ -615,7 +616,7 @@ private class NexradTilePayload(
     private val onResult: (ByteArray) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("nexrad_tile", "nexrad_tile:$src") {
+) : WorkPayload(UiSessionWorkKind.NexradTile, "nexrad_tile:$src") {
     override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.NexradTile(
         uiSession.nexradTileBytes(src, fetchResource),
     )
@@ -641,7 +642,7 @@ private class ChartAssetPayload(
     private val onResult: (ByteArray) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
-) : WorkPayload("chart_asset", "chart_asset:$assetKind:$chartId") {
+) : WorkPayload(UiSessionWorkKind.ChartAsset, "chart_asset:$assetKind:$chartId") {
     override fun run(uiSession: NativeUiSession): WorkResult = WorkResult.ChartAsset(
         uiSession.chartAssetBytes(chartId, assetKind, fetchResource),
     )
@@ -671,83 +672,4 @@ private sealed class WorkResult {
     data class TerrainTile(val bytes: ByteArray) : WorkResult()
 }
 
-@Serializable
-private data class WorkRequestWire(
-    val id: Long,
-    val kind: String,
-    @SerialName("coalesce_key")
-    val coalesceKey: String?,
-    @SerialName("requested_at_ms")
-    val requestedAtMs: Long,
-)
-
-private sealed class RequestDecision {
-    data class Start(val request: WorkRequestWire) : RequestDecision()
-    data class Queued(val replacedRequestId: Long?) : RequestDecision()
-}
-
-private data class CompletionDecision(
-    val resultAction: ResultAction,
-    val next: WorkRequestWire?,
-)
-
-private sealed class ResultAction {
-    data object Land : ResultAction()
-    data class Drop(val reason: String) : ResultAction()
-}
-
-private val json = Json {
-    ignoreUnknownKeys = true
-}
-
-private fun decodeRequestDecision(payload: String): RequestDecision {
-    val obj = json.parseToJsonElement(payload).jsonObject
-    return when (obj.requiredString("kind")) {
-        "start" -> RequestDecision.Start(obj.requiredObject("request").decodeWorkRequest())
-        "queued" -> RequestDecision.Queued(obj.optionalLong("replaced_request_id"))
-        else -> error("unknown ui session work request decision: $payload")
-    }
-}
-
-private fun decodeCompletionDecision(payload: String): CompletionDecision {
-    val obj = json.parseToJsonElement(payload).jsonObject
-    val actionObj = obj.requiredObject("result_action")
-    val action = when (actionObj.requiredString("kind")) {
-        "land" -> ResultAction.Land
-        "drop" -> ResultAction.Drop(actionObj.requiredString("reason"))
-        else -> error("unknown ui session work result action: $payload")
-    }
-    return CompletionDecision(
-        resultAction = action,
-        next = obj["next"]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonObject?.decodeWorkRequest(),
-    )
-}
-
-private fun JsonObject.decodeWorkRequest(): WorkRequestWire {
-    return WorkRequestWire(
-        id = requiredLong("id"),
-        kind = requiredString("kind"),
-        coalesceKey = optionalString("coalesce_key"),
-        requestedAtMs = requiredLong("requested_at_ms"),
-    )
-}
-
-private fun JsonObject.requiredObject(name: String): JsonObject {
-    return this[name]?.jsonObject ?: error("missing object field $name")
-}
-
-private fun JsonObject.requiredString(name: String): String {
-    return this[name]?.jsonPrimitive?.content ?: error("missing string field $name")
-}
-
-private fun JsonObject.optionalString(name: String): String? {
-    return this[name]?.jsonPrimitive?.content
-}
-
-private fun JsonObject.requiredLong(name: String): Long {
-    return requiredString(name).toLong()
-}
-
-private fun JsonObject.optionalLong(name: String): Long? {
-    return this[name]?.jsonPrimitive?.content?.toLongOrNull()
-}
+private val json = Json

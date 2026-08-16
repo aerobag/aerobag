@@ -139,6 +139,7 @@ import {
 import { ingestPreparedLiveFeedResource, resetLiveFeedPrep } from "./liveFeedPrep";
 import { liveFeedSourceUrl } from "./liveFeedUrls";
 import { SessionUpdateAccumulator } from "./sessionUpdateAccumulator";
+import { WebUiSessionWorkRunner } from "./uiSessionWorkRunner";
 export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
 
 export function sessionUpdateGroupNames(value: unknown): UiSessionUpdateGroup[] {
@@ -1026,6 +1027,10 @@ type WasmModule = {
   session_snapshot_refresh_scheduler_viewport_activity(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_refresh_completed(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_poll(handle: number): Promise<string> | string;
+  create_ui_session_work_scheduler(): Promise<number> | number;
+  destroy_ui_session_work_scheduler(handle: number): Promise<void> | void;
+  ui_session_work_scheduler_request(handle: number, requestJson: string): Promise<string> | string;
+  ui_session_work_scheduler_complete(handle: number, requestId: number): Promise<string> | string;
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedReferenceFamilyIdJson: string, selectedChartIdJson: string, suggestedChartIdsJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
@@ -1429,6 +1434,18 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         () => this.module.query_flight_plan_in_session(handle, JSON.stringify(query)),
       );
     await debugTiming("startup.session.sync_guidance_geometry.initial", () => syncGuidanceGeometry());
+    const uiSessionWorkRunner = await debugTiming(
+      "startup.session.create_work_scheduler",
+      () => WebUiSessionWorkRunner.create({
+        create: () => this.module.create_ui_session_work_scheduler(),
+        request: (schedulerHandle, requestJson) =>
+          this.module.ui_session_work_scheduler_request(schedulerHandle, requestJson),
+        complete: (schedulerHandle, requestId) =>
+          this.module.ui_session_work_scheduler_complete(schedulerHandle, requestId),
+        destroy: (schedulerHandle) =>
+          this.module.destroy_ui_session_work_scheduler(schedulerHandle),
+      }),
+    );
     return {
       setInvalidationListener: (listener) => {
         invalidationListener = listener;
@@ -1827,7 +1844,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       resolveChartAssetUrl: (chartId, assetKind) =>
-        resolveChartAssetUrl(handle, chartId, assetKind),
+        uiSessionWorkRunner.run(
+          "chart_asset",
+          `chart_asset:${assetKind}:${chartId}`,
+          () => resolveChartAssetUrl(handle, chartId, assetKind),
+        ),
       selectMapFamily: async (familyId) => {
         snapshot = await runSessionMutation(() =>
           this.module.select_map_family_in_session(handle, JSON.stringify(familyId)),
@@ -1950,28 +1971,32 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       ingestAirspaceLabelTiles: async (tiles) => {
         await this.module.ingest_airspace_label_tiles_in_session(handle, JSON.stringify(tiles));
       },
-      queryMapOverlay: async (viewport, widthPx, heightPx) =>
-        runSessionResult<MapOverlayQueryResult>(
-          () =>
-            this.module.get_map_overlay_in_session(
+      queryMapOverlay: (viewport, widthPx, heightPx) =>
+        uiSessionWorkRunner.run("map_overlay", "map_overlay", () =>
+          runSessionResult<MapOverlayQueryResult>(
+            () =>
+              this.module.get_map_overlay_in_session(
+                handle,
+                JSON.stringify(coreViewportForMap(viewport)),
+                widthPx,
+                heightPx,
+                Date.now(),
+              ),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+            "map.overlay",
+          ),
+        ),
+      queryMapSelection: (viewport, widthPx, heightPx, click) =>
+        uiSessionWorkRunner.run("map_selection", "map_selection", () =>
+          runSessionResult<MapSelectionQueryResult>(() =>
+            this.module.get_map_selection_in_session(
               handle,
               JSON.stringify(coreViewportForMap(viewport)),
               widthPx,
               heightPx,
+              JSON.stringify(click),
               Date.now(),
             ),
-          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
-          "map.overlay",
-        ),
-      queryMapSelection: async (viewport, widthPx, heightPx, click) =>
-        runSessionResult<MapSelectionQueryResult>(() =>
-          this.module.get_map_selection_in_session(
-            handle,
-            JSON.stringify(coreViewportForMap(viewport)),
-            widthPx,
-            heightPx,
-            JSON.stringify(click),
-            Date.now(),
           ),
         ),
       queryMapSelectionDistance: async (target) =>
@@ -1981,42 +2006,48 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             JSON.stringify(target),
           ),
         ) as string | null,
-      queryMapSelectionForNavRef: async (viewport, widthPx, heightPx, navRef) =>
-        runSessionResult<MapSelectionForNavRefResult>(() =>
-          this.module.get_map_selection_for_nav_ref_in_session(
-            handle,
-            JSON.stringify(coreViewportForMap(viewport)),
-            widthPx,
-            heightPx,
-            JSON.stringify(navRef),
-            Date.now(),
+      queryMapSelectionForNavRef: (viewport, widthPx, heightPx, navRef) =>
+        uiSessionWorkRunner.run("map_selection_for_nav_ref", "map_selection_for_nav_ref", () =>
+          runSessionResult<MapSelectionForNavRefResult>(() =>
+            this.module.get_map_selection_for_nav_ref_in_session(
+              handle,
+              JSON.stringify(coreViewportForMap(viewport)),
+              widthPx,
+              heightPx,
+              JSON.stringify(navRef),
+              Date.now(),
+            ),
           ),
         ),
-      queryTerrainOverlay: async (viewport, widthPx, heightPx, decodedCacheKeys, inFlightCacheKeys) =>
-        runSessionResult<TerrainOverlayQueryResult>(
-          () =>
-            this.module.get_scheduled_terrain_overlay_in_session(
-              handle,
-              JSON.stringify(coreViewportForMap(viewport)),
-              widthPx,
-              heightPx,
-              JSON.stringify(decodedCacheKeys),
-              JSON.stringify(inFlightCacheKeys),
-              Date.now(),
-            ),
-          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+      queryTerrainOverlay: (viewport, widthPx, heightPx, decodedCacheKeys, inFlightCacheKeys) =>
+        uiSessionWorkRunner.run("terrain_overlay", "terrain_overlay", () =>
+          runSessionResult<TerrainOverlayQueryResult>(
+            () =>
+              this.module.get_scheduled_terrain_overlay_in_session(
+                handle,
+                JSON.stringify(coreViewportForMap(viewport)),
+                widthPx,
+                heightPx,
+                JSON.stringify(decodedCacheKeys),
+                JSON.stringify(inFlightCacheKeys),
+                Date.now(),
+              ),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+          ),
         ),
-      queryNexradOverlay: async (viewport, widthPx, heightPx) =>
-        runSessionResult<NexradOverlayQueryResult>(
-          () =>
-            this.module.get_nexrad_overlay_in_session(
-              handle,
-              JSON.stringify(coreViewportForMap(viewport)),
-              widthPx,
-              heightPx,
-              Date.now(),
-            ),
-          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+      queryNexradOverlay: (viewport, widthPx, heightPx) =>
+        uiSessionWorkRunner.run("nexrad_overlay", "nexrad_overlay", () =>
+          runSessionResult<NexradOverlayQueryResult>(
+            () =>
+              this.module.get_nexrad_overlay_in_session(
+                handle,
+                JSON.stringify(coreViewportForMap(viewport)),
+                widthPx,
+                heightPx,
+                Date.now(),
+              ),
+            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+          ),
         ),
       queryRasterTilePlan: async (viewport, widthPx, heightPx, devicePixelRatio = 1) => {
         const totalStartedAt = performance.now();
@@ -2052,8 +2083,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         }));
         return plan;
       },
-      renderTerrainOverlayTileByKey: async (tileKey, aircraftAltitudeFt) =>
-        new Uint8Array(await this.module.render_terrain_overlay_tile_by_key_in_session(handle, tileKey, aircraftAltitudeFt)),
+      renderTerrainOverlayTileByKey: (tileKey, aircraftAltitudeFt) =>
+        uiSessionWorkRunner.run("terrain_tile", `terrain_tile:${tileKey}`, async () =>
+          new Uint8Array(await this.module.render_terrain_overlay_tile_by_key_in_session(
+            handle,
+            tileKey,
+            aircraftAltitudeFt,
+          )),
+        ),
       projectFlightPlanRoute: async () =>
         runSessionResult<FlightPlanRouteProjection>(() =>
           this.module.project_flight_plan_route_in_session(handle),
@@ -2131,6 +2168,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         destroyPromise = (async () => {
           liveFeedSubscription?.close();
           liveFeedSubscription = null;
+          await uiSessionWorkRunner.close();
           await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle);
           this.module.destroy_session(handle);
         })();
@@ -2315,6 +2353,10 @@ async function loadBestAvailableAdapterUncached(
     "session_snapshot_refresh_scheduler_viewport_activity",
     "session_snapshot_refresh_scheduler_refresh_completed",
     "session_snapshot_refresh_scheduler_poll",
+    "create_ui_session_work_scheduler",
+    "destroy_ui_session_work_scheduler",
+    "ui_session_work_scheduler_request",
+    "ui_session_work_scheduler_complete",
     "restore_chart_page_state_in_session",
     "destroy_session",
     "install_rust_debug_logger",

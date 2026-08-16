@@ -236,6 +236,14 @@ describe("loadBestAvailableAdapter", () => {
       session_snapshot_refresh_scheduler_viewport_activity: async () => JSON.stringify({ kind: "idle" }),
       session_snapshot_refresh_scheduler_refresh_completed: async () => JSON.stringify({ kind: "idle" }),
       session_snapshot_refresh_scheduler_poll: async () => JSON.stringify({ kind: "idle" }),
+      create_ui_session_work_scheduler: async () => 2,
+      destroy_ui_session_work_scheduler: async () => {},
+      ui_session_work_scheduler_request: async (_handle: number, requestJson: string) =>
+        JSON.stringify({ kind: "start", request: JSON.parse(requestJson) }),
+      ui_session_work_scheduler_complete: async () => JSON.stringify({
+        result_action: { kind: "land" },
+        next: null,
+      }),
       restore_chart_page_state_in_session: async () => mutationOutcomeJson(),
       destroy_session: () => {},
       install_rust_debug_logger: () => {},

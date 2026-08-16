@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "UiSessionWorkKind": {
+      "enum": [
+        "chart_asset",
+        "map_overlay",
+        "map_selection",
+        "map_selection_for_nav_ref",
+        "nexrad_overlay",
+        "nexrad_tile",
+        "terrain_overlay",
+        "terrain_tile"
+      ],
+      "type": "string"
+    },
+    "UiSessionWorkRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "coalesce_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/UiSessionWorkKind"
+        },
+        "requested_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "requested_at_ms"
+      ],
+      "type": "object"
+    },
+    "UiSessionWorkRequestDecision": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "start",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/UiSessionWorkRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "request"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "queued",
+              "type": "string"
+            },
+            "replaced_request_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "UiSessionWorkRequestDecision",
+      "x-discriminator": "kind"
+    },
+    "UiSessionWorkResultAction": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "land",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "drop",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "kind"
+    }
+  },
+  "$id": "org.aerobag.ui-wire.session-work",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Core-owned UI session work scheduling wire contract.",
+  "properties": {
+    "next": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UiSessionWorkRequest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_action": {
+      "$ref": "#/$defs/UiSessionWorkResultAction"
+    }
+  },
+  "required": [
+    "result_action"
+  ],
+  "title": "UiSessionWorkCompletionDecision",
+  "type": "object",
+  "x-contract-version": 3,
+  "x-export-order": [
+    "UiSessionWorkKind",
+    "UiSessionWorkRequest",
+    "UiSessionWorkRequestDecision",
+    "UiSessionWorkResultAction",
+    "UiSessionWorkCompletionDecision"
+  ]
+}

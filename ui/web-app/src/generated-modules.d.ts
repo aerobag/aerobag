@@ -79,6 +79,10 @@ declare module "@generated/app_wasm.js" {
   export const session_snapshot_refresh_scheduler_viewport_activity: (...args: unknown[]) => string;
   export const session_snapshot_refresh_scheduler_refresh_completed: (...args: unknown[]) => string;
   export const session_snapshot_refresh_scheduler_poll: (...args: unknown[]) => string;
+  export const create_ui_session_work_scheduler: (...args: unknown[]) => number;
+  export const destroy_ui_session_work_scheduler: (...args: unknown[]) => void;
+  export const ui_session_work_scheduler_request: (...args: unknown[]) => string;
+  export const ui_session_work_scheduler_complete: (...args: unknown[]) => string;
   export const restore_chart_page_state_in_session: (...args: unknown[]) => string;
   export const destroy_session: (...args: unknown[]) => void;
   export const install_rust_debug_logger: (...args: unknown[]) => void;

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use app_ui_contracts::{cloud, home, nexrad, session};
+use app_ui_contracts::{cloud, home, nexrad, session, work};
 
 fn assert_golden<T: serde::Serialize>(value: &T, golden: &str) {
     let actual = serde_json::to_value(value).expect("serialize wire value");
@@ -92,6 +92,24 @@ fn session_update_wire_matches_golden() {
 }
 
 #[test]
+fn session_work_wire_matches_golden() {
+    assert_golden(
+        &work::UiSessionWorkCompletionDecision {
+            result_action: work::UiSessionWorkResultAction::Drop {
+                reason: "superseded_by_newer_input".to_string(),
+            },
+            next: Some(work::UiSessionWorkRequest {
+                id: 7,
+                kind: work::UiSessionWorkKind::MapSelection,
+                coalesce_key: Some("map_selection".to_string()),
+                requested_at_ms: 1234,
+            }),
+        },
+        include_str!("goldens/session-work.json"),
+    );
+}
+
+#[test]
 fn contract_decoders_reject_unknown_fields() {
     assert!(serde_json::from_str::<home::UiHomePageState>(
         r#"{"buttons":[],"platform_guess":true}"#,
@@ -109,6 +127,10 @@ fn contract_decoders_reject_unknown_fields() {
     assert!(serde_json::from_str::<session::DebugFlagId>(r#""diagnostics""#).is_err());
     assert!(serde_json::from_str::<session::UiSessionUpdate>(
         r#"{"ui_contract_version":3,"session_revision":1,"unknown":true}"#,
+    )
+    .is_err());
+    assert!(serde_json::from_str::<work::UiSessionWorkRequestDecision>(
+        r#"{"kind":"queued","replaced_request_id":null,"unknown":true}"#,
     )
     .is_err());
 }

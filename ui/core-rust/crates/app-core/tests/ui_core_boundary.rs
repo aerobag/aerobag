@@ -1519,11 +1519,14 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
     let flight_data = read_repo_file("ui/core-rust/crates/app-core/src/flight_data.rs");
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let web_types = read_repo_file("ui/web-app/src/domain/types.ts");
+    let web_work_runner = read_repo_file("ui/web-app/src/domain/uiSessionWorkRunner.ts");
     let android = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
     let android_wire =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
+    let android_work_runner =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/UiSessionWorkRunner.kt");
 
     for (source_name, source, declarations) in [
         (
@@ -1605,6 +1608,26 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
                 "export type FlightDataCell =",
                 "export type FlightDataBannerModel =",
                 "export type FlightEstimateKind =",
+            ],
+        ),
+        (
+            "web session work runner",
+            web_work_runner.as_str(),
+            vec![
+                "export type UiSessionWorkKind =",
+                "type WorkRequest =",
+                "type RequestDecision =",
+                "type CompletionDecision =",
+            ],
+        ),
+        (
+            "Android session work runner",
+            android_work_runner.as_str(),
+            vec![
+                "private data class WorkRequestWire(",
+                "private sealed class RequestDecision",
+                "private data class CompletionDecision(",
+                "private sealed class ResultAction",
             ],
         ),
     ] {

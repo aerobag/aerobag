@@ -4,7 +4,7 @@
 
 use std::{env, fs, path::PathBuf};
 
-use app_ui_contracts::{cloud, home, nexrad, session, UI_WIRE_CONTRACT_VERSION};
+use app_ui_contracts::{cloud, home, nexrad, session, work, UI_WIRE_CONTRACT_VERSION};
 use schemars::{schema_for, JsonSchema};
 use serde_json::{json, Map, Value};
 
@@ -46,6 +46,15 @@ fn session_schema() -> Value {
     add_definition::<session::FlightDataBannerModel>(&mut root, "FlightDataBannerModel");
     add_definition::<session::MapLayerId>(&mut root, "MapLayerId");
     add_definition::<session::DebugFlagId>(&mut root, "DebugFlagId");
+    root
+}
+
+fn session_work_schema() -> Value {
+    let mut root = schema::<work::UiSessionWorkCompletionDecision>();
+    add_definition::<work::UiSessionWorkKind>(&mut root, "UiSessionWorkKind");
+    add_definition::<work::UiSessionWorkRequest>(&mut root, "UiSessionWorkRequest");
+    add_definition::<work::UiSessionWorkRequestDecision>(&mut root, "UiSessionWorkRequestDecision");
+    add_definition::<work::UiSessionWorkResultAction>(&mut root, "UiSessionWorkResultAction");
     root
 }
 
@@ -199,6 +208,23 @@ fn main() {
             ],
             tagged_unions: &[],
             schema: schema::<session::UiSessionUpdate>,
+        },
+        ContractSchema {
+            filename: "session-work-wire.schema.json",
+            id: "org.aerobag.ui-wire.session-work",
+            description: "Core-owned UI session work scheduling wire contract.",
+            export_order: &[
+                "UiSessionWorkKind",
+                "UiSessionWorkRequest",
+                "UiSessionWorkRequestDecision",
+                "UiSessionWorkResultAction",
+                "UiSessionWorkCompletionDecision",
+            ],
+            tagged_unions: &[
+                ("UiSessionWorkRequestDecision", "kind"),
+                ("UiSessionWorkResultAction", "kind"),
+            ],
+            schema: session_work_schema,
         },
     ];
 

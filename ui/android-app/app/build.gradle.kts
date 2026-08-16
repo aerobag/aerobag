@@ -338,11 +338,13 @@ val generateSharedWireTypes by tasks.registering(Exec::class) {
     inputs.file(repoRoot.resolve("tools/generate-ui-wire-types.mjs"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/home-page-wire.schema.json"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/session-page-wire.schema.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/schemas/session-work-wire.schema.json"))
     outputs.dir(generatedWireSourceDir)
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/nexradOverlayWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/cloudWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/homePageWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionPageWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionWorkWire.ts"))
     commandLine(
         "node",
         repoRoot.resolve("tools/generate-ui-wire-types.mjs").absolutePath,

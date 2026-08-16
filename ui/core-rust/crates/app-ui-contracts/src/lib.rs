@@ -6,5 +6,6 @@ pub mod cloud;
 pub mod home;
 pub mod nexrad;
 pub mod session;
+pub mod work;
 
 pub const UI_WIRE_CONTRACT_VERSION: u32 = 3;

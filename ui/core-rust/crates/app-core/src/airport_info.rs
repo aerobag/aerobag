@@ -23,6 +23,8 @@ const PATTERN_INDICATOR_THRESHOLD_GAP: f64 = 0.025;
 pub struct AirportInfoUiView {
     pub airport_id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_label: Option<String>,
     pub elevation_label: String,
     pub traffic_pattern_altitude_label: String,
     pub traffic_pattern_altitude_source: String,
@@ -82,6 +84,8 @@ struct AirportInfoRecord {
     schema_version: u32,
     airport_id: String,
     name: String,
+    #[serde(default)]
+    location_label: Option<String>,
     latitude: f64,
     longitude: f64,
     time_zone: String,
@@ -253,6 +257,7 @@ fn project_airport_info(
     Ok(AirportInfoUiView {
         airport_id: record.airport_id,
         name: record.name,
+        location_label: record.location_label,
         elevation_label,
         traffic_pattern_altitude_label,
         traffic_pattern_altitude_source,
@@ -771,6 +776,7 @@ mod tests {
             schema_version: 1,
             airport_id: "KRNT".to_string(),
             name: "Renton Municipal".to_string(),
+            location_label: Some("Renton, WA".to_string()),
             latitude: 47.493,
             longitude: -122.216,
             time_zone: "America/Los_Angeles".to_string(),
@@ -810,6 +816,7 @@ mod tests {
             project_airport_info(sample_record(), now, TimeDisplayMode::Local).expect("view");
 
         assert_eq!(view.time_label, "19:34 PDT");
+        assert_eq!(view.location_label.as_deref(), Some("Renton, WA"));
         assert_eq!(
             view.time_display_action_id,
             crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,

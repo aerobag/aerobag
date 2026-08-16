@@ -9324,7 +9324,10 @@ fn map_selection_with_point_details(
         let Some(position) = item.position else {
             continue;
         };
-        item.secondary_description = Some(format!("{:.4}, {:.4}", position.lat, position.lon));
+        append_map_selection_description(
+            &mut item.secondary_description,
+            format!("{:.4}, {:.4}", position.lat, position.lon),
+        );
         let elevation_msl_ft = item
             .elevation_msl_ft
             .filter(|value| value.is_finite())
@@ -15406,6 +15409,7 @@ mod tests {
                 lat: viewport.center.lat,
                 lon: viewport.center.lon,
                 label: "".to_string(),
+                location_label: None,
                 style_class: "obstacle".to_string(),
                 towered: None,
                 fuel_available: None,
@@ -18767,6 +18771,7 @@ mod tests {
                         lat: 0.0,
                         lon: 0.0,
                         label: "KAAA".to_string(),
+                        location_label: None,
                         style_class: "public".to_string(),
                         towered: Some(true),
                         fuel_available: None,
@@ -19229,6 +19234,7 @@ mod tests {
                 lat: 0.0,
                 lon: 0.0,
                 label: "".to_string(),
+                location_label: None,
                 style_class: "obstacle".to_string(),
                 towered: None,
                 fuel_available: None,
@@ -19743,6 +19749,7 @@ mod tests {
                 lat: 0.0,
                 lon: 0.0,
                 label: "".to_string(),
+                location_label: None,
                 style_class: "obstacle".to_string(),
                 towered: None,
                 fuel_available: None,
@@ -24548,7 +24555,8 @@ mod tests {
     fn map_selection_point_details_include_elevation_coordinates_and_distance() {
         let ownship = LatLon { lat: 0.0, lon: 0.0 };
         let point = LatLon { lat: 0.0, lon: 0.3 };
-        let mut airport = test_map_selection_item("KAPC", None, Some(point));
+        let mut airport = test_map_selection_item("KAPC", Some("Napa County"), Some(point));
+        airport.secondary_description = Some("Napa, CA".to_string());
         airport.elevation_msl_ft = Some(36.0);
         let selection = test_map_selection_with_items(vec![airport]);
 
@@ -24560,7 +24568,7 @@ mod tests {
             crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point));
         assert_eq!(
             selection.categories[0].items[0].description,
-            Some("Elev 36".to_string())
+            Some("Napa County · Elev 36".to_string())
         );
         assert_eq!(
             selection.categories[0].items[0].distance,
@@ -24570,7 +24578,7 @@ mod tests {
             selection.categories[0].items[0]
                 .secondary_description
                 .as_deref(),
-            Some("0.0000, 0.3000")
+            Some("Napa, CA · 0.0000, 0.3000")
         );
     }
 

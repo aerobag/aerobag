@@ -4547,6 +4547,13 @@ internal fun AirportInfoModal(
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                 color = uiTheme.controls.panelMuted,
             )
+            detail.locationLabel?.let { location ->
+                Text(
+                    text = location,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = uiTheme.controls.panelMuted,
+                )
+            }
             AirportInfoFact("Airport elevation", detail.elevationLabel)
             AirportInfoFact(
                 "Traffic pattern altitude",

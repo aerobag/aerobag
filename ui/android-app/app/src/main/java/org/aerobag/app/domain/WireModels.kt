@@ -1272,6 +1272,7 @@ data class WireFlightPlanRowActionUiView(
 data class WireAirportInfoUiView(
     val airport_id: String,
     val name: String,
+    val location_label: String? = null,
     val elevation_label: String,
     val traffic_pattern_altitude_label: String,
     val traffic_pattern_altitude_source: String,

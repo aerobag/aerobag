@@ -4,6 +4,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
+import * as navKv from "./navKv";
 
 const TEST_SSE_TRANSPORT_POLICY = {
   heartbeat_interval_ms: 30_000,
@@ -13,8 +14,13 @@ const TEST_SSE_TRANSPORT_POLICY = {
   reconnect_max_delay_ms: 65_000,
 };
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 const snapshotJson = JSON.stringify({
-  ui_contract_version: 1,
+  ui_contract_version: 2,
   session_revision: 0,
   app_ui_state: {
     active_plan: null,
@@ -98,12 +104,33 @@ describe("loadBestAvailableAdapter", () => {
     })).rejects.toThrow("module not found");
   });
 
-  it("uses the wasm adapter when the generated module exports the expected API", async () => {
+  it("establishes the web resource policy before opening the NAV database", async () => {
+    vi.stubGlobal("location", { href: "http://app.example.test/" });
     let sessionRevision = 0;
+    let resourcePolicyEstablished = false;
+    const startupCalls: string[] = [];
+    vi.spyOn(navKv, "runCoreHadSessionMutationOperation")
+      .mockImplementation(async (_sessionHandle, operation) => {
+        startupCalls.push("nav-dependent-mutation");
+        if (!resourcePolicyEstablished) {
+          throw new Error(
+            "web cannot fetch package_member resource nav_db/artifact/0/root; expected public_url",
+          );
+        }
+        const response = JSON.parse(await operation(1)) as { state: string; result?: unknown };
+        if (response.state !== "complete" || !Object.hasOwn(response, "result")) {
+          throw new Error(`test mutation unexpectedly returned ${response.state}`);
+        }
+        return { kind: "session_update", update: response.result };
+      });
+    vi.spyOn(navKv, "attachNavKvStoreToSession")
+      .mockImplementation(async () => {
+        startupCalls.push("attach-nav-kv");
+      });
     const mutationOutcomeJson = () => JSON.stringify({
       state: "complete",
       result: {
-        ui_contract_version: 1,
+        ui_contract_version: 2,
         session_revision: ++sessionRevision,
       },
     });
@@ -150,7 +177,11 @@ describe("loadBestAvailableAdapter", () => {
       set_debug_flag_in_session: async () => mutationOutcomeJson(),
       perform_settings_action_in_session: async () => mutationOutcomeJson(),
       accept_disclaimer_in_session: async () => mutationOutcomeJson(),
-      set_resource_policy_in_session: async () => mutationOutcomeJson(),
+      set_resource_policy_in_session: async () => {
+        startupCalls.push("set-resource-policy");
+        resourcePolicyEstablished = true;
+        return mutationOutcomeJson();
+      },
       configure_platform_capabilities_in_session: async () => mutationOutcomeJson(),
       take_cloud_authorization_request_in_session: async () => "null",
       complete_cloud_authorization_in_session: async () => mutationOutcomeJson(),
@@ -237,6 +268,14 @@ describe("loadBestAvailableAdapter", () => {
 
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
+    const session = await loaded.adapter.createUiSession([]);
+    expect(startupCalls[0]).toBe("set-resource-policy");
+    expect(startupCalls).toContain("attach-nav-kv");
+    expect(startupCalls.indexOf("set-resource-policy"))
+      .toBeLessThan(startupCalls.indexOf("nav-dependent-mutation"));
+    expect(startupCalls.indexOf("set-resource-policy"))
+      .toBeLessThan(startupCalls.indexOf("attach-nav-kv"));
+    await session.destroy();
   });
 });
 

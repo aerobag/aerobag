@@ -10860,6 +10860,9 @@ function AirportInfoModal(props: {
       <header className="airportInfoHeader">
         <div className="mapSelectionDetailTitle">{detail.airport_id}</div>
         <div className="airportInfoName">{detail.name}</div>
+        {detail.location_label ? (
+          <div className="airportInfoLocation">{detail.location_label}</div>
+        ) : null}
       </header>
       <section className="airportInfoSection">
         <div className="airportInfoFacts">

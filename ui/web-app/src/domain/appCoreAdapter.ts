@@ -561,6 +561,7 @@ export type MapSelectionAction = {
 export type AirportInfoUiView = {
   airport_id: string;
   name: string;
+  location_label?: string | null;
   elevation_label: string;
   traffic_pattern_altitude_label: string;
   traffic_pattern_altitude_source: "published" | "derived";
@@ -1166,6 +1167,26 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       );
       const loadFullSnapshot = () => runSessionSnapshotForHandle<unknown>(created.handle, () =>
         this.module.get_session_snapshot_paged(created.handle));
+      const applyPreNavBootstrapMutation = async (
+        operation: () => Promise<SessionMutationOperationJson> | SessionMutationOperationJson,
+      ) => {
+        const response = JSON.parse(await operation()) as {
+          state: string;
+          result?: unknown;
+        };
+        if (response.state !== "complete" || !Object.hasOwn(response, "result")) {
+          throw new Error(
+            `pre-NAV session bootstrap mutation unexpectedly returned ${response.state}; `
+            + "resource policy must be established before opening the NAV database",
+          );
+        }
+        const disposition = snapshotAccumulator.apply(response.result);
+        if (disposition === "resync_required") {
+          throw new Error(
+            "pre-NAV session bootstrap mutation requires a snapshot resync before the NAV database is available",
+          );
+        }
+      };
       const applyBootstrapMutation = async (operation: SessionMutationOperation) => {
         const completion = await runSessionMutationForHandle<unknown, unknown>(
           created.handle,
@@ -1179,7 +1200,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       };
       await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", async () =>
-        applyBootstrapMutation(() => module.set_resource_policy_in_session(
+        applyPreNavBootstrapMutation(() => module.set_resource_policy_in_session(
           created.handle,
           JSON.stringify("public_unpacked"),
         )),

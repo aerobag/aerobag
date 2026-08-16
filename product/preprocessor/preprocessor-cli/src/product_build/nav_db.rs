@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::*;
-use preprocessor_core::is_enroute_navaid_type;
 use preprocessor_core::runway::{
     parse_airport_magnetic_variation, parse_optional_position, resolve_true_heading,
     RunwayHeadingInput,
 };
+use preprocessor_core::{airport_location_label, is_enroute_navaid_type};
 use preprocessor_data::{cifp_procedure_kind_from_subsection, is_suppressed_cifp_procedure};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
@@ -3209,7 +3209,7 @@ fn build_nav_kv_airport_info_pairs(
     let timezone_finder = tzf_rs::DefaultFinder::new();
     let mut stmt = connection.prepare(
         "
-        SELECT trim(LocationID), trim(FacilityName),
+        SELECT trim(LocationID), trim(FacilityName), trim(City), trim(State),
                CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
                trim(ARPElevation), trim(TrafficPatternAltitude),
                trim(UNICOMFrequencies), trim(CTAFFrequency)
@@ -3221,17 +3221,19 @@ fn build_nav_kv_airport_info_pairs(
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, f64>(2)?,
-            row.get::<_, f64>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
             row.get::<_, String>(6)?,
             row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
         ))
     })?;
     let mut pairs = Vec::new();
     for row in rows {
-        let (id, name, lat, lon, elevation, pattern_altitude, unicom, ctaf) = row?;
+        let (id, name, city, state, lat, lon, elevation, pattern_altitude, unicom, ctaf) = row?;
         let airport_key = id.trim().to_ascii_uppercase();
         let mut communications = Vec::new();
         let ctaf = normalize_airport_frequency(&ctaf);
@@ -3304,6 +3306,7 @@ fn build_nav_kv_airport_info_pairs(
                 "schema_version": 1,
                 "airport_id": airport_key,
                 "name": name,
+                "location_label": airport_location_label(&city, &state),
                 "latitude": lat,
                 "longitude": lon,
                 "time_zone": time_zone,
@@ -6580,6 +6583,8 @@ mod tests {
                 CREATE TABLE airports (
                     LocationID TEXT,
                     FacilityName TEXT,
+                    City TEXT,
+                    State TEXT,
                     ARPLatitude REAL,
                     ARPLongitude REAL,
                     ARPElevation TEXT,
@@ -6616,9 +6621,9 @@ mod tests {
                     HELongitude TEXT
                 );
                 INSERT INTO airports VALUES
-                    ('KRNT', 'Renton Municipal', 47.493, -122.216, '32', '1218', '122.95', '124.7', '15E'),
-                    ('S88', 'Skykomish State', 47.711, -121.339, '1002', '', '', '122.9', '20E'),
-                    ('KUOS', 'Franklin County', 35.2051458, -85.8981472, '1953.3', '', '122.8', '122.8', '01W');
+                    ('KRNT', 'Renton Municipal', 'RENTON', 'WA', 47.493, -122.216, '32', '1218', '122.95', '124.7', '15E'),
+                    ('S88', 'Skykomish State', 'SKYKOMISH', 'WA', 47.711, -121.339, '1002', '', '', '122.9', '20E'),
+                    ('KUOS', 'Franklin County', 'SEWANEE', 'TN', 35.2051458, -85.8981472, '1953.3', '', '122.8', '122.8', '01W');
                 INSERT INTO airportfreq VALUES
                     ('KRNT', 'ATIS', '126.95'),
                     ('KRNT', 'GND/P', '121.6'),
@@ -6649,6 +6654,7 @@ mod tests {
             serde_json::from_slice(&pair.value).expect("airport info json");
 
         assert_eq!(value["time_zone"], "America/Los_Angeles");
+        assert_eq!(value["location_label"], "Renton, WA");
         assert_eq!(value["traffic_pattern_altitude_msl_ft"], 1218.0);
         assert_eq!(value["runways"][0]["length_ft"], 5382.0);
         assert_eq!(value["runways"][0]["end_a"]["latitude"], 47.5);

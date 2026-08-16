@@ -22,6 +22,38 @@ pub fn is_enroute_navaid_type(kind: &str) -> bool {
     )
 }
 
+pub fn airport_location_label(city: &str, state: &str) -> Option<String> {
+    let city = titlecase_words(city.trim());
+    let state = state.trim().to_ascii_uppercase();
+    match (city.is_empty(), state.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(city),
+        (true, false) => Some(state),
+        (false, false) => Some(format!("{city}, {state}")),
+    }
+}
+
+fn titlecase_words(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut capitalize = true;
+            word.chars()
+                .flat_map(|ch| {
+                    let rendered = if capitalize {
+                        ch.to_uppercase().collect::<String>()
+                    } else {
+                        ch.to_lowercase().collect::<String>()
+                    };
+                    capitalize = ch == '-' || ch == '\'';
+                    rendered.chars().collect::<Vec<_>>()
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub use had_nav_kv as nav_kv;
 pub mod runway;
 
@@ -65,6 +97,19 @@ pub fn xz_compress_bytes_with_system_xz(bytes: &[u8]) -> anyhow::Result<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airport_locations_are_friendly_and_optional() {
+        assert_eq!(
+            airport_location_label("MOAB", "ut").as_deref(),
+            Some("Moab, UT")
+        );
+        assert_eq!(
+            airport_location_label("O'NEILL", "NE").as_deref(),
+            Some("O'Neill, NE")
+        );
+        assert_eq!(airport_location_label("", "").as_deref(), None);
+    }
 
     #[test]
     fn system_xz_bytes_materially_compress_repetitive_payload() {

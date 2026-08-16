@@ -277,6 +277,8 @@ pub struct PointVectorRecord {
     pub lat: f64,
     pub lon: f64,
     pub label: String,
+    #[serde(default)]
+    pub location_label: Option<String>,
     pub style_class: String,
     #[serde(default)]
     pub towered: Option<bool>,
@@ -3585,7 +3587,7 @@ fn selection_item_for_point(
         sublabel: record.kind.trim().to_ascii_uppercase(),
         description: selection_item_description(record, is_airport),
         distance: None,
-        secondary_description: None,
+        secondary_description: record.location_label.clone(),
         position: Some(LatLon {
             lat: record.lat,
             lon: record.lon,
@@ -5031,7 +5033,7 @@ fn airport_ident_label(record: &PointVectorRecord) -> Option<String> {
 
 fn selection_item_description(record: &PointVectorRecord, is_airport: bool) -> Option<String> {
     if is_airport {
-        return None;
+        return (!record.label.trim().is_empty()).then(|| record.label.trim().to_string());
     }
     if is_vor_family_kind(&record.kind) {
         return vor_frequency_description(&record.label);
@@ -7367,6 +7369,7 @@ mod tests {
             lat: 47.36,
             lon: -121.98,
             label: kind.to_ascii_uppercase(),
+            location_label: None,
             style_class: style_class.to_string(),
             towered: None,
             fuel_available: None,
@@ -8417,6 +8420,7 @@ mod tests {
                             lat: viewport.center.lat,
                             lon: viewport.center.lon,
                             label: "KAAA".to_string(),
+                            location_label: None,
                             style_class: "airport".to_string(),
                             towered: Some(true),
                             fuel_available: Some(true),
@@ -10745,6 +10749,7 @@ mod tests {
             lat: 47.36,
             lon: -121.98,
             label: "SEATTLE".to_string(),
+            location_label: Some("Seattle, WA".to_string()),
             style_class: "airport".to_string(),
             towered: Some(true),
             fuel_available: Some(true),
@@ -10824,7 +10829,16 @@ mod tests {
 
         assert_eq!(result.categories[0].id, "airport");
         assert_eq!(result.categories[0].items[0].label, "KSEA");
-        assert_eq!(result.categories[0].items[0].description, None);
+        assert_eq!(
+            result.categories[0].items[0].description.as_deref(),
+            Some("SEATTLE")
+        );
+        assert_eq!(
+            result.categories[0].items[0]
+                .secondary_description
+                .as_deref(),
+            Some("Seattle, WA")
+        );
         assert_eq!(result.categories[0].items[0].elevation_msl_ft, Some(433.0));
         assert_eq!(
             result.initial_selected_item_id.as_deref(),
@@ -10939,6 +10953,7 @@ mod tests {
             lat: 47.36,
             lon: -121.98,
             label: "SEATTLE".to_string(),
+            location_label: None,
             style_class: "airport".to_string(),
             towered: Some(true),
             fuel_available: Some(true),
@@ -11110,6 +11125,7 @@ mod tests {
             lat: 47.0,
             lon: -122.0,
             label: "VAMPS".to_string(),
+            location_label: None,
             style_class: "fix".to_string(),
             towered: None,
             fuel_available: None,
@@ -11283,6 +11299,7 @@ mod tests {
             lat: 47.024,
             lon: -120.459,
             label: "ELLENSBURG 117.9".to_string(),
+            location_label: None,
             style_class: "nav".to_string(),
             towered: None,
             fuel_available: None,
@@ -11364,6 +11381,7 @@ mod tests {
             lat: 47.435,
             lon: -122.309,
             label: "SEATTLE 118.8".to_string(),
+            location_label: None,
             style_class: "nav".to_string(),
             towered: None,
             fuel_available: None,
@@ -11402,6 +11420,7 @@ mod tests {
             lat: 47.0,
             lon: -122.0,
             label: "PRIVATE STRIP".to_string(),
+            location_label: None,
             style_class: "airport".to_string(),
             towered: Some(false),
             fuel_available: Some(false),
@@ -11436,6 +11455,7 @@ mod tests {
                 lat: 51.679_305_555_555_55,
                 lon: -108.690_833_333_333_33,
                 label: "3451".to_string(),
+                location_label: None,
                 style_class: "obstacle".to_string(),
                 towered: None,
                 fuel_available: None,
@@ -11500,6 +11520,7 @@ mod tests {
                         lat: 47.361,
                         lon: -121.981,
                         label: "SEATTLE".to_string(),
+                        location_label: None,
                         style_class: "airport".to_string(),
                         towered: Some(true),
                         fuel_available: Some(true),
@@ -11519,6 +11540,7 @@ mod tests {
                         lat: 47.3605,
                         lon: -121.9805,
                         label: "PRIVATE".to_string(),
+                        location_label: None,
                         style_class: "airport".to_string(),
                         towered: Some(false),
                         fuel_available: Some(false),
@@ -11538,6 +11560,7 @@ mod tests {
                         lat: 47.36,
                         lon: -121.98,
                         label: "WATER".to_string(),
+                        location_label: None,
                         style_class: "airport".to_string(),
                         towered: Some(false),
                         fuel_available: Some(false),
@@ -11557,6 +11580,7 @@ mod tests {
                         lat: 47.362,
                         lon: -121.982,
                         label: "HELI".to_string(),
+                        location_label: None,
                         style_class: "airport".to_string(),
                         towered: Some(false),
                         fuel_available: Some(false),

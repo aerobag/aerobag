@@ -326,6 +326,7 @@ data class FlightPlanRowActionUiView(
 data class AirportInfoUiView(
     val airportId: String,
     val name: String,
+    val locationLabel: String? = null,
     val elevationLabel: String,
     val trafficPatternAltitudeLabel: String,
     val trafficPatternAltitudeSource: String,

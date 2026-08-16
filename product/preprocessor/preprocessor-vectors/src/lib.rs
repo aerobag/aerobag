@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::component as had_key_component;
 use had_nav_kv::{build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvPair};
+use preprocessor_core::airport_location_label;
 use preprocessor_core::runway::{
     parse_airport_magnetic_variation, parse_optional_number, parse_optional_position,
     resolve_true_heading, RunwayHeadingInput,
@@ -391,6 +392,8 @@ struct PointRecord {
     #[serde(serialize_with = "serialize_coord")]
     lon: f64,
     label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location_label: Option<String>,
     style_class: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     obstacle: Option<ObstacleProperties>,
@@ -1603,20 +1606,20 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
     let point_sources = [
         (
             "airports",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes, Use, ARPElevation FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, ATCT, FuelTypes, Use, ARPElevation, City, State FROM airports WHERE ARPLatitude != '' AND ARPLongitude != ''",
             "airport",
             "airports",
         ),
         (
             "enroute_navaids",
-            "SELECT identifier, latitude, longitude, facility_name, kind, NULL, NULL, NULL, NULL
+            "SELECT identifier, latitude, longitude, facility_name, kind, NULL, NULL, NULL, NULL, NULL, NULL
              FROM enroute_navaids",
             "nav",
             "nav",
         ),
         (
             "fix",
-            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, NULL, NULL, NULL, NULL
+            "SELECT LocationID, ARPLatitude, ARPLongitude, FacilityName, Type, NULL, NULL, NULL, NULL, NULL, NULL
              FROM fix
              WHERE printf('%.6f,%.6f', ARPLatitude, ARPLongitude) IN (
                  SELECT DISTINCT printf('%.6f,%.6f', Latitude, Longitude)
@@ -1664,23 +1667,31 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 source_label
             };
             let kind: String = row.get::<_, String>(4)?;
-            let (towered, fuel_available, public_use, private_use, heliport, elevation_msl_ft) =
-                if table_name == "airports" {
-                    let atct: String = row.get::<_, String>(5)?;
-                    let fuel_types: String = row.get::<_, String>(6)?;
-                    let use_code: String = row.get::<_, String>(7)?;
-                    let type_upper = kind.trim().to_ascii_uppercase();
-                    (
-                        Some(atct.trim().eq_ignore_ascii_case("Y")),
-                        Some(!fuel_types.trim().is_empty()),
-                        Some(use_code.trim().eq_ignore_ascii_case("PU")),
-                        Some(use_code.trim().eq_ignore_ascii_case("PR")),
-                        Some(type_upper.contains("HELIPORT")),
-                        parse_optional_f64_cell(row, 8)?,
-                    )
-                } else {
-                    (None, None, None, None, None, None)
-                };
+            let (
+                towered,
+                fuel_available,
+                public_use,
+                private_use,
+                heliport,
+                elevation_msl_ft,
+                location_label,
+            ) = if table_name == "airports" {
+                let atct: String = row.get::<_, String>(5)?;
+                let fuel_types: String = row.get::<_, String>(6)?;
+                let use_code: String = row.get::<_, String>(7)?;
+                let type_upper = kind.trim().to_ascii_uppercase();
+                (
+                    Some(atct.trim().eq_ignore_ascii_case("Y")),
+                    Some(!fuel_types.trim().is_empty()),
+                    Some(use_code.trim().eq_ignore_ascii_case("PU")),
+                    Some(use_code.trim().eq_ignore_ascii_case("PR")),
+                    Some(type_upper.contains("HELIPORT")),
+                    parse_optional_f64_cell(row, 8)?,
+                    airport_location_label(&row.get::<_, String>(9)?, &row.get::<_, String>(10)?),
+                )
+            } else {
+                (None, None, None, None, None, None, None)
+            };
             Ok((
                 id,
                 lat,
@@ -1693,6 +1704,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 private_use,
                 heliport,
                 elevation_msl_ft,
+                location_label,
             ))
         })?;
         for row in rows {
@@ -1708,6 +1720,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 private_use,
                 heliport,
                 elevation_msl_ft,
+                location_label,
             ) = row?;
             if !valid_lat_lon(lat, lon) {
                 continue;
@@ -1729,6 +1742,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                 lat,
                 lon,
                 label,
+                location_label,
                 style_class: style_class.to_string(),
                 obstacle: None,
                 towered,
@@ -1815,6 +1829,7 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
                 lat,
                 lon,
                 label: format!("{:.0}", height_msl),
+                location_label: None,
                 style_class: "obstacle".to_string(),
                 obstacle: Some(ObstacleProperties {
                     height_agl_ft: height_agl,
@@ -4806,6 +4821,7 @@ mod tests {
             lat: 47.49313888888889,
             lon: -122.215750055,
             label: "RENTON MUNI".to_string(),
+            location_label: Some("Renton, WA".to_string()),
             style_class: "airport".to_string(),
             obstacle: None,
             towered: Some(true),
@@ -4823,6 +4839,7 @@ mod tests {
         let value = serde_json::to_value(point).unwrap();
         assert_eq!(value["lat"], serde_json::json!(47.4931389));
         assert_eq!(value["lon"], serde_json::json!(-122.2157501));
+        assert_eq!(value["location_label"], "Renton, WA");
     }
 
     #[test]
@@ -5102,6 +5119,8 @@ mod tests {
                 FuelTypes TEXT,
                 Use TEXT,
                 ARPElevation TEXT,
+                City TEXT,
+                State TEXT,
                 MagneticVariation TEXT
             );
             CREATE TABLE enroute_navaids (
@@ -5152,7 +5171,7 @@ mod tests {
                 LEHeadingT TEXT,
                 HEHeading TEXT
             );
-            INSERT INTO airports VALUES ('KRNT', 47.4931388888889, -122.21575, 'RENTON MUNI', 'AIRPORT', 'Y', '100LL', 'PU', '32.0', '15E');
+            INSERT INTO airports VALUES ('KRNT', 47.4931388888889, -122.21575, 'RENTON MUNI', 'AIRPORT', 'Y', '100LL', 'PU', '32.0', 'RENTON', 'WA', '15E');
             INSERT INTO enroute_navaids VALUES ('RBG', 43.18241527777778, -123.35224194444444, 'ROSEBURG 114.45', 'VOR/DME');
             ",
         )
@@ -5164,6 +5183,7 @@ mod tests {
             .find(|point| point.id == "airports:KRNT")
             .expect("KRNT airport point");
         assert_eq!(krnt.elevation_msl_ft, Some(32.0));
+        assert_eq!(krnt.location_label.as_deref(), Some("Renton, WA"));
         let value = serde_json::to_value(krnt).unwrap();
         assert_eq!(value["elevation_msl_ft"], serde_json::json!(32.0));
         let rbg = points

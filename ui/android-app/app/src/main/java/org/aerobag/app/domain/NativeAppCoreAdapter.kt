@@ -4131,6 +4131,7 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
 private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
     airportId = airport_id,
     name = name,
+    locationLabel = location_label,
     elevationLabel = elevation_label,
     trafficPatternAltitudeLabel = traffic_pattern_altitude_label,
     trafficPatternAltitudeSource = traffic_pattern_altitude_source,

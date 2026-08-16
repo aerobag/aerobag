@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Fragment, Profiler, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
+import { Fragment, Profiler, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import type {
   AltitudeComparisonPanelUiView,
@@ -187,6 +187,15 @@ import {
   writePersistedDebugLogDeveloperServerUploadEnabled,
 } from "./domain/debugLog";
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
+import {
+  HIGH_RATE_SESSION_UPDATE_GROUPS,
+  NO_SESSION_UPDATE_GROUPS,
+  RenderValueStore,
+  SHELL_SESSION_UPDATE_GROUPS,
+  SessionRenderStore,
+  publicationAffectsGroups,
+} from "./domain/sessionRenderStore";
+import type { UiSessionUpdateGroup } from "./generated/sessionUpdateWire";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 declare const __AEROBAG_E2E_ENABLED__: boolean;
@@ -201,6 +210,7 @@ declare global {
         setOfflinePackagePreferences: (preferences: unknown) => Promise<void>;
         dropEventStream: () => Promise<void>;
       };
+      render?: () => unknown;
     };
   }
 }
@@ -2054,7 +2064,55 @@ function emptyNexradOverlayAnimation(): NexradOverlayQueryResult["animation"] {
   };
 }
 
+const webSessionRenderCounts = {
+  app: 0,
+  map: 0,
+  charts: 0,
+};
+
+function recordSessionRender(scope: keyof typeof webSessionRenderCounts) {
+  webSessionRenderCounts[scope] += 1;
+}
+
+function useSessionSnapshotGroups(
+  store: SessionRenderStore,
+  groups: readonly UiSessionUpdateGroup[],
+): UiSessionSnapshot {
+  const subscribe = useCallback(
+    (listener: () => void) => store.subscribe(groups, listener),
+    [groups, store],
+  );
+  const getSnapshot = useCallback(() => store.snapshot, [store]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+function useRenderValue<T>(store: RenderValueStore<T>, enabled: boolean): T {
+  const subscribe = useCallback(
+    (listener: () => void) => enabled ? store.subscribe(listener) : () => {},
+    [enabled, store],
+  );
+  const getSnapshot = useCallback(() => store.value, [store]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+function requireMapViewport(viewport: MapViewportState | null): MapViewportState {
+  if (viewport === null) throw new Error("map page rendered before its viewport was initialized");
+  return viewport;
+}
+
+const PageLayer = memo(
+  function PageLayer(props: { active: boolean; children: ReactNode }) {
+    return (
+      <div className={`pageLayer${props.active ? " isActive" : ""}`} aria-hidden={!props.active}>
+        {props.children}
+      </div>
+    );
+  },
+  (previous, next) => !previous.active && !next.active,
+);
+
 export default function App() {
+  recordSessionRender("app");
   const [sessionStartMs] = useState(() => Date.now());
   const initialDebugState = useMemo(defaultUiDebugState, []);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
@@ -2117,9 +2175,9 @@ export default function App() {
   } | null>(null);
   const cloudEventReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const webIdleState = useWebIdleState();
-  const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
-    initialUiInvalidationRevisions,
-  );
+  const uiInvalidationStoreRef = useRef<RenderValueStore<UiInvalidationRevisions> | null>(null);
+  const uiInvalidationStore = uiInvalidationStoreRef.current
+    ?? (uiInvalidationStoreRef.current = new RenderValueStore(initialUiInvalidationRevisions()));
   const sessionSnapshotRefreshInFlightRef = useRef(false);
   const sessionSnapshotRefreshTimerRef = useRef<number | null>(null);
   const appliedSessionRevisionRef = useRef(0);
@@ -2229,6 +2287,9 @@ export default function App() {
     next_session_snapshot_refresh_epoch_ms: 0,
     next_cycle_product_freshness_check_epoch_ms: null,
   });
+  const sessionRenderStoreRef = useRef<SessionRenderStore | null>(null);
+  const sessionRenderStore = sessionRenderStoreRef.current
+    ?? (sessionRenderStoreRef.current = new SessionRenderStore(sessionSnapshot));
   const applySessionSnapshot = useCallback((nextSnapshot: UiSessionSnapshot, source: string) => {
     const nextRevision = nextSnapshot.session_revision;
     const currentRevision = appliedSessionRevisionRef.current;
@@ -2240,6 +2301,10 @@ export default function App() {
       });
       return false;
     }
+    if (nextRevision === currentRevision && sessionRenderStore.snapshot === nextSnapshot) {
+      return true;
+    }
+    sessionRenderStore.replaceUnannouncedSnapshot(nextSnapshot);
     appliedSessionRevisionRef.current = nextRevision;
     debugLog("session.snapshot.apply", {
       source,
@@ -2247,18 +2312,26 @@ export default function App() {
     });
     setSessionSnapshot(nextSnapshot);
     return true;
-  }, []);
+  }, [sessionRenderStore]);
   const applySessionSnapshotDispatch = useCallback((nextSnapshot: SetStateAction<UiSessionSnapshot>) => {
     if (typeof nextSnapshot === "function") {
-      setSessionSnapshot((snapshot) => {
-        const resolved = nextSnapshot(snapshot);
-        appliedSessionRevisionRef.current = Math.max(appliedSessionRevisionRef.current, resolved.session_revision);
-        return resolved;
-      });
+      applySessionSnapshot(nextSnapshot(sessionRenderStore.snapshot), "session_callback");
       return;
     }
     applySessionSnapshot(nextSnapshot, "session_callback");
-  }, [applySessionSnapshot]);
+  }, [applySessionSnapshot, sessionRenderStore]);
+
+  useEffect(() => {
+    const render = () => ({
+      ...webSessionRenderCounts,
+      store: sessionRenderStore.stats,
+      session_revision: sessionRenderStore.snapshot.session_revision,
+    });
+    window.__aerobagE2e = { ...(window.__aerobagE2e ?? {}), render };
+    return () => {
+      if (window.__aerobagE2e?.render === render) delete window.__aerobagE2e.render;
+    };
+  }, [sessionRenderStore]);
 
   const pumpCloudProvider = useCallback(async () => {
     if (!uiSession || cloudPumpInFlightRef.current) {
@@ -2573,16 +2646,10 @@ export default function App() {
       highLatencyWarningTimerRef.current = null;
     }, startupHighLatencyWarningGraceMs);
   }, []);
-  const appUiState = sessionSnapshot.app_ui_state;
   const mapLayerState = useMemo(
     () => normalizeUiMapLayerState(sessionSnapshot.map_layer_state),
     [sessionSnapshot.map_layer_state],
   );
-  const badAutopilotActive = appUiState.ownship.controls.sources.some(
-    (source) => source.source_kind === "bad_autopilot" && source.active,
-  );
-  const playbackUiState = sessionSnapshot.playback_ui_state;
-  const mapFollowUiState = sessionSnapshot.map_follow_ui_state;
   const chartPageData: ChartPageData = useMemo(
     () => ({ airports: derivedChartPageState.airports }),
     [derivedChartPageState.airports],
@@ -2590,12 +2657,6 @@ export default function App() {
   const airportMenuEntries = derivedChartPageState.airport_menu_entries;
 
   useEffect(() => installMainThreadResponsivenessInstrumentation(), []);
-
-  useEffect(() => {
-    if (playbackUiState.source_path) {
-      setPlaybackSourcePath(playbackUiState.source_path);
-    }
-  }, [playbackUiState.source_path]);
 
   useEffect(() => () => {
     if (highLatencyWarningTimerRef.current !== null) {
@@ -2758,13 +2819,11 @@ export default function App() {
       return;
     }
     uiSession.setInvalidationListener((invalidations) => {
-      setUiInvalidationRevisions((current) => {
-        const next = { ...current };
-        for (const invalidation of invalidations) {
-          next[invalidation] = (next[invalidation] ?? 0) + 1;
-        }
-        return next;
-      });
+      const next = { ...uiInvalidationStore.value };
+      for (const invalidation of invalidations) {
+        next[invalidation] = (next[invalidation] ?? 0) + 1;
+      }
+      uiInvalidationStore.publish(next);
       if (invalidations.includes("session_snapshot")) {
         const priority = invalidations.includes("flight_plan_route") ? "timely" : "low_priority";
         requestSessionSnapshotRefresh(priority, "invalidation");
@@ -2773,7 +2832,27 @@ export default function App() {
     return () => {
       uiSession.setInvalidationListener(null);
     };
-  }, [requestSessionSnapshotRefresh, uiSession]);
+  }, [requestSessionSnapshotRefresh, uiInvalidationStore, uiSession]);
+
+  useEffect(() => {
+    if (!uiSession) return;
+    uiSession.setProjectionListener((publication) => {
+      const nextRevision = publication.snapshot.session_revision;
+      if (nextRevision < appliedSessionRevisionRef.current) {
+        debugLog("session.projection.stale_skip", {
+          next_revision: nextRevision,
+          current_revision: appliedSessionRevisionRef.current,
+        });
+        return;
+      }
+      if (!sessionRenderStore.publish(publication)) return;
+      appliedSessionRevisionRef.current = nextRevision;
+      if (publicationAffectsGroups(publication, SHELL_SESSION_UPDATE_GROUPS)) {
+        setSessionSnapshot(publication.snapshot);
+      }
+    });
+    return () => uiSession.setProjectionListener(null);
+  }, [sessionRenderStore, uiSession]);
 
   useEffect(() => {
     const deadline = sessionSnapshot.next_session_snapshot_refresh_epoch_ms;
@@ -2847,21 +2926,6 @@ export default function App() {
   }, [requestSessionSnapshotRefresh, sessionSnapshot.cloud_page_state.next_refresh_epoch_ms]);
 
   useEffect(() => {
-    const deadline = sessionSnapshot.app_ui_state.ownship.controls.next_refresh_epoch_ms;
-    if (deadline == null) {
-      return;
-    }
-    const timer = window.setTimeout(
-      () => requestSessionSnapshotRefresh("timely", "ownship_source_deadline"),
-      Math.max(0, Math.min(deadline - Date.now(), 2_147_000_000)),
-    );
-    return () => window.clearTimeout(timer);
-  }, [
-    requestSessionSnapshotRefresh,
-    sessionSnapshot.app_ui_state.ownship.controls.next_refresh_epoch_ms,
-  ]);
-
-  useEffect(() => {
     if (navDbMaintenanceTimerRef.current !== null) {
       window.clearTimeout(navDbMaintenanceTimerRef.current);
       navDbMaintenanceTimerRef.current = null;
@@ -2933,71 +2997,6 @@ export default function App() {
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [requestSessionSnapshotRefresh, sessionSnapshot.next_cycle_product_freshness_check_epoch_ms]);
-
-  useEffect(() => {
-    if (!uiSession || playbackUiState.status !== "playing") {
-      return;
-    }
-    let cancelled = false;
-    let timer: number | null = null;
-    let inFlight = false;
-    const intervalMs = Math.max(16, Math.min(1000, playbackUiState.tick_interval_ms));
-    const schedule = (delayMs: number) => {
-      if (cancelled) {
-        return;
-      }
-      timer = window.setTimeout(tick, delayMs);
-    };
-    const tick = () => {
-      if (cancelled || inFlight) {
-        return;
-      }
-      inFlight = true;
-      const startedAt = performance.now();
-      void uiSession.tickPlayback(Date.now()).then((nextSnapshot) => {
-        if (!cancelled) {
-          applySessionSnapshot(nextSnapshot, "playback_tick");
-        }
-      }).catch(() => {}).finally(() => {
-        inFlight = false;
-        schedule(Math.max(0, intervalMs - (performance.now() - startedAt)));
-      });
-    };
-    tick();
-    return () => {
-      cancelled = true;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [applySessionSnapshot, playbackUiState.status, playbackUiState.tick_interval_ms, uiSession]);
-
-  useEffect(() => {
-    if (!uiSession || !badAutopilotActive) {
-      return;
-    }
-    let cancelled = false;
-    let inFlight = false;
-    const tick = () => {
-      if (inFlight) {
-        return;
-      }
-      inFlight = true;
-      void uiSession.tickBadAutopilot(Date.now()).then((nextSnapshot) => {
-        if (!cancelled) {
-          applySessionSnapshot(nextSnapshot, "bad_autopilot_tick");
-        }
-      }).catch(() => {}).finally(() => {
-        inFlight = false;
-      });
-    };
-    tick();
-    const timer = window.setInterval(tick, 250);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [applySessionSnapshot, badAutopilotActive, uiSession]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -3136,7 +3135,7 @@ export default function App() {
       }
     };
   }, [uiSession]);
-  const planUiState = appUiState.active_plan;
+  const planUiState = sessionSnapshot.app_ui_state.active_plan;
   const chartPageStateRequestKey = JSON.stringify([
     planUiState?.plan_id ?? null,
     planUiState?.plan_version ?? null,
@@ -3195,7 +3194,17 @@ export default function App() {
   const selectedChartId = derivedChartPageState.selected_chart_id;
 
   const selectedMap = rasterMapState;
-  const [mapViewport, setMapViewport] = useState<MapViewportState | null>(null);
+  const mapViewportStoreRef = useRef<RenderValueStore<MapViewportState | null> | null>(null);
+  const mapViewportStore = mapViewportStoreRef.current
+    ?? (mapViewportStoreRef.current = new RenderValueStore<MapViewportState | null>(null));
+  const [mapViewportReady, setMapViewportReady] = useState(false);
+  const setMapViewport = useCallback((next: SetStateAction<MapViewportState | null>) => {
+    const current = mapViewportStore.value;
+    const resolved = typeof next === "function" ? next(current) : next;
+    mapViewportStore.publish(resolved);
+    if (current === null && resolved !== null) setMapViewportReady(true);
+  }, [mapViewportStore]);
+  const mapViewport = mapViewportStore.value;
   const [chartViewport, setChartViewport] = useState<ImageViewportState | null>(null);
   const [chartFolderOpen, setChartFolderOpen] = useState(false);
   const selectedFamily = useMemo(
@@ -3419,7 +3428,7 @@ export default function App() {
     appCoreAdapter !== null &&
     uiSession !== null &&
     selectedMap !== null &&
-    mapViewport !== null &&
+    mapViewportReady &&
     planUiState !== null;
 
   useEffect(() => {
@@ -3465,13 +3474,14 @@ export default function App() {
   }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId]);
 
   function currentSnapshot(): AppViewSnapshot {
-    if (mapViewport === null) {
+    const currentMapViewport = mapViewportStore.value;
+    if (currentMapViewport === null) {
       throw new Error("cannot snapshot map view before core supplies an initial viewport");
     }
     return {
       page,
       selectedMapId: rasterMapState?.selected_map_id ?? "",
-      mapViewport,
+      mapViewport: currentMapViewport,
       plateTargetAirportId: sessionSnapshot.chart_page_state.plate_target_airport_id ?? null,
       selectedAirportId,
       selectedReferenceFamilyId,
@@ -3535,7 +3545,7 @@ export default function App() {
       window.history.replaceState(state, "", urlForAppPage(page));
     }, 120);
     return () => window.clearTimeout(timeoutId);
-  }, [appReady, page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedReferenceFamilyId, selectedChartId, recentAirportIds, derivedChartPageState.suggested_chart_ids, chartViewport, chartFolderOpen]);
+  }, [appReady, page, pageHistory, rasterMapState?.selected_map_id, selectedAirportId, selectedReferenceFamilyId, selectedChartId, recentAirportIds, derivedChartPageState.suggested_chart_ids, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -3795,30 +3805,36 @@ export default function App() {
 
   return (
     <main className="appShell" style={themeVars}>
-      <div className={`pageLayer${page === "map" ? " isActive" : ""}`} aria-hidden={page !== "map"}>
+      <HighRateSessionEffects
+        sessionRenderStore={sessionRenderStore}
+        uiSession={uiSession}
+        requestSessionSnapshotRefresh={requestSessionSnapshotRefresh}
+        applySessionSnapshot={applySessionSnapshot}
+        onPlaybackSourcePathChange={setPlaybackSourcePath}
+      />
+      <PageLayer active={page === "map"}>
         <MapPage
+          sessionRenderStore={sessionRenderStore}
+          mapViewportStore={mapViewportStore}
+          uiInvalidationStore={uiInvalidationStore}
           key={sessionSnapshot.nav_data_epoch}
           appCoreAdapter={appCoreAdapter}
           navDataEpoch={sessionSnapshot.nav_data_epoch}
           flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
           page={page}
           debugState={sessionSnapshot.debug_state}
-          playbackPanelState={sessionSnapshot.playback_panel_state}
           mapLayerState={mapLayerState}
           selectedMap={selectedMap}
           selectedFamily={selectedFamily}
           familyOptions={rasterMapState.family_options}
-          viewport={mapViewport}
           mapOrientationMode={mapOrientationMode}
           onMapOrientationModeChange={setMapOrientationMode}
           pageTilePaintTiming={pageTilePaintTimingRef.current}
-          uiInvalidationRevisions={uiInvalidationRevisions}
           onPageTilePaintTimingComplete={(id) => {
             if (pageTilePaintTimingRef.current?.id === id) {
               pageTilePaintTimingRef.current = null;
             }
           }}
-          onViewportChange={(next) => setMapViewport(next)}
           onViewportGestureActiveChange={handleMapViewportGestureActiveChange}
           onViewportGestureActivity={handleMapViewportGestureActivity}
           onSelectMapFamily={(familyId) => {
@@ -3848,9 +3864,6 @@ export default function App() {
                 setChartPageStateLoadError(`failed to open chart references: ${errorMessage(error)}`);
               });
           }}
-          ownship={appUiState.ownship.render}
-          ownshipControls={appUiState.ownship.controls}
-          flightDataBanner={appUiState.flight_data_banner}
           dataStatusState={sessionSnapshot.data_status_state}
           onStatusAction={(actionId) => {
             if (actionId === "app:reload") {
@@ -3865,9 +3878,6 @@ export default function App() {
             });
           }}
           planUiState={planUiState}
-          playbackUiState={playbackUiState}
-          mapFollowUiState={mapFollowUiState}
-          mapFollowTargetViewport={sessionSnapshot.map_follow_target_viewport}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={applySessionSnapshotDispatch}
@@ -3878,9 +3888,9 @@ export default function App() {
           onHighLatencyWarning={logHighLatencyWarning}
           onFirstVisualReady={reportStartupVisualReady}
         />
-      </div>
+      </PageLayer>
 
-      <div className={`pageLayer${page === "plan" ? " isActive" : ""}`} aria-hidden={page !== "plan"}>
+      <PageLayer active={page === "plan"}>
         <FlightPlanPage
           appCoreAdapter={appCoreAdapter}
           uiSession={uiSession}
@@ -4025,9 +4035,9 @@ export default function App() {
             );
           }}
         />
-      </div>
+      </PageLayer>
 
-      <div className={`pageLayer${page === "altitude" ? " isActive" : ""}`} aria-hidden={page !== "altitude"}>
+      <PageLayer active={page === "altitude"}>
         <AltitudePlannerPage
           page={page}
           planUiState={planUiState}
@@ -4060,10 +4070,11 @@ export default function App() {
             );
           }}
         />
-      </div>
+      </PageLayer>
 
-      <div className={`pageLayer${page === "charts" ? " isActive" : ""}`} aria-hidden={page !== "charts"}>
+      <PageLayer active={page === "charts"}>
         <ChartsPage
+          sessionRenderStore={sessionRenderStore}
           appCoreAdapter={appCoreAdapter}
           page={page}
           planUiState={planUiState}
@@ -4140,10 +4151,6 @@ export default function App() {
               chartFolderOpen: false,
             });
           }}
-          ownship={appUiState.ownship.render}
-          ownshipControls={appUiState.ownship.controls}
-          playbackUiState={playbackUiState}
-          playbackPanelState={sessionSnapshot.playback_panel_state}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={applySessionSnapshotDispatch}
@@ -4152,9 +4159,9 @@ export default function App() {
           uiSession={uiSession}
           onFirstVisualReady={reportStartupVisualReady}
         />
-      </div>
+      </PageLayer>
 
-      <div className={`pageLayer${page === "home" ? " isActive" : ""}`} aria-hidden={page !== "home"}>
+      <PageLayer active={page === "home"}>
         <HomePage
           page={page}
           state={sessionSnapshot.home_page_state}
@@ -4164,9 +4171,9 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
         />
-      </div>
+      </PageLayer>
 
-      <div className={`pageLayer${page === "data" ? " isActive" : ""}`} aria-hidden={page !== "data"}>
+      <PageLayer active={page === "data"}>
         <DataStatusPage
           page={page}
           state={sessionSnapshot.data_status_page_state}
@@ -4184,8 +4191,8 @@ export default function App() {
             );
           }}
         />
-      </div>
-      <div className={`pageLayer${page === "settings" ? " isActive" : ""}`} aria-hidden={page !== "settings"}>
+      </PageLayer>
+      <PageLayer active={page === "settings"}>
         <SettingsPage
           page={page}
           state={sessionSnapshot.settings_page_state}
@@ -4206,8 +4213,8 @@ export default function App() {
             });
           }}
         />
-      </div>
-      <div className={`pageLayer${page === "cloud" ? " isActive" : ""}`} aria-hidden={page !== "cloud"}>
+      </PageLayer>
+      <PageLayer active={page === "cloud"}>
         <CloudPage
           page={page}
           state={sessionSnapshot.cloud_page_state}
@@ -4218,7 +4225,7 @@ export default function App() {
           onSelectPage={navigateToPage}
           onAction={performCloudPageAction}
         />
-      </div>
+      </PageLayer>
       {flightPlanWeatherModal ? (
         <>
           <TrayScrim ariaLabel="Close weather" onClose={() => setFlightPlanWeatherModal(null)} />
@@ -4236,24 +4243,105 @@ export default function App() {
   );
 }
 
+function HighRateSessionEffects(props: {
+  sessionRenderStore: SessionRenderStore;
+  uiSession: UiSession | null;
+  requestSessionSnapshotRefresh: (priority: SessionSnapshotRefreshPriority, reason: string) => void;
+  applySessionSnapshot: (snapshot: UiSessionSnapshot, source: string) => boolean;
+  onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
+}) {
+  const snapshot = useSessionSnapshotGroups(
+    props.sessionRenderStore,
+    HIGH_RATE_SESSION_UPDATE_GROUPS,
+  );
+  const playback = snapshot.playback_ui_state;
+  const ownship = snapshot.app_ui_state.ownship;
+
+  useEffect(() => {
+    if (playback.source_path) props.onPlaybackSourcePathChange(playback.source_path);
+  }, [playback.source_path, props.onPlaybackSourcePathChange]);
+
+  useEffect(() => {
+    const deadline = ownship.controls.next_refresh_epoch_ms;
+    if (deadline == null) return;
+    const timer = window.setTimeout(
+      () => props.requestSessionSnapshotRefresh("timely", "ownship_source_deadline"),
+      Math.max(0, Math.min(deadline - Date.now(), 2_147_000_000)),
+    );
+    return () => window.clearTimeout(timer);
+  }, [ownship.controls.next_refresh_epoch_ms, props.requestSessionSnapshotRefresh]);
+
+  useEffect(() => {
+    if (!props.uiSession || playback.status !== "playing") return;
+    let cancelled = false;
+    let timer: number | null = null;
+    let inFlight = false;
+    const intervalMs = Math.max(16, Math.min(1000, playback.tick_interval_ms));
+    const schedule = (delayMs: number) => {
+      if (!cancelled) timer = window.setTimeout(tick, delayMs);
+    };
+    const tick = () => {
+      if (cancelled || inFlight || !props.uiSession) return;
+      inFlight = true;
+      const startedAt = performance.now();
+      void props.uiSession.tickPlayback(Date.now()).then((nextSnapshot) => {
+        if (!cancelled) props.applySessionSnapshot(nextSnapshot, "playback_tick");
+      }).catch(() => {}).finally(() => {
+        inFlight = false;
+        schedule(Math.max(0, intervalMs - (performance.now() - startedAt)));
+      });
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [playback.status, playback.tick_interval_ms, props.applySessionSnapshot, props.uiSession]);
+
+  const badAutopilotActive = ownship.controls.sources.some(
+    (source) => source.source_kind === "bad_autopilot" && source.active,
+  );
+  useEffect(() => {
+    if (!props.uiSession || !badAutopilotActive) return;
+    let cancelled = false;
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight || !props.uiSession) return;
+      inFlight = true;
+      void props.uiSession.tickBadAutopilot(Date.now()).then((nextSnapshot) => {
+        if (!cancelled) props.applySessionSnapshot(nextSnapshot, "bad_autopilot_tick");
+      }).catch(() => {}).finally(() => {
+        inFlight = false;
+      });
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [badAutopilotActive, props.applySessionSnapshot, props.uiSession]);
+
+  return null;
+}
+
 function MapPage(props: {
+  sessionRenderStore: SessionRenderStore;
+  mapViewportStore: RenderValueStore<MapViewportState | null>;
+  uiInvalidationStore: RenderValueStore<UiInvalidationRevisions>;
   appCoreAdapter: AppCoreAdapter;
   navDataEpoch: number;
   flightPlanRouteRevision: number;
   page: AppPage;
   debugState: UiDebugState;
-  playbackPanelState: UiPlaybackPanelState;
   mapLayerState: UiMapLayerState;
   selectedMap: RasterMapUiState;
   selectedFamily: RasterMapUiState["family_options"][number] | null;
   familyOptions: RasterMapUiState["family_options"];
-  viewport: MapViewportState;
   mapOrientationMode: MapOrientationMode;
   onMapOrientationModeChange: (mode: MapOrientationMode) => void;
   pageTilePaintTiming: WebPageTilePaintTiming | null;
-  uiInvalidationRevisions: UiInvalidationRevisions;
   onPageTilePaintTimingComplete: (id: number) => void;
-  onViewportChange: (next: MapViewportState) => void;
   onViewportGestureActiveChange: (active: boolean) => void;
   onViewportGestureActivity: () => void;
   onSelectMapFamily: (familyId: ChartFamilyId) => void;
@@ -4261,15 +4349,9 @@ function MapPage(props: {
   onOpenPlan: () => void;
   onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
   onOpenChartReference: (action: NonNullable<RasterTilePlan["chart_reference_action"]>) => void;
-  ownship: OwnshipRenderState;
-  ownshipControls: OwnshipControlModel;
-  flightDataBanner: FlightDataBannerModel;
   dataStatusState: UiDataStatusState;
   onStatusAction: (actionId: string) => void | Promise<void>;
   planUiState: FlightPlanUiState | null;
-  playbackUiState: PlaybackUiState;
-  mapFollowUiState: MapFollowUiState;
-  mapFollowTargetViewport: { center: LatLon; zoom: number; rotation_deg: number; pitch_deg: number } | null;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
@@ -4280,6 +4362,29 @@ function MapPage(props: {
   onHighLatencyWarning: (tag: string, data?: unknown) => void;
   onFirstVisualReady: () => void;
 }) {
+  recordSessionRender("map");
+  const highRateSnapshot = useSessionSnapshotGroups(
+    props.sessionRenderStore,
+    props.page === "map" ? HIGH_RATE_SESSION_UPDATE_GROUPS : NO_SESSION_UPDATE_GROUPS,
+  );
+  const ownship = highRateSnapshot.app_ui_state.ownship.render;
+  const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
+  const flightDataBanner = highRateSnapshot.app_ui_state.flight_data_banner;
+  const playbackUiState = highRateSnapshot.playback_ui_state;
+  const playbackPanelState = highRateSnapshot.playback_panel_state;
+  const mapFollowUiState = highRateSnapshot.map_follow_ui_state;
+  const mapFollowTargetViewport = highRateSnapshot.map_follow_target_viewport;
+  const uiInvalidationRevisions = useRenderValue(
+    props.uiInvalidationStore,
+    props.page === "map",
+  );
+  const viewport = requireMapViewport(
+    useRenderValue(props.mapViewportStore, props.page === "map"),
+  );
+  const onViewportChange = useCallback(
+    (next: MapViewportState) => props.mapViewportStore.publish(next),
+    [props.mapViewportStore],
+  );
   const {
     appCoreAdapter,
     navDataEpoch,
@@ -4290,13 +4395,10 @@ function MapPage(props: {
     selectedMap,
     selectedFamily,
     familyOptions,
-    viewport,
     mapOrientationMode,
     onMapOrientationModeChange,
     pageTilePaintTiming,
-    uiInvalidationRevisions,
     onPageTilePaintTimingComplete,
-    onViewportChange,
     onViewportGestureActiveChange,
     onViewportGestureActivity,
     onSelectMapFamily,
@@ -4304,17 +4406,12 @@ function MapPage(props: {
     onOpenPlan,
     onOpenPlateTarget,
     onOpenChartReference,
-    ownship,
-    ownshipControls,
-    flightDataBanner,
     dataStatusState,
     onStatusAction,
     planUiState,
     uiSession,
     onPlaybackSnapshotChange,
     onSituationControlInput,
-    mapFollowUiState,
-    mapFollowTargetViewport,
     onDebugWarning,
     onHighLatencyWarning,
     onFirstVisualReady,
@@ -7868,10 +7965,10 @@ function MapPage(props: {
           onOpenPlan={onOpenPlan}
         />
 
-        {props.playbackPanelState.visible ? (
+        {playbackPanelState.visible ? (
           <PlaybackWidget
             uiSession={uiSession}
-            playbackUiState={props.playbackUiState}
+            playbackUiState={playbackUiState}
             sourcePath={props.playbackSourcePath}
             onSourcePathChange={props.onPlaybackSourcePathChange}
             onSnapshotChange={props.onPlaybackSnapshotChange}
@@ -11193,6 +11290,7 @@ function DataStatusWarningFace(props: { count?: string | null }) {
 }
 
 function ChartsPage(props: {
+  sessionRenderStore: SessionRenderStore;
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
   planUiState: FlightPlanUiState | null;
@@ -11211,19 +11309,24 @@ function ChartsPage(props: {
   onSelectAirport: (airportId: string) => void;
   onSelectReference: (familyId: ChartFamilyId) => void;
   onSelectChart: (chartId: string) => void;
-  playbackUiState: PlaybackUiState;
-  playbackPanelState: UiPlaybackPanelState;
   playbackSourcePath: string;
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   onSituationControlInput: (input: SituationControlInput) => void;
   debugState: UiDebugState;
   uiSession: UiSession | null;
-  ownship: OwnshipRenderState;
-  ownshipControls: OwnshipControlModel;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
+  recordSessionRender("charts");
+  const highRateSnapshot = useSessionSnapshotGroups(
+    props.sessionRenderStore,
+    props.page === "charts" ? HIGH_RATE_SESSION_UPDATE_GROUPS : NO_SESSION_UPDATE_GROUPS,
+  );
+  const ownship = highRateSnapshot.app_ui_state.ownship.render;
+  const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
+  const playbackUiState = highRateSnapshot.playback_ui_state;
+  const playbackPanelState = highRateSnapshot.playback_panel_state;
+  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -12023,10 +12126,10 @@ function ChartsPage(props: {
           onOpenPlan={onOpenPlan}
         />
 
-        {props.playbackPanelState.visible ? (
+        {playbackPanelState.visible ? (
           <PlaybackWidget
             uiSession={props.uiSession}
-            playbackUiState={props.playbackUiState}
+            playbackUiState={playbackUiState}
             sourcePath={props.playbackSourcePath}
             onSourcePathChange={props.onPlaybackSourcePathChange}
             onSnapshotChange={props.onPlaybackSnapshotChange}

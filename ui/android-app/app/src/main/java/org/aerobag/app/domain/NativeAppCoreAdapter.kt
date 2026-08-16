@@ -803,6 +803,12 @@ class NativeUiSession internal constructor(
     private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)?,
     initialSnapshot: JsonObject,
 ) {
+    internal data class SnapshotPublication(
+        val snapshot: UiSessionSnapshot,
+        val changedGroups: Set<UiSessionUpdateGroup>,
+        val fullSnapshot: Boolean,
+    )
+
     private val landedUpdateCount = AtomicLong(0)
     private val snapshotAccumulator = SessionUpdateAccumulator(
         initialSnapshot,
@@ -818,7 +824,8 @@ class NativeUiSession internal constructor(
     private var invalidationListener: ((List<String>) -> Unit)? = null
     private data class SnapshotListenerRegistration(
         val groups: Set<UiSessionUpdateGroup>,
-        val listener: (UiSessionSnapshot) -> Unit,
+        val includeRevisionOnlyUpdates: Boolean,
+        val listener: (SnapshotPublication) -> Unit,
     )
     private var nextSnapshotListenerId = 1L
     private val snapshotListeners = mutableMapOf<Long, SnapshotListenerRegistration>()
@@ -864,19 +871,47 @@ class NativeUiSession internal constructor(
     }
 
     fun subscribeSnapshots(listener: (UiSessionSnapshot) -> Unit): AutoCloseable =
-        subscribeSnapshotGroups(UiSessionUpdateGroup.entries.toSet(), listener)
+        subscribeSnapshotPublications { publication -> listener(publication.snapshot) }
+
+    internal fun subscribeSnapshotPublications(
+        listener: (SnapshotPublication) -> Unit,
+    ): AutoCloseable = subscribeSnapshotGroups(
+        groups = UiSessionUpdateGroup.entries.toSet(),
+        includeRevisionOnlyUpdates = true,
+        listener = listener,
+    )
 
     internal fun subscribeSnapshotGroups(
         groups: Set<UiSessionUpdateGroup>,
         listener: (UiSessionSnapshot) -> Unit,
+    ): AutoCloseable = subscribeSnapshotGroups(
+        groups = groups,
+        includeRevisionOnlyUpdates = false,
+        listener = { publication -> listener(publication.snapshot) },
+    )
+
+    private fun subscribeSnapshotGroups(
+        groups: Set<UiSessionUpdateGroup>,
+        includeRevisionOnlyUpdates: Boolean,
+        listener: (SnapshotPublication) -> Unit,
     ): AutoCloseable {
         require(groups.isNotEmpty()) { "snapshot subscription requires at least one update group" }
         val (listenerId, currentSnapshot) = synchronized(listenerLock) {
             val id = nextSnapshotListenerId++
-            snapshotListeners[id] = SnapshotListenerRegistration(groups, listener)
+            snapshotListeners[id] = SnapshotListenerRegistration(
+                groups,
+                includeRevisionOnlyUpdates,
+                listener,
+            )
             id to snapshot
         }
-        listener(currentSnapshot)
+        listener(
+            SnapshotPublication(
+                snapshot = currentSnapshot,
+                changedGroups = UiSessionUpdateGroup.entries.toSet(),
+                fullSnapshot = true,
+            ),
+        )
         return AutoCloseable {
             synchronized(listenerLock) {
                 snapshotListeners.remove(listenerId)
@@ -1103,13 +1138,18 @@ class NativeUiSession internal constructor(
         changedGroups: Set<UiSessionUpdateGroup> = UiSessionUpdateGroup.entries.toSet(),
         fullSnapshot: Boolean = false,
     ) {
+        val publication = SnapshotPublication(nextSnapshot, changedGroups, fullSnapshot)
         val listeners = synchronized(listenerLock) {
             snapshot = nextSnapshot
             snapshotListeners.values
-                .filter { fullSnapshot || it.groups.any(changedGroups::contains) }
+                .filter {
+                    fullSnapshot ||
+                        (changedGroups.isEmpty() && it.includeRevisionOnlyUpdates) ||
+                        it.groups.any(changedGroups::contains)
+                }
                 .map(SnapshotListenerRegistration::listener)
         }
-        listeners.forEach { it(nextSnapshot) }
+        listeners.forEach { it(publication) }
     }
 
     private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? =

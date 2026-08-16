@@ -28,7 +28,7 @@ describe("chart-reference view history boundary", () => {
   it("records a reference chart click without replaying stale core state", () => {
     const handler = sourceBetween(
       "onSelectChart={(chartId) => {",
-      "ownship={appUiState.ownship.render}",
+      "playbackSourcePath={playbackSourcePath}",
     );
 
     expect(handler).toContain("uiSession.selectChart(chartId)");

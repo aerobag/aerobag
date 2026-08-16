@@ -193,8 +193,8 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
     session.setInvalidationListener((invalidations) => {
       postMessage({ kind: "sessionInvalidation", sessionId, invalidations });
     });
-    session.setProjectionListener((landing) => {
-      ctx.postMessage({ kind: "sessionProjection", sessionId, landing });
+    session.setProjectionListener((publication) => {
+      ctx.postMessage({ kind: "sessionProjection", sessionId, landing: publication.landing });
     });
     return {
       __aerobagWorkerSessionId: sessionId,

@@ -187,9 +187,10 @@ class NativeUiSessionBoundaryTest {
             mainActivity.contains("LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot)"),
         )
         assertTrue(
-            "Activity snapshot delivery must collapse stale queued snapshots to the latest value.",
-            mainActivity.contains("LatestValueExecutor(mainExecutor, ::applySessionSnapshot)") &&
-                mainActivity.contains("uiSession.subscribeSnapshots(snapshotDelivery::submit)"),
+            "Activity snapshot delivery must collapse queued snapshots while preserving every changed group.",
+            mainActivity.contains("val snapshotDelivery = LatestValueExecutor(") &&
+                mainActivity.contains("previous.changedGroups + next.changedGroups") &&
+                mainActivity.contains("uiSession.subscribeSnapshotPublications"),
         )
         assertTrue(
             "Snapshot scheduling and the complete live-feed runtime must survive activity recreation.",

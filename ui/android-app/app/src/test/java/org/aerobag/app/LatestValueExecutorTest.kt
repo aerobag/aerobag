@@ -42,6 +42,23 @@ class LatestValueExecutorTest {
         assertEquals(emptyList<Int>(), delivered)
     }
 
+    @Test
+    fun coalescerPreservesMetadataFromCollapsedValues() {
+        val executor = QueuedExecutor()
+        val delivered = mutableListOf<Set<String>>()
+        val delivery = LatestValueExecutor(
+            executor = executor,
+            consume = delivered::add,
+            coalesce = { previous, next -> previous + next },
+        )
+
+        delivery.submit(setOf("status"))
+        delivery.submit(setOf("ownship"))
+        executor.runNext()
+
+        assertEquals(listOf(setOf("status", "ownship")), delivered)
+    }
+
     private class QueuedExecutor : Executor {
         private val work = ArrayDeque<Runnable>()
         val size: Int get() = work.size

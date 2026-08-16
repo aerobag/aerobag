@@ -10,7 +10,10 @@ import type {
   UiInvalidationListener,
   UiSession,
   UiSessionProjectionLanding,
+  UiSessionProjectionListener,
 } from "./appCoreAdapter";
+import { sessionUpdateGroupNames } from "./appCoreAdapter";
+import { UI_SESSION_UPDATE_GROUPS } from "../generated/sessionUpdateWire";
 import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
 import { debugLog, getBrowserInstanceId, isDebugLogEnabled, type DebugLogRecord } from "./debugLog";
 import type { SituationRingCandidate } from "./types";
@@ -373,12 +376,19 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
 function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, initialSnapshot: UiSessionSnapshot): UiSession {
   const call = <T>(method: string, args: unknown[] = []) => client.callSession<T>(sessionId, method, args);
   const landingAccumulator = new RenderSessionProjectionAccumulator(initialSnapshot);
-  let projectionListener: ((landing: UiSessionProjectionLanding) => void) | null = null;
+  let projectionListener: UiSessionProjectionListener | null = null;
   let landingError: Error | null = null;
   client.setSessionProjectionListener(sessionId, (landing) => {
     try {
-      landingAccumulator.land(landing);
-      projectionListener?.(landing);
+      const snapshot = landingAccumulator.land(landing);
+      projectionListener?.({
+        landing,
+        snapshot,
+        changedGroups: landing.kind === "full_snapshot"
+          ? UI_SESSION_UPDATE_GROUPS
+          : sessionUpdateGroupNames(landing.value),
+        fullSnapshot: landing.kind === "full_snapshot",
+      });
     } catch (error) {
       landingError = error instanceof Error ? error : new Error(String(error));
     }

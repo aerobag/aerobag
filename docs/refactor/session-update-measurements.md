@@ -159,3 +159,36 @@ These measurements do not justify another lock, thread, or Worker. The next
 candidate cost is aggregate UI publication: Android Compose and web React still
 receive one top-level snapshot for every relevant update even though decoding
 and transport are now narrow.
+
+## 2026-08-15 Render-Invalidation Result
+
+Both platforms now route the generated `ownship`, `situation`, and
+`flight_data` groups to a high-rate render store without replacing the
+application-shell model. Full-snapshot recovery still invalidates every owner;
+revision-only updates invalidate none.
+
+The Android `session_render_invalidation` emulator scenario pushed 32 synthetic
+ownship samples at 40 ms intervals after warmup:
+
+| Compose scope | Recomposition count |
+|---|---:|
+| Application root | 2 |
+| High-rate timing effects | 32 |
+| Active map content | 32 |
+| Inactive chart content | 0 |
+
+The browser platform journey pushed 20 synthetic positions while connected to
+the normal development live feeds:
+
+| React/store measurement | Count |
+|---|---:|
+| High-rate publications | 22 |
+| Slower shell publications | 3 |
+| `App` render attempts under StrictMode | 12 |
+| Active `MapPage` render attempts | 122 |
+| Inactive `ChartsPage` render attempts | 2 |
+
+React StrictMode deliberately invokes renders more than once in development.
+The actionable result is that root and inactive-page work tracks the much lower
+shell publication rate rather than the ownship stream. Map-local fan-out is now
+the next measured target; these results still do not justify another Worker.

@@ -54,6 +54,8 @@ try {
   const timeDisplay = await verifyTimeDisplayActions(page);
   progress("checking rotated raster coverage");
   const rotatedRaster = await verifyRotatedRasterCoverage(page, args.screenshot);
+  progress("checking narrow ownship render invalidation");
+  const renderInvalidation = await verifyOwnshipRenderInvalidation(page);
   progress("clicking map");
   await clickMap(page, mapRect);
   const selection = await waitForMapSelection(page);
@@ -70,7 +72,7 @@ try {
   }
 
   process.stdout.write(
-    `browser platform smoke passed: ${JSON.stringify({ timeDisplay, rotatedRaster, selection, refreshedSelection })}\n`,
+    `browser platform smoke passed: ${JSON.stringify({ timeDisplay, rotatedRaster, renderInvalidation, selection, refreshedSelection })}\n`,
   );
 } finally {
   await browser?.close();
@@ -143,6 +145,60 @@ async function waitForMap(page) {
     `timed out waiting for map surface; diagnostics=${JSON.stringify(page.diagnostics.slice(-10))}`,
     200,
   );
+}
+
+async function verifyOwnshipRenderInvalidation(page) {
+  const baseline = await waitFor(
+    async () => await page.evaluate("window.__aerobagE2e?.render?.() ?? null"),
+    10000,
+    "session render probe did not become available",
+    100,
+  );
+  const sampleCount = 20;
+  for (let index = 0; index < sampleCount; index += 1) {
+    const publicationsBeforeSample = await page.evaluate(
+      "window.__aerobagE2e.render().store.publications",
+    );
+    await page.evaluate(
+      `window.__aerobagSetSyntheticPosition(${47.4931 + index * 0.00005}, ${-122.2157 + index * 0.00005})`,
+    );
+    await waitFor(
+      async () => await page.evaluate(
+        `window.__aerobagE2e?.render?.().store.publications > ${publicationsBeforeSample}`,
+      ),
+      10000,
+      `ownship sample ${index + 1} did not publish a session projection`,
+      25,
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const after = await page.evaluate("window.__aerobagE2e.render()");
+  const result = {
+    samples: sampleCount,
+    appRenderDelta: after.app - baseline.app,
+    mapRenderDelta: after.map - baseline.map,
+    chartsRenderDelta: after.charts - baseline.charts,
+    shellPublicationDelta: after.store.shellPublications - baseline.store.shellPublications,
+    highRatePublicationDelta: after.store.highRatePublications - baseline.store.highRatePublications,
+  };
+  if (result.highRatePublicationDelta < sampleCount) {
+    throw new Error(`ownship samples did not reach the high-rate render store: ${JSON.stringify(result)}`);
+  }
+  if (result.shellPublicationDelta * 2 >= result.highRatePublicationDelta) {
+    throw new Error(`ownship samples produced too many shell publications: ${JSON.stringify(result)}`);
+  }
+  const rootRenderBudget = result.shellPublicationDelta * 4 + 4;
+  if (result.appRenderDelta > rootRenderBudget) {
+    throw new Error(`ownship updates invalidated the React app shell: ${JSON.stringify(result)}`);
+  }
+  if (result.mapRenderDelta < sampleCount / 2) {
+    throw new Error(`ownship updates did not render the active map: ${JSON.stringify(result)}`);
+  }
+  const hiddenPageRenderBudget = result.shellPublicationDelta * 2 + 2;
+  if (result.chartsRenderDelta > hiddenPageRenderBudget) {
+    throw new Error(`ownship updates repeatedly rendered the hidden chart page: ${JSON.stringify(result)}`);
+  }
+  return result;
 }
 
 async function verifyTimeDisplayActions(page) {

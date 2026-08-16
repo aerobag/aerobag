@@ -10,6 +10,7 @@ import java.util.concurrent.Executor
 internal class LatestValueExecutor<T>(
     private val executor: Executor,
     private val consume: (T) -> Unit,
+    private val coalesce: (previous: T, next: T) -> T = { _, next -> next },
 ) : AutoCloseable {
     private val lock = Any()
     private var pending: T? = null
@@ -19,7 +20,7 @@ internal class LatestValueExecutor<T>(
     fun submit(value: T) {
         val shouldSchedule = synchronized(lock) {
             if (closed) return
-            pending = value
+            pending = pending?.let { previous -> coalesce(previous, value) } ?: value
             if (scheduled) false else {
                 scheduled = true
                 true

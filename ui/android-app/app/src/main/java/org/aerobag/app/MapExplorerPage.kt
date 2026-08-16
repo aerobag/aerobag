@@ -96,6 +96,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -208,9 +209,7 @@ import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
-import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
-import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
@@ -230,7 +229,6 @@ import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.MapFollowTargetGate
 import org.aerobag.app.domain.MapLayerId
-import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOrientationMemory
 import org.aerobag.app.domain.MapOrientationMode
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -248,16 +246,13 @@ import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
 import org.aerobag.app.domain.NavElementUiView
-import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipMode
-import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.OwnshipSelection
 import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.OwnshipSourceRegistration
 import org.aerobag.app.domain.OwnshipSourceStatusUpdate
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
-import org.aerobag.app.domain.PlaybackUiState
 import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
@@ -278,7 +273,6 @@ import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
-import org.aerobag.app.domain.UiPlaybackPanelState
 import org.aerobag.app.domain.VisibleAdsbTraffic
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
@@ -624,17 +618,13 @@ internal fun MapExplorerPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     uiSession: NativeUiSession,
-    sessionSnapshot: UiSessionSnapshot,
+    shellSessionSnapshot: UiSessionSnapshot,
+    sessionRenderModel: SessionRenderModel,
+    sessionRenderDiagnostics: SessionRenderDiagnostics,
     uiInvalidationRevisions: UiInvalidationRevisions,
     liveFeedGeneration: Int,
     uiTheme: UiTheme,
-    ownship: OwnshipRenderState,
-    flightDataBanner: FlightDataBannerModel,
-    playbackUiState: PlaybackUiState,
-    playbackPanelState: UiPlaybackPanelState,
     playbackSourcePath: String,
-    mapFollowUiState: MapFollowUiState,
-    mapFollowTargetViewport: CoreMapViewport?,
     situationRingCandidates: List<SituationRingCandidate>,
     selectedMap: RasterMapUiState,
     mapFamilyOptions: List<MapFamilyOption>,
@@ -644,7 +634,6 @@ internal fun MapExplorerPage(
     debugState: UiDebugState,
     perfScenario: AndroidPerfScenario? = null,
     pageTilePaintTiming: PageTilePaintTiming?,
-    ownshipControls: OwnshipControlModel,
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
     onMapOrientationModeChange: (MapOrientationMode) -> Unit,
@@ -663,6 +652,18 @@ internal fun MapExplorerPage(
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
 ) {
+    SideEffect(sessionRenderDiagnostics::recordMap)
+    val highRate by sessionRenderModel.highRateProjectionState
+    val sessionSnapshot = remember(shellSessionSnapshot, highRate) {
+        shellSessionSnapshot.withHighRateProjection(highRate)
+    }
+    val ownship = highRate.ownship.render
+    val ownshipControls = highRate.ownship.controls
+    val flightDataBanner = highRate.flightDataBanner
+    val playbackUiState = highRate.playbackUiState
+    val playbackPanelState = highRate.playbackPanelState
+    val mapFollowUiState = highRate.mapFollowUiState
+    val mapFollowTargetViewport = highRate.mapFollowTargetViewport
     val context = LocalContext.current
     val activity = context as? MainActivity
     val density = LocalDensity.current

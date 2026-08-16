@@ -89,6 +89,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -199,10 +200,8 @@ import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
-import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.DerivedChartPageState
-import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
@@ -221,7 +220,6 @@ import org.aerobag.app.domain.ImageDisplaySize
 import org.aerobag.app.domain.ImageViewportState
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapLayerId
-import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOrientationMode
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
@@ -236,14 +234,12 @@ import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
 import org.aerobag.app.domain.NavElementUiView
-import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.PlateGeoref
 import org.aerobag.app.domain.describeForLog
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
-import org.aerobag.app.domain.PlaybackUiState
 import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadHeaderTone
 import org.aerobag.app.domain.ProcedureLoadMenu
@@ -367,11 +363,10 @@ internal fun ChartsPage(
     flightPlanRouteRevision: Long,
     debugState: UiDebugState,
     uiTheme: UiTheme,
-    ownship: OwnshipRenderState,
-    ownshipControls: OwnshipControlModel,
+    sessionRenderModel: SessionRenderModel,
+    sessionRenderDiagnostics: SessionRenderDiagnostics,
     dataStatusState: UiDataStatusState,
     procedureGeometryStatus: UiDataStatusState,
-    flightDataBanner: FlightDataBannerModel,
     uiSession: NativeUiSession,
     navElement: NavElementUiView?,
     folderOpen: Boolean,
@@ -388,6 +383,11 @@ internal fun ChartsPage(
     onSelectChart: (String) -> Unit,
     onSelectOwnshipSource: (String) -> Unit,
 ) {
+    SideEffect(sessionRenderDiagnostics::recordCharts)
+    val highRate by sessionRenderModel.highRateProjectionState
+    val ownship = highRate.ownship.render
+    val ownshipControls = highRate.ownship.controls
+    val flightDataBanner = highRate.flightDataBanner
     val context = LocalContext.current
     val activity = context as? MainActivity
     val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }

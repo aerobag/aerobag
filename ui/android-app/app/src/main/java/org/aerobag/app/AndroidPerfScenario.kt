@@ -13,6 +13,7 @@ import android.util.Log
 internal const val AndroidPerfScenarioExtra = "aerobag_perf_scenario"
 internal const val AndroidPerfScenarioMapSelectionFreeze = "map_selection_freeze"
 internal const val AndroidPerfScenarioTerrainNexradMemoryStress = "terrain_nexrad_memory_stress"
+internal const val AndroidPerfScenarioSessionRenderInvalidation = "session_render_invalidation"
 internal const val AndroidPerfScenarioTag = "AerobagPerfScenario"
 
 internal data class AndroidPerfScenario(
@@ -28,6 +29,7 @@ internal data class AndroidPerfScenario(
 internal fun androidPerfScenarioFromIntentValue(value: String?): AndroidPerfScenario? =
     when (value) {
         AndroidPerfScenarioMapSelectionFreeze -> AndroidPerfScenario(id = value)
+        AndroidPerfScenarioSessionRenderInvalidation -> AndroidPerfScenario(id = value)
         AndroidPerfScenarioTerrainNexradMemoryStress -> AndroidPerfScenario(
             id = value,
             mainThreadStallThresholdMs = 1_000L,

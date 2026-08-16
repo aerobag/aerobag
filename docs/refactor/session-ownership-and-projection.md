@@ -494,14 +494,38 @@ assignment to the raw creation snapshot, and the unchanged browser smoke covers
 the time-display symptom. Full measurements are in
 [`session-update-measurements.md`](session-update-measurements.md).
 
+## Completed Nineteenth Slice
+
+The nineteenth slice narrowed platform render invalidation around the generated
+projection groups. Both adapters now publish the accumulated snapshot together
+with the exact changed-group set and explicit full-snapshot recovery marker.
+`ownship`, `situation`, and `flight_data` feed a stable high-rate render store;
+the application shell receives only the remaining groups. Revision-only updates
+advance the stored model without invalidating either render owner.
+
+Android Compose reads the high-rate store only in the active map/chart content
+and its timing effects. Its main-thread latest-value delivery unions group sets
+when collapsing queued publications, so an intermediate shell change cannot be
+lost. A 32-sample emulator scenario produced 32 map recompositions, 32 timing-
+effect recompositions, 2 root recompositions, and 0 chart recompositions.
+
+Web React uses `useSyncExternalStore` for the high-rate model, map viewport, and
+map query-invalidation revisions. Inactive page layers retain local state but
+skip parent-driven reconciliation until activated. A headless Chrome journey
+with 20 synthetic positions observed 22 high-rate and 3 slower shell
+publications, 12 StrictMode root render attempts, 122 active-map render attempts,
+and 2 hidden-chart render attempts. The journey fails if high-rate publications
+begin driving root or hidden-page work directly.
+
+This slice added no lock, thread, Worker, or platform-specific domain policy.
+
 ## Next Slice
 
-Measure and then narrow UI render invalidation. Android's root activity still
-subscribes to all update groups and replaces one Compose snapshot state, while
-web React command handlers still publish one aggregate accumulated snapshot.
-Use the new group-aware boundaries to give page and overlay owners only the
-models they consume, beginning with high-rate situation updates, and compare
-actual recomposition/render work before considering another thread or Worker.
+Profile the active map subtree. The render boundary is now narrow, but the web
+journey still observed several `MapPage` render attempts per ownship sample.
+Measure which map-local stores and effects account for that fan-out before
+splitting map overlays or drawing surfaces further. Keep the work on the current
+thread unless those measurements identify a separate scheduling bottleneck.
 
 ## Relationship To Work Scheduling
 

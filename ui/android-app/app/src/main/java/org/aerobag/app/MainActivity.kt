@@ -97,6 +97,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -252,6 +253,8 @@ import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.OwnshipSelection
 import org.aerobag.app.domain.OwnshipSourceKind
+import org.aerobag.app.domain.OwnshipSourceRegistration
+import org.aerobag.app.domain.OwnshipSourceStatusUpdate
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.RasterMapUiState
 import org.aerobag.app.domain.PlaybackStatus
@@ -271,6 +274,9 @@ import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
+import org.aerobag.app.domain.SituationSample
+import org.aerobag.app.domain.SourceConnectionState
+import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.UiDataStatusPageFact
 import org.aerobag.app.domain.UiDataStatusPageRow
@@ -2444,6 +2450,8 @@ internal fun AerobagApp(
     armLayerNavKvFault: Boolean = false,
 ) {
     val context = LocalContext.current
+    val sessionRenderDiagnostics = remember(perfScenario?.id) { SessionRenderDiagnostics() }
+    SideEffect(sessionRenderDiagnostics::recordRoot)
     val appContext = context.applicationContext
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
     var runtimeReloadToken by remember { mutableStateOf(0) }
@@ -2562,20 +2570,20 @@ internal fun AerobagApp(
     }
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
-    var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    val sessionRenderModel = remember(uiSession) { SessionRenderModel(uiSession.snapshot) }
+    val sessionSnapshot by sessionRenderModel.shellSnapshotState
     val flightPlanOverlayController = remember(uiSession) { FlightPlanOverlayController() }
     var nextSessionCommandNoticeId by remember(uiSession) { mutableLongStateOf(1L) }
     var sessionCommandNotice by remember(uiSession) { mutableStateOf<SessionCommandNotice?>(null) }
     fun applySessionSnapshot(nextSnapshot: UiSessionSnapshot): Boolean {
-        if (nextSnapshot.sessionRevision < sessionSnapshot.sessionRevision) {
+        if (nextSnapshot.sessionRevision < sessionRenderModel.currentRevision) {
             Log.i(
                 "AerobagSession",
-                "ignored stale snapshot revision=${nextSnapshot.sessionRevision} current=${sessionSnapshot.sessionRevision}",
+                "ignored stale snapshot revision=${nextSnapshot.sessionRevision} current=${sessionRenderModel.currentRevision}",
             )
             return false
         }
-        sessionSnapshot = nextSnapshot
-        return true
+        return sessionRenderModel.publishUnannouncedSnapshot(nextSnapshot)
     }
     fun recoverSessionCommandFailure(error: Throwable, notifyUser: Boolean = true) {
         if (error is CancellationException) {
@@ -2675,8 +2683,20 @@ internal fun AerobagApp(
         mainExecutor.execute { publishUiInvalidations(invalidations) }
     }
     DisposableEffect(uiSession) {
-        val snapshotDelivery = LatestValueExecutor(mainExecutor, ::applySessionSnapshot)
-        val snapshotSubscription = uiSession.subscribeSnapshots(snapshotDelivery::submit)
+        val snapshotDelivery = LatestValueExecutor(
+            executor = mainExecutor,
+            consume = sessionRenderModel::publish,
+            coalesce = { previous, next ->
+                next.copy(
+                    changedGroups = previous.changedGroups + next.changedGroups,
+                    fullSnapshot = previous.fullSnapshot || next.fullSnapshot,
+                )
+            },
+        )
+        val snapshotSubscription = uiSession.subscribeSnapshotPublications { publication ->
+            sessionRenderModel.observe(publication.snapshot)
+            snapshotDelivery.submit(publication)
+        }
         val invalidationSubscription = uiSession.subscribeInvalidations(::enqueueUiInvalidations)
         onDispose {
             snapshotSubscription.close()
@@ -2717,14 +2737,6 @@ internal fun AerobagApp(
             .coerceAtLeast(0L)
         delay(delayMs)
         applySessionCommand("refreshSnapshot", notifyUser = false) {
-            uiSession.refreshSnapshot()
-        }
-    }
-    LaunchedEffect(uiSession, sessionSnapshot.appUiState.ownship.controls.nextRefreshEpochMs) {
-        val deadlineEpochMs = sessionSnapshot.appUiState.ownship.controls.nextRefreshEpochMs
-            ?: return@LaunchedEffect
-        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
-        applySessionCommand("refreshOwnshipSource", notifyUser = false) {
             uiSession.refreshSnapshot()
         }
     }
@@ -2928,29 +2940,87 @@ internal fun AerobagApp(
             }
         }
     }
-    LaunchedEffect(
-        uiSession,
-        sessionSnapshot.playbackUiState.status,
-        sessionSnapshot.playbackUiState.tickIntervalMs,
-    ) {
-        val tickIntervalMs = sessionSnapshot.playbackUiState.tickIntervalMs.coerceIn(16, 1000).toLong()
-        while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {
-            delay(tickIntervalMs)
-            applyBackgroundSessionCommand("tickPlayback", "AerobagPlayback") {
-                uiSession.tickPlayback(System.currentTimeMillis().toDouble())
-            }
+    LaunchedEffect(perfScenario?.id, uiSession) {
+        val scenario = perfScenario
+            ?.takeIf { it.id == AndroidPerfScenarioSessionRenderInvalidation }
+            ?: return@LaunchedEffect
+        val sourceId = "perf:session-render-ownship"
+        delay(2_000)
+        applyBackgroundSessionCommand("registerOwnshipSource", AndroidPerfScenarioTag) {
+            uiSession.registerOwnshipSource(
+                OwnshipSourceRegistration(
+                    sourceId = sourceId,
+                    sourceKind = OwnshipSourceKind.FlightPlanSimulator,
+                    displayName = "Render perf ownship",
+                    selectable = true,
+                    autoEligible = false,
+                ),
+            )
         }
-    }
-    val badAutopilotActive = appUiState.ownship.controls.sources.any { source ->
-        source.sourceKind == OwnshipSourceKind.BadAutopilot && source.active
-    }
-    LaunchedEffect(uiSession, badAutopilotActive) {
-        while (badAutopilotActive) {
-            applyBackgroundSessionCommand("tickBadAutopilot", "AerobagOwnship") {
-                uiSession.tickBadAutopilot(System.currentTimeMillis().toDouble())
-            }
-            delay(250)
+        applyBackgroundSessionCommand("updateOwnshipSourceStatus", AndroidPerfScenarioTag) {
+            uiSession.updateOwnshipSourceStatus(
+                OwnshipSourceStatusUpdate(
+                    sourceId = sourceId,
+                    connectionState = SourceConnectionState.Connected,
+                    enabled = true,
+                    statusLabel = "Render perf connected",
+                ),
+            )
         }
+        applyBackgroundSessionCommand("selectOwnshipSource", AndroidPerfScenarioTag) {
+            uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
+        }
+        delay(500)
+        val before = sessionRenderDiagnostics.snapshot()
+        val sampleCount = 32
+        repeat(sampleCount) { index ->
+            val sampleTime = System.currentTimeMillis()
+            applyBackgroundSessionCommand("pushSituationSample", AndroidPerfScenarioTag) {
+                uiSession.pushSituationSample(
+                    SituationSample(
+                        sourceId = sourceId,
+                        sourceKind = OwnshipSourceKind.FlightPlanSimulator,
+                        eventTimeEpochMs = sampleTime,
+                        receivedTimeEpochMs = sampleTime,
+                        position = LatLonPoint(
+                            lat = 47.4931 + index * 0.00005,
+                            lon = -122.2157 + index * 0.00005,
+                        ),
+                        horizontalAccuracyM = 3.0,
+                        verticalAccuracyM = 5.0,
+                        trackDegTrue = 45.0,
+                        headingDegTrue = 45.0,
+                        groundSpeedKt = 90.0,
+                        altitudeMslFt = 1_000.0,
+                    ),
+                )
+            }
+            delay(40)
+        }
+        delay(500)
+        val after = sessionRenderDiagnostics.snapshot()
+        val rootDelta = after.root - before.root
+        val effectsDelta = after.highRateEffects - before.highRateEffects
+        val mapDelta = after.map - before.map
+        val chartsDelta = after.charts - before.charts
+        Log.i(
+            AndroidPerfScenarioTag,
+            "render_counts scenario=${scenario.id} samples=$sampleCount " +
+                "rootDelta=$rootDelta effectsDelta=$effectsDelta mapDelta=$mapDelta chartsDelta=$chartsDelta",
+        )
+        if (rootDelta > 4) {
+            Log.w(
+                AndroidPerfScenarioTag,
+                "threshold_violation scenario=${scenario.id} kind=root_render_fanout rootDelta=$rootDelta threshold=4",
+            )
+        }
+        if (mapDelta < sampleCount / 2) {
+            Log.w(
+                AndroidPerfScenarioTag,
+                "threshold_violation scenario=${scenario.id} kind=missing_active_page_renders mapDelta=$mapDelta minimum=${sampleCount / 2}",
+            )
+        }
+        Log.i(AndroidPerfScenarioTag, "done scenario=${scenario.id}")
     }
     val navElement = sessionPlanUiState.guidance?.navElement
 
@@ -3138,6 +3208,25 @@ internal fun AerobagApp(
     }
 
     CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
+        HighRateSessionEffects(
+            sessionRenderModel = sessionRenderModel,
+            diagnostics = sessionRenderDiagnostics,
+            onRefreshOwnship = {
+                applySessionCommand("refreshOwnshipSource", notifyUser = false) {
+                    uiSession.refreshSnapshot()
+                }
+            },
+            onPlaybackTick = {
+                applyBackgroundSessionCommand("tickPlayback", "AerobagPlayback") {
+                    uiSession.tickPlayback(System.currentTimeMillis().toDouble())
+                }
+            },
+            onBadAutopilotTick = {
+                applyBackgroundSessionCommand("tickBadAutopilot", "AerobagOwnship") {
+                    uiSession.tickBadAutopilot(System.currentTimeMillis().toDouble())
+                }
+            },
+        )
         CloudEffectPump(
             uiSession = uiSession,
             onSnapshot = ::applySessionSnapshot,
@@ -3153,17 +3242,13 @@ internal fun AerobagApp(
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
                         uiSession = uiSession,
-                        sessionSnapshot = sessionSnapshot,
+                        shellSessionSnapshot = sessionSnapshot,
+                        sessionRenderModel = sessionRenderModel,
+                        sessionRenderDiagnostics = sessionRenderDiagnostics,
                         uiInvalidationRevisions = uiInvalidationRevisions,
                         liveFeedGeneration = liveFeedGeneration,
                         uiTheme = uiTheme,
-                        ownship = appUiState.ownship.render,
-                        flightDataBanner = appUiState.flightDataBanner,
-                        playbackUiState = sessionSnapshot.playbackUiState,
-                        playbackPanelState = sessionSnapshot.playbackPanelState,
                         playbackSourcePath = playbackSourcePath,
-                        mapFollowUiState = sessionSnapshot.mapFollowUiState,
-                        mapFollowTargetViewport = sessionSnapshot.mapFollowTargetViewport,
                         situationRingCandidates = situationRingCandidates,
                         selectedMap = selectedMap,
                         mapFamilyOptions = rasterMapState.familyOptions,
@@ -3173,7 +3258,6 @@ internal fun AerobagApp(
                         debugState = sessionSnapshot.debugState,
                         perfScenario = perfScenario,
                         pageTilePaintTiming = pageTilePaintTiming,
-                        ownshipControls = appUiState.ownship.controls,
                         onPageTilePaintTimingComplete = { completedId ->
                             if (pageTilePaintTiming?.id == completedId) {
                                 pageTilePaintTiming = null
@@ -3299,11 +3383,10 @@ internal fun AerobagApp(
                         flightPlanRouteRevision = sessionSnapshot.flightPlanRouteRevision,
                         debugState = sessionSnapshot.debugState,
                         uiTheme = uiTheme,
-                        ownship = appUiState.ownship.render,
-                        ownshipControls = appUiState.ownship.controls,
+                        sessionRenderModel = sessionRenderModel,
+                        sessionRenderDiagnostics = sessionRenderDiagnostics,
                         dataStatusState = sessionSnapshot.dataStatusState,
                         procedureGeometryStatus = derivedChartPageState.procedureGeometryStatus,
-                        flightDataBanner = appUiState.flightDataBanner,
                         uiSession = uiSession,
                         navElement = navElement,
                         folderOpen = chartFolderOpen,
@@ -3524,6 +3607,43 @@ internal fun AerobagApp(
                         .zIndex(OverlayPlaneModal),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun HighRateSessionEffects(
+    sessionRenderModel: SessionRenderModel,
+    diagnostics: SessionRenderDiagnostics,
+    onRefreshOwnship: () -> Unit,
+    onPlaybackTick: () -> Unit,
+    onBadAutopilotTick: () -> Unit,
+) {
+    SideEffect(diagnostics::recordHighRateEffects)
+    val projection by sessionRenderModel.highRateProjectionState
+    val ownshipRefreshEpochMs = projection.ownship.controls.nextRefreshEpochMs
+    LaunchedEffect(ownshipRefreshEpochMs) {
+        val deadlineEpochMs = ownshipRefreshEpochMs ?: return@LaunchedEffect
+        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
+        onRefreshOwnship()
+    }
+
+    val playback = projection.playbackUiState
+    LaunchedEffect(playback.status, playback.tickIntervalMs) {
+        val tickIntervalMs = playback.tickIntervalMs.coerceIn(16, 1000).toLong()
+        while (playback.status == PlaybackStatus.Playing) {
+            delay(tickIntervalMs)
+            onPlaybackTick()
+        }
+    }
+
+    val badAutopilotActive = projection.ownship.controls.sources.any { source ->
+        source.sourceKind == OwnshipSourceKind.BadAutopilot && source.active
+    }
+    LaunchedEffect(badAutopilotActive) {
+        while (badAutopilotActive) {
+            onBadAutopilotTick()
+            delay(250)
         }
     }
 }

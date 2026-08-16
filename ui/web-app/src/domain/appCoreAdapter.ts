@@ -32,7 +32,10 @@ import type {
   WeatherDetailUiView,
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
-import { UI_SESSION_UPDATE_GROUPS } from "../generated/sessionUpdateWire";
+import {
+  UI_SESSION_UPDATE_GROUPS,
+  type UiSessionUpdateGroup,
+} from "../generated/sessionUpdateWire";
 import type {
   CloudAuthorizationRequest,
   CloudAuthorizationResponse,
@@ -137,7 +140,7 @@ import { liveFeedSourceUrl } from "./liveFeedUrls";
 import { SessionUpdateAccumulator } from "./sessionUpdateAccumulator";
 export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
 
-function sessionUpdateGroupNames(value: unknown): string[] {
+export function sessionUpdateGroupNames(value: unknown): UiSessionUpdateGroup[] {
   if (!value || typeof value !== "object") {
     return [];
   }
@@ -755,7 +758,14 @@ export type UiSessionProjectionLanding =
   | { kind: "update"; value: unknown }
   | { kind: "full_snapshot"; value: UiSessionSnapshot };
 
-export type UiSessionProjectionListener = (landing: UiSessionProjectionLanding) => void;
+export type UiSessionProjectionPublication = {
+  landing: UiSessionProjectionLanding;
+  snapshot: UiSessionSnapshot;
+  changedGroups: readonly UiSessionUpdateGroup[];
+  fullSnapshot: boolean;
+};
+
+export type UiSessionProjectionListener = (publication: UiSessionProjectionPublication) => void;
 
 export interface UiSession {
   setInvalidationListener(listener: UiInvalidationListener | null): void;
@@ -1258,7 +1268,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const installFullSnapshot = (value: unknown) => {
       snapshotAccumulator.replaceFullSnapshot(value);
       snapshot = decodeAccumulatedSnapshot();
-      projectionListener?.({ kind: "full_snapshot", value: snapshot });
+      const landing = { kind: "full_snapshot", value: snapshot } as const;
+      projectionListener?.({
+        landing,
+        snapshot,
+        changedGroups: UI_SESSION_UPDATE_GROUPS,
+        fullSnapshot: true,
+      });
       return snapshot;
     };
     const applySessionUpdate = async (value: unknown) => {
@@ -1278,9 +1294,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       snapshot = decodeAccumulatedSnapshot();
       if (disposition === "resync_required") {
-        projectionListener?.({ kind: "full_snapshot", value: snapshot });
+        const landing = { kind: "full_snapshot", value: snapshot } as const;
+        projectionListener?.({
+          landing,
+          snapshot,
+          changedGroups: UI_SESSION_UPDATE_GROUPS,
+          fullSnapshot: true,
+        });
       } else if (disposition === "applied") {
-        projectionListener?.({ kind: "update", value });
+        const landing = { kind: "update", value } as const;
+        projectionListener?.({
+          landing,
+          snapshot,
+          changedGroups: sessionUpdateGroupNames(value),
+          fullSnapshot: false,
+        });
       }
       if (measureLanding) {
         debugLog("session.update.landed", {

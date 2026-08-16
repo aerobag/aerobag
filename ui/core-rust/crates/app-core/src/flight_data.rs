@@ -90,18 +90,22 @@ const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 14] = [
         FLIGHT_DATA_AGL_CELL_ID,
         "AGL ft",
     ),
-    banner_cell(FlightDataBannerField::GroundSpeed, "ground_speed", "GS kt"),
     banner_cell(
         FlightDataBannerField::VerticalSpeed,
         "vertical_speed",
         "VS fpm",
     ),
     banner_cell(FlightDataBannerField::Track, "track", "TRK °M"),
-    banner_cell(FlightDataBannerField::DesiredTrack, "desired_track", "DTK"),
+    banner_cell(
+        FlightDataBannerField::DesiredTrack,
+        "desired_track",
+        "DTK °M",
+    ),
+    banner_cell(FlightDataBannerField::GroundSpeed, "ground_speed", "GS kt"),
     banner_cell(
         FlightDataBannerField::WaypointDistance,
         "waypoint_distance",
-        "WPT nm",
+        "NEXT nm",
     ),
     banner_cell(
         FlightDataBannerField::WaypointEte,
@@ -111,12 +115,12 @@ const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 14] = [
     banner_cell(
         FlightDataBannerField::FinalDistance,
         "final_distance",
-        "FINAL nm",
+        "DEST nm",
     ),
     banner_cell(FlightDataBannerField::FinalEte, "final_ete", "ETE DEST"),
-    banner_cell(FlightDataBannerField::FinalFuel, "final_fuel", "FUEL DEST"),
     banner_cell(FlightDataBannerField::FinalEta, "final_eta", "ETA"),
     banner_cell(FlightDataBannerField::Clock, "clock", "TIME"),
+    banner_cell(FlightDataBannerField::FinalFuel, "final_fuel", "FUEL DEST"),
     banner_cell(FlightDataBannerField::NexradAge, "nexrad_age", "NEXRAD"),
 ];
 
@@ -760,7 +764,12 @@ mod tests {
     #[test]
     fn grid_estimate_labels_name_next_and_destination_scope() {
         let banner = FlightDataComputer::default().banner(FlightDataBannerInput::default());
+        assert_eq!(
+            cell_label(&banner.cells, "waypoint_distance"),
+            Some("NEXT nm")
+        );
         assert_eq!(cell_label(&banner.cells, "waypoint_ete"), Some("ETE NEXT"));
+        assert_eq!(cell_label(&banner.cells, "final_distance"), Some("DEST nm"));
         assert_eq!(cell_label(&banner.cells, "final_ete"), Some("ETE DEST"));
         assert_eq!(cell_label(&banner.cells, "final_fuel"), Some("FUEL DEST"));
     }
@@ -771,7 +780,7 @@ mod tests {
             .into_iter()
             .find(|column| column.id == "desired_track")
             .expect("desired track column");
-        assert_eq!(desired_track_column.label, "DTK");
+        assert_eq!(desired_track_column.label, "DTK °M");
 
         let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
             desired_track_magnetic_deg: Some(271.4),
@@ -783,7 +792,7 @@ mod tests {
             .find(|cell| cell.id == "desired_track")
             .expect("desired track cell");
 
-        assert_eq!(desired_track_cell.label, "DTK");
+        assert_eq!(desired_track_cell.label, "DTK °M");
         assert_eq!(desired_track_cell.value.as_deref(), Some("271"));
     }
 
@@ -987,6 +996,29 @@ mod tests {
         });
 
         assert_eq!(banner.cells.len(), 14);
+        assert_eq!(
+            banner
+                .cells
+                .iter()
+                .map(|cell| cell.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "altitude",
+                "agl",
+                "vertical_speed",
+                "track",
+                "desired_track",
+                "ground_speed",
+                "waypoint_distance",
+                "waypoint_ete",
+                "final_distance",
+                "final_ete",
+                "final_eta",
+                "clock",
+                "final_fuel",
+                "nexrad_age",
+            ]
+        );
         assert_eq!(
             banner.cells.last().map(|cell| cell.id.as_str()),
             Some("nexrad_age")

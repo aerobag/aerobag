@@ -200,31 +200,45 @@ pub fn derive_chart_page_state_from_airports(
     selected_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> DerivedChartPageState {
-    derive_chart_page_state_from_collections(
+    derive_chart_page_state_from_collections(ChartPageCollectionsInput {
         plan,
         airports,
-        Vec::new(),
+        reference_families: Vec::new(),
         stored_recent_airport_ids,
         plate_target_airport_id,
         selected_airport_id,
-        None,
+        selected_reference_family_id: None,
         candidate_chart_id,
-        &[],
-    )
+        suggested_chart_ids: &[],
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
+pub struct ChartPageCollectionsInput<'a> {
+    pub plan: &'a FlightPlan,
+    pub airports: Vec<DerivedChartAirport>,
+    pub reference_families: Vec<DerivedChartReferenceFamily>,
+    pub stored_recent_airport_ids: &'a [String],
+    pub plate_target_airport_id: Option<&'a str>,
+    pub selected_airport_id: Option<&'a str>,
+    pub selected_reference_family_id: Option<&'a str>,
+    pub candidate_chart_id: Option<&'a str>,
+    pub suggested_chart_ids: &'a [String],
+}
+
 pub fn derive_chart_page_state_from_collections(
-    plan: &FlightPlan,
-    airports: Vec<DerivedChartAirport>,
-    reference_families: Vec<DerivedChartReferenceFamily>,
-    stored_recent_airport_ids: &[String],
-    plate_target_airport_id: Option<&str>,
-    selected_airport_id: Option<&str>,
-    selected_reference_family_id: Option<&str>,
-    candidate_chart_id: Option<&str>,
-    suggested_chart_ids: &[String],
+    input: ChartPageCollectionsInput<'_>,
 ) -> DerivedChartPageState {
+    let ChartPageCollectionsInput {
+        plan,
+        airports,
+        reference_families,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        selected_airport_id,
+        selected_reference_family_id,
+        candidate_chart_id,
+        suggested_chart_ids,
+    } = input;
     let recent_airport_ids = merge_recent_airport_ids(&airports, stored_recent_airport_ids);
     let selected_airport_id = resolve_airport_id(
         &airports,
@@ -967,17 +981,17 @@ mod tests {
                 },
             ],
         };
-        let state = derive_chart_page_state_from_collections(
-            &FlightPlan::default(),
-            vec![airport_with_id("KSEA")],
-            vec![reference],
-            &["KSEA".to_string()],
-            None,
-            Some("KSEA"),
-            Some("tac"),
-            None,
-            &["la-inset".to_string(), "other-inset".to_string()],
-        );
+        let state = derive_chart_page_state_from_collections(ChartPageCollectionsInput {
+            plan: &FlightPlan::default(),
+            airports: vec![airport_with_id("KSEA")],
+            reference_families: vec![reference],
+            stored_recent_airport_ids: &["KSEA".to_string()],
+            plate_target_airport_id: None,
+            selected_airport_id: Some("KSEA"),
+            selected_reference_family_id: Some("tac"),
+            candidate_chart_id: None,
+            suggested_chart_ids: &["la-inset".to_string(), "other-inset".to_string()],
+        });
 
         assert_eq!(state.selected_reference_family_id.as_deref(), Some("tac"));
         assert_eq!(state.selected_chart_id, "legend");

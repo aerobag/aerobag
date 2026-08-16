@@ -829,34 +829,37 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
             changed_count_if_no_delta,
         } = built;
         match payload {
-            LiveFeedStatePayload::JsonFile { path, value } => self.publish_json_state(
-                product,
-                version,
-                path,
-                value,
-                state_sha256,
-                state_payload_kind,
-                status_timestamps,
-                delta_policy,
-                precomputed_delta,
-                changed_count_if_no_delta,
-            ),
+            LiveFeedStatePayload::JsonFile { path: _, value } => {
+                self.publish_json_state(PublishStateRequest {
+                    product,
+                    version,
+                    state_value: value,
+                    state_sha256,
+                    state_payload_kind,
+                    status_timestamps,
+                    delta_policy,
+                    precomputed_delta,
+                    changed_count_if_no_delta,
+                })
+            }
             LiveFeedStatePayload::Directory {
                 root,
                 manifest_path,
                 manifest_value,
             } => self.publish_directory_state(
-                product,
-                version,
                 root,
                 manifest_path,
-                manifest_value,
-                state_sha256,
-                state_payload_kind,
-                status_timestamps,
-                delta_policy,
-                precomputed_delta,
-                changed_count_if_no_delta,
+                PublishStateRequest {
+                    product,
+                    version,
+                    state_value: manifest_value,
+                    state_sha256,
+                    state_payload_kind,
+                    status_timestamps,
+                    delta_policy,
+                    precomputed_delta,
+                    changed_count_if_no_delta,
+                },
             ),
             LiveFeedStatePayload::NotamIncremental { state_root } => {
                 self.publish_notam_incremental(product, version, state_root, status_timestamps)
@@ -896,58 +899,47 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
     }
 }
 
+struct PublishStateRequest {
+    product: String,
+    version: String,
+    state_value: Value,
+    state_sha256: Option<String>,
+    state_payload_kind: Option<String>,
+    status_timestamps: LiveFeedStatusTimestamps,
+    delta_policy: DeltaPolicy,
+    precomputed_delta: Option<LiveFeedRecordDelta>,
+    changed_count_if_no_delta: usize,
+}
+
 impl<C: Clock> FileLiveFeedPublisher<C> {
     fn publish_json_state(
         &self,
-        product: String,
-        version: String,
-        source_path: PathBuf,
-        state_value: Value,
-        state_sha256: Option<String>,
-        state_payload_kind: Option<String>,
-        status_timestamps: LiveFeedStatusTimestamps,
-        delta_policy: DeltaPolicy,
-        precomputed_delta: Option<LiveFeedRecordDelta>,
-        changed_count_if_no_delta: usize,
+        mut request: PublishStateRequest,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
-        let state_dir = self.root.join("states").join(&product);
-        let state_path = state_dir.join(format!("{version}.json.xz"));
+        let state_dir = self.root.join("states").join(&request.product);
+        let state_path = state_dir.join(format!("{}.json.xz", request.version));
         fs::create_dir_all(&state_dir)
             .with_context(|| format!("failed to create {}", state_dir.display()))?;
-        let _ = source_path;
         if !state_path.is_file() {
-            write_xz_json_pretty_file(&state_path, &state_value)?;
+            write_xz_json_pretty_file(&state_path, &request.state_value)?;
         }
-        self.publish_state_common(
-            product,
-            version,
-            state_path,
-            state_value,
-            state_sha256,
-            state_payload_kind.or_else(|| Some("json_xz".to_string())),
-            status_timestamps,
-            delta_policy,
-            precomputed_delta,
-            changed_count_if_no_delta,
-            None,
-        )
+        request.state_payload_kind = request
+            .state_payload_kind
+            .or_else(|| Some("json_xz".to_string()));
+        self.publish_state_common(state_path, None, request)
     }
 
     fn publish_directory_state(
         &self,
-        product: String,
-        version: String,
         source_root: PathBuf,
         manifest_path: PathBuf,
-        manifest_value: Value,
-        state_sha256: Option<String>,
-        state_payload_kind: Option<String>,
-        status_timestamps: LiveFeedStatusTimestamps,
-        delta_policy: DeltaPolicy,
-        precomputed_delta: Option<LiveFeedRecordDelta>,
-        changed_count_if_no_delta: usize,
+        mut request: PublishStateRequest,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
-        let state_dir = self.root.join("states").join(&product).join(&version);
+        let state_dir = self
+            .root
+            .join("states")
+            .join(&request.product)
+            .join(&request.version);
         let state_path = state_dir.join("manifest.json");
         if !state_path.is_file() {
             if state_dir.exists() {
@@ -959,38 +951,32 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         if !state_path.is_file() {
             copy_file_if_missing(&manifest_path, &state_path)?;
         }
-        if state_payload_kind.as_deref() == Some("nav_kv") {
-            xz_nav_kv_state_dir_pages(&state_dir, &manifest_value)?;
+        if request.state_payload_kind.as_deref() == Some("nav_kv") {
+            xz_nav_kv_state_dir_pages(&state_dir, &request.state_value)?;
         }
-        self.publish_state_common(
-            product,
-            version,
-            state_path,
-            manifest_value,
-            state_sha256,
-            state_payload_kind.or_else(|| Some("json".to_string())),
-            status_timestamps,
-            delta_policy,
-            precomputed_delta,
-            changed_count_if_no_delta,
-            Some(state_dir),
-        )
+        request.state_payload_kind = request
+            .state_payload_kind
+            .or_else(|| Some("json".to_string()));
+        self.publish_state_common(state_path, Some(state_dir), request)
     }
 
     fn publish_state_common(
         &self,
-        product: String,
-        version: String,
         state_path: PathBuf,
-        state_value: Value,
-        state_sha256: Option<String>,
-        state_payload_kind: Option<String>,
-        status_timestamps: LiveFeedStatusTimestamps,
-        delta_policy: DeltaPolicy,
-        precomputed_delta: Option<LiveFeedRecordDelta>,
-        changed_count_if_no_delta: usize,
         state_root: Option<PathBuf>,
+        request: PublishStateRequest,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
+        let PublishStateRequest {
+            product,
+            version,
+            state_value,
+            state_sha256,
+            state_payload_kind,
+            status_timestamps,
+            delta_policy,
+            precomputed_delta,
+            changed_count_if_no_delta,
+        } = request;
         let state_bytes = fs::read(&state_path)
             .with_context(|| format!("failed to read {}", state_path.display()))?;
         let state_blob_sha256 = sha256_hex(&state_bytes);
@@ -2005,10 +1991,9 @@ pub(crate) fn read_nav_kv_pairs_from_dir(state_dir: &Path) -> anyhow::Result<Vec
         .ok_or_else(|| anyhow::anyhow!("failed to read HAD pages under {}", state_dir.display()))
 }
 
-fn read_nav_kv_members_from_dir(
-    product: &str,
-    state_dir: &Path,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)> {
+type NavKvMembers = (Vec<u8>, Vec<u8>, Vec<Vec<u8>>);
+
+fn read_nav_kv_members_from_dir(product: &str, state_dir: &Path) -> anyhow::Result<NavKvMembers> {
     let manifest_path = state_dir.join("manifest.json");
     let manifest = fs::read(&manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;

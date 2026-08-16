@@ -2306,7 +2306,7 @@ pub fn dispatch_offline_packages_controller_json(
         .state
         .packages_state
         .as_ref()
-        .map(|state| serde_json::to_string(state))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|err| err.to_string())?;
     let library_cache_json = if library_cache_changed {
@@ -2314,7 +2314,7 @@ pub fn dispatch_offline_packages_controller_json(
             .state
             .library_cache
             .as_ref()
-            .map(|cache| serde_json::to_string(cache))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|err| err.to_string())?
     } else {
@@ -3465,7 +3465,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncGuidanceGe
     _class: JClass,
     handle: i64,
 ) -> jstring {
-    let result = (|| sync_guidance_geometry_in_session_json(handle as u64))();
+    let result = sync_guidance_geometry_in_session_json(handle as u64);
     return_string(&mut env, result)
 }
 
@@ -3475,7 +3475,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_projectFlightP
     _class: JClass,
     handle: i64,
 ) -> jstring {
-    let result = (|| project_flight_plan_route_in_session_json(handle as u64))();
+    let result = project_flight_plan_route_in_session_json(handle as u64);
     return_string(&mut env, result)
 }
 

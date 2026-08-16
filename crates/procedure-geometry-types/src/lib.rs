@@ -33,16 +33,12 @@ pub struct ProcedureLatLon {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ProcedureKind {
     Sid,
     Star,
+    #[default]
     Approach,
-}
-
-impl Default for ProcedureKind {
-    fn default() -> Self {
-        Self::Approach
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,15 +140,11 @@ pub enum ProcedureGeometryElement {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ProcedureGeometryPathStyle {
+    #[default]
     Solid,
     Dashed,
-}
-
-impl Default for ProcedureGeometryPathStyle {
-    fn default() -> Self {
-        Self::Solid
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,15 +158,11 @@ pub struct ProcedureGeometryPath {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ProcedureSequencingRule {
+    #[default]
     Continue,
     Suspend,
-}
-
-impl Default for ProcedureSequencingRule {
-    fn default() -> Self {
-        Self::Continue
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

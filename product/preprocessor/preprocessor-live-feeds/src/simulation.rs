@@ -21,7 +21,7 @@ use crate::{
     },
     products::{
         directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count,
-        nav_kv_live_feed_state,
+        nav_kv_live_feed_state, NavKvLiveFeedStateInput,
     },
 };
 
@@ -411,16 +411,16 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
                     .and_then(Value::as_str)
                     .map(ToString::to_string)
                     .unwrap_or_else(|| manifest.state.state_sha256.clone());
-                return Ok(nav_kv_live_feed_state(
-                    &event.product,
-                    event.source_id.clone(),
-                    state_root,
-                    state_path,
-                    state_value,
+                return Ok(nav_kv_live_feed_state(NavKvLiveFeedStateInput {
+                    product: event.product.clone(),
+                    version: event.source_id.clone(),
+                    state_source_dir: state_root,
+                    manifest_source_path: state_path,
+                    manifest_value: state_value,
                     state_sha256,
                     pairs,
-                    count,
-                ));
+                    changed_count_if_no_delta: count,
+                }));
             }
             return Ok(directory_live_feed_state(
                 &event.product,

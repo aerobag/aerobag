@@ -620,16 +620,16 @@ fn prefetch_one(
             {
                 source = "cache";
             } else {
-                source = fetch_network_with_cache(
-                    &layout,
-                    &request.cache_key,
-                    &request.url,
-                    request.force_http1,
-                    request.allow_html,
+                source = fetch_network_with_cache(&NetworkFetchRequest {
+                    layout: &layout,
+                    cache_key: &request.cache_key,
+                    network_url: &request.url,
+                    force_http1: request.force_http1,
+                    allow_html: request.allow_html,
                     file_name,
                     dest_dir,
-                    &archive_path,
-                )?;
+                    archive_path: &archive_path,
+                })?;
             }
         } else {
             fetch_network(&request.url, request.force_http1, file_name, dest_dir)?;
@@ -682,28 +682,21 @@ fn prefetch_one(
     Ok(())
 }
 
-fn fetch_network_with_cache(
-    layout: &CacheLayout,
-    cache_key: &str,
-    network_url: &str,
+struct NetworkFetchRequest<'a> {
+    layout: &'a CacheLayout,
+    cache_key: &'a str,
+    network_url: &'a str,
     force_http1: bool,
     allow_html: bool,
-    file_name: &str,
-    dest_dir: &Path,
-    archive_path: &Path,
-) -> anyhow::Result<&'static str> {
+    file_name: &'a str,
+    dest_dir: &'a Path,
+    archive_path: &'a Path,
+}
+
+fn fetch_network_with_cache(request: &NetworkFetchRequest<'_>) -> anyhow::Result<&'static str> {
     let mut last_error = None;
     for attempt in 1..=NETWORK_FETCH_OUTER_ATTEMPTS {
-        match fetch_network_with_cache_once(
-            layout,
-            cache_key,
-            network_url,
-            force_http1,
-            allow_html,
-            file_name,
-            dest_dir,
-            archive_path,
-        ) {
+        match fetch_network_with_cache_once(request) {
             Ok(source) => return Ok(source),
             Err(error) => {
                 last_error = Some(error);
@@ -717,15 +710,18 @@ fn fetch_network_with_cache(
 }
 
 fn fetch_network_with_cache_once(
-    layout: &CacheLayout,
-    cache_key: &str,
-    network_url: &str,
-    force_http1: bool,
-    allow_html: bool,
-    file_name: &str,
-    dest_dir: &Path,
-    archive_path: &Path,
+    request: &NetworkFetchRequest<'_>,
 ) -> anyhow::Result<&'static str> {
+    let NetworkFetchRequest {
+        layout,
+        cache_key,
+        network_url,
+        force_http1,
+        allow_html,
+        file_name,
+        dest_dir,
+        archive_path,
+    } = *request;
     let metadata = read_cache_metadata(layout, cache_key)?;
     let temp_path = temporary_download_path(archive_path);
     let headers_path = temp_path.with_extension("headers");

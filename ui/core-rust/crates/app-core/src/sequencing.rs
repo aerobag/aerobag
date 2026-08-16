@@ -38,11 +38,13 @@ impl SequencingFinishCriterion {
                 untraveled_mid_bearing_deg,
                 clockwise,
             } => arc_sector_crossed_by(
-                center,
-                finish_point,
-                finish_bearing_deg,
-                untraveled_mid_bearing_deg,
-                clockwise,
+                ArcSectorBoundary {
+                    center,
+                    finish_point,
+                    finish_bearing_deg,
+                    untraveled_mid_bearing_deg,
+                    clockwise,
+                },
                 previous,
                 current,
             ),
@@ -151,16 +153,22 @@ fn plane_crossed_by(
     magnitude(crossing) <= FINISH_BOUNDARY_LOCALITY_NM
 }
 
-#[allow(clippy::too_many_arguments)]
-fn arc_sector_crossed_by(
+struct ArcSectorBoundary {
     center: LatLon,
     finish_point: LatLon,
     finish_bearing_deg: f64,
     untraveled_mid_bearing_deg: f64,
     clockwise: bool,
-    previous: LatLon,
-    current: LatLon,
-) -> bool {
+}
+
+fn arc_sector_crossed_by(boundary: ArcSectorBoundary, previous: LatLon, current: LatLon) -> bool {
+    let ArcSectorBoundary {
+        center,
+        finish_point,
+        finish_bearing_deg,
+        untraveled_mid_bearing_deg,
+        clockwise,
+    } = boundary;
     let previous_offset = local_offset_nm(center, previous);
     let current_offset = local_offset_nm(center, current);
     let motion = subtract(current_offset, previous_offset);

@@ -441,7 +441,7 @@ pub(super) fn build_water_mask_product(
     )?;
     let output_dir = prepared.dir.join("output");
     let manifest_path = output_dir.join("manifest.json");
-    if let Some(record) = try_load_node_record(&prepared, &[manifest_path.clone()])? {
+    if let Some(record) = try_load_node_record(&prepared, std::slice::from_ref(&manifest_path))? {
         let (source_version, source_fetched_at_utc) = water_mask_manifest_versions(&manifest_path)?;
         let zip_path = water_mask_record_zip_path(&prepared.dir, &record)?;
         return Ok((
@@ -452,7 +452,8 @@ pub(super) fn build_water_mask_product(
             record,
         ));
     }
-    let _build_lock = match claim_or_wait_for_node(&prepared, &[manifest_path.clone()])? {
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&manifest_path))?
+    {
         NodeCacheState::CacheHit(record) => {
             let (source_version, source_fetched_at_utc) =
                 water_mask_manifest_versions(&manifest_path)?;
@@ -601,16 +602,26 @@ pub(super) fn water_mask_product_inputs(
     ]))
 }
 
-pub(super) fn build_world_basemap_product(
-    config: &ProductBuildConfig,
-) -> anyhow::Result<(
+type BuiltStaticProduct = (
     PathBuf,
     String,
     Option<String>,
     Vec<TileLevelRecord>,
     NodeRecord,
     Vec<NodeRecord>,
-)> {
+);
+
+type BuiltStaticWideProduct = (
+    PathBuf,
+    String,
+    Option<String>,
+    Vec<TileLevelRecord>,
+    NodeRecord,
+);
+
+pub(super) fn build_world_basemap_product(
+    config: &ProductBuildConfig,
+) -> anyhow::Result<BuiltStaticProduct> {
     let sources = build_world_basemap_source_node(config)?;
     let source_fingerprint = sources.source_fingerprint.clone();
     let source_fetched_at_utc = sources.source_fetched_at_utc.clone();
@@ -998,14 +1009,7 @@ pub(super) fn build_shaded_relief_product(
     source_fetched_at_utc: Option<String>,
     water_mask_tiles_dir: &Path,
     water_mask_version: &str,
-) -> anyhow::Result<(
-    PathBuf,
-    String,
-    Option<String>,
-    Vec<TileLevelRecord>,
-    NodeRecord,
-    Vec<NodeRecord>,
-)> {
+) -> anyhow::Result<BuiltStaticProduct> {
     let region_id = region.code().to_ascii_lowercase();
     let overlays = prepare_shaded_relief_overlay_sources(config)?;
 
@@ -1136,17 +1140,17 @@ pub(super) fn build_shaded_relief_product(
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let vrt_path = output_dir.join(format!("shaded_relief_{region_id}.vrt"));
     build_terrain_vrt(&vrt_path, &dem_paths)?;
-    build_shaded_relief_region_tiles(
+    build_shaded_relief_region_tiles(ShadedReliefRegionTilesInput {
         region,
-        &vrt_path,
-        &output_dir,
-        &version_label,
-        &dem_selection,
+        vrt_path: &vrt_path,
+        output_dir: &output_dir,
+        version_label: &version_label,
+        dem_selection: &dem_selection,
         water_mask_tiles_dir,
-        &overlays.state_borders_shp,
-        &overlays.primary_roads_shp,
-        false,
-    )?;
+        state_borders_shp: &overlays.state_borders_shp,
+        primary_roads_shp: &overlays.primary_roads_shp,
+        draw_low_zoom_overlays: false,
+    })?;
     move_static_tile_tree_under_chart_index(&output_dir, 0)?;
     stage_static_tile_zoom_subset(
         &output_dir,
@@ -1348,13 +1352,7 @@ pub(super) fn build_shaded_relief_wide_product(
     config: &ProductBuildConfig,
     regional_products: &[(String, PathBuf, String, String, Option<String>)],
     overlays: &ShadedReliefOverlaySources,
-) -> anyhow::Result<(
-    PathBuf,
-    String,
-    Option<String>,
-    Vec<TileLevelRecord>,
-    NodeRecord,
-)> {
+) -> anyhow::Result<BuiltStaticWideProduct> {
     let source_fingerprint =
         shaded_relief_wide_source_fingerprint(regional_products, &overlays.source_fingerprint);
     let version_label = content_product_version_label(&source_fingerprint);
@@ -1900,7 +1898,7 @@ pub(super) fn build_terrain_discovery_index(
     )?;
     let output_dir = prepared.dir.join("output");
     let index_path = output_dir.join("terrain_dem_index.json");
-    let _build_lock = match claim_or_wait_for_node(&prepared, &[index_path.clone()])? {
+    let _build_lock = match claim_or_wait_for_node(&prepared, std::slice::from_ref(&index_path))? {
         NodeCacheState::CacheHit(record) => {
             return Ok((index_path, source_fetched_at_utc, record));
         }
@@ -2896,7 +2894,7 @@ pub(super) fn prefetch_water_mask_source_page_split(
         label,
         fetch_cache,
     ) {
-        Ok(()) => return Ok(()),
+        Ok(()) => Ok(()),
         Err(error) => {
             if page.object_ids.len() > 1 {
                 if *split_page_fetches >= WATER_MASK_MAX_SPLIT_SOURCE_PAGES {
@@ -3013,17 +3011,30 @@ pub(super) fn build_water_mask_region_tiles(
     Ok(())
 }
 
-pub(super) fn build_shaded_relief_region_tiles(
+struct ShadedReliefRegionTilesInput<'a> {
     region: Region,
-    vrt_path: &Path,
-    output_dir: &Path,
-    version_label: &str,
-    dem_selection: &TerrainDemSelection,
-    water_mask_tiles_dir: &Path,
-    state_borders_shp: &Path,
-    primary_roads_shp: &Path,
+    vrt_path: &'a Path,
+    output_dir: &'a Path,
+    version_label: &'a str,
+    dem_selection: &'a TerrainDemSelection,
+    water_mask_tiles_dir: &'a Path,
+    state_borders_shp: &'a Path,
+    primary_roads_shp: &'a Path,
     draw_low_zoom_overlays: bool,
-) -> anyhow::Result<()> {
+}
+
+fn build_shaded_relief_region_tiles(input: ShadedReliefRegionTilesInput<'_>) -> anyhow::Result<()> {
+    let ShadedReliefRegionTilesInput {
+        region,
+        vrt_path,
+        output_dir,
+        version_label,
+        dem_selection,
+        water_mask_tiles_dir,
+        state_borders_shp,
+        primary_roads_shp,
+        draw_low_zoom_overlays,
+    } = input;
     let script_path = shaded_relief_tile_script_path();
     let bounds = region.bounds();
     let mut command = Command::new("python3");
@@ -3289,88 +3300,6 @@ def main():
 if __name__ == '__main__':
     main()
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn water_mask_cleanup_keeps_product_outputs_and_removes_source_work_files() {
-        let temp = tempdir().unwrap();
-        let output_dir = temp.path();
-        let tile_path = output_dir
-            .join("tiles")
-            .join("0")
-            .join("1")
-            .join("2.water.png");
-        fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
-        fs::write(&tile_path, b"tile").unwrap();
-        fs::write(output_dir.join("manifest.json"), b"{}").unwrap();
-        fs::write(output_dir.join("water_mask_nw_test.zip"), b"zip").unwrap();
-        fs::write(output_dir.join("source.geojson"), b"source").unwrap();
-        let source_pages = output_dir.join("source-pages");
-        fs::create_dir_all(&source_pages).unwrap();
-        fs::write(source_pages.join("layer_9_chunk_00001.geojson"), b"page").unwrap();
-
-        prune_water_mask_source_intermediates(output_dir).unwrap();
-
-        assert!(tile_path.exists());
-        assert!(output_dir.join("manifest.json").exists());
-        assert!(output_dir.join("water_mask_nw_test.zip").exists());
-        assert!(!output_dir.join("source.geojson").exists());
-        assert!(!source_pages.exists());
-    }
-
-    #[test]
-    fn cached_terrain_record_gets_dem_fetch_refs_from_fetch_cache_metadata() {
-        let temp = tempdir().unwrap();
-        let fetch_cache = FetchCacheConfig {
-            root: temp.path().join("fetch"),
-            mode: FetchCacheMode::CacheFirst,
-        };
-        let layout = CacheLayout::new(&fetch_cache.root);
-        fs::create_dir_all(layout.http_dir()).unwrap();
-        fs::create_dir_all(layout.blobs_dir()).unwrap();
-
-        let url = "https://example.test/USGS_1_n46w106_20240325.tif";
-        let request = PrefetchRequest::new(url)
-            .with_logical_file_name("USGS_1_n46w106_20240325.tif")
-            .with_cache_key(format!("{url}#logical_name=USGS_1_n46w106_20240325.tif"));
-        fs::write(layout.blob_path("dem-sha"), b"dem").unwrap();
-        fs::write(
-            layout.http_metadata_path(&request.cache_key),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "cache_key": request.cache_key,
-                "file": "USGS_1_n46w106_20240325.tif",
-                "sha256": "dem-sha",
-                "size": 3,
-                "url": url,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let record = NodeRecord {
-            name: "static-terrain-nw".to_string(),
-            fingerprint: "fingerprint".to_string(),
-            started_at_utc: "2026-06-30T00:00:00Z".to_string(),
-            finished_at_utc: "2026-06-30T00:00:01Z".to_string(),
-            elapsed_ms: 1,
-            cache_hit: true,
-            inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            output_details: BTreeMap::new(),
-            fetch_cache_refs: Vec::new(),
-        };
-
-        let enriched = with_terrain_dem_fetch_cache_refs(record, &fetch_cache, &[request]).unwrap();
-
-        assert_eq!(enriched.fetch_cache_refs.len(), 1);
-        assert_eq!(enriched.fetch_cache_refs[0].sha256, "dem-sha");
-        assert_eq!(enriched.fetch_cache_refs[0].size_bytes, Some(3));
-    }
-}
 
 const SHADED_RELIEF_WIDE_TILE_SCRIPT: &str = r#"
 import argparse
@@ -4123,3 +4052,85 @@ def main():
 if __name__ == '__main__':
     main()
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn water_mask_cleanup_keeps_product_outputs_and_removes_source_work_files() {
+        let temp = tempdir().unwrap();
+        let output_dir = temp.path();
+        let tile_path = output_dir
+            .join("tiles")
+            .join("0")
+            .join("1")
+            .join("2.water.png");
+        fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        fs::write(&tile_path, b"tile").unwrap();
+        fs::write(output_dir.join("manifest.json"), b"{}").unwrap();
+        fs::write(output_dir.join("water_mask_nw_test.zip"), b"zip").unwrap();
+        fs::write(output_dir.join("source.geojson"), b"source").unwrap();
+        let source_pages = output_dir.join("source-pages");
+        fs::create_dir_all(&source_pages).unwrap();
+        fs::write(source_pages.join("layer_9_chunk_00001.geojson"), b"page").unwrap();
+
+        prune_water_mask_source_intermediates(output_dir).unwrap();
+
+        assert!(tile_path.exists());
+        assert!(output_dir.join("manifest.json").exists());
+        assert!(output_dir.join("water_mask_nw_test.zip").exists());
+        assert!(!output_dir.join("source.geojson").exists());
+        assert!(!source_pages.exists());
+    }
+
+    #[test]
+    fn cached_terrain_record_gets_dem_fetch_refs_from_fetch_cache_metadata() {
+        let temp = tempdir().unwrap();
+        let fetch_cache = FetchCacheConfig {
+            root: temp.path().join("fetch"),
+            mode: FetchCacheMode::CacheFirst,
+        };
+        let layout = CacheLayout::new(&fetch_cache.root);
+        fs::create_dir_all(layout.http_dir()).unwrap();
+        fs::create_dir_all(layout.blobs_dir()).unwrap();
+
+        let url = "https://example.test/USGS_1_n46w106_20240325.tif";
+        let request = PrefetchRequest::new(url)
+            .with_logical_file_name("USGS_1_n46w106_20240325.tif")
+            .with_cache_key(format!("{url}#logical_name=USGS_1_n46w106_20240325.tif"));
+        fs::write(layout.blob_path("dem-sha"), b"dem").unwrap();
+        fs::write(
+            layout.http_metadata_path(&request.cache_key),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "cache_key": request.cache_key,
+                "file": "USGS_1_n46w106_20240325.tif",
+                "sha256": "dem-sha",
+                "size": 3,
+                "url": url,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let record = NodeRecord {
+            name: "static-terrain-nw".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            started_at_utc: "2026-06-30T00:00:00Z".to_string(),
+            finished_at_utc: "2026-06-30T00:00:01Z".to_string(),
+            elapsed_ms: 1,
+            cache_hit: true,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            output_details: BTreeMap::new(),
+            fetch_cache_refs: Vec::new(),
+        };
+
+        let enriched = with_terrain_dem_fetch_cache_refs(record, &fetch_cache, &[request]).unwrap();
+
+        assert_eq!(enriched.fetch_cache_refs.len(), 1);
+        assert_eq!(enriched.fetch_cache_refs[0].sha256, "dem-sha");
+        assert_eq!(enriched.fetch_cache_refs[0].size_bytes, Some(3));
+    }
+}

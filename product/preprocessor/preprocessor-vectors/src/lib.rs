@@ -1516,7 +1516,7 @@ pub fn build_obstacle_dataset(
             schema_version: 1,
             product_id: "obstacles".to_string(),
             version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.clone(),
+            generated_at_utc: request.generated_at_utc,
             encoding: format!("had-nav-kv-v{}", had_nav_kv::VERSION),
             root: "root".to_string(),
             page_path_template: "page_{page:04}".to_string(),
@@ -3962,9 +3962,9 @@ fn max_subchain_arc_deviation_ft(
     let mut max_deviation = 0.0f64;
     let start_xy = projection.project(points[start]);
     let end_xy = projection.project(points[end]);
-    for index in start..=end {
+    for point in &points[start..=end] {
         max_deviation = max_deviation.max(point_arc_distance_feet(
-            projection.project(points[index]),
+            projection.project(*point),
             start_xy,
             end_xy,
             circle,
@@ -4941,10 +4941,16 @@ mod tests {
             format!(
                 "{}\n{}\n",
                 obstacle_dof_line(
-                    "47", "00", "00.00", "N", "122", "00", "00.00", "W", "01000", "01500"
+                    ["47", "00", "00.00", "N"],
+                    ["122", "00", "00.00", "W"],
+                    "01000",
+                    "01500",
                 ),
                 obstacle_dof_line(
-                    "46", "30", "00.00", "N", "121", "45", "00.00", "W", "00850", "02000"
+                    ["46", "30", "00.00", "N"],
+                    ["121", "45", "00.00", "W"],
+                    "00850",
+                    "02000",
                 )
             ),
         )?;
@@ -5018,7 +5024,10 @@ mod tests {
     fn obstacle_fixed_width_fields_survive_windows_1252_city_text() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
         let mut line = obstacle_dof_line(
-            "38", "44", "02.82", "N", "090", "41", "19.10", "W", "00404", "00933",
+            ["38", "44", "02.82", "N"],
+            ["090", "41", "19.10", "W"],
+            "00404",
+            "00933",
         )
         .into_bytes();
         line[22] = 0x92;
@@ -5644,14 +5653,8 @@ mod tests {
     }
 
     fn obstacle_dof_line(
-        lat_deg: &str,
-        lat_min: &str,
-        lat_sec: &str,
-        lat_hemi: &str,
-        lon_deg: &str,
-        lon_min: &str,
-        lon_sec: &str,
-        lon_hemi: &str,
+        [lat_deg, lat_min, lat_sec, lat_hemi]: [&str; 4],
+        [lon_deg, lon_min, lon_sec, lon_hemi]: [&str; 4],
         height_agl: &str,
         height_msl: &str,
     ) -> String {

@@ -362,18 +362,18 @@ fn parse_adsb_trace_value(value: Value) -> AppResult<PlaybackTrace> {
             orientation_deg: items[5].as_f64(),
         });
     }
-    normalize_playback_trace(
+    normalize_playback_trace(PlaybackTraceInput {
         raw_points,
-        Vec::new(),
-        None,
+        raw_status_events: Vec::new(),
+        title_label: None,
         registration,
         icao,
         aircraft_type,
-        OwnshipSourceKind::AdsbTrackPlayback,
-        "ADS-B Trace Playback".to_string(),
-        PlaybackGapBehavior::Skip,
-        ADSB_PLAYBACK_GAP_THRESHOLD_SECONDS,
-    )
+        source_kind: OwnshipSourceKind::AdsbTrackPlayback,
+        source_display_name: "ADS-B Trace Playback".to_string(),
+        gap_behavior: PlaybackGapBehavior::Skip,
+        gap_threshold_seconds: ADSB_PLAYBACK_GAP_THRESHOLD_SECONDS,
+    })
 }
 
 fn parse_gps_capture_jsonl(trace_json: &str) -> AppResult<PlaybackTrace> {
@@ -470,24 +470,23 @@ fn parse_gps_capture_jsonl(trace_json: &str) -> AppResult<PlaybackTrace> {
             message: "GPS capture contains no usable ownship capture records".to_string(),
         });
     }
-    normalize_playback_trace(
+    normalize_playback_trace(PlaybackTraceInput {
         raw_points,
         raw_status_events,
-        Some("GPS Capture".to_string()),
-        None,
-        None,
-        None,
-        OwnshipSourceKind::GpxPlayback,
-        "GPS Capture Playback".to_string(),
-        PlaybackGapBehavior::PreserveUnavailable,
-        GPS_CAPTURE_GAP_THRESHOLD_SECONDS,
-    )
+        title_label: Some("GPS Capture".to_string()),
+        registration: None,
+        icao: None,
+        aircraft_type: None,
+        source_kind: OwnshipSourceKind::GpxPlayback,
+        source_display_name: "GPS Capture Playback".to_string(),
+        gap_behavior: PlaybackGapBehavior::PreserveUnavailable,
+        gap_threshold_seconds: GPS_CAPTURE_GAP_THRESHOLD_SECONDS,
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn normalize_playback_trace(
-    mut raw_points: Vec<PlaybackPoint>,
-    mut raw_status_events: Vec<PlaybackStatusEvent>,
+struct PlaybackTraceInput {
+    raw_points: Vec<PlaybackPoint>,
+    raw_status_events: Vec<PlaybackStatusEvent>,
     title_label: Option<String>,
     registration: Option<String>,
     icao: Option<String>,
@@ -496,7 +495,21 @@ fn normalize_playback_trace(
     source_display_name: String,
     gap_behavior: PlaybackGapBehavior,
     gap_threshold_seconds: f64,
-) -> AppResult<PlaybackTrace> {
+}
+
+fn normalize_playback_trace(input: PlaybackTraceInput) -> AppResult<PlaybackTrace> {
+    let PlaybackTraceInput {
+        mut raw_points,
+        mut raw_status_events,
+        title_label,
+        registration,
+        icao,
+        aircraft_type,
+        source_kind,
+        source_display_name,
+        gap_behavior,
+        gap_threshold_seconds,
+    } = input;
     if raw_points.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,

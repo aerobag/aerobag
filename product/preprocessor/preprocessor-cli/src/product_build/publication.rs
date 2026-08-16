@@ -1919,12 +1919,13 @@ pub(super) fn validate_embedded_sha256_filename(
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| anyhow::anyhow!("filename has no stem: {filename}"))?;
     if let Some(suffix) = stem.rsplit('_').next() {
-        if suffix.len() == 64 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            if suffix != checksum_sha256 {
-                bail!(
+        if suffix.len() == 64
+            && suffix.chars().all(|ch| ch.is_ascii_hexdigit())
+            && suffix != checksum_sha256
+        {
+            bail!(
                     "embedded sha256 mismatch for {filename}: filename {suffix} != checksum {checksum_sha256}"
                 );
-            }
         }
     }
     Ok(())

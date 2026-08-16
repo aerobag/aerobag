@@ -20,7 +20,7 @@ fn tpp_render_tasks_for_plan(
             weight: TPP_RENDER_UNIT_WEIGHT,
             kind: ScheduledTaskKind::TppRenderUnit {
                 region,
-                unit: unit.clone(),
+                unit: Box::new(unit.clone()),
             },
         });
     }
@@ -366,34 +366,30 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Some(TaskValue::ChartFetch { record }) => record,
                             _ => unreachable!("chart fetch dependency should have completed"),
                         };
-                        let record = build_chart_process_node(
+                        build_chart_process_node(
                             &config,
                             family,
                             &config.chart_metadata_root,
                             &chart_source_urls_path(&source_urls_dir, family),
                             &source_fetch,
-                            config.cpu_jobs.min(8).max(1),
+                            config.cpu_jobs.clamp(1, 8),
                         )
                         .map(|record| TaskCompletion {
                             node_records: vec![record],
                             value: TaskValue::None,
                             completion_detail: "cache_or_rebuild".to_string(),
-                        });
-                        record
+                        })
                     }
-                    ScheduledTaskKind::CsupFetch => {
-                        let record = build_csup_fetch_node(
-                            &config,
-                            &source_urls_dir.join("csup/source_urls.jsonl"),
-                            config.fetch_jobs,
-                        )
-                        .map(|record| TaskCompletion {
-                            node_records: vec![record.clone()],
-                            value: TaskValue::CsupFetch { record },
-                            completion_detail: "cache_or_rebuild".to_string(),
-                        });
-                        record
-                    }
+                    ScheduledTaskKind::CsupFetch => build_csup_fetch_node(
+                        &config,
+                        &source_urls_dir.join("csup/source_urls.jsonl"),
+                        config.fetch_jobs,
+                    )
+                    .map(|record| TaskCompletion {
+                        node_records: vec![record.clone()],
+                        value: TaskValue::CsupFetch { record },
+                        completion_detail: "cache_or_rebuild".to_string(),
+                    }),
                     ScheduledTaskKind::CsupProcess => {
                         let source_fetch = match task_values_snapshot.get("csup-fetch") {
                             Some(TaskValue::CsupFetch { record }) => record,
@@ -769,16 +765,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             &task_node_records_snapshot.iter().collect(),
                         )?;
                         let started = Instant::now();
-                        let (record, source) = build_tpp_package_assemble_node(
-                            &config,
-                            region,
-                            &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                            &plan_record,
-                            &metadata_root,
-                            &plate_sources,
-                            &plan,
-                            &thumbnail_records,
-                        )?;
+                        let source_urls_path =
+                            source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        let (record, source) =
+                            build_tpp_package_assemble_node(TppPackageAssembleInput {
+                                config: &config,
+                                region,
+                                source_urls_path: &source_urls_path,
+                                plan_record: &plan_record,
+                                metadata_root: &metadata_root,
+                                plate_sources: &plate_sources,
+                                plan: &plan,
+                                thumbnail_records: &thumbnail_records,
+                            })?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
                         Ok(TaskCompletion {
@@ -1036,17 +1035,17 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let vector_had_pairs_path =
             resolve_artifact_path(config, output_path(vectors_record, "had_pairs")?);
         let wmm_source = build_wmm_source_node(config)?;
-        let nav_db = build_nav_kv_artifact(
+        let nav_db = build_nav_kv_artifact(BuildNavKvArtifactInput {
             config,
-            &resource_index_path,
-            &intermediate_sqlite_db,
-            &bundle_cycle,
-            &vector_had_pairs_path,
-            &wmm_source.cof_path,
-            &wmm_source.metadata_path,
-            &[],
-            &[],
-        )?;
+            resource_index_path: &resource_index_path,
+            intermediate_sqlite_db_path: &intermediate_sqlite_db,
+            cycle: &bundle_cycle,
+            vector_had_pairs_path: &vector_had_pairs_path,
+            wmm_cof_path: &wmm_source.cof_path,
+            wmm_metadata_path: &wmm_source.metadata_path,
+            stable_packages: &[],
+            static_raster_tile_levels: &[],
+        })?;
         let mut build_manifest = build_manifest;
         build_manifest.nodes.push(normalize_node_record_paths(
             nav_db.node_record.clone(),

@@ -851,7 +851,7 @@ enum ScheduledTaskKind {
     },
     TppRenderUnit {
         region: Region,
-        unit: TppRenderUnitPlan,
+        unit: Box<TppRenderUnitPlan>,
     },
     TppRenderAssemble {
         region: Region,

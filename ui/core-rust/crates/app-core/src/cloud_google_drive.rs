@@ -8,8 +8,8 @@ use serde::Deserialize;
 use crate::{
     cloud::{
         CloudHttpHeader, CloudHttpMethod, CloudHttpRequest, CloudHttpResponse,
-        CloudProviderErrorKind, CloudProviderKind, CloudProviderObject, CloudProviderOperation,
-        CloudProviderRequest, CloudProviderResponse,
+        CloudProviderErrorKind, CloudProviderKind, CloudProviderOperation, CloudProviderRequest,
+        CloudProviderResponse,
     },
     AppError, AppErrorKind, AppResult,
 };
@@ -88,33 +88,6 @@ pub(crate) fn plan_request(request: &CloudProviderRequest) -> AppResult<CloudHtt
                 }],
                 Some(URL_SAFE_NO_PAD.encode(body)),
                 MAX_SMALL_RESPONSE_BYTES,
-            )
-        }
-        CloudProviderOperation::Delete { id } => (
-            CloudHttpMethod::Delete,
-            format!("{DRIVE_API_ROOT}/files/{}", percent_encode(id)),
-            Vec::new(),
-            None,
-            MAX_SMALL_RESPONSE_BYTES,
-        ),
-        CloudProviderOperation::List { page_token } => {
-            let mut url = format!(
-                "{DRIVE_API_ROOT}/files?spaces=appDataFolder&pageSize=1000&q={}&fields={}",
-                percent_encode(&format!(
-                    "trashed = false and mimeType = '{CLOUD_OBJECT_MIME}'"
-                )),
-                percent_encode("nextPageToken,files(id,size,createdTime)"),
-            );
-            if let Some(page_token) = page_token {
-                url.push_str("&pageToken=");
-                url.push_str(&percent_encode(page_token));
-            }
-            (
-                CloudHttpMethod::Get,
-                url,
-                json_headers(),
-                None,
-                MAX_CLOUD_OBJECT_BYTES,
             )
         }
         CloudProviderOperation::AcsIssueAccountChallenge
@@ -212,59 +185,7 @@ pub(crate) fn parse_response(
         CloudProviderOperation::CreateOnce { .. } if is_success(status) => {
             CloudProviderResponse::Created
         }
-        CloudProviderOperation::Delete { .. } if status == 404 => {
-            CloudProviderResponse::Deleted { existed: false }
-        }
-        CloudProviderOperation::Delete { .. } if is_success(status) => {
-            CloudProviderResponse::Deleted { existed: true }
-        }
-        CloudProviderOperation::List { .. } if is_success(status) => parse_list_response(&body),
         operation => http_error(status, &body, operation_label(operation)),
-    }
-}
-
-fn parse_list_response(body: &[u8]) -> CloudProviderResponse {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ListPayload {
-        #[serde(default)]
-        files: Vec<ListFile>,
-        next_page_token: Option<String>,
-    }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ListFile {
-        id: Option<String>,
-        size: Option<String>,
-        created_time: Option<String>,
-    }
-    let payload = match serde_json::from_slice::<ListPayload>(body) {
-        Ok(payload) => payload,
-        Err(error) => return invalid_json("object-list", error),
-    };
-    let mut objects = Vec::with_capacity(payload.files.len());
-    for file in payload.files {
-        let Some(id) = file.id.filter(|id| !id.is_empty()) else {
-            return provider_error(
-                CloudProviderErrorKind::Permanent,
-                "Google Drive returned cloud object metadata without an ID".to_string(),
-            );
-        };
-        let Some(size_bytes) = file.size.and_then(|size| size.parse::<u64>().ok()) else {
-            return provider_error(
-                CloudProviderErrorKind::Permanent,
-                format!("Google Drive returned invalid size metadata for {id}"),
-            );
-        };
-        objects.push(CloudProviderObject {
-            id,
-            size_bytes,
-            created_at: file.created_time,
-        });
-    }
-    CloudProviderResponse::Listed {
-        objects,
-        next_page_token: payload.next_page_token,
     }
 }
 
@@ -318,8 +239,6 @@ fn operation_label(operation: &CloudProviderOperation) -> &'static str {
         CloudProviderOperation::AllocateIds { .. } => "allocate Google Drive object IDs",
         CloudProviderOperation::Read { .. } => "read Google Drive cloud object",
         CloudProviderOperation::CreateOnce { .. } => "create Google Drive cloud object",
-        CloudProviderOperation::Delete { .. } => "delete Google Drive cloud object",
-        CloudProviderOperation::List { .. } => "list Google Drive cloud objects",
         CloudProviderOperation::AcsIssueAccountChallenge
         | CloudProviderOperation::AcsCreateAccount { .. }
         | CloudProviderOperation::AcsCreateObject { .. }
@@ -376,41 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_paginated_appdata_listing() {
-        let planned = plan_request(&request(CloudProviderOperation::List {
-            page_token: Some("next page".to_string()),
-        }))
-        .unwrap();
-        assert_eq!(planned.method, CloudHttpMethod::Get);
-        assert!(planned.url.contains("spaces=appDataFolder"));
-        assert!(planned.url.contains("pageToken=next%20page"));
-        assert!(!planned.url.contains(' '));
-    }
-
-    #[test]
-    fn parses_paginated_appdata_listing() {
-        let response = parse_response(
-            &request(CloudProviderOperation::List { page_token: None }),
-            completed(
-                200,
-                br#"{"files":[{"id":"object-1","size":"37","createdTime":"2026-07-31T12:00:00Z"}],"nextPageToken":"next page"}"#,
-            ),
-        );
-        assert_eq!(
-            response,
-            CloudProviderResponse::Listed {
-                objects: vec![CloudProviderObject {
-                    id: "object-1".to_string(),
-                    size_bytes: 37,
-                    created_at: Some("2026-07-31T12:00:00Z".to_string()),
-                }],
-                next_page_token: Some("next page".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn maps_create_contention_and_missing_delete() {
+    fn maps_create_contention() {
         let create = request(CloudProviderOperation::CreateOnce {
             id: "occupied".to_string(),
             name: "state".to_string(),
@@ -419,13 +304,6 @@ mod tests {
         assert_eq!(
             parse_response(&create, completed(409, b"")),
             CloudProviderResponse::AlreadyExists
-        );
-        let delete = request(CloudProviderOperation::Delete {
-            id: "missing".to_string(),
-        });
-        assert_eq!(
-            parse_response(&delete, completed(404, b"")),
-            CloudProviderResponse::Deleted { existed: false }
         );
     }
 

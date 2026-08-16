@@ -159,14 +159,6 @@ pub(crate) enum CloudProviderOperation {
         name: String,
         bytes_base64: String,
     },
-    #[allow(dead_code)] // Required by the provider contract for future unreachable-object GC.
-    Delete {
-        id: String,
-    },
-    #[allow(dead_code)] // Required by the provider contract for future recovery and GC.
-    List {
-        page_token: Option<String>,
-    },
     AcsIssueAccountChallenge,
     AcsCreateAccount {
         request: AcsCreateAccountRequest,
@@ -187,13 +179,6 @@ pub(crate) enum CloudProviderOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CloudProviderObject {
-    pub id: String,
-    pub size_bytes: u64,
-    pub created_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CloudProviderRequest {
     pub request_id: u64,
     pub provider: CloudProviderKind,
@@ -210,13 +195,6 @@ pub(crate) enum CloudProviderResponse {
     },
     Created,
     AlreadyExists,
-    Deleted {
-        existed: bool,
-    },
-    Listed {
-        objects: Vec<CloudProviderObject>,
-        next_page_token: Option<String>,
-    },
     AcsCreationChallenge {
         response: AcsCreationChallengeResponse,
     },
@@ -4175,24 +4153,6 @@ mod tests {
                         CloudProviderResponse::Created
                     }
                 }
-                CloudProviderOperation::Delete { id } => CloudProviderResponse::Deleted {
-                    existed: self.objects.remove(id).is_some(),
-                },
-                CloudProviderOperation::List { page_token } => {
-                    assert!(page_token.is_none(), "test provider has one list page");
-                    CloudProviderResponse::Listed {
-                        objects: self
-                            .objects
-                            .iter()
-                            .map(|(id, bytes)| CloudProviderObject {
-                                id: id.clone(),
-                                size_bytes: bytes.len() as u64,
-                                created_at: None,
-                            })
-                            .collect(),
-                        next_page_token: None,
-                    }
-                }
                 CloudProviderOperation::AcsIssueAccountChallenge
                 | CloudProviderOperation::AcsCreateAccount { .. }
                 | CloudProviderOperation::AcsCreateObject { .. }
@@ -4234,24 +4194,6 @@ mod tests {
                 .unwrap(),
             ),
             CloudProviderResponse::AlreadyExists => (409, Vec::new()),
-            CloudProviderResponse::Deleted { existed } => {
-                (if existed { 204 } else { 404 }, Vec::new())
-            }
-            CloudProviderResponse::Listed {
-                objects,
-                next_page_token,
-            } => (
-                200,
-                serde_json::to_vec(&serde_json::json!({
-                    "files": objects.into_iter().map(|object| serde_json::json!({
-                        "id": object.id,
-                        "size": object.size_bytes.to_string(),
-                        "createdTime": object.created_at,
-                    })).collect::<Vec<_>>(),
-                    "nextPageToken": next_page_token,
-                }))
-                .unwrap(),
-            ),
             CloudProviderResponse::Error {
                 kind: CloudProviderErrorKind::Transient,
                 detail,

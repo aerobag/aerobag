@@ -3183,18 +3183,6 @@ pub fn set_map_layer_enabled_in_session(
     changed_session_update_outcome(session)
 }
 
-#[allow(dead_code)]
-pub(crate) fn set_guidance_leg_geometry_in_session(
-    handle: u32,
-    geometries: Vec<GuidanceLegGeometry>,
-) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
-    install_guidance_leg_geometry(session, geometries)?;
-    changed_session_update_outcome(session)
-}
-
 fn install_guidance_leg_geometry(
     session: &mut UiSession,
     geometries: Vec<GuidanceLegGeometry>,
@@ -3376,23 +3364,24 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOper
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
-        &plan,
-        &session.coordinator.chart_page_state.recent_airport_ids,
-        session
-            .coordinator
-            .chart_page_state
-            .plate_target_airport_id
-            .as_deref(),
-        Some(&session.coordinator.chart_page_state.selected_airport_id),
-        session
-            .coordinator
-            .chart_page_state
-            .selected_reference_family_id
-            .as_deref(),
-        Some(chart_id),
-        &session.coordinator.chart_page_state.suggested_chart_ids,
-    );
+    session.coordinator.chart_page_state =
+        derive_compact_chart_page_state_with_reference(CompactChartPageInput {
+            plan: &plan,
+            stored_recent_airport_ids: &session.coordinator.chart_page_state.recent_airport_ids,
+            plate_target_airport_id: session
+                .coordinator
+                .chart_page_state
+                .plate_target_airport_id
+                .as_deref(),
+            candidate_airport_id: Some(&session.coordinator.chart_page_state.selected_airport_id),
+            selected_reference_family_id: session
+                .coordinator
+                .chart_page_state
+                .selected_reference_family_id
+                .as_deref(),
+            candidate_chart_id: Some(chart_id),
+            suggested_chart_ids: &session.coordinator.chart_page_state.suggested_chart_ids,
+        });
     changed_session_update_outcome(session)
 }
 
@@ -3405,19 +3394,20 @@ pub fn select_chart_reference_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
-        &plan,
-        &session.coordinator.chart_page_state.recent_airport_ids,
-        session
-            .coordinator
-            .chart_page_state
-            .plate_target_airport_id
-            .as_deref(),
-        Some(&session.coordinator.chart_page_state.selected_airport_id),
-        Some(family_id),
-        None,
-        suggested_chart_ids,
-    );
+    session.coordinator.chart_page_state =
+        derive_compact_chart_page_state_with_reference(CompactChartPageInput {
+            plan: &plan,
+            stored_recent_airport_ids: &session.coordinator.chart_page_state.recent_airport_ids,
+            plate_target_airport_id: session
+                .coordinator
+                .chart_page_state
+                .plate_target_airport_id
+                .as_deref(),
+            candidate_airport_id: Some(&session.coordinator.chart_page_state.selected_airport_id),
+            selected_reference_family_id: Some(family_id),
+            candidate_chart_id: None,
+            suggested_chart_ids,
+        });
     changed_session_update_outcome(session)
 }
 
@@ -5641,15 +5631,16 @@ pub fn restore_chart_page_state_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
-        &plan,
-        recent_airport_ids,
-        plate_target_airport_id,
-        selected_airport_id,
-        selected_reference_family_id,
-        selected_chart_id,
-        suggested_chart_ids,
-    );
+    session.coordinator.chart_page_state =
+        derive_compact_chart_page_state_with_reference(CompactChartPageInput {
+            plan: &plan,
+            stored_recent_airport_ids: recent_airport_ids,
+            plate_target_airport_id,
+            candidate_airport_id: selected_airport_id,
+            selected_reference_family_id,
+            candidate_chart_id: selected_chart_id,
+            suggested_chart_ids,
+        });
     changed_session_update_outcome(session)
 }
 
@@ -10645,23 +10636,24 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
 
 fn refresh_session_flight_plan_derivatives(session: &mut UiSession, normalized_plan: &FlightPlan) {
     session.coordinator.last_content_report = None;
-    session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
-        normalized_plan,
-        &session.coordinator.chart_page_state.recent_airport_ids,
-        session
-            .coordinator
-            .chart_page_state
-            .plate_target_airport_id
-            .as_deref(),
-        Some(&session.coordinator.chart_page_state.selected_airport_id),
-        session
-            .coordinator
-            .chart_page_state
-            .selected_reference_family_id
-            .as_deref(),
-        Some(&session.coordinator.chart_page_state.selected_chart_id),
-        &session.coordinator.chart_page_state.suggested_chart_ids,
-    );
+    session.coordinator.chart_page_state =
+        derive_compact_chart_page_state_with_reference(CompactChartPageInput {
+            plan: normalized_plan,
+            stored_recent_airport_ids: &session.coordinator.chart_page_state.recent_airport_ids,
+            plate_target_airport_id: session
+                .coordinator
+                .chart_page_state
+                .plate_target_airport_id
+                .as_deref(),
+            candidate_airport_id: Some(&session.coordinator.chart_page_state.selected_airport_id),
+            selected_reference_family_id: session
+                .coordinator
+                .chart_page_state
+                .selected_reference_family_id
+                .as_deref(),
+            candidate_chart_id: Some(&session.coordinator.chart_page_state.selected_chart_id),
+            suggested_chart_ids: &session.coordinator.chart_page_state.suggested_chart_ids,
+        });
     sync_procedure_geometry_status_records(session, normalized_plan);
 }
 
@@ -12915,27 +12907,39 @@ fn derive_compact_chart_page_state(
     candidate_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> UiChartPageState {
-    derive_compact_chart_page_state_with_reference(
+    derive_compact_chart_page_state_with_reference(CompactChartPageInput {
         plan,
         stored_recent_airport_ids,
         plate_target_airport_id,
         candidate_airport_id,
-        None,
+        selected_reference_family_id: None,
         candidate_chart_id,
-        &[],
-    )
+        suggested_chart_ids: &[],
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
+struct CompactChartPageInput<'a> {
+    plan: &'a FlightPlan,
+    stored_recent_airport_ids: &'a [String],
+    plate_target_airport_id: Option<&'a str>,
+    candidate_airport_id: Option<&'a str>,
+    selected_reference_family_id: Option<&'a str>,
+    candidate_chart_id: Option<&'a str>,
+    suggested_chart_ids: &'a [String],
+}
+
 fn derive_compact_chart_page_state_with_reference(
-    plan: &FlightPlan,
-    stored_recent_airport_ids: &[String],
-    plate_target_airport_id: Option<&str>,
-    candidate_airport_id: Option<&str>,
-    selected_reference_family_id: Option<&str>,
-    candidate_chart_id: Option<&str>,
-    suggested_chart_ids: &[String],
+    input: CompactChartPageInput<'_>,
 ) -> UiChartPageState {
+    let CompactChartPageInput {
+        plan,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        candidate_airport_id,
+        selected_reference_family_id,
+        candidate_chart_id,
+        suggested_chart_ids,
+    } = input;
     let mut ordered_airport_ids = Vec::new();
     for airport_id in compact_chart_page_airport_candidates(
         plan,
@@ -14799,7 +14803,6 @@ mod tests {
 
     macro_rules! snapshot_wrapper {
         ($name:ident(handle: u32 $(, $arg:ident: $arg_type:ty)* $(,)?)) => {
-            #[allow(dead_code)]
             fn $name(handle: u32 $(, $arg: $arg_type)*) -> AppResult<UiSessionSnapshot> {
                 super::$name(handle $(, $arg)*)?;
                 get_session_snapshot(handle)
@@ -14812,11 +14815,6 @@ mod tests {
         layer: MapLayerId,
         visible: bool,
     ));
-    snapshot_wrapper!(set_guidance_leg_geometry_in_session(
-        handle: u32,
-        geometries: Vec<GuidanceLegGeometry>,
-    ));
-    snapshot_wrapper!(load_raster_map_catalog_in_session(handle: u32));
     snapshot_wrapper!(set_resource_policy_in_session(
         handle: u32,
         policy: CoreResourcePolicy,
@@ -14847,18 +14845,6 @@ mod tests {
         handle: u32,
         package_ids: Vec<String>,
     ));
-    snapshot_wrapper!(select_map_family_in_session(handle: u32, family_id: &str));
-    snapshot_wrapper!(select_raster_map_in_session(
-        handle: u32,
-        selected_map_id: &str,
-    ));
-    snapshot_wrapper!(select_airport_in_session(handle: u32, airport_id: &str));
-    snapshot_wrapper!(select_chart_in_session(handle: u32, chart_id: &str));
-    snapshot_wrapper!(select_chart_reference_in_session(
-        handle: u32,
-        family_id: &str,
-        suggested_chart_ids: &[String],
-    ));
     snapshot_wrapper!(register_ownship_source_in_session(
         handle: u32,
         registration: crate::OwnshipSourceRegistration,
@@ -14870,10 +14856,6 @@ mod tests {
     snapshot_wrapper!(push_situation_sample_in_session(
         handle: u32,
         sample: crate::SituationSample,
-    ));
-    snapshot_wrapper!(set_ownship_policy_in_session(
-        handle: u32,
-        policy: crate::OwnshipPolicy,
     ));
     snapshot_wrapper!(select_ownship_source_in_session(
         handle: u32,
@@ -14902,47 +14884,24 @@ mod tests {
         trace_json: &str,
     ));
     snapshot_wrapper!(play_playback_in_session(handle: u32, now_epoch_ms: f64));
-    snapshot_wrapper!(pause_playback_in_session(handle: u32, now_epoch_ms: f64));
     snapshot_wrapper!(seek_playback_in_session(
         handle: u32,
         cursor_seconds: f64,
         now_epoch_ms: f64,
     ));
-    snapshot_wrapper!(set_playback_rate_in_session(
-        handle: u32,
-        rate: f64,
-        now_epoch_ms: f64,
-    ));
     snapshot_wrapper!(tick_playback_in_session(handle: u32, now_epoch_ms: f64));
     snapshot_wrapper!(set_situation_in_session(handle: u32, situation: Situation));
     snapshot_wrapper!(tick_bad_autopilot_in_session(handle: u32, now_epoch_ms: f64));
-    snapshot_wrapper!(activate_next_leg_in_session(handle: u32));
     snapshot_wrapper!(stop_navigation_in_session(handle: u32));
-    snapshot_wrapper!(suspend_sequencing_in_session(handle: u32));
     snapshot_wrapper!(unsuspend_sequencing_in_session(handle: u32));
-    snapshot_wrapper!(sequence_active_leg_in_session(handle: u32));
     snapshot_wrapper!(replace_flight_plan_in_session(
         handle: u32,
         plan: FlightPlan,
-    ));
-    snapshot_wrapper!(perform_status_action_in_session(
-        handle: u32,
-        action_id: String,
     ));
     snapshot_wrapper!(restore_direct_to_in_session(handle: u32));
     snapshot_wrapper!(engage_map_follow_in_session(
         handle: u32,
         viewport: MapViewport,
-    ));
-    snapshot_wrapper!(disengage_map_follow_in_session(
-        handle: u32,
-        viewport: MapViewport,
-    ));
-    snapshot_wrapper!(set_map_follow_offset_in_session(
-        handle: u32,
-        viewport: MapViewport,
-        offset_x_px: f64,
-        offset_y_px: f64,
     ));
     snapshot_wrapper!(sync_map_follow_in_session(
         handle: u32,
@@ -14982,12 +14941,17 @@ mod tests {
         resource_id: &str,
         message: &str,
     ));
-    snapshot_wrapper!(report_session_resource_failure_in_session_at_epoch_ms(
+
+    fn set_guidance_leg_geometry_in_session(
         handle: u32,
-        resource_id: &str,
-        message: &str,
-        epoch_ms: i64,
-    ));
+        geometries: Vec<GuidanceLegGeometry>,
+    ) -> AppResult<UiSessionSnapshot> {
+        let slot = super::session_slot(handle)?;
+        let mut session_guard = slot.lock_running()?;
+        super::install_guidance_leg_geometry(&mut session_guard, geometries)?;
+        drop(session_guard);
+        get_session_snapshot(handle)
+    }
 
     fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
         super::get_session_snapshot(handle).map(snapshot_from_outcome)

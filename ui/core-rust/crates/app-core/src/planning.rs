@@ -2398,23 +2398,25 @@ fn project_display_rows(
                 apply_component_mutation_action_availability(
                     plan,
                     component.component_index,
-                    waypoint_actions_for_row(
-                        FlightPlanDisplayRowKind::Waypoint,
-                        0,
+                    waypoint_actions_for_row(WaypointRowActionsInput {
+                        row_kind: FlightPlanDisplayRowKind::Waypoint,
+                        depth: 0,
                         leg_index,
-                        projected_nav_ref.as_ref(),
-                        component.can_add_airway_after,
-                        component.can_add_procedure_before,
-                        component.component_index == 0 && chart_airport_id.is_some(),
-                        component.component_index + 1 == plan.route_components.len()
+                        nav_ref: projected_nav_ref.as_ref(),
+                        can_add_airway_after: component.can_add_airway_after,
+                        can_add_procedure_before: component.can_add_procedure_before,
+                        can_select_departure: component.component_index == 0
                             && chart_airport_id.is_some(),
-                        component.can_remove,
-                        component.can_reorder_up,
-                        component.can_reorder_down,
-                        component.component_index.into(),
-                        chart_airport_id.as_ref(),
-                        origin_anchor.as_ref(),
-                    ),
+                        is_destination_airport: component.component_index + 1
+                            == plan.route_components.len()
+                            && chart_airport_id.is_some(),
+                        can_remove_component: component.can_remove,
+                        can_reorder_up: component.can_reorder_up,
+                        can_reorder_down: component.can_reorder_down,
+                        component_index: Some(component.component_index),
+                        chart_airport_id: chart_airport_id.as_ref(),
+                        origin_anchor: origin_anchor.as_ref(),
+                    }),
                 ),
             );
             rows.push(FlightPlanDisplayRowUiView {
@@ -3200,12 +3202,11 @@ fn is_procedure_attachment_message(message: &str) -> bool {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn waypoint_actions_for_row(
+struct WaypointRowActionsInput<'a> {
     row_kind: FlightPlanDisplayRowKind,
     depth: usize,
     leg_index: Option<usize>,
-    nav_ref: Option<&NavRef>,
+    nav_ref: Option<&'a NavRef>,
     can_add_airway_after: bool,
     can_add_procedure_before: bool,
     can_select_departure: bool,
@@ -3214,9 +3215,27 @@ fn waypoint_actions_for_row(
     can_reorder_up: bool,
     can_reorder_down: bool,
     component_index: Option<usize>,
-    chart_airport_id: Option<&String>,
-    origin_anchor: Option<&NavRef>,
-) -> Vec<FlightPlanRowActionUiView> {
+    chart_airport_id: Option<&'a String>,
+    origin_anchor: Option<&'a NavRef>,
+}
+
+fn waypoint_actions_for_row(input: WaypointRowActionsInput<'_>) -> Vec<FlightPlanRowActionUiView> {
+    let WaypointRowActionsInput {
+        row_kind,
+        depth,
+        leg_index,
+        nav_ref,
+        can_add_airway_after,
+        can_add_procedure_before,
+        can_select_departure,
+        is_destination_airport,
+        can_remove_component,
+        can_reorder_up,
+        can_reorder_down,
+        component_index,
+        chart_airport_id,
+        origin_anchor,
+    } = input;
     if row_kind != FlightPlanDisplayRowKind::Waypoint {
         return Vec::new();
     }

@@ -970,7 +970,7 @@ fn handle_saa_text(state: &mut SaaParseResult, raw: &str) {
         state.enddate = text.clone();
     }
     if state.p_note {
-        if let Some(last_line) = text.lines().filter(|line| !line.trim().is_empty()).last() {
+        if let Some(last_line) = text.lines().rfind(|line| !line.trim().is_empty()) {
             state.note = last_line.trim_start().to_string();
         }
     }
@@ -2967,8 +2967,8 @@ pub fn normalized_database_dump(path: &Path) -> anyhow::Result<String> {
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map([], |row| {
             let mut values = Vec::with_capacity(columns.len());
-            for idx in 0..columns.len() {
-                values.push(sqlite_value_to_string(row, idx, columns[idx])?);
+            for (idx, column) in columns.iter().enumerate() {
+                values.push(sqlite_value_to_string(row, idx, *column)?);
             }
             Ok(values)
         })?;
@@ -3025,8 +3025,8 @@ fn normalized_table_dump(path: &Path, table: &str) -> anyhow::Result<String> {
     let mut stmt = conn.prepare(&query)?;
     let rows = stmt.query_map([], |row| {
         let mut values = Vec::with_capacity(columns.len());
-        for idx in 0..columns.len() {
-            values.push(sqlite_value_to_string(row, idx, columns[idx])?);
+        for (idx, column) in columns.iter().enumerate() {
+            values.push(sqlite_value_to_string(row, idx, *column)?);
         }
         Ok(values.join("|"))
     })?;

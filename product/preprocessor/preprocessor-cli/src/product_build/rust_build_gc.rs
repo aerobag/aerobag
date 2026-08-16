@@ -192,6 +192,7 @@ fn try_lock_cargo_profiles(profile_roots: &[PathBuf]) -> anyhow::Result<Option<V
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)
             .with_context(|| format!("failed to open {}", lock_path.display()))?;
         let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -347,6 +348,7 @@ mod tests {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(profile.join(".cargo-lock"))
             .expect("open lock");
         assert_eq!(

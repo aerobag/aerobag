@@ -1233,15 +1233,13 @@ fn classify_relation(
 
         let uniquely_bound = cid_claimers
             .iter()
-            .filter_map(|(cid, claimers)| {
-                (claimers.len() == 1).then(|| (cid.clone(), claimers[0].clone()))
-            })
+            .filter(|(_, claimers)| claimers.len() == 1)
+            .map(|(cid, claimers)| (cid.clone(), claimers[0].clone()))
             .collect::<BTreeMap<_, _>>();
         let multiply_bound = cid_claimers
             .iter()
-            .filter_map(|(cid, claimers)| {
-                (claimers.len() > 1).then(|| (cid.clone(), claimers.clone()))
-            })
+            .filter(|(_, claimers)| claimers.len() > 1)
+            .map(|(cid, claimers)| (cid.clone(), claimers.clone()))
             .collect::<BTreeMap<_, _>>();
         let unresolved_set = procedure_ids
             .iter()

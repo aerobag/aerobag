@@ -26,6 +26,9 @@ enum CycleFormat {
     Iso,
 }
 
+type SourceUrlRecord = BTreeMap<String, Value>;
+type SourceUrlRecordGroups = Vec<(String, Vec<SourceUrlRecord>)>;
+
 pub fn emit_source_urls(
     output_dir: &Path,
     target_cycle: Option<&str>,
@@ -66,7 +69,7 @@ pub fn cycle_effective_date(cycle_code: &str) -> anyhow::Result<NaiveDate> {
 fn build_records(
     target_cycle: Option<&str>,
     fetch_cache: Option<&FetchCacheConfig>,
-) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
+) -> anyhow::Result<SourceUrlRecordGroups> {
     let catalog = SourceCatalog::fetch(fetch_cache)?;
     let cycle = match target_cycle {
         Some(cycle) => cycle.to_string(),
@@ -91,9 +94,8 @@ fn build_records_for_cycle(
     cycle: &str,
     catalog: &SourceCatalog,
     published_chart_effective_dates: &BTreeSet<NaiveDate>,
-) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
-    let charts_effective =
-        chart_effective_date_for_cycle(&cycle, &published_chart_effective_dates)?;
+) -> anyhow::Result<SourceUrlRecordGroups> {
+    let charts_effective = chart_effective_date_for_cycle(cycle, published_chart_effective_dates)?;
     let charts_start = format_effective_date(charts_effective, CycleFormat::Charts);
     let iso_start = format_effective_date(charts_effective, CycleFormat::Iso);
     let current_start = format_effective_date(cycle_effective_date(cycle)?, CycleFormat::Iso);
@@ -572,7 +574,7 @@ fn discover_published_tpp_cycles(catalog: &SourceCatalog) -> anyhow::Result<BTre
         if !href.starts_with("http") || !href.ends_with(".zip") || !href.contains("DDTPP") {
             continue;
         }
-        let Some(compact) = extract_suffix_date_token(&href, "DDTPP", ".zip") else {
+        let Some(compact) = extract_suffix_date_token(href, "DDTPP", ".zip") else {
             continue;
         };
         let effective = parse_compact_yy_mm_dd(&compact)?;
@@ -593,7 +595,7 @@ fn discover_published_chart_effective_dates(
         }
     }
     for href in &catalog.dafd {
-        if let Some(compact) = extract_prefix_date_token(&href, "DCS_", ".zip") {
+        if let Some(compact) = extract_prefix_date_token(href, "DCS_", ".zip") {
             if let Ok(date) = NaiveDate::parse_from_str(&compact, "%Y%m%d") {
                 dates.insert(date);
             }

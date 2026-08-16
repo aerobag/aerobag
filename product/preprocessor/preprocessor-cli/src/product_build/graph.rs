@@ -114,6 +114,10 @@ impl<V> Drop for GraphCompletionGuard<V> {
     }
 }
 
+type GraphTaskValues<V> = BTreeMap<String, V>;
+type GraphTaskNodeRecords = BTreeMap<String, Vec<NodeRecord>>;
+type GraphTaskOutputs<V> = (GraphTaskValues<V>, GraphTaskNodeRecords);
+
 pub(super) fn run_weighted_task_graph_with_expansion<K, V, RunTask, ExpandTask, Log>(
     graph_name: &str,
     pending_tasks: Vec<GraphScheduledTask<K>>,
@@ -121,7 +125,7 @@ pub(super) fn run_weighted_task_graph_with_expansion<K, V, RunTask, ExpandTask, 
     log: Log,
     run_task: RunTask,
     expand_task: ExpandTask,
-) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
+) -> anyhow::Result<GraphTaskOutputs<V>>
 where
     K: Clone + Send + 'static,
     V: Clone + Send + Sync + 'static,
@@ -154,7 +158,7 @@ where
     Ok((outcome.task_values, outcome.task_node_records))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn run_weighted_task_graph_fail_slow_with_failure_scopes<
     K,
     V,
@@ -242,9 +246,11 @@ where
     )
 }
 
+type GraphFailureScope = Box<dyn Fn(&str) -> Option<String> + Send>;
+
 enum GraphFailurePolicy {
     FailFast,
-    FailSlow(Box<dyn Fn(&str) -> Option<String> + Send>),
+    FailSlow(GraphFailureScope),
 }
 
 fn graph_failed_scope(policy: &GraphFailurePolicy, task_id: &str) -> Option<String> {
@@ -254,164 +260,154 @@ fn graph_failed_scope(policy: &GraphFailurePolicy, task_id: &str) -> Option<Stri
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn skip_pending_graph_task<K, Log>(
-    graph_name: &str,
-    task_id: &str,
-    skip_reason: String,
+struct GraphSchedulerState<K> {
     total_tasks: usize,
-    pending_tasks: &mut BTreeMap<String, GraphScheduledTask<K>>,
-    unresolved_deps: &mut BTreeMap<String, usize>,
-    reverse_deps: &mut BTreeMap<String, Vec<String>>,
-    skipped_tasks: &mut BTreeSet<String>,
-    log: &mut Log,
-) -> anyhow::Result<()>
-where
-    Log: FnMut(String) -> anyhow::Result<()>,
-{
-    if pending_tasks.remove(task_id).is_none() {
-        return Ok(());
-    }
-    unresolved_deps.remove(task_id);
-    if skipped_tasks.insert(task_id.to_string()) {
-        log(format!(
-            "{graph_name}-skip {} skipped={}/{} {}",
-            task_id,
-            skipped_tasks.len(),
+    known_task_ids: BTreeSet<String>,
+    pending_tasks: BTreeMap<String, GraphScheduledTask<K>>,
+    unresolved_deps: BTreeMap<String, usize>,
+    reverse_deps: BTreeMap<String, Vec<String>>,
+    ready_tasks: VecDeque<String>,
+    completed_ids: BTreeSet<String>,
+    failed_ids: BTreeSet<String>,
+    failed_scopes: BTreeSet<String>,
+    skipped_tasks: BTreeSet<String>,
+}
+
+impl<K> GraphSchedulerState<K> {
+    fn new(total_tasks: usize) -> Self {
+        Self {
             total_tasks,
-            skip_reason
-        ))?;
+            known_task_ids: BTreeSet::new(),
+            pending_tasks: BTreeMap::new(),
+            unresolved_deps: BTreeMap::new(),
+            reverse_deps: BTreeMap::new(),
+            ready_tasks: VecDeque::new(),
+            completed_ids: BTreeSet::new(),
+            failed_ids: BTreeSet::new(),
+            failed_scopes: BTreeSet::new(),
+            skipped_tasks: BTreeSet::new(),
+        }
     }
-    if let Some(dependents) = reverse_deps.remove(task_id) {
-        for dependent in dependents {
-            skip_pending_graph_task(
+
+    fn skip_pending_task<Log>(
+        &mut self,
+        graph_name: &str,
+        task_id: &str,
+        skip_reason: String,
+        log: &mut Log,
+    ) -> anyhow::Result<()>
+    where
+        Log: FnMut(String) -> anyhow::Result<()>,
+    {
+        if self.pending_tasks.remove(task_id).is_none() {
+            return Ok(());
+        }
+        self.unresolved_deps.remove(task_id);
+        if self.skipped_tasks.insert(task_id.to_string()) {
+            log(format!(
+                "{graph_name}-skip {} skipped={}/{} {}",
+                task_id,
+                self.skipped_tasks.len(),
+                self.total_tasks,
+                skip_reason
+            ))?;
+        }
+        if let Some(dependents) = self.reverse_deps.remove(task_id) {
+            for dependent in dependents {
+                self.skip_pending_task(
+                    graph_name,
+                    &dependent,
+                    format!("failed_dep={task_id}"),
+                    log,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn enqueue<Log>(
+        &mut self,
+        graph_name: &str,
+        task: GraphScheduledTask<K>,
+        failure_policy: &GraphFailurePolicy,
+        log: &mut Log,
+    ) -> anyhow::Result<()>
+    where
+        Log: FnMut(String) -> anyhow::Result<()>,
+    {
+        if !self.known_task_ids.insert(task.id.clone()) {
+            bail!("{graph_name} duplicate dynamic task id {}", task.id);
+        }
+
+        let task_id = task.id.clone();
+        let failed_dep = task
+            .deps
+            .iter()
+            .find(|dep| self.failed_ids.contains(*dep) || self.skipped_tasks.contains(*dep))
+            .cloned();
+        let failed_scope = graph_failed_scope(failure_policy, &task_id)
+            .filter(|scope| self.failed_scopes.contains(scope));
+        let unresolved = task
+            .deps
+            .iter()
+            .filter(|dep| !self.completed_ids.contains(*dep))
+            .count();
+        for dep in task
+            .deps
+            .iter()
+            .filter(|dep| !self.completed_ids.contains(*dep))
+        {
+            self.reverse_deps
+                .entry(dep.clone())
+                .or_default()
+                .push(task_id.clone());
+        }
+        self.unresolved_deps.insert(task_id.clone(), unresolved);
+        if unresolved == 0 {
+            self.ready_tasks.push_back(task_id.clone());
+        }
+        self.pending_tasks.insert(task_id.clone(), task);
+
+        if let Some(failed_dep) = failed_dep {
+            self.skip_pending_task(
                 graph_name,
-                &dependent,
-                format!("failed_dep={task_id}"),
-                total_tasks,
-                pending_tasks,
-                unresolved_deps,
-                reverse_deps,
-                skipped_tasks,
+                &task_id,
+                format!("failed_dep={failed_dep}"),
+                log,
+            )?;
+        } else if let Some(failed_scope) = failed_scope {
+            self.skip_pending_task(
+                graph_name,
+                &task_id,
+                format!("failed_scope={failed_scope}"),
                 log,
             )?;
         }
-    }
-    Ok(())
-}
 
-#[allow(clippy::too_many_arguments)]
-fn enqueue_graph_task<K, Log>(
-    graph_name: &str,
-    task: GraphScheduledTask<K>,
-    total_tasks: usize,
-    known_task_ids: &mut BTreeSet<String>,
-    completed_ids: &BTreeSet<String>,
-    failed_ids: &BTreeSet<String>,
-    failed_scopes: &BTreeSet<String>,
-    skipped_tasks: &mut BTreeSet<String>,
-    pending_tasks: &mut BTreeMap<String, GraphScheduledTask<K>>,
-    unresolved_deps: &mut BTreeMap<String, usize>,
-    reverse_deps: &mut BTreeMap<String, Vec<String>>,
-    ready_tasks: &mut VecDeque<String>,
-    failure_policy: &GraphFailurePolicy,
-    log: &mut Log,
-) -> anyhow::Result<()>
-where
-    Log: FnMut(String) -> anyhow::Result<()>,
-{
-    if !known_task_ids.insert(task.id.clone()) {
-        bail!("{graph_name} duplicate dynamic task id {}", task.id);
+        Ok(())
     }
 
-    let task_id = task.id.clone();
-    let failed_dep = task
-        .deps
-        .iter()
-        .find(|dep| failed_ids.contains(*dep) || skipped_tasks.contains(*dep))
-        .cloned();
-    let failed_scope =
-        graph_failed_scope(failure_policy, &task_id).filter(|scope| failed_scopes.contains(scope));
-    let unresolved = task
-        .deps
-        .iter()
-        .filter(|dep| !completed_ids.contains(*dep))
-        .count();
-    for dep in task.deps.iter().filter(|dep| !completed_ids.contains(*dep)) {
-        reverse_deps
-            .entry(dep.clone())
-            .or_default()
-            .push(task_id.clone());
+    fn skip_scope<Log>(
+        &mut self,
+        graph_name: &str,
+        scope: &str,
+        failure_policy: &GraphFailurePolicy,
+        log: &mut Log,
+    ) -> anyhow::Result<()>
+    where
+        Log: FnMut(String) -> anyhow::Result<()>,
+    {
+        let scoped_ids = self
+            .pending_tasks
+            .keys()
+            .filter(|task_id| graph_failed_scope(failure_policy, task_id).as_deref() == Some(scope))
+            .cloned()
+            .collect::<Vec<_>>();
+        for task_id in scoped_ids {
+            self.skip_pending_task(graph_name, &task_id, format!("failed_scope={scope}"), log)?;
+        }
+        Ok(())
     }
-    unresolved_deps.insert(task_id.clone(), unresolved);
-    if unresolved == 0 {
-        ready_tasks.push_back(task_id.clone());
-    }
-    pending_tasks.insert(task_id.clone(), task);
-
-    if let Some(failed_dep) = failed_dep {
-        skip_pending_graph_task(
-            graph_name,
-            &task_id,
-            format!("failed_dep={failed_dep}"),
-            total_tasks,
-            pending_tasks,
-            unresolved_deps,
-            reverse_deps,
-            skipped_tasks,
-            log,
-        )?;
-    } else if let Some(failed_scope) = failed_scope {
-        skip_pending_graph_task(
-            graph_name,
-            &task_id,
-            format!("failed_scope={failed_scope}"),
-            total_tasks,
-            pending_tasks,
-            unresolved_deps,
-            reverse_deps,
-            skipped_tasks,
-            log,
-        )?;
-    }
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn skip_pending_graph_scope<K, Log>(
-    graph_name: &str,
-    scope: &str,
-    total_tasks: usize,
-    pending_tasks: &mut BTreeMap<String, GraphScheduledTask<K>>,
-    unresolved_deps: &mut BTreeMap<String, usize>,
-    reverse_deps: &mut BTreeMap<String, Vec<String>>,
-    skipped_tasks: &mut BTreeSet<String>,
-    failure_policy: &GraphFailurePolicy,
-    log: &mut Log,
-) -> anyhow::Result<()>
-where
-    Log: FnMut(String) -> anyhow::Result<()>,
-{
-    let scoped_ids = pending_tasks
-        .keys()
-        .filter(|task_id| graph_failed_scope(failure_policy, task_id).as_deref() == Some(scope))
-        .cloned()
-        .collect::<Vec<_>>();
-    for task_id in scoped_ids {
-        skip_pending_graph_task(
-            graph_name,
-            &task_id,
-            format!("failed_scope={scope}"),
-            total_tasks,
-            pending_tasks,
-            unresolved_deps,
-            reverse_deps,
-            skipped_tasks,
-            log,
-        )?;
-    }
-    Ok(())
 }
 
 fn run_weighted_task_graph_impl<K, V, RunTask, ExpandTask, Log>(
@@ -443,62 +439,44 @@ where
     ) -> anyhow::Result<Vec<GraphScheduledTask<K>>>,
     Log: FnMut(String) -> anyhow::Result<()>,
 {
-    let mut total_tasks = pending_tasks.len();
+    let mut scheduler = GraphSchedulerState::new(pending_tasks.len());
     log(format!(
         "{graph_name}-ready tasks={} work_unit_budget={}",
-        total_tasks, work_unit_budget
+        scheduler.total_tasks, work_unit_budget
     ))?;
 
-    let mut known_task_ids = BTreeSet::<String>::new();
-    let mut pending_by_id = BTreeMap::<String, GraphScheduledTask<K>>::new();
-    let mut unresolved_deps = BTreeMap::<String, usize>::new();
-    let mut reverse_deps = BTreeMap::<String, Vec<String>>::new();
-    let mut ready_tasks = VecDeque::<String>::new();
     let (tx, rx) =
         crossbeam_channel::unbounded::<(String, usize, anyhow::Result<GraphTaskCompletion<V>>)>();
     let mut running_jobs = 0_usize;
     let mut running_units = 0_usize;
     let mut launched_tasks = 0_usize;
     let mut completed_tasks = 0_usize;
-    let mut completed_ids = std::collections::BTreeSet::<String>::new();
     let task_values = Arc::new(RwLock::new(BTreeMap::<String, V>::new()));
     let task_node_records = Arc::new(RwLock::new(BTreeMap::<String, Vec<NodeRecord>>::new()));
     let mut failures = BTreeMap::<String, String>::new();
-    let mut failed_ids = BTreeSet::<String>::new();
-    let mut failed_scopes = BTreeSet::<String>::new();
-    let mut skipped_tasks = BTreeSet::<String>::new();
     let mut worker_threads = BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
     let mut running_task_kinds = BTreeMap::<String, K>::new();
 
     for task in pending_tasks {
-        enqueue_graph_task(
-            graph_name,
-            task,
-            total_tasks,
-            &mut known_task_ids,
-            &completed_ids,
-            &failed_ids,
-            &failed_scopes,
-            &mut skipped_tasks,
-            &mut pending_by_id,
-            &mut unresolved_deps,
-            &mut reverse_deps,
-            &mut ready_tasks,
-            &failure_policy,
-            &mut log,
-        )?;
+        scheduler.enqueue(graph_name, task, &failure_policy, &mut log)?;
     }
 
-    while running_jobs > 0 || !pending_by_id.is_empty() {
+    while running_jobs > 0 || !scheduler.pending_tasks.is_empty() {
         let mut launched_any = false;
         loop {
             let mut deferred_ready = Vec::new();
             let mut selected_task_id = None;
-            while let Some(task_id) = ready_tasks.pop_front() {
-                let Some(task) = pending_by_id.get(&task_id) else {
+            while let Some(task_id) = scheduler.ready_tasks.pop_front() {
+                let Some(task) = scheduler.pending_tasks.get(&task_id) else {
                     continue;
                 };
-                if unresolved_deps.get(&task_id).copied().unwrap_or(usize::MAX) != 0 {
+                if scheduler
+                    .unresolved_deps
+                    .get(&task_id)
+                    .copied()
+                    .unwrap_or(usize::MAX)
+                    != 0
+                {
                     continue;
                 }
                 if running_units + task.weight <= work_unit_budget {
@@ -508,15 +486,16 @@ where
                 deferred_ready.push(task_id);
             }
             for task_id in deferred_ready.into_iter().rev() {
-                ready_tasks.push_front(task_id);
+                scheduler.ready_tasks.push_front(task_id);
             }
             let Some(selected_task_id) = selected_task_id else {
                 break;
             };
-            let task = pending_by_id
+            let task = scheduler
+                .pending_tasks
                 .remove(&selected_task_id)
                 .with_context(|| format!("missing ready task {selected_task_id}"))?;
-            unresolved_deps.remove(&selected_task_id);
+            scheduler.unresolved_deps.remove(&selected_task_id);
             let task_id = task.id.clone();
             let task_weight = task.weight;
             running_task_kinds.insert(task_id.clone(), task.kind.clone());
@@ -527,7 +506,7 @@ where
                 graph_name,
                 [
                     ("launched", launched_tasks.to_string()),
-                    ("total", total_tasks.to_string()),
+                    ("total", scheduler.total_tasks.to_string()),
                     ("completed", completed_tasks.to_string()),
                     ("weight", task_weight.to_string()),
                     ("running_units", (running_units + task_weight).to_string()),
@@ -569,7 +548,7 @@ where
         }
 
         if running_jobs == 0 {
-            if pending_by_id.is_empty() {
+            if scheduler.pending_tasks.is_empty() {
                 break;
             }
             bail!("{graph_name} deadlock: no runnable tasks remain");
@@ -585,7 +564,7 @@ where
                     log(format!(
                         "{graph_name}-wait running_jobs={} pending_tasks={} running_units={}/{}",
                         running_jobs,
-                        pending_by_id.len(),
+                        scheduler.pending_tasks.len(),
                         running_units,
                         work_unit_budget,
                     ))?;
@@ -621,15 +600,16 @@ where
                         .write()
                         .expect("graph values lock poisoned")
                         .insert(task_id.clone(), completion.value.clone());
-                    completed_ids.insert(task_id.clone());
-                    if let Some(dependents) = reverse_deps.remove(&task_id) {
+                    scheduler.completed_ids.insert(task_id.clone());
+                    if let Some(dependents) = scheduler.reverse_deps.remove(&task_id) {
                         for dependent in dependents {
-                            let Some(unresolved) = unresolved_deps.get_mut(&dependent) else {
+                            let Some(unresolved) = scheduler.unresolved_deps.get_mut(&dependent)
+                            else {
                                 continue;
                             };
                             *unresolved = unresolved.saturating_sub(1);
                             if *unresolved == 0 {
-                                ready_tasks.push_back(dependent);
+                                scheduler.ready_tasks.push_back(dependent);
                             }
                         }
                     }
@@ -644,25 +624,15 @@ where
                     )?;
                     if !spawned_tasks.is_empty() {
                         let spawned_count = spawned_tasks.len();
-                        total_tasks += spawned_count;
+                        scheduler.total_tasks += spawned_count;
                         log(format!(
                             "{graph_name}-spawn {} count={} total_tasks={}",
-                            task_id, spawned_count, total_tasks
+                            task_id, spawned_count, scheduler.total_tasks
                         ))?;
                         for spawned_task in spawned_tasks {
-                            enqueue_graph_task(
+                            scheduler.enqueue(
                                 graph_name,
                                 spawned_task,
-                                total_tasks,
-                                &mut known_task_ids,
-                                &completed_ids,
-                                &failed_ids,
-                                &failed_scopes,
-                                &mut skipped_tasks,
-                                &mut pending_by_id,
-                                &mut unresolved_deps,
-                                &mut reverse_deps,
-                                &mut ready_tasks,
                                 &failure_policy,
                                 &mut log,
                             )?;
@@ -675,7 +645,7 @@ where
                         [
                             ("status", "PASS".to_string()),
                             ("completed", completed_tasks.to_string()),
-                            ("total", total_tasks.to_string()),
+                            ("total", scheduler.total_tasks.to_string()),
                             ("running_units", running_units.to_string()),
                             ("work_unit_budget", work_unit_budget.to_string()),
                         ],
@@ -692,7 +662,7 @@ where
                         [
                             ("status", "FAIL".to_string()),
                             ("completed", completed_tasks.to_string()),
-                            ("total", total_tasks.to_string()),
+                            ("total", scheduler.total_tasks.to_string()),
                             ("running_units", running_units.to_string()),
                             ("work_unit_budget", work_unit_budget.to_string()),
                         ],
@@ -703,38 +673,23 @@ where
                     }
                     if let GraphFailurePolicy::FailSlow(scope_for_task) = &failure_policy {
                         if let Some(scope) = scope_for_task(&task_id) {
-                            failed_scopes.insert(scope);
+                            scheduler.failed_scopes.insert(scope);
                         }
                     }
-                    failed_ids.insert(task_id.clone());
-                    if let Some(dependents) = reverse_deps.remove(&task_id) {
+                    scheduler.failed_ids.insert(task_id.clone());
+                    if let Some(dependents) = scheduler.reverse_deps.remove(&task_id) {
                         for dependent in dependents {
-                            skip_pending_graph_task(
+                            scheduler.skip_pending_task(
                                 graph_name,
                                 &dependent,
                                 format!("failed_dep={task_id}"),
-                                total_tasks,
-                                &mut pending_by_id,
-                                &mut unresolved_deps,
-                                &mut reverse_deps,
-                                &mut skipped_tasks,
                                 &mut log,
                             )?;
                         }
                     }
                     if let Some(scope) = graph_failed_scope(&failure_policy, &task_id) {
-                        if failed_scopes.contains(&scope) {
-                            skip_pending_graph_scope(
-                                graph_name,
-                                &scope,
-                                total_tasks,
-                                &mut pending_by_id,
-                                &mut unresolved_deps,
-                                &mut reverse_deps,
-                                &mut skipped_tasks,
-                                &failure_policy,
-                                &mut log,
-                            )?;
+                        if scheduler.failed_scopes.contains(&scope) {
+                            scheduler.skip_scope(graph_name, &scope, &failure_policy, &mut log)?;
                         }
                     }
                     failures.insert(task_id, error_text);
@@ -755,7 +710,7 @@ where
         task_values: final_task_values,
         task_node_records: final_task_node_records,
         failures,
-        skipped_tasks,
+        skipped_tasks: scheduler.skipped_tasks,
     })
 }
 

@@ -130,16 +130,16 @@ pub fn display_path_for_procedure_leg(
     } else {
         hold_record.unwrap_or(leg_end)
     };
-    build_procedure_leg_display_path(
+    build_procedure_leg_display_path(ProcedureLegDisplayPathInput {
         segment_records,
         leg_start,
         terminal_record,
         initial_position_override,
         initial_course_override,
-        None,
-        false,
-        false,
-    )
+        following_segment_records: None,
+        allow_hold_exit_to_following_course: false,
+        align_standalone_pi_to_defining_course: false,
+    })
 }
 
 pub(crate) fn charted_flyover_turn_display_path(
@@ -182,6 +182,11 @@ pub(crate) fn charted_flyover_turn_display_path(
     })
 }
 
+pub struct FollowingProcedureSegment<'a> {
+    pub records: &'a [ProcedureLegMaterializationRecord],
+    pub allow_hold_exit_to_following_course: bool,
+}
+
 pub fn display_path_for_procedure_leg_before_following_segment(
     segment_records: &[ProcedureLegMaterializationRecord],
     leg_start: &ProcedureLegMaterializationRecord,
@@ -189,8 +194,7 @@ pub fn display_path_for_procedure_leg_before_following_segment(
     hold_record: Option<&ProcedureLegMaterializationRecord>,
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
-    following_segment_records: &[ProcedureLegMaterializationRecord],
-    allow_hold_exit_to_following_course: bool,
+    following_segment: FollowingProcedureSegment<'_>,
 ) -> Option<LegDisplayPath> {
     let terminal_record = if leg_start.sequence == leg_end.sequence {
         segment_records
@@ -201,18 +205,18 @@ pub fn display_path_for_procedure_leg_before_following_segment(
     } else {
         hold_record.unwrap_or(leg_end)
     };
-    build_procedure_leg_display_path(
+    build_procedure_leg_display_path(ProcedureLegDisplayPathInput {
         segment_records,
         leg_start,
         terminal_record,
         initial_position_override,
         initial_course_override,
-        Some(following_segment_records),
-        allow_hold_exit_to_following_course,
-        leg_start.path_termination.trim() == "PI"
+        following_segment_records: Some(following_segment.records),
+        allow_hold_exit_to_following_course: following_segment.allow_hold_exit_to_following_course,
+        align_standalone_pi_to_defining_course: leg_start.path_termination.trim() == "PI"
             && leg_start.sequence == 10
             && terminal_record.sequence == leg_start.sequence,
-    )
+    })
 }
 
 pub fn display_path_for_resumed_common_cf(
@@ -420,16 +424,16 @@ pub fn display_path_for_single_procedure_step(
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
 ) -> Option<LegDisplayPath> {
-    build_procedure_leg_display_path(
+    build_procedure_leg_display_path(ProcedureLegDisplayPathInput {
         segment_records,
-        step,
-        step,
+        leg_start: step,
+        terminal_record: step,
         initial_position_override,
         initial_course_override,
-        None,
-        false,
-        false,
-    )
+        following_segment_records: None,
+        allow_hold_exit_to_following_course: false,
+        align_standalone_pi_to_defining_course: false,
+    })
 }
 
 pub fn build_trailing_course_to_intercept_display_path(
@@ -453,16 +457,18 @@ pub fn build_trailing_course_to_intercept_display_path(
     )?;
     let mut altitude_ft = trailing_record.altitude_1_ft;
     let mut debug_sources = Vec::new();
-    let _ = append_course_track_path(
-        &mut elements,
-        &mut debug_sources,
-        intercept,
-        Some(intercept_step.magnetic_course_deg? + course_reference_variation_deg(intercept_step)),
-        &mut altitude_ft,
-        intercept_step,
-        TrackTermination::ToFix(intercept_step.nav_position?),
-        false,
-    )?;
+    let _ = append_course_track_path(CourseTrackPathInput {
+        elements: &mut elements,
+        debug_sources: &mut debug_sources,
+        current_position: intercept,
+        current_course_deg: Some(
+            intercept_step.magnetic_course_deg? + course_reference_variation_deg(intercept_step),
+        ),
+        current_altitude_ft: &mut altitude_ft,
+        step: intercept_step,
+        termination: TrackTermination::Fix(intercept_step.nav_position?),
+        force_misaligned_arrival_course_join: false,
+    })?;
     Some(solid_path(elements, debug_sources))
 }
 
@@ -486,11 +492,13 @@ fn hold_display_path(
     let leg_length_nm = nominal_hold_leg_length_nm(leg.route_distance_or_time.as_deref())?;
     let turn_radius_nm = nominal_standard_rate_turn_radius_nm();
     Some(build_hold_display_path(
-        fix,
-        inbound_course_deg,
-        clockwise,
-        leg_length_nm,
-        turn_radius_nm,
+        HoldGeometry {
+            fix,
+            inbound_course_deg,
+            clockwise,
+            leg_length_nm,
+            turn_radius_nm,
+        },
         arrival_course_deg,
         hold_kind == "HF",
         following_course_deg,
@@ -749,9 +757,9 @@ const NEAR_COURSE_ANCHOR_TRACK_TOLERANCE_NM: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TrackTermination {
-    ToFix(LatLon),
-    ToAltitude(Option<f64>),
-    ToDme { center: LatLon, radius_nm: f64 },
+    Fix(LatLon),
+    Altitude(Option<f64>),
+    Dme { center: LatLon, radius_nm: f64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -761,16 +769,30 @@ enum CourseToFixStartDecision {
     JoinPublishedCourseFromMisalignedArrival,
 }
 
-fn build_procedure_leg_display_path(
-    segment_records: &[ProcedureLegMaterializationRecord],
-    leg_start: &ProcedureLegMaterializationRecord,
-    terminal_record: &ProcedureLegMaterializationRecord,
+struct ProcedureLegDisplayPathInput<'a> {
+    segment_records: &'a [ProcedureLegMaterializationRecord],
+    leg_start: &'a ProcedureLegMaterializationRecord,
+    terminal_record: &'a ProcedureLegMaterializationRecord,
     initial_position_override: Option<LatLon>,
     initial_course_override: Option<f64>,
-    following_segment_records: Option<&[ProcedureLegMaterializationRecord]>,
+    following_segment_records: Option<&'a [ProcedureLegMaterializationRecord]>,
     allow_hold_exit_to_following_course: bool,
     align_standalone_pi_to_defining_course: bool,
+}
+
+fn build_procedure_leg_display_path(
+    input: ProcedureLegDisplayPathInput<'_>,
 ) -> Option<LegDisplayPath> {
+    let ProcedureLegDisplayPathInput {
+        segment_records,
+        leg_start,
+        terminal_record,
+        initial_position_override,
+        initial_course_override,
+        following_segment_records,
+        allow_hold_exit_to_following_course,
+        align_standalone_pi_to_defining_course,
+    } = input;
     let mut current_position = initial_position_override.or(leg_start.nav_position)?;
     let mut current_course_deg = initial_course_override.or_else(|| {
         leg_start
@@ -937,34 +959,34 @@ fn build_procedure_leg_display_path(
                 }
                 let termination = step
                     .altitude_1_ft
-                    .map(|altitude_ft| TrackTermination::ToAltitude(Some(altitude_ft)))
-                    .or_else(|| step.nav_position.map(TrackTermination::ToFix))?;
-                let (new_position, course_deg) = append_course_track_path(
-                    &mut elements,
-                    &mut debug_sources,
+                    .map(|altitude_ft| TrackTermination::Altitude(Some(altitude_ft)))
+                    .or_else(|| step.nav_position.map(TrackTermination::Fix))?;
+                let (new_position, course_deg) = append_course_track_path(CourseTrackPathInput {
+                    elements: &mut elements,
+                    debug_sources: &mut debug_sources,
                     current_position,
                     current_course_deg,
-                    &mut current_altitude_ft,
+                    current_altitude_ft: &mut current_altitude_ft,
                     step,
                     termination,
-                    false,
-                )?;
+                    force_misaligned_arrival_course_join: false,
+                })?;
                 current_position = new_position;
                 current_course_deg = Some(course_deg);
             }
             "CD" => {
                 let center = step.defining_nav_position?;
                 let radius_nm = parse_distance_tenths_nm(step.route_distance_or_time.as_deref())?;
-                let (new_position, course_deg) = append_course_track_path(
-                    &mut elements,
-                    &mut debug_sources,
+                let (new_position, course_deg) = append_course_track_path(CourseTrackPathInput {
+                    elements: &mut elements,
+                    debug_sources: &mut debug_sources,
                     current_position,
                     current_course_deg,
-                    &mut current_altitude_ft,
+                    current_altitude_ft: &mut current_altitude_ft,
                     step,
-                    TrackTermination::ToDme { center, radius_nm },
-                    false,
-                )?;
+                    termination: TrackTermination::Dme { center, radius_nm },
+                    force_misaligned_arrival_course_join: false,
+                })?;
                 current_position = new_position;
                 current_course_deg = Some(course_deg);
             }
@@ -1550,16 +1572,16 @@ fn build_procedure_leg_display_path(
                     fix,
                     previous_path_termination,
                 );
-                if let Some((new_position, _)) = append_course_track_path(
-                    &mut elements,
-                    &mut debug_sources,
+                if let Some((new_position, _)) = append_course_track_path(CourseTrackPathInput {
+                    elements: &mut elements,
+                    debug_sources: &mut debug_sources,
                     current_position,
                     current_course_deg,
-                    &mut current_altitude_ft,
+                    current_altitude_ft: &mut current_altitude_ft,
                     step,
-                    TrackTermination::ToFix(fix),
-                    previous_path_termination == Some("CA"),
-                ) {
+                    termination: TrackTermination::Fix(fix),
+                    force_misaligned_arrival_course_join: previous_path_termination == Some("CA"),
+                }) {
                     current_position = new_position;
                 } else {
                     let direct_course_deg = bearing_from(current_position, fix);
@@ -1805,7 +1827,7 @@ fn should_skip_direct_to_fix_for_following_course(
         next_cf_step
             .nav_ref
             .clone()
-            .unwrap_or_else(|| crate::NavRef::LatLon(direct_fix)),
+            .unwrap_or(crate::NavRef::LatLon(direct_fix)),
         Some(direct_fix),
         next_cf_step
             .magnetic_course_deg
@@ -1950,18 +1972,30 @@ fn current_or_step_course_deg(
     Some(step_magnetic_course_deg + course_reference_variation_deg(step))
 }
 
-fn append_course_track_path(
-    elements: &mut Vec<LegDisplayElement>,
-    debug_sources: &mut Vec<String>,
+struct CourseTrackPathInput<'a> {
+    elements: &'a mut Vec<LegDisplayElement>,
+    debug_sources: &'a mut Vec<String>,
     current_position: LatLon,
     current_course_deg: Option<f64>,
-    current_altitude_ft: &mut Option<f64>,
-    step: &ProcedureLegMaterializationRecord,
+    current_altitude_ft: &'a mut Option<f64>,
+    step: &'a ProcedureLegMaterializationRecord,
     termination: TrackTermination,
     force_misaligned_arrival_course_join: bool,
-) -> Option<(LatLon, f64)> {
+}
+
+fn append_course_track_path(input: CourseTrackPathInput<'_>) -> Option<(LatLon, f64)> {
+    let CourseTrackPathInput {
+        elements,
+        debug_sources,
+        current_position,
+        current_course_deg,
+        current_altitude_ft,
+        step,
+        termination,
+        force_misaligned_arrival_course_join,
+    } = input;
     let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
-    if let TrackTermination::ToFix(fix) = termination {
+    if let TrackTermination::Fix(fix) = termination {
         if distance_between_points_nm(current_position, fix) <= MIN_GEOMETRY_DISTANCE_NM {
             return Some((current_position, course_deg));
         }
@@ -1971,7 +2005,7 @@ fn append_course_track_path(
     // the inbound course line.
     let course_anchor = step.nav_position.or(step.defining_nav_position)?;
     let track_limit = track_limit_position(&termination);
-    let course_to_fix_start_decision = course_to_fix_start_decision(
+    let course_to_fix_start_decision = course_to_fix_start_decision(CourseToFixStartInput {
         current_position,
         current_course_deg,
         step,
@@ -1980,10 +2014,10 @@ fn append_course_track_path(
         course_deg,
         track_limit,
         force_misaligned_arrival_course_join,
-    );
+    });
     let on_track_tolerance_nm = match termination {
-        TrackTermination::ToDme { .. } => 0.5,
-        TrackTermination::ToAltitude(_)
+        TrackTermination::Dme { .. } => 0.5,
+        TrackTermination::Altitude(_)
             if distance_between_points_nm(current_position, course_anchor)
                 <= NEAR_COURSE_ANCHOR_TRACK_TOLERANCE_NM =>
         {
@@ -1998,7 +2032,7 @@ fn append_course_track_path(
     let track_start = if distance_between_points_nm(current_position, course_anchor)
         <= MIN_GEOMETRY_DISTANCE_NM
     {
-        if let (TrackTermination::ToFix(_), Some(current_heading_deg), Some(turn_clockwise)) =
+        if let (TrackTermination::Fix(_), Some(current_heading_deg), Some(turn_clockwise)) =
             (termination, current_course_deg, cf_turn_direction(step))
         {
             if angular_difference_degrees(current_heading_deg, course_deg) > 5.0 {
@@ -2035,7 +2069,7 @@ fn append_course_track_path(
             } else {
                 current_position
             }
-        } else if matches!(termination, TrackTermination::ToAltitude(_)) {
+        } else if matches!(termination, TrackTermination::Altitude(_)) {
             if let Some(current_heading_deg) = current_course_deg {
                 let heading_delta_deg = angular_difference_degrees(current_heading_deg, course_deg);
                 if heading_delta_deg > 1.0 {
@@ -2070,24 +2104,21 @@ fn append_course_track_path(
             current_position
         }
     } else if let Some(current_heading_deg) = current_course_deg {
-        if course_to_fix_start_decision
-            == CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse
-        {
-            current_position
-        } else if matches!(termination, TrackTermination::ToDme { .. })
-            && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
-        {
-            current_position
-        } else if current_position_is_on_track(
+        let direct_to_fix_satisfies_course = course_to_fix_start_decision
+            == CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse;
+        let aligned_dme_track = matches!(termination, TrackTermination::Dme { .. })
+            && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0;
+        let already_on_track = current_position_is_on_track(
             current_position,
             course_anchor,
             course_deg,
             on_track_tolerance_nm,
-        ) && angular_difference_degrees(current_heading_deg, course_deg) <= 5.0
-        {
+        ) && angular_difference_degrees(current_heading_deg, course_deg)
+            <= 5.0;
+        if direct_to_fix_satisfies_course || aligned_dme_track || already_on_track {
             current_position
-        } else if matches!(termination, TrackTermination::ToAltitude(_)) {
-            let Some((join_elements, intercept)) = best_nominal_intercept_track_join(
+        } else if matches!(termination, TrackTermination::Altitude(_)) {
+            let (join_elements, intercept) = best_nominal_intercept_track_join(
                 current_position,
                 current_heading_deg,
                 None,
@@ -2095,9 +2126,7 @@ fn append_course_track_path(
                 course_deg,
                 track_limit,
                 missed_approach_turn_radius_nm(),
-            ) else {
-                return None;
-            };
+            )?;
             extend_elements_with_sources(
                 elements,
                 debug_sources,
@@ -2177,7 +2206,7 @@ fn append_course_track_path(
                     // is a fly-by corner. Keep the published legs exact here; a later
                     // fillet/turn-anticipation pass can smooth it using both tangents.
                     current_position
-                } else if matches!(termination, TrackTermination::ToFix(fix) if distance_between_points_nm(intercept, fix) <= MIN_GEOMETRY_DISTANCE_NM)
+                } else if matches!(termination, TrackTermination::Fix(fix) if distance_between_points_nm(intercept, fix) <= MIN_GEOMETRY_DISTANCE_NM)
                     && intercept_distance_nm <= LATE_TO_FIX_CORRECTION_SNAP_DISTANCE_NM
                     && elements
                         .last()
@@ -2200,7 +2229,7 @@ fn append_course_track_path(
                     current_position
                 }
             } else {
-                if matches!(termination, TrackTermination::ToFix(_))
+                if matches!(termination, TrackTermination::Fix(_))
                     && angular_difference_degrees(current_heading_deg, course_deg) <= 20.0
                 {
                     // No-turn CF joins with small heading deltas are fly-by corners.
@@ -2231,14 +2260,14 @@ fn append_course_track_path(
         }
     } else {
         match termination {
-            TrackTermination::ToFix(fix) => {
+            TrackTermination::Fix(fix) => {
                 if distance_between_points_nm(current_position, fix) > MIN_GEOMETRY_DISTANCE_NM {
                     push_segment!(elements, debug_sources, current_position, fix);
                 }
                 fix
             }
-            TrackTermination::ToAltitude(_) => return None,
-            TrackTermination::ToDme { center, radius_nm } => {
+            TrackTermination::Altitude(_) => return None,
+            TrackTermination::Dme { center, radius_nm } => {
                 let end = forward_heading_circle_intersection(
                     current_position,
                     course_deg,
@@ -2254,7 +2283,7 @@ fn append_course_track_path(
     };
 
     let final_position = match termination {
-        TrackTermination::ToFix(fix) => {
+        TrackTermination::Fix(fix) => {
             let distance_to_fix_nm = distance_between_points_nm(track_start, fix);
             let can_retarget_last_element = elements
                 .last()
@@ -2279,7 +2308,7 @@ fn append_course_track_path(
             }
             fix
         }
-        TrackTermination::ToAltitude(target_altitude_ft) => extend_climb_segment(
+        TrackTermination::Altitude(target_altitude_ft) => extend_climb_segment(
             elements,
             track_start,
             course_deg,
@@ -2287,7 +2316,7 @@ fn append_course_track_path(
             target_altitude_ft,
             None,
         ),
-        TrackTermination::ToDme { center, radius_nm } => {
+        TrackTermination::Dme { center, radius_nm } => {
             let end =
                 forward_heading_circle_intersection(track_start, course_deg, center, radius_nm)?;
             if distance_between_points_nm(track_start, end) > MIN_GEOMETRY_DISTANCE_NM {
@@ -2296,23 +2325,35 @@ fn append_course_track_path(
             end
         }
     };
-    if matches!(termination, TrackTermination::ToFix(_)) && step.altitude_1_ft.is_some() {
+    if matches!(termination, TrackTermination::Fix(_)) && step.altitude_1_ft.is_some() {
         *current_altitude_ft = step.altitude_1_ft;
     }
     Some((final_position, course_deg))
 }
 
-fn course_to_fix_start_decision(
+struct CourseToFixStartInput<'a> {
     current_position: LatLon,
-    current_heading_deg: Option<f64>,
-    step: &ProcedureLegMaterializationRecord,
+    current_course_deg: Option<f64>,
+    step: &'a ProcedureLegMaterializationRecord,
     termination: TrackTermination,
     course_anchor: LatLon,
     course_deg: f64,
     track_limit: Option<LatLon>,
     force_misaligned_arrival_course_join: bool,
-) -> CourseToFixStartDecision {
-    let TrackTermination::ToFix(fix) = termination else {
+}
+
+fn course_to_fix_start_decision(input: CourseToFixStartInput<'_>) -> CourseToFixStartDecision {
+    let CourseToFixStartInput {
+        current_position,
+        current_course_deg: current_heading_deg,
+        step,
+        termination,
+        course_anchor,
+        course_deg,
+        track_limit,
+        force_misaligned_arrival_course_join,
+    } = input;
+    let TrackTermination::Fix(fix) = termination else {
         return CourseToFixStartDecision::JoinPublishedCourse;
     };
     if cf_turn_direction(step).is_some() {
@@ -2684,12 +2725,14 @@ fn borrowed_hold_entry_elements_for_pi(
     let leg_length_nm = nominal_hold_leg_length_nm(hold_record.route_distance_or_time.as_deref())?;
     let pi_outbound_course_deg = procedure_turn_initial_outbound_course_deg(pi_step)?;
     let entry = hold_entry_elements_with_optional_protected_exit(
-        fix,
-        inbound_course_deg,
-        clockwise,
+        HoldGeometry {
+            fix,
+            inbound_course_deg,
+            clockwise,
+            leg_length_nm,
+            turn_radius_nm: nominal_standard_rate_turn_radius_nm(),
+        },
         Some(arrival_course_deg),
-        leg_length_nm,
-        nominal_standard_rate_turn_radius_nm(),
         Some(pi_outbound_course_deg),
         true,
     );
@@ -2870,7 +2913,7 @@ fn best_nominal_intercept_track_join(
             if extra_straight_nm > MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM {
                 continue;
             }
-            let Some(candidate) = build_track_join_candidate(
+            let Some(candidate) = build_track_join_candidate(TrackJoinCandidateInput {
                 current_position,
                 current_heading_deg,
                 turn_clockwise,
@@ -2880,7 +2923,7 @@ fn best_nominal_intercept_track_join(
                 course_deg,
                 track_limit,
                 turn_radius_nm,
-            ) else {
+            }) else {
                 continue;
             };
             let score = sweep + (extra_straight_nm * 5.0);
@@ -2898,9 +2941,9 @@ fn best_nominal_intercept_track_join(
 
 fn track_limit_position(termination: &TrackTermination) -> Option<LatLon> {
     match termination {
-        TrackTermination::ToFix(fix) => Some(*fix),
-        TrackTermination::ToAltitude(_) => None,
-        TrackTermination::ToDme { .. } => None,
+        TrackTermination::Fix(fix) => Some(*fix),
+        TrackTermination::Altitude(_) => None,
+        TrackTermination::Dme { .. } => None,
     }
 }
 
@@ -3006,16 +3049,18 @@ fn append_heading_leg_path(
                     let next_course_deg =
                         next_step.magnetic_course_deg? + course_reference_variation_deg(next_step);
                     let next_defining_nav = next_step.defining_nav_position?;
-                    if let Some(candidate_extra_straight_nm) = delayed_turn_start_for_track_capture(
-                        current_position,
-                        initial_course_deg,
-                        target_heading_deg,
-                        turn_clockwise,
-                        turn_radius_nm,
-                        next_defining_nav,
-                        next_course_deg,
-                        Some(next_fix),
-                    ) {
+                    if let Some(candidate_extra_straight_nm) =
+                        delayed_turn_start_for_track_capture(DelayedTrackCaptureInput {
+                            current_position,
+                            current_heading_deg: initial_course_deg,
+                            target_heading_deg,
+                            turn_clockwise,
+                            turn_radius_nm,
+                            course_anchor: next_defining_nav,
+                            course_deg: next_course_deg,
+                            track_limit: Some(next_fix),
+                        })
+                    {
                         if candidate_extra_straight_nm > MAX_EXTRA_STRAIGHT_BEFORE_VI_TURN_NM {
                             panic!(
                                 "needed {:.2}nm extra straight before {} turn for {} {} seq {}",
@@ -3224,7 +3269,7 @@ fn course_to_intercept_path(
     Some((elements, intercept, flown_course_deg))
 }
 
-fn delayed_turn_start_for_track_capture(
+struct DelayedTrackCaptureInput {
     current_position: LatLon,
     current_heading_deg: f64,
     target_heading_deg: f64,
@@ -3233,7 +3278,19 @@ fn delayed_turn_start_for_track_capture(
     course_anchor: LatLon,
     course_deg: f64,
     track_limit: Option<LatLon>,
-) -> Option<f64> {
+}
+
+fn delayed_turn_start_for_track_capture(input: DelayedTrackCaptureInput) -> Option<f64> {
+    let DelayedTrackCaptureInput {
+        current_position,
+        current_heading_deg,
+        target_heading_deg,
+        turn_clockwise,
+        turn_radius_nm,
+        course_anchor,
+        course_deg,
+        track_limit,
+    } = input;
     for extra_straight_nm in (0..=8).map(|index| index as f64 * 0.25) {
         let turn_end = preview_heading_change_end(
             current_position,
@@ -3771,11 +3828,11 @@ fn best_near_reciprocal_track_join(
     {
         let sweep =
             heading_sweep_degrees(current_heading_deg, intercept_heading_deg, turn_clockwise);
-        if sweep < 1.0 || sweep > 270.0 {
+        if !(1.0..=270.0).contains(&sweep) {
             continue;
         }
         for extra_straight_nm in (0..=20).map(|index| index as f64 * 0.25) {
-            let Some(candidate) = build_track_join_candidate(
+            let Some(candidate) = build_track_join_candidate(TrackJoinCandidateInput {
                 current_position,
                 current_heading_deg,
                 turn_clockwise,
@@ -3783,9 +3840,9 @@ fn best_near_reciprocal_track_join(
                 extra_straight_nm,
                 course_anchor,
                 course_deg,
-                None,
+                track_limit: None,
                 turn_radius_nm,
-            ) else {
+            }) else {
                 continue;
             };
             if let Some(limit) = track_limit {
@@ -3796,8 +3853,9 @@ fn best_near_reciprocal_track_join(
                     projection_along_course_nm(course_anchor, limit, course_unit);
                 let on_course_distance_nm = distance_between_points_nm(candidate.intercept, limit);
                 if intercept_projection > limit_projection + MIN_GEOMETRY_DISTANCE_NM
-                    || on_course_distance_nm > MAX_NEAR_RECIPROCAL_INTERCEPT_TO_FIX_DISTANCE_NM
-                    || on_course_distance_nm < MIN_NEAR_RECIPROCAL_ON_COURSE_DISTANCE_NM
+                    || !(MIN_NEAR_RECIPROCAL_ON_COURSE_DISTANCE_NM
+                        ..=MAX_NEAR_RECIPROCAL_INTERCEPT_TO_FIX_DISTANCE_NM)
+                        .contains(&on_course_distance_nm)
                 {
                     continue;
                 }
@@ -3839,7 +3897,7 @@ struct TrackJoinCandidate {
     intercept: LatLon,
 }
 
-fn build_track_join_candidate(
+struct TrackJoinCandidateInput {
     current_position: LatLon,
     current_heading_deg: f64,
     turn_clockwise: bool,
@@ -3849,7 +3907,20 @@ fn build_track_join_candidate(
     course_deg: f64,
     track_limit: Option<LatLon>,
     turn_radius_nm: f64,
-) -> Option<TrackJoinCandidate> {
+}
+
+fn build_track_join_candidate(input: TrackJoinCandidateInput) -> Option<TrackJoinCandidate> {
+    let TrackJoinCandidateInput {
+        current_position,
+        current_heading_deg,
+        turn_clockwise,
+        intercept_heading_deg,
+        extra_straight_nm,
+        course_anchor,
+        course_deg,
+        track_limit,
+        turn_radius_nm,
+    } = input;
     let turn_start = if extra_straight_nm <= 0.0 {
         current_position
     } else {
@@ -4180,16 +4251,28 @@ struct HoldEntryPrelude {
     terminal_course_deg: f64,
 }
 
-fn hold_entry_elements_with_optional_protected_exit(
+#[derive(Clone, Copy)]
+struct HoldGeometry {
     fix: LatLon,
     inbound_course_deg: f64,
     clockwise: bool,
-    arrival_course_deg: Option<f64>,
     leg_length_nm: f64,
     turn_radius_nm: f64,
+}
+
+fn hold_entry_elements_with_optional_protected_exit(
+    geometry: HoldGeometry,
+    arrival_course_deg: Option<f64>,
     requested_exit_course_deg: Option<f64>,
     allow_empty_entry_exit: bool,
 ) -> HoldEntryPrelude {
+    let HoldGeometry {
+        fix,
+        inbound_course_deg,
+        clockwise,
+        leg_length_nm,
+        turn_radius_nm,
+    } = geometry;
     let entry_kind = arrival_course_deg.map(|arrival_course_deg| {
         classify_hold_entry(arrival_course_deg, inbound_course_deg, clockwise)
     });
@@ -4286,15 +4369,18 @@ fn hold_entry_elements_with_optional_protected_exit(
 }
 
 fn build_hold_display_path(
-    fix: LatLon,
-    inbound_course_deg: f64,
-    clockwise: bool,
-    leg_length_nm: f64,
-    turn_radius_nm: f64,
+    geometry: HoldGeometry,
     arrival_course_deg: Option<f64>,
     stop_when_established_inbound: bool,
     following_course_deg: Option<f64>,
 ) -> LegDisplayPath {
+    let HoldGeometry {
+        fix,
+        inbound_course_deg,
+        clockwise,
+        leg_length_nm,
+        turn_radius_nm,
+    } = geometry;
     let inbound = bearing_unit_vector(inbound_course_deg);
     let outbound = (-inbound.0, -inbound.1);
     let lateral = if clockwise {
@@ -4320,12 +4406,8 @@ fn build_hold_display_path(
         entry_kind,
         terminal_course_deg,
     } = hold_entry_elements_with_optional_protected_exit(
-        fix,
-        inbound_course_deg,
-        clockwise,
+        geometry,
         arrival_course_deg,
-        leg_length_nm,
-        turn_radius_nm,
         requested_entry_exit_course_deg,
         false,
     );
@@ -4365,19 +4447,17 @@ fn build_hold_display_path(
         -lateral.0 * turn_radius_nm,
         -lateral.1 * turn_radius_nm,
     );
-    if stop_when_established_inbound {
-        if !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
-            prune_degenerate_display_elements_with_sources_and_roles(
-                &mut elements,
-                &mut debug_sources,
-                &mut element_roles,
-            );
-            tag_hold_debug_sources(&mut debug_sources, &element_roles);
-            let mut path = solid_path(elements, debug_sources);
-            path.debug_element_roles = element_roles;
-            path.effective_terminal_course_deg = Some(terminal_course_deg);
-            return path;
-        }
+    if stop_when_established_inbound && !matches!(entry_kind, Some(HoldEntryKind::Direct) | None) {
+        prune_degenerate_display_elements_with_sources_and_roles(
+            &mut elements,
+            &mut debug_sources,
+            &mut element_roles,
+        );
+        tag_hold_debug_sources(&mut debug_sources, &element_roles);
+        let mut path = solid_path(elements, debug_sources);
+        path.debug_element_roles = element_roles;
+        path.effective_terminal_course_deg = Some(terminal_course_deg);
+        return path;
     }
     if !direct_entry_replaces_first_turn {
         push_arc!(
@@ -4621,6 +4701,141 @@ fn classify_hold_entry(
     HoldEntryKind::Direct
 }
 
+fn bearing_unit_vector(course_deg: f64) -> (f64, f64) {
+    let radians = course_deg.to_radians();
+    (radians.sin(), radians.cos())
+}
+
+fn normalize_bearing_degrees(value: f64) -> f64 {
+    let mut normalized = value % 360.0;
+    if normalized < 0.0 {
+        normalized += 360.0;
+    }
+    normalized
+}
+
+fn clockwise_delta_degrees(from_deg: f64, to_deg: f64) -> f64 {
+    let mut delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
+    if delta < 0.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
+fn shortest_turn_clockwise(from_deg: f64, to_deg: f64) -> bool {
+    let clockwise_delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
+    let clockwise_delta = if clockwise_delta < 0.0 {
+        clockwise_delta + 360.0
+    } else {
+        clockwise_delta
+    };
+    clockwise_delta <= 180.0
+}
+
+fn angular_difference_degrees(left: f64, right: f64) -> f64 {
+    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    delta
+}
+
+fn bearing_from(from: LatLon, to: LatLon) -> f64 {
+    let from_lat = from.lat.to_radians();
+    let from_lon = from.lon.to_radians();
+    let to_lat = to.lat.to_radians();
+    let to_lon = to.lon.to_radians();
+    let delta_lon = to_lon - from_lon;
+    let y = delta_lon.sin() * to_lat.cos();
+    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
+    normalize_bearing_degrees(y.atan2(x).to_degrees())
+}
+
+fn distance_between_points_nm(from: LatLon, to: LatLon) -> f64 {
+    let mean_lat = ((from.lat + to.lat) / 2.0).to_radians();
+    let east_nm = (to.lon - from.lon) * 60.0 * mean_lat.cos();
+    let north_nm = (to.lat - from.lat) * 60.0;
+    east_nm.hypot(north_nm)
+}
+
+fn positions_nearly_equal_for_geometry(a: LatLon, b: LatLon) -> bool {
+    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
+}
+
+fn prune_degenerate_display_elements_with_sources(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+) {
+    let mut roles = Vec::new();
+    prune_degenerate_display_elements_with_sources_and_roles(elements, debug_sources, &mut roles);
+}
+
+fn prune_degenerate_display_elements_with_sources_and_roles(
+    elements: &mut Vec<LegDisplayElement>,
+    debug_sources: &mut Vec<String>,
+    debug_roles: &mut Vec<String>,
+) {
+    let original_elements = std::mem::take(elements);
+    let original_sources = std::mem::take(debug_sources);
+    let original_roles = std::mem::take(debug_roles);
+    for (index, element) in original_elements.into_iter().enumerate() {
+        let keep = match &element {
+            LegDisplayElement::Segment { start, end } => {
+                !positions_nearly_equal_for_geometry(*start, *end)
+            }
+            LegDisplayElement::Arc {
+                start,
+                end,
+                radius_nm,
+                sweep_degrees,
+                ..
+            } => {
+                let is_missed_turn = original_sources.get(index).is_some_and(|source| {
+                    source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX)
+                        || source.starts_with(INFERRED_MISSED_TURN_SOURCE_PREFIX)
+                        || source.starts_with(PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX)
+                });
+                let has_arc_geometry = !positions_nearly_equal_for_geometry(*start, *end)
+                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM;
+                (is_missed_turn
+                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
+                    && sweep_degrees.abs() > 0.0)
+                    || (has_arc_geometry && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG)
+            }
+        };
+        if keep {
+            elements.push(element);
+            debug_sources.push(
+                original_sources
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            );
+            debug_roles.push(original_roles.get(index).cloned().unwrap_or_default());
+        }
+    }
+}
+
+fn left_normal((east, north): (f64, f64)) -> (f64, f64) {
+    (-north, east)
+}
+
+fn right_normal((east, north): (f64, f64)) -> (f64, f64) {
+    (north, -east)
+}
+
+fn offset_latlon(origin: LatLon, east_nm: f64, north_nm: f64) -> LatLon {
+    let lat = origin.lat + north_nm / 60.0;
+    let lon_scale = origin.lat.to_radians().cos().abs().max(0.01);
+    let lon = origin.lon + east_nm / (60.0 * lon_scale);
+    LatLon { lat, lon }
+}
+
+fn destination_point(origin: LatLon, course_deg: f64, distance_nm: f64) -> LatLon {
+    let (east, north) = bearing_unit_vector(course_deg);
+    offset_latlon(origin, east * distance_nm, north * distance_nm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4848,9 +5063,16 @@ mod tests {
         anchor.altitude_1_ft = Some(432.0);
         let records = vec![anchor.clone(), vi, step.clone()];
 
-        let path = build_procedure_leg_display_path(
-            &records, &anchor, &step, None, None, None, false, false,
-        )
+        let path = build_procedure_leg_display_path(ProcedureLegDisplayPathInput {
+            segment_records: &records,
+            leg_start: &anchor,
+            terminal_record: &step,
+            initial_position_override: None,
+            initial_course_override: None,
+            following_segment_records: None,
+            allow_hold_exit_to_following_course: false,
+            align_standalone_pi_to_defining_course: false,
+        })
         .expect("MONTN2 should reach NEZUG without a late lateral correction");
 
         assert_eq!(
@@ -4925,9 +5147,16 @@ mod tests {
         );
         let records = vec![anchor.clone(), vi, intercept_anchor, target.clone()];
 
-        let path = build_procedure_leg_display_path(
-            &records, &anchor, &target, None, None, None, false, false,
-        )
+        let path = build_procedure_leg_display_path(ProcedureLegDisplayPathInput {
+            segment_records: &records,
+            leg_start: &anchor,
+            terminal_record: &target,
+            initial_position_override: None,
+            initial_course_override: None,
+            following_segment_records: None,
+            allow_hold_exit_to_following_course: false,
+            align_standalone_pi_to_defining_course: false,
+        })
         .expect("BUELT4 should intercept GLJ R-130 and continue to BUELT");
 
         assert!(
@@ -5045,16 +5274,16 @@ mod tests {
         };
         let records = [final_cf, missed_ca];
 
-        let path = build_procedure_leg_display_path(
-            &records,
-            &records[0],
-            &records[1],
-            Some(yalsu),
-            Some(312.6),
-            None,
-            false,
-            false,
-        )
+        let path = build_procedure_leg_display_path(ProcedureLegDisplayPathInput {
+            segment_records: &records,
+            leg_start: &records[0],
+            terminal_record: &records[1],
+            initial_position_override: Some(yalsu),
+            initial_course_override: Some(312.6),
+            following_segment_records: None,
+            allow_hold_exit_to_following_course: false,
+            align_standalone_pi_to_defining_course: false,
+        })
         .expect("materialize 71J S31 final and initial missed climb");
         let missed_course_deg = path
             .elements
@@ -5118,16 +5347,16 @@ mod tests {
         let mut debug_sources = Vec::new();
         let mut altitude_ft = Some(700.0);
 
-        append_course_track_path(
-            &mut elements,
-            &mut debug_sources,
-            climb_end,
-            Some(133.2),
-            &mut altitude_ft,
-            &step,
-            TrackTermination::ToFix(chide),
-            true,
-        )
+        append_course_track_path(CourseTrackPathInput {
+            elements: &mut elements,
+            debug_sources: &mut debug_sources,
+            current_position: climb_end,
+            current_course_deg: Some(133.2),
+            current_altitude_ft: &mut altitude_ft,
+            step: &step,
+            termination: TrackTermination::Fix(chide),
+            force_misaligned_arrival_course_join: true,
+        })
         .expect("materialize KCEC missed CF");
 
         assert!(
@@ -5213,16 +5442,16 @@ mod tests {
             "the audit must reject KCLT's former direct-to-LOCAS shortcut"
         );
 
-        append_course_track_path(
-            &mut elements,
-            &mut debug_sources,
-            climb_end,
-            Some(176.0),
-            &mut altitude_ft,
-            &step,
-            TrackTermination::ToFix(locas),
-            true,
-        )
+        append_course_track_path(CourseTrackPathInput {
+            elements: &mut elements,
+            debug_sources: &mut debug_sources,
+            current_position: climb_end,
+            current_course_deg: Some(176.0),
+            current_altitude_ft: &mut altitude_ft,
+            step: &step,
+            termination: TrackTermination::Fix(locas),
+            force_misaligned_arrival_course_join: true,
+        })
         .expect("materialize KCLT missed CF");
 
         assert!(
@@ -5280,139 +5509,4 @@ mod tests {
             HoldEntryKind::Direct
         );
     }
-}
-
-fn bearing_unit_vector(course_deg: f64) -> (f64, f64) {
-    let radians = course_deg.to_radians();
-    (radians.sin(), radians.cos())
-}
-
-fn normalize_bearing_degrees(value: f64) -> f64 {
-    let mut normalized = value % 360.0;
-    if normalized < 0.0 {
-        normalized += 360.0;
-    }
-    normalized
-}
-
-fn clockwise_delta_degrees(from_deg: f64, to_deg: f64) -> f64 {
-    let mut delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
-    if delta < 0.0 {
-        delta += 360.0;
-    }
-    delta
-}
-
-fn shortest_turn_clockwise(from_deg: f64, to_deg: f64) -> bool {
-    let clockwise_delta = normalize_bearing_degrees(to_deg) - normalize_bearing_degrees(from_deg);
-    let clockwise_delta = if clockwise_delta < 0.0 {
-        clockwise_delta + 360.0
-    } else {
-        clockwise_delta
-    };
-    clockwise_delta <= 180.0
-}
-
-fn angular_difference_degrees(left: f64, right: f64) -> f64 {
-    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
-    if delta > 180.0 {
-        delta = 360.0 - delta;
-    }
-    delta
-}
-
-fn bearing_from(from: LatLon, to: LatLon) -> f64 {
-    let from_lat = from.lat.to_radians();
-    let from_lon = from.lon.to_radians();
-    let to_lat = to.lat.to_radians();
-    let to_lon = to.lon.to_radians();
-    let delta_lon = to_lon - from_lon;
-    let y = delta_lon.sin() * to_lat.cos();
-    let x = from_lat.cos() * to_lat.sin() - from_lat.sin() * to_lat.cos() * delta_lon.cos();
-    normalize_bearing_degrees(y.atan2(x).to_degrees())
-}
-
-fn distance_between_points_nm(from: LatLon, to: LatLon) -> f64 {
-    let mean_lat = ((from.lat + to.lat) / 2.0).to_radians();
-    let east_nm = (to.lon - from.lon) * 60.0 * mean_lat.cos();
-    let north_nm = (to.lat - from.lat) * 60.0;
-    east_nm.hypot(north_nm)
-}
-
-fn positions_nearly_equal_for_geometry(a: LatLon, b: LatLon) -> bool {
-    (a.lat - b.lat).abs() < POSITION_EPSILON_DEG && (a.lon - b.lon).abs() < POSITION_EPSILON_DEG
-}
-
-fn prune_degenerate_display_elements_with_sources(
-    elements: &mut Vec<LegDisplayElement>,
-    debug_sources: &mut Vec<String>,
-) {
-    let mut roles = Vec::new();
-    prune_degenerate_display_elements_with_sources_and_roles(elements, debug_sources, &mut roles);
-}
-
-fn prune_degenerate_display_elements_with_sources_and_roles(
-    elements: &mut Vec<LegDisplayElement>,
-    debug_sources: &mut Vec<String>,
-    debug_roles: &mut Vec<String>,
-) {
-    let original_elements = std::mem::take(elements);
-    let original_sources = std::mem::take(debug_sources);
-    let original_roles = std::mem::take(debug_roles);
-    for (index, element) in original_elements.into_iter().enumerate() {
-        let keep = match &element {
-            LegDisplayElement::Segment { start, end } => {
-                !positions_nearly_equal_for_geometry(*start, *end)
-            }
-            LegDisplayElement::Arc {
-                start,
-                end,
-                radius_nm,
-                sweep_degrees,
-                ..
-            } => {
-                let is_missed_turn = original_sources.get(index).is_some_and(|source| {
-                    source.starts_with(EXPLICIT_MISSED_TURN_SOURCE_PREFIX)
-                        || source.starts_with(INFERRED_MISSED_TURN_SOURCE_PREFIX)
-                        || source.starts_with(PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX)
-                });
-                let has_arc_geometry = !positions_nearly_equal_for_geometry(*start, *end)
-                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM;
-                (is_missed_turn
-                    && *radius_nm > MIN_GEOMETRY_DISTANCE_NM
-                    && sweep_degrees.abs() > 0.0)
-                    || (has_arc_geometry && sweep_degrees.abs() > MIN_ARC_SWEEP_DEG)
-            }
-        };
-        if keep {
-            elements.push(element);
-            debug_sources.push(
-                original_sources
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string()),
-            );
-            debug_roles.push(original_roles.get(index).cloned().unwrap_or_default());
-        }
-    }
-}
-
-fn left_normal((east, north): (f64, f64)) -> (f64, f64) {
-    (-north, east)
-}
-
-fn right_normal((east, north): (f64, f64)) -> (f64, f64) {
-    (north, -east)
-}
-
-fn offset_latlon(origin: LatLon, east_nm: f64, north_nm: f64) -> LatLon {
-    let lat = origin.lat + north_nm / 60.0;
-    let lon_scale = origin.lat.to_radians().cos().abs().max(0.01);
-    let lon = origin.lon + east_nm / (60.0 * lon_scale);
-    LatLon { lat, lon }
-}
-
-fn destination_point(origin: LatLon, course_deg: f64, distance_nm: f64) -> LatLon {
-    let (east, north) = bearing_unit_vector(course_deg);
-    offset_latlon(origin, east * distance_nm, north * distance_nm)
 }

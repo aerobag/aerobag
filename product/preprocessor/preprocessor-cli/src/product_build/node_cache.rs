@@ -382,10 +382,10 @@ fn legacy_external_fetch_provenance_roots(node_dir: &Path) -> Vec<PathBuf> {
         (region_id != WIDE_ANGLE_REGION_ID).then(|| format!("terrain-{region_id}"))
     } else if let Some(region_id) = node_name.strip_prefix("static-shaded-relief-") {
         (region_id != WIDE_ANGLE_REGION_ID).then(|| format!("shaded-relief-{region_id}"))
-    } else if let Some(region_id) = node_name.strip_prefix("static-water-mask-") {
-        Some(format!("water-mask-{region_id}"))
     } else {
-        None
+        node_name
+            .strip_prefix("static-water-mask-")
+            .map(|region_id| format!("water-mask-{region_id}"))
     };
     provenance_name
         .map(|name| vec![provenance_root.join(name)])

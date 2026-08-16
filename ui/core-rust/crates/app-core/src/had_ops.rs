@@ -2423,15 +2423,17 @@ pub(crate) fn chart_page_state(
     }
     let reference_families = resolve_chart_reference_families(store, selected_reference_family_id)?;
     Ok(derive_chart_page_state_from_collections(
-        plan,
-        airports,
-        reference_families,
-        stored_recent_airport_ids,
-        plate_target_airport_id,
-        candidate_airport_id,
-        selected_reference_family_id,
-        candidate_chart_id,
-        suggested_chart_ids,
+        crate::chart_page::ChartPageCollectionsInput {
+            plan,
+            airports,
+            reference_families,
+            stored_recent_airport_ids,
+            plate_target_airport_id,
+            selected_airport_id: candidate_airport_id,
+            selected_reference_family_id,
+            candidate_chart_id,
+            suggested_chart_ids,
+        },
     ))
 }
 

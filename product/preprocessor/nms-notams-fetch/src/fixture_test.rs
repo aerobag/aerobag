@@ -223,16 +223,16 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
                 &boundaries,
                 &checkpoint_artifacts,
             )?;
-            apply_transition_range(
-                &mut client,
-                &transitions,
-                &boundaries,
-                checkpoint_boundary,
-                transitions.len(),
+            apply_transition_range(TransitionRangeInput {
+                client: &mut client,
+                transitions: &transitions,
+                boundaries: &boundaries,
+                start: checkpoint_boundary,
+                end: transitions.len(),
                 max_span,
-                temp.path(),
-                &mut delta_artifacts,
-            )?;
+                output_root: temp.path(),
+                artifacts: &mut delta_artifacts,
+            })?;
             assert_exact_final_state(&client, &final_checkpoint);
             path_count += 1;
         }
@@ -254,26 +254,23 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
         let mut client =
             install_checkpoint_artifact(checkpoint_boundary, &boundaries, &checkpoint_artifacts)?;
         let online_span = [1_usize, 7, 31][schedule % 3];
-        apply_transition_range(
-            &mut client,
-            &transitions,
-            &boundaries,
-            checkpoint_boundary,
-            disconnect_boundary,
-            online_span,
-            temp.path(),
-            &mut delta_artifacts,
-        )?;
+        apply_transition_range(TransitionRangeInput {
+            client: &mut client,
+            transitions: &transitions,
+            boundaries: &boundaries,
+            start: checkpoint_boundary,
+            end: disconnect_boundary,
+            max_span: online_span,
+            output_root: temp.path(),
+            artifacts: &mut delta_artifacts,
+        })?;
 
         let mut catchup_start = disconnect_boundary;
         if schedule % 3 == 0 {
             if let Some(new_checkpoint) = checkpoint_boundaries
                 .iter()
                 .copied()
-                .filter(|boundary| {
-                    *boundary > disconnect_boundary && *boundary <= transitions.len()
-                })
-                .last()
+                .rfind(|boundary| *boundary > disconnect_boundary && *boundary <= transitions.len())
             {
                 client = install_checkpoint_artifact(
                     new_checkpoint,
@@ -284,16 +281,16 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
             }
         }
         let catchup_span = [1_usize, 7, 31, 100, usize::MAX][schedule % 5];
-        apply_transition_range(
-            &mut client,
-            &transitions,
-            &boundaries,
-            catchup_start,
-            transitions.len(),
-            catchup_span,
-            temp.path(),
-            &mut delta_artifacts,
-        )?;
+        apply_transition_range(TransitionRangeInput {
+            client: &mut client,
+            transitions: &transitions,
+            boundaries: &boundaries,
+            start: catchup_start,
+            end: transitions.len(),
+            max_span: catchup_span,
+            output_root: temp.path(),
+            artifacts: &mut delta_artifacts,
+        })?;
         assert_exact_final_state(&client, &final_checkpoint);
         path_count += 1;
     }
@@ -511,17 +508,28 @@ fn install_checkpoint_artifact(
     Ok(PreparedNotamClient { preparer, index })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_transition_range(
-    client: &mut PreparedNotamClient,
-    transitions: &[NotamPublicationTransition],
-    boundaries: &[Boundary],
+struct TransitionRangeInput<'a> {
+    client: &'a mut PreparedNotamClient,
+    transitions: &'a [NotamPublicationTransition],
+    boundaries: &'a [Boundary],
     start: usize,
     end: usize,
     max_span: usize,
-    output_root: &Path,
-    artifacts: &mut HashMap<(usize, usize), Arc<Vec<u8>>>,
-) -> anyhow::Result<()> {
+    output_root: &'a Path,
+    artifacts: &'a mut HashMap<(usize, usize), Arc<Vec<u8>>>,
+}
+
+fn apply_transition_range(input: TransitionRangeInput<'_>) -> anyhow::Result<()> {
+    let TransitionRangeInput {
+        client,
+        transitions,
+        boundaries,
+        start,
+        end,
+        max_span,
+        output_root,
+        artifacts,
+    } = input;
     let mut cursor = start;
     while cursor < end {
         let next = if max_span == usize::MAX {

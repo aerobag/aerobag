@@ -125,6 +125,11 @@ pub const AEROBAG_SSE_TRANSPORT_POLICY: SseTransportPolicy = SseTransportPolicy 
     reconnect_max_delay_ms: 65_000,
 };
 
+const _: () = assert!(
+    AEROBAG_SSE_TRANSPORT_POLICY.idle_timeout_ms
+        > 2 * AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms
+);
+
 pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
     ProductContract {
         family_id: "nav-db",
@@ -200,9 +205,5 @@ mod tests {
             .map(|failure| AEROBAG_SSE_TRANSPORT_POLICY.reconnect_delay_ms(failure))
             .collect::<Vec<_>>();
         assert_eq!(delays, vec![5_000, 10_000, 20_000, 40_000, 65_000, 65_000]);
-        assert!(
-            AEROBAG_SSE_TRANSPORT_POLICY.idle_timeout_ms
-                > 2 * AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms
-        );
     }
 }

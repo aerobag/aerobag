@@ -726,10 +726,7 @@ fn tfr_notam_metadata_rank(metadata: &StructuredTfrNotamMetadata) -> u8 {
         .as_deref()
         .is_some_and(|keyword| keyword.eq_ignore_ascii_case("AIRSPACE"))
         as u8;
-    let text_rank = metadata
-        .text
-        .as_deref()
-        .is_some_and(|text| text_contains_tfr(text)) as u8;
+    let text_rank = metadata.text.as_deref().is_some_and(text_contains_tfr) as u8;
     source_rank + keyword_rank + text_rank
 }
 

@@ -80,9 +80,9 @@ pub use altitude_planner::{
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
     derive_chart_page_state_from_collections, route_airport_ids_from_plan, ChartAssetRecord,
-    ChartReferenceFamilyRecord, ChartReferenceFamilySummary, DerivedChartAirport,
-    DerivedChartAirportMenuEntry, DerivedChartAsset, DerivedChartCatalog, DerivedChartPage,
-    DerivedChartPageState, DerivedChartReferenceFamily,
+    ChartPageCollectionsInput, ChartReferenceFamilyRecord, ChartReferenceFamilySummary,
+    DerivedChartAirport, DerivedChartAirportMenuEntry, DerivedChartAsset, DerivedChartCatalog,
+    DerivedChartPage, DerivedChartPageState, DerivedChartReferenceFamily,
 };
 pub use cloud::{
     CloudAuthorizationMode, CloudAuthorizationRequest, CloudAuthorizationResponse,

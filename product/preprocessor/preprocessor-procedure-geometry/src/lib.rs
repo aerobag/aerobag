@@ -49,7 +49,7 @@ pub use procedure_geometry::{
     build_trailing_course_to_intercept_display_path, display_path_for_procedure_leg,
     display_path_for_procedure_leg_before_following_segment, display_path_for_resumed_common_cf,
     display_path_for_single_procedure_step,
-    display_path_for_terminal_tf_to_following_common_course,
+    display_path_for_terminal_tf_to_following_common_course, FollowingProcedureSegment,
 };
 pub use procedure_legs::{
     interpret_path_termination, leading_procedure_discontinuity, terminal_procedure_discontinuity,
@@ -359,16 +359,30 @@ fn route_destination_point(origin: LatLon, bearing_deg: f64, distance_nm: f64) -
     }
 }
 
+pub struct MaterializeProcedureInput<'a> {
+    pub airport_id: &'a str,
+    pub procedure_id: &'a str,
+    pub kind: ProcedureKind,
+    pub runway_transition: Option<String>,
+    pub enroute_transition: Option<String>,
+    pub component_index: usize,
+    pub rows: Vec<ProcedureDistinctRow>,
+    pub legs: Vec<ProcedureLegMaterializationRecord>,
+}
+
 pub fn materialize_procedure_from_records(
-    airport_id: &str,
-    procedure_id: &str,
-    kind: ProcedureKind,
-    runway_transition: Option<String>,
-    enroute_transition: Option<String>,
-    component_index: usize,
-    rows: Vec<ProcedureDistinctRow>,
-    mut legs: Vec<ProcedureLegMaterializationRecord>,
+    input: MaterializeProcedureInput<'_>,
 ) -> AppResult<MaterializedProcedure> {
+    let MaterializeProcedureInput {
+        airport_id,
+        procedure_id,
+        kind,
+        runway_transition,
+        enroute_transition,
+        component_index,
+        rows,
+        mut legs,
+    } = input;
     let options =
         describe_procedure_options_from_rows(airport_id, procedure_id, kind.clone(), rows.clone())?;
     let requested = ProcedureSpecChoice {
@@ -1262,8 +1276,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
                             window_link.hold_record,
                             initial_position_override,
                             initial_course_override,
-                            records,
-                            allow_hold_exit_to_following_course,
+                            FollowingProcedureSegment {
+                                records,
+                                allow_hold_exit_to_following_course,
+                            },
                         )
                     })
                     .or_else(|| {
@@ -1278,17 +1294,18 @@ fn resolve_procedure_materialization_legs_with_provenance(
                     })
             };
             let previous_to = window_link.to.clone();
-            previous_display_path = append_resolved_procedure_leg(
-                &mut resolved,
-                &mut heading_checks,
-                &mut next_heading_step_index,
-                procedure_id,
-                airport_id,
-                &kind,
-                &role,
-                component_index,
-                append_spec_for_window_link(pair[0], window_link, display_path),
-            );
+            previous_display_path =
+                append_resolved_procedure_leg(AppendResolvedProcedureLegInput {
+                    resolved: &mut resolved,
+                    heading_checks: &mut heading_checks,
+                    next_heading_step_index: &mut next_heading_step_index,
+                    procedure_id,
+                    airport_id,
+                    kind: &kind,
+                    role: &role,
+                    component_index,
+                    spec: append_spec_for_window_link(pair[0], window_link, display_path),
+                });
             previous_leg_to = Some(previous_to);
         }
 
@@ -1311,17 +1328,18 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 if let Some(tail_link) = trailing_plan {
                     row_ledger.mark_tail_consumed(last_fix, tail_link.provenance_record);
                     let previous_to = tail_link.nav_ref.clone();
-                    previous_display_path = append_resolved_procedure_leg(
-                        &mut resolved,
-                        &mut heading_checks,
-                        &mut next_heading_step_index,
-                        procedure_id,
-                        airport_id,
-                        &kind,
-                        &role,
-                        component_index,
-                        append_spec_for_tail_link(last_fix, tail_link),
-                    );
+                    previous_display_path =
+                        append_resolved_procedure_leg(AppendResolvedProcedureLegInput {
+                            resolved: &mut resolved,
+                            heading_checks: &mut heading_checks,
+                            next_heading_step_index: &mut next_heading_step_index,
+                            procedure_id,
+                            airport_id,
+                            kind: &kind,
+                            role: &role,
+                            component_index,
+                            spec: append_spec_for_tail_link(last_fix, tail_link),
+                        });
                     previous_leg_to = Some(previous_to);
                 }
             }
@@ -1344,17 +1362,18 @@ fn resolve_procedure_materialization_legs_with_provenance(
                 };
                 row_ledger.mark_emitted(standalone);
                 let previous_to = tail_link.nav_ref.clone();
-                previous_display_path = append_resolved_procedure_leg(
-                    &mut resolved,
-                    &mut heading_checks,
-                    &mut next_heading_step_index,
-                    procedure_id,
-                    airport_id,
-                    &kind,
-                    &role,
-                    component_index,
-                    append_spec_for_tail_link(standalone, tail_link),
-                );
+                previous_display_path =
+                    append_resolved_procedure_leg(AppendResolvedProcedureLegInput {
+                        resolved: &mut resolved,
+                        heading_checks: &mut heading_checks,
+                        next_heading_step_index: &mut next_heading_step_index,
+                        procedure_id,
+                        airport_id,
+                        kind: &kind,
+                        role: &role,
+                        component_index,
+                        spec: append_spec_for_tail_link(standalone, tail_link),
+                    });
                 previous_leg_to = Some(previous_to);
             }
         }
@@ -3480,14 +3499,16 @@ fn allow_acute_turn_kykm_vora_missed_at_ykm(
             .or(previous.end_magnetic_variation_deg),
     );
     arinc_ambiguity_resolutions::acute_turn_kykm_vora_missed_at_ykm(
-        &previous.airport_id,
-        &current.airport_id,
-        &previous.procedure_id,
-        &current.procedure_id,
-        &previous.end_label,
-        &current.start_label,
-        inbound_magnetic_heading,
-        outbound_magnetic_heading,
+        arinc_ambiguity_resolutions::AcuteTurnBoundary {
+            previous_airport_id: &previous.airport_id,
+            current_airport_id: &current.airport_id,
+            previous_procedure_id: &previous.procedure_id,
+            current_procedure_id: &current.procedure_id,
+            previous_end_label: &previous.end_label,
+            current_start_label: &current.start_label,
+            inbound_magnetic_heading_deg: inbound_magnetic_heading,
+            outbound_magnetic_heading_deg: outbound_magnetic_heading,
+        },
     )
 }
 
@@ -3611,15 +3632,11 @@ fn reconciliation_resume_skip_through_index(
     segment_records: &[ProcedureLegMaterializationRecord],
     fix_records: &[&ProcedureLegMaterializationRecord],
 ) -> Option<usize> {
-    let Some(previous_display_path) = previous_display_path else {
-        return None;
-    };
-    let Some(previous_leg_to) = previous_leg_to else {
-        return None;
-    };
+    let previous_display_path = previous_display_path?;
+    let previous_leg_to = previous_leg_to?;
     let max_reentry_sequence = common_resume_max_sequence(segment_records);
     let terminal_state = reentry_terminal_state(Some(previous_display_path), previous_leg_to)?;
-    let Some(reentry_index) = fix_records
+    let reentry_index = fix_records
         .windows(2)
         .enumerate()
         .find_map(|(index, pair)| {
@@ -3636,10 +3653,7 @@ fn reconciliation_resume_skip_through_index(
             let current_from = pair[0].nav_ref.as_ref()?;
             reentry_candidate_skips(terminal_state.clone(), pair[0], current_from, current_to)
                 .then_some(index)
-        })
-    else {
-        return None;
-    };
+        })?;
     Some(reentry_index)
 }
 
@@ -4491,18 +4505,31 @@ struct ProcedureWindowContinuationPolicy {
     resume_common_cf_from_previous_path: bool,
 }
 
+struct ProcedureWindowLinkInput<'records, 'context> {
+    current_window_index: usize,
+    from: &'context NavRef,
+    to: &'context NavRef,
+    pair: [&'records ProcedureLegMaterializationRecord; 2],
+    hold_record: Option<&'records ProcedureLegMaterializationRecord>,
+    role: ProcedureSegmentRole,
+    traversal_policy: SegmentTraversalPolicy<'records>,
+    previous: PreviousWindowContext,
+    previous_leg_to: Option<&'context NavRef>,
+}
+
 impl ProcedureWindowContinuationPolicy {
-    fn evaluate(
-        current_window_index: usize,
-        from: &NavRef,
-        to: &NavRef,
-        pair: [&ProcedureLegMaterializationRecord; 2],
-        hold_record: Option<&ProcedureLegMaterializationRecord>,
-        role: ProcedureSegmentRole,
-        traversal_policy: SegmentTraversalPolicy<'_>,
-        previous: PreviousWindowContext,
-        previous_leg_to: Option<&NavRef>,
-    ) -> Self {
+    fn evaluate(input: &ProcedureWindowLinkInput<'_, '_>) -> Self {
+        let ProcedureWindowLinkInput {
+            current_window_index,
+            from,
+            to,
+            pair,
+            hold_record,
+            role,
+            traversal_policy,
+            previous,
+            previous_leg_to,
+        } = input;
         let continuing_if_to_cf_join = (from != to)
             && pair[0].path_termination.trim() == "IF"
             && pair[1].path_termination.trim() == "CF"
@@ -4525,7 +4552,7 @@ impl ProcedureWindowContinuationPolicy {
                 });
         let continuing_from_fa_window = (from != to)
             && pair[0].path_termination.trim() == "FA"
-            && previous_leg_to.is_some_and(|previous_to| previous_to == from)
+            && previous_leg_to.is_some_and(|previous_to| previous_to == *from)
             && previous.terminal_position.is_some();
         let continuing_from_previous_anchor = previous
             .terminal_position
@@ -4534,12 +4561,12 @@ impl ProcedureWindowContinuationPolicy {
                 great_circle_distance_nm(previous_end, anchor_position) <= 0.05
             });
         let continuing_from_previous_course = previous.previous_ended_with_hold_entry_geometry
-            && role == ProcedureSegmentRole::Common
-            && previous_terminal_lies_on_window_course(previous, pair);
+            && *role == ProcedureSegmentRole::Common
+            && previous_terminal_lies_on_window_course(*previous, *pair);
         let continuing_from_consumed_hold = previous.previous_leg_consumed_same_hold
             && matches!(pair[0].path_termination.trim(), "HA" | "HF" | "HM");
-        let resume_common_cf_from_previous_path = role == ProcedureSegmentRole::Common
-            && traversal_policy.resumes_common_on_window(current_window_index);
+        let resume_common_cf_from_previous_path = *role == ProcedureSegmentRole::Common
+            && traversal_policy.resumes_common_on_window(*current_window_index);
         Self {
             continuing_if_to_cf_join,
             continuing_same_anchor_window,
@@ -4597,39 +4624,24 @@ struct ProcedureWindowLinkBehavior<'a> {
 }
 
 fn determine_procedure_window_link<'a>(
-    current_window_index: usize,
-    from: &NavRef,
-    to: &NavRef,
-    pair: [&'a ProcedureLegMaterializationRecord; 2],
-    hold_record: Option<&'a ProcedureLegMaterializationRecord>,
-    role: ProcedureSegmentRole,
-    traversal_policy: SegmentTraversalPolicy<'_>,
-    previous: PreviousWindowContext,
-    previous_leg_to: Option<&NavRef>,
+    input: ProcedureWindowLinkInput<'a, '_>,
 ) -> ProcedureWindowLinkBehavior<'a> {
-    let policy = ProcedureWindowContinuationPolicy::evaluate(
-        current_window_index,
+    let policy = ProcedureWindowContinuationPolicy::evaluate(&input);
+    let ProcedureWindowLinkInput {
         from,
         to,
         pair,
-        hold_record,
-        role,
-        traversal_policy,
         previous,
-        previous_leg_to,
-    );
-    let display_leg_start = if pair[0].path_termination.trim() == "PI"
+        ..
+    } = input;
+    let starts_at_second_record = (pair[0].path_termination.trim() == "PI"
         && from != to
-        && previous.previous_leg_consumed_same_pi
-    {
-        pair[1]
-    } else if pair[0].path_termination.trim() == "RF" && policy.continuing_from_previous_anchor {
-        pair[1]
-    } else if policy.resume_common_cf_from_previous_path {
-        pair[1]
-    } else if policy.continuing_from_previous_course {
-        pair[1]
-    } else if policy.continuing_from_consumed_hold {
+        && previous.previous_leg_consumed_same_pi)
+        || (pair[0].path_termination.trim() == "RF" && policy.continuing_from_previous_anchor)
+        || policy.resume_common_cf_from_previous_path
+        || policy.continuing_from_previous_course
+        || policy.continuing_from_consumed_hold;
+    let display_leg_start = if starts_at_second_record {
         pair[1]
     } else {
         pair[0]
@@ -4737,20 +4749,20 @@ fn plan_procedure_window<'a>(
     ) {
         return Ok(None);
     }
-    let behavior = determine_procedure_window_link(
+    let behavior = determine_procedure_window_link(ProcedureWindowLinkInput {
         current_window_index,
-        &from,
-        &to,
+        from: &from,
+        to: &to,
         pair,
         hold_record,
-        planning.role,
-        SegmentTraversalPolicy {
+        role: planning.role,
+        traversal_policy: SegmentTraversalPolicy {
             common_resume_target: planning.common_resume_target,
             skip_through_index: None,
         },
-        previous_context,
-        planning.previous_leg_to,
-    );
+        previous: previous_context,
+        previous_leg_to: planning.previous_leg_to,
+    });
     Ok(Some(ProcedureWindowLink {
         from,
         to,
@@ -4818,8 +4830,10 @@ fn plan_trailing_procedure_window<'a>(
                     None,
                     initial_position_override,
                     initial_course_override,
-                    next_segment_records,
-                    true,
+                    FollowingProcedureSegment {
+                        records: next_segment_records,
+                        allow_hold_exit_to_following_course: true,
+                    },
                 )
             })
     } else if let Some(next_segment_records) = planning.next_segment_records {
@@ -4885,8 +4899,10 @@ fn plan_standalone_pi_window<'a>(
                 None,
                 previous_path_state.terminal_position,
                 previous_path_state.terminal_course,
-                next_segment_records,
-                false,
+                FollowingProcedureSegment {
+                    records: next_segment_records,
+                    allow_hold_exit_to_following_course: false,
+                },
             )
         })
         .or_else(|| {
@@ -4906,17 +4922,32 @@ fn plan_standalone_pi_window<'a>(
     }))
 }
 
-fn append_resolved_procedure_leg(
-    resolved: &mut Vec<ResolvedLeg>,
-    heading_checks: &mut Vec<DisplayElementHeadingSignature>,
-    next_heading_step_index: &mut usize,
-    procedure_id: &str,
-    airport_id: &str,
-    kind: &ProcedureKind,
-    role: &ProcedureSegmentRole,
+struct AppendResolvedProcedureLegInput<'a> {
+    resolved: &'a mut Vec<ResolvedLeg>,
+    heading_checks: &'a mut Vec<DisplayElementHeadingSignature>,
+    next_heading_step_index: &'a mut usize,
+    procedure_id: &'a str,
+    airport_id: &'a str,
+    kind: &'a ProcedureKind,
+    role: &'a ProcedureSegmentRole,
     component_index: usize,
-    mut spec: ProcedureAppendSpec<'_>,
+    spec: ProcedureAppendSpec<'a>,
+}
+
+fn append_resolved_procedure_leg(
+    input: AppendResolvedProcedureLegInput<'_>,
 ) -> Option<LegDisplayPath> {
+    let AppendResolvedProcedureLegInput {
+        resolved,
+        heading_checks,
+        next_heading_step_index,
+        procedure_id,
+        airport_id,
+        kind,
+        role,
+        component_index,
+        mut spec,
+    } = input;
     let previous_display_path_index = resolved.iter().rposition(|leg| {
         leg.procedure_provenance
             .as_ref()
@@ -5495,16 +5526,16 @@ fn collect_procedure_geometry_records(
         }
 
         for choice in options.valid_choices {
-            let built = match materialize_procedure_from_records(
-                &airport_id,
-                &procedure_id,
-                kind.clone(),
-                choice.runway_transition.clone(),
-                choice.enroute_transition.clone(),
-                0,
-                distinct_rows.clone(),
-                materialization_rows.clone(),
-            ) {
+            let built = match materialize_procedure_from_records(MaterializeProcedureInput {
+                airport_id: &airport_id,
+                procedure_id: &procedure_id,
+                kind: kind.clone(),
+                runway_transition: choice.runway_transition.clone(),
+                enroute_transition: choice.enroute_transition.clone(),
+                component_index: 0,
+                rows: distinct_rows.clone(),
+                legs: materialization_rows.clone(),
+            }) {
                 Ok(built) => built,
                 Err(error) => {
                     materialization_rejections.push(ProcedureGeometryMaterializationRejection {
@@ -5600,6 +5631,241 @@ pub fn build_procedure_geometry_records(
         );
     }
     Ok(audit.records)
+}
+
+pub fn procedure_kinds_from_lists(
+    approach_lists: BTreeMap<String, BTreeSet<String>>,
+    sid_lists: BTreeMap<String, BTreeSet<String>>,
+    star_lists: BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<(String, String), ProcedureKind> {
+    let mut kinds = BTreeMap::new();
+    for (airport_id, procedure_ids) in approach_lists {
+        for procedure_id in procedure_ids {
+            kinds.insert((airport_id.clone(), procedure_id), ProcedureKind::Approach);
+        }
+    }
+    for (airport_id, procedure_ids) in sid_lists {
+        for procedure_id in procedure_ids {
+            kinds.insert((airport_id.clone(), procedure_id), ProcedureKind::Sid);
+        }
+    }
+    for (airport_id, procedure_ids) in star_lists {
+        for procedure_id in procedure_ids {
+            kinds.insert((airport_id.clone(), procedure_id), ProcedureKind::Star);
+        }
+    }
+    kinds
+}
+
+fn procedure_geometry_record_from_materialized(
+    built: MaterializedProcedure,
+    choice: ProcedureSpecChoice,
+) -> pgt::ProcedureGeometryRecord {
+    let terminal_discontinuity = built.procedure.terminal_discontinuity.clone();
+    let key = pgt::ProcedureGeometryKey {
+        airport_id: built.procedure.airport_id.0.clone(),
+        procedure_id: built.procedure.procedure_id.clone(),
+        kind: procedure_kind_to_geometry(&built.procedure.kind),
+        runway_transition: choice.runway_transition,
+        enroute_transition: choice.enroute_transition,
+    };
+    let mut leg_bundles = built
+        .resolved_legs
+        .into_iter()
+        .map(procedure_geometry_bundle_from_resolved_leg)
+        .collect::<Vec<_>>();
+    if terminal_discontinuity.is_some() {
+        if let Some(last) = leg_bundles.last_mut() {
+            last.sequencing_after = pgt::ProcedureSequencingRule::Suspend;
+        }
+    }
+    pgt::ProcedureGeometryRecord {
+        key,
+        terminal_discontinuity: terminal_discontinuity.map(procedure_discontinuity_to_geometry),
+        components: Vec::new(),
+        leg_bundles,
+        data_quality: built
+            .procedure
+            .data_quality
+            .into_iter()
+            .map(|message| pgt::ProcedureDataQualityAnnotation { message })
+            .collect(),
+    }
+}
+
+fn procedure_geometry_bundle_from_resolved_leg(
+    leg: ResolvedLeg,
+) -> pgt::ProcedureGeometryLegBundle {
+    let provenance = leg.procedure_provenance;
+    let path = provenance
+        .as_ref()
+        .and_then(|provenance| provenance.display_path.clone())
+        .map(procedure_geometry_path_from_display_path)
+        .unwrap_or_else(|| pgt::ProcedureGeometryPath {
+            style: pgt::ProcedureGeometryPathStyle::Solid,
+            elements: Vec::new(),
+            effective_terminal_course_deg: None,
+        });
+    let role = provenance
+        .as_ref()
+        .map(|provenance| procedure_segment_role_to_geometry(&provenance.role))
+        .unwrap_or(pgt::ProcedureSegmentRole::Common);
+    let path_termination = provenance
+        .as_ref()
+        .map(|provenance| path_termination_to_geometry(&provenance.path_termination))
+        .unwrap_or_else(|| pgt::ProcedurePathTermination::Other(String::new()));
+    let leg_sequence = provenance
+        .as_ref()
+        .map(|provenance| provenance.leg_sequence)
+        .unwrap_or_default();
+    let discontinuity_after = provenance
+        .as_ref()
+        .and_then(|provenance| provenance.discontinuity_after.clone());
+
+    pgt::ProcedureGeometryLegBundle {
+        id: leg.id,
+        role,
+        from: nav_ref_to_geometry(leg.from),
+        to: nav_ref_to_geometry(leg.to.clone()),
+        path_termination,
+        leg_sequence,
+        path,
+        waypoints: vec![pgt::ProcedureGeometryWaypoint {
+            nav_ref: nav_ref_to_geometry(leg.to),
+            name: None,
+        }],
+        sequencing_after: if discontinuity_after.is_some() {
+            pgt::ProcedureSequencingRule::Suspend
+        } else {
+            pgt::ProcedureSequencingRule::Continue
+        },
+        discontinuity_after: discontinuity_after.map(procedure_discontinuity_to_geometry),
+        source_row_sequences: if leg_sequence == 0 {
+            Vec::new()
+        } else {
+            vec![leg_sequence]
+        },
+    }
+}
+
+fn procedure_geometry_path_from_display_path(path: LegDisplayPath) -> pgt::ProcedureGeometryPath {
+    pgt::ProcedureGeometryPath {
+        style: match path.style {
+            LegDisplayPathStyle::Solid => pgt::ProcedureGeometryPathStyle::Solid,
+            LegDisplayPathStyle::Dashed => pgt::ProcedureGeometryPathStyle::Dashed,
+            LegDisplayPathStyle::Vectors => {
+                panic!("vectors styling is derived from procedure sequencing at render time")
+            }
+        },
+        elements: path
+            .elements
+            .into_iter()
+            .map(|element| match element {
+                LegDisplayElement::Segment { start, end } => {
+                    pgt::ProcedureGeometryElement::Segment {
+                        start: lat_lon_to_geometry(start),
+                        end: lat_lon_to_geometry(end),
+                    }
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    start,
+                    end,
+                    clockwise,
+                    sweep_degrees,
+                } => pgt::ProcedureGeometryElement::Arc {
+                    center: lat_lon_to_geometry(center),
+                    radius_nm,
+                    start: lat_lon_to_geometry(start),
+                    end: lat_lon_to_geometry(end),
+                    clockwise,
+                    sweep_degrees,
+                },
+            })
+            .collect(),
+        effective_terminal_course_deg: path.effective_terminal_course_deg,
+    }
+}
+
+fn nav_ref_to_geometry(nav_ref: NavRef) -> pgt::ProcedureNavRef {
+    match nav_ref {
+        NavRef::Airport(id) => pgt::ProcedureNavRef::Airport(id),
+        NavRef::Navaid(id) => pgt::ProcedureNavRef::Navaid(id),
+        NavRef::Fix(id) => pgt::ProcedureNavRef::Fix(id),
+        NavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => pgt::ProcedureNavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        },
+        NavRef::TerminalNavaid {
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => pgt::ProcedureNavRef::TerminalNavaid {
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        },
+        NavRef::LatLon(value) | NavRef::Spot(value) => {
+            pgt::ProcedureNavRef::LatLon(lat_lon_to_geometry(value))
+        }
+    }
+}
+
+fn lat_lon_to_geometry(value: LatLon) -> pgt::ProcedureLatLon {
+    pgt::ProcedureLatLon {
+        lat: value.lat,
+        lon: value.lon,
+    }
+}
+
+fn procedure_kind_to_geometry(kind: &ProcedureKind) -> pgt::ProcedureKind {
+    match kind {
+        ProcedureKind::Sid => pgt::ProcedureKind::Sid,
+        ProcedureKind::Star => pgt::ProcedureKind::Star,
+        ProcedureKind::Approach => pgt::ProcedureKind::Approach,
+    }
+}
+
+fn procedure_discontinuity_to_geometry(
+    discontinuity: ProcedureDiscontinuity,
+) -> pgt::ProcedureDiscontinuity {
+    match discontinuity {
+        ProcedureDiscontinuity::Vectors => pgt::ProcedureDiscontinuity::Vectors,
+        ProcedureDiscontinuity::Hold => pgt::ProcedureDiscontinuity::Hold,
+        ProcedureDiscontinuity::Other(label) => pgt::ProcedureDiscontinuity::Other(label),
+    }
+}
+
+fn procedure_segment_role_to_geometry(role: &ProcedureSegmentRole) -> pgt::ProcedureSegmentRole {
+    match role {
+        ProcedureSegmentRole::EnrouteTransition => pgt::ProcedureSegmentRole::EnrouteTransition,
+        ProcedureSegmentRole::Common => pgt::ProcedureSegmentRole::Common,
+        ProcedureSegmentRole::RunwayTransition => pgt::ProcedureSegmentRole::RunwayTransition,
+    }
+}
+
+fn path_termination_to_geometry(path: &PathTermination) -> pgt::ProcedurePathTermination {
+    match path {
+        PathTermination::InitialFix => pgt::ProcedurePathTermination::InitialFix,
+        PathTermination::TrackToFix => pgt::ProcedurePathTermination::TrackToFix,
+        PathTermination::CourseToFix => pgt::ProcedurePathTermination::CourseToFix,
+        PathTermination::DirectToFix => pgt::ProcedurePathTermination::DirectToFix,
+        PathTermination::HeadingToManual => pgt::ProcedurePathTermination::HeadingToManual,
+        PathTermination::HeadingToAltitude => pgt::ProcedurePathTermination::HeadingToAltitude,
+        PathTermination::Other(value) => pgt::ProcedurePathTermination::Other(value.clone()),
+    }
 }
 
 #[cfg(test)]
@@ -5865,16 +6131,16 @@ mod published_geometry_build_tests {
             leg("6", "RW10B", 20, "HEFLY", 37.5, -121.2, "TF"),
         ];
 
-        let result = materialize_procedure_from_records(
-            "KSFO",
-            "ALWYS3",
-            ProcedureKind::Star,
-            Some("RW10B".to_string()),
-            Some("INYOE".to_string()),
-            0,
-            distinct_rows,
-            rows,
-        )
+        let result = materialize_procedure_from_records(MaterializeProcedureInput {
+            airport_id: "KSFO",
+            procedure_id: "ALWYS3",
+            kind: ProcedureKind::Star,
+            runway_transition: Some("RW10B".to_string()),
+            enroute_transition: Some("INYOE".to_string()),
+            component_index: 0,
+            rows: distinct_rows,
+            legs: rows,
+        })
         .expect("ALL-labeled STAR common segment should materialize");
 
         assert!(result.resolved_legs.iter().any(|leg| {
@@ -6028,10 +6294,54 @@ mod published_geometry_build_tests {
         materialization_by_procedure.insert(
             ("KSEA".to_string(), "BANGR9".to_string()),
             vec![
-                sid_test_leg("4", "RW16L", 10, "CAVOB", 47.30, -122.30, "IF", None),
-                sid_test_leg("4", "RW16L", 20, "BANGR", 47.40, -122.20, "DF", Some("L")),
-                sid_test_leg("6", "ARRIE", 10, "BANGR", 47.40, -122.20, "IF", None),
-                sid_test_leg("6", "ARRIE", 20, "ARRIE", 47.50, -122.10, "TF", None),
+                sid_test_leg(
+                    "4",
+                    "RW16L",
+                    10,
+                    "CAVOB",
+                    LatLon {
+                        lat: 47.30,
+                        lon: -122.30,
+                    },
+                    "IF",
+                    None,
+                ),
+                sid_test_leg(
+                    "4",
+                    "RW16L",
+                    20,
+                    "BANGR",
+                    LatLon {
+                        lat: 47.40,
+                        lon: -122.20,
+                    },
+                    "DF",
+                    Some("L"),
+                ),
+                sid_test_leg(
+                    "6",
+                    "ARRIE",
+                    10,
+                    "BANGR",
+                    LatLon {
+                        lat: 47.40,
+                        lon: -122.20,
+                    },
+                    "IF",
+                    None,
+                ),
+                sid_test_leg(
+                    "6",
+                    "ARRIE",
+                    20,
+                    "ARRIE",
+                    LatLon {
+                        lat: 47.50,
+                        lon: -122.10,
+                    },
+                    "TF",
+                    None,
+                ),
             ],
         );
 
@@ -6901,8 +7211,7 @@ mod published_geometry_build_tests {
         transition_id: &str,
         sequence: i32,
         fix: &str,
-        lat: f64,
-        lon: f64,
+        position: LatLon,
         path_termination: &str,
         turn_direction: Option<&str>,
     ) -> serde_json::Value {
@@ -6915,244 +7224,9 @@ mod published_geometry_build_tests {
             },
             "sequence": sequence,
             "nav_ref": { "Fix": fix },
-            "nav_position": { "lat": lat, "lon": lon },
+                "nav_position": { "lat": position.lat, "lon": position.lon },
             "path_termination": path_termination,
             "turn_direction": turn_direction,
         })
-    }
-}
-
-pub fn procedure_kinds_from_lists(
-    approach_lists: BTreeMap<String, BTreeSet<String>>,
-    sid_lists: BTreeMap<String, BTreeSet<String>>,
-    star_lists: BTreeMap<String, BTreeSet<String>>,
-) -> BTreeMap<(String, String), ProcedureKind> {
-    let mut kinds = BTreeMap::new();
-    for (airport_id, procedure_ids) in approach_lists {
-        for procedure_id in procedure_ids {
-            kinds.insert((airport_id.clone(), procedure_id), ProcedureKind::Approach);
-        }
-    }
-    for (airport_id, procedure_ids) in sid_lists {
-        for procedure_id in procedure_ids {
-            kinds.insert((airport_id.clone(), procedure_id), ProcedureKind::Sid);
-        }
-    }
-    for (airport_id, procedure_ids) in star_lists {
-        for procedure_id in procedure_ids {
-            kinds.insert((airport_id.clone(), procedure_id), ProcedureKind::Star);
-        }
-    }
-    kinds
-}
-
-fn procedure_geometry_record_from_materialized(
-    built: MaterializedProcedure,
-    choice: ProcedureSpecChoice,
-) -> pgt::ProcedureGeometryRecord {
-    let terminal_discontinuity = built.procedure.terminal_discontinuity.clone();
-    let key = pgt::ProcedureGeometryKey {
-        airport_id: built.procedure.airport_id.0.clone(),
-        procedure_id: built.procedure.procedure_id.clone(),
-        kind: procedure_kind_to_geometry(&built.procedure.kind),
-        runway_transition: choice.runway_transition,
-        enroute_transition: choice.enroute_transition,
-    };
-    let mut leg_bundles = built
-        .resolved_legs
-        .into_iter()
-        .map(procedure_geometry_bundle_from_resolved_leg)
-        .collect::<Vec<_>>();
-    if terminal_discontinuity.is_some() {
-        if let Some(last) = leg_bundles.last_mut() {
-            last.sequencing_after = pgt::ProcedureSequencingRule::Suspend;
-        }
-    }
-    pgt::ProcedureGeometryRecord {
-        key,
-        terminal_discontinuity: terminal_discontinuity.map(procedure_discontinuity_to_geometry),
-        components: Vec::new(),
-        leg_bundles,
-        data_quality: built
-            .procedure
-            .data_quality
-            .into_iter()
-            .map(|message| pgt::ProcedureDataQualityAnnotation { message })
-            .collect(),
-    }
-}
-
-fn procedure_geometry_bundle_from_resolved_leg(
-    leg: ResolvedLeg,
-) -> pgt::ProcedureGeometryLegBundle {
-    let provenance = leg.procedure_provenance;
-    let path = provenance
-        .as_ref()
-        .and_then(|provenance| provenance.display_path.clone())
-        .map(procedure_geometry_path_from_display_path)
-        .unwrap_or_else(|| pgt::ProcedureGeometryPath {
-            style: pgt::ProcedureGeometryPathStyle::Solid,
-            elements: Vec::new(),
-            effective_terminal_course_deg: None,
-        });
-    let role = provenance
-        .as_ref()
-        .map(|provenance| procedure_segment_role_to_geometry(&provenance.role))
-        .unwrap_or(pgt::ProcedureSegmentRole::Common);
-    let path_termination = provenance
-        .as_ref()
-        .map(|provenance| path_termination_to_geometry(&provenance.path_termination))
-        .unwrap_or_else(|| pgt::ProcedurePathTermination::Other(String::new()));
-    let leg_sequence = provenance
-        .as_ref()
-        .map(|provenance| provenance.leg_sequence)
-        .unwrap_or_default();
-    let discontinuity_after = provenance
-        .as_ref()
-        .and_then(|provenance| provenance.discontinuity_after.clone());
-
-    pgt::ProcedureGeometryLegBundle {
-        id: leg.id,
-        role,
-        from: nav_ref_to_geometry(leg.from),
-        to: nav_ref_to_geometry(leg.to.clone()),
-        path_termination,
-        leg_sequence,
-        path,
-        waypoints: vec![pgt::ProcedureGeometryWaypoint {
-            nav_ref: nav_ref_to_geometry(leg.to),
-            name: None,
-        }],
-        sequencing_after: if discontinuity_after.is_some() {
-            pgt::ProcedureSequencingRule::Suspend
-        } else {
-            pgt::ProcedureSequencingRule::Continue
-        },
-        discontinuity_after: discontinuity_after.map(procedure_discontinuity_to_geometry),
-        source_row_sequences: if leg_sequence == 0 {
-            Vec::new()
-        } else {
-            vec![leg_sequence]
-        },
-    }
-}
-
-fn procedure_geometry_path_from_display_path(path: LegDisplayPath) -> pgt::ProcedureGeometryPath {
-    pgt::ProcedureGeometryPath {
-        style: match path.style {
-            LegDisplayPathStyle::Solid => pgt::ProcedureGeometryPathStyle::Solid,
-            LegDisplayPathStyle::Dashed => pgt::ProcedureGeometryPathStyle::Dashed,
-            LegDisplayPathStyle::Vectors => {
-                panic!("vectors styling is derived from procedure sequencing at render time")
-            }
-        },
-        elements: path
-            .elements
-            .into_iter()
-            .map(|element| match element {
-                LegDisplayElement::Segment { start, end } => {
-                    pgt::ProcedureGeometryElement::Segment {
-                        start: lat_lon_to_geometry(start),
-                        end: lat_lon_to_geometry(end),
-                    }
-                }
-                LegDisplayElement::Arc {
-                    center,
-                    radius_nm,
-                    start,
-                    end,
-                    clockwise,
-                    sweep_degrees,
-                } => pgt::ProcedureGeometryElement::Arc {
-                    center: lat_lon_to_geometry(center),
-                    radius_nm,
-                    start: lat_lon_to_geometry(start),
-                    end: lat_lon_to_geometry(end),
-                    clockwise,
-                    sweep_degrees,
-                },
-            })
-            .collect(),
-        effective_terminal_course_deg: path.effective_terminal_course_deg,
-    }
-}
-
-fn nav_ref_to_geometry(nav_ref: NavRef) -> pgt::ProcedureNavRef {
-    match nav_ref {
-        NavRef::Airport(id) => pgt::ProcedureNavRef::Airport(id),
-        NavRef::Navaid(id) => pgt::ProcedureNavRef::Navaid(id),
-        NavRef::Fix(id) => pgt::ProcedureNavRef::Fix(id),
-        NavRef::ArincNavaid {
-            identifier,
-            icao_code,
-            section_code,
-            subsection_code,
-        } => pgt::ProcedureNavRef::ArincNavaid {
-            identifier,
-            icao_code,
-            section_code,
-            subsection_code,
-        },
-        NavRef::TerminalNavaid {
-            airport_id,
-            identifier,
-            icao_code,
-            section_code,
-            subsection_code,
-        } => pgt::ProcedureNavRef::TerminalNavaid {
-            airport_id,
-            identifier,
-            icao_code,
-            section_code,
-            subsection_code,
-        },
-        NavRef::LatLon(value) | NavRef::Spot(value) => {
-            pgt::ProcedureNavRef::LatLon(lat_lon_to_geometry(value))
-        }
-    }
-}
-
-fn lat_lon_to_geometry(value: LatLon) -> pgt::ProcedureLatLon {
-    pgt::ProcedureLatLon {
-        lat: value.lat,
-        lon: value.lon,
-    }
-}
-
-fn procedure_kind_to_geometry(kind: &ProcedureKind) -> pgt::ProcedureKind {
-    match kind {
-        ProcedureKind::Sid => pgt::ProcedureKind::Sid,
-        ProcedureKind::Star => pgt::ProcedureKind::Star,
-        ProcedureKind::Approach => pgt::ProcedureKind::Approach,
-    }
-}
-
-fn procedure_discontinuity_to_geometry(
-    discontinuity: ProcedureDiscontinuity,
-) -> pgt::ProcedureDiscontinuity {
-    match discontinuity {
-        ProcedureDiscontinuity::Vectors => pgt::ProcedureDiscontinuity::Vectors,
-        ProcedureDiscontinuity::Hold => pgt::ProcedureDiscontinuity::Hold,
-        ProcedureDiscontinuity::Other(label) => pgt::ProcedureDiscontinuity::Other(label),
-    }
-}
-
-fn procedure_segment_role_to_geometry(role: &ProcedureSegmentRole) -> pgt::ProcedureSegmentRole {
-    match role {
-        ProcedureSegmentRole::EnrouteTransition => pgt::ProcedureSegmentRole::EnrouteTransition,
-        ProcedureSegmentRole::Common => pgt::ProcedureSegmentRole::Common,
-        ProcedureSegmentRole::RunwayTransition => pgt::ProcedureSegmentRole::RunwayTransition,
-    }
-}
-
-fn path_termination_to_geometry(path: &PathTermination) -> pgt::ProcedurePathTermination {
-    match path {
-        PathTermination::InitialFix => pgt::ProcedurePathTermination::InitialFix,
-        PathTermination::TrackToFix => pgt::ProcedurePathTermination::TrackToFix,
-        PathTermination::CourseToFix => pgt::ProcedurePathTermination::CourseToFix,
-        PathTermination::DirectToFix => pgt::ProcedurePathTermination::DirectToFix,
-        PathTermination::HeadingToManual => pgt::ProcedurePathTermination::HeadingToManual,
-        PathTermination::HeadingToAltitude => pgt::ProcedurePathTermination::HeadingToAltitude,
-        PathTermination::Other(value) => pgt::ProcedurePathTermination::Other(value.clone()),
     }
 }

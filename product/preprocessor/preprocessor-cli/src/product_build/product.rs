@@ -61,7 +61,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         TppRenderUnit {
             cycle: String,
             region: Region,
-            unit: TppRenderUnitPlan,
+            unit: Box<TppRenderUnitPlan>,
         },
         TppRenderAssemble {
             cycle: String,
@@ -146,7 +146,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 kind: ProductScheduledTaskKind::TppRenderUnit {
                     cycle: cycle.to_string(),
                     region,
-                    unit: unit.clone(),
+                    unit: Box::new(unit.clone()),
                 },
             });
         }
@@ -758,7 +758,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &cycle_config.chart_metadata_root,
                             &chart_source_urls_path(&source_urls, family),
                             &source_fetch,
-                            cycle_config.cpu_jobs.min(8).max(1),
+                            cycle_config.cpu_jobs.clamp(1, 8),
                         )?;
                         let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
@@ -1253,16 +1253,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let thumbnail_records =
                             tpp_thumbnail_records_for_plan(region, &plan, &scoped_task_records)?;
                         let started = Instant::now();
-                        let (record, source) = build_tpp_package_assemble_node(
-                            &cycle_config,
-                            region,
-                            &source_urls.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                            &plan_record,
-                            &metadata_root,
-                            &plate_sources,
-                            &plan,
-                            &thumbnail_records,
-                        )?;
+                        let source_urls_path =
+                            source_urls.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        let (record, source) =
+                            build_tpp_package_assemble_node(TppPackageAssembleInput {
+                                config: &cycle_config,
+                                region,
+                                source_urls_path: &source_urls_path,
+                                plan_record: &plan_record,
+                                metadata_root: &metadata_root,
+                                plate_sources: &plate_sources,
+                                plan: &plan,
+                                thumbnail_records: &thumbnail_records,
+                            })?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
                         Ok(ProductTaskCompletion {
@@ -1550,17 +1553,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }) => (cof_path.clone(), metadata_path.clone()),
                                 _ => bail!("missing WMM source output"),
                             };
-                        let built = build_nav_kv_artifact(
-                            &cycle_config,
-                            &resource_index_path,
-                            &intermediate_sqlite_db,
-                            &cycle,
-                            &vector_had_pairs_path,
-                            &wmm_cof_path,
-                            &wmm_metadata_path,
-                            &stable_packages,
-                            &static_raster_tile_levels,
-                        )?;
+                        let built = build_nav_kv_artifact(BuildNavKvArtifactInput {
+                            config: &cycle_config,
+                            resource_index_path: &resource_index_path,
+                            intermediate_sqlite_db_path: &intermediate_sqlite_db,
+                            cycle: &cycle,
+                            vector_had_pairs_path: &vector_had_pairs_path,
+                            wmm_cof_path: &wmm_cof_path,
+                            wmm_metadata_path: &wmm_metadata_path,
+                            stable_packages: &stable_packages,
+                            static_raster_tile_levels: &static_raster_tile_levels,
+                        })?;
                         let unpack_source_root = resolve_nav_db_unpack_source_root_from_record(
                             &cycle_config,
                             &built.node_record,

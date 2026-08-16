@@ -996,10 +996,12 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let baseline_xml = update_xml(
-            "1000000000000001",
-            "FDC",
-            "MHK",
-            "7893",
+            UpdateIdentity {
+                nms_id: "1000000000000001",
+                classification: "FDC",
+                location: "MHK",
+                number: "7893",
+            },
             Some("N"),
             "!FDC 6/7893 MHK TEST",
             "TEST V1",
@@ -1017,10 +1019,12 @@ mod tests {
         )?;
 
         let updated_xml = update_xml(
-            "1000000000000001",
-            "FDC",
-            "MHK",
-            "7893",
+            UpdateIdentity {
+                nms_id: "1000000000000001",
+                classification: "FDC",
+                location: "MHK",
+                number: "7893",
+            },
             Some("N"),
             "!FDC 6/7893 MHK TEST",
             "TEST V2",
@@ -1052,10 +1056,12 @@ mod tests {
         assert_eq!(summary.upserted, 0);
 
         let cancellation = update_xml(
-            "1000000000000099",
-            "FDC",
-            "FDC",
-            "7893",
+            UpdateIdentity {
+                nms_id: "1000000000000099",
+                classification: "FDC",
+                location: "FDC",
+                number: "7893",
+            },
             Some("C"),
             "!FDC 6/7893 FDC CANCEL 6/7893 MHK",
             "FDC 6/7893 NOTAMC 6/7893 A) MHK",
@@ -1080,10 +1086,12 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let baseline_xml = update_xml(
-            "1000000000000100",
-            "DOM",
-            "OME",
-            "110",
+            UpdateIdentity {
+                nms_id: "1000000000000100",
+                classification: "DOM",
+                location: "OME",
+                number: "110",
+            },
             Some("N"),
             "!OME 07/110 OME TWY TEST",
             "TEST V1",
@@ -1101,10 +1109,12 @@ mod tests {
         )?;
 
         let valid = update_xml(
-            "1000000000000100",
-            "DOM",
-            "OME",
-            "110",
+            UpdateIdentity {
+                nms_id: "1000000000000100",
+                classification: "DOM",
+                location: "OME",
+                number: "110",
+            },
             Some("N"),
             "!OME 07/110 OME TWY TEST",
             "TEST V2",
@@ -1113,10 +1123,12 @@ mod tests {
             "209907241405",
         );
         let malformed = update_xml(
-            "1000000000000101",
-            "FDC",
-            "MHK",
-            "7894",
+            UpdateIdentity {
+                nms_id: "1000000000000101",
+                classification: "FDC",
+                location: "MHK",
+                number: "7894",
+            },
             Some("N"),
             "!FDC 6/7894 MHK TEST",
             "MISSING LOCATION",
@@ -1176,10 +1188,12 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let original_xml = update_xml(
-            "1000000000000102",
-            "DOM",
-            "OME",
-            "111",
+            UpdateIdentity {
+                nms_id: "1000000000000102",
+                classification: "DOM",
+                location: "OME",
+                number: "111",
+            },
             Some("N"),
             "!OME 07/111 OME TWY TEST",
             "ORIGINAL",
@@ -1198,10 +1212,12 @@ mod tests {
         )?;
 
         let replacement_xml = update_xml(
-            "1000000000000103",
-            "DOM",
-            "OME",
-            "112",
+            UpdateIdentity {
+                nms_id: "1000000000000103",
+                classification: "DOM",
+                location: "OME",
+                number: "112",
+            },
             Some("N"),
             "!OME 07/112 OME TWY TEST",
             "REPLACEMENT",
@@ -1237,10 +1253,12 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let original_xml = update_xml(
-            "1000000000000104",
-            "DOM",
-            "OME",
-            "113",
+            UpdateIdentity {
+                nms_id: "1000000000000104",
+                classification: "DOM",
+                location: "OME",
+                number: "113",
+            },
             Some("N"),
             "!OME 07/113 OME TWY TEST",
             "STALE",
@@ -1308,10 +1326,12 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let active_xml = update_xml(
-            "1000000000000002",
-            "DOM",
-            "OME",
-            "103",
+            UpdateIdentity {
+                nms_id: "1000000000000002",
+                classification: "DOM",
+                location: "OME",
+                number: "103",
+            },
             Some("N"),
             "!OME 07/103 OME TWY TEST",
             "TWY TEST",
@@ -1328,10 +1348,12 @@ mod tests {
             &[active.record],
         )?;
         let cancellation = update_xml(
-            "1000000000000002",
-            "DOM",
-            "OME",
-            "103",
+            UpdateIdentity {
+                nms_id: "1000000000000002",
+                classification: "DOM",
+                location: "OME",
+                number: "103",
+            },
             None,
             "!OME 07/103 OME TWY TEST",
             "TWY TEST",
@@ -1348,10 +1370,12 @@ mod tests {
         assert_eq!(summary.removed, 1);
 
         let expired = update_xml(
-            "1000000000000003",
-            "DOM",
-            "OME",
-            "104",
+            UpdateIdentity {
+                nms_id: "1000000000000003",
+                classification: "DOM",
+                location: "OME",
+                number: "104",
+            },
             Some("N"),
             "!OME 07/104 OME TWY TEST",
             "TWY TEST",
@@ -1377,10 +1401,12 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let baseline_xml = update_xml(
-            "1000000000000004",
-            "DOM",
-            "OME",
-            "105",
+            UpdateIdentity {
+                nms_id: "1000000000000004",
+                classification: "DOM",
+                location: "OME",
+                number: "105",
+            },
             Some("N"),
             "!OME 07/105 OME TWY TEST",
             "TEST V1",
@@ -1399,10 +1425,12 @@ mod tests {
         )?;
 
         let updated_xml = update_xml(
-            "1000000000000004",
-            "DOM",
-            "OME",
-            "105",
+            UpdateIdentity {
+                nms_id: "1000000000000004",
+                classification: "DOM",
+                location: "OME",
+                number: "105",
+            },
             Some("N"),
             "!OME 07/105 OME TWY TEST",
             "TEST V2",
@@ -1491,10 +1519,12 @@ mod tests {
                 }
             };
             let update = update_xml(
-                nms_id,
-                source_classification,
-                location,
-                number,
+                UpdateIdentity {
+                    nms_id,
+                    classification: source_classification,
+                    location,
+                    number,
+                },
                 Some("N"),
                 &format!("!{location} 07/{number} {location} TEST"),
                 text,
@@ -1569,12 +1599,15 @@ mod tests {
             .with_timezone(&Utc)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    struct UpdateIdentity<'a> {
+        nms_id: &'a str,
+        classification: &'a str,
+        location: &'a str,
+        number: &'a str,
+    }
+
     fn update_xml(
-        nms_id: &str,
-        classification: &str,
-        location: &str,
-        number: &str,
+        identity: UpdateIdentity<'_>,
         notam_type: Option<&str>,
         local_text: &str,
         text: &str,
@@ -1582,6 +1615,12 @@ mod tests {
         canceled: Option<&str>,
         effective_end: &str,
     ) -> String {
+        let UpdateIdentity {
+            nms_id,
+            classification,
+            location,
+            number,
+        } = identity;
         let notam_type = notam_type
             .map(|value| format!("<event:type>{value}</event:type>"))
             .unwrap_or_default();

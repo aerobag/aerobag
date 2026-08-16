@@ -83,6 +83,7 @@ impl TfrDetailBackfillStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path)
             .with_context(|| {
                 format!("failed to open TFR detail backfill lock {}", path.display())

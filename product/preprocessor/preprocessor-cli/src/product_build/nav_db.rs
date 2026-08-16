@@ -1064,17 +1064,32 @@ pub(super) fn build_nav_kv_magvar_pairs(
     Ok(pairs)
 }
 
+pub(super) struct BuildNavKvArtifactInput<'a> {
+    pub config: &'a ProductBuildConfig,
+    pub resource_index_path: &'a Path,
+    pub intermediate_sqlite_db_path: &'a Path,
+    pub cycle: &'a str,
+    pub vector_had_pairs_path: &'a Path,
+    pub wmm_cof_path: &'a Path,
+    pub wmm_metadata_path: &'a Path,
+    pub stable_packages: &'a [BundlePackageArtifact],
+    pub static_raster_tile_levels: &'a [StaticRasterCatalogEntry],
+}
+
 pub(super) fn build_nav_kv_artifact(
-    config: &ProductBuildConfig,
-    resource_index_path: &Path,
-    intermediate_sqlite_db_path: &Path,
-    cycle: &str,
-    vector_had_pairs_path: &Path,
-    wmm_cof_path: &Path,
-    wmm_metadata_path: &Path,
-    stable_packages: &[BundlePackageArtifact],
-    static_raster_tile_levels: &[StaticRasterCatalogEntry],
+    input: BuildNavKvArtifactInput<'_>,
 ) -> anyhow::Result<BuiltNavDbArtifacts> {
+    let BuildNavKvArtifactInput {
+        config,
+        resource_index_path,
+        intermediate_sqlite_db_path,
+        cycle,
+        vector_had_pairs_path,
+        wmm_cof_path,
+        wmm_metadata_path,
+        stable_packages,
+        static_raster_tile_levels,
+    } = input;
     let aircraft_definition_sources = BUNDLED_AIRCRAFT_DEFINITIONS
         .iter()
         .map(|(filename, source)| format!("{filename}\n{}", hash_text(source)))
@@ -1120,7 +1135,7 @@ pub(super) fn build_nav_kv_artifact(
             "static_raster_tile_levels".to_string(),
             hash_text(&static_raster_json),
         ),
-        ("magvar_model".to_string(), hash_file(&wmm_cof_path)?),
+        ("magvar_model".to_string(), hash_file(wmm_cof_path)?),
         (
             "magvar_source_metadata".to_string(),
             hash_file(wmm_metadata_path)?,
@@ -1201,7 +1216,7 @@ pub(super) fn build_nav_kv_artifact(
                 pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
                 pairs.extend(build_nav_kv_vector_pairs(vector_had_pairs_path)?);
                 pairs.extend(build_nav_kv_magvar_pairs(
-                    &wmm_cof_path,
+                    wmm_cof_path,
                     wmm_metadata_path,
                     magvar_decimal_year,
                 )?);
@@ -2197,7 +2212,7 @@ const OFFLINE_REGION_LABEL_MAX_ITERATIONS: usize = 32;
 pub(super) fn deconflict_offline_region_labels(regions: &mut [OfflineRegionRecord]) {
     let mut labels = regions
         .iter()
-        .map(|region| offline_region_label_layout(region))
+        .map(offline_region_label_layout)
         .collect::<Vec<_>>();
     let world_size = offline_region_label_world_size();
 
@@ -5139,6 +5154,15 @@ pub(super) fn is_runway_identifier(identifier: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric())
 }
 
+struct AirwayPointInvariantInput<'a> {
+    airway_name: &'a str,
+    branch_key: &'a str,
+    sequence: i32,
+    point_name: &'a str,
+    position: OfflineRegionLatLon,
+    nav_ref: &'a serde_json::Value,
+}
+
 impl NavLookupContext {
     fn load(connection: &rusqlite::Connection) -> anyhow::Result<Self> {
         let airport_positions =
@@ -5281,10 +5305,10 @@ impl NavLookupContext {
             }
             "P" => {
                 let subsection = subsection_code.trim().to_ascii_uppercase();
-                if subsection == "C" || subsection.is_empty() {
-                    if self.fix_positions.contains_key(&trimmed) {
-                        return serde_json::json!({ "Fix": trimmed });
-                    }
+                if (subsection == "C" || subsection.is_empty())
+                    && self.fix_positions.contains_key(&trimmed)
+                {
+                    return serde_json::json!({ "Fix": trimmed });
                 }
             }
             _ => {}
@@ -5336,14 +5360,16 @@ impl NavLookupContext {
 
     fn assert_airway_point_nav_ref_invariant(
         &self,
-        airway_name: &str,
-        branch_key: &str,
-        sequence: i32,
-        point_name: &str,
-        lat: f64,
-        lon: f64,
-        nav_ref: &serde_json::Value,
+        input: AirwayPointInvariantInput<'_>,
     ) -> anyhow::Result<()> {
+        let AirwayPointInvariantInput {
+            airway_name,
+            branch_key,
+            sequence,
+            point_name,
+            position,
+            nav_ref,
+        } = input;
         let Some(fix_id) = nav_ref.get("Fix").and_then(|value| value.as_str()) else {
             return Ok(());
         };
@@ -5354,7 +5380,7 @@ impl NavLookupContext {
         let Some(navaid_position) = self.navaid_positions.get(&fix_id) else {
             return Ok(());
         };
-        if position_json_matches(navaid_position, lat, lon) {
+        if position_json_matches(navaid_position, position.lat, position.lon) {
             bail!(
                 "airway {airway_name} branch {branch_key} sequence {sequence} point {point_name} emitted Fix({fix_id}) but waypoint/identifier/{fix_id} resolves to colocated Navaid({fix_id})"
             );
@@ -5710,15 +5736,14 @@ pub(super) fn build_nav_kv_airway_pairs(
                 ));
             }
         }
-        nav_context.assert_airway_point_nav_ref_invariant(
-            &name,
-            &branch_key,
+        nav_context.assert_airway_point_nav_ref_invariant(AirwayPointInvariantInput {
+            airway_name: &name,
+            branch_key: &branch_key,
             sequence,
-            &point_name,
-            lat,
-            lon,
-            &nav_ref,
-        )?;
+            point_name: &point_name,
+            position: OfflineRegionLatLon { lat, lon },
+            nav_ref: &nav_ref,
+        })?;
         let point = serde_json::json!({
             "airway_name": name,
             "sequence": sequence,

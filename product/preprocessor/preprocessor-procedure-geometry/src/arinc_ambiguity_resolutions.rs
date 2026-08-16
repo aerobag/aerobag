@@ -328,16 +328,28 @@ pub fn acute_turn_ksan_09_family_at_pgy(
         && previous_procedure_id == current_procedure_id
 }
 
-pub fn acute_turn_kykm_vora_missed_at_ykm(
-    previous_airport_id: &str,
-    current_airport_id: &str,
-    previous_procedure_id: &str,
-    current_procedure_id: &str,
-    previous_end_label: &str,
-    current_start_label: &str,
-    inbound_magnetic_heading_deg: f64,
-    outbound_magnetic_heading_deg: f64,
-) -> bool {
+pub struct AcuteTurnBoundary<'a> {
+    pub previous_airport_id: &'a str,
+    pub current_airport_id: &'a str,
+    pub previous_procedure_id: &'a str,
+    pub current_procedure_id: &'a str,
+    pub previous_end_label: &'a str,
+    pub current_start_label: &'a str,
+    pub inbound_magnetic_heading_deg: f64,
+    pub outbound_magnetic_heading_deg: f64,
+}
+
+pub fn acute_turn_kykm_vora_missed_at_ykm(boundary: AcuteTurnBoundary<'_>) -> bool {
+    let AcuteTurnBoundary {
+        previous_airport_id,
+        current_airport_id,
+        previous_procedure_id,
+        current_procedure_id,
+        previous_end_label,
+        current_start_label,
+        inbound_magnetic_heading_deg,
+        outbound_magnetic_heading_deg,
+    } = boundary;
     previous_airport_id.trim() == "KYKM"
         && current_airport_id.trim() == "KYKM"
         && previous_procedure_id == "VOR-A"
@@ -357,6 +369,22 @@ fn record_anchor_name(record: &ProcedureLegMaterializationRecord) -> Option<&str
         | crate::NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
         crate::NavRef::LatLon(_) | crate::NavRef::Spot(_) => None,
     }
+}
+
+fn angular_difference_degrees(left: f64, right: f64) -> f64 {
+    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    delta
+}
+
+fn normalize_bearing_degrees(deg: f64) -> f64 {
+    let mut normalized = deg % 360.0;
+    if normalized < 0.0 {
+        normalized += 360.0;
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -407,20 +435,4 @@ mod tests {
         assert_eq!(records[0].turn_direction.as_deref(), Some("L"));
         assert_eq!(warnings, [KNOWN_MISSING_TURN_DIRECTION_WARNING]);
     }
-}
-
-fn angular_difference_degrees(left: f64, right: f64) -> f64 {
-    let mut delta = (normalize_bearing_degrees(left) - normalize_bearing_degrees(right)).abs();
-    if delta > 180.0 {
-        delta = 360.0 - delta;
-    }
-    delta
-}
-
-fn normalize_bearing_degrees(deg: f64) -> f64 {
-    let mut normalized = deg % 360.0;
-    if normalized < 0.0 {
-        normalized += 360.0;
-    }
-    normalized
 }

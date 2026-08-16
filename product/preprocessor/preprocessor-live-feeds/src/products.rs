@@ -210,18 +210,30 @@ pub fn directory_live_feed_state(
     }
 }
 
-pub fn nav_kv_live_feed_state(
-    product: &str,
-    version: String,
-    state_source_dir: PathBuf,
-    manifest_source_path: PathBuf,
-    manifest_value: Value,
-    state_sha256: String,
-    pairs: Vec<had_nav_kv::NavKvPair>,
-    changed_count_if_no_delta: usize,
-) -> BuiltLiveFeedState {
+pub struct NavKvLiveFeedStateInput {
+    pub product: String,
+    pub version: String,
+    pub state_source_dir: PathBuf,
+    pub manifest_source_path: PathBuf,
+    pub manifest_value: Value,
+    pub state_sha256: String,
+    pub pairs: Vec<had_nav_kv::NavKvPair>,
+    pub changed_count_if_no_delta: usize,
+}
+
+pub fn nav_kv_live_feed_state(input: NavKvLiveFeedStateInput) -> BuiltLiveFeedState {
+    let NavKvLiveFeedStateInput {
+        product,
+        version,
+        state_source_dir,
+        manifest_source_path,
+        manifest_value,
+        state_sha256,
+        pairs,
+        changed_count_if_no_delta,
+    } = input;
     BuiltLiveFeedState {
-        product: product.to_string(),
+        product,
         version,
         payload: LiveFeedStatePayload::Directory {
             root: state_source_dir,
@@ -988,16 +1000,16 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             .context("obstacle HAD manifest has no parent")?
             .to_path_buf();
         Ok(with_collected_at(
-            nav_kv_live_feed_state(
-                "obstacles",
+            nav_kv_live_feed_state(NavKvLiveFeedStateInput {
+                product: "obstacles".to_string(),
                 version,
                 state_source_dir,
-                result.manifest_path,
-                state_value,
-                result.state_sha256,
-                result.had_pairs,
-                result.had_page_paths.len(),
-            ),
+                manifest_source_path: result.manifest_path,
+                manifest_value: state_value,
+                state_sha256: result.state_sha256,
+                pairs: result.had_pairs,
+                changed_count_if_no_delta: result.had_page_paths.len(),
+            }),
             normalized_event_time(event.observed_at_utc),
         ))
     }
@@ -1572,7 +1584,7 @@ mod tests {
             "verified published prefix should reconcile before publishing its suffix"
         );
         let third_delta: notam_state::NotamDelta = serde_json::from_value(read_json_value(
-            &third_update
+            third_update
                 .delta_path
                 .as_ref()
                 .context("missing third NOTAM delta")?,

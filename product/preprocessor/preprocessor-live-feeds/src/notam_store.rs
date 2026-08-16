@@ -213,6 +213,7 @@ impl NotamPersistentStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path)
             .with_context(|| format!("failed to open NOTAM store lock {}", path.display()))?;
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };

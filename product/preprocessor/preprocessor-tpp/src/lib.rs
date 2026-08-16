@@ -2137,7 +2137,7 @@ fn minimum_plate_fingerprint(
 
 fn preprocessor_tools_source_hash() -> anyhow::Result<String> {
     hash_file(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .context("preprocessor-tpp crate should live under workspace root")?
             .join("preprocessor-tools/src/lib.rs"),

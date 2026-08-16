@@ -375,7 +375,7 @@ pub(super) fn build_chart_package_nodes(
         &config.chart_metadata_root,
         &source_urls_path,
         source_content_fingerprint(source_fetch_record)?,
-        config.cpu_jobs.min(8).max(1),
+        config.cpu_jobs.clamp(1, 8),
     )?;
     let process_prepared = prepare_node_at(
         &build_shared_node_dir(config, &process_node_name)?,
@@ -393,7 +393,7 @@ pub(super) fn build_chart_package_nodes(
             &config.chart_metadata_root,
             &source_urls_path,
             source_content_fingerprint(source_fetch_record)?,
-            config.cpu_jobs.min(8).max(1),
+            config.cpu_jobs.clamp(1, 8),
         )?;
         let bundled_prepared = prepare_node_at(
             &build_shared_node_dir(config, &bundled_node_name)?,
@@ -1002,14 +1002,13 @@ fn tpp_plate_sources_from_unit_records(
         let unit_plates_root =
             resolve_artifact_path(config, output_path(unit_record, "plates_root")?);
         if unit_plates_root.is_dir() {
-            collect_tpp_plate_sources(config, &unit_plates_root, &unit_plates_root, &mut sources)?;
+            collect_tpp_plate_sources(&unit_plates_root, &unit_plates_root, &mut sources)?;
         }
     }
     Ok(sources)
 }
 
 fn collect_tpp_plate_sources(
-    config: &ProductBuildConfig,
     plates_root: &Path,
     dir: &Path,
     sources: &mut TppPlateSourceMap,
@@ -1025,7 +1024,7 @@ fn collect_tpp_plate_sources(
             .file_type()
             .with_context(|| format!("failed to stat {}", path.display()))?;
         if file_type.is_dir() {
-            collect_tpp_plate_sources(config, plates_root, &path, sources)?;
+            collect_tpp_plate_sources(plates_root, &path, sources)?;
             continue;
         }
         if !file_type.is_file() || path.extension().and_then(|value| value.to_str()) != Some("png")
@@ -1706,16 +1705,30 @@ pub(super) fn build_tpp_thumbnail_node(
     )
 }
 
+pub(super) struct TppPackageAssembleInput<'a> {
+    pub config: &'a ProductBuildConfig,
+    pub region: Region,
+    pub source_urls_path: &'a Path,
+    pub plan_record: &'a NodeRecord,
+    pub metadata_root: &'a Path,
+    pub plate_sources: &'a TppPlateSourceMap,
+    pub plan: &'a TppPackagePlan,
+    pub thumbnail_records: &'a [NodeRecord],
+}
+
 pub(super) fn build_tpp_package_assemble_node(
-    config: &ProductBuildConfig,
-    region: Region,
-    source_urls_path: &Path,
-    plan_record: &NodeRecord,
-    metadata_root: &Path,
-    plate_sources: &TppPlateSourceMap,
-    plan: &TppPackagePlan,
-    thumbnail_records: &[NodeRecord],
+    input: TppPackageAssembleInput<'_>,
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
+    let TppPackageAssembleInput {
+        config,
+        region,
+        source_urls_path,
+        plan_record,
+        metadata_root,
+        plate_sources,
+        plan,
+        thumbnail_records,
+    } = input;
     let region_id = region.code().to_ascii_lowercase();
     let inputs = tpp_package_assemble_inputs(region, plan_record, thumbnail_records)?;
     let node_name = format!("tpp-{region_id}-package");

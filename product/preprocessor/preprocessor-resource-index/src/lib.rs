@@ -2764,8 +2764,8 @@ mod tests {
             unpack_source_root: temp.path().join("unpacked"),
             source_urls_path: None,
         };
-        let collections =
-            collect_chart_collections(&[source.clone()]).expect("collect chart collections");
+        let collections = collect_chart_collections(std::slice::from_ref(&source))
+            .expect("collect chart collections");
 
         assert_eq!(
             collections

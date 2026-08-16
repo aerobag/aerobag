@@ -492,19 +492,20 @@ fn bulk_notam_state_cannot_cross_into_the_ui_session() {
 fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);
-    let functions = [
+    let definition_functions = [
         "insert_waypoint_at_flight_plan_row_in_session",
         "insert_airway_at_flight_plan_row_in_session",
         "select_procedure_at_flight_plan_row_in_session",
         "load_plate_procedure_in_session",
         "append_flight_plan_entry_in_session",
-        "perform_flight_plan_row_action_in_session",
     ];
     let mut violations = Vec::new();
-    for function in functions {
+    for function in definition_functions {
         let body = function_body(source, function);
-        if !body.contains("commit_session_flight_plan_with_invalidations_outcome") {
-            violations.push(format!("{function}: missing staged paged commit helper"));
+        if !body.contains("commit_session_flight_plan_edit_with_invalidations_outcome") {
+            violations.push(format!(
+                "{function}: missing staged definition-edit commit helper"
+            ));
         }
         if body.contains("replace_session_flight_plan(session") {
             violations.push(format!(
@@ -512,10 +513,33 @@ fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
             ));
         }
     }
-    let mutation_helper = function_body(source, "mutate_session_flight_plan");
-    if !mutation_helper.contains("commit_session_flight_plan_with_invalidations_outcome") {
-        violations
-            .push("mutate_session_flight_plan: missing staged paged commit helper".to_string());
+
+    let row_action = function_body(source, "perform_flight_plan_row_action_in_session");
+    for helper in [
+        "commit_session_flight_plan_edit_with_invalidations_outcome",
+        "commit_session_navigation_update_with_invalidations_outcome",
+    ] {
+        if !row_action.contains(helper) {
+            violations.push(format!(
+                "perform_flight_plan_row_action_in_session: missing domain commit helper {helper}"
+            ));
+        }
+    }
+
+    let definition_helper =
+        function_body(source, "mutate_session_flight_plan_definition_controller");
+    if !definition_helper.contains("commit_session_flight_plan_edit_with_invalidations_outcome") {
+        violations.push(
+            "mutate_session_flight_plan_definition_controller: missing staged definition-edit commit helper"
+                .to_string(),
+        );
+    }
+    let navigation_helper = function_body(source, "mutate_session_navigation_controller");
+    if !navigation_helper.contains("commit_session_navigation_update_with_invalidations_outcome") {
+        violations.push(
+            "mutate_session_navigation_controller: missing staged navigation commit helper"
+                .to_string(),
+        );
     }
     for function in [
         "activate_next_leg_in_session",
@@ -525,9 +549,9 @@ fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
         "sequence_active_leg_in_session",
     ] {
         let body = function_body(source, function);
-        if !body.contains("mutate_session_flight_plan") {
+        if !body.contains("mutate_session_navigation_controller") {
             violations.push(format!(
-                "{function}: bypasses the common flight-plan mutation boundary"
+                "{function}: bypasses the navigation-only mutation boundary"
             ));
         }
     }
@@ -1263,11 +1287,12 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         let window = &web[index.saturating_sub(220)..web.len().min(index + 420)];
         if !window.contains("runCoreHadSessionOperation")
             && !window.contains("runSessionOperation")
+            && !window.contains("runSessionResult")
             && !window.contains("runSessionMutation")
             && !window.contains("runFlightPlanMutation")
         {
             violations.push(format!(
-                "web calls {export} without runCoreHadSessionOperation"
+                "web calls {export} without a paged session operation helper"
             ));
         }
     }

@@ -4331,6 +4331,7 @@ button {
 .planControls {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   justify-content: center;
   gap: var(--thumb-gap);
 }

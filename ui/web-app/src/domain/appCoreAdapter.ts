@@ -778,6 +778,7 @@ export interface UiSession {
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   describePlateProcedureLoads(plateId: string): Promise<ProcedureLoadMenu>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
+  redoFlightPlanEdit(): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
   altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
@@ -789,6 +790,7 @@ export interface UiSession {
   activateNextLeg(): Promise<UiSessionSnapshot>;
   stopNavigation(): Promise<UiSessionSnapshot>;
   suspendSequencing(): Promise<UiSessionSnapshot>;
+  undoFlightPlanEdit(): Promise<UiSessionSnapshot>;
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
   sequenceActiveLeg(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
@@ -1544,6 +1546,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       loadPlateProcedure: async (loadId) => {
         return performFlightPlanCommand({ kind: "load_plate_procedure", load_id: loadId });
       },
+      redoFlightPlanEdit: async () => {
+        return performFlightPlanCommand({ kind: "redo" });
+      },
       restoreDirectTo: async () => {
         return performFlightPlanCommand({ kind: "restore_direct_to" });
       },
@@ -1589,6 +1594,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       suspendSequencing: async () => {
         return performFlightPlanCommand({ kind: "suspend_sequencing" });
+      },
+      undoFlightPlanEdit: async () => {
+        return performFlightPlanCommand({ kind: "undo" });
       },
       unsuspendSequencing: async () => {
         return performFlightPlanCommand({ kind: "unsuspend_sequencing" });

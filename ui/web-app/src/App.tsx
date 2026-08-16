@@ -3958,6 +3958,9 @@ export default function App() {
               case "activate_next_leg":
                 applySessionSnapshot(await uiSession.activateNextLeg(), "activate_next_leg");
                 return;
+              case "redo":
+                applySessionSnapshot(await uiSession.redoFlightPlanEdit(), "redo_flight_plan_edit");
+                return;
               case "restore_direct_to":
                 applySessionSnapshot(await uiSession.restoreDirectTo(), "restore_direct_to");
                 return;
@@ -3969,6 +3972,9 @@ export default function App() {
                 return;
               case "suspend_sequencing":
                 applySessionSnapshot(await uiSession.suspendSequencing(), "suspend_sequencing");
+                return;
+              case "undo":
+                applySessionSnapshot(await uiSession.undoFlightPlanEdit(), "undo_flight_plan_edit");
                 return;
               case "unsuspend_sequencing":
                 applySessionSnapshot(await uiSession.unsuspendSequencing(), "unsuspend_sequencing");

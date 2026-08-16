@@ -980,10 +980,12 @@ pub struct FlightPlanUiState {
 #[serde(rename_all = "snake_case")]
 pub enum FlightPlanControlId {
     ActivateNextLeg,
+    Redo,
     RestoreDirectTo,
     SequenceActiveLeg,
     StopNavigation,
     SuspendSequencing,
+    Undo,
     UnsuspendSequencing,
 }
 
@@ -1355,13 +1357,11 @@ fn planned_direct_to_targets_for_nav_ref(
         .collect()
 }
 
-fn allocate_temporary_direct_to_row_id(plan: &mut FlightPlan) -> FlightPlanRowId {
-    let row_id = FlightPlanRowId(format!(
+fn allocate_temporary_direct_to_row_id(plan: &FlightPlan) -> FlightPlanRowId {
+    FlightPlanRowId(format!(
         "flight-plan-row:{:016x}",
         plan.route_component_uid_counter
-    ));
-    plan.route_component_uid_counter += 1;
-    row_id
+    ))
 }
 
 fn planned_direct_to_target_for_row_id(
@@ -1421,7 +1421,7 @@ pub fn activate_direct_to(
     from_position: LatLon,
     target: NavRef,
 ) -> AppResult<FlightPlan> {
-    let mut plan = plan.clone().normalized();
+    let plan = plan.clone().normalized();
     let planned_targets = planned_direct_to_targets_for_nav_ref(&plan, &target)?;
     let planned_target = match planned_targets.as_slice() {
         [target] => Some(target.clone()),
@@ -1438,7 +1438,7 @@ pub fn activate_direct_to(
             row_id: target.row_id,
         })
         .unwrap_or_else(|| DirectToTargetRow::Temporary {
-            row_id: allocate_temporary_direct_to_row_id(&mut plan),
+            row_id: allocate_temporary_direct_to_row_id(&plan),
         });
     let active_leg_index = target_leg_index
         .or_else(|| {
@@ -3832,6 +3832,25 @@ fn rebuild_plan_from_uid_components(
         GuidanceRebuildPolicy::Clear => None,
     };
     Ok(plan)
+}
+
+/// Restores a user-authored flight-plan definition without restoring its old
+/// operational navigation state. Current guidance is reconciled against the
+/// restored route using the same stable-row recovery as every other plan edit.
+pub(crate) fn restore_flight_plan_definition(
+    current_plan: &FlightPlan,
+    historical_definition: &FlightPlan,
+) -> AppResult<FlightPlan> {
+    let current_plan = current_plan.clone().normalized();
+    let current_guidance = current_plan.guidance.clone();
+    let active_anchor = capture_active_guidance_anchor(&current_plan);
+    let mut restored = historical_definition.clone().normalized();
+    restored.guidance = None;
+    restored.guidance = match active_anchor {
+        Some(anchor) => restore_guidance_from_row_uid_anchor(&restored, &anchor)?,
+        None => revalidate_guidance_after_plan_edit(current_guidance, &restored)?,
+    };
+    Ok(restored)
 }
 
 pub(crate) fn validate_procedure_attachments(route_components: &[RouteComponent]) -> AppResult<()> {

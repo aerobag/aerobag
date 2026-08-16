@@ -1266,6 +1266,13 @@ class NativeUiSession internal constructor(
         )
     }
 
+    fun redoFlightPlanEdit(): UiSessionSnapshot {
+        return performFlightPlanCommand(
+            "redoFlightPlanEdit",
+            buildJsonObject { put("kind", "redo") },
+        )
+    }
+
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
         return performFlightPlanCommand(
             "insertWaypointAtFlightPlanRow",
@@ -1712,6 +1719,13 @@ class NativeUiSession internal constructor(
         return performFlightPlanCommand(
             "suspendSequencing",
             buildJsonObject { put("kind", "suspend_sequencing") },
+        )
+    }
+
+    fun undoFlightPlanEdit(): UiSessionSnapshot {
+        return performFlightPlanCommand(
+            "undoFlightPlanEdit",
+            buildJsonObject { put("kind", "undo") },
         )
     }
 
@@ -3719,19 +3733,23 @@ private fun DirectToUiView.toWire() = WireDirectToUiView(
 
 private fun WireFlightPlanControlId.toUi() = when (this) {
     WireFlightPlanControlId.ActivateNextLeg -> FlightPlanControlId.ActivateNextLeg
+    WireFlightPlanControlId.Redo -> FlightPlanControlId.Redo
     WireFlightPlanControlId.RestoreDirectTo -> FlightPlanControlId.RestoreDirectTo
     WireFlightPlanControlId.SequenceActiveLeg -> FlightPlanControlId.SequenceActiveLeg
     WireFlightPlanControlId.StopNavigation -> FlightPlanControlId.StopNavigation
     WireFlightPlanControlId.SuspendSequencing -> FlightPlanControlId.SuspendSequencing
+    WireFlightPlanControlId.Undo -> FlightPlanControlId.Undo
     WireFlightPlanControlId.UnsuspendSequencing -> FlightPlanControlId.UnsuspendSequencing
 }
 
 private fun FlightPlanControlId.toWire() = when (this) {
     FlightPlanControlId.ActivateNextLeg -> WireFlightPlanControlId.ActivateNextLeg
+    FlightPlanControlId.Redo -> WireFlightPlanControlId.Redo
     FlightPlanControlId.RestoreDirectTo -> WireFlightPlanControlId.RestoreDirectTo
     FlightPlanControlId.SequenceActiveLeg -> WireFlightPlanControlId.SequenceActiveLeg
     FlightPlanControlId.StopNavigation -> WireFlightPlanControlId.StopNavigation
     FlightPlanControlId.SuspendSequencing -> WireFlightPlanControlId.SuspendSequencing
+    FlightPlanControlId.Undo -> WireFlightPlanControlId.Undo
     FlightPlanControlId.UnsuspendSequencing -> WireFlightPlanControlId.UnsuspendSequencing
 }
 

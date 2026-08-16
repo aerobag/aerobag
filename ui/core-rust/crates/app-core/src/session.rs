@@ -3817,6 +3817,7 @@ pub enum FlightPlanSessionCommand {
     LoadPlateProcedure {
         load_id: String,
     },
+    Redo,
     RestoreDirectTo,
     PerformRowAction {
         row_uid: String,
@@ -3832,6 +3833,7 @@ pub enum FlightPlanSessionCommand {
     ActivateNextLeg,
     StopNavigation,
     SuspendSequencing,
+    Undo,
     UnsuspendSequencing,
     SequenceActiveLeg,
 }
@@ -3904,6 +3906,7 @@ pub fn perform_flight_plan_command_in_session(
         FlightPlanSessionCommand::LoadPlateProcedure { load_id } => {
             load_plate_procedure_in_session(handle, load_id)
         }
+        FlightPlanSessionCommand::Redo => redo_flight_plan_edit_in_session(handle),
         FlightPlanSessionCommand::RestoreDirectTo => restore_direct_to_in_session(handle),
         FlightPlanSessionCommand::PerformRowAction {
             row_uid,
@@ -3918,6 +3921,7 @@ pub fn perform_flight_plan_command_in_session(
         FlightPlanSessionCommand::ActivateNextLeg => activate_next_leg_in_session(handle),
         FlightPlanSessionCommand::StopNavigation => stop_navigation_in_session(handle),
         FlightPlanSessionCommand::SuspendSequencing => suspend_sequencing_in_session(handle),
+        FlightPlanSessionCommand::Undo => undo_flight_plan_edit_in_session(handle),
         FlightPlanSessionCommand::UnsuspendSequencing => unsuspend_sequencing_in_session(handle),
         FlightPlanSessionCommand::SequenceActiveLeg => sequence_active_leg_in_session(handle),
     }
@@ -4159,12 +4163,12 @@ fn perform_altitude_planner_action_in_session(
                 message: "unknown or unavailable aircraft/profile selection".to_string(),
             });
         };
-        return mutate_session_flight_plan_controller(handle, |controller| {
+        return mutate_session_flight_plan_definition_controller(handle, |controller| {
             controller.plan_after_set_aircraft(selection, cruise_altitude_ft)
         });
     }
     if let Some(altitude_ft) = crate::had_ops::planner_altitude_from_action_uid(&action_uid) {
-        return mutate_session_flight_plan_controller(handle, |controller| {
+        return mutate_session_flight_plan_definition_controller(handle, |controller| {
             controller.plan_after_set_cruise_altitude(altitude_ft)
         });
     }
@@ -4236,7 +4240,7 @@ fn set_altitude_planner_departure_input_in_session(
     next.planned_departure_time_epoch_ms = parsed.departure_time_epoch_ms;
     let previous_basis = session.coordinator.time_display_mode;
     session.coordinator.time_display_mode = parsed.basis;
-    match commit_session_flight_plan_with_invalidations_outcome(session, next) {
+    match commit_session_flight_plan_edit_with_invalidations_outcome(session, next) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             session.coordinator.time_display_mode = previous_basis;
@@ -4263,36 +4267,44 @@ pub fn perform_time_display_action_in_session(
 }
 
 pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller| {
         controller.plan_after_activate_next_leg()
     })
 }
 
+pub(crate) fn undo_flight_plan_edit_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    move_flight_plan_history_in_session(handle, FlightPlanHistoryDirection::Undo)
+}
+
+pub(crate) fn redo_flight_plan_edit_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    move_flight_plan_history_in_session(handle, FlightPlanHistoryDirection::Redo)
+}
+
 pub(crate) fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller| {
         controller.plan_after_stop_navigation()
     })
 }
 
 pub(crate) fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller| {
         controller.plan_after_suspend_sequencing()
     })
 }
 
 pub(crate) fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller| {
         controller.plan_after_unsuspend_sequencing()
     })
 }
 
 pub(crate) fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan_controller(handle, |controller| {
+    mutate_session_navigation_controller(handle, |controller| {
         controller.plan_after_manual_sequence()
     })
 }
 
-fn mutate_session_flight_plan_controller(
+fn mutate_session_navigation_controller(
     handle: u32,
     mutation: impl FnOnce(&FlightPlanController) -> AppResult<FlightPlan>,
 ) -> AppResult<HadOperationOutcome> {
@@ -4300,7 +4312,18 @@ fn mutate_session_flight_plan_controller(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let next_plan = mutation(&session.flight_plan)?;
-    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+    commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
+}
+
+fn mutate_session_flight_plan_definition_controller(
+    handle: u32,
+    mutation: impl FnOnce(&FlightPlanController) -> AppResult<FlightPlan>,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    let next_plan = mutation(&session.flight_plan)?;
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn perform_map_selection_action_in_session(
@@ -4359,7 +4382,7 @@ fn insert_waypoint_best_position_for_session(
             });
         }
     };
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, mutation)
 }
 
 pub(crate) fn insert_waypoint_at_flight_plan_row_in_session(
@@ -4394,7 +4417,7 @@ pub(crate) fn insert_waypoint_at_flight_plan_row_in_session(
             message: format!("flight-plan insert target component is stale: {component_uid}"),
         })?;
     let next_plan = crate::insert_waypoint(&plan, component_index, before, waypoint)?;
-    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, next_plan)
 }
 
 pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
@@ -4583,7 +4606,7 @@ pub(crate) fn append_flight_plan_entry_in_session(
             }
         }
     };
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, mutation)
 }
 
 pub(crate) fn insert_airway_at_flight_plan_row_in_session(
@@ -4650,7 +4673,7 @@ pub(crate) fn insert_airway_at_flight_plan_row_in_session(
         materialized.airway,
         materialized.resolved_legs,
     )?;
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, mutation)
 }
 
 pub(crate) fn select_procedure_at_flight_plan_row_in_session(
@@ -4808,7 +4831,7 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
         }),
     );
     let commit_started = crate::CoreDebugTimer::start();
-    let outcome = commit_session_flight_plan_with_invalidations_outcome(session, mutation);
+    let outcome = commit_session_flight_plan_edit_with_invalidations_outcome(session, mutation);
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
         &serde_json::json!({
@@ -4990,7 +5013,7 @@ pub(crate) fn load_plate_procedure_in_session(
             built,
         )?
     };
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, mutation)
 }
 
 fn activate_direct_to_nav_ref_in_session_outcome(
@@ -5012,7 +5035,7 @@ fn activate_direct_to_nav_ref_in_session_outcome(
     let next_plan = session
         .flight_plan
         .plan_after_direct_to(from_position, target)?;
-    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+    commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn perform_status_action_in_session(
@@ -5047,12 +5070,19 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let next_plan = session.flight_plan.plan_after_row_action(
+    let (next_plan, domain) = session.flight_plan.plan_after_row_action(
         &row_uid,
         &action_uid,
         session.situation.ownship().render.position,
     )?;
-    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+    match domain {
+        crate::flight_plan_controller::FlightPlanMutationDomain::Definition => {
+            commit_session_flight_plan_edit_with_invalidations_outcome(session, next_plan)
+        }
+        crate::flight_plan_controller::FlightPlanMutationDomain::Navigation => {
+            commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
+        }
+    }
 }
 
 pub(crate) fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -5060,7 +5090,7 @@ pub(crate) fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperatio
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let next_plan = session.flight_plan.plan_after_restore_direct_to()?;
-    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+    commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn attach_nav_kv_store_to_session(
@@ -10505,9 +10535,14 @@ fn airport_plate_availability(
 
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
     let normalized_plan = session.flight_plan.replace_plan(plan)?.clone();
+    refresh_session_flight_plan_derivatives(session, &normalized_plan);
+    Ok(())
+}
+
+fn refresh_session_flight_plan_derivatives(session: &mut UiSession, normalized_plan: &FlightPlan) {
     session.coordinator.last_content_report = None;
     session.coordinator.chart_page_state = derive_compact_chart_page_state_with_reference(
-        &normalized_plan,
+        normalized_plan,
         &session.coordinator.chart_page_state.recent_airport_ids,
         session
             .coordinator
@@ -10523,11 +10558,10 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
         Some(&session.coordinator.chart_page_state.selected_chart_id),
         &session.coordinator.chart_page_state.suggested_chart_ids,
     );
-    sync_procedure_geometry_status_records(session, &normalized_plan);
-    Ok(())
+    sync_procedure_geometry_status_records(session, normalized_plan);
 }
 
-fn commit_session_flight_plan_with_invalidations_outcome(
+fn commit_session_flight_plan_edit_with_invalidations_outcome(
     session: &mut UiSession,
     plan: FlightPlan,
 ) -> AppResult<HadOperationOutcome> {
@@ -10538,12 +10572,8 @@ fn commit_session_flight_plan_with_invalidations_outcome(
         .cloned()
         .ok_or_else(|| missing_active_plan_error("flight-plan mutation"))?;
     run_session_model_transaction(session, |session| {
-        replace_session_flight_plan(session, plan)?;
-        let accepted_plan = session
-            .flight_plan
-            .active_plan()
-            .cloned()
-            .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
+        let accepted_plan = session.flight_plan.apply_definition_edit(plan)?.clone();
+        refresh_session_flight_plan_derivatives(session, &accepted_plan);
         let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
         let definition_changed = session.cloud.record_local_flight_plan_mutation(
             &prior_plan,
@@ -10555,6 +10585,70 @@ fn commit_session_flight_plan_with_invalidations_outcome(
                 replace_session_flight_plan(session, remote_plan)?;
             }
         }
+        sync_guidance_geometry_for_session(session, &started)?;
+        Ok(vec![
+            UiInvalidation::SessionSnapshot,
+            UiInvalidation::FlightPlanRoute,
+            UiInvalidation::MapOverlay,
+        ])
+    })
+}
+
+fn commit_session_navigation_update_with_invalidations_outcome(
+    session: &mut UiSession,
+    plan: FlightPlan,
+) -> AppResult<HadOperationOutcome> {
+    let started = crate::CoreDebugTimer::start();
+    run_session_model_transaction(session, |session| {
+        session.flight_plan.apply_navigation_update(plan)?;
+        if session
+            .flight_plan
+            .active_plan()
+            .is_some_and(|plan| plan.guidance.is_none())
+        {
+            if let Some(remote_plan) = session.cloud.take_pending_remote_flight_plan() {
+                replace_session_flight_plan(session, remote_plan)?;
+            }
+        }
+        sync_guidance_geometry_for_session(session, &started)?;
+        Ok(vec![
+            UiInvalidation::SessionSnapshot,
+            UiInvalidation::FlightPlanRoute,
+            UiInvalidation::MapOverlay,
+        ])
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FlightPlanHistoryDirection {
+    Undo,
+    Redo,
+}
+
+fn move_flight_plan_history_in_session(
+    handle: u32,
+    direction: FlightPlanHistoryDirection,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    let started = crate::CoreDebugTimer::start();
+    let prior_plan = session
+        .flight_plan
+        .active_plan()
+        .cloned()
+        .ok_or_else(|| missing_active_plan_error("flight-plan history mutation"))?;
+    run_session_model_transaction(session, |session| {
+        let accepted_plan = match direction {
+            FlightPlanHistoryDirection::Undo => session.flight_plan.undo_definition_edit()?.clone(),
+            FlightPlanHistoryDirection::Redo => session.flight_plan.redo_definition_edit()?.clone(),
+        };
+        refresh_session_flight_plan_derivatives(session, &accepted_plan);
+        session.cloud.record_local_flight_plan_mutation(
+            &prior_plan,
+            &accepted_plan,
+            session.coordinator.wall_clock_epoch_ms,
+        )?;
         sync_guidance_geometry_for_session(session, &started)?;
         Ok(vec![
             UiInvalidation::SessionSnapshot,
@@ -10838,17 +10932,10 @@ fn assemble_session_update(
                     .next_session_snapshot_refresh_epoch_ms,
             };
             if !settings_changed {
-                if let Some(row) = snapshot.settings_page_state.rows.first() {
-                    assignments.push(UiSessionProjectionAssignment {
-                        path: vec![
-                            "settings_page_state".to_string(),
-                            "rows".to_string(),
-                            "0".to_string(),
-                            "items".to_string(),
-                        ],
-                        value: serde_json::json!(row.items),
-                    });
-                }
+                assignments.push(UiSessionProjectionAssignment {
+                    path: vec!["settings_page_state".to_string(), "rows".to_string()],
+                    value: serde_json::json!(snapshot.settings_page_state.rows),
+                });
             }
             assignments
         }),
@@ -12796,7 +12883,7 @@ fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<Ha
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    commit_session_flight_plan_with_invalidations_outcome(session, plan)
+    commit_session_flight_plan_edit_with_invalidations_outcome(session, plan)
 }
 
 #[cfg(test)]
@@ -13330,7 +13417,8 @@ mod tests {
             projection_assignment_paths(update.flight_data.as_ref().expect("flight data patch")),
             BTreeSet::from([
                 "app_ui_state/flight_data_banner".to_string(),
-                "settings_page_state/rows/0/items".to_string(),
+                "next_session_snapshot_refresh_epoch_ms".to_string(),
+                "settings_page_state/rows".to_string(),
             ]),
         );
         assert!(update.application_shell.is_none());
@@ -27664,6 +27752,56 @@ mod tests {
             .expect("selected level");
 
         assert_eq!(selected.res, 0);
+    }
+
+    #[test]
+    fn session_commands_undo_and_redo_definition_edits() {
+        let initial = FlightPlan {
+            name: "initial".to_string(),
+            ..FlightPlan::empty()
+        };
+        let init = create_ui_session(initial, &[], None, None).expect("session");
+        let mut edited = get_session_snapshot(init.handle)
+            .expect("initial snapshot")
+            .app_state
+            .active_plan
+            .expect("active plan");
+        edited.name = "edited".to_string();
+        replace_flight_plan_in_session(init.handle, edited).expect("definition edit");
+
+        perform_flight_plan_command_in_session(init.handle, FlightPlanSessionCommand::Undo, 1_000)
+            .expect("undo command");
+        let undone = get_session_snapshot(init.handle).expect("undone snapshot");
+        assert_eq!(
+            undone
+                .app_state
+                .active_plan
+                .as_ref()
+                .map(|plan| plan.name.as_str()),
+            Some("initial")
+        );
+        let controls = &undone
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("plan UI")
+            .controls;
+        assert!(controls
+            .iter()
+            .any(|control| control.id == crate::FlightPlanControlId::Redo && control.enabled));
+
+        perform_flight_plan_command_in_session(init.handle, FlightPlanSessionCommand::Redo, 2_000)
+            .expect("redo command");
+        let redone = get_session_snapshot(init.handle).expect("redone snapshot");
+        assert_eq!(
+            redone
+                .app_state
+                .active_plan
+                .as_ref()
+                .map(|plan| plan.name.as_str()),
+            Some("edited")
+        );
+        destroy_session(init.handle);
     }
 
     #[test]

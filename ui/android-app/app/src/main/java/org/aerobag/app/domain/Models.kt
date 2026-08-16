@@ -200,10 +200,12 @@ data class GuidanceUiView(
 
 enum class FlightPlanControlId {
     ActivateNextLeg,
+    Redo,
     RestoreDirectTo,
     SequenceActiveLeg,
     StopNavigation,
     SuspendSequencing,
+    Undo,
     UnsuspendSequencing,
 }
 

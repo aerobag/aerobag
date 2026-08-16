@@ -394,6 +394,8 @@ internal fun FlightPlanPage(
         when (controlId) {
             FlightPlanControlId.ActivateNextLeg ->
                 applySessionCommand("activateNextLeg") { uiSession.activateNextLeg() }
+            FlightPlanControlId.Redo ->
+                applySessionCommand("redoFlightPlanEdit") { uiSession.redoFlightPlanEdit() }
             FlightPlanControlId.RestoreDirectTo ->
                 applySessionCommand("restoreDirectTo") { uiSession.restoreDirectTo() }
             FlightPlanControlId.SequenceActiveLeg ->
@@ -402,6 +404,8 @@ internal fun FlightPlanPage(
                 applySessionCommand("stopNavigation") { uiSession.stopNavigation() }
             FlightPlanControlId.SuspendSequencing ->
                 applySessionCommand("suspendSequencing") { uiSession.suspendSequencing() }
+            FlightPlanControlId.Undo ->
+                applySessionCommand("undoFlightPlanEdit") { uiSession.undoFlightPlanEdit() }
             FlightPlanControlId.UnsuspendSequencing ->
                 applySessionCommand("unsuspendSequencing") { uiSession.unsuspendSequencing() }
         }
@@ -1487,10 +1491,12 @@ private fun procedureChoiceLabel(
 
 private fun FlightPlanControlId.coreId() = when (this) {
     FlightPlanControlId.ActivateNextLeg -> "activate_next_leg"
+    FlightPlanControlId.Redo -> "redo"
     FlightPlanControlId.RestoreDirectTo -> "restore_direct_to"
     FlightPlanControlId.SequenceActiveLeg -> "sequence_active_leg"
     FlightPlanControlId.StopNavigation -> "stop_navigation"
     FlightPlanControlId.SuspendSequencing -> "suspend_sequencing"
+    FlightPlanControlId.Undo -> "undo"
     FlightPlanControlId.UnsuspendSequencing -> "unsuspend_sequencing"
 }
 

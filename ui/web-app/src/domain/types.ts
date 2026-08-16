@@ -213,10 +213,12 @@ export type GuidanceUiView = {
 
 export type FlightPlanControlId =
   | "activate_next_leg"
+  | "redo"
   | "restore_direct_to"
   | "sequence_active_leg"
   | "stop_navigation"
   | "suspend_sequencing"
+  | "undo"
   | "unsuspend_sequencing";
 
 export type FlightPlanControlUiView = {

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
 };
 
@@ -12,11 +12,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     flight_plan_materialization::MaterializedFlightPlan,
     had_ops::{FlightPlanLiveData, HadReadError},
-    AppError, AppErrorKind, AppResult, FlightDataComputer, FlightPlan, FlightPlanDisplayRowKind,
-    FlightPlanRouteProjection, FlightPlanRouteSegment, FlightPlanRowActionExecution,
-    FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon, LegDisplayElement, NavKvStore,
-    NavRef, ProcedureDiscontinuity, RouteComponentViewKind, SequencingMode,
+    AppError, AppErrorKind, AppResult, FlightDataComputer, FlightPlan, FlightPlanControlId,
+    FlightPlanControlUiView, FlightPlanDisplayRowKind, FlightPlanRouteProjection,
+    FlightPlanRouteSegment, FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState,
+    GuidanceState, LatLon, LegDisplayElement, NavKvStore, NavRef, ProcedureDiscontinuity,
+    RouteComponentViewKind, SequencingMode,
 };
+
+const MAX_FLIGHT_PLAN_UNDO_DEPTH: usize = 1_024;
+const MAX_FLIGHT_PLAN_HISTORY_BYTES: usize = 16 * 1_024 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuidanceLegGeometry {
@@ -28,22 +32,141 @@ pub struct GuidanceLegGeometry {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct FlightPlanModel {
-    active_plan: Option<FlightPlan>,
-    guidance_leg_geometry: Arc<HashMap<String, GuidanceLegGeometry>>,
-    route_revision: u64,
-    revision: u64,
+struct FlightPlanDefinition {
+    plan: Arc<FlightPlan>,
+    serialized_bytes: usize,
 }
 
-impl Default for FlightPlanModel {
-    fn default() -> Self {
+impl FlightPlanDefinition {
+    fn from_plan(plan: &FlightPlan) -> AppResult<Self> {
+        let mut definition = plan.clone().normalized();
+        definition.guidance = None;
+        let serialized_bytes = serde_json::to_vec(&definition)
+            .map_err(|error| AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("could not size flight-plan history snapshot: {error}"),
+            })?
+            .len();
+        Ok(Self {
+            plan: Arc::new(definition),
+            serialized_bytes,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct FlightPlanDefinitionController {
+    snapshots: VecDeque<FlightPlanDefinition>,
+    cursor: usize,
+    serialized_bytes: usize,
+}
+
+impl FlightPlanDefinitionController {
+    fn new(definition: FlightPlanDefinition) -> Self {
+        let serialized_bytes = definition.serialized_bytes;
         Self {
-            active_plan: None,
-            guidance_leg_geometry: Arc::new(HashMap::new()),
-            route_revision: 0,
-            revision: 0,
+            snapshots: VecDeque::from([definition]),
+            cursor: 0,
+            serialized_bytes,
         }
     }
+
+    fn current(&self) -> Option<&FlightPlan> {
+        self.snapshots
+            .get(self.cursor)
+            .map(|entry| entry.plan.as_ref())
+    }
+
+    fn can_undo(&self) -> bool {
+        self.cursor > 0
+    }
+
+    fn can_redo(&self) -> bool {
+        self.cursor + 1 < self.snapshots.len()
+    }
+
+    fn undo_target(&self) -> Option<&FlightPlan> {
+        self.cursor
+            .checked_sub(1)
+            .and_then(|cursor| self.snapshots.get(cursor))
+            .map(|entry| entry.plan.as_ref())
+    }
+
+    fn redo_target(&self) -> Option<&FlightPlan> {
+        self.snapshots
+            .get(self.cursor + 1)
+            .map(|entry| entry.plan.as_ref())
+    }
+
+    fn finish_undo(&mut self) {
+        debug_assert!(self.can_undo());
+        self.cursor -= 1;
+    }
+
+    fn finish_redo(&mut self) {
+        debug_assert!(self.can_redo());
+        self.cursor += 1;
+    }
+
+    fn reset(&mut self, definition: FlightPlanDefinition) {
+        *self = Self::new(definition);
+    }
+
+    fn record(&mut self, definition: FlightPlanDefinition) -> bool {
+        if self.current() == Some(definition.plan.as_ref()) {
+            return false;
+        }
+        while self.snapshots.len() > self.cursor + 1 {
+            if let Some(removed) = self.snapshots.pop_back() {
+                self.serialized_bytes = self
+                    .serialized_bytes
+                    .saturating_sub(removed.serialized_bytes);
+            }
+        }
+        self.serialized_bytes = self
+            .serialized_bytes
+            .saturating_add(definition.serialized_bytes);
+        self.snapshots.push_back(definition);
+        self.cursor = self.snapshots.len() - 1;
+        while self.snapshots.len() > MAX_FLIGHT_PLAN_UNDO_DEPTH + 1
+            || (self.serialized_bytes > MAX_FLIGHT_PLAN_HISTORY_BYTES && self.snapshots.len() > 1)
+        {
+            let removed = self
+                .snapshots
+                .pop_front()
+                .expect("flight-plan history is nonempty");
+            self.serialized_bytes = self
+                .serialized_bytes
+                .saturating_sub(removed.serialized_bytes);
+            self.cursor = self.cursor.saturating_sub(1);
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FlightPlanNavigationController {
+    guidance: Option<GuidanceState>,
+    guidance_leg_geometry: Arc<HashMap<String, GuidanceLegGeometry>>,
+}
+
+impl Default for FlightPlanNavigationController {
+    fn default() -> Self {
+        Self {
+            guidance: None,
+            guidance_leg_geometry: Arc::new(HashMap::new()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct FlightPlanModel {
+    definition: FlightPlanDefinitionController,
+    navigation: FlightPlanNavigationController,
+    // Read-only composite cache for planners and projections that consume both domains.
+    active_plan: Option<FlightPlan>,
+    route_revision: u64,
+    revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,10 +236,16 @@ impl FlightPlanController {
         guidance_leg_geometry: Vec<GuidanceLegGeometry>,
     ) -> AppResult<Self> {
         let active_plan = crate::build_flight_plan(plan)?;
+        let definition = FlightPlanDefinition::from_plan(&active_plan)?;
+        let guidance = active_plan.guidance.clone();
         Ok(Self {
             model: FlightPlanModel {
+                definition: FlightPlanDefinitionController::new(definition),
+                navigation: FlightPlanNavigationController {
+                    guidance,
+                    guidance_leg_geometry: Arc::new(geometry_map(guidance_leg_geometry)),
+                },
                 active_plan: Some(active_plan),
-                guidance_leg_geometry: Arc::new(geometry_map(guidance_leg_geometry)),
                 route_revision: 0,
                 revision: 0,
             },
@@ -138,7 +267,7 @@ impl FlightPlanController {
     }
 
     pub fn guidance_leg_geometry(&self) -> &HashMap<String, GuidanceLegGeometry> {
-        &self.model.guidance_leg_geometry
+        &self.model.navigation.guidance_leg_geometry
     }
 
     pub fn checkpoint_model(&self) -> FlightPlanModelCheckpoint {
@@ -152,19 +281,59 @@ impl FlightPlanController {
         self.clear_projection_caches();
     }
 
-    pub fn store_plan(&mut self, plan: FlightPlan) -> AppResult<&FlightPlan> {
-        self.model.active_plan = Some(crate::build_flight_plan(plan)?);
+    /// Accepts a user-authored definition edit and records it in undo history.
+    pub fn apply_definition_edit(&mut self, plan: FlightPlan) -> AppResult<&FlightPlan> {
+        let normalized = crate::build_flight_plan(plan)?;
+        let definition = FlightPlanDefinition::from_plan(&normalized)?;
+        self.model.definition.record(definition);
+        self.install_normalized_plan(normalized)?;
         self.model.route_revision = self.model.route_revision.saturating_add(1);
         self.note_change();
-        Ok(self.model.active_plan.as_ref().expect("stored active plan"))
+        Ok(self.model.active_plan.as_ref().expect("edited active plan"))
     }
 
+    /// Accepts an operational navigation update. The definition is checked but
+    /// never replaced, so guidance code cannot enter edit history by accident.
+    pub fn apply_navigation_update(&mut self, plan: FlightPlan) -> AppResult<&FlightPlan> {
+        let normalized = crate::build_flight_plan(plan)?;
+        let incoming_definition = FlightPlanDefinition::from_plan(&normalized)?;
+        if self.model.definition.current() != Some(incoming_definition.plan.as_ref()) {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: "navigation update attempted to mutate the flight-plan definition"
+                    .to_string(),
+            });
+        }
+        let mut combined = self
+            .model
+            .definition
+            .current()
+            .cloned()
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: "navigation update has no flight-plan definition".to_string(),
+            })?;
+        combined.guidance = normalized.guidance;
+        let combined = crate::build_flight_plan(combined)?;
+        self.model.navigation.guidance = combined.guidance.clone();
+        self.model.active_plan = Some(combined);
+        self.model.route_revision = self.model.route_revision.saturating_add(1);
+        self.note_change();
+        Ok(self
+            .model
+            .active_plan
+            .as_ref()
+            .expect("navigation-updated active plan"))
+    }
+
+    /// Replaces the plan from persistence or sync and establishes a new local
+    /// history baseline.
     pub fn replace_plan(&mut self, plan: FlightPlan) -> AppResult<&FlightPlan> {
         let normalized = crate::build_flight_plan(plan)?;
-        let geometry =
-            self_contained_guidance_leg_geometry_for_plan(&normalized)?.unwrap_or_default();
-        self.model.active_plan = Some(normalized);
-        self.model.guidance_leg_geometry = Arc::new(geometry_map(geometry));
+        self.model
+            .definition
+            .reset(FlightPlanDefinition::from_plan(&normalized)?);
+        self.install_normalized_plan(normalized)?;
         self.model.route_revision = self.model.route_revision.saturating_add(1);
         self.note_change();
         Ok(self
@@ -174,18 +343,68 @@ impl FlightPlanController {
             .expect("replaced active plan"))
     }
 
+    pub fn can_undo(&self) -> bool {
+        self.model.definition.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.model.definition.can_redo()
+    }
+
+    pub fn undo_definition_edit(&mut self) -> AppResult<&FlightPlan> {
+        let historical_definition =
+            self.model
+                .definition
+                .undo_target()
+                .cloned()
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::UnsupportedOperation,
+                    message: "No flight-plan edit is available to undo.".to_string(),
+                })?;
+        let current = self.required_plan("undo flight-plan edit")?.clone();
+        let restored =
+            crate::planning::restore_flight_plan_definition(&current, &historical_definition)?;
+        let restored = crate::build_flight_plan(restored)?;
+        self.model.definition.finish_undo();
+        self.install_normalized_plan(restored)?;
+        self.model.route_revision = self.model.route_revision.saturating_add(1);
+        self.note_change();
+        Ok(self.model.active_plan.as_ref().expect("undo active plan"))
+    }
+
+    pub fn redo_definition_edit(&mut self) -> AppResult<&FlightPlan> {
+        let historical_definition =
+            self.model
+                .definition
+                .redo_target()
+                .cloned()
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::UnsupportedOperation,
+                    message: "No flight-plan edit is available to redo.".to_string(),
+                })?;
+        let current = self.required_plan("redo flight-plan edit")?.clone();
+        let restored =
+            crate::planning::restore_flight_plan_definition(&current, &historical_definition)?;
+        let restored = crate::build_flight_plan(restored)?;
+        self.model.definition.finish_redo();
+        self.install_normalized_plan(restored)?;
+        self.model.route_revision = self.model.route_revision.saturating_add(1);
+        self.note_change();
+        Ok(self.model.active_plan.as_ref().expect("redo active plan"))
+    }
+
     pub fn install_guidance_leg_geometry(&mut self, geometries: Vec<GuidanceLegGeometry>) {
         let geometries = Arc::new(geometry_map(geometries));
-        if self.model.guidance_leg_geometry == geometries {
+        if self.model.navigation.guidance_leg_geometry == geometries {
             return;
         }
-        self.model.guidance_leg_geometry = geometries;
+        self.model.navigation.guidance_leg_geometry = geometries;
         self.note_change();
     }
 
     pub fn clear_guidance_leg_geometry(&mut self) {
-        if !self.model.guidance_leg_geometry.is_empty() {
-            self.model.guidance_leg_geometry = Arc::new(HashMap::new());
+        if !self.model.navigation.guidance_leg_geometry.is_empty() {
+            self.model.navigation.guidance_leg_geometry = Arc::new(HashMap::new());
             self.note_change();
         }
     }
@@ -238,7 +457,7 @@ impl FlightPlanController {
         row_uid: &str,
         action_uid: &str,
         ownship_position: Option<LatLon>,
-    ) -> AppResult<FlightPlan> {
+    ) -> AppResult<(FlightPlan, FlightPlanMutationDomain)> {
         let plan = self.required_plan("perform row action")?;
         let mut ui = crate::project_ui_state(plan);
         crate::planning::apply_flight_plan_live_action_availability(
@@ -288,7 +507,13 @@ impl FlightPlanController {
                 })
         };
 
-        match &action.id {
+        let domain = match &action.id {
+            FlightPlanRowActionId::ActivateLeg | FlightPlanRowActionId::DirectTo => {
+                FlightPlanMutationDomain::Navigation
+            }
+            _ => FlightPlanMutationDomain::Definition,
+        };
+        let plan = match &action.id {
             FlightPlanRowActionId::ActivateLeg => {
                 let leg_index = row.leg_index.ok_or_else(|| AppError {
                     kind: AppErrorKind::InvalidFlightPlan,
@@ -339,7 +564,8 @@ impl FlightPlanController {
                 kind: AppErrorKind::UnsupportedOperation,
                 message: format!("unsupported core flight-plan row action: {action_uid}"),
             }),
-        }
+        }?;
+        Ok((plan, domain))
     }
 
     pub fn plan_after_direct_to(
@@ -362,15 +588,17 @@ impl FlightPlanController {
         let plan = self.model.active_plan.as_ref()?;
         let guidance = plan.guidance.as_ref()?;
         if guidance.sequencing_mode == SequencingMode::DirectTo {
-            let geometry =
-                active_guidance_projection_geometry(plan, &self.model.guidance_leg_geometry)?;
+            let geometry = active_guidance_projection_geometry(
+                plan,
+                &self.model.navigation.guidance_leg_geometry,
+            )?;
             return Some((geometry.leg_id.clone(), geometry));
         }
         let active_detail_index = active_guidance_detail_index_for_motion(plan, guidance)?;
         active_guidance_detail_geometry_for_index(
             plan,
             active_detail_index,
-            &self.model.guidance_leg_geometry,
+            &self.model.navigation.guidance_leg_geometry,
         )
     }
 
@@ -387,31 +615,32 @@ impl FlightPlanController {
             let Some(guidance) = plan.guidance.as_ref() else {
                 return Ok(sequenced);
             };
-            let (finish_criterion, suspended_hold) =
-                if guidance.sequencing_mode == SequencingMode::DirectTo {
-                    let Some(finish_criterion) =
-                        direct_to_finish_criterion(plan, &self.model.guidance_leg_geometry)
-                    else {
-                        return Ok(sequenced);
-                    };
-                    (finish_criterion, false)
-                } else {
-                    let Some(active_detail_index) =
-                        active_guidance_detail_index_for_motion(plan, guidance)
-                    else {
-                        return Ok(sequenced);
-                    };
-                    let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
-                    let Some(finish_criterion) = active_detail_finish_criterion(
-                        plan,
-                        active_detail_index,
-                        &self.model.guidance_leg_geometry,
-                        suspended_hold,
-                    ) else {
-                        return Ok(sequenced);
-                    };
-                    (finish_criterion, suspended_hold)
+            let (finish_criterion, suspended_hold) = if guidance.sequencing_mode
+                == SequencingMode::DirectTo
+            {
+                let Some(finish_criterion) =
+                    direct_to_finish_criterion(plan, &self.model.navigation.guidance_leg_geometry)
+                else {
+                    return Ok(sequenced);
                 };
+                (finish_criterion, false)
+            } else {
+                let Some(active_detail_index) =
+                    active_guidance_detail_index_for_motion(plan, guidance)
+                else {
+                    return Ok(sequenced);
+                };
+                let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
+                let Some(finish_criterion) = active_detail_finish_criterion(
+                    plan,
+                    active_detail_index,
+                    &self.model.navigation.guidance_leg_geometry,
+                    suspended_hold,
+                ) else {
+                    return Ok(sequenced);
+                };
+                (finish_criterion, suspended_hold)
+            };
             if !finish_criterion.crossed_by(previous_position, current_position) {
                 return Ok(sequenced);
             }
@@ -420,7 +649,7 @@ impl FlightPlanController {
             } else {
                 crate::sequence_active_detail(plan)?
             };
-            self.store_plan(next_plan)?;
+            self.apply_navigation_update(next_plan)?;
             sequenced = true;
         }
         Ok(sequenced)
@@ -483,7 +712,7 @@ impl FlightPlanController {
                 } else {
                     let materialized = MaterializedFlightPlan::build(
                         plan,
-                        &self.model.guidance_leg_geometry,
+                        &self.model.navigation.guidance_leg_geometry,
                         inputs.ownship_position,
                     )
                     .map_err(|error| HadReadError::Fatal(error.message))?;
@@ -498,6 +727,23 @@ impl FlightPlanController {
             crate::planning::apply_flight_plan_live_action_availability(
                 ui_state,
                 inputs.ownship_position.is_some(),
+            );
+            ui_state.controls.splice(
+                0..0,
+                [
+                    history_control(
+                        FlightPlanControlId::Undo,
+                        "UNDO",
+                        self.can_undo(),
+                        "No flight-plan edit is available to undo.",
+                    ),
+                    history_control(
+                        FlightPlanControlId::Redo,
+                        "REDO",
+                        self.can_redo(),
+                        "No flight-plan edit is available to redo.",
+                    ),
+                ],
             );
         }
         self.projection_cache = Some(FlightPlanProjectionCache {
@@ -560,6 +806,34 @@ impl FlightPlanController {
             kind: AppErrorKind::Internal,
             message: format!("cannot {context}: no active flight plan"),
         })
+    }
+
+    fn install_normalized_plan(&mut self, plan: FlightPlan) -> AppResult<()> {
+        let geometry = self_contained_guidance_leg_geometry_for_plan(&plan)?.unwrap_or_default();
+        self.model.navigation.guidance = plan.guidance.clone();
+        self.model.navigation.guidance_leg_geometry = Arc::new(geometry_map(geometry));
+        self.model.active_plan = Some(plan);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlightPlanMutationDomain {
+    Definition,
+    Navigation,
+}
+
+fn history_control(
+    id: FlightPlanControlId,
+    label: &str,
+    enabled: bool,
+    disabled_reason: &str,
+) -> FlightPlanControlUiView {
+    FlightPlanControlUiView {
+        id,
+        label: label.to_string(),
+        enabled,
+        disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
     }
 }
 
@@ -985,11 +1259,185 @@ mod tests {
         let checkpoint = controller.checkpoint_model();
         let mut changed = plan();
         changed.name = "changed".to_string();
-        controller.store_plan(changed).expect("store plan");
+        controller
+            .apply_definition_edit(changed)
+            .expect("store plan edit");
         assert_eq!(controller.route_revision(), 1);
 
         controller.rollback_model(checkpoint);
         assert_eq!(controller.route_revision(), 0);
         assert_ne!(controller.active_plan().expect("plan").name, "changed");
+    }
+
+    #[test]
+    fn definition_history_is_deep_branchable_and_excludes_navigation() {
+        let mut controller =
+            FlightPlanController::new(direct_to_plan(), Vec::new()).expect("controller");
+
+        for name in ["first edit", "second edit", "third edit"] {
+            let mut edited = controller.active_plan().expect("plan").clone();
+            edited.name = name.to_string();
+            controller
+                .apply_definition_edit(edited)
+                .expect("definition edit");
+        }
+        assert_eq!(controller.active_plan().expect("plan").name, "third edit");
+
+        controller.undo_definition_edit().expect("first undo");
+        controller.undo_definition_edit().expect("second undo");
+        assert_eq!(controller.active_plan().expect("plan").name, "first edit");
+        assert!(controller.can_redo());
+
+        let navigated = crate::activate_leg(controller.active_plan().expect("plan"), 0)
+            .expect("activate guidance");
+        controller
+            .apply_navigation_update(navigated)
+            .expect("navigation update");
+        assert!(controller.can_redo(), "navigation must not truncate redo");
+
+        controller.redo_definition_edit().expect("redo");
+        assert_eq!(controller.active_plan().expect("plan").name, "second edit");
+        assert!(controller.active_plan().expect("plan").guidance.is_some());
+
+        controller
+            .undo_definition_edit()
+            .expect("undo before branch");
+        let mut branched = controller.active_plan().expect("plan").clone();
+        branched.name = "branched edit".to_string();
+        controller
+            .apply_definition_edit(branched)
+            .expect("branched edit");
+        assert!(!controller.can_redo());
+    }
+
+    #[test]
+    fn undo_reconciles_current_guidance_instead_of_rewinding_it() {
+        let original = crate::build_flight_plan(FlightPlan {
+            route_components: vec![
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("YKM".to_string()),
+                },
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBOI".to_string()),
+                },
+            ],
+            ..FlightPlan::empty()
+        })
+        .expect("plan");
+        let mut controller = FlightPlanController::new(original, Vec::new()).expect("controller");
+        let mut edited = controller.active_plan().expect("plan").clone();
+        edited.name = "edited".to_string();
+        controller
+            .apply_definition_edit(edited)
+            .expect("definition edit");
+
+        let navigated = crate::activate_leg(controller.active_plan().expect("plan"), 1)
+            .expect("activate second leg");
+        controller
+            .apply_navigation_update(navigated)
+            .expect("navigation update");
+        let active_to_before = crate::project_ui_state(controller.active_plan().expect("plan"))
+            .guidance
+            .and_then(|guidance| guidance.active_to_row_uid)
+            .expect("active to row");
+
+        controller.undo_definition_edit().expect("undo");
+        let restored = controller.active_plan().expect("plan");
+        assert_eq!(restored.name, "Flight Plan");
+        let active_to_after = crate::project_ui_state(restored)
+            .guidance
+            .and_then(|guidance| guidance.active_to_row_uid)
+            .expect("restored active to row");
+        assert_eq!(active_to_after, active_to_before);
+    }
+
+    #[test]
+    fn undo_restores_the_exact_definition_after_remove_all_above() {
+        let original = crate::build_flight_plan(FlightPlan {
+            route_components: vec![
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("YKM".to_string()),
+                },
+                crate::RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBOI".to_string()),
+                },
+            ],
+            ..FlightPlan::empty()
+        })
+        .expect("plan");
+        let trimmed = crate::remove_all_above(&original, 1).expect("remove all above");
+        let mut controller =
+            FlightPlanController::new(original.clone(), Vec::new()).expect("controller");
+        controller
+            .apply_definition_edit(trimmed.clone())
+            .expect("destructive edit");
+
+        controller.undo_definition_edit().expect("undo remove all");
+        assert_eq!(controller.active_plan(), Some(&original));
+        controller.redo_definition_edit().expect("redo remove all");
+        assert_eq!(controller.active_plan(), Some(&trimmed));
+    }
+
+    #[test]
+    fn projected_history_controls_track_cursor_availability() {
+        let mut controller = FlightPlanController::new(plan(), Vec::new()).expect("controller");
+        let initial = controller
+            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .expect("initial projection")
+            .projection
+            .ui_state
+            .expect("UI state");
+        assert!(!initial.controls[0].enabled);
+        assert_eq!(initial.controls[0].id, FlightPlanControlId::Undo);
+        assert!(!initial.controls[1].enabled);
+        assert_eq!(initial.controls[1].id, FlightPlanControlId::Redo);
+
+        let mut edited = controller.active_plan().expect("plan").clone();
+        edited.notes = Some("remember this".to_string());
+        controller
+            .apply_definition_edit(edited)
+            .expect("definition edit");
+        let edited = controller
+            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .expect("edited projection")
+            .projection
+            .ui_state
+            .expect("UI state");
+        assert!(edited.controls[0].enabled);
+        assert!(!edited.controls[1].enabled);
+
+        controller.undo_definition_edit().expect("undo");
+        let undone = controller
+            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .expect("undone projection")
+            .projection
+            .ui_state
+            .expect("UI state");
+        assert!(!undone.controls[0].enabled);
+        assert!(undone.controls[1].enabled);
+    }
+
+    #[test]
+    fn history_retains_up_to_the_configured_deep_undo_budget() {
+        let mut controller = FlightPlanController::new(plan(), Vec::new()).expect("controller");
+        for index in 0..MAX_FLIGHT_PLAN_UNDO_DEPTH + 8 {
+            let mut edited = controller.active_plan().expect("plan").clone();
+            edited.name = format!("edit {index}");
+            controller
+                .apply_definition_edit(edited)
+                .expect("definition edit");
+        }
+        let mut undo_count = 0;
+        while controller.can_undo() {
+            controller.undo_definition_edit().expect("deep undo");
+            undo_count += 1;
+        }
+        assert_eq!(undo_count, MAX_FLIGHT_PLAN_UNDO_DEPTH);
     }
 }

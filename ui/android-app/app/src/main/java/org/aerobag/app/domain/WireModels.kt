@@ -1111,6 +1111,9 @@ enum class WireFlightPlanControlId {
     @SerialName("activate_next_leg")
     ActivateNextLeg,
 
+    @SerialName("redo")
+    Redo,
+
     @SerialName("restore_direct_to")
     RestoreDirectTo,
 
@@ -1122,6 +1125,9 @@ enum class WireFlightPlanControlId {
 
     @SerialName("suspend_sequencing")
     SuspendSequencing,
+
+    @SerialName("undo")
+    Undo,
 
     @SerialName("unsuspend_sequencing")
     UnsuspendSequencing,

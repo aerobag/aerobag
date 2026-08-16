@@ -1399,11 +1399,11 @@ button {
 .mapSelectionRow {
   display: flex;
   gap: calc(var(--thumb-gap) * 0.8);
-  min-height: var(--thumb);
+  min-height: calc(var(--thumb) + 8px);
   min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  padding-bottom: 2px;
+  padding: 4px;
 }
 
 .mapSelectionEmpty {
@@ -1440,6 +1440,10 @@ button {
 .mapSelectionItem.isSelected {
   border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
   background: var(--theme-button-checked);
+  box-shadow:
+    0 0 0 2px white,
+    0 0 0 4px var(--theme-button-checked),
+    var(--shadow);
 }
 
 .mapSelectionItemLabel {

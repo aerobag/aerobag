@@ -4962,35 +4962,46 @@ internal fun MapSelectionItemButton(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val containerColor = if (selected) uiTheme.controls.buttonChecked else uiTheme.controls.buttonUnchecked
-    Surface(
+    val outerShape = RoundedCornerShape(ThumbRadius + 4.dp)
+    val gapShape = RoundedCornerShape(ThumbRadius + 2.dp)
+    Box(
         modifier = Modifier
-            .size(ThumbSize)
-            .testTag(testTag)
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(ThumbRadius),
-        color = containerColor,
-        contentColor = uiTheme.controls.buttonFg,
-        border = BorderStroke(
-            if (selected) 2.dp else 1.dp,
-            if (selected) uiTheme.controls.buttonFg else lerp(containerColor, Color.Black, 0.22f),
-        ),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(3.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            MapSelectionItemIcon(item, Modifier.weight(1f).fillMaxWidth())
-            Text(
-                text = item.label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = IconButtonLabelFontSize,
-                    fontWeight = FontWeight.Bold,
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
+            .size(ThumbSize + 8.dp)
+            .then(
+                if (selected) Modifier.border(2.dp, uiTheme.controls.buttonChecked, outerShape)
+                else Modifier,
             )
+            .padding(2.dp)
+            .then(if (selected) Modifier.border(2.dp, Color.White, gapShape) else Modifier)
+            .padding(2.dp),
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag(testTag)
+                .clickable(onClick = onClick),
+            shape = RoundedCornerShape(ThumbRadius),
+            color = containerColor,
+            contentColor = uiTheme.controls.buttonFg,
+            border = BorderStroke(1.dp, lerp(containerColor, Color.Black, 0.22f)),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(3.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                MapSelectionItemIcon(item, Modifier.weight(1f).fillMaxWidth())
+                Text(
+                    text = item.label,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = IconButtonLabelFontSize,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }

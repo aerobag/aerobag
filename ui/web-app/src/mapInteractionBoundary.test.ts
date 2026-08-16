@@ -90,6 +90,20 @@ describe("map interaction boundaries", () => {
     expect(airportIdentityBlocks).toContain("font-weight: 800");
   });
 
+  it("draws the selected inspector item outside its existing shape", () => {
+    const selectedItemBlocks = [...styles.matchAll(/\.mapSelectionItem\.isSelected\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(selectedItemBlocks).toContain("0 0 0 2px white");
+    expect(selectedItemBlocks).toContain("0 0 0 4px var(--theme-button-checked)");
+
+    const itemBlocks = [...styles.matchAll(/\.mapSelectionItem\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(itemBlocks).toContain("width: var(--thumb)");
+    expect(itemBlocks).toContain("height: var(--thumb)");
+  });
+
   it("uses the weather modal as the only weather-detail scroll viewport", () => {
     const modalBlocks = [...styles.matchAll(/\.mapSelectionDetailModal\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")

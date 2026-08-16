@@ -91,6 +91,13 @@ class NativeUiSessionBoundaryTest {
                     .contains("decodeAccumulatedSnapshot()"),
         )
         assertTrue(
+            "Every emitted session refresh deadline must land in Android's incremental model.",
+            source.contains(
+                "\"next_session_snapshot_refresh_epoch_ms\" -> next.copy(\n" +
+                    "                nextSessionSnapshotRefreshEpochMs = value.jsonPrimitive.content.toLong(),",
+            ),
+        )
+        assertTrue(
             "Ordinary mutations must apply core's generated update and full refreshes must explicitly reset it.",
             sessionBody.contains("snapshotAccumulator.applyOrResyncDetailed(update)") &&
                 sessionBody.contains("snapshotAccumulator.replaceFullSnapshot"),

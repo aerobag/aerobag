@@ -669,6 +669,9 @@ private fun landSessionUpdate(
             "next_nav_db_maintenance_epoch_ms" -> next.copy(
                 nextNavDbMaintenanceEpochMs = json.decodeFromJsonElement<Long?>(value),
             )
+            "next_session_snapshot_refresh_epoch_ms" -> next.copy(
+                nextSessionSnapshotRefreshEpochMs = value.jsonPrimitive.content.toLong(),
+            )
             "app_ui_state" -> next.copy(
                 appUiState = landAppUiState(next.appUiState, path, value, json),
             )

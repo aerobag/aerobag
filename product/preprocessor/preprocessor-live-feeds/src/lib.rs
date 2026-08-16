@@ -2272,12 +2272,10 @@ fn textual_star_procedure_ids(text: &str) -> BTreeSet<String> {
         .skip(1)
         .filter_map(|tail| tail.split_once(')'))
     {
-        let candidate = parenthesized
-            .0
-            .split('.')
-            .next_back()
-            .map(str::trim)
-            .unwrap_or_default();
+        let Some((_, candidate)) = parenthesized.0.rsplit_once('.') else {
+            continue;
+        };
+        let candidate = candidate.trim();
         if candidate.len() >= 2
             && candidate
                 .chars()
@@ -3545,7 +3543,10 @@ mod tests {
             &xml,
             Some("STAR"),
             None,
-            Some("STAR SEA CHART CHINS FIVE ARRIVAL (CHINS.CHINS5) PROCEDURE NA"),
+            Some(
+                "STAR SEA CHART CHINS FIVE ARRIVAL (CHINS.CHINS5) PROCEDURE NA; \
+                 WINDMILL AT 873 OBS (25-077159)",
+            ),
         )?;
         assert_eq!(
             keys,

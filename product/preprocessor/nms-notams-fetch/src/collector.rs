@@ -19,7 +19,7 @@ use crate::{
     InitialLoadCaptureSource, NmsApiSource,
 };
 
-const NMS_API_STORE_SCHEMA_VERSION: u32 = 2;
+const NMS_API_STORE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct CollectorOptions {
@@ -106,10 +106,11 @@ impl NmsApiCollectorStore {
                 "schema_version",
                 &NMS_API_STORE_SCHEMA_VERSION.to_string(),
             ),
-            Some("1") => {
-                // Version 2 adds semantic procedure keys derived from raw AIXM.
-                // Baseline rows do not retain enough source XML to backfill them,
-                // so force one authoritative Initial Load refresh.
+            Some("1") | Some("2") => {
+                // Versions 2 and 3 add and then tighten semantic procedure keys
+                // derived from raw AIXM. Baseline rows do not retain enough
+                // source XML to recompute either change in place, so force one
+                // authoritative Initial Load refresh.
                 let tx = connection
                     .transaction()
                     .context("failed to start NMS procedure-key schema migration")?;
@@ -135,7 +136,7 @@ impl NmsApiCollectorStore {
                 tx.commit()
                     .context("failed to commit NMS procedure-key schema migration")
             }
-            Some("2") => Ok(()),
+            Some("3") => Ok(()),
             Some(version) => bail!(
                 "unsupported NMS API collector schema {version}; required {NMS_API_STORE_SCHEMA_VERSION}"
             ),
@@ -990,12 +991,12 @@ mod tests {
     }
 
     #[test]
-    fn schema_one_state_is_invalidated_for_procedure_key_reingestion() -> anyhow::Result<()> {
+    fn older_state_is_invalidated_for_procedure_key_reingestion() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let connection = store.open_connection()?;
-        set_metadata(&connection, "schema_version", "1")?;
+        set_metadata(&connection, "schema_version", "2")?;
         set_metadata(
             &connection,
             "baseline_installed_at_utc",
@@ -1017,7 +1018,7 @@ mod tests {
         let connection = store.open_connection()?;
         assert_eq!(
             metadata(&connection, "schema_version")?.as_deref(),
-            Some("2")
+            Some("3")
         );
         assert!(!store.is_baseline_installed()?);
         assert!(store.current_records()?.is_empty());

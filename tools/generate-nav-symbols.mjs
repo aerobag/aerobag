@@ -250,6 +250,8 @@ export const dataStatusWarningSymbol = ${JSON.stringify(symbolSource("data_statu
 export const airportOpenMarkerSymbol = ${JSON.stringify(symbolSource("airport_open_marker"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const mapSelectionSpotSymbol = ${JSON.stringify(symbolSource("map_selection_spot"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const compassSymbol = ${JSON.stringify(symbolSource("compass"), null, 2)} satisfies readonly NavSymbolLayer[];
+export const mapFollowInactiveSymbol = ${JSON.stringify(symbolSource("map_follow_inactive"), null, 2)} satisfies readonly NavSymbolLayer[];
+export const mapFollowActiveSymbol = ${JSON.stringify(symbolSource("map_follow_active"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const metarClearSymbol = ${JSON.stringify(symbolSource("metar_clear"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const metarFewSymbol = ${JSON.stringify(symbolSource("metar_few"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const metarSctSymbol = ${JSON.stringify(symbolSource("metar_sct"), null, 2)} satisfies readonly NavSymbolLayer[];
@@ -458,6 +460,14 @@ fun mapSelectionSpotSymbol(center: Offset, scale: Float): List<NavSymbolLayer> =
 
 fun compassSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
     ${ktSymbolLayers("compass")}
+)
+
+fun mapFollowInactiveSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
+    ${ktSymbolLayers("map_follow_inactive")}
+)
+
+fun mapFollowActiveSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
+    ${ktSymbolLayers("map_follow_active")}
 )
 
 fun metarClearSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(

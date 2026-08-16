@@ -72,13 +72,13 @@ class PrimaryNavigationLayoutTest {
             "internal fun AndroidChartSearchBox(",
         )
         val searchIndex = mapControls.indexOf("AndroidChartSearchBox(")
-        val ctrIndex = mapControls.indexOf("""label = "CTR"""")
+        val ctrIndex = mapControls.indexOf("MapCenterButton(")
         val orientationIndex = mapControls.indexOf("MapOrientationButton(")
         assertTrue("CTR must follow Search in the map top row.", ctrIndex > searchIndex)
         assertTrue("Orientation must follow CTR in the map top row.", orientationIndex > ctrIndex)
 
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
-        assertFalse("CTR must not return to the map's bottom-right corner.", mapPage.contains("""label = "CTR""""))
+        assertFalse("CTR must not return to the map's bottom-right corner.", mapPage.contains("MapCenterButton("))
         assertFalse("Orientation must use the shared top-row control.", mapPage.contains("internal fun MapOrientationButton("))
     }
 
@@ -92,6 +92,19 @@ class PrimaryNavigationLayoutTest {
         assertTrue(orientationButton.contains("compassSymbol(center, scale)"))
         assertTrue(orientationButton.contains("drawNavSymbolLayer(layer, scale, uiTheme)"))
         assertFalse(orientationButton.contains("drawLine("))
+    }
+
+    @Test
+    fun ctrUsesGeneratedSharedSymbolsAndStandardSelectedColor() {
+        val centerButton = sourceBetween(
+            chartsSource,
+            "internal fun MapCenterButton(",
+            "internal fun MapOrientationButton(",
+        )
+        assertTrue(centerButton.contains("buttonContainerColor(uiTheme, enabled, selected)"))
+        assertTrue(centerButton.contains("mapFollowActiveSymbol(center, scale)"))
+        assertTrue(centerButton.contains("mapFollowInactiveSymbol(center, scale)"))
+        assertFalse(centerButton.contains("Color(0xFF0D6F67)"))
     }
 
     @Test

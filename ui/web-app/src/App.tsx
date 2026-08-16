@@ -45,6 +45,8 @@ import {
   airportFuelMarkerPath,
   airportOpenMarkerSymbol,
   compassSymbol,
+  mapFollowActiveSymbol,
+  mapFollowInactiveSymbol,
   dataStatusWarningSymbol,
   actionSymbol,
   heliportHPath,
@@ -8079,6 +8081,8 @@ function MapPage(props: {
             className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}${centerHereDisabled ? " isDisabled" : ""}`}
             disabled={centerHereDisabled && !centerHereDisabledReason}
             aria-disabled={centerHereDisabled ? "true" : undefined}
+            aria-pressed={mapFollowUiState.following}
+            aria-label={mapFollowUiState.following ? "Stop centering on ownship" : "Center on ownship"}
             title={centerHereDisabledReason ?? undefined}
             onPointerDown={stopPointer}
             onPointerUp={stopPointer}
@@ -8100,7 +8104,12 @@ function MapPage(props: {
               void nextSnapshot.then(props.onPlaybackSnapshotChange).catch(() => {});
             }}
           >
-            CTR
+            <svg className="centerHereIcon" viewBox="-20 -20 40 40" aria-hidden="true">
+              <RenderNavSymbolLayers
+                layers={mapFollowUiState.following ? mapFollowActiveSymbol : mapFollowInactiveSymbol}
+              />
+            </svg>
+            <span className="chartButtonLabel">CTR</span>
           </button>
           <MapOrientationButton
             mode={mapOrientationMode}

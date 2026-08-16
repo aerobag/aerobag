@@ -14,6 +14,8 @@
     "compass_north_needle": "M 0 -15 L 3.2 0 L -3.2 0 Z",
     "compass_south_needle": "M 0 15 L -3.2 0 L 3.2 0 Z",
     "compass_hub": "M 0 -2.4 C 1.325 -2.4 2.4 -1.325 2.4 0 C 2.4 1.325 1.325 2.4 0 2.4 C -1.325 2.4 -2.4 1.325 -2.4 0 C -2.4 -1.325 -1.325 -2.4 0 -2.4 Z",
+    "map_follow_reticle": "M -15 -5 V -13 H -7 M 7 -13 H 15 V -5 M 15 5 V 13 H 7 M -7 13 H -15 V 5",
+    "map_follow_ownship": "M 0 -10 L 6 8 L 0 5 L -6 8 Z",
     "manual_sequence_chevron": "M -5 -7 L 4 0 L -5 7",
     "metar_circle": "M 0 -8 C 4.418 -8 8 -4.418 8 0 C 8 4.418 4.418 8 0 8 C -4.418 8 -8 4.418 -8 0 C -8 -4.418 -4.418 -8 0 -8 Z",
     "metar_few_bar": "M 0 -6.5 L 0 6.5",
@@ -204,6 +206,13 @@
         "stroke": "ink_75",
         "stroke_width": 1
       }
+    ],
+    "map_follow_inactive": [
+      { "path": "map_follow_reticle", "paint": "map_follow_reticle", "fill": "none", "stroke": "button_icon", "stroke_width": 2.5, "line_cap": "round", "line_join": "round" }
+    ],
+    "map_follow_active": [
+      { "path": "map_follow_reticle", "paint": "map_follow_reticle", "fill": "none", "stroke": "button_icon", "stroke_width": 2.5, "line_cap": "round", "line_join": "round" },
+      { "path": "map_follow_ownship", "paint": "map_follow_ownship", "fill": "button_icon", "line_join": "round" }
     ],
     "metar_clear": [
       { "path": "metar_circle", "paint": "metar_under", "fill": "none", "stroke": "white_90", "stroke_width": 5, "line_cap": "round", "line_join": "round" },

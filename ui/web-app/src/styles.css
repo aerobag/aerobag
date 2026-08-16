@@ -2997,16 +2997,28 @@ button {
   background: var(--theme-button-unchecked);
   box-shadow: var(--shadow);
   color: var(--theme-button-fg);
-  font-size: calc(var(--thumb) * 0.2);
-  font-weight: 800;
-  letter-spacing: 0.06em;
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 0 calc(var(--thumb) * 0.07);
+  overflow: hidden;
   pointer-events: auto;
 }
 
 .centerHereButton.isActive {
-  background: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 72%, black);
-  color: #fff;
+  background: var(--theme-button-checked);
+  border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
+}
+
+.centerHereIcon {
+  position: absolute;
+  top: calc(var(--thumb) * 0.07);
+  left: 50%;
+  width: calc(var(--thumb) * 0.65);
+  height: calc(var(--thumb) * 0.65);
+  display: block;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .centerHereButton.isDisabled,
@@ -3018,6 +3030,12 @@ button {
 
 .centerHereButton.isDisabled {
   cursor: help;
+}
+
+.centerHereButton.isDisabled .centerHereIcon,
+.centerHereButton:disabled .centerHereIcon {
+  filter: saturate(var(--theme-button-disabled-icon-saturation));
+  opacity: var(--theme-button-disabled-icon-opacity);
 }
 
 .mapOrientationButton {

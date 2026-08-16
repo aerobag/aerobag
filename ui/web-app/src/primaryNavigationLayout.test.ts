@@ -4,7 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { compassSymbol } from "./generated/navSymbols";
+import { compassSymbol, mapFollowActiveSymbol, mapFollowInactiveSymbol } from "./generated/navSymbols";
 
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -67,6 +67,17 @@ describe("primary navigation layout", () => {
       .toBe("M 0 -15 L 3.2 0 L -3.2 0 Z");
     expect(compassSymbol.find((layer) => layer.paint === "compass_south_needle")?.path)
       .toBe("M 0 15 L -3.2 0 L 3.2 0 Z");
+  });
+
+  it("uses shared CTR symbols and the standard selected palette", () => {
+    const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
+    const activeStyles = styles.match(/\.centerHereButton\.isActive\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(mapPage).toContain("mapFollowUiState.following ? mapFollowActiveSymbol : mapFollowInactiveSymbol");
+    expect(mapFollowInactiveSymbol).toHaveLength(1);
+    expect(mapFollowActiveSymbol).toHaveLength(2);
+    expect(mapFollowActiveSymbol[1]?.paint).toBe("map_follow_ownship");
+    expect(activeStyles).toContain("var(--theme-button-checked)");
+    expect(activeStyles).not.toContain("var(--accent)");
   });
 
   it("makes the CDI and both square buttons one thumb high", () => {

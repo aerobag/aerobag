@@ -285,6 +285,8 @@ import org.aerobag.app.generated.airportCircleMarkerPath
 import org.aerobag.app.generated.airportFuelMarkerPath
 import org.aerobag.app.generated.airportOpenMarkerSymbol
 import org.aerobag.app.generated.compassSymbol
+import org.aerobag.app.generated.mapFollowActiveSymbol
+import org.aerobag.app.generated.mapFollowInactiveSymbol
 import org.aerobag.app.generated.fixTrianglePath
 import org.aerobag.app.generated.heliportHPath
 import org.aerobag.app.generated.mapSelectionSpotSymbol
@@ -1318,12 +1320,9 @@ internal fun MapTopLeftControls(
             onSubmit = onChartSearchSubmit,
             onSuggestionClick = onChartSearchSuggestionClick,
         )
-        CompactSquareButton(
-            label = "CTR",
-            modifier = Modifier.size(ThumbSize),
+        MapCenterButton(
             enabled = centerHereEnabled,
             selected = centerHereSelected,
-            selectedColor = Color(0xFF0D6F67),
             onDisabledClick = centerHereDisabledReason?.let { reason ->
                 { showDisabledActionToast(context, reason) }
             },
@@ -1334,6 +1333,62 @@ internal fun MapTopLeftControls(
             needleRotationDeg = compassNeedleRotationDeg,
             onToggle = onMapOrientationToggle,
         )
+    }
+}
+
+@Composable
+internal fun MapCenterButton(
+    enabled: Boolean,
+    selected: Boolean,
+    onDisabledClick: (() -> Unit)?,
+    onClick: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val containerColor = buttonContainerColor(uiTheme, enabled, selected)
+    Surface(
+        modifier = Modifier
+            .size(ThumbSize)
+            .testTag("parity:center-here-button")
+            .semantics {
+                this.selected = selected
+                if (!enabled) disabled()
+            }
+            .clickable(enabled = enabled || onDisabledClick != null) {
+                if (enabled) onClick() else onDisabledClick?.invoke()
+            },
+        shape = RoundedCornerShape(ThumbRadius),
+        color = containerColor,
+        contentColor = uiTheme.controls.buttonFg,
+        border = BorderStroke(1.dp, lerp(containerColor, Color.Black, 0.22f)),
+        shadowElevation = 2.dp,
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = ThumbSize * 0.07f)
+                    .size(ThumbSize * 0.65f),
+            ) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val scale = size.minDimension / 40f
+                val symbol = if (selected) {
+                    mapFollowActiveSymbol(center, scale)
+                } else {
+                    mapFollowInactiveSymbol(center, scale)
+                }
+                symbol.forEach { layer -> drawNavSymbolLayer(layer, scale, uiTheme) }
+            }
+            OutlinedButtonLabel(
+                text = "CTR",
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 1.dp, vertical = 2.dp),
+                style = buttonLabelStyle().copy(fontSize = 13.sp),
+                maxLines = 1,
+                color = uiTheme.controls.buttonFg,
+            )
+        }
     }
 }
 

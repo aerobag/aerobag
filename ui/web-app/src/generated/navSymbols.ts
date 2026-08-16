@@ -696,6 +696,40 @@ export const compassSymbol = [
     "transform_degrees": null
   }
 ] satisfies readonly NavSymbolLayer[];
+export const mapFollowInactiveSymbol = [
+  {
+    "path": "M -15 -5 V -13 H -7 M 7 -13 H 15 V -5 M 15 5 V 13 H 7 M -7 13 H -15 V 5",
+    "paint": "map_follow_reticle",
+    "fill": "none",
+    "stroke": "button_icon",
+    "stroke_width": 2.5,
+    "line_cap": "round",
+    "line_join": "round",
+    "transform_degrees": null
+  }
+] satisfies readonly NavSymbolLayer[];
+export const mapFollowActiveSymbol = [
+  {
+    "path": "M -15 -5 V -13 H -7 M 7 -13 H 15 V -5 M 15 5 V 13 H 7 M -7 13 H -15 V 5",
+    "paint": "map_follow_reticle",
+    "fill": "none",
+    "stroke": "button_icon",
+    "stroke_width": 2.5,
+    "line_cap": "round",
+    "line_join": "round",
+    "transform_degrees": null
+  },
+  {
+    "path": "M 0 -10 L 6 8 L 0 5 L -6 8 Z",
+    "paint": "map_follow_ownship",
+    "fill": "button_icon",
+    "stroke": null,
+    "stroke_width": null,
+    "line_cap": null,
+    "line_join": "round",
+    "transform_degrees": null
+  }
+] satisfies readonly NavSymbolLayer[];
 export const metarClearSymbol = [
   {
     "path": "M 0 -8 C 4.418 -8 8 -4.418 8 0 C 8 4.418 4.418 8 0 8 C -4.418 8 -8 4.418 -8 0 C -8 -4.418 -4.418 -8 0 -8 Z",

@@ -220,3 +220,42 @@ journey produced 15 vector commits, about 75 ms of vector duration, and about
 measurements and vary between runs; the stable regression is that vector commit
 count must fit a budget derived from viewport, vector-overlay, route, and shell
 changes rather than total map commits.
+
+## 2026-08-16 Map-Surface Result
+
+The next browser run split the remaining map surface into terrain, situation,
+flight-data, and control subtrees. Terrain rendering was not a meaningful
+scheduling target: across 71 map commits it consumed about 6 ms. The expensive
+behavior shared by the remaining subtrees was unnecessary reconciliation on
+every raster, terrain, vector, and high-rate completion:
+
+| Surface | Commits before | Duration before |
+|---|---:|---:|
+| Flight data | 71 | 10.3 ms |
+| Terrain | 71 | 6.3 ms |
+| Situation | 71 | 9.5 ms |
+| Primary navigation | 71 | 5.7 ms |
+
+Exact dependency boundaries now isolate those four surfaces. Terrain image
+placement is also memoized from its frame and viewport inputs. A repeated run
+measured:
+
+| Surface | Commits after | Duration after |
+|---|---:|---:|
+| Flight data | 1 | 0.2 ms |
+| Terrain | 15 | 1.6 ms |
+| Situation | 27 | 4.9 ms |
+| Primary navigation | 8 | 0.8 ms |
+
+The absolute durations are development-build samples and varied with concurrent
+live-feed landings; aggregate map duration in particular was dominated by the
+number of vector-overlay landings during each run. Durations are therefore not
+CI thresholds. The browser journey instead derives commit budgets from each
+surface's actual sources: terrain frame and viewport, high-rate situation and
+viewport, high-rate flight data, and shell navigation. It fails if unrelated
+map-local work crosses those boundaries again.
+
+Moving terrain state or rendering to another scheduler is not justified by this
+measurement. The remaining control, raster, and vector subtrees each averaged
+well below one millisecond per commit in this workload. The next optimization
+should begin with a new measured workload rather than another active-map split.

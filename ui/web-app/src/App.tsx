@@ -582,7 +582,19 @@ function logAfterNextPaint(tag: string, startedAt: number, data: Record<string, 
 
 const reactProfilerActualDurationLogMs = 1;
 const reactProfilerCommitDelayLogMs = 8;
-const reactProfilerCommitDelayIds = new Set(["MapSurface", "RasterLayer", "VectorLayer"]);
+const reactProfilerCommitDelayIds = new Set([
+  "FlightDataBanner",
+  "MapChartControls",
+  "MapControls",
+  "MapSurface",
+  "PrimaryNavigation",
+  "RasterLayer",
+  "SituationLayer",
+  "StatusControls",
+  "TerrainLayer",
+  "VectorLayer",
+  "ZoomControl",
+]);
 
 type ReactProfilerTotals = {
   commits: number;
@@ -2148,8 +2160,8 @@ const PageLayer = memo(
   (previous, next) => !previous.active && !next.active,
 );
 
-const MapVectorRenderBoundary = memo(
-  function MapVectorRenderBoundary(props: {
+const RenderDependencyBoundary = memo(
+  function RenderDependencyBoundary(props: {
     dependencies: readonly unknown[];
     render: () => ReactNode;
   }) {
@@ -7018,11 +7030,14 @@ function MapPage(props: {
     });
   }
 
-  const visibleTerrainImages = terrainOverlay.query
-    ? terrainOverlay.images
-      .filter((image) => terrainOverlay.query?.tile_requests.some((request) => request.key === image.key))
-      .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height))
-    : [];
+  const visibleTerrainImages = useMemo(
+    () => terrainOverlay.query
+      ? terrainOverlay.images
+        .filter((image) => terrainOverlay.query?.tile_requests.some((request) => request.key === image.key))
+        .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height))
+      : [],
+    [terrainOverlay, viewport, surfaceSize.height, surfaceSize.width],
+  );
   const layerTrayOptions: TrayOption[] = mapLayerState.options.map((option) => {
     const toggleState = mapLayerToggleState(mapLayerState, option.layer_id);
     return {
@@ -7090,18 +7105,33 @@ function MapPage(props: {
           onDoubleClick={handleDoubleClick}
         >
         <div className="mapBackdrop" />
-        <FlightDataBanner
-          banner={flightDataBanner}
-          edge={flightDataBannerEdge}
-          edgeColumnCount={flightDataBannerEdgeColumnCount}
-          edgeLayout={flightDataBannerEdgeLayout}
-          lowered={statusControlDockLowered}
-          onAction={(actionId) => {
-            if (!uiSession) return;
-            void uiSession.performTimeDisplayAction(actionId).then((snapshot) => {
-              props.onSessionSnapshot(snapshot, "time_display_mode");
-            });
-          }}
+        <RenderDependencyBoundary
+          dependencies={[
+            flightDataBanner,
+            flightDataBannerEdge,
+            flightDataBannerEdgeColumnCount,
+            flightDataBannerEdgeLayout,
+            statusControlDockLowered,
+            uiSession,
+            props.onSessionSnapshot,
+          ]}
+          render={() => (
+            <Profiler id="FlightDataBanner" onRender={logReactProfilerRender}>
+              <FlightDataBanner
+                banner={flightDataBanner}
+                edge={flightDataBannerEdge}
+                edgeColumnCount={flightDataBannerEdgeColumnCount}
+                edgeLayout={flightDataBannerEdgeLayout}
+                lowered={statusControlDockLowered}
+                onAction={(actionId) => {
+                  if (!uiSession) return;
+                  void uiSession.performTimeDisplayAction(actionId).then((snapshot) => {
+                    props.onSessionSnapshot(snapshot, "time_display_mode");
+                  });
+                }}
+              />
+            </Profiler>
+          )}
         />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
         {mapSelection ? (
@@ -7343,16 +7373,23 @@ function MapPage(props: {
               ))}
             </div>
           </Profiler>
-          {visibleTerrainImages.length > 0 ? (
-            <div className="terrainOverlay" aria-hidden="true">
-              {visibleTerrainImages.map((tile) => (
-                <TerrainOverlayCanvasTile
-                  key={tile.key}
-                  tile={tile}
-                />
-              ))}
-            </div>
-          ) : null}
+          <RenderDependencyBoundary
+            dependencies={[visibleTerrainImages]}
+            render={() => (
+              <Profiler id="TerrainLayer" onRender={logReactProfilerRender}>
+                {visibleTerrainImages.length > 0 ? (
+                  <div className="terrainOverlay" aria-hidden="true">
+                    {visibleTerrainImages.map((tile) => (
+                      <TerrainOverlayCanvasTile
+                        key={tile.key}
+                        tile={tile}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </Profiler>
+            )}
+          />
           {nexradOverlay.tiles.length > 0 ? (
             <svg
               className="nexradOverlay"
@@ -7396,7 +7433,7 @@ function MapPage(props: {
               })}
             </svg>
           ) : null}
-          <MapVectorRenderBoundary
+          <RenderDependencyBoundary
             dependencies={[
               debugState.sequencing_finish_lines,
               handleMetarHoverEnter,
@@ -7778,9 +7815,12 @@ function MapPage(props: {
           </Profiler>
             )}
           />
-        {mapIsVisible && situationOverlay ? (
-          <>
-            <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+        <RenderDependencyBoundary
+          dependencies={[mapIsVisible, situationOverlay, surfaceSize.height, surfaceSize.width]}
+          render={() => (
+            <Profiler id="SituationLayer" onRender={logReactProfilerRender}>
+              {mapIsVisible && situationOverlay ? (
+                <svg className="situationOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
               {situationOverlay.ring ? (
                 <>
                   <circle
@@ -7931,12 +7971,17 @@ function MapPage(props: {
                 headingDeg={situationOverlay.headingDeg}
                 sizePx={thumbPixels(1.44)}
               />
-            </svg>
-          </>
-        ) : null}
+                </svg>
+              ) : null}
+            </Profiler>
+          )}
+        />
         </div>
         </div>
-        <StatusControlDock
+        <Profiler id="MapControls" onRender={logReactProfilerRender}>
+          <>
+        <Profiler id="StatusControls" onRender={logReactProfilerRender}>
+          <StatusControlDock
           controls={ownshipControls}
           dataStatusState={dataStatusState}
           lowered={statusControlDockLowered}
@@ -7960,9 +8005,11 @@ function MapPage(props: {
               onDisabledAction={showDisabledAction}
             />
           }
-        />
+          />
+        </Profiler>
 
-        <div className="chartDock mapChartDock">
+        <Profiler id="MapChartControls" onRender={logReactProfilerRender}>
+          <div className="chartDock mapChartDock">
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
             launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
@@ -8056,13 +8103,21 @@ function MapPage(props: {
               onMapOrientationModeChange(mapOrientationMode === "north" ? "track" : "north");
             }}
           />
-        </div>
+          </div>
+        </Profiler>
 
-        <PrimaryNavigationDock
-          page={page}
-          navElement={planUiState?.guidance?.nav_element}
-          onSelectPage={onSelectPage}
-          onOpenPlan={onOpenPlan}
+        <RenderDependencyBoundary
+          dependencies={[page, planUiState?.guidance?.nav_element, onSelectPage, onOpenPlan]}
+          render={() => (
+            <Profiler id="PrimaryNavigation" onRender={logReactProfilerRender}>
+              <PrimaryNavigationDock
+                page={page}
+                navElement={planUiState?.guidance?.nav_element}
+                onSelectPage={onSelectPage}
+                onOpenPlan={onOpenPlan}
+              />
+            </Profiler>
+          )}
         />
 
         {playbackPanelState.visible ? (
@@ -8078,13 +8133,17 @@ function MapPage(props: {
           />
         ) : null}
 
-        <ZoomControl
-          zoom={viewport.zoom}
-          minZoom={selectedMap.min_zoom}
-          maxZoom={selectedMap.max_zoom}
-          onZoomChange={setViewportZoom}
-          raisedForPrimaryNavigation={bottomCornerControlsRaised}
-        />
+        <Profiler id="ZoomControl" onRender={logReactProfilerRender}>
+          <ZoomControl
+            zoom={viewport.zoom}
+            minZoom={selectedMap.min_zoom}
+            maxZoom={selectedMap.max_zoom}
+            onZoomChange={setViewportZoom}
+            raisedForPrimaryNavigation={bottomCornerControlsRaised}
+          />
+        </Profiler>
+          </>
+        </Profiler>
 
         </div>
       </Profiler>

@@ -63,7 +63,7 @@ try {
   if (!selection.primary.includes("Elev ")) {
     throw new Error(`selected point does not display elevation: ${JSON.stringify(selection)}`);
   }
-  if (!/^-?\d+\.\d{4}, -?\d+\.\d{4}$/.test(selection.secondary)) {
+  if (!/-?\d+\.\d{4}, -?\d+\.\d{4}/.test(`${selection.primary} ${selection.secondary}`)) {
     throw new Error(`selected point does not display four-decimal coordinates: ${JSON.stringify(selection)}`);
   }
   const refreshedSelection = await verifyMapSelectionDistanceRefresh(page, selection);
@@ -238,11 +238,43 @@ async function verifyOwnshipRenderInvalidation(page) {
       `unrelated map-local updates repeatedly reconciled the vector layer: ${JSON.stringify({ vectorCommitBudget, ...result })}`,
     );
   }
+  const terrainCommitBudget =
+    (result.mapCommitSources.viewport ?? 0)
+    + (result.mapCommitSources.terrain_overlay ?? 0)
+    + (result.mapCommitSources.surface_size ?? 0)
+    + 4;
+  requireProfilerCommitBudget(result, "TerrainLayer", terrainCommitBudget);
+  const situationCommitBudget =
+    (result.mapCommitSources.high_rate_snapshot ?? 0)
+    + (result.mapCommitSources.viewport ?? 0)
+    + (result.mapCommitSources.surface_size ?? 0)
+    + 6;
+  requireProfilerCommitBudget(result, "SituationLayer", situationCommitBudget);
+  const flightDataCommitBudget =
+    result.highRatePublicationDelta
+    + (result.mapCommitSources.surface_size ?? 0)
+    + result.shellPublicationDelta * 2
+    + 4;
+  requireProfilerCommitBudget(result, "FlightDataBanner", flightDataCommitBudget);
+  const primaryNavigationCommitBudget = result.shellPublicationDelta * 2 + 4;
+  requireProfilerCommitBudget(result, "PrimaryNavigation", primaryNavigationCommitBudget);
   const hiddenPageRenderBudget = result.shellPublicationDelta * 2 + 2;
   if (result.chartsRenderDelta > hiddenPageRenderBudget) {
     throw new Error(`ownship updates repeatedly rendered the hidden chart page: ${JSON.stringify(result)}`);
   }
   return result;
+}
+
+function requireProfilerCommitBudget(result, profilerId, budget) {
+  const commits = result.profilerDeltas[profilerId]?.commits;
+  if (typeof commits !== "number") {
+    throw new Error(`${profilerId} profiler did not report commits: ${JSON.stringify(result)}`);
+  }
+  if (commits > budget) {
+    throw new Error(
+      `unrelated map-local updates repeatedly reconciled ${profilerId}: ${JSON.stringify({ budget, ...result })}`,
+    );
+  }
 }
 
 async function verifyTimeDisplayActions(page) {

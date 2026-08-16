@@ -546,11 +546,14 @@ post-attach mutations retain the typed paged runner and snapshot continuation.
 
 ## Next Slice
 
-Profile the remaining active map work. The vector drawing surface is now scoped
-to vector-relevant inputs, but terrain completion and the high-rate map chrome
-still schedule the page owner independently. Measure their render duration
-before moving another surface or controller; raw commit count alone is not a
-reason to split ownership.
+The active-map profiling slice is complete. Terrain rendering was inexpensive,
+so its state and scheduler remain in the page owner. Exact render dependencies
+now keep terrain, situation, flight data, and primary navigation from
+reconciling after unrelated map-local completions; source-derived browser E2E
+budgets preserve those boundaries.
+
+Choose the next optimization from a new measured workload. The current browser
+map sample does not justify another render-owner split, lock, thread, or Worker.
 
 ## Relationship To Work Scheduling
 

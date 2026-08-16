@@ -1538,7 +1538,7 @@ button {
 
 .mapSelectionActionTitleSecondary {
   color: #52656d;
-  font-size: calc(var(--thumb) * 0.16);
+  font-size: inherit;
   font-weight: 700;
 }
 
@@ -1671,16 +1671,11 @@ button {
   margin-bottom: calc(var(--thumb-gap) * 0.9);
 }
 
-.airportInfoName {
+.airportInfoName,
+.airportInfoLocation {
   color: var(--theme-panel-muted);
   font-size: calc(var(--thumb) * 0.16);
   font-weight: 800;
-}
-
-.airportInfoLocation {
-  color: var(--theme-panel-muted);
-  font-size: calc(var(--thumb) * 0.14);
-  font-weight: 650;
 }
 
 .airportInfoSection {

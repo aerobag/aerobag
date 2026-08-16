@@ -4287,6 +4287,7 @@ internal fun MapSelectionTray(
 internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
     val uiTheme = LocalAerobagUiTheme.current
     val headerHeight = with(LocalDensity.current) { 34.sp.toDp() }
+    val headerTextStyle = MaterialTheme.typography.labelMedium.copy(lineHeight = 15.sp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -4307,17 +4308,15 @@ internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
                     append(" ")
                 }
             },
-            style = MaterialTheme.typography.labelMedium.copy(lineHeight = 15.sp),
+            style = headerTextStyle,
             color = uiTheme.controls.panelFg,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = selectedItem?.secondaryDescription?.trim()?.takeIf { it.isNotEmpty() } ?: "\u00a0",
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 13.sp,
+            style = headerTextStyle.copy(
                 fontWeight = FontWeight.Bold,
-                lineHeight = 14.sp,
             ),
             color = uiTheme.controls.panelFg.copy(alpha = 0.72f),
             maxLines = 1,
@@ -4522,6 +4521,7 @@ internal fun AirportInfoModal(
 ) {
     val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
+    val airportIdentityStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
     Surface(
         modifier = modifier
             .widthIn(max = ThumbSize * 10.5f)
@@ -4545,13 +4545,13 @@ internal fun AirportInfoModal(
             )
             Text(
                 text = detail.name,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                style = airportIdentityStyle,
                 color = uiTheme.controls.panelMuted,
             )
             detail.locationLabel?.let { location ->
                 Text(
                     text = location,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = airportIdentityStyle,
                     color = uiTheme.controls.panelMuted,
                 )
             }

@@ -77,6 +77,19 @@ describe("map interaction boundaries", () => {
     expect(detailModalBlocks).toContain("user-select: text");
   });
 
+  it("does not shrink airport identity text on either inspector surface", () => {
+    const selectionSecondaryBlocks = [...styles.matchAll(/\.mapSelectionActionTitleSecondary\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(selectionSecondaryBlocks).toContain("font-size: inherit");
+
+    const airportIdentityBlocks = [...styles.matchAll(/\.airportInfoName,\s*\n\.airportInfoLocation\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(airportIdentityBlocks).toContain("font-size: calc(var(--thumb) * 0.16)");
+    expect(airportIdentityBlocks).toContain("font-weight: 800");
+  });
+
   it("uses the weather modal as the only weather-detail scroll viewport", () => {
     const modalBlocks = [...styles.matchAll(/\.mapSelectionDetailModal\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")

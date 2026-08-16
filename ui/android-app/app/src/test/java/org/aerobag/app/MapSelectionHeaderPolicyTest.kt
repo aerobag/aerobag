@@ -20,13 +20,32 @@ class MapSelectionHeaderPolicyTest {
             headerBody.contains("with(LocalDensity.current) { 34.sp.toDp() }"),
         )
         assertTrue(
-            "The selection header must retain the declared 15sp and 14sp line heights within its 34sp budget.",
-            headerBody.contains("lineHeight = 15.sp") &&
-                headerBody.contains("lineHeight = 14.sp"),
+            "Both selection-header lines must share one full-size text style.",
+            headerBody.contains(
+                "val headerTextStyle = MaterialTheme.typography.labelMedium.copy(lineHeight = 15.sp)",
+            ) && headerBody.contains("style = headerTextStyle") &&
+                headerBody.contains("style = headerTextStyle.copy("),
+        )
+        assertFalse(
+            "The selection-header secondary line must not be shrunk.",
+            headerBody.contains("fontSize = 13.sp") || headerBody.contains("lineHeight = 14.sp"),
         )
         assertFalse(
             "The old fixed 0.52-thumb height is smaller than two rendered text lines.",
             headerBody.contains(".height(ThumbSize * 0.52f)"),
+        )
+    }
+
+    @Test
+    fun airportNameAndLocationShareOneReadableTextStyle() {
+        val source = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val modalBody = balancedBlockAfterMarker(source, "internal fun AirportInfoModal")
+
+        assertTrue(
+            "Airport name and city/state must use the same text style.",
+            modalBody.contains(
+                "val airportIdentityStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)",
+            ) && modalBody.split("style = airportIdentityStyle").size - 1 == 2,
         )
     }
 

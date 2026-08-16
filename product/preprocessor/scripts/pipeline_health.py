@@ -722,6 +722,41 @@ def add_live_feed_metrics(
                 },
             )
         if product == "notams":
+            source_samples = status.get("source_samples")
+            recent_source_rejections: list[dict[str, Any]] = []
+            if isinstance(source_samples, list):
+                rejection_window_start = now - timedelta(
+                    seconds=LIVE_FEED_FAILURE_WINDOW_SECONDS
+                )
+                recent_source_rejections = [
+                    {
+                        "observed_at_utc": sample.get("observed_at_utc"),
+                        "cursor_utc": sample.get("cursor_utc"),
+                        "rejected_count": int(sample.get("rejected_count") or 0),
+                    }
+                    for sample in source_samples
+                    if isinstance(sample, dict)
+                    and int(sample.get("rejected_count") or 0) > 0
+                    and (
+                        sample_time := parse_time(sample.get("observed_at_utc"))
+                    )
+                    is not None
+                    and rejection_window_start <= sample_time <= now
+                ]
+            rejected_updates = sum(
+                sample["rejected_count"] for sample in recent_source_rejections
+            )
+            add_metric(
+                metrics,
+                metric_id="live_feed.notams.rejected_api_updates_2h",
+                label="NOTAM rejected API updates (2h)",
+                value=rejected_updates,
+                unit="records",
+                severity="warning" if rejected_updates > 0 else "ok",
+                warning_threshold=1,
+                message=f"NOTAM rejected API updates in the last 2h: {rejected_updates}",
+                details={"samples": recent_source_rejections[-10:]},
+            )
             quality = status.get("quality")
             if isinstance(quality, dict):
                 rejected_count = int(quality.get("rejected_row_count") or 0)

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -94,6 +95,29 @@ pub trait NmsApiSource: InitialLoadSource {
         classification: NmsNotamClassification,
         last_updated_since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<String>>;
+}
+
+#[derive(Debug)]
+pub struct NmsIncrementalCursorExpired {
+    pub query_since_utc: String,
+}
+
+impl fmt::Display for NmsIncrementalCursorExpired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "NMS incremental cursor {} exceeds the source's 24-hour window",
+            self.query_since_utc
+        )
+    }
+}
+
+impl std::error::Error for NmsIncrementalCursorExpired {}
+
+pub fn is_incremental_cursor_expired(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<NmsIncrementalCursorExpired>())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,7 +313,17 @@ impl NmsClient {
                     .build()
                     .call()
             },
-        )?;
+        );
+        let bytes = match bytes {
+            Ok(bytes) => bytes,
+            Err(error) if is_expired_cursor_response(&error) => {
+                return Err(NmsIncrementalCursorExpired {
+                    query_since_utc: last_updated_since,
+                }
+                .into());
+            }
+            Err(error) => return Err(error),
+        };
         parse_notam_update_response(&bytes)
     }
 }
@@ -636,6 +670,26 @@ struct NmsHttpClient {
     retry_delay: Duration,
 }
 
+#[derive(Debug)]
+struct NmsHttpResponseError {
+    operation: String,
+    status: u16,
+    attempt: usize,
+    detail: String,
+}
+
+impl fmt::Display for NmsHttpResponseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "NMS {} returned HTTP {} on attempt {}: {}",
+            self.operation, self.status, self.attempt, self.detail
+        )
+    }
+}
+
+impl std::error::Error for NmsHttpResponseError {}
+
 impl NmsHttpClient {
     fn new(attempts: usize, retry_delay: Duration) -> Self {
         assert!(attempts > 0, "NMS HTTP attempts must be positive");
@@ -686,10 +740,12 @@ impl NmsHttpClient {
                     let retryable = is_retryable_http_status(status.as_u16());
                     let detail = response_error_preview(&mut response);
                     (
-                        anyhow::anyhow!(
-                            "NMS {operation} returned HTTP {} on attempt {attempt}: {detail}",
-                            status.as_u16()
-                        ),
+                        anyhow::Error::new(NmsHttpResponseError {
+                            operation: operation.to_string(),
+                            status: status.as_u16(),
+                            attempt,
+                            detail,
+                        }),
                         retryable,
                     )
                 }
@@ -709,6 +765,32 @@ impl NmsHttpClient {
         }
         unreachable!("positive NMS HTTP attempt count exhausted without a result")
     }
+}
+
+fn is_expired_cursor_response(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let Some(response) = cause.downcast_ref::<NmsHttpResponseError>() else {
+            return false;
+        };
+        if response.status != 400 {
+            return false;
+        }
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&response.detail) else {
+            return false;
+        };
+        payload
+            .get("errors")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|errors| {
+                errors.iter().any(|error| {
+                    error.get("code").and_then(serde_json::Value::as_str) == Some("7.1")
+                        && error
+                            .get("message")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|message| message.contains("24 hour threshold"))
+                })
+            })
+    })
 }
 
 fn is_retryable_http_status(status: u16) -> bool {
@@ -1026,6 +1108,45 @@ mod tests {
         let detail = format!("{error:#}");
         assert!(detail.contains("HTTP 401 on attempt 1"), "{detail}");
         assert!(detail.contains("bad token"), "{detail}");
+        Ok(())
+    }
+
+    #[test]
+    fn recognizes_faa_expired_incremental_cursor_response() -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let server = thread::spawn(move || -> anyhow::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request)?;
+            let body = r#"{"status":"Failure","errors":[{"code":"7.1","message":"The last updated date exceeds the 24 hour threshold"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )?;
+            Ok(())
+        });
+        let client = NmsHttpClient::new(5, Duration::ZERO);
+        let error = client
+            .request_bytes(
+                "lastUpdatedDate request",
+                NMS_JSON_RESPONSE_LIMIT,
+                |agent| {
+                    agent
+                        .get(format!("http://{address}/updates"))
+                        .config()
+                        .http_status_as_error(false)
+                        .build()
+                        .call()
+                },
+            )
+            .expect_err("HTTP 400 was accepted");
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("test HTTP server panicked"))??;
+
+        assert!(is_expired_cursor_response(&error), "{error:#}");
         Ok(())
     }
 }

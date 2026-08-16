@@ -15,7 +15,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    capture_initial_load, load_initial_load_capture, InitialLoadCaptureSource, NmsApiSource,
+    capture_initial_load, is_incremental_cursor_expired, load_initial_load_capture,
+    InitialLoadCaptureSource, NmsApiSource,
 };
 
 const NMS_API_STORE_SCHEMA_VERSION: u32 = 1;
@@ -47,6 +48,7 @@ pub struct NmsApiPollSummary {
     pub fdc_received: usize,
     pub new_payloads: usize,
     pub duplicate_payloads: usize,
+    pub rejected_payloads: usize,
     pub upserted: usize,
     pub removed: usize,
     pub expired: usize,
@@ -58,6 +60,11 @@ pub struct NmsApiPollSummary {
 pub enum NmsCollectorEvent {
     StateReady {
         installed_initial_load: bool,
+        current_records: usize,
+        cursor_utc: String,
+    },
+    StateResynchronized {
+        previous_cursor_utc: String,
         current_records: usize,
         cursor_utc: String,
     },
@@ -238,23 +245,48 @@ impl NmsApiCollectorStore {
         let domestic_received = domestic_xml.len();
         let fdc_received = fdc_xml.len();
         let mut parsed = Vec::with_capacity(domestic_received + fdc_received);
+        let mut rejected = Vec::new();
         for (classification, messages) in [
             (NmsNotamClassification::Domestic, domestic_xml),
             (NmsNotamClassification::Fdc, fdc_xml),
         ] {
             for xml in messages {
-                let update = parse_nms_api_update(&xml, classification).with_context(|| {
-                    format!(
-                        "failed to parse {} lastUpdatedDate record",
-                        classification.api_name()
-                    )
-                })?;
+                let update = match parse_nms_api_update(&xml, classification) {
+                    Ok(update) => update,
+                    Err(error) => {
+                        rejected.push(RejectedRawUpdate {
+                            classification,
+                            payload_sha256: sha256_hex(xml.as_bytes()),
+                            raw_aixm: xml,
+                            reason: format!(
+                                "failed to parse {} lastUpdatedDate record: {error:#}",
+                                classification.api_name()
+                            ),
+                        });
+                        continue;
+                    }
+                };
                 let last_updated = update
                     .record
                     .last_updated_utc
                     .as_deref()
                     .context("NMS API update has no lastUpdated time")
-                    .and_then(|value| parse_timestamp(value, "NMS API update"))?;
+                    .and_then(|value| parse_timestamp(value, "NMS API update"));
+                let last_updated = match last_updated {
+                    Ok(last_updated) => last_updated,
+                    Err(error) => {
+                        rejected.push(RejectedRawUpdate {
+                            classification,
+                            payload_sha256: sha256_hex(xml.as_bytes()),
+                            raw_aixm: xml,
+                            reason: format!(
+                                "failed to parse {} lastUpdatedDate record: {error:#}",
+                                classification.api_name()
+                            ),
+                        });
+                        continue;
+                    }
+                };
                 parsed.push(ParsedRawUpdate {
                     classification,
                     payload_sha256: sha256_hex(xml.as_bytes()),
@@ -292,6 +324,9 @@ impl NmsApiCollectorStore {
         let poll_id = tx.last_insert_rowid();
         let mut new_payloads = 0usize;
         let mut duplicate_payloads = 0usize;
+        for rejected_update in &rejected {
+            retain_rejected_update(&tx, poll_id, completed_at, rejected_update)?;
+        }
         let mut upserted = 0usize;
         let mut removed = 0usize;
         for parsed_update in parsed {
@@ -343,6 +378,7 @@ impl NmsApiCollectorStore {
             fdc_received,
             new_payloads,
             duplicate_payloads,
+            rejected_payloads: rejected.len(),
             upserted,
             removed,
             expired,
@@ -421,7 +457,20 @@ impl NmsApiCollectorStore {
                  CREATE INDEX IF NOT EXISTS raw_updates_poll_idx
                     ON raw_updates(poll_id);
                  CREATE INDEX IF NOT EXISTS raw_updates_nms_id_idx
-                    ON raw_updates(nms_id, last_updated_utc);",
+                    ON raw_updates(nms_id, last_updated_utc);
+                 CREATE TABLE IF NOT EXISTS rejected_updates (
+                    payload_sha256 TEXT PRIMARY KEY,
+                    first_poll_id INTEGER NOT NULL REFERENCES poll_runs(poll_id),
+                    last_poll_id INTEGER NOT NULL REFERENCES poll_runs(poll_id),
+                    classification TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    raw_aixm TEXT NOT NULL,
+                    first_rejected_at_utc TEXT NOT NULL,
+                    last_rejected_at_utc TEXT NOT NULL,
+                    occurrence_count INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS rejected_updates_last_poll_idx
+                    ON rejected_updates(last_poll_id);",
             )
             .context("failed to initialize NMS API sqlite schema")?;
         Ok(connection)
@@ -452,35 +501,15 @@ pub fn run_collector_with_observer(
     let _lock = store.acquire_lock()?;
     let mut installed_initial_load = false;
     if !store.is_baseline_installed()? {
-        let capture_started_at = Utc::now();
-        let capture_path = store.capture_root().join(format!(
-            "initial-load-{}",
-            capture_started_at.format("%Y%m%dT%H%M%SZ")
-        ));
-        capture_initial_load(
-            &capture_path,
-            &[
-                NmsNotamClassification::Domestic,
-                NmsNotamClassification::Fdc,
-            ],
-            source,
-        )?;
-        let baseline = load_initial_load_capture(&capture_path)?;
-        store.install_baseline(
-            &baseline.source.environment,
-            baseline.source.api_base_url.as_deref(),
-            baseline.captured_at_utc,
-            &capture_path,
-            &baseline.records,
-        )?;
+        let baseline = install_fresh_baseline(store, source)?;
         installed_initial_load = true;
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "event": "nms_api_baseline_installed",
-                "capture": capture_path,
-                "records": baseline.records.len(),
-                "poll_cursor_utc": baseline.captured_at_utc,
+                "capture": baseline.capture_path,
+                "records": baseline.current_records,
+                "poll_cursor_utc": baseline.cursor_utc,
             }))?
         );
     } else {
@@ -514,6 +543,32 @@ pub fn run_collector_with_observer(
                 println!("{}", serde_json::to_string(&summary)?);
                 observer(&NmsCollectorEvent::PollApplied { summary })?;
             }
+            Err(error) if is_incremental_cursor_expired(&error) => {
+                let previous_cursor_utc = store.poll_cursor()?.to_rfc3339();
+                match install_fresh_baseline(store, source) {
+                    Ok(baseline) => {
+                        let event = NmsCollectorEvent::StateResynchronized {
+                            previous_cursor_utc,
+                            current_records: baseline.current_records,
+                            cursor_utc: baseline.cursor_utc.to_rfc3339(),
+                        };
+                        println!("{}", serde_json::to_string(&event)?);
+                        observer(&event)?;
+                    }
+                    Err(resync_error) => {
+                        let event = NmsCollectorEvent::PollFailed {
+                            failed_at_utc: Utc::now().to_rfc3339(),
+                            attempt: attempted_polls,
+                            error: format!(
+                                "incremental cursor expired ({error:#}); full resynchronization failed: {resync_error:#}"
+                            ),
+                            cursor_utc: store.poll_cursor()?.to_rfc3339(),
+                        };
+                        eprintln!("{}", serde_json::to_string(&event)?);
+                        observer(&event)?;
+                    }
+                }
+            }
             Err(error) => {
                 let event = NmsCollectorEvent::PollFailed {
                     failed_at_utc: Utc::now().to_rfc3339(),
@@ -545,6 +600,44 @@ pub fn run_collector_with_observer(
     Ok(())
 }
 
+struct InstalledBaseline {
+    capture_path: PathBuf,
+    current_records: usize,
+    cursor_utc: DateTime<Utc>,
+}
+
+fn install_fresh_baseline(
+    store: &NmsApiCollectorStore,
+    source: &mut impl NmsApiSource,
+) -> anyhow::Result<InstalledBaseline> {
+    let capture_started_at = Utc::now();
+    let capture_path = store.capture_root().join(format!(
+        "initial-load-{}",
+        capture_started_at.format("%Y%m%dT%H%M%S%.fZ")
+    ));
+    capture_initial_load(
+        &capture_path,
+        &[
+            NmsNotamClassification::Domestic,
+            NmsNotamClassification::Fdc,
+        ],
+        source,
+    )?;
+    let baseline = load_initial_load_capture(&capture_path)?;
+    store.install_baseline(
+        &baseline.source.environment,
+        baseline.source.api_base_url.as_deref(),
+        baseline.captured_at_utc,
+        &capture_path,
+        &baseline.records,
+    )?;
+    Ok(InstalledBaseline {
+        capture_path,
+        current_records: baseline.records.len(),
+        cursor_utc: baseline.captured_at_utc,
+    })
+}
+
 fn poll_once(
     store: &NmsApiCollectorStore,
     source: &mut impl NmsApiSource,
@@ -570,6 +663,45 @@ struct ParsedRawUpdate {
     raw_aixm: String,
     last_updated: DateTime<Utc>,
     update: NmsApiUpdate,
+}
+
+struct RejectedRawUpdate {
+    classification: NmsNotamClassification,
+    payload_sha256: String,
+    raw_aixm: String,
+    reason: String,
+}
+
+fn retain_rejected_update(
+    tx: &Transaction<'_>,
+    poll_id: i64,
+    rejected_at: DateTime<Utc>,
+    update: &RejectedRawUpdate,
+) -> anyhow::Result<()> {
+    let rejected_at = rejected_at.to_rfc3339();
+    tx.execute(
+        "INSERT INTO rejected_updates (
+            payload_sha256, first_poll_id, last_poll_id, classification,
+            reason, raw_aixm, first_rejected_at_utc, last_rejected_at_utc,
+            occurrence_count
+         ) VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?6, 1)
+         ON CONFLICT(payload_sha256) DO UPDATE SET
+            last_poll_id = excluded.last_poll_id,
+            reason = excluded.reason,
+            raw_aixm = excluded.raw_aixm,
+            last_rejected_at_utc = excluded.last_rejected_at_utc,
+            occurrence_count = rejected_updates.occurrence_count + 1",
+        params![
+            update.payload_sha256,
+            poll_id,
+            update.classification.api_name(),
+            update.reason,
+            update.raw_aixm,
+            rejected_at,
+        ],
+    )
+    .context("failed to retain rejected NMS API update")?;
+    Ok(())
 }
 
 fn apply_update(
@@ -805,10 +937,12 @@ mod tests {
     use std::collections::VecDeque;
 
     use anyhow::bail;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{InitialLoadCaptureSource, InitialLoadSource};
+    use crate::{InitialLoadCaptureSource, InitialLoadSource, NmsIncrementalCursorExpired};
 
     #[test]
     fn collector_state_allows_only_one_process_lock() -> anyhow::Result<()> {
@@ -937,6 +1071,234 @@ mod tests {
         )?;
         assert_eq!(summary.removed, 1);
         assert!(restarted.current_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_update_is_retained_while_valid_updates_apply() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let baseline_xml = update_xml(
+            "1000000000000100",
+            "DOM",
+            "OME",
+            "110",
+            Some("N"),
+            "!OME 07/110 OME TWY TEST",
+            "TEST V1",
+            "2026-07-23T14:00:00Z",
+            None,
+            "209907241405",
+        );
+        let baseline = parse_nms_api_update(&baseline_xml, NmsNotamClassification::Domestic)?;
+        store.install_baseline(
+            "fixture",
+            None,
+            timestamp("2026-07-23T14:00:00Z"),
+            Path::new("/fixture/initial-load"),
+            &[baseline.record],
+        )?;
+
+        let valid = update_xml(
+            "1000000000000100",
+            "DOM",
+            "OME",
+            "110",
+            Some("N"),
+            "!OME 07/110 OME TWY TEST",
+            "TEST V2",
+            "2026-07-23T14:03:00Z",
+            None,
+            "209907241405",
+        );
+        let malformed = update_xml(
+            "1000000000000101",
+            "FDC",
+            "MHK",
+            "7894",
+            Some("N"),
+            "!FDC 6/7894 MHK TEST",
+            "MISSING LOCATION",
+            "2026-07-23T14:03:30Z",
+            None,
+            "209907241405",
+        )
+        .replace("<event:location>MHK</event:location>", "");
+        let poll_started = timestamp("2026-07-23T14:04:00Z");
+        let summary = store.apply_poll(
+            poll_started,
+            timestamp("2026-07-23T13:50:00Z"),
+            vec![valid],
+            vec![malformed.clone()],
+        )?;
+
+        assert_eq!(summary.new_payloads, 1);
+        assert_eq!(summary.rejected_payloads, 1);
+        assert_eq!(summary.upserted, 1);
+        assert_eq!(store.poll_cursor()?, poll_started);
+        assert_eq!(store.current_records()?[0].text.as_deref(), Some("TEST V2"));
+
+        let connection = store.open_connection()?;
+        let (reason, raw_aixm, occurrences) = connection.query_row(
+            "SELECT reason, raw_aixm, occurrence_count FROM rejected_updates",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        assert!(reason.contains("NOTAM location is missing"));
+        assert_eq!(raw_aixm, malformed);
+        assert_eq!(occurrences, 1);
+
+        store.apply_poll(
+            timestamp("2026-07-23T14:07:00Z"),
+            timestamp("2026-07-23T13:54:00Z"),
+            Vec::new(),
+            vec![malformed],
+        )?;
+        assert_eq!(
+            connection.query_row("SELECT occurrence_count FROM rejected_updates", [], |row| {
+                row.get::<_, i64>(0)
+            },)?,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_baseline_replacement_is_atomic() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let original_xml = update_xml(
+            "1000000000000102",
+            "DOM",
+            "OME",
+            "111",
+            Some("N"),
+            "!OME 07/111 OME TWY TEST",
+            "ORIGINAL",
+            "2026-07-23T14:00:00Z",
+            None,
+            "209907241405",
+        );
+        let original = parse_nms_api_update(&original_xml, NmsNotamClassification::Domestic)?;
+        let original_cursor = timestamp("2026-07-23T14:00:00Z");
+        store.install_baseline(
+            "fixture",
+            None,
+            original_cursor,
+            Path::new("/fixture/original"),
+            &[original.record],
+        )?;
+
+        let replacement_xml = update_xml(
+            "1000000000000103",
+            "DOM",
+            "OME",
+            "112",
+            Some("N"),
+            "!OME 07/112 OME TWY TEST",
+            "REPLACEMENT",
+            "2026-07-23T14:03:00Z",
+            None,
+            "209907241405",
+        );
+        let replacement =
+            parse_nms_api_update(&replacement_xml, NmsNotamClassification::Domestic)?.record;
+        let mut invalid = replacement.clone();
+        invalid.id = "NMS:invalid".to_string();
+        invalid.notam_status = Some("CANCELLED".to_string());
+        store
+            .install_baseline(
+                "fixture",
+                None,
+                timestamp("2026-07-23T14:04:00Z"),
+                Path::new("/fixture/replacement"),
+                &[replacement, invalid],
+            )
+            .expect_err("invalid replacement baseline should fail");
+
+        assert_eq!(store.poll_cursor()?, original_cursor);
+        let records = store.current_records()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].text.as_deref(), Some("ORIGINAL"));
+        Ok(())
+    }
+
+    #[test]
+    fn expired_incremental_cursor_installs_a_fresh_baseline() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let original_xml = update_xml(
+            "1000000000000104",
+            "DOM",
+            "OME",
+            "113",
+            Some("N"),
+            "!OME 07/113 OME TWY TEST",
+            "STALE",
+            "2026-07-23T14:00:00Z",
+            None,
+            "209907241405",
+        );
+        let original = parse_nms_api_update(&original_xml, NmsNotamClassification::Domestic)?;
+        let original_cursor = timestamp("2026-07-23T14:00:00Z");
+        store.install_baseline(
+            "fixture",
+            None,
+            original_cursor,
+            Path::new("/fixture/original"),
+            &[original.record],
+        )?;
+
+        let mut source = ResynchronizingFixtureSource {
+            cursor_expired: true,
+        };
+        let mut events = Vec::new();
+        run_collector_with_observer(
+            &store,
+            &mut source,
+            &CollectorOptions {
+                poll_interval: Duration::from_millis(1),
+                overlap: Duration::from_secs(600),
+                run_duration: None,
+                max_polls: Some(2),
+            },
+            |event| {
+                events.push(event.clone());
+                Ok(())
+            },
+        )?;
+
+        assert!(matches!(
+            events.get(1),
+            Some(NmsCollectorEvent::StateResynchronized {
+                previous_cursor_utc,
+                current_records: 2,
+                ..
+            }) if previous_cursor_utc == &original_cursor.to_rfc3339()
+        ));
+        assert!(matches!(
+            events.get(2),
+            Some(NmsCollectorEvent::PollApplied { summary })
+                if summary.rejected_payloads == 0
+        ));
+        assert!(store.poll_cursor()? > original_cursor);
+        let records = store.current_records()?;
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .any(|record| record.text.as_deref() == Some("FRESH DOM")));
+        assert!(records
+            .iter()
+            .any(|record| record.text.as_deref() == Some("FRESH FDC")));
         Ok(())
     }
 
@@ -1101,6 +1463,70 @@ mod tests {
 
     struct FixtureSource {
         domestic_results: VecDeque<Result<Vec<String>, String>>,
+    }
+
+    struct ResynchronizingFixtureSource {
+        cursor_expired: bool,
+    }
+
+    impl InitialLoadSource for ResynchronizingFixtureSource {
+        fn capture_source(&self) -> InitialLoadCaptureSource {
+            InitialLoadCaptureSource {
+                environment: "fixture".to_string(),
+                api_base_url: None,
+            }
+        }
+
+        fn fetch_classification(
+            &mut self,
+            classification: NmsNotamClassification,
+            output_gzip_path: &Path,
+        ) -> anyhow::Result<()> {
+            let (nms_id, source_classification, location, number, text) = match classification {
+                NmsNotamClassification::Domestic => {
+                    ("1000000000000200", "DOM", "OME", "120", "FRESH DOM")
+                }
+                NmsNotamClassification::Fdc => {
+                    ("1000000000000201", "FDC", "MHK", "7900", "FRESH FDC")
+                }
+            };
+            let update = update_xml(
+                nms_id,
+                source_classification,
+                location,
+                number,
+                Some("N"),
+                &format!("!{location} 07/{number} {location} TEST"),
+                text,
+                "2026-07-23T14:03:00Z",
+                None,
+                "209907241405",
+            );
+            let xml =
+                format!(r#"<FeatureCollection numberReturned="1">{update}</FeatureCollection>"#);
+            let output = File::create(output_gzip_path)?;
+            let mut encoder = GzEncoder::new(output, Compression::default());
+            encoder.write_all(xml.as_bytes())?;
+            encoder.finish()?;
+            Ok(())
+        }
+    }
+
+    impl NmsApiSource for ResynchronizingFixtureSource {
+        fn fetch_updates(
+            &mut self,
+            classification: NmsNotamClassification,
+            last_updated_since: DateTime<Utc>,
+        ) -> anyhow::Result<Vec<String>> {
+            if classification == NmsNotamClassification::Domestic && self.cursor_expired {
+                self.cursor_expired = false;
+                return Err(NmsIncrementalCursorExpired {
+                    query_since_utc: last_updated_since.to_rfc3339(),
+                }
+                .into());
+            }
+            Ok(Vec::new())
+        }
     }
 
     impl InitialLoadSource for FixtureSource {

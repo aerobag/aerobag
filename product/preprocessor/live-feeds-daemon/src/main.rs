@@ -268,6 +268,7 @@ struct SourceIngestSample {
     received_count: usize,
     new_payload_count: usize,
     duplicate_payload_count: usize,
+    rejected_count: usize,
     changed_count: usize,
     removed_count: usize,
     expired_count: usize,
@@ -1583,6 +1584,21 @@ fn handle_nms_notam_event(
                 ),
             );
         }
+        NmsCollectorEvent::StateResynchronized {
+            previous_cursor_utc,
+            current_records,
+            cursor_utc,
+        } => {
+            queue_nms_notam_state_event(store, publication_store, sender, cursor_utc)?;
+            status.record_source_success(
+                "notams",
+                Some(cursor_utc.clone()),
+                format!(
+                    "nms_state_resynchronized previous_cursor={} current_records={}",
+                    previous_cursor_utc, current_records
+                ),
+            );
+        }
         NmsCollectorEvent::PollApplied { summary } => {
             let observed_at_utc =
                 parse_utc_timestamp(&summary.started_at_utc, "NMS NOTAM poll start")?;
@@ -1596,6 +1612,7 @@ fn handle_nms_notam_event(
                     received_count,
                     new_payload_count: summary.new_payloads,
                     duplicate_payload_count: summary.duplicate_payloads,
+                    rejected_count: summary.rejected_payloads,
                     changed_count: summary.upserted,
                     removed_count: summary.removed,
                     expired_count: summary.expired,
@@ -1606,10 +1623,11 @@ fn handle_nms_notam_event(
                 "notams",
                 Some(summary.started_at_utc.clone()),
                 format!(
-                    "nms_poll received={} new_payloads={} duplicate_payloads={} upserted={} removed={} expired={} current_records={}",
+                    "nms_poll received={} new_payloads={} duplicate_payloads={} rejected={} upserted={} removed={} expired={} current_records={}",
                     received_count,
                     summary.new_payloads,
                     summary.duplicate_payloads,
+                    summary.rejected_payloads,
                     summary.upserted,
                     summary.removed,
                     summary.expired,
@@ -2401,12 +2419,13 @@ function renderSourceRatePlot(product, data, generatedAtUtc) {
   const lastBucket = minuteBucketMs(generatedAtUtc);
   const buckets = new Map();
   for (let bucket = firstBucket; bucket <= lastBucket; bucket += 60000) {
-    buckets.set(bucket, { received: 0, changed: 0, removed: 0, expired: 0, cursor: null });
+    buckets.set(bucket, { received: 0, rejected: 0, changed: 0, removed: 0, expired: 0, cursor: null });
   }
   for (const sample of samples) {
     const bucket = minuteBucketMs(sample.observed_at_utc);
-    const value = buckets.get(bucket) || { received: 0, changed: 0, removed: 0, expired: 0, cursor: null };
+    const value = buckets.get(bucket) || { received: 0, rejected: 0, changed: 0, removed: 0, expired: 0, cursor: null };
     value.received += sample.received_count;
+    value.rejected += sample.rejected_count || 0;
     value.changed += sample.changed_count;
     value.removed += sample.removed_count;
     value.expired += sample.expired_count;
@@ -2421,7 +2440,7 @@ function renderSourceRatePlot(product, data, generatedAtUtc) {
     y: entries.map(([, value]) => value.received),
     text: entries.map(([, value]) =>
       `${value.received} records/min<br>` +
-      `${value.changed} changed, ${value.removed} removed, ${value.expired} expired<br>` +
+      `${value.rejected} rejected, ${value.changed} changed, ${value.removed} removed, ${value.expired} expired<br>` +
       `cursor ${value.cursor ?? "-"}`
     ),
     hovertemplate: "%{x}<br>%{text}<extra></extra>",
@@ -3053,6 +3072,7 @@ mod tests {
                 received_count: 3,
                 new_payload_count: 2,
                 duplicate_payload_count: 1,
+                rejected_count: 0,
                 changed_count: 2,
                 removed_count: 1,
                 expired_count: 0,
@@ -3068,6 +3088,7 @@ mod tests {
                 received_count: 6,
                 new_payload_count: 4,
                 duplicate_payload_count: 2,
+                rejected_count: 1,
                 changed_count: 4,
                 removed_count: 1,
                 expired_count: 1,
@@ -3082,6 +3103,7 @@ mod tests {
         assert_eq!(notams.source_samples[0].received_count, 3);
         assert_eq!(notams.source_samples[0].new_payload_count, 2);
         assert_eq!(notams.source_samples[0].duplicate_payload_count, 1);
+        assert_eq!(notams.source_samples[0].rejected_count, 0);
         assert_eq!(notams.source_samples[0].changed_count, 2);
         assert_eq!(notams.source_samples[0].removed_count, 1);
         assert_eq!(notams.source_samples[0].expired_count, 0);
@@ -3090,6 +3112,7 @@ mod tests {
         assert_eq!(notams.source_samples[1].received_count, 6);
         assert_eq!(notams.source_samples[1].new_payload_count, 4);
         assert_eq!(notams.source_samples[1].duplicate_payload_count, 2);
+        assert_eq!(notams.source_samples[1].rejected_count, 1);
         assert_eq!(notams.source_samples[1].changed_count, 4);
         assert_eq!(notams.source_samples[1].removed_count, 1);
         assert_eq!(notams.source_samples[1].expired_count, 1);
@@ -3189,6 +3212,7 @@ mod tests {
                     fdc_received: 0,
                     new_payloads: 0,
                     duplicate_payloads: 0,
+                    rejected_payloads: 0,
                     upserted: 0,
                     removed: 0,
                     expired: 0,
@@ -3203,6 +3227,41 @@ mod tests {
             parse_utc_timestamp("2026-07-24T00:03:00Z", "test timestamp")?
         );
         assert_eq!(status.snapshot().products["notams"].source_samples.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn resynchronized_nms_state_is_queued_for_publication() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
+        let (sender, receiver) = mpsc::channel();
+        let status = DaemonStatus::default();
+
+        handle_nms_notam_event(
+            &store,
+            &publication_store,
+            &sender,
+            &status,
+            &NmsCollectorEvent::StateResynchronized {
+                previous_cursor_utc: "2026-07-20T00:00:00Z".to_string(),
+                current_records: 0,
+                cursor_utc: "2026-07-24T00:00:00Z".to_string(),
+            },
+        )?;
+
+        let event = receiver.recv_timeout(Duration::from_secs(1))?;
+        assert_eq!(
+            event.observed_at_utc,
+            parse_utc_timestamp("2026-07-24T00:00:00Z", "test timestamp")?
+        );
+        let notams = &status.snapshot().products["notams"];
+        assert_eq!(
+            notams.last_source_timestamp_utc.as_deref(),
+            Some("2026-07-24T00:00:00Z")
+        );
+        assert_eq!(notams.consecutive_failure_count, 0);
         Ok(())
     }
 

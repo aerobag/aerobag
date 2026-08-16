@@ -346,6 +346,18 @@ class PipelineHealthTests(unittest.TestCase):
                                 "last_failure_phase": "poll",
                                 "last_error": "unsupported NOTAM type R",
                                 "consecutive_failure_count": 1,
+                                "source_samples": [
+                                    {
+                                        "observed_at_utc": "2026-07-17T17:00:00Z",
+                                        "cursor_utc": "2026-07-17T17:00:00Z",
+                                        "rejected_count": 9,
+                                    },
+                                    {
+                                        "observed_at_utc": "2026-07-17T19:50:00Z",
+                                        "cursor_utc": "2026-07-17T19:49:00Z",
+                                        "rejected_count": 1,
+                                    },
+                                ],
                                 "quality": {
                                     "rejected_row_count": 1,
                                     "oldest_rejected_ingest_seq": 6922,
@@ -400,6 +412,15 @@ class PipelineHealthTests(unittest.TestCase):
         )
         self.assertEqual(
             rejected["details"]["recent_rejections"][0]["ingest_seq"], 6922
+        )
+        rejected_updates = metric(
+            evaluation, "live_feed.notams.rejected_api_updates_2h"
+        )
+        self.assertEqual(rejected_updates["value"], 1)
+        self.assertEqual(rejected_updates["severity"], "warning")
+        self.assertEqual(
+            rejected_updates["details"]["samples"][0]["cursor_utc"],
+            "2026-07-17T19:49:00Z",
         )
         self.assertEqual(evaluation["top_line_status"], "critical")
 

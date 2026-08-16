@@ -266,11 +266,13 @@ pub fn perform_ownship_text_action_in_session_json(
 pub fn perform_settings_action_in_session_json(
     handle: u64,
     action_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, String> {
     let action: app_core::UiSettingsAction =
         serde_json::from_str(action_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::perform_settings_action_in_session(handle as u32, action)
-        .map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::perform_settings_action_in_session(handle as u32, action, now_epoch_ms)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -483,6 +485,22 @@ pub fn apply_situation_control_input_in_session_json(
         app_core::apply_situation_control_input_in_session(handle as u32, input, now_epoch_ms)
             .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn set_ownship_source_sleeping_in_session_json(
+    handle: u64,
+    source_id: &str,
+    sleeping: bool,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let outcome = app_core::set_ownship_source_sleeping_in_session(
+        handle as u32,
+        source_id,
+        sleeping,
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn engage_map_follow_in_session_json(
@@ -3282,10 +3300,11 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performSetting
     _class: JClass,
     handle: i64,
     action_json: JString,
+    now_epoch_ms: i64,
 ) -> jstring {
     let result = (|| {
         let action_json = get_java_string(&mut env, action_json)?;
-        perform_settings_action_in_session_json(handle as u64, &action_json)
+        perform_settings_action_in_session_json(handle as u64, &action_json, now_epoch_ms)
     })();
     return_string(&mut env, result)
 }
@@ -3556,6 +3575,27 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_applySituation
     let result = (|| {
         let input_json = get_java_string(&mut env, input_json)?;
         apply_situation_control_input_in_session_json(handle as u64, &input_json, now_epoch_ms)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setOwnshipSourceSleepingInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    source_id: JString,
+    sleeping: bool,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let source_id = get_java_string(&mut env, source_id)?;
+        set_ownship_source_sleeping_in_session_json(
+            handle as u64,
+            &source_id,
+            sleeping,
+            now_epoch_ms,
+        )
     })();
     return_string(&mut env, result)
 }

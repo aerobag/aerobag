@@ -29,6 +29,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.OwnshipSourceKind
+import org.aerobag.app.domain.OwnshipSourcePowerState
 import org.aerobag.app.domain.SituationSample
 
 class AerobagGpsService : Service() {
@@ -273,16 +274,23 @@ class AerobagGpsService : Service() {
             )
         }
 
-        fun applyCorePowerState(context: Context, paused: Boolean) {
-            if (!paused) {
-                startHighPrecisionGps(context)
-                return
+        fun applyCorePowerState(context: Context, powerState: OwnshipSourcePowerState) {
+            when (powerState) {
+                OwnshipSourcePowerState.Running -> startHighPrecisionGps(context)
+                OwnshipSourcePowerState.Paused -> {
+                    AndroidGpsPower.markGpsPaused(context)
+                    AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
+                    context.startService(
+                        Intent(context, AerobagGpsService::class.java).setAction(ActionApplyPausedState),
+                    )
+                }
+                OwnshipSourcePowerState.Sleeping -> {
+                    AndroidGpsPower.markGpsActive(context)
+                    AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus("Sleeping"))
+                    context.getSystemService(NotificationManager::class.java).cancel(PausedNotificationId)
+                    context.stopService(Intent(context, AerobagGpsService::class.java))
+                }
             }
-            AndroidGpsPower.markGpsPaused(context)
-            AndroidGpsSource.publishStatus(AndroidGpsSource.pausedStatus())
-            context.startService(
-                Intent(context, AerobagGpsService::class.java).setAction(ActionApplyPausedState),
-            )
         }
     }
 }

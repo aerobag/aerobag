@@ -572,6 +572,14 @@
     "UiDisplayPolicy": {
       "additionalProperties": false,
       "properties": {
+        "allow_screen_off_after_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "dim_after_ms": {
           "format": "uint64",
           "minimum": 0,

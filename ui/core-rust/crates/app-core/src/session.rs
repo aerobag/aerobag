@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub use crate::settings_controller::{
-    DisplayDimTimeout, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
+    DisplayDimTimeout, InactivitySleepTimeout, SettingsPreferences, SettingsStorage,
+    SettingsStorageHandle,
 };
 
 pub use app_ui_contracts::{
@@ -111,7 +112,8 @@ use crate::{
         SettingsProjectionDependencies, StatusProjectionDependencies,
     },
     settings_controller::{
-        debug_flag_settings_action, SettingsController, SettingsModelCheckpoint, SettingsProjection,
+        cloud_synced_settings_action, debug_flag_settings_action, SettingsController,
+        SettingsModelCheckpoint, SettingsProjection,
     },
     situation_controller::{
         selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
@@ -2596,6 +2598,9 @@ pub fn complete_cloud_provider_request_in_session(
         if let Some(preferences) = updates.offline_package_preferences {
             session.packages.replace_preferences(preferences);
         }
+        if let Some(timeout) = updates.inactivity_sleep_timeout {
+            session.settings.set_inactivity_sleep_timeout(timeout);
+        }
         let mut invalidations = vec![UiInvalidation::SessionSnapshot];
         if let Some(remote_plan) = updates.remote_flight_plan {
             let navigation_active = session
@@ -2825,6 +2830,7 @@ fn run_session_model_transaction_projecting(
 pub fn perform_settings_action_in_session(
     handle: u32,
     action: UiSettingsAction,
+    now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
@@ -2838,9 +2844,15 @@ pub fn perform_settings_action_in_session(
                 .platform_capabilities
                 .display_policy
                 .is_some();
-            session
+            let changed = session
                 .settings
                 .perform_action(&action, display_policy_available)?;
+            if changed && cloud_synced_settings_action(&action) {
+                session.cloud.record_local_inactivity_sleep_timeout(
+                    session.settings.inactivity_sleep_timeout(),
+                    now_epoch_ms,
+                )?;
+            }
         }
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
@@ -3646,6 +3658,22 @@ pub fn apply_situation_control_input_in_session(
     let session = &mut *session_guard;
     advance_session_wall_clock(session, now_epoch_ms as i64);
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
+    changed_session_update_outcome(session)
+}
+
+pub fn set_ownship_source_sleeping_in_session(
+    handle: u32,
+    source_id: &str,
+    sleeping: bool,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    advance_session_wall_clock(session, now_epoch_ms);
+    session
+        .situation
+        .set_source_power_sleeping(&crate::OwnshipSourceId(source_id.to_string()), sleeping);
     changed_session_update_outcome(session)
 }
 
@@ -11435,6 +11463,9 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     let document = decode_session_persistence(&bytes);
     session.settings.restore_preferences(document.preferences);
     session.cloud = CloudController::new(document.cloud);
+    if let Some(timeout) = session.cloud.inactivity_sleep_timeout()? {
+        session.settings.set_inactivity_sleep_timeout(timeout);
+    }
     restore_package_preferences_from_cloud(session)?;
     if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
@@ -14482,6 +14513,7 @@ mod tests {
                 action_id: "display_dim_timeout".to_string(),
                 value_id: "30s".to_string(),
             },
+            100,
         )
         .expect("settings mutation");
         let changed = session_diagnostics(init.handle).expect("changed diagnostics");
@@ -14801,6 +14833,7 @@ mod tests {
     snapshot_wrapper!(perform_settings_action_in_session(
         handle: u32,
         action: UiSettingsAction,
+        now_epoch_ms: i64,
     ));
     snapshot_wrapper!(perform_flight_plan_column_action_in_session(
         handle: u32,
@@ -14856,6 +14889,12 @@ mod tests {
         handle: u32,
         input: SituationControlInput,
         now_epoch_ms: f64,
+    ));
+    snapshot_wrapper!(set_ownship_source_sleeping_in_session(
+        handle: u32,
+        source_id: &str,
+        sleeping: bool,
+        now_epoch_ms: i64,
     ));
     snapshot_wrapper!(load_playback_trace_in_session(
         handle: u32,
@@ -15116,6 +15155,7 @@ mod tests {
                 action_id: "debug_flag.plate_flight_plan".to_string(),
                 value_id: "on".to_string(),
             },
+            100,
         )
         .expect("enable plate flight-plan diagnostics");
         assert!(enabled.debug_state.plate_flight_plan);
@@ -15152,14 +15192,22 @@ mod tests {
         )
         .expect("configure platform capabilities");
 
-        assert_eq!(snapshot.settings_page_state.rows.len(), 2);
+        assert_eq!(snapshot.settings_page_state.rows.len(), 3);
         assert_eq!(snapshot.settings_page_state.rows[1].value_id, "2m");
+        assert_eq!(snapshot.settings_page_state.rows[2].value_id, "1h");
         assert_eq!(
             snapshot
                 .display_policy
                 .as_ref()
                 .and_then(|policy| policy.dim_after_ms),
             Some(120_000)
+        );
+        assert_eq!(
+            snapshot
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.allow_screen_off_after_ms),
+            Some(3_600_000)
         );
 
         let snapshot = perform_settings_action_in_session(
@@ -15168,6 +15216,7 @@ mod tests {
                 action_id: "display_dim_timeout".to_string(),
                 value_id: "30s".to_string(),
             },
+            100,
         )
         .expect("perform settings action");
         assert_eq!(snapshot.settings_page_state.rows[1].value_id, "30s");
@@ -15206,6 +15255,75 @@ mod tests {
                 .as_ref()
                 .and_then(|policy| policy.dim_after_ms),
             Some(30_000)
+        );
+    }
+
+    #[test]
+    fn inactivity_sleep_setting_is_persisted_as_a_cloud_record() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            Some(storage.clone()),
+        )
+        .expect("configure platform capabilities");
+
+        let changed = perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "inactivity_sleep_timeout".to_string(),
+                value_id: "2h".to_string(),
+            },
+            1_234,
+        )
+        .expect("change inactivity sleep timeout");
+        assert_eq!(changed.settings_page_state.rows[2].value_id, "2h");
+        assert_eq!(
+            changed
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.allow_screen_off_after_ms),
+            Some(7_200_000)
+        );
+
+        let persisted = storage
+            .read_settings()
+            .expect("read settings")
+            .expect("persisted bytes");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("persisted json");
+        assert_eq!(
+            persisted_json["preferences"]["inactivity_sleep_timeout"],
+            "2h"
+        );
+        assert_eq!(
+            persisted_json["cloud"]["records"]["cached"]["settings/inactivity_sleep_timeout"]
+                ["value"],
+            "2h"
+        );
+        let restored =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let restored = configure_platform_capabilities_in_session(
+            restored.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            Some(storage),
+        )
+        .expect("restore setting");
+        assert_eq!(restored.settings_page_state.rows[2].value_id, "2h");
+        assert_eq!(
+            restored
+                .display_policy
+                .as_ref()
+                .and_then(|policy| policy.allow_screen_off_after_ms),
+            Some(7_200_000)
         );
     }
 
@@ -15284,6 +15402,7 @@ mod tests {
                 action_id: "display_dim_timeout".to_string(),
                 value_id: "30s".to_string(),
             },
+            100,
         )
         .expect_err("failed persistence must reject setting");
         assert!(error.message.contains("injected settings write failure"));
@@ -15476,6 +15595,7 @@ mod tests {
                 action_id: "flight_data_visibility".to_string(),
                 value_id: "clock".to_string(),
             },
+            100,
         )
         .expect("disable clock cell");
         assert!(!snapshot
@@ -15523,6 +15643,7 @@ mod tests {
                 action_id: "flight_data_visibility".to_string(),
                 value_id: "clock".to_string(),
             },
+            200,
         )
         .expect("re-enable clock cell");
         assert!(restored_snapshot
@@ -26830,6 +26951,25 @@ mod tests {
         assert_eq!(resumed.app_ui_state.ownship.controls.launcher_label, "GPS");
         assert!(resumed.app_ui_state.ownship.render.draw_aircraft);
         assert_enabled_situation_controls(&resumed, &[SituationControlInput::Pause]);
+
+        let sleeping =
+            set_ownship_source_sleeping_in_session(init.handle, &source_id.0, true, 1_300)
+                .expect("sleep GPS after inactivity");
+        assert_eq!(
+            sleeping.app_ui_state.ownship.controls.sources[0].power_state,
+            Some(crate::OwnshipSourcePowerState::Sleeping)
+        );
+        assert_eq!(
+            sleeping.app_ui_state.ownship.controls.launcher_label,
+            "GPS SLEEPING"
+        );
+
+        let awake = set_ownship_source_sleeping_in_session(init.handle, &source_id.0, false, 1_400)
+            .expect("wake GPS after activity");
+        assert_eq!(
+            awake.app_ui_state.ownship.controls.sources[0].power_state,
+            Some(crate::OwnshipSourcePowerState::Running)
+        );
         destroy_session(init.handle);
     }
 

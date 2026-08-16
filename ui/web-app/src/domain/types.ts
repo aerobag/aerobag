@@ -622,7 +622,7 @@ export type SituationControlInput =
   | "pause"
   | "resume";
 
-export type OwnshipSourcePowerState = "running" | "paused";
+export type OwnshipSourcePowerState = "running" | "paused" | "sleeping";
 
 export type OwnshipSourceKind =
   | "device_gps"

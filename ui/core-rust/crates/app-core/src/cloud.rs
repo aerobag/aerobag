@@ -38,8 +38,8 @@ use crate::{
     device_setup_code::{
         decode_device_setup_code, encode_device_setup_code, DeviceSetupCode, DeviceSetupProvider,
     },
-    AppError, AppErrorKind, AppResult, FlightPlan, OfflinePackagePreferences,
-    OfflinePackageSelection,
+    AppError, AppErrorKind, AppResult, FlightPlan, InactivitySleepTimeout,
+    OfflinePackagePreferences, OfflinePackageSelection,
 };
 
 const CLOUD_PERSISTENCE_VERSION: u32 = 5;
@@ -51,6 +51,8 @@ const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 2;
 const OFFLINE_PACKAGE_REGION_RECORD_PREFIX: &str = "offline_packages/region/";
 const OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX: &str = "offline_packages/product/";
 const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
+const INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY: &str = "settings/inactivity_sleep_timeout";
+const INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION: u32 = 1;
 const AIRCRAFT_LIBRARY_RECORD_PREFIX: &str = "aircraft/library/";
 const AIRCRAFT_LIBRARY_SCHEMA_VERSION: u32 = 1;
 const LEGACY_UNKNOWN_MUTATION_EPOCH_MS: i64 = i64::MIN;
@@ -606,6 +608,11 @@ impl CloudCompletion {
                 || key.starts_with(OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX)
         })
     }
+
+    pub(crate) fn inactivity_sleep_timeout_changed(&self) -> bool {
+        self.changed_records
+            .contains_key(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
+    }
 }
 
 impl CloudEngine {
@@ -1132,6 +1139,43 @@ impl CloudEngine {
             }
         }
         Ok(changed)
+    }
+
+    pub fn record_local_inactivity_sleep_timeout(
+        &mut self,
+        timeout: InactivitySleepTimeout,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        let existing = self
+            .persistent
+            .records
+            .cached
+            .get(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
+            .map(inactivity_sleep_timeout_from_record)
+            .transpose()?;
+        if existing == Some(timeout) {
+            return Ok(false);
+        }
+        let record =
+            CloudRecord {
+                schema_version: INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION,
+                modified_at_epoch_ms: Some(self.next_record_mutation_epoch_ms(
+                    INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY,
+                    now_epoch_ms,
+                )),
+                value: serde_json::to_value(timeout).map_err(cloud_json_error)?,
+            };
+        self.record_local_cloud_record(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY, record);
+        Ok(true)
+    }
+
+    pub fn inactivity_sleep_timeout(&self) -> AppResult<Option<InactivitySleepTimeout>> {
+        self.persistent
+            .records
+            .cached
+            .get(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
+            .map(inactivity_sleep_timeout_from_record)
+            .transpose()
     }
 
     pub fn offline_package_preferences(&self) -> AppResult<OfflinePackagePreferences> {
@@ -3836,6 +3880,21 @@ fn offline_package_selection_from_record(
     serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
 }
 
+fn inactivity_sleep_timeout_from_record(record: &CloudRecord) -> AppResult<InactivitySleepTimeout> {
+    if record.schema_version != INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION {
+        return Err(cloud_error(format!(
+            "unsupported inactivity sleep timeout schema {}",
+            record.schema_version
+        )));
+    }
+    if record.modified_at_epoch_ms.is_none() {
+        return Err(cloud_error(
+            "inactivity sleep timeout has no user-mutation timestamp",
+        ));
+    }
+    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+}
+
 fn aircraft_definition_from_record(
     expected_hash: &str,
     record: &CloudRecord,
@@ -3882,6 +3941,8 @@ fn aircraft_library_membership_from_record(
 fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
     if key == FLIGHT_PLAN_RECORD_KEY {
         flight_plan_from_record(record)?;
+    } else if key == INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY {
+        inactivity_sleep_timeout_from_record(record)?;
     } else if key.starts_with(OFFLINE_PACKAGE_REGION_RECORD_PREFIX)
         || key.starts_with(OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX)
     {
@@ -5291,6 +5352,79 @@ mod tests {
         };
         assert_eq!(first.offline_package_preferences().unwrap(), expected);
         assert_eq!(second.offline_package_preferences().unwrap(), expected);
+    }
+
+    #[test]
+    fn inactivity_sleep_timeout_is_a_timestamped_synchronized_record() {
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        assert_eq!(engine.inactivity_sleep_timeout().unwrap(), None);
+
+        assert!(engine
+            .record_local_inactivity_sleep_timeout(InactivitySleepTimeout::TwoHours, 123)
+            .unwrap());
+        assert_eq!(
+            engine.inactivity_sleep_timeout().unwrap(),
+            Some(InactivitySleepTimeout::TwoHours)
+        );
+        let record = engine
+            .persistent
+            .records
+            .cached
+            .get(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
+            .expect("synced settings record");
+        assert_eq!(record.modified_at_epoch_ms, Some(123));
+        assert!(!engine
+            .record_local_inactivity_sleep_timeout(InactivitySleepTimeout::TwoHours, 456)
+            .unwrap());
+    }
+
+    #[test]
+    fn inactivity_sleep_timeout_crossfills_between_devices() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut provider = MemoryProvider::default();
+        let mut first = CloudEngine::new(CloudPersistentState::default());
+        first
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        first
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut first);
+        first
+            .perform_action(CloudAction::CreateAccount, &initial)
+            .unwrap();
+        pump(&mut first, &mut provider, 10);
+
+        let mut second = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut second);
+        second
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode {
+                    setup_code: first.device_setup_code().unwrap(),
+                },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        pump(&mut second, &mut provider, 20);
+
+        first
+            .record_local_inactivity_sleep_timeout(InactivitySleepTimeout::TwoHours, 29)
+            .unwrap();
+        pump(&mut first, &mut provider, 30);
+        second
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        pump(&mut second, &mut provider, 40);
+
+        assert_eq!(
+            second.inactivity_sleep_timeout().unwrap(),
+            Some(InactivitySleepTimeout::TwoHours)
+        );
     }
 
     #[test]

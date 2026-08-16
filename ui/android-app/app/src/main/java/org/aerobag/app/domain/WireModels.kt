@@ -201,6 +201,9 @@ enum class WireOwnshipSourcePowerState {
 
     @SerialName("paused")
     Paused,
+
+    @SerialName("sleeping")
+    Sleeping,
 }
 
 @Serializable

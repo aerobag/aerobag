@@ -962,7 +962,7 @@ type WasmModule = {
   set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
-  perform_settings_action_in_session(handle: number, actionJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_settings_action_in_session(handle: number, actionJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   take_cloud_authorization_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
   complete_cloud_authorization_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -1735,6 +1735,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_settings_action_in_session(
             handle,
             JSON.stringify({ action_id: actionId, value_id: valueId }),
+            BigInt(Date.now()),
           ),
         );
         return snapshot;

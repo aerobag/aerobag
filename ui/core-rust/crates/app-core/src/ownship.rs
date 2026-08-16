@@ -117,6 +117,7 @@ pub enum SourceConnectionState {
 pub enum OwnshipSourcePowerState {
     Running,
     Paused,
+    Sleeping,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -476,6 +477,34 @@ pub fn set_source_power_paused(
     refresh(&next)
 }
 
+pub fn set_source_power_sleeping(
+    state: &OwnshipState,
+    source_id: &OwnshipSourceId,
+    sleeping: bool,
+) -> OwnshipState {
+    let mut next = state.clone();
+    let Some(source) = next
+        .sources
+        .iter_mut()
+        .find(|source| source.source_id == *source_id)
+    else {
+        return next;
+    };
+    source.power_state = match (source.power_state, sleeping) {
+        (Some(OwnshipSourcePowerState::Running), true) => Some(OwnshipSourcePowerState::Sleeping),
+        (Some(OwnshipSourcePowerState::Sleeping), false) => Some(OwnshipSourcePowerState::Running),
+        (power_state, _) => power_state,
+    };
+    refresh(&next)
+}
+
+fn power_state_suspended(power_state: Option<OwnshipSourcePowerState>) -> bool {
+    matches!(
+        power_state,
+        Some(OwnshipSourcePowerState::Paused | OwnshipSourcePowerState::Sleeping)
+    )
+}
+
 pub fn update_source_status(
     state: &OwnshipState,
     update: OwnshipSourceStatusUpdate,
@@ -614,12 +643,14 @@ fn resolve_state(
     }
 
     if let OwnshipSelectionPolicy::Manual { source_id } = &policy.selection {
-        if sources.iter().any(|source| {
-            source.source_id == *source_id
-                && source.power_state == Some(OwnshipSourcePowerState::Paused)
+        if let Some(source) = sources.iter().find(|source| {
+            source.source_id == *source_id && power_state_suspended(source.power_state)
         }) {
             return ResolvedOwnshipState {
-                banner_text: "GPS PAUSED".to_string(),
+                banner_text: match source.power_state {
+                    Some(OwnshipSourcePowerState::Sleeping) => "GPS SLEEPING".to_string(),
+                    _ => "GPS PAUSED".to_string(),
+                },
                 ..ResolvedOwnshipState::none()
             };
         }
@@ -712,7 +743,7 @@ fn pick_by_priority<'a>(
 
 fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool {
     source.enabled
-        && source.power_state != Some(OwnshipSourcePowerState::Paused)
+        && !power_state_suspended(source.power_state)
         && source.selectable
         && source.connection_state == SourceConnectionState::Connected
         && source
@@ -724,7 +755,7 @@ fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool 
 
 fn is_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64, policy: &OwnshipPolicy) -> bool {
     source.enabled
-        && source.power_state != Some(OwnshipSourcePowerState::Paused)
+        && !power_state_suspended(source.power_state)
         && source.auto_eligible
         && source.connection_state == SourceConnectionState::Connected
         && source
@@ -1032,7 +1063,7 @@ fn project_source_menu_item(
 }
 
 fn power_control_menu_items(source: &OwnshipSourceMenuItem) -> Vec<SituationControlMenuItem> {
-    let paused = source.power_state == Some(OwnshipSourcePowerState::Paused);
+    let paused = power_state_suspended(source.power_state);
     vec![
         SituationControlMenuItem {
             input: SituationControlInput::Pause,
@@ -1054,7 +1085,7 @@ fn next_source_refresh_epoch_ms(sources: &[OwnshipSourceStatus]) -> Option<i64> 
         .iter()
         .filter(|source| {
             source.enabled
-                && source.power_state != Some(OwnshipSourcePowerState::Paused)
+                && !power_state_suspended(source.power_state)
                 && source.source_kind != OwnshipSourceKind::FlightPlanSimulator
                 && source.connection_state == SourceConnectionState::Connected
         })
@@ -1182,8 +1213,10 @@ fn situation_control_handler_for_mode(mode: OwnshipMode) -> Box<dyn SituationCon
 }
 
 fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
-    if source.power_state == Some(OwnshipSourcePowerState::Paused) {
-        return "GPS PAUSED".to_string();
+    match source.power_state {
+        Some(OwnshipSourcePowerState::Paused) => return "GPS PAUSED".to_string(),
+        Some(OwnshipSourcePowerState::Sleeping) => return "GPS SLEEPING".to_string(),
+        _ => {}
     }
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
@@ -1215,7 +1248,7 @@ fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
     if !source.enabled {
         return OwnshipControlTone::Unavailable;
     }
-    if source.power_state == Some(OwnshipSourcePowerState::Paused) {
+    if power_state_suspended(source.power_state) {
         return OwnshipControlTone::Neutral;
     }
     match source.source_kind {
@@ -1431,6 +1464,51 @@ mod tests {
         assert_eq!(resumed.resolved.mode, OwnshipMode::Live);
         assert_eq!(resumed.controls.launcher_label, "GPS");
         assert!(resumed.render.draw_aircraft);
+    }
+
+    #[test]
+    fn inactivity_sleep_is_transient_and_cannot_resume_a_user_pause() {
+        let source_id = OwnshipSourceId("gps".to_string());
+        let state = register_source(
+            &OwnshipState::default(),
+            OwnshipSourceRegistration {
+                source_id: source_id.clone(),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                display_name: "GPS".to_string(),
+                selectable: true,
+                auto_eligible: true,
+                stale_after_ms: None,
+                power_state: Some(OwnshipSourcePowerState::Running),
+            },
+        );
+        let state = select_source(
+            &state,
+            OwnshipSelectionCommand::Source {
+                source_id: source_id.clone(),
+            },
+        );
+
+        let sleeping = set_source_power_sleeping(&state, &source_id, true);
+        assert_eq!(
+            sleeping.sources[0].power_state,
+            Some(OwnshipSourcePowerState::Sleeping)
+        );
+        assert_eq!(sleeping.resolved.banner_text, "GPS SLEEPING");
+        assert_eq!(sleeping.controls.launcher_label, "GPS SLEEPING");
+
+        let awake = set_source_power_sleeping(&sleeping, &source_id, false);
+        assert_eq!(
+            awake.sources[0].power_state,
+            Some(OwnshipSourcePowerState::Running)
+        );
+
+        let manually_paused = set_source_power_paused(&sleeping, &source_id, true);
+        let still_paused = set_source_power_sleeping(&manually_paused, &source_id, false);
+        assert_eq!(
+            still_paused.sources[0].power_state,
+            Some(OwnshipSourcePowerState::Paused)
+        );
+        assert_eq!(still_paused.resolved.banner_text, "GPS PAUSED");
     }
 
     #[test]

@@ -596,6 +596,7 @@ enum class OwnshipLauncherTextTone {
 enum class OwnshipSourcePowerState {
     Running,
     Paused,
+    Sleeping,
 }
 
 enum class SituationControlInput {

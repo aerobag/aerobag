@@ -1453,6 +1453,21 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun setOwnshipSourceSleeping(
+        sourceId: String,
+        sleeping: Boolean,
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ): UiSessionSnapshot {
+        return runPagedSnapshot("setOwnshipSourceSleeping") {
+            bridge.setOwnshipSourceSleepingInSessionJson(
+                handle,
+                sourceId,
+                sleeping,
+                nowEpochMs,
+            )
+        }
+    }
+
     fun engageMapFollow(viewport: MapViewportState): UiSessionSnapshot {
         return runPagedSnapshot("engageMapFollow") {
             bridge.engageMapFollowInSessionJson(handle, viewport.toCoreViewport().toCoreJson(json))
@@ -1659,6 +1674,7 @@ class NativeUiSession internal constructor(
                     put("action_id", actionId)
                     put("value_id", valueId)
                 }.toString(),
+                System.currentTimeMillis(),
             )
         }
     }
@@ -2237,6 +2253,7 @@ private fun SituationControlInput.toWire(): WireSituationControlInput = when (th
 private fun OwnshipSourcePowerState.toWire(): WireOwnshipSourcePowerState = when (this) {
     OwnshipSourcePowerState.Running -> WireOwnshipSourcePowerState.Running
     OwnshipSourcePowerState.Paused -> WireOwnshipSourcePowerState.Paused
+    OwnshipSourcePowerState.Sleeping -> WireOwnshipSourcePowerState.Sleeping
 }
 
 private fun WireAppUiState.toUi() = AppUiState(
@@ -2356,6 +2373,7 @@ private fun WireSituationControlInput.toUi(): SituationControlInput = when (this
 private fun WireOwnshipSourcePowerState.toUi(): OwnshipSourcePowerState = when (this) {
     WireOwnshipSourcePowerState.Running -> OwnshipSourcePowerState.Running
     WireOwnshipSourcePowerState.Paused -> OwnshipSourcePowerState.Paused
+    WireOwnshipSourcePowerState.Sleeping -> OwnshipSourcePowerState.Sleeping
 }
 
 private fun WireOwnshipMode.toUi(): OwnshipMode = when (this) {
@@ -2507,6 +2525,7 @@ private fun SituationControlInput.toCoreJson(json: Json): String =
 private fun OwnshipSourcePowerState.toWireName(): String = when (this) {
     OwnshipSourcePowerState.Running -> "running"
     OwnshipSourcePowerState.Paused -> "paused"
+    OwnshipSourcePowerState.Sleeping -> "sleeping"
 }
 
 private fun CoreMapViewport.toCoreJson(json: Json): String =
@@ -2924,6 +2943,7 @@ data class UiDisplayPolicy(
     val keepScreenOn: Boolean,
     val dimAfterMs: Long?,
     val dimBrightness: Float,
+    val allowScreenOffAfterMs: Long?,
 )
 
 data class UiDisclaimerState(
@@ -3138,6 +3158,7 @@ private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
     keepScreenOn = keepScreenOn,
     dimAfterMs = dimAfterMs,
     dimBrightness = dimBrightness.toFloat(),
+    allowScreenOffAfterMs = allowScreenOffAfterMs,
 )
 
 private fun WireUiDisclaimerState.toUi() = UiDisclaimerState(

@@ -240,6 +240,13 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    fun setOwnshipSourceSleepingInSessionJson(
+        handle: Long,
+        sourceId: String,
+        sleeping: Boolean,
+        nowEpochMs: Long,
+    ): String
+
     fun engageMapFollowInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -358,6 +365,7 @@ interface NativeBridge {
     fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
+        nowEpochMs: Long,
     ): String
 
     fun takeCloudAuthorizationRequestInSessionJson(handle: Long, nowEpochMs: Long): String
@@ -837,6 +845,13 @@ object NativeBindings : NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    external override fun setOwnshipSourceSleepingInSessionJson(
+        handle: Long,
+        sourceId: String,
+        sleeping: Boolean,
+        nowEpochMs: Long,
+    ): String
+
     external override fun engageMapFollowInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -955,6 +970,7 @@ object NativeBindings : NativeBridge {
     external override fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
+        nowEpochMs: Long,
     ): String
 
     external override fun takeCloudAuthorizationRequestInSessionJson(handle: Long, nowEpochMs: Long): String

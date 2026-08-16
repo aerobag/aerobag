@@ -325,6 +325,7 @@ pub struct UiDisplayPolicy {
     pub keep_screen_on: bool,
     pub dim_after_ms: Option<u64>,
     pub dim_brightness: f32,
+    pub allow_screen_off_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

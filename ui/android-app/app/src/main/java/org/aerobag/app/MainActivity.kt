@@ -2060,14 +2060,21 @@ private const val DebugArmLayerNavKvFaultExtra =
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
     var onSituationControlInput: ((SituationControlInput) -> Boolean)? = null
+    var onDisplayInactivityChanged: ((Boolean) -> Boolean)? = null
 
     private val displayPolicyHandler = Handler(Looper.getMainLooper())
     private var displayPolicyForeground = false
     private var displayPolicyWindowFocused = false
     private var displayPolicyTopResumed = true
     private var activeDisplayPolicy: UiDisplayPolicy? = null
+    private var lastDisplayUserActivityElapsedMs = SystemClock.elapsedRealtime()
+    private var displayPolicyAllowsScreenOff = false
+    private var displayInactivityReportedToCore = false
     private val displayDimRunnable = Runnable {
         applyDisplayPolicyDimState()
+    }
+    private val displayAllowScreenOffRunnable = Runnable {
+        applyDisplayPolicyAllowScreenOffState()
     }
 
     private val gpsPermissionLauncher =
@@ -2086,8 +2093,28 @@ class MainActivity : ComponentActivity() {
 
     private fun syncDisplayPolicy() {
         displayPolicyHandler.removeCallbacks(displayDimRunnable)
+        displayPolicyHandler.removeCallbacks(displayAllowScreenOffRunnable)
         val policy = activeDisplayPolicy
-        if (!displayPolicyCanControlWindow() || policy?.keepScreenOn != true) {
+        if (policy?.keepScreenOn == true && !displayPolicyAllowsScreenOff) {
+            val allowScreenOffAfterMs = policy.allowScreenOffAfterMs
+            if (allowScreenOffAfterMs != null) {
+                val remainingMs = remainingDisplayInactivityMs(
+                    nowElapsedMs = SystemClock.elapsedRealtime(),
+                    lastActivityElapsedMs = lastDisplayUserActivityElapsedMs,
+                    timeoutMs = allowScreenOffAfterMs,
+                )
+                if (remainingMs == 0L) {
+                    applyDisplayPolicyAllowScreenOffState()
+                    return
+                }
+                displayPolicyHandler.postDelayed(displayAllowScreenOffRunnable, remainingMs)
+            }
+        }
+        if (
+            !displayPolicyCanControlWindow() ||
+            policy?.keepScreenOn != true ||
+            displayPolicyAllowsScreenOff
+        ) {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             restoreSystemWindowBrightness()
             return
@@ -2095,17 +2122,52 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         restoreSystemWindowBrightness()
         val dimAfterMs = policy.dimAfterMs ?: return
-        displayPolicyHandler.postDelayed(displayDimRunnable, dimAfterMs.coerceAtLeast(1L))
+        val remainingMs = remainingDisplayInactivityMs(
+            nowElapsedMs = SystemClock.elapsedRealtime(),
+            lastActivityElapsedMs = lastDisplayUserActivityElapsedMs,
+            timeoutMs = dimAfterMs,
+        )
+        if (remainingMs == 0L) {
+            applyDisplayPolicyDimState()
+        } else {
+            displayPolicyHandler.postDelayed(displayDimRunnable, remainingMs)
+        }
     }
 
     private fun applyDisplayPolicyDimState() {
         val policy = activeDisplayPolicy ?: return
-        if (!displayPolicyCanControlWindow() || !policy.keepScreenOn || policy.dimAfterMs == null) {
+        if (
+            !displayPolicyCanControlWindow() ||
+            !policy.keepScreenOn ||
+            policy.dimAfterMs == null ||
+            displayPolicyAllowsScreenOff
+        ) {
             return
         }
         val attrs = window.attributes
         attrs.screenBrightness = policy.dimBrightness.coerceIn(0.0f, 1.0f)
         window.attributes = attrs
+    }
+
+    private fun applyDisplayPolicyAllowScreenOffState() {
+        val policy = activeDisplayPolicy ?: return
+        val allowScreenOffAfterMs = policy.allowScreenOffAfterMs ?: return
+        val remainingMs = remainingDisplayInactivityMs(
+            nowElapsedMs = SystemClock.elapsedRealtime(),
+            lastActivityElapsedMs = lastDisplayUserActivityElapsedMs,
+            timeoutMs = allowScreenOffAfterMs,
+        )
+        if (!policy.keepScreenOn || remainingMs > 0L) {
+            syncDisplayPolicy()
+            return
+        }
+        if (onDisplayInactivityChanged?.invoke(true) != true) {
+            displayPolicyHandler.postDelayed(displayAllowScreenOffRunnable, 1_000L)
+            return
+        }
+        displayInactivityReportedToCore = true
+        displayPolicyAllowsScreenOff = true
+        syncDisplayPolicy()
     }
 
     private fun displayPolicyCanControlWindow(): Boolean =
@@ -2121,7 +2183,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun noteDisplayUserActivity() {
+        lastDisplayUserActivityElapsedMs = SystemClock.elapsedRealtime()
+        displayPolicyAllowsScreenOff = false
         syncDisplayPolicy()
+        if (
+            displayInactivityReportedToCore &&
+            onDisplayInactivityChanged?.invoke(false) == true
+        ) {
+            displayInactivityReportedToCore = false
+        }
     }
 
     @OptIn(ExperimentalComposeUiApi::class)
@@ -2189,15 +2259,18 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         displayPolicyForeground = true
-        syncDisplayPolicy()
+        noteDisplayUserActivity()
     }
 
     override fun onPause() {
         displayPolicyForeground = false
-        displayPolicyHandler.removeCallbacks(displayDimRunnable)
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        restoreSystemWindowBrightness()
+        syncDisplayPolicy()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        displayPolicyHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -2725,6 +2798,20 @@ internal fun AerobagApp(
             (context as? MainActivity)?.applyCoreDisplayPolicy(null)
         }
     }
+    DisposableEffect(uiSession, context) {
+        val activity = context as? MainActivity
+        activity?.onDisplayInactivityChanged = { sleeping ->
+            applySessionCommand("setOwnshipSourceSleeping") {
+                uiSession.setOwnshipSourceSleeping(
+                    sourceId = AndroidGpsSource.SourceId,
+                    sleeping = sleeping,
+                )
+            } != null
+        }
+        onDispose {
+            activity?.onDisplayInactivityChanged = null
+        }
+    }
     fun selectOwnshipSource(sourceId: String) {
         applySessionCommand("selectOwnshipSource") {
             uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
@@ -2779,7 +2866,7 @@ internal fun AerobagApp(
         val powerState = deviceGpsPowerState ?: return@LaunchedEffect
         AerobagGpsService.applyCorePowerState(
             appContext,
-            paused = powerState == OwnshipSourcePowerState.Paused,
+            powerState = powerState,
         )
     }
     val sessionPlanUiState = requireNotNull(appUiState.activePlan) {

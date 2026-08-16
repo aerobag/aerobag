@@ -730,11 +730,13 @@ pub fn perform_ownship_text_action_in_session(
 pub fn perform_settings_action_in_session(
     session_handle: u32,
     action_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
     let action: app_core::UiSettingsAction =
         serde_json::from_str(action_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let snapshot = app_core::perform_settings_action_in_session(session_handle, action)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let snapshot =
+        app_core::perform_settings_action_in_session(session_handle, action, now_epoch_ms)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

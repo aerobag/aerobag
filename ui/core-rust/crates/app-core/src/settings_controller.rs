@@ -17,6 +17,8 @@ const NO_WARRANTY_DISCLAIMER_HTML: &str = include_str!("../../../../shared/no-wa
 const NO_WARRANTY_DISCLAIMER_AGREEMENT_ID: &str = "no-warranty-v1";
 const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
 const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
+const INACTIVITY_SLEEP_TIMEOUT_ROW_ID: &str = "inactivity_sleep_timeout";
+const INACTIVITY_SLEEP_TIMEOUT_ACTION_ID: &str = "inactivity_sleep_timeout";
 const FLIGHT_DATA_VISIBILITY_ROW_ID: &str = "flight_data_visibility";
 const FLIGHT_DATA_VISIBILITY_ACTION_ID: &str = "flight_data_visibility";
 const DEBUG_DIAGNOSTICS_SECTION_ID: &str = "debug_diagnostics";
@@ -107,10 +109,80 @@ impl DisplayDimTimeout {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InactivitySleepTimeout {
+    #[serde(rename = "30m")]
+    ThirtyMinutes,
+    #[serde(rename = "1h")]
+    #[default]
+    OneHour,
+    #[serde(rename = "2h")]
+    TwoHours,
+    #[serde(rename = "4h")]
+    FourHours,
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl InactivitySleepTimeout {
+    fn id(self) -> &'static str {
+        match self {
+            Self::ThirtyMinutes => "30m",
+            Self::OneHour => "1h",
+            Self::TwoHours => "2h",
+            Self::FourHours => "4h",
+            Self::Never => "never",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::ThirtyMinutes => "30m",
+            Self::OneHour => "1h",
+            Self::TwoHours => "2h",
+            Self::FourHours => "4h",
+            Self::Never => "Never",
+        }
+    }
+
+    fn sleep_after_ms(self) -> Option<u64> {
+        match self {
+            Self::ThirtyMinutes => Some(30 * 60 * 1_000),
+            Self::OneHour => Some(60 * 60 * 1_000),
+            Self::TwoHours => Some(2 * 60 * 60 * 1_000),
+            Self::FourHours => Some(4 * 60 * 60 * 1_000),
+            Self::Never => None,
+        }
+    }
+
+    fn from_value_id(value_id: &str) -> Option<Self> {
+        match value_id {
+            "30m" => Some(Self::ThirtyMinutes),
+            "1h" => Some(Self::OneHour),
+            "2h" => Some(Self::TwoHours),
+            "4h" => Some(Self::FourHours),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    fn all_stops() -> [Self; 5] {
+        [
+            Self::ThirtyMinutes,
+            Self::OneHour,
+            Self::TwoHours,
+            Self::FourHours,
+            Self::Never,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SettingsPreferences {
     #[serde(default)]
     pub display_dim_timeout: DisplayDimTimeout,
+    #[serde(default)]
+    pub inactivity_sleep_timeout: InactivitySleepTimeout,
     #[serde(default)]
     pub disabled_flight_data_cell_ids: BTreeSet<String>,
     #[serde(default)]
@@ -186,6 +258,7 @@ impl SettingsController {
     pub fn restore_preferences(&mut self, preferences: SettingsPreferences) -> bool {
         let static_changed = self.preferences.display_dim_timeout
             != preferences.display_dim_timeout
+            || self.preferences.inactivity_sleep_timeout != preferences.inactivity_sleep_timeout
             || self.preferences.accepted_disclaimer_agreement_ids
                 != preferences.accepted_disclaimer_agreement_ids;
         let flight_data_changed = self.preferences.disabled_flight_data_cell_ids
@@ -217,6 +290,21 @@ impl SettingsController {
                     (false, false)
                 } else {
                     self.preferences.display_dim_timeout = timeout;
+                    (true, true)
+                }
+            }
+            INACTIVITY_SLEEP_TIMEOUT_ACTION_ID => {
+                if !display_policy_available {
+                    return Err(invalid_settings_action(&action.action_id));
+                }
+                let timeout =
+                    InactivitySleepTimeout::from_value_id(&action.value_id).ok_or_else(|| {
+                        invalid_settings_action_value(&action.action_id, &action.value_id)
+                    })?;
+                if self.preferences.inactivity_sleep_timeout == timeout {
+                    (false, false)
+                } else {
+                    self.preferences.inactivity_sleep_timeout = timeout;
                     (true, true)
                 }
             }
@@ -272,6 +360,19 @@ impl SettingsController {
 
     pub fn flight_plan_ete_scope(&self) -> crate::FlightPlanEteScope {
         self.preferences.flight_plan_ete_scope
+    }
+
+    pub fn inactivity_sleep_timeout(&self) -> InactivitySleepTimeout {
+        self.preferences.inactivity_sleep_timeout
+    }
+
+    pub fn set_inactivity_sleep_timeout(&mut self, timeout: InactivitySleepTimeout) -> bool {
+        if self.preferences.inactivity_sleep_timeout == timeout {
+            return false;
+        }
+        self.preferences.inactivity_sleep_timeout = timeout;
+        self.note_change(true);
+        true
     }
 
     pub fn toggle_flight_plan_ete_scope(&mut self) {
@@ -369,6 +470,21 @@ fn project_settings_page_state(
             items: Vec::new(),
             action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
         });
+        rows.push(UiSettingsPageRow {
+            kind: "slider".to_string(),
+            id: INACTIVITY_SLEEP_TIMEOUT_ROW_ID.to_string(),
+            title: "\u{1F50B} Screen and GPS sleep after...".to_string(),
+            value_id: preferences.inactivity_sleep_timeout.id().to_string(),
+            stops: InactivitySleepTimeout::all_stops()
+                .into_iter()
+                .map(|timeout| UiSettingsSliderStop {
+                    id: timeout.id().to_string(),
+                    label: timeout.label().to_string(),
+                })
+                .collect(),
+            items: Vec::new(),
+            action_id: INACTIVITY_SLEEP_TIMEOUT_ACTION_ID.to_string(),
+        });
     }
     let sections = vec![UiSettingsPageSection {
         id: DEBUG_DIAGNOSTICS_SECTION_ID.to_string(),
@@ -426,6 +542,10 @@ pub(crate) fn debug_flag_settings_action(
         }
     };
     Ok(Some((flag_id, enabled)))
+}
+
+pub(crate) fn cloud_synced_settings_action(action: &UiSettingsAction) -> bool {
+    action.action_id == INACTIVITY_SLEEP_TIMEOUT_ACTION_ID
 }
 
 fn all_debug_flags() -> [DebugFlagId; 10] {
@@ -495,6 +615,7 @@ fn project_display_policy(
         keep_screen_on: true,
         dim_after_ms: preferences.display_dim_timeout.dim_after_ms(),
         dim_brightness: DISPLAY_DIM_BRIGHTNESS,
+        allow_screen_off_after_ms: preferences.inactivity_sleep_timeout.sleep_after_ms(),
     })
 }
 
@@ -607,7 +728,7 @@ mod tests {
         assert!(capability_changed.rebuilt);
         assert_eq!(
             capability_changed.projection.settings_page_state.rows.len(),
-            2
+            3
         );
 
         let mut changed_banner = input;

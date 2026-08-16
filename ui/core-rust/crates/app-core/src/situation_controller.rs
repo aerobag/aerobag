@@ -8,9 +8,10 @@ use crate::{
     map_follow::{MapFollowSessionState, MapFollowUiState},
     ownship::{
         push_sample, refresh_at, register_source, select_source, set_policy,
-        set_source_power_paused, update_source_status, OwnshipPolicy, OwnshipSelectionCommand,
-        OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind, OwnshipSourceRegistration,
-        OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState, SituationSample,
+        set_source_power_paused, set_source_power_sleeping, update_source_status, OwnshipPolicy,
+        OwnshipSelectionCommand, OwnshipSelectionPolicy, OwnshipSourceId, OwnshipSourceKind,
+        OwnshipSourceRegistration, OwnshipSourceStatusUpdate, OwnshipState, OwnshipUiState,
+        SituationSample,
     },
     playback::PlaybackSessionState,
     LatLon, MapViewport, PlaybackUiState,
@@ -135,6 +136,14 @@ impl SituationController {
 
     pub fn set_source_power_paused(&mut self, source_id: &OwnshipSourceId, paused: bool) {
         let next = set_source_power_paused(&self.model.ownship, source_id, paused);
+        if next != self.model.ownship {
+            self.model.ownship = next;
+            self.note_change();
+        }
+    }
+
+    pub fn set_source_power_sleeping(&mut self, source_id: &OwnshipSourceId, sleeping: bool) {
+        let next = set_source_power_sleeping(&self.model.ownship, source_id, sleeping);
         if next != self.model.ownship {
             self.model.ownship = next;
             self.note_change();

@@ -166,6 +166,7 @@ export type UiSettingsPageState = {
 };
 
 export type UiDisplayPolicy = {
+  allow_screen_off_after_ms?: number | null;
   dim_after_ms?: number | null;
   dim_brightness: number;
   keep_screen_on: boolean;

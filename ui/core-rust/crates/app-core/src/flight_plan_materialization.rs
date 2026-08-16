@@ -24,7 +24,7 @@ pub(crate) enum MaterializedFlightPlanRowArrow {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MaterializedFlightPlanRow {
     pub id: FlightPlanRowId,
-    pub location: NavRef,
+    pub location: Option<NavRef>,
     pub leg_index: Option<usize>,
     pub tone: FlightDataCellTone,
     pub arrow: MaterializedFlightPlanRowArrow,
@@ -86,25 +86,29 @@ impl MaterializedFlightPlan {
         let mut row_id_by_leg_index = BTreeMap::new();
 
         for row in identity_rows.into_iter().filter(|row| {
-            row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.nav_ref.is_some()
+            (row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.nav_ref.is_some())
+                || (row.row_kind == FlightPlanDisplayRowKind::Discontinuity
+                    && row
+                        .leg_index
+                        .and_then(|leg_index| plan.resolved_legs.get(leg_index))
+                        .is_some_and(
+                            crate::planning::resolved_leg_targets_vector_discontinuity_row,
+                        ))
         }) {
             let id = FlightPlanRowId(row.uid);
             if let Some(leg_index) = row.leg_index {
                 if row_id_by_leg_index.insert(leg_index, id.clone()).is_some() {
                     return Err(invalid_plan(format!(
-                        "resolved leg {leg_index} projects to multiple waypoint rows"
+                        "resolved leg {leg_index} projects to multiple target rows"
                     )));
                 }
             }
-            let location = row
-                .nav_ref
-                .expect("waypoint row filter requires a location");
             order.push(id.clone());
             rows.insert(
                 id.clone(),
                 MaterializedFlightPlanRow {
                     id,
-                    location,
+                    location: row.nav_ref,
                     leg_index: row.leg_index,
                     tone: FlightDataCellTone::Planned,
                     arrow: if row.leg_index.is_some() {
@@ -129,7 +133,7 @@ impl MaterializedFlightPlan {
         for leg_index in 0..plan.resolved_legs.len() {
             if !row_id_by_leg_index.contains_key(&leg_index) {
                 return Err(invalid_plan(format!(
-                    "resolved leg {leg_index} has no waypoint row"
+                    "resolved leg {leg_index} has no target row"
                 )));
             }
         }
@@ -166,7 +170,7 @@ impl MaterializedFlightPlan {
                     ))
                 })?;
                 if matches!(direct_to.target_row, DirectToTargetRow::Planned { .. })
-                    && target_row.location != direct_to.target
+                    && target_row.location.as_ref() != Some(&direct_to.target)
                 {
                     return Err(invalid_plan(format!(
                         "direct-to target row {} does not contain its target",
@@ -206,7 +210,7 @@ impl MaterializedFlightPlan {
                         .cloned()
                         .ok_or_else(|| {
                             invalid_plan(format!(
-                                "active leg {} has no waypoint row",
+                                "active leg {} has no target row",
                                 guidance.active_leg_index
                             ))
                         })?;
@@ -256,6 +260,18 @@ impl MaterializedFlightPlan {
                 row_id,
                 summary: if active_guidance_detail_is_terminal_hold(plan) {
                     "HOLD".to_string()
+                } else if plan.guidance.as_ref().is_some_and(|guidance| {
+                    guidance.sequencing_mode != SequencingMode::DirectTo
+                        && plan
+                            .resolved_legs
+                            .get(guidance.active_leg_index)
+                            .is_some_and(
+                                crate::planning::resolved_leg_targets_vector_discontinuity_row,
+                            )
+                }) {
+                    crate::active_guidance_leg(plan)
+                        .map(|leg| format!("{} -> VECTORS", location_label(&leg.from),))
+                        .unwrap_or_default()
                 } else {
                     crate::active_guidance_leg(plan)
                         .map(|leg| {

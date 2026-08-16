@@ -1577,6 +1577,7 @@ fn endpoint_airport_id(
             .rows
             .get(row_id)?
             .location
+            .as_ref()?
             .airport_code()
             .map(str::to_string)
     })
@@ -5763,7 +5764,7 @@ mod tests {
         let estimate_end = LatLon { lat: 0.0, lon: 2.0 };
         let row = crate::flight_plan_materialization::MaterializedFlightPlanRow {
             id: row_id.clone(),
-            location: NavRef::LatLon(estimate_end),
+            location: Some(NavRef::LatLon(estimate_end)),
             leg_index: Some(0),
             tone: crate::FlightDataCellTone::Planned,
             arrow: crate::flight_plan_materialization::MaterializedFlightPlanRowArrow::Leg,

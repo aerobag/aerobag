@@ -2335,7 +2335,7 @@ pub(crate) fn resolved_leg_ends_in_manual_sequence(leg: &ResolvedLeg) -> bool {
     })
 }
 
-fn resolved_leg_targets_vector_discontinuity_row(leg: &ResolvedLeg) -> bool {
+pub(crate) fn resolved_leg_targets_vector_discontinuity_row(leg: &ResolvedLeg) -> bool {
     leg.from == leg.to
         && leg.procedure_provenance.as_ref().is_some_and(|provenance| {
             provenance.discontinuity_after == Some(ProcedureDiscontinuity::Vectors)
@@ -11019,6 +11019,7 @@ mod tests {
             direct_to: None,
             suspend_reason: None,
         });
+        let plan = plan.normalized();
 
         let ui = project_ui_state(&plan);
         let guidance = ui.guidance.as_ref().expect("vector guidance");
@@ -11041,6 +11042,19 @@ mod tests {
         );
         assert!(flight_plan_row_actions(to_row)
             .any(|action| { action.id == FlightPlanRowActionId::ActivateLeg && !action.enabled }));
+
+        let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
+            &plan,
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .expect("materialize vector target row");
+        let active = materialized
+            .active
+            .as_ref()
+            .expect("materialized active leg");
+        assert_eq!(active.row_id.as_str(), to_row.uid);
+        assert_eq!(active.summary, "RW34 -> VECTORS");
     }
 
     #[test]

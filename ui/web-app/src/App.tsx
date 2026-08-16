@@ -13445,19 +13445,15 @@ function SituationAircraftSvg(props: {
   const scale = props.sizePx / 100;
   return (
     <g transform={`translate(${props.point.x} ${props.point.y}) rotate(${props.headingDeg}) scale(${scale})`}>
-      <path
-        d={props.pathData}
-        fill="#e6e6e6"
-        stroke="#000000"
-        strokeWidth="1.1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <g
         style={{
           pointerEvents: "none",
           userSelect: "none",
           filter: "drop-shadow(0 1px 1px rgba(18, 26, 33, 0.45))",
         }}
-      />
+      >
+        <AircraftPlanViewPath pathData={props.pathData} />
+      </g>
     </g>
   );
 }
@@ -13486,15 +13482,24 @@ function SituationAircraft(props: {
         transform: `translate(-50%, -50%) rotate(${props.headingDeg}deg)`,
       }}
     >
+      <AircraftPlanViewPath pathData={props.pathData} />
+    </svg>
+  );
+}
+
+function AircraftPlanViewPath(props: { pathData: string }) {
+  return (
+    <>
       <path
         d={props.pathData}
-        fill="#e6e6e6"
+        fill="none"
         stroke="#000000"
-        strokeWidth="1.1"
+        strokeWidth="3.3"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-    </svg>
+      <path d={props.pathData} fill="#e6e6e6" />
+    </>
   );
 }
 

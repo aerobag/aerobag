@@ -34,11 +34,15 @@ internal fun DrawScope.drawAircraftPlanView(
     drawContext.canvas.translate(center.x, center.y)
     drawContext.canvas.rotate(headingDeg)
     drawContext.canvas.scale(scale, scale)
-    drawPath(path, Color(0xFFE6E6E6))
     drawPath(
         path,
         Color.Black,
-        style = Stroke(width = 1.1f, join = androidx.compose.ui.graphics.StrokeJoin.Round),
+        style = Stroke(
+            width = 3.3f,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            join = androidx.compose.ui.graphics.StrokeJoin.Round,
+        ),
     )
+    drawPath(path, Color(0xFFE6E6E6))
     drawContext.canvas.restore()
 }

@@ -127,18 +127,18 @@ use crate::{
         LiveNavKvSource, LiveNexradInstalledState, LiveObstacleHadState, WeatherController,
         WeatherModelCheckpoint, WeatherProjection, WeatherProjectionInput,
     },
-    AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanRowActionId, FlightPlanUiState,
     GuidanceLegGeometry, LatLon, MapOverlayQuery, MapOverlayQueryResult,
     MapSelectionForNavRefResult, MapSelectionQuery, MapSelectionQueryResult,
     MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
     MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
-    NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState, PointTilePayload,
-    ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget, RasterMapCatalog,
-    RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource, SituationControlInput,
-    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
-    VectorAggregateTilePayload, VectorIdentLabelStyle,
+    NavKvStore, NavRef, NotamDisplayIndex, OfflinePackagesLibraryCache, PlaybackUiState,
+    PointTilePayload, ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget,
+    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
+    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
+    TfrProductPayload, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
@@ -155,6 +155,8 @@ pub struct UiSessionSnapshot {
     pub ui_contract_version: u32,
     pub session_revision: u64,
     pub flight_plan_route_revision: u64,
+    #[serde(default)]
+    pub notam_display_state_id: Option<String>,
     pub nav_data_epoch: u64,
     pub active_nav_db: Option<UiNavDbIdentity>,
     pub next_nav_db_maintenance_epoch_ms: Option<i64>,
@@ -896,7 +898,7 @@ fn data_status_page_input(
         "notams".to_string(),
         product(
             "notams",
-            session.weather.runtime().airport_notam_index.is_some(),
+            session.weather.runtime().notam_display_index.is_some(),
             live_feed_status_timestamp(session, "notams"),
             live_feeds
                 .product_loaded_version("notams")
@@ -4015,6 +4017,7 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
             candidate_chart_id: (!compact.selected_chart_id.is_empty())
                 .then_some(compact.selected_chart_id.as_str()),
             suggested_chart_ids: &compact.suggested_chart_ids,
+            notam_display_index: session.weather.runtime().notam_display_index.as_ref(),
         },
     ) {
         Ok(derived) => derived,
@@ -6228,9 +6231,9 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     let envelope_product = envelope.product.clone();
     let notam_mutation_count = match &envelope.payload {
         crate::PreparedLiveFeedPayload::Notams(
-            crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint),
+            crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
         ) => Some(checkpoint.records.len()),
-        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
+        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDisplayDelta(
             delta,
         )) => Some(delta.mutations.len()),
         _ => None,
@@ -6256,15 +6259,15 @@ pub fn ingest_prepared_live_feed_resource_in_session(
                     "expected_from_state_id": envelope.from_state_sha256,
                     "expected_to_state_id": envelope.state_sha256,
                     "actual_state_id": session
-                        .weather.runtime().airport_notam_index
+                        .weather.runtime().notam_display_index
                         .as_ref()
-                        .map(AirportNotamIndex::state_id),
+                        .map(NotamDisplayIndex::state_id),
                     "mutation_count": notam_mutation_count,
                     "failure_class": notam_failure_class(&error),
                 }),
             );
         }
-        if envelope_product == "notams" && session.weather.runtime().airport_notam_index.is_none() {
+        if envelope_product == "notams" && session.weather.runtime().notam_display_index.is_none() {
             session
                 .weather
                 .live_feeds_mut()
@@ -6613,20 +6616,20 @@ fn install_prepared_live_feed(
         }
         crate::PreparedLiveFeedPayload::Notams(message) => {
             match message {
-                crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint) => {
-                    let index = AirportNotamIndex::from_projection_checkpoint(checkpoint).map_err(
+                crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint) => {
+                    let index = NotamDisplayIndex::from_projection_checkpoint(checkpoint).map_err(
                         |error| AppError {
                             kind: AppErrorKind::InvalidManifest,
                             message: format!("failed to install airport NOTAM projection: {error}"),
                         },
                     )?;
-                    session.weather.runtime_mut().airport_notam_index = Some(index);
+                    session.weather.runtime_mut().notam_display_index = Some(index);
                 }
-                crate::PreparedNotamPayload::ApplyAirportDelta(delta) => {
+                crate::PreparedNotamPayload::ApplyDisplayDelta(delta) => {
                     let index = session
                         .weather
                         .runtime_mut()
-                        .airport_notam_index
+                        .notam_display_index
                         .as_mut()
                         .ok_or_else(|| AppError {
                             kind: AppErrorKind::InvalidManifest,
@@ -6640,7 +6643,7 @@ fn install_prepared_live_feed(
                                 | notam_state::NotamStateError::BaseStateMismatch { .. }
                         );
                         if !preserve {
-                            session.weather.runtime_mut().airport_notam_index = None;
+                            session.weather.runtime_mut().notam_display_index = None;
                         }
                         return Err(AppError {
                             kind: AppErrorKind::InvalidManifest,
@@ -6997,7 +7000,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             .live_feeds()
             .has_product_current_version("notams")
         {
-            session.weather.runtime_mut().airport_notam_index = None;
+            session.weather.runtime_mut().notam_display_index = None;
             let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
@@ -9217,7 +9220,7 @@ fn materialize_map_selection_in_session(
             metar_payload: session.weather.runtime().metar_payload.as_ref(),
             pirep_payload: session.weather.runtime().pirep_payload.as_ref(),
             taf_payload: session.weather.runtime().taf_payload.as_ref(),
-            notam_payload: session.weather.runtime().airport_notam_index.as_ref(),
+            notam_payload: session.weather.runtime().notam_display_index.as_ref(),
             weather_station_airport_aliases,
             offline_region_records: &offline_region_records,
             airspace_feature_cache: &session.map.runtime().airspace_feature_cache,
@@ -10909,7 +10912,10 @@ fn session_projection_dependencies(
             next_refresh_epoch_ms: snapshot.next_session_snapshot_refresh_epoch_ms,
         },
         situation: session.situation.revision(),
-        charts: session.coordinator.chart_page_state.clone(),
+        charts: crate::session_projection::ChartProjectionDependencies {
+            state: session.coordinator.chart_page_state.clone(),
+            notam_display_state_id: snapshot.notam_display_state_id.clone(),
+        },
         map: MapProjectionDependencies {
             map_revision: session.map.revision(),
             internet_adsb_enabled: session.coordinator.debug_state.internet_adsb,
@@ -11046,6 +11052,7 @@ fn assemble_session_update(
         charts: changed_projection_patch(previous.charts, current.charts, || {
             projection_assignments! {
                 ["chart_page_state"] => snapshot.chart_page_state,
+                ["notam_display_state_id"] => snapshot.notam_display_state_id,
             }
         }),
         map: changed_projection_patch(previous.map, current.map, || {
@@ -11226,6 +11233,12 @@ fn try_snapshot_for_session(
         ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: session.coordinator.session_revision,
         flight_plan_route_revision: session.flight_plan.route_revision(),
+        notam_display_state_id: session
+            .weather
+            .runtime()
+            .notam_display_index
+            .as_ref()
+            .map(|index| index.state_id().to_string()),
         nav_data_epoch: session.nav_data.epoch(),
         active_nav_db: session.nav_data.active_identity(),
         next_nav_db_maintenance_epoch_ms,
@@ -11697,7 +11710,7 @@ fn enrich_flight_plan_weather(session: &UiSession, active_plan: &mut FlightPlanU
                 aliases,
                 session.weather.runtime().metar_payload.as_ref(),
                 session.weather.runtime().taf_payload.as_ref(),
-                session.weather.runtime().airport_notam_index.as_ref(),
+                session.weather.runtime().notam_display_index.as_ref(),
                 Some(session_wall_clock_utc(session)),
             )
         });
@@ -13429,7 +13442,10 @@ mod tests {
                     "playback_ui_state",
                 ]),
             ),
-            ("charts", BTreeSet::from(["chart_page_state"])),
+            (
+                "charts",
+                BTreeSet::from(["chart_page_state", "notam_display_state_id"]),
+            ),
             ("map", BTreeSet::from(["map_layer_state", "raster_map"])),
             (
                 "status",
@@ -13509,7 +13525,10 @@ mod tests {
         assert_eq!(update.session_revision, 1);
         assert_eq!(
             projection_assignment_paths(update.charts.as_ref().expect("chart patch")),
-            BTreeSet::from(["chart_page_state".to_string()])
+            BTreeSet::from([
+                "chart_page_state".to_string(),
+                "notam_display_state_id".to_string(),
+            ])
         );
         assert!(update.nav_data.is_none());
         assert!(update.application_shell.is_none());
@@ -17931,7 +17950,7 @@ mod tests {
                     session
                         .weather
                         .runtime()
-                        .airport_notam_index
+                        .notam_display_index
                         .as_ref()
                         .map(|index| index.version_label.as_str()),
                     Some("v1")
@@ -18085,26 +18104,26 @@ mod tests {
             )
             .unwrap();
         let base_id = source.state_id().to_string();
-        let checkpoint = crate::map_overlay::airport_notam_projection_checkpoint(&source);
+        let checkpoint = crate::map_overlay::notam_display_checkpoint(&source);
 
         let mut sessions = lock_sessions();
         let mut session = session_mut(&mut sessions, init.handle).expect("session");
         install_prepared_live_feed(
             &mut session,
             crate::PreparedLiveFeedPayload::Notams(
-                crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint.clone()),
+                crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint.clone()),
             ),
         )
         .unwrap();
-        let stale = crate::AirportNotamProjectionDelta {
-            schema_version: crate::map_overlay::AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+        let stale = crate::NotamDisplayDelta {
+            schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
             from_state_id: "e".repeat(64),
             to_state_id: "d".repeat(64),
             mutations: Vec::new(),
         };
         assert!(install_prepared_live_feed(
             &mut session,
-            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDisplayDelta(
                 stale
             ),),
         )
@@ -18113,27 +18132,28 @@ mod tests {
             session
                 .weather
                 .runtime()
-                .airport_notam_index
+                .notam_display_index
                 .as_ref()
-                .map(AirportNotamIndex::state_id),
+                .map(NotamDisplayIndex::state_id),
             Some(base_id.as_str())
         );
 
         install_prepared_live_feed(
             &mut session,
             crate::PreparedLiveFeedPayload::Notams(
-                crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint),
+                crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
             ),
         )
         .unwrap();
-        let invalid = crate::AirportNotamProjectionDelta {
-            schema_version: crate::map_overlay::AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+        let invalid = crate::NotamDisplayDelta {
+            schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
             from_state_id: base_id,
             to_state_id: "f".repeat(64),
-            mutations: vec![crate::AirportNotamProjectionMutation::Upsert(
-                crate::AirportNotamProjectionRecord {
+            mutations: vec![crate::NotamDisplayMutation::Upsert(
+                crate::NotamDisplayRecord {
                     id: "B".to_string(),
-                    airport_id: "ksea".to_string(),
+                    airport_id: Some("ksea".to_string()),
+                    procedure_rendezvous_keys: BTreeSet::new(),
                     label: "AD".to_string(),
                     text: "invalid lowercase airport".to_string(),
                     priority: 0,
@@ -18142,12 +18162,12 @@ mod tests {
         };
         assert!(install_prepared_live_feed(
             &mut session,
-            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDisplayDelta(
                 invalid
             ),),
         )
         .is_err());
-        assert!(session.weather.runtime().airport_notam_index.is_none());
+        assert!(session.weather.runtime().notam_display_index.is_none());
     }
 
     #[test]
@@ -18296,9 +18316,9 @@ mod tests {
                 session
                     .weather
                     .runtime()
-                    .airport_notam_index
+                    .notam_display_index
                     .as_ref()
-                    .map(AirportNotamIndex::state_id),
+                    .map(NotamDisplayIndex::state_id),
                 Some(checkpoint_id.as_str())
             );
             assert_eq!(
@@ -18335,9 +18355,9 @@ mod tests {
             session
                 .weather
                 .runtime()
-                .airport_notam_index
+                .notam_display_index
                 .as_ref()
-                .map(AirportNotamIndex::state_id),
+                .map(NotamDisplayIndex::state_id),
             Some(head_id.as_str())
         );
         assert_eq!(
@@ -18479,7 +18499,7 @@ mod tests {
             let index = session
                 .weather
                 .runtime()
-                .airport_notam_index
+                .notam_display_index
                 .as_ref()
                 .unwrap_or_else(|| {
                     panic!("airport NOTAM index: {:?}", session.data_status.records())
@@ -18566,8 +18586,8 @@ mod tests {
                 taf_count: Some(1),
                 tafs_by_station,
             });
-            session.weather.runtime_mut().airport_notam_index = Some(
-                AirportNotamIndex::from_payload(NotamProductPayload {
+            session.weather.runtime_mut().notam_display_index = Some(
+                NotamDisplayIndex::from_payload(NotamProductPayload {
                     schema_version: product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
                     version_label: "v1".to_string(),
                     notam_count: Some(1),

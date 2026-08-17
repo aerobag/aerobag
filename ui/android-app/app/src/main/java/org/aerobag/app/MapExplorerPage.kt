@@ -281,6 +281,7 @@ import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.AirportNotamUiView
+import org.aerobag.app.domain.PlateProcedureNotamDetail
 import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.AirportRunwayUiView
 import org.aerobag.app.domain.applyPinchGesture
@@ -4781,7 +4782,10 @@ private fun AirportRunwayDiagram(
 }
 
 @Composable
-private fun AirportNotamSection(notams: List<AirportNotamUiView>) {
+internal fun AirportNotamSection(
+    notams: List<AirportNotamUiView>,
+    emptyText: String = "No airport NOTAMs available.",
+) {
     val uiTheme = LocalAerobagUiTheme.current
     Column(
         modifier = Modifier
@@ -4819,7 +4823,7 @@ private fun AirportNotamSection(notams: List<AirportNotamUiView>) {
         }
         if (notams.isEmpty()) {
             Text(
-                text = "No airport NOTAMs available.",
+                text = emptyText,
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                 color = uiTheme.controls.panelFg.copy(alpha = 0.65f),
             )
@@ -4864,6 +4868,58 @@ private fun AirportNotamSection(notams: List<AirportNotamUiView>) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun ProcedureNotamModal(
+    detail: PlateProcedureNotamDetail,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier
+            .testTag("parity:procedure-notam-modal")
+            .widthIn(max = ThumbSize * 10.5f)
+            .heightIn(max = ThumbSize * 11.5f),
+        shape = RoundedCornerShape(ThumbRadius + 4.dp),
+        color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
+        contentColor = uiTheme.controls.panelFg,
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(ThumbSize * 0.18f),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
+        ) {
+            Text(
+                text = detail.title.uppercase(),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.4.sp,
+                ),
+                color = uiTheme.controls.panelFg,
+            )
+            Text(
+                text = detail.advisoryText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(uiTheme.controls.dataStatusWarningBg, RoundedCornerShape(ThumbRadius))
+                    .border(1.dp, uiTheme.controls.dataStatusWarningStroke, RoundedCornerShape(ThumbRadius))
+                    .padding(ThumbSize * 0.13f),
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 18.sp,
+                ),
+                color = lerp(Color.Black, uiTheme.controls.dataStatusWarningStroke, 0.3f),
+            )
+            AirportNotamSection(
+                notams = detail.notams,
+                emptyText = "No procedure NOTAMs available.",
+            )
         }
     }
 }

@@ -13,7 +13,7 @@ use std::{
 use anyhow::{bail, Context};
 use app_core::{
     decode_prepared_live_feed, prepare_notam_live_feed_delta_resource_with_work,
-    prepare_notam_live_feed_state_resource_with_work, AirportNotamIndex, BackgroundNotamWork,
+    prepare_notam_live_feed_state_resource_with_work, BackgroundNotamWork, NotamDisplayIndex,
     NotamProjectionPreparer, PreparedLiveFeedPayload, PreparedNotamPayload,
 };
 use chrono::{DateTime, Utc};
@@ -35,7 +35,7 @@ use crate::fixture::{load_nms_fixture, LoadedNmsFixture};
 
 struct PreparedNotamClient {
     preparer: NotamProjectionPreparer,
-    index: AirportNotamIndex,
+    index: NotamDisplayIndex,
 }
 
 #[derive(Debug, Deserialize)]
@@ -488,7 +488,7 @@ fn install_checkpoint_artifact(
         &mut NotamApplyWork::default(),
     )?;
     let envelope = decode_prepared_live_feed(&postcard)?;
-    let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(checkpoint)) =
+    let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint)) =
         envelope.payload
     else {
         bail!("prepared NOTAM checkpoint used the wrong payload kind");
@@ -497,7 +497,7 @@ fn install_checkpoint_artifact(
         bail!("background checkpoint work did not count exact decoded records");
     }
     let index =
-        AirportNotamIndex::from_projection_checkpoint(checkpoint).map_err(anyhow::Error::msg)?;
+        NotamDisplayIndex::from_projection_checkpoint(checkpoint).map_err(anyhow::Error::msg)?;
     if index.state_id() != expected.state_id
         || preparer
             .canonical_checkpoint()
@@ -572,7 +572,7 @@ fn apply_transition_range(input: TransitionRangeInput<'_>) -> anyhow::Result<()>
             &mut NotamApplyWork::default(),
         )?;
         let envelope = decode_prepared_live_feed(&postcard)?;
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) =
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDisplayDelta(delta)) =
             envelope.payload
         else {
             bail!("prepared NOTAM delta used the wrong payload kind");

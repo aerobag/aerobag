@@ -4722,15 +4722,71 @@ button {
   padding: calc(var(--thumb) * 0.3);
 }
 
-.plateThumb {
+.plateThumbShell {
+  position: relative;
   width: calc(var(--thumb) * 2);
   height: calc(var(--thumb) * 3);
+}
+
+.plateThumb {
+  width: 100%;
+  height: 100%;
   padding: 0;
   border: 1px solid rgba(19, 33, 41, 0.16);
   border-radius: calc(var(--thumb-radius) * 0.9);
   background: transparent;
   box-shadow: var(--shadow);
   overflow: hidden;
+}
+
+.plateThumbStickerRow {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--thumb) * 0.05);
+  transform: translate(calc(var(--thumb) * 0.08), -50%);
+  pointer-events: none;
+}
+
+.plateProcedureNotamBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--thumb) * 0.055);
+  box-sizing: border-box;
+  padding: 0 calc(var(--thumb) * 0.06);
+  border: 2px solid var(--theme-plate-notam-badge-stroke);
+  border-radius: 0;
+  background: var(--theme-plate-notam-badge-bg);
+  color: var(--theme-plate-notam-badge-fg);
+  box-shadow: var(--shadow);
+  font-weight: 900;
+  line-height: 1;
+  pointer-events: auto;
+}
+
+.plateProcedureNotamBadge-folder {
+  min-width: calc(var(--thumb) * 0.5);
+  height: calc(var(--thumb) * 0.36);
+  font-size: calc(var(--thumb) * 0.15);
+}
+
+.plateProcedureNotamBadge-folder span:first-child {
+  font-size: calc(var(--thumb) * 0.2);
+}
+
+.plateProcedureNotamBadge-dock {
+  width: calc(var(--thumb) * 0.5);
+  min-width: calc(var(--thumb) * 0.5);
+  height: calc(var(--thumb) * 0.5);
+  font-size: calc(var(--thumb) * 0.16);
+}
+
+.plateProcedureNotamBadge-dock span:first-child {
+  font-size: calc(var(--thumb) * 0.23);
 }
 
 .plateThumb.isActive {
@@ -4764,12 +4820,10 @@ button {
 .plateProcedureWarningMini {
   --data-status-symbol-ink: var(--theme-data-status-warning-stroke);
 
-  position: absolute;
-  top: calc(var(--thumb) * 0.08);
-  right: calc(var(--thumb) * 0.08);
-  z-index: 1;
+  position: relative;
   width: calc(var(--thumb) * 0.36);
   height: calc(var(--thumb) * 0.36);
+  flex: 0 0 calc(var(--thumb) * 0.36);
   border: 1px solid var(--theme-data-status-warning-stroke);
   border-radius: calc(var(--thumb-radius) * 0.62);
   background: var(--theme-data-status-warning-bg);

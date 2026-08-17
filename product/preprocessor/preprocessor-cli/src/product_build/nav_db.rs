@@ -9,7 +9,9 @@ use preprocessor_core::runway::{
 };
 use preprocessor_core::{airport_location_label, is_enroute_navaid_type};
 use preprocessor_data::{cifp_procedure_kind_from_subsection, is_suppressed_cifp_procedure};
-use product_contracts::{ProcedureRendezvousKey, ProcedureRendezvousKind};
+use product_contracts::{
+    ProcedureRendezvousIdentity, ProcedureRendezvousKey, ProcedureRendezvousKind,
+};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -4405,15 +4407,24 @@ pub(super) fn build_nav_kv_procedure_pairs(
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string();
-        let rendezvous_key =
-            procedure_rendezvous_key(&procedure_kind, airport_id.as_str(), cifp_id.as_str())?;
+        let plate_label = row
+            .get("plate_label")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let rendezvous_keys = procedure_rendezvous_keys(
+            &procedure_kind,
+            airport_id.as_str(),
+            cifp_id.as_str(),
+            plate_label.as_str(),
+        )?;
         let mut row = row;
         row.as_object_mut()
             .context("CIFP/TPP match row is not an object")?
             .insert(
-                "procedure_rendezvous_key".to_string(),
-                serde_json::to_value(&rendezvous_key)
-                    .context("failed to encode procedure rendezvous key")?,
+                "procedure_rendezvous_keys".to_string(),
+                serde_json::to_value(&rendezvous_keys)
+                    .context("failed to encode procedure rendezvous keys")?,
             );
         if !airport_id.is_empty() && !cifp_id.is_empty() {
             matches_by_procedure
@@ -4435,12 +4446,14 @@ pub(super) fn build_nav_kv_procedure_pairs(
             rendezvous_keys_by_plate
                 .entry(plate_id)
                 .or_default()
-                .insert(rendezvous_key.clone());
+                .extend(rendezvous_keys.iter().cloned());
         }
-        matches_by_rendezvous
-            .entry(rendezvous_key)
-            .or_default()
-            .push(row);
+        for rendezvous_key in rendezvous_keys {
+            matches_by_rendezvous
+                .entry(rendezvous_key)
+                .or_default()
+                .push(row.clone());
+        }
     }
     for ((airport_id, cifp_id), rows) in matches_by_procedure {
         pairs.push(json_pair(
@@ -4589,6 +4602,32 @@ fn procedure_rendezvous_key(
     })
 }
 
+fn procedure_rendezvous_keys(
+    procedure_kind: &str,
+    airport_id: &str,
+    procedure_id: &str,
+    plate_label: &str,
+) -> anyhow::Result<BTreeSet<ProcedureRendezvousKey>> {
+    let mut keys = BTreeSet::from([procedure_rendezvous_key(
+        procedure_kind,
+        airport_id,
+        procedure_id,
+    )?]);
+    let published_name_key = match procedure_kind {
+        "sid" => ProcedureRendezvousKey::airport_scoped_published_name(
+            ProcedureRendezvousKind::Departure,
+            airport_id,
+            plate_label,
+        )
+        .ok(),
+        "star" => ProcedureRendezvousKey::shared_arrival_published_name(plate_label).ok(),
+        "approach" => None,
+        _ => anyhow::bail!("unsupported CIFP procedure kind {procedure_kind:?}"),
+    };
+    keys.extend(published_name_key);
+    Ok(keys)
+}
+
 fn procedure_rendezvous_nav_key(key: &ProcedureRendezvousKey) -> String {
     let kind = match key.kind {
         ProcedureRendezvousKind::Departure => "DEPARTURE",
@@ -4596,11 +4635,21 @@ fn procedure_rendezvous_nav_key(key: &ProcedureRendezvousKey) -> String {
         ProcedureRendezvousKind::Approach => "APPROACH",
     };
     let scope = key.airport_id.as_deref().unwrap_or("SHARED");
+    let identity = match &key.identity {
+        ProcedureRendezvousIdentity::CifpId(procedure_id) => {
+            format!("CIFP/{}", had_upper_key_component(procedure_id),)
+        }
+        ProcedureRendezvousIdentity::PublishedName(published) => format!(
+            "PUBLISHED-NAME/{}/{}",
+            had_upper_key_component(&published.name),
+            published.revision,
+        ),
+    };
     format!(
         "plate/procedure-rendezvous/by-key/{}/{}/{}",
         had_upper_key_component(kind),
         had_upper_key_component(scope),
-        had_upper_key_component(&key.procedure_id),
+        identity,
     )
 }
 
@@ -6287,19 +6336,19 @@ mod tests {
 
     #[test]
     fn cycle_procedures_emit_the_shared_rendezvous_contract() {
-        let approach = procedure_rendezvous_key("approach", "KPAE", "I16R").unwrap();
+        let approach = procedure_rendezvous_key("approach", "04W", "R6").unwrap();
         assert_eq!(
             approach,
             ProcedureRendezvousKey::airport_scoped(
                 ProcedureRendezvousKind::Approach,
-                "KPAE",
-                "I16R",
+                "04W",
+                "R06",
             )
             .unwrap()
         );
         assert_eq!(
             procedure_rendezvous_nav_key(&approach),
-            "plate/procedure-rendezvous/by-key/APPROACH/KPAE/I16R"
+            "plate/procedure-rendezvous/by-key/APPROACH/04W/CIFP/R06"
         );
 
         let arrival = procedure_rendezvous_key("star", "KSEA", "CHINS5").unwrap();
@@ -6309,7 +6358,35 @@ mod tests {
         );
         assert_eq!(
             procedure_rendezvous_nav_key(&arrival),
-            "plate/procedure-rendezvous/by-key/ARRIVAL/SHARED/CHINS5"
+            "plate/procedure-rendezvous/by-key/ARRIVAL/SHARED/CIFP/CHINS5"
+        );
+
+        let departure_keys =
+            procedure_rendezvous_keys("sid", "KALN", "LINDY9", "LINDBERGH NINE").unwrap();
+        assert_eq!(
+            departure_keys,
+            BTreeSet::from([
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Departure,
+                    "KALN",
+                    "LINDY9",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped_published_name(
+                    ProcedureRendezvousKind::Departure,
+                    "KALN",
+                    "LINDBERGH NINE",
+                )
+                .unwrap(),
+            ])
+        );
+        let published_key = departure_keys
+            .iter()
+            .find(|key| matches!(key.identity, ProcedureRendezvousIdentity::PublishedName(_)))
+            .unwrap();
+        assert_eq!(
+            procedure_rendezvous_nav_key(published_key),
+            "plate/procedure-rendezvous/by-key/DEPARTURE/KALN/PUBLISHED-NAME/LINDBERGH/9"
         );
     }
 

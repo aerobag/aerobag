@@ -2389,6 +2389,7 @@ pub(crate) struct ChartPageQuery<'a> {
     pub(crate) selected_reference_family_id: Option<&'a str>,
     pub(crate) candidate_chart_id: Option<&'a str>,
     pub(crate) suggested_chart_ids: &'a [String],
+    pub(crate) notam_display_index: Option<&'a crate::NotamDisplayIndex>,
 }
 
 pub(crate) fn chart_page_state(
@@ -2403,6 +2404,7 @@ pub(crate) fn chart_page_state(
         selected_reference_family_id,
         candidate_chart_id,
         suggested_chart_ids,
+        notam_display_index,
     } = query;
     let mut airports = Vec::new();
     for airport_id in chart_page_airport_candidates(
@@ -2427,6 +2429,7 @@ pub(crate) fn chart_page_state(
             selected_reference_family_id,
             candidate_chart_id,
             suggested_chart_ids,
+            notam_display_index,
         },
     ))
 }
@@ -5024,6 +5027,7 @@ mod tests {
                 selected_reference_family_id: None,
                 candidate_chart_id: None,
                 suggested_chart_ids: &[],
+                notam_display_index: None,
             },
         )
         .expect("derive chart page state");

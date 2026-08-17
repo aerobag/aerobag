@@ -2993,6 +2993,7 @@ internal fun AerobagApp(
         uiSession,
         sessionPlanUiState.planId,
         sessionPlanUiState.planVersion,
+        sessionSnapshot.notamDisplayStateId,
         sessionSnapshot.chartPageState.recentAirportIds,
         sessionSnapshot.chartPageState.plateTargetAirportId,
         sessionSnapshot.chartPageState.selectedAirportId,

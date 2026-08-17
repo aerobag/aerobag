@@ -2566,6 +2566,7 @@ private data class WireUiSessionSnapshot(
     val ui_contract_version: Int,
     val session_revision: Long = 0,
     val flight_plan_route_revision: Long = 0,
+    val notam_display_state_id: String? = null,
     val nav_data_epoch: Long = 0,
     val active_nav_db: WireUiNavDbIdentity? = null,
     val next_nav_db_maintenance_epoch_ms: Long? = null,
@@ -2723,7 +2724,24 @@ internal data class WireDerivedChartAsset(
     val folder_category: String,
     val has_thumbnail: Boolean,
     val procedure_geometry_warning_count: Int = 0,
+    val procedure_notam_badge: WirePlateProcedureNotamBadge? = null,
     val georef: WirePlateGeoref? = null,
+)
+
+@kotlinx.serialization.Serializable
+internal data class WirePlateProcedureNotamBadge(
+    val label: String,
+    val count: Int,
+    val action_id: String,
+    val accessibility_label: String,
+    val detail: WirePlateProcedureNotamDetail,
+)
+
+@kotlinx.serialization.Serializable
+internal data class WirePlateProcedureNotamDetail(
+    val title: String,
+    val advisory_text: String,
+    val notams: List<WireAirportNotamUiView> = emptyList(),
 )
 
 @kotlinx.serialization.Serializable(with = WirePlateGeorefSerializer::class)
@@ -2782,6 +2800,7 @@ data class DerivedChartPageState(
 data class UiSessionSnapshot(
     val sessionRevision: Long,
     val flightPlanRouteRevision: Long,
+    val notamDisplayStateId: String?,
     val navDataEpoch: Long,
     val activeNavDb: UiNavDbIdentity?,
     val nextNavDbMaintenanceEpochMs: Long?,
@@ -3185,6 +3204,7 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
     return UiSessionSnapshot(
     sessionRevision = session_revision,
     flightPlanRouteRevision = flight_plan_route_revision,
+    notamDisplayStateId = notam_display_state_id,
     navDataEpoch = nav_data_epoch,
     activeNavDb = active_nav_db?.toUi(),
     nextNavDbMaintenanceEpochMs = next_nav_db_maintenance_epoch_ms,
@@ -3241,6 +3261,19 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     folderCategory = folder_category,
     hasThumbnail = has_thumbnail,
     procedureGeometryWarningCount = procedure_geometry_warning_count,
+    procedureNotamBadge = procedure_notam_badge?.let { badge ->
+        PlateProcedureNotamBadge(
+            label = badge.label,
+            count = badge.count,
+            actionId = badge.action_id,
+            accessibilityLabel = badge.accessibility_label,
+            detail = PlateProcedureNotamDetail(
+                title = badge.detail.title,
+                advisoryText = badge.detail.advisory_text,
+                notams = badge.detail.notams.map { it.toUi() },
+            ),
+        )
+    },
     georef = georef?.toUi(),
 )
 

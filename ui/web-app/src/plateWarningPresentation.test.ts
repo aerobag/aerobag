@@ -29,4 +29,23 @@ describe("plate procedure geometry warnings", () => {
     expect(styles).toContain(".plateProcedureWarningMini");
     expect(styles).not.toContain(".plateProcedureWarning.isViewer");
   });
+
+  it("renders procedure NOTAMs as an independent core-modeled badge and modal", () => {
+    const chartsPage = sourceBetween("function ChartsPage(", "function HomePage(");
+
+    expect(chartsPage).toContain('className="plateThumbShell"');
+    expect(chartsPage).toContain('className="plateThumbStickerRow"');
+    expect(chartsPage).toContain('placement="folder"');
+    expect(chartsPage).toContain('placement="dock"');
+    expect(chartsPage).toContain("!folderOpen && selectedChart?.procedure_notam_badge");
+    expect(chartsPage).toContain("setProcedureNotamDetail(chart.procedure_notam_badge!.detail)");
+    expect(chartsPage).toContain("<ProcedureNotamModal detail={procedureNotamDetail} />");
+    expect(appSource).toContain("props.badge.accessibility_label");
+    expect(appSource).toContain("data-action-id={props.badge.action_id}");
+    expect(styles).toContain(".plateThumbStickerRow");
+    expect(styles).toContain(".plateProcedureNotamBadge-dock");
+    expect(styles).toMatch(/\.plateProcedureNotamBadge\s*\{[^}]*border-radius:\s*0;/s);
+    expect(styles).toContain("--theme-plate-notam-badge-bg");
+    expect(styles).toContain("--theme-plate-notam-badge-stroke");
+  });
 });

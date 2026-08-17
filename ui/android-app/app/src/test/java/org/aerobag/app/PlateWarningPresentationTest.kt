@@ -29,6 +29,30 @@ class PlateWarningPresentationTest {
         assertTrue(folder.contains(".align(Alignment.TopEnd)"))
     }
 
+    @Test
+    fun folderUsesIndependentCoreModeledProcedureNotamBadgeAndModal() {
+        val chartsPage = sourceBetween(
+            "internal fun ChartsPage(",
+            "internal data class PlateOwnshipOverlay(",
+        )
+        val folder = sourceBetween(
+            "internal fun PlateFolderGrid(",
+            "internal fun MenuDock(",
+        )
+
+        assertTrue(folder.contains("chart.procedureNotamBadge?.let"))
+        assertTrue(folder.contains("onOpenProcedureNotams(badge.detail)"))
+        assertTrue(folder.contains("badge.accessibilityLabel"))
+        assertTrue(folder.contains("parity:plate-notam:${'$'}{badge.actionId}"))
+        assertTrue(folder.contains("shape = RectangleShape"))
+        assertTrue(folder.contains("badgeSize = 22.dp"))
+        assertTrue(chartsPage.contains("badgeSize = ThumbSize * 0.5f"))
+        assertTrue(chartsPage.contains("procedureNotamBadge?.takeUnless { folderOpen }"))
+        assertTrue(chartsPage.contains("procedureNotamDetail = badge.detail"))
+        assertTrue(chartsPage.contains("Popup("))
+        assertTrue(chartsPage.contains("ProcedureNotamModal("))
+    }
+
     private fun sourceBetween(start: String, end: String): String {
         val startIndex = chartsSource.indexOf(start)
         check(startIndex >= 0) { "could not find $start" }

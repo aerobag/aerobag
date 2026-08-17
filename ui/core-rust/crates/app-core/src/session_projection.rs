@@ -47,6 +47,12 @@ pub(crate) struct FlightDataProjectionDependencies {
     pub next_refresh_epoch_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ChartProjectionDependencies {
+    pub state: UiChartPageState,
+    pub notam_display_state_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NavDataProjectionDependencies {
     pub nav_data_revision: u64,
@@ -94,7 +100,7 @@ pub(crate) struct SessionProjectionDependencies {
     pub ownship: OwnshipUiState,
     pub flight_data: FlightDataProjectionDependencies,
     pub situation: u64,
-    pub charts: UiChartPageState,
+    pub charts: ChartProjectionDependencies,
     pub map: MapProjectionDependencies,
     pub status: StatusProjectionDependencies,
     pub settings: SettingsProjectionDependencies,
@@ -247,7 +253,10 @@ mod tests {
                 next_refresh_epoch_ms: 60_000,
             },
             situation: 0,
-            charts: chart_state(),
+            charts: ChartProjectionDependencies {
+                state: chart_state(),
+                notam_display_state_id: None,
+            },
             map: MapProjectionDependencies {
                 map_revision: 0,
                 internet_adsb_enabled: false,
@@ -351,8 +360,15 @@ mod tests {
             value.situation += 1;
         });
         assert_group_change!(charts, |value: &mut SessionProjectionDependencies| {
-            value.charts.selected_airport_id = "KSEA".to_string();
+            value.charts.state.selected_airport_id = "KSEA".to_string();
         });
+
+        let mut versions = SessionProjectionVersionState::default();
+        versions.observe(dependencies());
+        let mut changed = dependencies();
+        changed.charts.notam_display_state_id = Some("notam-state-2".to_string());
+        versions.observe(changed);
+        assert_eq!(versions.versions().charts, 1);
         assert_group_change!(map, |value: &mut SessionProjectionDependencies| {
             value.map.map_revision += 1;
         });

@@ -518,7 +518,22 @@ data class ChartAsset(
     val folderCategory: String,
     val hasThumbnail: Boolean,
     val procedureGeometryWarningCount: Int = 0,
+    val procedureNotamBadge: PlateProcedureNotamBadge? = null,
     val georef: PlateGeoref? = null,
+)
+
+data class PlateProcedureNotamBadge(
+    val label: String,
+    val count: Int,
+    val actionId: String,
+    val accessibilityLabel: String,
+    val detail: PlateProcedureNotamDetail,
+)
+
+data class PlateProcedureNotamDetail(
+    val title: String,
+    val advisoryText: String,
+    val notams: List<AirportNotamUiView>,
 )
 
 data class ChartAirport(

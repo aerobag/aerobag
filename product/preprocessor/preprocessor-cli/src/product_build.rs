@@ -3931,7 +3931,7 @@ mod tests {
                 ),
                 &serde_json::json!([{
                     "kind": "approach",
-                    "procedure_id": "V01",
+                    "identity": {"cifp_id": "V01"},
                     "airport_id": "KAAA"
                 }]),
                 "test plate rendezvous",
@@ -3994,7 +3994,7 @@ mod tests {
             plate["procedure_rendezvous_keys"],
             serde_json::json!([{
                 "kind": "approach",
-                "procedure_id": "V01",
+                "identity": {"cifp_id": "V01"},
                 "airport_id": "KAAA"
             }])
         );

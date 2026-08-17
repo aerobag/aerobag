@@ -735,7 +735,7 @@ impl LiveFeedCache {
             installed,
             None,
             None,
-            PreparedNotamPayload::InstallAirportCheckpoint(checkpoint),
+            PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
         )?);
         Ok(())
     }
@@ -2031,7 +2031,7 @@ mod tests {
             .unwrap();
         let initial_envelope =
             crate::decode_prepared_live_feed(initial_for_main.as_ref().unwrap()).unwrap();
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(
             initial_checkpoint,
         )) = initial_envelope.payload
         else {
@@ -2103,7 +2103,7 @@ mod tests {
             .unwrap();
         let delta_envelope =
             crate::decode_prepared_live_feed(delta_for_main.as_ref().unwrap()).unwrap();
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) =
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDisplayDelta(delta)) =
             delta_envelope.payload
         else {
             panic!("incremental NOTAM candidate should be a projected delta");
@@ -2148,7 +2148,7 @@ mod tests {
         let restored_envelope = crate::decode_prepared_live_feed(&restored_prepared).unwrap();
         assert!(matches!(
             restored_envelope.payload,
-            PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(_))
+            PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(_))
         ));
     }
 
@@ -2178,7 +2178,7 @@ mod tests {
             .unwrap();
         let replacement = crate::decode_prepared_live_feed(&replacement).unwrap();
         assert_eq!(replacement.version, new_id);
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(
             checkpoint,
         )) = replacement.payload
         else {

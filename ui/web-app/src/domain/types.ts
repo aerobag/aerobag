@@ -858,6 +858,17 @@ export type ChartPageData = {
       folder_category: string;
       has_thumbnail: boolean;
       procedure_geometry_warning_count: number;
+      procedure_notam_badge?: {
+        label: string;
+        count: number;
+        action_id: string;
+        accessibility_label: string;
+        detail: {
+          title: string;
+          advisory_text: string;
+          notams: AirportNotamUiView[];
+        };
+      } | null;
       georef: PlateGeoref | null;
     }>;
   }>;

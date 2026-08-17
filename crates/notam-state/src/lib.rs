@@ -1070,11 +1070,11 @@ mod tests {
         );
         assert_eq!(
             NotamState::empty().state_id(),
-            "a07c032de81a79c3428bae499ad9797d26708fef8cc847537ee0bfbd9fc76f62"
+            "b4796a4b3a3f194aeeb20d9e3ca2ee0223ee1d353edc6304ee75b970f40c902f"
         );
         assert_eq!(
             state.state_id(),
-            "6b7d1256e8191f097fa0aa4ab6d2ecf57ade6861d2deae81272785d13c8ab3c3"
+            "4ff0f624ef77cb3895b4f29c2ff4409f954c8f7b9fdf55f68213130e6444c32b"
         );
     }
 

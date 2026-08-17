@@ -18,9 +18,8 @@ use crate::{
     },
     live_feeds::NEXRAD_FRAME_WINDOW_SIZE,
     map_overlay::WeatherStationAirportAliases,
-    AirportNotamIndex, AppResult, DataStatusRecord, LiveFeedsState, MetarProductPayload,
-    MetarTilePayload, NavKvStore, PointTilePayload, PreparedMetarTile, TafProductPayload,
-    TfrProductPayload,
+    AppResult, DataStatusRecord, LiveFeedsState, MetarProductPayload, MetarTilePayload, NavKvStore,
+    NotamDisplayIndex, PointTilePayload, PreparedMetarTile, TafProductPayload, TfrProductPayload,
 };
 
 pub(crate) const NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS: i64 = 1_000;
@@ -136,7 +135,7 @@ pub(crate) struct WeatherRuntime {
     pub forecast_atmosphere: Option<crate::InstalledForecastAtmosphere>,
     pub obstacle_tile_cache: HashMap<String, PointTilePayload>,
     pub taf_payload: Option<TafProductPayload>,
-    pub airport_notam_index: Option<AirportNotamIndex>,
+    pub notam_display_index: Option<NotamDisplayIndex>,
     pub tfr_payload: Option<TfrProductPayload>,
     pub nexrad_installed: BTreeMap<String, LiveNexradInstalledState>,
     pub nexrad_tile_cache: HashMap<String, Vec<u8>>,

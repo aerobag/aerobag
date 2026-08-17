@@ -95,9 +95,86 @@ pub enum ProcedureRendezvousKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcedureRendezvousIdentity {
+    CifpId(String),
+    PublishedName(ProcedurePublishedName),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ProcedurePublishedName {
+    pub name: String,
+    pub revision: u8,
+}
+
+impl ProcedurePublishedName {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let mut words = value
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_uppercase)
+            .collect::<Vec<_>>();
+        if words.len() >= 2
+            && words[words.len() - 2] == "CONT"
+            && words
+                .last()
+                .is_some_and(|word| !word.is_empty() && word.chars().all(|ch| ch.is_ascii_digit()))
+        {
+            words.truncate(words.len() - 2);
+        }
+        while words
+            .last()
+            .is_some_and(|word| matches!(word.as_str(), "RNAV" | "OBSTACLE"))
+        {
+            words.pop();
+        }
+        let revision = words
+            .pop()
+            .and_then(|word| published_procedure_revision(&word))
+            .ok_or_else(|| format!("published procedure name {value:?} has no revision"))?;
+        if words.is_empty() {
+            return Err(format!("published procedure name {value:?} has no name"));
+        }
+        let published = Self {
+            name: words.join(" "),
+            revision,
+        };
+        published.validate()?;
+        Ok(published)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.revision == 0 || self.revision > 9 {
+            return Err(format!(
+                "published procedure revision {} is outside 1..=9",
+                self.revision
+            ));
+        }
+        let canonical_name = self
+            .name
+            .split_whitespace()
+            .map(str::to_ascii_uppercase)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if canonical_name.is_empty()
+            || canonical_name != self.name
+            || !canonical_name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == ' ')
+        {
+            return Err(format!(
+                "published procedure name {:?} is not canonical",
+                self.name
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ProcedureRendezvousKey {
     pub kind: ProcedureRendezvousKind,
-    pub procedure_id: String,
+    pub identity: ProcedureRendezvousIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub airport_id: Option<String>,
 }
@@ -113,7 +190,10 @@ impl ProcedureRendezvousKey {
         }
         let key = Self {
             kind,
-            procedure_id: canonical_procedure_component(procedure_id, "procedure ID")?,
+            identity: ProcedureRendezvousIdentity::CifpId(canonical_procedure_id(
+                kind,
+                procedure_id,
+            )?),
             airport_id: Some(canonical_procedure_component(airport_id, "airport ID")?),
         };
         key.validate()?;
@@ -123,7 +203,41 @@ impl ProcedureRendezvousKey {
     pub fn shared_arrival(procedure_id: &str) -> Result<Self, String> {
         let key = Self {
             kind: ProcedureRendezvousKind::Arrival,
-            procedure_id: canonical_procedure_component(procedure_id, "procedure ID")?,
+            identity: ProcedureRendezvousIdentity::CifpId(canonical_procedure_id(
+                ProcedureRendezvousKind::Arrival,
+                procedure_id,
+            )?),
+            airport_id: None,
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
+    pub fn airport_scoped_published_name(
+        kind: ProcedureRendezvousKind,
+        airport_id: &str,
+        published_name: &str,
+    ) -> Result<Self, String> {
+        if kind != ProcedureRendezvousKind::Departure {
+            return Err("airport-scoped published names are only valid for departures".to_string());
+        }
+        let key = Self {
+            kind,
+            identity: ProcedureRendezvousIdentity::PublishedName(ProcedurePublishedName::parse(
+                published_name,
+            )?),
+            airport_id: Some(canonical_procedure_component(airport_id, "airport ID")?),
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
+    pub fn shared_arrival_published_name(published_name: &str) -> Result<Self, String> {
+        let key = Self {
+            kind: ProcedureRendezvousKind::Arrival,
+            identity: ProcedureRendezvousIdentity::PublishedName(ProcedurePublishedName::parse(
+                published_name,
+            )?),
             airport_id: None,
         };
         key.validate()?;
@@ -131,13 +245,23 @@ impl ProcedureRendezvousKey {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let canonical_procedure_id =
-            canonical_procedure_component(&self.procedure_id, "procedure ID")?;
-        if canonical_procedure_id != self.procedure_id {
-            return Err(format!(
-                "procedure ID {:?} is not canonical; expected {:?}",
-                self.procedure_id, canonical_procedure_id
-            ));
+        match &self.identity {
+            ProcedureRendezvousIdentity::CifpId(procedure_id) => {
+                let canonical_procedure_id = canonical_procedure_id(self.kind, procedure_id)?;
+                if canonical_procedure_id != *procedure_id {
+                    return Err(format!(
+                        "procedure ID {procedure_id:?} is not canonical; expected {canonical_procedure_id:?}"
+                    ));
+                }
+            }
+            ProcedureRendezvousIdentity::PublishedName(published_name) => {
+                if self.kind == ProcedureRendezvousKind::Approach {
+                    return Err(
+                        "approach rendezvous keys cannot use published-name identity".to_string(),
+                    );
+                }
+                published_name.validate()?;
+            }
         }
         match (self.kind, self.airport_id.as_deref()) {
             (ProcedureRendezvousKind::Arrival, None) => Ok(()),
@@ -160,6 +284,43 @@ impl ProcedureRendezvousKey {
     }
 }
 
+fn published_procedure_revision(value: &str) -> Option<u8> {
+    match value {
+        "1" | "ONE" => Some(1),
+        "2" | "TWO" => Some(2),
+        "3" | "THREE" => Some(3),
+        "4" | "FOUR" => Some(4),
+        "5" | "FIVE" => Some(5),
+        "6" | "SIX" => Some(6),
+        "7" | "SEVEN" => Some(7),
+        "8" | "EIGHT" => Some(8),
+        "9" | "NINE" => Some(9),
+        _ => None,
+    }
+}
+
+fn canonical_procedure_id(kind: ProcedureRendezvousKind, value: &str) -> Result<String, String> {
+    let value = canonical_procedure_component(value, "procedure ID")?;
+    if kind != ProcedureRendezvousKind::Approach {
+        return Ok(value);
+    }
+
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && matches!(bytes[1], b'1'..=b'9')
+        && bytes.get(2).is_none_or(|next| !next.is_ascii_digit())
+    {
+        let mut canonical = String::with_capacity(value.len() + 1);
+        canonical.push(bytes[0] as char);
+        canonical.push('0');
+        canonical.push_str(&value[1..]);
+        return Ok(canonical);
+    }
+
+    Ok(value)
+}
+
 fn canonical_procedure_component(value: &str, label: &str) -> Result<String, String> {
     let value = value.trim().to_ascii_uppercase();
     if value.is_empty() {
@@ -174,7 +335,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV21";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV22";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -188,7 +349,7 @@ pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
-pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 4;
+pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 5;
 
 /// Transport timing shared by every Aerobag SSE producer and consumer.
 ///
@@ -313,7 +474,7 @@ mod tests {
             .unwrap(),
             ProcedureRendezvousKey {
                 kind: ProcedureRendezvousKind::Approach,
-                procedure_id: "I16R".to_string(),
+                identity: ProcedureRendezvousIdentity::CifpId("I16R".to_string()),
                 airport_id: Some("KPAE".to_string()),
             }
         );
@@ -321,7 +482,7 @@ mod tests {
             ProcedureRendezvousKey::shared_arrival(" chins5 ").unwrap(),
             ProcedureRendezvousKey {
                 kind: ProcedureRendezvousKind::Arrival,
-                procedure_id: "CHINS5".to_string(),
+                identity: ProcedureRendezvousIdentity::CifpId("CHINS5".to_string()),
                 airport_id: None,
             }
         );
@@ -333,10 +494,113 @@ mod tests {
         .is_err());
         assert!(ProcedureRendezvousKey {
             kind: ProcedureRendezvousKind::Approach,
-            procedure_id: "I16R".to_string(),
+            identity: ProcedureRendezvousIdentity::CifpId("I16R".to_string()),
             airport_id: None,
         }
         .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn procedure_rendezvous_keys_canonicalize_one_digit_approach_runways() {
+        for (input, expected) in [
+            ("R6", "R06"),
+            ("I9R", "I09R"),
+            ("R1LY", "R01LY"),
+            ("S3-Y", "S03-Y"),
+        ] {
+            assert_eq!(
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Approach,
+                    "KTEST",
+                    input,
+                )
+                .unwrap()
+                .identity,
+                ProcedureRendezvousIdentity::CifpId(expected.to_string()),
+            );
+        }
+        assert_eq!(
+            ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Departure,
+                "KHIO",
+                "FARM7",
+            )
+            .unwrap()
+            .identity,
+            ProcedureRendezvousIdentity::CifpId("FARM7".to_string()),
+        );
+        assert!(ProcedureRendezvousKey {
+            kind: ProcedureRendezvousKind::Approach,
+            identity: ProcedureRendezvousIdentity::CifpId("R6".to_string()),
+            airport_id: Some("04W".to_string()),
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn published_procedure_names_are_typed_and_canonical() {
+        assert_eq!(
+            ProcedurePublishedName::parse(" Joe Pool Eight (RNAV) ").unwrap(),
+            ProcedurePublishedName {
+                name: "JOE POOL".to_string(),
+                revision: 8,
+            }
+        );
+        assert_eq!(
+            ProcedurePublishedName::parse("SCBBY TWO (RNAV), CONT.1").unwrap(),
+            ProcedurePublishedName {
+                name: "SCBBY".to_string(),
+                revision: 2,
+            }
+        );
+        assert_eq!(
+            ProcedurePublishedName::parse("DALLES ONE (OBSTACLE) (RNAV)").unwrap(),
+            ProcedurePublishedName {
+                name: "DALLES".to_string(),
+                revision: 1,
+            }
+        );
+        let published_key = ProcedureRendezvousKey::airport_scoped_published_name(
+            ProcedureRendezvousKind::Departure,
+            " kaln ",
+            "Lindbergh Nine",
+        )
+        .unwrap();
+        assert_eq!(
+            published_key,
+            ProcedureRendezvousKey {
+                kind: ProcedureRendezvousKind::Departure,
+                identity: ProcedureRendezvousIdentity::PublishedName(ProcedurePublishedName {
+                    name: "LINDBERGH".to_string(),
+                    revision: 9,
+                }),
+                airport_id: Some("KALN".to_string()),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&published_key).unwrap(),
+            serde_json::json!({
+                "kind": "departure",
+                "identity": {
+                    "published_name": {
+                        "name": "LINDBERGH",
+                        "revision": 9
+                    }
+                },
+                "airport_id": "KALN"
+            })
+        );
+        assert_ne!(
+            ProcedureRendezvousKey::shared_arrival_published_name("TAYTR THREE").unwrap(),
+            ProcedureRendezvousKey::shared_arrival_published_name("TAYTR FOUR").unwrap(),
+        );
+        assert!(ProcedureRendezvousKey::airport_scoped_published_name(
+            ProcedureRendezvousKind::Approach,
+            "KSEA",
+            "GLASR THREE",
+        )
         .is_err());
     }
 }

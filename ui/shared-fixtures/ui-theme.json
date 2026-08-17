@@ -77,6 +77,9 @@
   },
   "plate_folder": {
     "thumbnail_bg": "#303030",
+    "notam_badge_bg": "#dceaf5",
+    "notam_badge_fg": "#132129",
+    "notam_badge_stroke": "#4f8ebd",
     "disabled_accent_percent": 50,
     "label_colors": {
       "csup": "#1a84d8d9",

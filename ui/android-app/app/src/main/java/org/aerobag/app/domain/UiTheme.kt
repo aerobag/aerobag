@@ -64,6 +64,9 @@ data class ControlsTheme(
 
 data class PlateFolderTheme(
     val thumbnailBg: Color,
+    val notamBadgeBg: Color,
+    val notamBadgeFg: Color,
+    val notamBadgeStroke: Color,
     val disabledAccentPercent: Float,
     val labelColors: Map<String, Color>,
 )
@@ -159,6 +162,9 @@ private data class WireControlsTheme(
 @Serializable
 private data class WirePlateFolderTheme(
     val thumbnail_bg: String,
+    val notam_badge_bg: String,
+    val notam_badge_fg: String,
+    val notam_badge_stroke: String,
     val disabled_accent_percent: Float,
     val label_colors: Map<String, String>,
 )
@@ -287,6 +293,9 @@ object UiThemeLoader {
             ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),
+                notamBadgeBg = wire.plate_folder.notam_badge_bg.toColor(),
+                notamBadgeFg = wire.plate_folder.notam_badge_fg.toColor(),
+                notamBadgeStroke = wire.plate_folder.notam_badge_stroke.toColor(),
                 disabledAccentPercent = wire.plate_folder.disabled_accent_percent,
                 labelColors = wire.plate_folder.label_colors.mapValues { (_, value) -> value.toColor() },
             ),

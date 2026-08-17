@@ -112,6 +112,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -196,6 +197,8 @@ import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
+import org.aerobag.app.domain.PlateProcedureNotamBadge
+import org.aerobag.app.domain.PlateProcedureNotamDetail
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
@@ -402,6 +405,7 @@ internal fun ChartsPage(
     var loadTrayOpen by remember { mutableStateOf(false) }
     var dataStatusTrayOpen by remember { mutableStateOf(false) }
     var procedureWarningTrayOpen by remember { mutableStateOf(false) }
+    var procedureNotamDetail by remember { mutableStateOf<PlateProcedureNotamDetail?>(null) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     fun applySessionCommand(operation: () -> UiSessionSnapshot) {
@@ -692,6 +696,7 @@ internal fun ChartsPage(
                 onSelectChart = {
                     onSelectChart(it)
                 },
+                onOpenProcedureNotams = { procedureNotamDetail = it },
             )
         } else {
             val currentViewport = viewport
@@ -795,75 +800,80 @@ internal fun ChartsPage(
             )
         }
 
-        DataStatusBadge(
-            dataStatusState = procedureGeometryStatus,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(
-                    top = situationDockTopPadding,
-                    end = ThumbGap + MenuDockStyle.Situation.buttonWidth +
-                        (ThumbGap * 2f) + (ThumbSize * 0.5f),
-                ),
-            open = procedureWarningTrayOpen,
-            onToggle = {
-                procedureWarningTrayOpen = !procedureWarningTrayOpen
-                airportTrayOpen = false
-                chartTrayOpen = false
-                loadTrayOpen = false
-                dataStatusTrayOpen = false
-                situationTrayOpen = false
-            },
-        )
-
-        DataStatusBadge(
-            dataStatusState = dataStatusState,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(
-                    top = situationDockTopPadding,
-                    end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
-                ),
-            open = dataStatusTrayOpen,
-            onToggle = {
-                dataStatusTrayOpen = !dataStatusTrayOpen
-                airportTrayOpen = false
-                chartTrayOpen = false
-                loadTrayOpen = false
-                procedureWarningTrayOpen = false
-                situationTrayOpen = false
-            },
-            onAction = onStatusAction,
-        )
-
-        SituationStatusBadge(
-            controls = ownshipControls,
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = situationDockTopPadding, end = ThumbGap),
-            open = situationTrayOpen,
-            onToggle = {
-                situationTrayOpen = !situationTrayOpen
-                airportTrayOpen = false
-                chartTrayOpen = false
-                loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
-            },
-            onSelectSource = { source ->
-                if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
-                onSelectOwnshipSource(source.sourceId)
-            },
-            onSituationControlInput = { input ->
-                applySessionCommand {
-                    uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
-                }
-            },
-            onTextAction = { actionId, value ->
-                applySessionCommand {
-                    uiSession.performOwnshipTextAction(actionId, value)
-                }
-            },
-        )
+            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+            verticalAlignment = Alignment.Top,
+        ) {
+            selectedChart?.procedureNotamBadge?.takeUnless { folderOpen }?.let { badge ->
+                PlateProcedureNotamBadgeButton(
+                    badge = badge,
+                    badgeSize = ThumbSize * 0.5f,
+                    onClick = {
+                        airportTrayOpen = false
+                        chartTrayOpen = false
+                        loadTrayOpen = false
+                        dataStatusTrayOpen = false
+                        procedureWarningTrayOpen = false
+                        situationTrayOpen = false
+                        procedureNotamDetail = badge.detail
+                    },
+                )
+            }
+            DataStatusBadge(
+                dataStatusState = procedureGeometryStatus,
+                open = procedureWarningTrayOpen,
+                onToggle = {
+                    procedureWarningTrayOpen = !procedureWarningTrayOpen
+                    airportTrayOpen = false
+                    chartTrayOpen = false
+                    loadTrayOpen = false
+                    dataStatusTrayOpen = false
+                    situationTrayOpen = false
+                },
+            )
+            DataStatusBadge(
+                dataStatusState = dataStatusState,
+                open = dataStatusTrayOpen,
+                onToggle = {
+                    dataStatusTrayOpen = !dataStatusTrayOpen
+                    airportTrayOpen = false
+                    chartTrayOpen = false
+                    loadTrayOpen = false
+                    procedureWarningTrayOpen = false
+                    situationTrayOpen = false
+                },
+                onAction = onStatusAction,
+            )
+            SituationStatusBadge(
+                controls = ownshipControls,
+                open = situationTrayOpen,
+                onToggle = {
+                    situationTrayOpen = !situationTrayOpen
+                    airportTrayOpen = false
+                    chartTrayOpen = false
+                    loadTrayOpen = false
+                    dataStatusTrayOpen = false
+                    procedureWarningTrayOpen = false
+                },
+                onSelectSource = { source ->
+                    if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
+                    onSelectOwnshipSource(source.sourceId)
+                },
+                onSituationControlInput = { input ->
+                    applySessionCommand {
+                        uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+                    }
+                },
+                onTextAction = { actionId, value ->
+                    applySessionCommand {
+                        uiSession.performOwnshipTextAction(actionId, value)
+                    }
+                },
+            )
+        }
 
         ChartViewerSelectors(
             modifier = Modifier.align(Alignment.TopStart),
@@ -956,6 +966,23 @@ internal fun ChartsPage(
                 dataStatusTrayOpen = false
                 procedureWarningTrayOpen = false
                 situationTrayOpen = false
+            }
+        }
+
+        procedureNotamDetail?.let { detail ->
+            Popup(
+                onDismissRequest = { procedureNotamDetail = null },
+                properties = PopupProperties(focusable = true, clippingEnabled = false),
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Scrim { procedureNotamDetail = null }
+                    ProcedureNotamModal(
+                        detail = detail,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .zIndex(OverlayPlaneModal),
+                    )
+                }
             }
         }
 
@@ -1718,6 +1745,7 @@ internal fun PlateFolderGrid(
     uiTheme: UiTheme,
     devServerBaseUrl: String,
     onSelectChart: (String) -> Unit,
+    onOpenProcedureNotams: (PlateProcedureNotamDetail) -> Unit,
 ) {
     val context = LocalContext.current
     LazyVerticalGrid(
@@ -1754,71 +1782,124 @@ internal fun PlateFolderGrid(
                     null
                 }
             }
-            Surface(
+            Box(
                 modifier = Modifier
                     .width(PlateFolderTileWidth)
                     .height(PlateFolderTileHeight)
-                    .testTag("parity:plate-folder-tile:${chart.id}")
-                    .border(
-                        width = when {
-                            chart.id == selectedChartId -> 2.dp
-                            chart.id in suggestedChartIds -> 3.dp
-                            else -> 1.dp
-                        },
-                        color = when {
-                            chart.id == selectedChartId -> MaterialTheme.colorScheme.primary
-                            chart.id in suggestedChartIds -> Color(0xFFF2C94C)
-                            else -> Color(0x26132129)
-                        },
-                        shape = RoundedCornerShape(ThumbRadius),
-                    )
-                    .clickable { onSelectChart(chart.id) },
-                shape = RoundedCornerShape(ThumbRadius),
-                color = uiTheme.plateFolder.thumbnailBg,
-                shadowElevation = 2.dp,
             ) {
-                Box {
-                    if (thumbnail != null) {
-                        androidx.compose.foundation.Image(
-                            bitmap = thumbnail!!,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("parity:plate-folder-tile:${chart.id}")
+                        .border(
+                            width = when {
+                                chart.id == selectedChartId -> 2.dp
+                                chart.id in suggestedChartIds -> 3.dp
+                                else -> 1.dp
+                            },
+                            color = when {
+                                chart.id == selectedChartId -> MaterialTheme.colorScheme.primary
+                                chart.id in suggestedChartIds -> Color(0xFFF2C94C)
+                                else -> Color(0x26132129)
+                            },
+                            shape = RoundedCornerShape(ThumbRadius),
                         )
-                    }
-                    if (chart.procedureGeometryWarningCount > 0) {
-                        DataStatusBadgeFace(
-                            count = chart.procedureGeometryWarningCount.toString(),
-                            severity = UiStatusSeverity.Caution,
-                            open = false,
-                            badgeSize = 22.dp,
+                        .clickable { onSelectChart(chart.id) },
+                    shape = RoundedCornerShape(ThumbRadius),
+                    color = uiTheme.plateFolder.thumbnailBg,
+                    shadowElevation = 2.dp,
+                ) {
+                    Box {
+                        if (thumbnail != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = thumbnail!!,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                        Box(
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(4.dp)
-                                .semantics {
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .background(plateFolderColor(uiTheme, chart.folderCategory))
+                                .padding(horizontal = 6.dp, vertical = 5.dp),
+                        ) {
+                            Text(
+                                text = chart.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFFFF7EF),
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+                if (chart.procedureNotamBadge != null || chart.procedureGeometryWarningCount > 0) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 4.dp, y = (-11).dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        chart.procedureNotamBadge?.let { badge ->
+                            PlateProcedureNotamBadgeButton(
+                                badge = badge,
+                                badgeSize = 22.dp,
+                                onClick = { onOpenProcedureNotams(badge.detail) },
+                            )
+                        }
+                        if (chart.procedureGeometryWarningCount > 0) {
+                            DataStatusBadgeFace(
+                                count = chart.procedureGeometryWarningCount.toString(),
+                                severity = UiStatusSeverity.Caution,
+                                open = false,
+                                badgeSize = 22.dp,
+                                modifier = Modifier.semantics {
                                     contentDescription =
                                         "${chart.procedureGeometryWarningCount} procedure geometry " +
                                         "warning${if (chart.procedureGeometryWarningCount == 1) "" else "s"}; " +
                                         "verify against the published plate"
                                 },
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .background(plateFolderColor(uiTheme, chart.folderCategory))
-                            .padding(horizontal = 6.dp, vertical = 5.dp),
-                    ) {
-                        Text(
-                            text = chart.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFFFFF7EF),
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PlateProcedureNotamBadgeButton(
+    badge: PlateProcedureNotamBadge,
+    badgeSize: Dp,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier
+            .size(badgeSize)
+            .testTag("parity:plate-notam:${badge.actionId}")
+            .semantics { contentDescription = badge.accessibilityLabel }
+            .clickable(onClick = onClick),
+        shape = RectangleShape,
+        color = uiTheme.plateFolder.notamBadgeBg,
+        contentColor = uiTheme.plateFolder.notamBadgeFg,
+        border = BorderStroke(2.dp, uiTheme.plateFolder.notamBadgeStroke),
+        shadowElevation = 2.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = "${badge.label}${badge.count}",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (badgeSize.value * 0.32f).sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.sp,
+                ),
+                maxLines = 1,
+            )
         }
     }
 }

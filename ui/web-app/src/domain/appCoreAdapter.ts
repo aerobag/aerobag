@@ -239,6 +239,7 @@ export type UiSessionSnapshot = {
   ui_contract_version: number;
   session_revision: number;
   flight_plan_route_revision: number;
+  notam_display_state_id?: string | null;
   nav_data_epoch: number;
   active_nav_db: {
     package_id: string;

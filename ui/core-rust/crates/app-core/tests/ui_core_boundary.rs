@@ -459,7 +459,7 @@ fn bulk_notam_state_cannot_cross_into_the_ui_session() {
     let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let session = strip_rust_tests(&session_text);
     let overlay = read_repo_file("ui/core-rust/crates/app-core/src/map_overlay.rs");
-    let airport_index = balanced_block_after_marker(&overlay, "pub struct AirportNotamIndex");
+    let airport_index = balanced_block_after_marker(&overlay, "pub struct NotamDisplayIndex");
     let android_runtime = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/RetainedLiveFeedRuntime.kt",
     );
@@ -699,7 +699,7 @@ fn weather_state_runtime_and_projection_are_owned_by_weather_controller() {
         "live_feed_current_refresh",
         "metar_payload",
         "taf_payload",
-        "airport_notam_index",
+        "notam_display_index",
         "tfr_payload",
         "nexrad_installed",
         "obstacle_had",

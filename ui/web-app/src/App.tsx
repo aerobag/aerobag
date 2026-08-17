@@ -1005,6 +1005,9 @@ type UiThemeJson = {
   };
   plate_folder: {
     thumbnail_bg: string;
+    notam_badge_bg: string;
+    notam_badge_fg: string;
+    notam_badge_stroke: string;
     disabled_accent_percent: number;
     label_colors: Record<string, string>;
   };
@@ -3204,6 +3207,7 @@ export default function App() {
     planUiState?.plan_id ?? null,
     planUiState?.plan_version ?? null,
     sessionSnapshot.chart_page_state,
+    sessionSnapshot.notam_display_state_id ?? null,
   ]);
   useEffect(() => {
     if (typeof window === "undefined" || !__AEROBAG_E2E_ENABLED__ || !uiSession) {
@@ -3749,6 +3753,9 @@ export default function App() {
         "--theme-button-disabled-icon-saturation": String(controlTheme.button_disabled_icon_saturation),
         "--theme-button-disabled-icon-opacity": String(controlTheme.button_disabled_icon_opacity),
         "--theme-disabled-accent-percent": `${plateFolderTheme.disabled_accent_percent}%`,
+        "--theme-plate-notam-badge-bg": plateFolderTheme.notam_badge_bg,
+        "--theme-plate-notam-badge-fg": plateFolderTheme.notam_badge_fg,
+        "--theme-plate-notam-badge-stroke": plateFolderTheme.notam_badge_stroke,
         "--theme-button-fg": controlTheme.button_fg,
         "--theme-control-group-bg": controlTheme.control_group_bg,
         "--theme-text-input-bg": controlTheme.text_input_bg,
@@ -11125,7 +11132,7 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
           ageWarning={detail.taf_age_warning ?? false}
           text={detail.taf_text ?? null}
         />
-        <AirportNotamSection notams={detail.notams ?? []} />
+        <NotamSection notams={detail.notams ?? []} emptyText="No airport NOTAMs available." />
       </div>
     </section>
   );
@@ -11333,7 +11340,10 @@ function RunwayDiagram(props: {
   );
 }
 
-function AirportNotamSection(props: { notams: NonNullable<WeatherDetailUiView["notams"]> }) {
+function NotamSection(props: {
+  notams: NonNullable<WeatherDetailUiView["notams"]>;
+  emptyText: string;
+}) {
   return (
     <section className="weatherDetailSection airportNotamSection">
       <div className="weatherDetailSectionTitle">
@@ -11347,10 +11357,64 @@ function AirportNotamSection(props: { notams: NonNullable<WeatherDetailUiView["n
             <div className="airportNotamText">{notam.text}</div>
           </article>
         )) : (
-          <div className="airportNotamEmpty">No airport NOTAMs available.</div>
+          <div className="airportNotamEmpty">{props.emptyText}</div>
         )}
       </div>
     </section>
+  );
+}
+
+function ProcedureNotamModal(props: {
+  detail: NonNullable<ChartAsset["procedure_notam_badge"]>["detail"];
+}) {
+  return (
+    <section
+      className="mapSelectionDetailModal weatherDetailModal procedureNotamDetailModal"
+      data-testid="procedure-notam-modal"
+      aria-label={props.detail.title}
+      onPointerDown={stopPointer}
+      onPointerMove={stopPointer}
+      onPointerUp={stopPointer}
+      onPointerCancel={stopPointer}
+      onWheel={stopWheel}
+      onClick={stopClick}
+      onDoubleClick={stopDoubleClick}
+    >
+      <div className="mapSelectionDetailTitle">{props.detail.title}</div>
+      <div className="weatherDetailAdvisory">{props.detail.advisory_text}</div>
+      <div className="weatherDetailSections">
+        <NotamSection
+          notams={props.detail.notams}
+          emptyText="No procedure NOTAMs available."
+        />
+      </div>
+    </section>
+  );
+}
+
+function PlateProcedureNotamBadgeButton(props: {
+  badge: NonNullable<ChartAsset["procedure_notam_badge"]>;
+  placement: "folder" | "dock";
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`plateProcedureNotamBadge plateProcedureNotamBadge-${props.placement}`}
+      aria-label={props.badge.accessibility_label}
+      title={props.badge.accessibility_label}
+      data-action-id={props.badge.action_id}
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      onClick={(event) => {
+        event.stopPropagation();
+        props.onOpen();
+      }}
+    >
+      <span>{props.badge.label}</span>
+      <span>{props.badge.count}</span>
+    </button>
   );
 }
 
@@ -11514,6 +11578,9 @@ function ChartsPage(props: {
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "ownship"] as const);
+  const [procedureNotamDetail, setProcedureNotamDetail] = useState<
+    NonNullable<ChartAsset["procedure_notam_badge"]>["detail"] | null
+  >(null);
   const [plateProcedureLoadMenu, setPlateProcedureLoadMenu] = useState<ProcedureLoadMenu>({
     procedure_kind: null,
     launcher_label: "LOAD\nPROC",
@@ -12063,6 +12130,16 @@ function ChartsPage(props: {
           controls={ownshipControls}
           dataStatusState={procedureGeometryStatus}
           lowered={statusControlDockLowered}
+          leadingControl={!folderOpen && selectedChart?.procedure_notam_badge ? (
+            <PlateProcedureNotamBadgeButton
+              badge={selectedChart.procedure_notam_badge}
+              placement="dock"
+              onOpen={() => {
+                trayGroup.closeAll();
+                setProcedureNotamDetail(selectedChart.procedure_notam_badge!.detail);
+              }}
+            />
+          ) : null}
           ownshipOpen={trayGroup.isOpen("ownship")}
           statusOpen={trayGroup.isOpen("procedureWarning")}
           onOwnshipToggle={() => trayGroup.toggle("ownship")}
@@ -12089,40 +12166,52 @@ function ChartsPage(props: {
         {folderOpen ? (
           <div className="plateFolderGrid" onPointerDown={stopPointer} onPointerUp={stopPointer} onDoubleClick={stopDoubleClick}>
             {sortedCharts.map((chart) => (
-              <button
-                key={chart.id}
-                type="button"
-                className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}${suggestedChartIds.includes(chart.id) ? " isSuggested" : ""}`}
-                onPointerDown={stopPointer}
-                onPointerUp={stopPointer}
-                onDoubleClick={stopDoubleClick}
-                onClick={() => {
-                  onSelectChart(chart.id);
-                }}
-              >
-                <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
-                  {resolvedChartUrls[chart.id]?.thumbnailUrl ? (
-                    <img
-                      className="plateThumbImage"
-                      src={resolvedChartUrls[chart.id]?.thumbnailUrl ?? undefined}
-                      alt=""
-                      draggable={false}
-                    />
-                  ) : null}
-                  {chart.procedure_geometry_warning_count > 0 ? (
-                    <span
-                      className="plateProcedureWarningMini"
-                      aria-label={`${chart.procedure_geometry_warning_count} procedure geometry warning${chart.procedure_geometry_warning_count === 1 ? "" : "s"}; verify against the published plate`}
-                      title="Computed procedure geometry requires verification against the published plate"
-                    >
-                      <DataStatusWarningFace count={chart.procedure_geometry_warning_count.toString()} />
-                    </span>
-                  ) : null}
-                  <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
-                    {chart.label}
+              <div className="plateThumbShell" key={chart.id}>
+                <button
+                  type="button"
+                  className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}${suggestedChartIds.includes(chart.id) ? " isSuggested" : ""}`}
+                  onPointerDown={stopPointer}
+                  onPointerUp={stopPointer}
+                  onDoubleClick={stopDoubleClick}
+                  onClick={() => {
+                    onSelectChart(chart.id);
+                  }}
+                >
+                  <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
+                    {resolvedChartUrls[chart.id]?.thumbnailUrl ? (
+                      <img
+                        className="plateThumbImage"
+                        src={resolvedChartUrls[chart.id]?.thumbnailUrl ?? undefined}
+                        alt=""
+                        draggable={false}
+                      />
+                    ) : null}
+                    <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
+                      {chart.label}
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+                {chart.procedure_notam_badge || chart.procedure_geometry_warning_count > 0 ? (
+                  <div className="plateThumbStickerRow">
+                    {chart.procedure_notam_badge ? (
+                      <PlateProcedureNotamBadgeButton
+                        badge={chart.procedure_notam_badge}
+                        placement="folder"
+                        onOpen={() => setProcedureNotamDetail(chart.procedure_notam_badge!.detail)}
+                      />
+                    ) : null}
+                    {chart.procedure_geometry_warning_count > 0 ? (
+                      <span
+                        className="plateProcedureWarningMini"
+                        aria-label={`${chart.procedure_geometry_warning_count} procedure geometry warning${chart.procedure_geometry_warning_count === 1 ? "" : "s"}; verify against the published plate`}
+                        title="Computed procedure geometry requires verification against the published plate"
+                      >
+                        <DataStatusWarningFace count={chart.procedure_geometry_warning_count.toString()} />
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             ))}
           </div>
         ) : selectedChart && selectedChartAssetUrl ? (
@@ -12173,6 +12262,13 @@ function ChartsPage(props: {
                 headingDeg={plateOwnshipOverlay.headingDeg}
               />
             ) : null}
+          </>
+        ) : null}
+
+        {procedureNotamDetail ? (
+          <>
+            <TrayScrim ariaLabel="Close procedure NOTAMs" onClose={() => setProcedureNotamDetail(null)} />
+            <ProcedureNotamModal detail={procedureNotamDetail} />
           </>
         ) : null}
 
@@ -13219,6 +13315,7 @@ function StatusControlDock(props: {
   controls: OwnshipControlModel;
   dataStatusState?: UiDataStatusState | null;
   lowered?: boolean;
+  leadingControl?: ReactNode;
   ownshipOpen: boolean;
   statusOpen?: boolean;
   onOwnshipToggle: () => void;
@@ -13230,6 +13327,7 @@ function StatusControlDock(props: {
 }) {
   return (
     <div className={`statusControlDock${props.lowered ? " isLowered" : ""}`}>
+      {props.leadingControl}
       {props.dataStatusState && props.onStatusToggle && props.onAction ? (
         <DataStatusDock
           dataStatusState={props.dataStatusState}

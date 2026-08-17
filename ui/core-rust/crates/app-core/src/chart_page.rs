@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
+use product_contracts::ProcedureRendezvousKey;
 use serde::{Deserialize, Serialize};
 
 use crate::data_status::{
@@ -119,8 +120,28 @@ pub struct DerivedChartAsset {
     pub procedure_geometry_warning_count: usize,
     #[serde(default, skip_serializing)]
     pub procedure_geometry_warnings: Vec<PlateProcedureGeometryWarning>,
+    #[serde(default, skip_serializing)]
+    pub procedure_rendezvous_keys: BTreeSet<ProcedureRendezvousKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure_notam_badge: Option<PlateProcedureNotamBadge>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlateProcedureNotamBadge {
+    pub label: String,
+    pub count: usize,
+    pub action_id: String,
+    pub accessibility_label: String,
+    pub detail: PlateProcedureNotamDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlateProcedureNotamDetail {
+    pub title: String,
+    pub advisory_text: String,
+    pub notams: Vec<crate::AirportNotamUiView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +163,8 @@ pub struct ChartAssetRecord {
     pub procedure_geometry_warning_count: usize,
     #[serde(default)]
     pub procedure_geometry_warnings: Vec<PlateProcedureGeometryWarning>,
+    #[serde(default)]
+    pub procedure_rendezvous_keys: BTreeSet<ProcedureRendezvousKey>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,
 }
@@ -170,6 +193,8 @@ impl From<ChartAssetRecord> for DerivedChartAsset {
             has_thumbnail: record.thumbnail_path.is_some(),
             procedure_geometry_warning_count: record.procedure_geometry_warning_count,
             procedure_geometry_warnings: record.procedure_geometry_warnings,
+            procedure_rendezvous_keys: record.procedure_rendezvous_keys,
+            procedure_notam_badge: None,
             georef: record.georef,
         }
     }
@@ -212,6 +237,7 @@ pub fn derive_chart_page_state_from_airports(
         selected_reference_family_id: None,
         candidate_chart_id,
         suggested_chart_ids: &[],
+        notam_display_index: None,
     })
 }
 
@@ -225,6 +251,7 @@ pub struct ChartPageCollectionsInput<'a> {
     pub selected_reference_family_id: Option<&'a str>,
     pub candidate_chart_id: Option<&'a str>,
     pub suggested_chart_ids: &'a [String],
+    pub notam_display_index: Option<&'a crate::NotamDisplayIndex>,
 }
 
 pub fn derive_chart_page_state_from_collections(
@@ -240,7 +267,14 @@ pub fn derive_chart_page_state_from_collections(
         selected_reference_family_id,
         candidate_chart_id,
         suggested_chart_ids,
+        notam_display_index,
     } = input;
+    let mut airports = airports;
+    let mut reference_families = reference_families;
+    enrich_procedure_notams(&mut airports, notam_display_index);
+    for family in &mut reference_families {
+        enrich_chart_notams(&mut family.charts, notam_display_index);
+    }
     let ordered_airport_ids = airports
         .iter()
         .map(|airport| airport.id.clone())
@@ -324,6 +358,44 @@ pub fn derive_chart_page_state_from_collections(
         selected_chart_id,
         suggested_chart_ids: suggested_chart_ids.to_vec(),
         procedure_geometry_status,
+    }
+}
+
+fn enrich_procedure_notams(
+    airports: &mut [DerivedChartAirport],
+    notam_display_index: Option<&crate::NotamDisplayIndex>,
+) {
+    for airport in airports {
+        enrich_chart_notams(&mut airport.charts, notam_display_index);
+    }
+}
+
+fn enrich_chart_notams(
+    charts: &mut [DerivedChartAsset],
+    notam_display_index: Option<&crate::NotamDisplayIndex>,
+) {
+    for chart in charts {
+        let notams =
+            crate::procedure_notam_views(&chart.procedure_rendezvous_keys, notam_display_index);
+        chart.procedure_notam_badge = (!notams.is_empty()).then(|| {
+            let count = notams.len();
+            PlateProcedureNotamBadge {
+                label: "N".to_string(),
+                count,
+                action_id: format!("plate_notams:{}", chart.id),
+                accessibility_label: format!(
+                    "{count} procedure NOTAM{} for {}",
+                    if count == 1 { "" } else { "s" },
+                    chart.label,
+                ),
+                detail: PlateProcedureNotamDetail {
+                    title: format!("NOTAM — {}", chart.label),
+                    advisory_text: "Procedure NOTAMs may be incomplete; check official sources."
+                        .to_string(),
+                    notams,
+                },
+            }
+        });
     }
 }
 
@@ -761,6 +833,8 @@ mod tests {
             has_thumbnail: false,
             procedure_geometry_warning_count: 0,
             procedure_geometry_warnings: Vec::new(),
+            procedure_rendezvous_keys: BTreeSet::new(),
+            procedure_notam_badge: None,
             georef: None,
         }
     }
@@ -1031,6 +1105,8 @@ mod tests {
                     has_thumbnail: true,
                     procedure_geometry_warning_count: 0,
                     procedure_geometry_warnings: Vec::new(),
+                    procedure_rendezvous_keys: BTreeSet::new(),
+                    procedure_notam_badge: None,
                     georef: None,
                 },
                 DerivedChartAsset {
@@ -1043,6 +1119,8 @@ mod tests {
                     has_thumbnail: true,
                     procedure_geometry_warning_count: 0,
                     procedure_geometry_warnings: Vec::new(),
+                    procedure_rendezvous_keys: BTreeSet::new(),
+                    procedure_notam_badge: None,
                     georef: None,
                 },
             ],
@@ -1057,6 +1135,7 @@ mod tests {
             selected_reference_family_id: Some("tac"),
             candidate_chart_id: None,
             suggested_chart_ids: &["la-inset".to_string(), "other-inset".to_string()],
+            notam_display_index: None,
         });
 
         assert_eq!(state.selected_reference_family_id.as_deref(), Some("tac"));
@@ -1072,5 +1151,212 @@ mod tests {
             Some(DerivedChartAirportMenuEntry::ExternalLink { label, url })
                 if label == FAA_CHART_USERS_GUIDE_LABEL && url == FAA_CHART_USERS_GUIDE_URL
         ));
+    }
+
+    #[test]
+    fn plate_notam_badge_exact_joins_and_deduplicates_rendezvous_keys() {
+        let ils = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Approach,
+            "KSEA",
+            "I34C",
+        )
+        .unwrap();
+        let localizer = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Approach,
+            "KSEA",
+            "L34C",
+        )
+        .unwrap();
+        let unrelated = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Approach,
+            "KSEA",
+            "I16L",
+        )
+        .unwrap();
+        let index =
+            crate::NotamDisplayIndex::from_projection_checkpoint(crate::NotamDisplayCheckpoint {
+                schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
+                state_id: "notam-state".to_string(),
+                records: vec![
+                    crate::NotamDisplayRecord {
+                        id: "A".to_string(),
+                        airport_id: Some("KSEA".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::from([
+                            crate::map_overlay::NotamDisplayProcedureKey::from(&ils),
+                            crate::map_overlay::NotamDisplayProcedureKey::from(&localizer),
+                        ]),
+                        label: "IAP".to_string(),
+                        text: "ILS OR LOC RWY 34C AMDT".to_string(),
+                        priority: 2,
+                    },
+                    crate::NotamDisplayRecord {
+                        id: "B".to_string(),
+                        airport_id: Some("KSEA".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::from([
+                            crate::map_overlay::NotamDisplayProcedureKey::from(&localizer),
+                        ]),
+                        label: "IAP".to_string(),
+                        text: "LOC RWY 34C MINIMUMS CHANGED".to_string(),
+                        priority: 7,
+                    },
+                    crate::NotamDisplayRecord {
+                        id: "C".to_string(),
+                        airport_id: Some("KSEA".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::from([
+                            crate::map_overlay::NotamDisplayProcedureKey::from(&unrelated),
+                        ]),
+                        label: "IAP".to_string(),
+                        text: "ILS RWY 16L AMDT".to_string(),
+                        priority: 2,
+                    },
+                ],
+            })
+            .unwrap();
+        let mut plate = chart("KSEA", "plate-i34c", "plate", "approach");
+        plate.label = "ILS OR LOC RWY 34C".to_string();
+        plate.procedure_rendezvous_keys = BTreeSet::from([ils, localizer]);
+
+        let state = derive_chart_page_state_from_collections(ChartPageCollectionsInput {
+            plan: &FlightPlan::default(),
+            airports: vec![DerivedChartAirport {
+                id: "KSEA".to_string(),
+                label: "Seattle-Tacoma Intl".to_string(),
+                charts: vec![plate],
+            }],
+            reference_families: Vec::new(),
+            stored_recent_airport_ids: &[],
+            plate_target_airport_id: Some("KSEA"),
+            selected_airport_id: Some("KSEA"),
+            selected_reference_family_id: None,
+            candidate_chart_id: Some("plate-i34c"),
+            suggested_chart_ids: &[],
+            notam_display_index: Some(&index),
+        });
+
+        let badge = state.airports[0].charts[0]
+            .procedure_notam_badge
+            .as_ref()
+            .expect("matching procedure NOTAM badge");
+        assert_eq!(badge.label, "N");
+        assert_eq!(badge.count, 2);
+        assert_eq!(badge.action_id, "plate_notams:plate-i34c");
+        assert_eq!(
+            badge
+                .detail
+                .notams
+                .iter()
+                .map(|notam| notam.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
+    }
+
+    #[test]
+    fn published_name_notam_badges_cycle_plates_with_different_cifp_ids() {
+        let farmington_cifp = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "KHIO",
+            "FARM7",
+        )
+        .unwrap();
+        let farmington_name = ProcedureRendezvousKey::airport_scoped_published_name(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "KHIO",
+            "FARMINGTON SEVEN",
+        )
+        .unwrap();
+        let scapo_cifp = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "KHIO",
+            "SCAPO7",
+        )
+        .unwrap();
+        let scapo_name = ProcedureRendezvousKey::airport_scoped_published_name(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "KHIO",
+            "SCAPO SEVEN",
+        )
+        .unwrap();
+        let index =
+            crate::NotamDisplayIndex::from_projection_checkpoint(crate::NotamDisplayCheckpoint {
+                schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
+                state_id: "khio-notam-state".to_string(),
+                records: vec![crate::NotamDisplayRecord {
+                    id: "NMS:1772308003914016".to_string(),
+                    airport_id: Some("KHIO".to_string()),
+                    procedure_rendezvous_keys: BTreeSet::from([
+                        crate::map_overlay::NotamDisplayProcedureKey::from(&farmington_name),
+                        crate::map_overlay::NotamDisplayProcedureKey::from(&scapo_name),
+                    ]),
+                    label: "SID".to_string(),
+                    text: "FARMINGTON SEVEN DEPARTURE; SCAPO SEVEN DEPARTURE; PROCEDURE NA"
+                        .to_string(),
+                    priority: 2,
+                }],
+            })
+            .unwrap();
+        let mut farmington_plate = chart("KHIO", "farm7", "plate", "departure");
+        farmington_plate.label = "FARMINGTON SEVEN".to_string();
+        farmington_plate.procedure_rendezvous_keys =
+            BTreeSet::from([farmington_cifp, farmington_name]);
+        let mut scapo_plate = chart("KHIO", "scapo7", "plate", "departure");
+        scapo_plate.label = "SCAPO SEVEN".to_string();
+        scapo_plate.procedure_rendezvous_keys = BTreeSet::from([scapo_cifp, scapo_name]);
+
+        let state = derive_chart_page_state_from_collections(ChartPageCollectionsInput {
+            plan: &FlightPlan::default(),
+            airports: vec![DerivedChartAirport {
+                id: "KHIO".to_string(),
+                label: "Portland-Hillsboro".to_string(),
+                charts: vec![farmington_plate, scapo_plate],
+            }],
+            reference_families: Vec::new(),
+            stored_recent_airport_ids: &[],
+            plate_target_airport_id: Some("KHIO"),
+            selected_airport_id: Some("KHIO"),
+            selected_reference_family_id: None,
+            candidate_chart_id: None,
+            suggested_chart_ids: &[],
+            notam_display_index: Some(&index),
+        });
+
+        let charts = &state.airports[0].charts;
+        assert_eq!(charts.len(), 2);
+        for chart in charts {
+            let badge = chart
+                .procedure_notam_badge
+                .as_ref()
+                .expect("each named SID plate must receive the shared NOTAM");
+            assert_eq!(badge.count, 1);
+            assert_eq!(badge.detail.notams[0].id, "NMS:1772308003914016");
+        }
+    }
+
+    #[test]
+    fn published_name_revision_must_match_exactly() {
+        let taytr_three = ProcedureRendezvousKey::shared_arrival_published_name("TAYTR THREE")
+            .expect("current NOTAM name");
+        let taytr_four = ProcedureRendezvousKey::shared_arrival_published_name("TAYTR FOUR")
+            .expect("current plate name");
+        let index =
+            crate::NotamDisplayIndex::from_projection_checkpoint(crate::NotamDisplayCheckpoint {
+                schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
+                state_id: "taytr-notam-state".to_string(),
+                records: vec![crate::NotamDisplayRecord {
+                    id: "STALE-TAYTR3".to_string(),
+                    airport_id: None,
+                    procedure_rendezvous_keys: BTreeSet::from([
+                        crate::map_overlay::NotamDisplayProcedureKey::from(&taytr_three),
+                    ]),
+                    label: "STAR".to_string(),
+                    text: "TAYTR THREE ARRIVAL CHANGED".to_string(),
+                    priority: 2,
+                }],
+            })
+            .unwrap();
+
+        assert!(
+            crate::procedure_notam_views(&BTreeSet::from([taytr_four]), Some(&index),).is_empty()
+        );
     }
 }

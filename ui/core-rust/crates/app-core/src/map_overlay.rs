@@ -8,9 +8,12 @@ use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use notam_state::{NotamDelta, NotamMutation, NotamState, NotamStateError};
-use product_contracts::AirportNotamEffect;
 #[cfg(test)]
 use product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION;
+use product_contracts::{
+    AirportNotamEffect, ProcedureRendezvousIdentity, ProcedureRendezvousKey,
+    ProcedureRendezvousKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -425,46 +428,79 @@ pub struct AirportNotamUiView {
     priority: u8,
 }
 
-pub const AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION: u32 = 1;
+pub const NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION: u32 = 3;
+
+/// Binary-safe form of the shared rendezvous key used across the worker boundary.
+///
+/// The publication key omits an absent airport in JSON. Prepared NOTAM projections
+/// use postcard, whose positional struct encoding requires every field to be present.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NotamDisplayProcedureKey {
+    pub kind: ProcedureRendezvousKind,
+    pub identity: ProcedureRendezvousIdentity,
+    pub airport_id: Option<String>,
+}
+
+impl From<&ProcedureRendezvousKey> for NotamDisplayProcedureKey {
+    fn from(key: &ProcedureRendezvousKey) -> Self {
+        Self {
+            kind: key.kind,
+            identity: key.identity.clone(),
+            airport_id: key.airport_id.clone(),
+        }
+    }
+}
+
+impl NotamDisplayProcedureKey {
+    fn publication_key(&self) -> ProcedureRendezvousKey {
+        ProcedureRendezvousKey {
+            kind: self.kind,
+            identity: self.identity.clone(),
+            airport_id: self.airport_id.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AirportNotamProjectionRecord {
+pub struct NotamDisplayRecord {
     pub id: String,
-    pub airport_id: String,
+    pub airport_id: Option<String>,
+    pub procedure_rendezvous_keys: BTreeSet<NotamDisplayProcedureKey>,
     pub label: String,
     pub text: String,
     pub priority: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AirportNotamProjectionCheckpoint {
+pub struct NotamDisplayCheckpoint {
     pub schema_version: u32,
     pub state_id: String,
-    pub records: Vec<AirportNotamProjectionRecord>,
+    pub records: Vec<NotamDisplayRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AirportNotamProjectionDelta {
+pub struct NotamDisplayDelta {
     pub schema_version: u32,
     pub from_state_id: String,
     pub to_state_id: String,
-    pub mutations: Vec<AirportNotamProjectionMutation>,
+    pub mutations: Vec<NotamDisplayMutation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AirportNotamProjectionMutation {
-    Upsert(AirportNotamProjectionRecord),
+pub enum NotamDisplayMutation {
+    Upsert(NotamDisplayRecord),
     Remove { notam_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AirportNotamIndex {
+pub struct NotamDisplayIndex {
     pub version_label: String,
-    records: BTreeMap<String, AirportNotamProjectionRecord>,
+    records: BTreeMap<String, NotamDisplayRecord>,
     by_airport: BTreeMap<String, Vec<String>>,
+    by_procedure: BTreeMap<NotamDisplayProcedureKey, Vec<String>>,
 }
 
-impl AirportNotamIndex {
+impl NotamDisplayIndex {
     #[cfg(test)]
     pub fn from_payload(payload: NotamProductPayload) -> Result<Self, String> {
         if payload.schema_version != product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION {
@@ -482,26 +518,27 @@ impl AirportNotamIndex {
         {
             return Err("NOTAM fixture count does not match records".to_string());
         }
-        Self::from_projection_checkpoint(AirportNotamProjectionCheckpoint {
-            schema_version: AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+        Self::from_projection_checkpoint(NotamDisplayCheckpoint {
+            schema_version: NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
             state_id: payload.version_label,
             records: records
                 .iter()
-                .filter_map(project_airport_notam_record)
+                .filter_map(project_notam_display_record)
                 .collect(),
         })
         .map_err(|error| error.to_string())
     }
 
     pub fn from_projection_checkpoint(
-        checkpoint: AirportNotamProjectionCheckpoint,
+        checkpoint: NotamDisplayCheckpoint,
     ) -> Result<Self, NotamStateError> {
-        validate_airport_notam_projection_schema(checkpoint.schema_version)?;
+        validate_notam_display_projection_schema(checkpoint.schema_version)?;
         validate_projection_record_order(&checkpoint.records)?;
         let mut index = Self {
             version_label: checkpoint.state_id,
             records: BTreeMap::new(),
             by_airport: BTreeMap::new(),
+            by_procedure: BTreeMap::new(),
         };
         for record in checkpoint.records {
             index.upsert(record)?;
@@ -511,9 +548,9 @@ impl AirportNotamIndex {
 
     pub fn apply_projection_delta(
         &mut self,
-        delta: AirportNotamProjectionDelta,
+        delta: NotamDisplayDelta,
     ) -> Result<(), NotamStateError> {
-        validate_airport_notam_projection_schema(delta.schema_version)?;
+        validate_notam_display_projection_schema(delta.schema_version)?;
         if self.version_label != delta.from_state_id {
             return Err(NotamStateError::BaseStateMismatch {
                 expected: delta.from_state_id,
@@ -523,8 +560,8 @@ impl AirportNotamIndex {
         validate_projection_mutation_order(&delta.mutations)?;
         for mutation in delta.mutations {
             match mutation {
-                AirportNotamProjectionMutation::Upsert(record) => self.upsert(record)?,
-                AirportNotamProjectionMutation::Remove { notam_id } => {
+                NotamDisplayMutation::Upsert(record) => self.upsert(record)?,
+                NotamDisplayMutation::Remove { notam_id } => {
                     self.remove(&notam_id)?;
                 }
             }
@@ -537,21 +574,14 @@ impl AirportNotamIndex {
         &self.version_label
     }
 
-    fn upsert(&mut self, record: AirportNotamProjectionRecord) -> Result<(), NotamStateError> {
+    fn upsert(&mut self, record: NotamDisplayRecord) -> Result<(), NotamStateError> {
         validate_projection_record(&record)?;
         self.remove(&record.id)?;
-        let ids = self
-            .by_airport
-            .entry(record.airport_id.clone())
-            .or_default();
-        match ids.binary_search(&record.id) {
-            Ok(_) => {
-                return Err(NotamStateError::Invariant(format!(
-                    "airport NOTAM {} is already indexed",
-                    record.id
-                )));
-            }
-            Err(index) => ids.insert(index, record.id.clone()),
+        if let Some(airport_id) = &record.airport_id {
+            insert_projected_notam_id(&mut self.by_airport, airport_id.clone(), &record.id)?;
+        }
+        for key in &record.procedure_rendezvous_keys {
+            insert_projected_notam_id(&mut self.by_procedure, key.clone(), &record.id)?;
         }
         self.records.insert(record.id.clone(), record);
         Ok(())
@@ -561,31 +591,16 @@ impl AirportNotamIndex {
         let Some(record) = self.records.remove(notam_id) else {
             return Ok(());
         };
-        let remove_airport = {
-            let ids = self.by_airport.get_mut(&record.airport_id).ok_or_else(|| {
-                NotamStateError::Invariant(format!(
-                    "airport NOTAM {notam_id} is missing airport index {}",
-                    record.airport_id
-                ))
-            })?;
-            let index = ids
-                .binary_search_by(|id| id.as_str().cmp(notam_id))
-                .map_err(|_| {
-                    NotamStateError::Invariant(format!(
-                        "airport NOTAM {notam_id} is missing from airport index {}",
-                        record.airport_id
-                    ))
-                })?;
-            ids.remove(index);
-            ids.is_empty()
-        };
-        if remove_airport {
-            self.by_airport.remove(&record.airport_id);
+        if let Some(airport_id) = &record.airport_id {
+            remove_projected_notam_id(&mut self.by_airport, airport_id, notam_id)?;
+        }
+        for key in &record.procedure_rendezvous_keys {
+            remove_projected_notam_id(&mut self.by_procedure, key, notam_id)?;
         }
         Ok(())
     }
 
-    fn airport_records(&self, airport_id: &str) -> Vec<&AirportNotamProjectionRecord> {
+    fn airport_records(&self, airport_id: &str) -> Vec<&NotamDisplayRecord> {
         let airport_id = airport_id.trim().to_ascii_uppercase();
         self.by_airport
             .get(&airport_id)
@@ -594,23 +609,79 @@ impl AirportNotamIndex {
             .filter_map(|id| self.records.get(id))
             .collect()
     }
+
+    pub fn procedure_records(
+        &self,
+        keys: &BTreeSet<ProcedureRendezvousKey>,
+    ) -> Vec<&NotamDisplayRecord> {
+        let ids = keys
+            .iter()
+            .map(NotamDisplayProcedureKey::from)
+            .filter_map(|key| self.by_procedure.get(&key))
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        ids.iter().filter_map(|id| self.records.get(id)).collect()
+    }
 }
 
-pub fn airport_notam_projection_checkpoint(state: &NotamState) -> AirportNotamProjectionCheckpoint {
-    AirportNotamProjectionCheckpoint {
-        schema_version: AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+fn insert_projected_notam_id<K: Ord>(
+    index: &mut BTreeMap<K, Vec<String>>,
+    key: K,
+    notam_id: &str,
+) -> Result<(), NotamStateError> {
+    let ids = index.entry(key).or_default();
+    match ids.binary_search_by(|id| id.as_str().cmp(notam_id)) {
+        Ok(_) => Err(NotamStateError::Invariant(format!(
+            "NOTAM {notam_id} is already indexed"
+        ))),
+        Err(position) => {
+            ids.insert(position, notam_id.to_string());
+            Ok(())
+        }
+    }
+}
+
+fn remove_projected_notam_id<K: Ord + std::fmt::Debug>(
+    index: &mut BTreeMap<K, Vec<String>>,
+    key: &K,
+    notam_id: &str,
+) -> Result<(), NotamStateError> {
+    let remove_key = {
+        let ids = index.get_mut(key).ok_or_else(|| {
+            NotamStateError::Invariant(format!("NOTAM {notam_id} is missing display index {key:?}"))
+        })?;
+        let position = ids
+            .binary_search_by(|id| id.as_str().cmp(notam_id))
+            .map_err(|_| {
+                NotamStateError::Invariant(format!(
+                    "NOTAM {notam_id} is missing from display index {key:?}"
+                ))
+            })?;
+        ids.remove(position);
+        ids.is_empty()
+    };
+    if remove_key {
+        index.remove(key);
+    }
+    Ok(())
+}
+
+pub fn notam_display_checkpoint(state: &NotamState) -> NotamDisplayCheckpoint {
+    NotamDisplayCheckpoint {
+        schema_version: NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
         state_id: state.state_id().to_string(),
         records: state
             .canonical_records()
-            .filter_map(|(_, record)| project_airport_notam_record(record))
+            .filter_map(|(_, record)| project_notam_display_record(record))
             .collect(),
     }
 }
 
-pub fn airport_notam_projection_delta(
+pub fn notam_display_delta(
     state: &NotamState,
     delta: &NotamDelta,
-) -> Result<AirportNotamProjectionDelta, NotamStateError> {
+) -> Result<NotamDisplayDelta, NotamStateError> {
     delta.validate_contract()?;
     if state.state_id() != delta.from_state_id {
         return Err(NotamStateError::BaseStateMismatch {
@@ -623,39 +694,42 @@ pub fn airport_notam_projection_delta(
         .mutations
         .iter()
         .filter_map(|mutation| match mutation {
-            NotamMutation::Upsert { record } => project_airport_notam_record(record)
-                .map(AirportNotamProjectionMutation::Upsert)
+            NotamMutation::Upsert { record } => project_notam_display_record(record)
+                .map(NotamDisplayMutation::Upsert)
                 .or_else(|| {
                     state
                         .record(&record.id)
-                        .and_then(project_airport_notam_record)
-                        .map(|_| AirportNotamProjectionMutation::Remove {
+                        .and_then(project_notam_display_record)
+                        .map(|_| NotamDisplayMutation::Remove {
                             notam_id: record.id.clone(),
                         })
                 }),
             NotamMutation::Remove { notam_id } => state
                 .record(notam_id)
-                .and_then(project_airport_notam_record)
-                .map(|_| AirportNotamProjectionMutation::Remove {
+                .and_then(project_notam_display_record)
+                .map(|_| NotamDisplayMutation::Remove {
                     notam_id: notam_id.clone(),
                 }),
         })
         .collect();
-    Ok(AirportNotamProjectionDelta {
-        schema_version: AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+    Ok(NotamDisplayDelta {
+        schema_version: NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
         from_state_id: delta.from_state_id.clone(),
         to_state_id: delta.to_state_id.clone(),
         mutations,
     })
 }
 
-fn project_airport_notam_record(record: &NotamRecord) -> Option<AirportNotamProjectionRecord> {
+fn project_notam_display_record(record: &NotamRecord) -> Option<NotamDisplayRecord> {
     let airport_id = record
         .airport_id
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())?
-        .to_ascii_uppercase();
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_uppercase);
+    if airport_id.is_none() && record.procedure_rendezvous_keys.is_empty() {
+        return None;
+    }
     let text = record
         .text
         .as_deref()
@@ -663,9 +737,14 @@ fn project_airport_notam_record(record: &NotamRecord) -> Option<AirportNotamProj
         .or(record.icao_text.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-    Some(AirportNotamProjectionRecord {
+    Some(NotamDisplayRecord {
         id: record.id.clone(),
         airport_id,
+        procedure_rendezvous_keys: record
+            .procedure_rendezvous_keys
+            .iter()
+            .map(NotamDisplayProcedureKey::from)
+            .collect(),
         label: record
             .notam_keyword
             .as_deref()
@@ -677,33 +756,43 @@ fn project_airport_notam_record(record: &NotamRecord) -> Option<AirportNotamProj
     })
 }
 
-fn validate_airport_notam_projection_schema(schema_version: u32) -> Result<(), NotamStateError> {
-    if schema_version != AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION {
+fn validate_notam_display_projection_schema(schema_version: u32) -> Result<(), NotamStateError> {
+    if schema_version != NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION {
         return Err(NotamStateError::Contract(format!(
-            "unsupported airport NOTAM projection schema {schema_version}; expected \
-             {AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION}"
+            "unsupported NOTAM display projection schema {schema_version}; expected \
+             {NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION}"
         )));
     }
     Ok(())
 }
 
-fn validate_projection_record(
-    record: &AirportNotamProjectionRecord,
-) -> Result<(), NotamStateError> {
+fn validate_projection_record(record: &NotamDisplayRecord) -> Result<(), NotamStateError> {
     if record.id.is_empty() || record.id.trim() != record.id {
         return Err(NotamStateError::InvalidRecord(format!(
             "invalid projected NOTAM ID {:?}",
             record.id
         )));
     }
-    if record.airport_id.is_empty()
-        || record.airport_id.trim() != record.airport_id
-        || record.airport_id != record.airport_id.to_ascii_uppercase()
-    {
+    if let Some(airport_id) = &record.airport_id {
+        if airport_id.is_empty()
+            || airport_id.trim() != airport_id
+            || *airport_id != airport_id.to_ascii_uppercase()
+        {
+            return Err(NotamStateError::InvalidRecord(format!(
+                "invalid projected NOTAM airport {airport_id:?}"
+            )));
+        }
+    }
+    if record.airport_id.is_none() && record.procedure_rendezvous_keys.is_empty() {
         return Err(NotamStateError::InvalidRecord(format!(
-            "invalid projected NOTAM airport {:?}",
-            record.airport_id
+            "projected NOTAM {} has no lookup identity",
+            record.id
         )));
+    }
+    for key in &record.procedure_rendezvous_keys {
+        key.publication_key()
+            .validate()
+            .map_err(NotamStateError::InvalidRecord)?;
     }
     if record.text.trim().is_empty() {
         return Err(NotamStateError::InvalidRecord(format!(
@@ -714,9 +803,7 @@ fn validate_projection_record(
     Ok(())
 }
 
-fn validate_projection_record_order(
-    records: &[AirportNotamProjectionRecord],
-) -> Result<(), NotamStateError> {
+fn validate_projection_record_order(records: &[NotamDisplayRecord]) -> Result<(), NotamStateError> {
     let mut previous = None;
     for record in records {
         validate_projection_record(record)?;
@@ -732,16 +819,16 @@ fn validate_projection_record_order(
 }
 
 fn validate_projection_mutation_order(
-    mutations: &[AirportNotamProjectionMutation],
+    mutations: &[NotamDisplayMutation],
 ) -> Result<(), NotamStateError> {
     let mut previous = None;
     for mutation in mutations {
         let id = match mutation {
-            AirportNotamProjectionMutation::Upsert(record) => {
+            NotamDisplayMutation::Upsert(record) => {
                 validate_projection_record(record)?;
                 record.id.as_str()
             }
-            AirportNotamProjectionMutation::Remove { notam_id } => notam_id.as_str(),
+            NotamDisplayMutation::Remove { notam_id } => notam_id.as_str(),
         };
         if id.is_empty() || id.trim() != id {
             return Err(NotamStateError::InvalidRecord(format!(
@@ -2948,7 +3035,7 @@ pub struct MapSelectionQuery<'a> {
     pub metar_payload: Option<&'a MetarProductPayload>,
     pub pirep_payload: Option<&'a PirepProductPayload>,
     pub taf_payload: Option<&'a TafProductPayload>,
-    pub notam_payload: Option<&'a AirportNotamIndex>,
+    pub notam_payload: Option<&'a NotamDisplayIndex>,
     pub weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     pub offline_region_records: &'a [OfflineRegionRecord],
     pub airspace_feature_cache: &'a HashMap<String, AirspaceFeaturePayload>,
@@ -3314,7 +3401,7 @@ struct MetarSelectionInput<'a> {
     tile_cache: &'a HashMap<String, MetarTilePayload>,
     metar_payload: &'a MetarProductPayload,
     taf_payload: Option<&'a TafProductPayload>,
-    notam_payload: Option<&'a AirportNotamIndex>,
+    notam_payload: Option<&'a NotamDisplayIndex>,
     weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 }
@@ -3572,7 +3659,7 @@ struct SelectionItemData<'a> {
     plan: Option<&'a FlightPlan>,
     metar_payload: Option<&'a MetarProductPayload>,
     taf_payload: Option<&'a TafProductPayload>,
-    notam_payload: Option<&'a AirportNotamIndex>,
+    notam_payload: Option<&'a NotamDisplayIndex>,
     weather_station_airport_aliases: &'a WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 }
@@ -3796,7 +3883,7 @@ fn selection_item_for_metar(
     record: &MetarRecord,
     taf: Option<&TafRecord>,
     feature: VisibleMetarFeature,
-    notam_payload: Option<&AirportNotamIndex>,
+    notam_payload: Option<&NotamDisplayIndex>,
     weather_station_airport_aliases: &WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
@@ -3897,7 +3984,7 @@ pub(crate) fn weather_detail_for_station(
     aliases: &WeatherStationAirportAliases,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
-    notam_index: Option<&AirportNotamIndex>,
+    notam_index: Option<&NotamDisplayIndex>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let station_id = station_id.trim().to_ascii_uppercase();
@@ -3929,7 +4016,7 @@ pub(crate) fn weather_detail_for_airport(
     aliases: &WeatherStationAirportAliases,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
-    notam_index: Option<&AirportNotamIndex>,
+    notam_index: Option<&NotamDisplayIndex>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let airport_id = airport_id.trim().to_ascii_uppercase();
@@ -4053,7 +4140,7 @@ fn weather_detail_from_records(
 
 fn airport_notam_views(
     airport_id: &str,
-    index: Option<&AirportNotamIndex>,
+    index: Option<&NotamDisplayIndex>,
 ) -> Vec<AirportNotamUiView> {
     let Some(index) = index else {
         return Vec::new();
@@ -4070,7 +4157,23 @@ fn airport_notam_views(
     notams
 }
 
-fn airport_notam_ui_view(record: &AirportNotamProjectionRecord) -> AirportNotamUiView {
+pub fn procedure_notam_views(
+    keys: &BTreeSet<ProcedureRendezvousKey>,
+    index: Option<&NotamDisplayIndex>,
+) -> Vec<AirportNotamUiView> {
+    let Some(index) = index else {
+        return Vec::new();
+    };
+    let mut notams = index
+        .procedure_records(keys)
+        .into_iter()
+        .map(airport_notam_ui_view)
+        .collect::<Vec<_>>();
+    sort_airport_notam_views(&mut notams);
+    notams
+}
+
+fn airport_notam_ui_view(record: &NotamDisplayRecord) -> AirportNotamUiView {
     AirportNotamUiView {
         id: record.id.clone(),
         label: record.label.clone(),
@@ -9029,7 +9132,7 @@ mod tests {
             ]),
         };
 
-        let index = AirportNotamIndex::from_payload(payload).expect("supported NOTAM fixture");
+        let index = NotamDisplayIndex::from_payload(payload).expect("supported NOTAM fixture");
         let detail = weather_detail_for_station(
             "KAAA",
             &WeatherStationAirportAliases::default(),
@@ -9067,7 +9170,7 @@ mod tests {
                 },
             )
         };
-        let index = AirportNotamIndex::from_payload(NotamProductPayload {
+        let index = NotamDisplayIndex::from_payload(NotamProductPayload {
             schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
             version_label: "v1".to_string(),
             notam_count: Some(4),
@@ -9123,7 +9226,7 @@ mod tests {
     }
 
     #[test]
-    fn airport_notam_projection_delta_matches_reprojected_canonical_state() {
+    fn notam_display_delta_matches_reprojected_canonical_state() {
         let record = |id: &str, airport_id: Option<&str>, text: &str| NotamRecord {
             id: id.to_string(),
             airport_id: airport_id.map(str::to_string),
@@ -9150,10 +9253,9 @@ mod tests {
                 )
                 .unwrap();
         }
-        let mut index = AirportNotamIndex::from_projection_checkpoint(
-            airport_notam_projection_checkpoint(&state),
-        )
-        .unwrap();
+        let mut index =
+            NotamDisplayIndex::from_projection_checkpoint(notam_display_checkpoint(&state))
+                .unwrap();
         let from_state_id = state.state_id().to_string();
         let mutations = vec![
             NotamMutation::Upsert {
@@ -9186,17 +9288,16 @@ mod tests {
             mutations,
         );
 
-        let projection_delta = airport_notam_projection_delta(&state, &delta).unwrap();
+        let projection_delta = notam_display_delta(&state, &delta).unwrap();
         assert_eq!(projection_delta.mutations.len(), 3);
         state
             .apply_delta(delta, &mut notam_state::NotamApplyWork::default())
             .unwrap();
         index.apply_projection_delta(projection_delta).unwrap();
 
-        let expected = AirportNotamIndex::from_projection_checkpoint(
-            airport_notam_projection_checkpoint(&state),
-        )
-        .unwrap();
+        let expected =
+            NotamDisplayIndex::from_projection_checkpoint(notam_display_checkpoint(&state))
+                .unwrap();
         assert_eq!(index, expected);
         assert_eq!(
             index
@@ -9219,7 +9320,7 @@ mod tests {
 
     #[test]
     fn airport_notam_index_rejects_old_product_contract() {
-        let error = AirportNotamIndex::from_payload(NotamProductPayload {
+        let error = NotamDisplayIndex::from_payload(NotamProductPayload {
             schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION - 1,
             version_label: "old".to_string(),
             notam_count: Some(0),
@@ -9228,6 +9329,70 @@ mod tests {
         .expect_err("old NOTAM products lack semantic effects");
 
         assert!(error.contains("unsupported NOTAM live-feed schema"));
+    }
+
+    #[test]
+    fn procedure_notam_index_moves_records_between_exact_keys() {
+        let first = ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap();
+        let second = ProcedureRendezvousKey::shared_arrival("GLASR3").unwrap();
+        let record = |key: Option<ProcedureRendezvousKey>| NotamRecord {
+            id: "STAR-NOTAM".to_string(),
+            airport_id: None,
+            airport_effects: BTreeSet::new(),
+            procedure_rendezvous_keys: key.into_iter().collect(),
+            notam_keyword: Some("STAR".to_string()),
+            effective_start_utc: None,
+            effective_end_utc: None,
+            text: Some("STAR PROCEDURE CHANGED".to_string()),
+            local_text: None,
+            icao_text: None,
+        };
+        let mut state = NotamState::empty();
+        state
+            .apply_mutation(
+                NotamMutation::Upsert {
+                    record: record(Some(first.clone())),
+                },
+                &mut notam_state::NotamApplyWork::default(),
+            )
+            .unwrap();
+        let mut index =
+            NotamDisplayIndex::from_projection_checkpoint(notam_display_checkpoint(&state))
+                .unwrap();
+        assert_eq!(
+            index
+                .procedure_records(&BTreeSet::from([first.clone()]))
+                .len(),
+            1
+        );
+
+        let mut next = NotamState::from_checkpoint(
+            state.checkpoint(),
+            &mut notam_state::NotamApplyWork::default(),
+        )
+        .unwrap();
+        let mutation = NotamMutation::Upsert {
+            record: record(Some(second.clone())),
+        };
+        next.apply_mutation(
+            mutation.clone(),
+            &mut notam_state::NotamApplyWork::default(),
+        )
+        .unwrap();
+        let delta = NotamDelta::new(
+            state.state_id().to_string(),
+            next.state_id().to_string(),
+            next.counters(),
+            vec![mutation],
+        );
+        let display_delta = notam_display_delta(&state, &delta).unwrap();
+        state
+            .apply_delta(delta, &mut notam_state::NotamApplyWork::default())
+            .unwrap();
+        index.apply_projection_delta(display_delta).unwrap();
+
+        assert!(index.procedure_records(&BTreeSet::from([first])).is_empty());
+        assert_eq!(index.procedure_records(&BTreeSet::from([second])).len(), 1);
     }
 
     #[test]

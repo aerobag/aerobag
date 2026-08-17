@@ -14,9 +14,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     map_overlay::{
-        airport_notam_projection_checkpoint, airport_notam_projection_delta,
-        AirportNotamProjectionCheckpoint, AirportNotamProjectionDelta, MetarProductPayload,
-        PirepProductPayload, TafProductPayload, TfrProductPayload,
+        notam_display_checkpoint, notam_display_delta, MetarProductPayload, NotamDisplayCheckpoint,
+        NotamDisplayDelta, PirepProductPayload, TafProductPayload, TfrProductPayload,
     },
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
@@ -189,8 +188,8 @@ pub enum PreparedLiveFeedPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PreparedNotamPayload {
-    InstallAirportCheckpoint(AirportNotamProjectionCheckpoint),
-    ApplyAirportDelta(AirportNotamProjectionDelta),
+    InstallDisplayCheckpoint(NotamDisplayCheckpoint),
+    ApplyDisplayDelta(NotamDisplayDelta),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -213,9 +212,9 @@ impl NotamProjectionPreparer {
         work: &mut NotamApplyWork,
     ) -> Result<PreparedNotamPayload, notam_state::NotamStateError> {
         let state = NotamState::from_checkpoint(checkpoint, work)?;
-        let projection = airport_notam_projection_checkpoint(&state);
+        let projection = notam_display_checkpoint(&state);
         self.state = Some(state);
-        Ok(PreparedNotamPayload::InstallAirportCheckpoint(projection))
+        Ok(PreparedNotamPayload::InstallDisplayCheckpoint(projection))
     }
 
     pub fn apply_delta(
@@ -228,18 +227,18 @@ impl NotamProjectionPreparer {
                 "cannot prepare NOTAM delta without canonical worker state".to_string(),
             )
         })?;
-        let projection = airport_notam_projection_delta(&state, &delta)?;
+        let projection = notam_display_delta(&state, &delta)?;
         state.apply_delta(delta, work)?;
         self.state = Some(state);
-        Ok(PreparedNotamPayload::ApplyAirportDelta(projection))
+        Ok(PreparedNotamPayload::ApplyDisplayDelta(projection))
     }
 
     pub fn state_id(&self) -> Option<&str> {
         self.state.as_ref().map(NotamState::state_id)
     }
 
-    pub fn projection_checkpoint(&self) -> Option<AirportNotamProjectionCheckpoint> {
-        self.state.as_ref().map(airport_notam_projection_checkpoint)
+    pub fn projection_checkpoint(&self) -> Option<NotamDisplayCheckpoint> {
+        self.state.as_ref().map(notam_display_checkpoint)
     }
 
     pub fn canonical_checkpoint(&self) -> Option<NotamCheckpoint> {
@@ -297,10 +296,10 @@ impl PreparedLiveFeedPayload {
             Self::Metars(feed) => &feed.payload.version_label,
             Self::Tafs(payload) => &payload.version_label,
             Self::Tfrs(payload) => &payload.version_label,
-            Self::Notams(PreparedNotamPayload::InstallAirportCheckpoint(checkpoint)) => {
+            Self::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint)) => {
                 &checkpoint.state_id
             }
-            Self::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) => &delta.to_state_id,
+            Self::Notams(PreparedNotamPayload::ApplyDisplayDelta(delta)) => &delta.to_state_id,
             Self::Pireps(feed) => &feed.payload.version_label,
         }
     }
@@ -2979,15 +2978,15 @@ mod tests {
             Some(head_id.as_str())
         );
 
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(
             checkpoint,
         )) = checkpoint_envelope.payload
         else {
             panic!("expected prepared NOTAM checkpoint");
         };
         assert_eq!(checkpoint.records.len(), 256);
-        let mut client = crate::AirportNotamIndex::from_projection_checkpoint(checkpoint).unwrap();
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) =
+        let mut client = crate::NotamDisplayIndex::from_projection_checkpoint(checkpoint).unwrap();
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDisplayDelta(delta)) =
             delta_envelope.payload
         else {
             panic!("expected prepared NOTAM delta");

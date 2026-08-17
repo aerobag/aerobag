@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use notam_state::NotamRecord;
-use preprocessor_data::{faa_named_terminal_procedure_id, faa_procedure_id_candidate_groups};
+use preprocessor_data::faa_procedure_id_candidate_groups;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
-use product_contracts::{AirportNotamEffect, ProcedureRendezvousKey, ProcedureRendezvousKind};
+use product_contracts::{
+    AirportNotamEffect, ProcedurePublishedName, ProcedureRendezvousKey, ProcedureRendezvousKind,
+};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
@@ -2190,14 +2192,9 @@ fn procedure_rendezvous_keys_for_notam(
                 node.is_element()
                     && node.tag_name().name() == "StandardInstrumentDepartureTimeSlice"
             }) {
-                let procedure_id = descendant_text(&time_slice, "legacyControlNumber")
+                if let Some(procedure_id) = descendant_text(&time_slice, "legacyControlNumber")
                     .and_then(|control| terminal_control_procedure_id(&control, false))
-                    .or_else(|| {
-                        let name = child_text(&time_slice, "name")?;
-                        let revision = descendant_text(&time_slice, "printableVersionNumber")?;
-                        faa_named_terminal_procedure_id(&format!("{name} {revision}"))
-                    });
-                if let Some(procedure_id) = procedure_id {
+                {
                     keys.insert(
                         ProcedureRendezvousKey::airport_scoped(
                             ProcedureRendezvousKind::Departure,
@@ -2207,29 +2204,60 @@ fn procedure_rendezvous_keys_for_notam(
                         .map_err(anyhow::Error::msg)?,
                     );
                 }
+                if let Some(published_name) = structured_published_procedure_name(&time_slice) {
+                    keys.insert(
+                        ProcedureRendezvousKey::airport_scoped_published_name(
+                            ProcedureRendezvousKind::Departure,
+                            airport_id,
+                            &published_name,
+                        )
+                        .map_err(anyhow::Error::msg)?,
+                    );
+                }
+            }
+            for published_name in
+                textual_published_procedure_names(text.unwrap_or_default(), &["DEPARTURE"])
+            {
+                keys.insert(
+                    ProcedureRendezvousKey::airport_scoped_published_name(
+                        ProcedureRendezvousKind::Departure,
+                        airport_id,
+                        &published_name,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                );
             }
         }
         Some("STAR") => {
             for time_slice in document.descendants().filter(|node| {
                 node.is_element() && node.tag_name().name() == "StandardInstrumentArrivalTimeSlice"
             }) {
-                let procedure_id = descendant_text(&time_slice, "legacyControlNumber")
+                if let Some(procedure_id) = descendant_text(&time_slice, "legacyControlNumber")
                     .and_then(|control| terminal_control_procedure_id(&control, true))
-                    .or_else(|| {
-                        let name = child_text(&time_slice, "name")?;
-                        let revision = descendant_text(&time_slice, "printableVersionNumber")?;
-                        faa_named_terminal_procedure_id(&format!("{name} {revision}"))
-                    });
-                if let Some(procedure_id) = procedure_id {
+                {
                     keys.insert(
                         ProcedureRendezvousKey::shared_arrival(&procedure_id)
                             .map_err(anyhow::Error::msg)?,
                     );
                 }
+                if let Some(published_name) = structured_published_procedure_name(&time_slice) {
+                    keys.insert(
+                        ProcedureRendezvousKey::shared_arrival_published_name(&published_name)
+                            .map_err(anyhow::Error::msg)?,
+                    );
+                }
             }
-            for procedure_id in textual_star_procedure_ids(text.unwrap_or_default()) {
+            for procedure_id in textual_star_cifp_ids(text.unwrap_or_default()) {
                 keys.insert(
                     ProcedureRendezvousKey::shared_arrival(&procedure_id)
+                        .map_err(anyhow::Error::msg)?,
+                );
+            }
+            for published_name in
+                textual_published_procedure_names(text.unwrap_or_default(), &["ARR", "ARRIVAL"])
+            {
+                keys.insert(
+                    ProcedureRendezvousKey::shared_arrival_published_name(&published_name)
                         .map_err(anyhow::Error::msg)?,
                 );
             }
@@ -2263,7 +2291,19 @@ fn terminal_control_procedure_id(control: &str, arrival: bool) -> Option<String>
         .then(|| candidate.to_ascii_uppercase())
 }
 
-fn textual_star_procedure_ids(text: &str) -> BTreeSet<String> {
+fn structured_published_procedure_name(time_slice: &roxmltree::Node<'_, '_>) -> Option<String> {
+    let name = child_text(time_slice, "name")?;
+    if ProcedurePublishedName::parse(&name).is_ok() {
+        return Some(name);
+    }
+    let revision = descendant_text(time_slice, "printableVersionNumber")?;
+    let combined = format!("{name} {revision}");
+    ProcedurePublishedName::parse(&combined)
+        .is_ok()
+        .then_some(combined)
+}
+
+fn textual_star_cifp_ids(text: &str) -> BTreeSet<String> {
     let uppercase = text.to_ascii_uppercase();
     let mut ids = BTreeSet::new();
 
@@ -2286,27 +2326,39 @@ fn textual_star_procedure_ids(text: &str) -> BTreeSet<String> {
         }
     }
 
-    for line in uppercase.lines() {
-        let words = line
-            .split_whitespace()
-            .map(|word| word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric()))
+    ids
+}
+
+fn textual_published_procedure_names(text: &str, markers: &[&str]) -> BTreeSet<String> {
+    let uppercase = text.to_ascii_uppercase();
+    let mut names = BTreeSet::new();
+    for clause in uppercase.split('.') {
+        let words = clause
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
             .filter(|word| !word.is_empty())
             .collect::<Vec<_>>();
-        for arrival_index in words
+        if words
+            .first()
+            .is_some_and(|word| matches!(*word, "SID" | "STAR" | "ODP" | "IAP" | "SPECIAL"))
+        {
+            continue;
+        }
+        for marker_index in words
             .iter()
             .enumerate()
-            .filter_map(|(index, word)| (*word == "ARRIVAL").then_some(index))
+            .filter_map(|(index, word)| markers.contains(word).then_some(index))
         {
-            if arrival_index < 2 {
-                continue;
+            let mut end = marker_index;
+            if end > 0 && words[end - 1] == "RNAV" {
+                end -= 1;
             }
-            let name = format!("{} {}", words[arrival_index - 2], words[arrival_index - 1]);
-            if let Some(procedure_id) = faa_named_terminal_procedure_id(&name) {
-                ids.insert(procedure_id);
+            let candidate = words[..end].join(" ");
+            if ProcedurePublishedName::parse(&candidate).is_ok() {
+                names.insert(candidate);
             }
         }
     }
-    ids
+    names
 }
 
 fn airport_id_for_notam(
@@ -3537,6 +3589,116 @@ mod tests {
     }
 
     #[test]
+    fn nms_one_digit_approach_runway_uses_cycle_canonical_key() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse(
+            r#"<root>
+                <InstrumentApproachProcedureTimeSlice>
+                  <name>RNAV (GPS) RWY 6</name>
+                </InstrumentApproachProcedureTimeSlice>
+              </root>"#,
+        )?;
+
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(&xml, Some("IAP"), Some("04W"), None)?,
+            BTreeSet::from([ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Approach,
+                "04W",
+                "R06",
+            )
+            .unwrap()]),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nms_multi_sid_notam_emits_every_departure_rendezvous_key() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse(
+            r#"<root>
+                <StandardInstrumentDepartureTimeSlice>
+                  <name>FARMINGTON SEVEN</name>
+                  <extension><legacyControlNumber>FARM7.FARM</legacyControlNumber></extension>
+                </StandardInstrumentDepartureTimeSlice>
+                <StandardInstrumentDepartureTimeSlice>
+                  <name>SCAPO SEVEN</name>
+                  <extension><legacyControlNumber>SCAPO7.SCAPO</legacyControlNumber></extension>
+                </StandardInstrumentDepartureTimeSlice>
+              </root>"#,
+        )?;
+
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("SID"),
+                Some("KHIO"),
+                Some(
+                    "SID PORTLAND-HILLSBORO, PORTLAND, OR.\n\
+                     FARMINGTON SEVEN DEPARTURE...\n\
+                     SCAPO SEVEN DEPARTURE...",
+                ),
+            )?,
+            BTreeSet::from([
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Departure,
+                    "KHIO",
+                    "FARM7",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Departure,
+                    "KHIO",
+                    "SCAPO7",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped_published_name(
+                    ProcedureRendezvousKind::Departure,
+                    "KHIO",
+                    "FARMINGTON SEVEN",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped_published_name(
+                    ProcedureRendezvousKind::Departure,
+                    "KHIO",
+                    "SCAPO SEVEN",
+                )
+                .unwrap(),
+            ]),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nms_text_only_sid_uses_published_name_without_inventing_cifp_ids() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse("<root/>")?;
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("SID"),
+                Some("KAFW"),
+                Some(
+                    "SID PEROT FLD/FORT WORTH ALLIANCE, FORT WORTH, TX.\n\
+                     WORTH ONE DEPARTURE ...\n\
+                     JOE POOL EIGHT DEPARTURE ...",
+                ),
+            )?,
+            BTreeSet::from([
+                ProcedureRendezvousKey::airport_scoped_published_name(
+                    ProcedureRendezvousKind::Departure,
+                    "KAFW",
+                    "WORTH ONE",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped_published_name(
+                    ProcedureRendezvousKind::Departure,
+                    "KAFW",
+                    "JOE POOL EIGHT",
+                )
+                .unwrap(),
+            ]),
+        );
+        Ok(())
+    }
+
+    #[test]
     fn nms_star_text_emits_one_shared_key_for_every_served_airport() -> anyhow::Result<()> {
         let xml = roxmltree::Document::parse("<root/>")?;
         let keys = procedure_rendezvous_keys_for_notam(
@@ -3638,6 +3800,47 @@ mod tests {
         assert_eq!("5000", area["upper_limit"]["value_text"]);
         assert_eq!("FT", area["upper_limit"]["unit"]);
         Ok(())
+    }
+
+    #[test]
+    fn nms_star_text_accepts_faa_arrival_spelling_and_layout_variants() {
+        for (text, expected) in [
+            (
+                "STAR BOZEMAN YELLOWSTONE INTERNATIONAL. BGMAN ONE ARRIVAL...NOT AVBL",
+                "BGMAN ONE",
+            ),
+            (
+                "STAR HOUSTON. DOOBI THREE RNAV ARR... ADD NOTE: DO NOT FILE.",
+                "DOOBI THREE",
+            ),
+            (
+                "STAR NASHVILLE. RYYMN THREE (RNAV) ARRIVAL...TURNT TRANSITION NOT AVBL",
+                "RYYMN THREE",
+            ),
+            (
+                "STAR ORLANDO. GTOUT ONE RNAV\nARRIVAL..CROSS NICCK AT 12000.",
+                "GTOUT ONE",
+            ),
+            (
+                "STAR PROVO. TAYTR THREE ARRIVAL..CHANGE ARRIVAL ROUTE DESCRIPTION",
+                "TAYTR THREE",
+            ),
+        ] {
+            assert_eq!(
+                textual_published_procedure_names(text, &["ARR", "ARRIVAL"]),
+                BTreeSet::from([expected.to_string()]),
+                "failed to parse {text:?}",
+            );
+        }
+        assert!(textual_published_procedure_names(
+            "STAR SPECIAL IAP, USCG SAN DIEGO, COPTER RNAV (GPS) 007, ORIG",
+            &["ARR", "ARRIVAL"],
+        )
+        .is_empty());
+        assert!(textual_star_cifp_ids(
+            "STAR SPECIAL IAP, USCG SAN DIEGO, COPTER RNAV (GPS) 007, ORIG"
+        )
+        .is_empty());
     }
 
     #[test]

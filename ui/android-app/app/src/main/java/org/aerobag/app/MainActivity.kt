@@ -2619,6 +2619,15 @@ internal fun AerobagApp(
         return
     }
     val fixture = runtimeFixture!!.getOrThrow()
+    if (startupPerfTrace != null) {
+        val appContentCompositionStartedAtMs = SystemClock.elapsedRealtime()
+        SideEffect {
+            startupPerfTrace.mark(
+                "app_content_composition_committed",
+                appContentCompositionStartedAtMs,
+            )
+        }
+    }
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
     val retainedCoreSession = retainedModel.preparedCoreSession(fixture)

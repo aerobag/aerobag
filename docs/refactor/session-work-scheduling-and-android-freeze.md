@@ -330,6 +330,15 @@ complete lifecycle, rejects scheduled work on the main thread, allows at most a
 500 ms gap during the noninteractive first render, and enforces a 2.2 second
 time-to-usable budget.
 
+The terminal condition requires the first combined map-overlay result and at
+least one decoded or cached raster tile to each pass through a frame, followed
+by one final frame. It does not wait for terrain, NEXRAD, GPS, live-feed cache
+restoration or connection, the complete raster tile batch, or flight-plan route
+projection. The combined overlay result can contain immediately available
+vectors, airspace/TFR, METAR/PIREP, traffic, and offline-region data; live-feed
+products restored later invalidate it asynchronously. Terrain has a diagnostic
+startup marker but is not a required stage.
+
 The first trace showed that installed-runtime loading did not begin until the
 first Compose effect and native session construction then occupied the UI
 thread. Runtime and session preparation now form one retained, generation-
@@ -345,6 +354,18 @@ remaining repeatable 433 ms gap occurs in the first Compose/map render before
 the chart becomes interactive. It is now visible separately from runtime and
 session construction and is the next startup-render target if cold-start work
 continues.
+
+Follow-up attribution split that render into loaded-app composition, the first
+surface-sized map composition, root map layout, and root map draw-command
+generation. Two x86 release-build runs reached the terminal condition at 1.278
+and 1.420 seconds. In the faster run, runtime/NAVDB preparation took 112 ms,
+native session preparation 86 ms, loaded-app composition 12 ms, and the sized
+map composition/layout/draw stages 16/18/4 ms. The emulator still delivered a
+433 ms maximum frame gap; Android frame statistics attributed its largest
+debug-build frames primarily to Skia/OpenGL draw-command submission and render
+synchronization. Removing a neutral north-up raster graphics layer did not
+improve two A/B runs and was reverted. No further app optimization is justified
+from this emulator-specific render delay without a representative-device trace.
 
 Pass/fail thresholds should start conservative:
 

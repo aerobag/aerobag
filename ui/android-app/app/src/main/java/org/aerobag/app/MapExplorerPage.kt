@@ -138,6 +138,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -147,6 +148,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -656,6 +658,7 @@ internal fun MapExplorerPage(
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
 ) {
+    val mapCompositionStartedAtMs = startupPerfTrace?.let { SystemClock.elapsedRealtime() }
     SideEffect(sessionRenderDiagnostics::recordMap)
     SideEffect { startupPerfTrace?.mark("map_composed") }
     val highRate by sessionRenderModel.highRateProjectionState
@@ -745,6 +748,14 @@ internal fun MapExplorerPage(
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    val mapCompositionSurfaceWasSized = surfaceSize.width > 0 && surfaceSize.height > 0
+    if (mapCompositionSurfaceWasSized) {
+        mapCompositionStartedAtMs?.let { startedAtMs ->
+            SideEffect {
+                startupPerfTrace?.mark("map_sized_composition_committed", startedAtMs)
+            }
+        }
+    }
     var committedMapOverlay by remember(uiSession, navDataEpoch) {
         mutableStateOf(
             MapOverlayQueryResult(
@@ -2581,12 +2592,37 @@ internal fun MapExplorerPage(
         val selectionTrayBlocks = mapSelection != null && mapSelectionTrayBounds?.contains(windowPosition) == true
         return selectionTrayBlocks
     }
+    val startupAttributionModifier = if (startupPerfTrace == null) {
+        Modifier
+    } else {
+        Modifier
+            .layout { measurable, constraints ->
+                val startedAtMs = SystemClock.elapsedRealtime()
+                val placeable = measurable.measure(constraints)
+                layout(placeable.width, placeable.height) {
+                    placeable.placeRelative(0, 0)
+                    startupPerfTrace.mark("map_first_layout_completed", startedAtMs)
+                    if (mapCompositionSurfaceWasSized) {
+                        startupPerfTrace.mark("map_sized_layout_completed", startedAtMs)
+                    }
+                }
+            }
+            .drawWithContent {
+                val startedAtMs = SystemClock.elapsedRealtime()
+                drawContent()
+                startupPerfTrace.mark("map_first_draw_completed", startedAtMs)
+                if (mapCompositionSurfaceWasSized) {
+                    startupPerfTrace.mark("map_sized_draw_completed", startedAtMs)
+                }
+            }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .testTag("parity:map-surface")
             .background(uiTheme.controls.chartSurfaceBg)
+            .then(startupAttributionModifier)
             .onSizeChanged { surfaceSize = it }
             .onGloballyPositioned { coordinates -> mapSurfaceBounds = coordinates.boundsInWindow() }
             .focusRequester(focusRequester)

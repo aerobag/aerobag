@@ -341,8 +341,6 @@ internal fun showDisabledActionToast(context: Context, reason: String?) {
     showActionToast(context, reason)
 }
 
-internal fun pageLabel(page: AppPage): String = PageOptions.firstOrNull { it.page == page }?.launcherLabel ?: page.name.uppercase()
-
 @Composable
 internal fun rememberUptimeLabel(sessionStartElapsedMs: Long): String {
     val nowMs by produceState(initialValue = SystemClock.elapsedRealtime(), sessionStartElapsedMs) {
@@ -365,59 +363,6 @@ internal fun formatUptimeLabel(elapsedMs: Long): String {
         "%d:%02d".format(minutes, seconds)
     }
 }
-
-internal fun formatSnapshot(snapshot: AppViewSnapshot): String {
-    return formatSnapshot(snapshot, emptyMap())
-}
-
-internal fun formatSnapshot(snapshot: AppViewSnapshot, chartLabelsById: Map<String, String>): String {
-    val label = pageLabel(snapshot.page)
-    if (snapshot.page == AppPage.Map) {
-        val family = snapshot.selectedMapLauncherLabel
-        return if (family.isBlank()) label else "$label-$family"
-    }
-    if (snapshot.page != AppPage.Charts) {
-        return label
-    }
-    if (snapshot.chartFolderOpen) {
-        return "$label-FLDR"
-    }
-    val suffixSource = snapshot.selectedChartLabel
-        .ifBlank { chartLabelsById[snapshot.selectedChartId].orEmpty() }
-        .ifBlank { snapshot.selectedChartId }
-    val suffix = suffixSource.takeLast(3).uppercase()
-    return if (suffix.isBlank()) label else "$label-$suffix"
-}
-
-internal fun formatPageStack(
-    pageHistory: List<AppViewSnapshot>,
-    currentPage: AppPage,
-    selectedMapId: String = "",
-    selectedMapLauncherLabel: String = "",
-    selectedAirportId: String = "",
-    selectedChartId: String = "",
-    selectedChartLabel: String = "",
-    chartFolderOpen: Boolean = false,
-    chartLabelsById: Map<String, String> = emptyMap(),
-): String = (
-    listOf(
-        AppViewSnapshot(
-        page = currentPage,
-        selectedMapId = selectedMapId,
-        selectedMapLauncherLabel = selectedMapLauncherLabel,
-        mapViewport = MapViewportState(0.0, 0.0, 0.0),
-        plateTargetAirportId = null,
-        selectedAirportId = selectedAirportId,
-        selectedReferenceFamilyId = null,
-        selectedChartId = selectedChartId,
-        selectedChartLabel = selectedChartLabel,
-        suggestedChartIds = emptyList(),
-        recentAirportIds = emptyList(),
-        chartViewport = null,
-        chartFolderOpen = chartFolderOpen,
-    )
-    ) + pageHistory.asReversed()
-).joinToString(" > ") { formatSnapshot(it, chartLabelsById) }
 
 @Composable
 internal fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {

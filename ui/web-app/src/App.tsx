@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Fragment, Profiler, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
+import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import type {
   AltitudeComparisonPanelUiView,
@@ -177,7 +177,6 @@ import type {
 } from "./domain/appCoreAdapter";
 import {
   debugLog,
-  DebugLogDeveloperServerPath,
   debugTiming,
   installGlobalErrorLogging,
   perfDebugLog,
@@ -199,7 +198,6 @@ import type { UiSessionUpdateGroup } from "./generated/sessionUpdateWire";
 
 const FLIGHT_PLAN_SESSION_UPDATE_GROUPS = ["flight_plan"] as const satisfies readonly UiSessionUpdateGroup[];
 
-declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 declare const __AEROBAG_E2E_ENABLED__: boolean;
 
 declare global {
@@ -1312,20 +1310,73 @@ async function preloadNexradOverlayImages(query: NexradOverlayQueryResult): Prom
   };
 }
 
-const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; iconSrc?: string }> = [
-  { id: "map", label: "CHART", launcherLabel: "CHART", iconSrc: PAGE_CHART_ICON_SRC },
-  { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
-  { id: "plan", label: "FLIGHT PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
-  { id: "altitude", label: "ALTITUDE PLANNER", launcherLabel: "ALT" },
-  { id: "data", label: "STATUS", launcherLabel: "STATUS" },
-  { id: "settings", label: "SETTINGS", launcherLabel: "SET" },
-  { id: "home", label: "HOME", launcherLabel: "HOME", iconSrc: PAGE_HOME_ICON_SRC },
-];
+type NavigationPageOption = { id: AppPage; label: string; launcherLabel: string; iconSrc?: string };
+type NavigationPagePolicy = {
+  options: NavigationPageOption[];
+  maxHistoryDepth: number;
+  chartOrPlateReturnPages: ReadonlySet<AppPage>;
+  defaultChartOrPlateReturnPage: AppPage;
+};
+
+const NavigationPageOptionsContext = createContext<NavigationPagePolicy | null>(null);
+
+function navigationPageOptionsFromCore(state: UiSessionSnapshot["navigation_page_state"]): NavigationPagePolicy {
+  const pagePairs = state.options.flatMap((option) => {
+    const id = appPageFromNavigationPageId(option.id);
+    if (!id) return [];
+    const iconSrc = id === "map"
+      ? PAGE_CHART_ICON_SRC
+      : id === "charts"
+        ? PAGE_PLATE_ICON_SRC
+        : id === "plan"
+          ? PAGE_PLAN_ICON_SRC
+          : id === "home"
+            ? PAGE_HOME_ICON_SRC
+            : undefined;
+    return [{ option: { id, label: option.label, launcherLabel: option.launcher_label, iconSrc }, returnTarget: option.chart_or_plate_return_target }];
+  });
+  const defaultChartOrPlateReturnPage = appPageFromNavigationPageId(
+    state.default_chart_or_plate_return_target,
+  );
+  if (!defaultChartOrPlateReturnPage) {
+    throw new Error("core supplied an unsupported default chart/plate return page");
+  }
+  return {
+    options: pagePairs.map((entry) => entry.option),
+    maxHistoryDepth: state.max_history_depth,
+    chartOrPlateReturnPages: new Set(pagePairs.filter((entry) => entry.returnTarget).map((entry) => entry.option.id)),
+    defaultChartOrPlateReturnPage,
+  };
+}
+
+function appPageFromNavigationPageId(id: UiSessionSnapshot["navigation_page_state"]["options"][number]["id"]): AppPage | null {
+  switch (id) {
+    case "map": return "map";
+    case "charts": return "charts";
+    case "flight_plan": return "plan";
+    case "altitude_planner": return "altitude";
+    case "data_status": return "data";
+    case "settings": return "settings";
+    case "home": return "home";
+    default: return null;
+  }
+}
+
+function useNavigationPageOptions() {
+  return useNavigationPagePolicy().options;
+}
+
+function useNavigationPagePolicy(): NavigationPagePolicy {
+  const policy = useContext(NavigationPageOptionsContext);
+  if (!policy) {
+    throw new Error("navigation page policy is unavailable outside the session provider");
+  }
+  return policy;
+}
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
 const aboutPagePath = "/about";
 const androidApkMetadataPath = "/downloads/android-apk.json";
-const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
@@ -2204,7 +2255,7 @@ export default function App() {
   const [rasterMapState, setRasterMapState] = useState<RasterMapUiState | null>(null);
   const [mapSelectorLoadError, setMapSelectorLoadError] = useState<string | null>(null);
   const initialRecentAirportIds = useMemo(
-    () => mergeRecentAirportIds(emptyChartPage.airports, persistedUiState.recentAirportIds ?? []),
+    () => persistedUiState.recentAirportIds ?? [],
     [persistedUiState],
   );
   const initialChartPageState = useMemo<DerivedChartPageState>(
@@ -2339,6 +2390,11 @@ export default function App() {
     offline_package_preferences_json: "{\"regions\":{},\"products\":{}}",
     home_page_state: {
       buttons: [],
+    },
+    navigation_page_state: {
+      options: [],
+      max_history_depth: 0,
+      default_chart_or_plate_return_target: "map",
     },
     display_policy: null,
     disclaimer_state: {
@@ -3543,6 +3599,11 @@ export default function App() {
     });
   }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId]);
 
+  const navigationPageOptions = useMemo(
+    () => navigationPageOptionsFromCore(sessionSnapshot.navigation_page_state),
+    [sessionSnapshot.navigation_page_state],
+  );
+
   function currentSnapshot(): AppViewSnapshot {
     const currentMapViewport = mapViewportStore.value;
     if (currentMapViewport === null) {
@@ -3596,7 +3657,8 @@ export default function App() {
   }
 
   function boundedHistory(history: AppViewSnapshot[]) {
-    return history.length <= maxViewHistoryDepth ? history : history.slice(history.length - maxViewHistoryDepth);
+    const maxDepth = navigationPageOptions.maxHistoryDepth;
+    return maxDepth <= 0 || history.length <= maxDepth ? history : history.slice(history.length - maxDepth);
   }
 
   useEffect(() => {
@@ -3699,48 +3761,48 @@ export default function App() {
     const target = pageHistory
       .slice()
       .reverse()
-      .find((snapshot) => snapshot.page === "map" || snapshot.page === "charts");
+      .find((snapshot) => navigationPageOptions.chartOrPlateReturnPages.has(snapshot.page));
     if (target) {
       pushViewSnapshot(target, true);
       return;
     }
-    navigateToPage("map");
+    navigateToPage(navigationPageOptions.defaultChartOrPlateReturnPage);
   }
-  const mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory);
+  const mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(
+    pageHistory,
+    navigationPageOptions.chartOrPlateReturnPages,
+    navigationPageOptions.defaultChartOrPlateReturnPage,
+  );
 
   function openPlateTarget(airportId: string, target: "Folder" | "CSup") {
+    if (!uiSession) {
+      return;
+    }
     const targetChartId = `Plate:${airportId}:${target}`;
-    const nextRecentAirportIds = moveAirportToFront(recentAirportIds, airportId, chartPageData.airports);
-    if (uiSession) {
-      void uiSession.restoreChartPageState(
-        nextRecentAirportIds,
-        airportId,
-        airportId,
-        null,
-        targetChartId,
-        [],
-      ).then((nextSnapshot) => {
+    void uiSession.openChartAirport(airportId, targetChartId)
+      .then((nextSnapshot) => {
         applySessionSnapshot(nextSnapshot, "open_plate_target");
-      }).catch((error) => {
+        const chartState = nextSnapshot.chart_page_state;
+        pushViewSnapshot({
+          page: "charts",
+          plateTargetAirportId: airportId,
+          selectedAirportId: chartState.selected_airport_id,
+          selectedReferenceFamilyId: null,
+          selectedChartId: chartState.selected_chart_id,
+          selectedChartLabel: "",
+          recentAirportIds: chartState.recent_airport_ids,
+          suggestedChartIds: [],
+          chartViewport: null,
+          chartFolderOpen: target === "Folder",
+        });
+      })
+      .catch((error) => {
         debugLog("plates.open.target.failed", {
           airport_id: airportId,
           target,
           error: errorMessage(error),
         });
       });
-    }
-    pushViewSnapshot({
-      page: "charts",
-      plateTargetAirportId: airportId,
-      selectedAirportId: airportId,
-      selectedReferenceFamilyId: null,
-      selectedChartId: targetChartId,
-      selectedChartLabel: "",
-      recentAirportIds: nextRecentAirportIds,
-      suggestedChartIds: [],
-      chartViewport: null,
-      chartFolderOpen: target === "Folder",
-    });
   }
 
   const themeVars = useMemo(
@@ -3878,6 +3940,7 @@ export default function App() {
 
   return (
     <main className="appShell" style={themeVars}>
+      <NavigationPageOptionsContext.Provider value={navigationPageOptions}>
       <HighRateSessionEffects
         sessionRenderStore={sessionRenderStore}
         uiSession={uiSession}
@@ -3975,7 +4038,7 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenWeatherDetail={setFlightPlanWeatherModal}
           onOpenCharts={(airportId, chartId) => {
-            if (!airportId) {
+            if (!airportId || !uiSession) {
               return;
             }
             const airport = chartPageData.airports.find((entry) => entry.id === airportId);
@@ -3984,20 +4047,13 @@ export default function App() {
               airport?.charts[0]?.id ??
               "";
             const resolvedChartLabel = airport?.charts.find((chart) => chart.id === resolvedChartId)?.label ?? airport?.charts[0]?.label ?? "";
-            if (uiSession) {
-              debugLog("charts.open.request", {
-                airport_id: airportId,
-                chart_id: resolvedChartId,
-                chart_label: resolvedChartLabel,
-              });
-              void uiSession.restoreChartPageState(
-                moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
-                airportId,
-                airportId,
-                null,
-                resolvedChartId || undefined,
-                [],
-              ).then((nextSnapshot) => {
+            debugLog("charts.open.request", {
+              airport_id: airportId,
+              chart_id: resolvedChartId,
+              chart_label: resolvedChartLabel,
+            });
+            void uiSession.openChartAirport(airportId, resolvedChartId || undefined)
+              .then((nextSnapshot) => {
                 debugLog("charts.open.snapshot", {
                   requested_airport_id: airportId,
                   requested_chart_id: resolvedChartId,
@@ -4005,20 +4061,27 @@ export default function App() {
                   selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
                 });
                 applySessionSnapshot(nextSnapshot, "open_charts");
-              }).catch(() => {});
-            }
-            pushViewSnapshot({
-              page: "charts",
-              plateTargetAirportId: airportId,
-              selectedAirportId: airportId,
-              selectedReferenceFamilyId: null,
-              selectedChartId: resolvedChartId,
-              selectedChartLabel: resolvedChartLabel,
-              recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
-              suggestedChartIds: [],
-              chartViewport: null,
-              chartFolderOpen: !chartId,
-            });
+                const chartState = nextSnapshot.chart_page_state;
+                pushViewSnapshot({
+                  page: "charts",
+                  plateTargetAirportId: airportId,
+                  selectedAirportId: chartState.selected_airport_id,
+                  selectedReferenceFamilyId: null,
+                  selectedChartId: chartState.selected_chart_id,
+                  selectedChartLabel: resolvedChartLabel,
+                  recentAirportIds: chartState.recent_airport_ids,
+                  suggestedChartIds: [],
+                  chartViewport: null,
+                  chartFolderOpen: !chartId,
+                });
+              })
+              .catch((error) => {
+                debugLog("charts.open.failed", {
+                  airport_id: airportId,
+                  chart_id: resolvedChartId,
+                  error: errorMessage(error),
+                });
+              });
           }}
           onInsertAirportWaypointAtRow={async (rowUid, before, airportId) => {
             if (!appCoreAdapter) return;
@@ -4176,23 +4239,32 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           onSelectAirport={(airportId) => {
-            const airport = chartPageData.airports.find((entry) => entry.id === airportId);
-            if (uiSession) {
-              void uiSession.selectAirport(airportId).then((nextSnapshot) => {
-                applySessionSnapshot(nextSnapshot, "select_airport");
-              }).catch(() => {});
+            if (!uiSession) {
+              return;
             }
-            pushViewSnapshot({
-              page: "charts",
-              selectedAirportId: airportId,
-              selectedReferenceFamilyId: null,
-              selectedChartId: airport?.charts[0]?.id ?? "",
-              selectedChartLabel: airport?.charts[0]?.label ?? "",
-              recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
-              suggestedChartIds: [],
-              chartViewport: null,
-              chartFolderOpen: false,
-            });
+            const airport = chartPageData.airports.find((entry) => entry.id === airportId);
+            void uiSession.openChartAirport(airportId)
+              .then((nextSnapshot) => {
+                applySessionSnapshot(nextSnapshot, "select_airport");
+                const chartState = nextSnapshot.chart_page_state;
+                pushViewSnapshot({
+                  page: "charts",
+                  selectedAirportId: chartState.selected_airport_id,
+                  selectedReferenceFamilyId: null,
+                  selectedChartId: chartState.selected_chart_id,
+                  selectedChartLabel: airport?.charts[0]?.label ?? "",
+                  recentAirportIds: chartState.recent_airport_ids,
+                  suggestedChartIds: [],
+                  chartViewport: null,
+                  chartFolderOpen: false,
+                });
+              })
+              .catch((error) => {
+                debugLog("charts.select.airport.failed", {
+                  airport_id: airportId,
+                  error: errorMessage(error),
+                });
+              });
           }}
           onSelectReference={(familyId: ChartFamilyId) => {
             if (!uiSession) {
@@ -4257,7 +4329,6 @@ export default function App() {
         <DataStatusPage
           page={page}
           state={sessionSnapshot.data_status_page_state}
-          dataSourcesRow={dataSourcesStatusRow(sessionSnapshot.debug_state)}
           navElement={planUiState?.guidance?.nav_element}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenPlan={() => navigateToPage("plan")}
@@ -4319,6 +4390,7 @@ export default function App() {
           onAccept={() => void acceptDisclaimer()}
         />
       ) : null}
+      </NavigationPageOptionsContext.Provider>
     </main>
   );
 }
@@ -10420,6 +10492,7 @@ function ChartPlateToggleButton(props: {
   page: AppPage;
   onSelectPage: (page: AppPage) => void;
 }) {
+  const pageOptions = useNavigationPageOptions();
   const chartSelected = props.page === "map";
   const active = props.page === "map" || props.page === "charts";
   const option = chartSelected
@@ -10446,18 +10519,23 @@ function ChartPlateToggleButton(props: {
   );
 }
 
-function mostRecentChartOrPlatePageFromHistory(pageHistory: AppViewSnapshot[]): AppPage {
+function mostRecentChartOrPlatePageFromHistory(
+  pageHistory: AppViewSnapshot[],
+  returnTargetPages: ReadonlySet<AppPage>,
+  defaultReturnPage: AppPage,
+): AppPage {
   return pageHistory
     .slice()
     .reverse()
-    .find((snapshot) => snapshot.page === "map" || snapshot.page === "charts")
-    ?.page ?? "map";
+    .find((snapshot) => returnTargetPages.has(snapshot.page))
+    ?.page ?? defaultReturnPage;
 }
 
 function ChartPlateReturnButton(props: {
   targetPage: AppPage;
   onClick: () => void;
 }) {
+  const pageOptions = useNavigationPageOptions();
   const chartSelected = props.targetPage !== "charts";
   const option = chartSelected
     ? pageOptions.find((entry) => entry.id === "map")
@@ -10483,6 +10561,7 @@ function HomeNavButton(props: {
   active: boolean;
   onClick: () => void;
 }) {
+  const pageOptions = useNavigationPageOptions();
   const option = pageOptions.find((entry) => entry.id === "home");
   return (
     <button
@@ -10510,7 +10589,8 @@ function PrimaryNavigationDock(props: {
   onOpenPlan?: () => void;
   onOpenChartOrPlate?: () => void;
 }) {
-  const chartOrPlatePage = props.page === "map" || props.page === "charts";
+  const navigationPolicy = useNavigationPagePolicy();
+  const chartOrPlatePage = navigationPolicy.chartOrPlateReturnPages.has(props.page);
   return (
     <nav
       className={`primaryNavigationDock${props.className ? ` ${props.className}` : ""}`}
@@ -10532,8 +10612,8 @@ function PrimaryNavigationDock(props: {
         <ChartPlateToggleButton page={props.page} onSelectPage={props.onSelectPage} />
       ) : (
         <ChartPlateReturnButton
-          targetPage={props.chartPlateTargetPage ?? "map"}
-          onClick={props.onOpenChartOrPlate ?? (() => props.onSelectPage("map"))}
+          targetPage={props.chartPlateTargetPage ?? navigationPolicy.defaultChartOrPlateReturnPage}
+          onClick={props.onOpenChartOrPlate ?? (() => props.onSelectPage(navigationPolicy.defaultChartOrPlateReturnPage))}
         />
       )}
     </nav>
@@ -12651,11 +12731,6 @@ function CloudPage(props: {
   const [fieldValues, setFieldValues] = useState<Partial<Record<CloudUiFieldId, string>>>({});
   const [copyStatus, setCopyStatus] = useState("");
   const [actionError, setActionError] = useState("");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const invoke = async (action: UiSessionSnapshot["cloud_page_state"]["overall_status"]["actions"][number]) => {
     setActionError("");
@@ -12700,7 +12775,7 @@ function CloudPage(props: {
           {panel.time_facts.map((fact) => (
             <div key={fact.label}>
               <dt>{fact.label}</dt>
-              <dd>{formatCloudRelativeTime(fact.epoch_ms, nowMs)}</dd>
+              <dd>{fact.value}</dd>
             </div>
           ))}
         </dl>
@@ -12799,28 +12874,6 @@ function CloudPage(props: {
       </div>
     </section>
   );
-}
-
-function formatCloudRelativeTime(epochMs: number, nowMs: number) {
-  const deltaMs = epochMs - nowMs;
-  const magnitude = formatCloudDuration(Math.abs(deltaMs));
-  return deltaMs > 0 ? `in ${magnitude}` : `${magnitude} ago`;
-}
-
-function formatCloudDuration(durationMs: number) {
-  const seconds = Math.floor(durationMs / 1_000);
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) {
-    return `${hours}h`;
-  }
-  return `${Math.floor(hours / 24)}d`;
 }
 
 function SettingsPage(props: {
@@ -12964,7 +13017,6 @@ function SettingsPageRowView(props: {
 function DataStatusPage(props: {
   page: AppPage;
   state: UiDataStatusPageState;
-  dataSourcesRow: UiDataStatusPageState["rows"][number];
   navElement: NavElementUiView | null | undefined;
   mostRecentChartOrPlatePage: AppPage;
   onOpenPlan: () => void;
@@ -12972,16 +13024,6 @@ function DataStatusPage(props: {
   onSelectPage: (page: AppPage) => void;
   onTimeDisplayAction: (actionId: string) => void | Promise<void>;
 }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (props.page !== "data") {
-      return;
-    }
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => setNowMs(Date.now()), 10_000);
-    return () => window.clearInterval(timer);
-  }, [props.page]);
-
   return (
     <section className="appPage dataStatusPage">
       <PrimaryNavigationDock
@@ -12999,11 +13041,10 @@ function DataStatusPage(props: {
           <p>{props.state.summary}</p>
         </header>
         <div className="dataStatusPageRows">
-          {[props.dataSourcesRow, ...props.state.rows].map((row) => (
+          {props.state.rows.map((row) => (
             <DataStatusPageRowArticle
               key={row.id}
               row={row}
-              nowMs={nowMs}
               onTimeDisplayAction={props.onTimeDisplayAction}
             />
           ))}
@@ -13015,10 +13056,9 @@ function DataStatusPage(props: {
 
 function DataStatusPageRowArticle(props: {
   row: UiDataStatusPageState["rows"][number];
-  nowMs: number;
   onTimeDisplayAction: (actionId: string) => void | Promise<void>;
 }) {
-  const { row, nowMs } = props;
+  const { row } = props;
   return (
     <article className={`dataStatusPageRow statusSeverity-${row.severity}`}>
       <div className="dataStatusPageRowHeader">
@@ -13043,7 +13083,7 @@ function DataStatusPageRowArticle(props: {
                   }
                 } : undefined}
               >
-                {renderDataStatusFactValue(fact, nowMs)}
+                {renderDataStatusFactValue(fact)}
               </dd>
             </div>
           ))}
@@ -13053,64 +13093,10 @@ function DataStatusPageRowArticle(props: {
   );
 }
 
-function dataSourcesStatusRow(debugState: UiDebugState): UiDataStatusPageState["rows"][number] {
-  const cycleDataBaseUrl = webCycleDataBaseUrl();
-  const liveFeedsBaseUrl = webLiveFeedsBaseUrl();
-  const facts: UiDataStatusPageState["rows"][number]["facts"] = [
-    {
-      label: "Cycle Data",
-      value: cycleDataBaseUrl,
-      link_url: cycleDataBaseUrl,
-    },
-    {
-      label: "Live Feeds",
-      value: liveFeedsBaseUrl,
-      link_url: liveFeedsBaseUrl,
-    },
-  ];
-  if (debugState.debug_log_to_developer_server) {
-    const debugLogSinkUrl = webDebugLogSinkUrl();
-    facts.push({
-      label: "Debug log sink",
-      value: debugLogSinkUrl,
-      link_url: debugLogSinkUrl,
-    });
-  }
-  return {
-    id: "data_sources",
-    label: "Data Sources",
-    value: "Config",
-    severity: "info",
-    detail: "Base URLs used for remote aviation data.",
-    facts,
-  };
-}
-
-function webCycleDataBaseUrl(): string {
-  const origin = typeof window !== "undefined" ? window.location.origin.replace(/\/+$/, "") : "";
-  return origin ? `${origin}/packages` : "/packages";
-}
-
-function webLiveFeedsBaseUrl(): string {
-  const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
-  const root = configured
-    ? configured.replace(/\/+$/, "")
-    : typeof window !== "undefined"
-      ? window.location.origin.replace(/\/+$/, "")
-      : "";
-  return root ? `${root}/live-feeds` : "/live-feeds";
-}
-
-function webDebugLogSinkUrl(): string {
-  const origin = typeof window !== "undefined" ? window.location.origin.replace(/\/+$/, "") : "";
-  return origin ? `${origin}${DebugLogDeveloperServerPath}` : DebugLogDeveloperServerPath;
-}
-
 function renderDataStatusFactValue(
   fact: UiDataStatusPageState["rows"][number]["facts"][number],
-  nowMs: number,
 ): ReactNode {
-  const value = renderDataStatusFactContent(fact, nowMs);
+  const value = renderDataStatusFactContent(fact);
   if (fact.link_url) {
     return (
       <a href={fact.link_url} target="_blank" rel="noreferrer">
@@ -13123,61 +13109,16 @@ function renderDataStatusFactValue(
 
 function renderDataStatusFactContent(
   fact: UiDataStatusPageState["rows"][number]["facts"][number],
-  nowMs: number,
 ): ReactNode {
-  if (!fact.time_utc || !fact.time_display) {
-    return fact.value;
-  }
-  const instantMs = Date.parse(fact.time_utc);
-  if (!Number.isFinite(instantMs)) {
-    return fact.value;
-  }
-  const suffix = dataStatusRelativeTimeSuffix(instantMs, nowMs, fact.time_display);
-  if (!suffix) {
+  if (!fact.relative_value) {
     return fact.value;
   }
   return (
     <>
       <span className="dataStatusPageFactValuePrimary">{fact.value}</span>
-      <span className="dataStatusPageFactValueRelative">({suffix})</span>
+      <span className="dataStatusPageFactValueRelative">({fact.relative_value})</span>
     </>
   );
-}
-
-function dataStatusRelativeTimeSuffix(
-  instantMs: number,
-  nowMs: number,
-  display: NonNullable<UiDataStatusPageState["rows"][number]["facts"][number]["time_display"]>,
-) {
-  const deltaMs = instantMs - nowMs;
-  const magnitude = formatDataStatusDuration(Math.abs(deltaMs));
-  if (display === "old") {
-    return `${magnitude} old`;
-  }
-  if (display === "until") {
-    return deltaMs >= 0 ? `in ${magnitude}` : `${magnitude} ago`;
-  }
-  return deltaMs >= 0 ? `in ${magnitude}` : `${magnitude} ago`;
-}
-
-function formatDataStatusDuration(durationMs: number) {
-  const minutes = Math.floor(durationMs / 60_000);
-  if (minutes < 60) {
-    return `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) {
-    return `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  if (days < 60) {
-    return `${days}d`;
-  }
-  const months = Math.floor(days / 30);
-  if (months < 24) {
-    return `${months}mo`;
-  }
-  return `${Math.floor(days / 365)}y`;
 }
 
 function ZoomControl(props: {
@@ -13258,29 +13199,6 @@ function writePersistedWebUiState(state: PersistedWebUiState) {
     return;
   }
   window.localStorage.setItem(webUiStateStorageKey, JSON.stringify(state));
-}
-
-function mergeRecentAirportIds(
-  airports: ChartPageData["airports"],
-  storedIds: string[],
-) {
-  const validIds = new Set(airports.map((airport) => airport.id));
-  const orderedIds = storedIds.filter((id, index) => validIds.has(id) && storedIds.indexOf(id) === index);
-  for (const airport of airports) {
-    if (!orderedIds.includes(airport.id)) {
-      orderedIds.push(airport.id);
-    }
-  }
-  return orderedIds;
-}
-
-function moveAirportToFront(
-  currentIds: string[],
-  airportId: string,
-  airports: ChartPageData["airports"],
-) {
-  const mergedIds = mergeRecentAirportIds(airports, [airportId, ...currentIds.filter((id) => id !== airportId)]);
-  return mergedIds.includes(airportId) ? mergedIds : [airportId, ...mergedIds];
 }
 
 function plateFolderColor(category: PlateFolderCategory) {

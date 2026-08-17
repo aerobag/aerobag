@@ -69,17 +69,52 @@ class SessionSnapshotRefreshRunnerTest {
         runner.close()
     }
 
+    @Test
+    fun viewportGestureAndActivityUseTheSharedCoreScheduler() {
+        val calls = mutableListOf<String>()
+        val bridge = snapshotSchedulerBridge(
+            request = { """{"kind":"idle"}""" },
+            complete = { """{"kind":"idle"}""" },
+            gesture = { active ->
+                calls += "gesture:$active"
+                """{"kind":"idle"}"""
+            },
+            activity = {
+                calls += "activity"
+                """{"kind":"idle"}"""
+            },
+        )
+        val runner = SessionSnapshotRefreshRunner(
+            refresh = { Unit },
+            resultExecutor = Executor(Runnable::run),
+            bridge = bridge,
+            clockMs = { 1_000 },
+        )
+
+        runner.viewportGestureActiveChanged(true)
+        runner.viewportActivity()
+        runner.viewportGestureActiveChanged(false)
+
+        assertEquals(listOf("gesture:true", "activity", "gesture:false"), calls)
+        runner.close()
+    }
+
     private fun snapshotSchedulerBridge(
         request: () -> String,
         complete: () -> String,
+        gesture: (Boolean) -> String = { """{"kind":"idle"}""" },
+        activity: () -> String = { """{"kind":"idle"}""" },
     ): NativeBridge = Proxy.newProxyInstance(
         NativeBridge::class.java.classLoader,
         arrayOf(NativeBridge::class.java),
-    ) { _, method, _ ->
+    ) { _, method, arguments ->
         when (method.name) {
             "createSessionSnapshotRefreshScheduler" -> 1L
             "sessionSnapshotRefreshSchedulerRequestJson" -> request()
             "sessionSnapshotRefreshSchedulerRefreshCompletedJson" -> complete()
+            "sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson" ->
+                gesture(requireNotNull(arguments)[2] as Boolean)
+            "sessionSnapshotRefreshSchedulerViewportActivityJson" -> activity()
             "sessionSnapshotRefreshSchedulerPollJson" -> """{"kind":"idle"}"""
             "destroySessionSnapshotRefreshScheduler" -> Unit
             "equals" -> false

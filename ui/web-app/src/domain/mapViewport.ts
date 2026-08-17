@@ -4,6 +4,8 @@
 
 import type { MapViewJson } from "./types";
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 type ViewportMap = Pick<MapViewJson, "min_zoom" | "max_zoom" | "initial_viewport">;
 
 export type MapViewportState = {
@@ -78,7 +80,7 @@ export function dragViewport(
   viewport: MapViewportState,
   dx: number,
   dy: number,
-  mapUpDeg = 0,
+  mapUpDeg = viewport.rotationDeg ?? 0,
 ): MapViewportState {
   const scale = scaleForZoom(viewport.zoom);
   const worldAlignedDelta = rotateScreenOffset(dx, dy, mapUpDeg);
@@ -93,7 +95,8 @@ export function sameMapViewport(left: MapViewportState, right: MapViewportState)
   return (
     Math.abs(left.centerWorldX - right.centerWorldX) < VIEWPORT_EPSILON &&
     Math.abs(left.centerWorldY - right.centerWorldY) < VIEWPORT_EPSILON &&
-    Math.abs(left.zoom - right.zoom) < VIEWPORT_EPSILON
+    Math.abs(left.zoom - right.zoom) < VIEWPORT_EPSILON &&
+    Math.abs((left.rotationDeg ?? 0) - (right.rotationDeg ?? 0)) < VIEWPORT_EPSILON
   );
 }
 
@@ -109,7 +112,7 @@ export function screenToWorld(
   point: ScreenPoint,
   width: number,
   height: number,
-  mapUpDeg = 0,
+  mapUpDeg = viewport.rotationDeg ?? 0,
 ): { x: number; y: number } {
   const scale = scaleForZoom(viewport.zoom);
   const worldAlignedOffset = rotateScreenOffset(
@@ -128,11 +131,12 @@ export function worldToScreen(
   world: { x: number; y: number },
   width: number,
   height: number,
-  mapUpDeg = 0,
+  mapUpDeg = viewport.rotationDeg ?? 0,
 ): ScreenPoint {
   const scale = scaleForZoom(viewport.zoom);
+  const wrappedWorldX = world.x + Math.round((viewport.centerWorldX - world.x) / WORLD_SIZE) * WORLD_SIZE;
   const screenAlignedOffset = rotateScreenOffset(
-    (world.x - viewport.centerWorldX) * scale,
+    (wrappedWorldX - viewport.centerWorldX) * scale,
     (world.y - viewport.centerWorldY) * scale,
     -mapUpDeg,
   );
@@ -195,31 +199,17 @@ function rotateScreenOffset(x: number, y: number, degrees: number): ScreenPoint 
   };
 }
 
-function displayFrameTransformParts(from: MapDisplayFrame, to: MapDisplayFrame): {
-  scale: number;
-  translateX: number;
-  translateY: number;
-} {
-  const fromScale = scaleForZoom(from.viewport.zoom);
-  const toScale = scaleForZoom(to.viewport.zoom);
-  const scale = toScale / fromScale;
-  return {
-    scale,
-    translateX: to.width / 2 - (from.width / 2) * scale + (from.viewport.centerWorldX - to.viewport.centerWorldX) * toScale,
-    translateY: to.height / 2 - (from.height / 2) * scale + (from.viewport.centerWorldY - to.viewport.centerWorldY) * toScale,
-  };
-}
-
 export function transformScreenPointBetweenFrames(
   from: MapDisplayFrame,
   to: MapDisplayFrame,
   point: ScreenPoint,
 ): ScreenPoint {
-  const transform = displayFrameTransformParts(from, to);
-  return {
-    x: point.x * transform.scale + transform.translateX,
-    y: point.y * transform.scale + transform.translateY,
-  };
+  return worldToScreen(
+    to.viewport,
+    screenToWorld(from.viewport, point, from.width, from.height),
+    to.width,
+    to.height,
+  );
 }
 
 export function displayFrameCssTransform(from: MapDisplayFrame, to: MapDisplayFrame): string | undefined {
@@ -230,8 +220,10 @@ export function displayFrameCssTransform(from: MapDisplayFrame, to: MapDisplayFr
   ) {
     return undefined;
   }
-  const transform = displayFrameTransformParts(from, to);
-  return `matrix(${transform.scale}, 0, 0, ${transform.scale}, ${transform.translateX}, ${transform.translateY})`;
+  const origin = transformScreenPointBetweenFrames(from, to, { x: 0, y: 0 });
+  const xBasis = transformScreenPointBetweenFrames(from, to, { x: 1, y: 0 });
+  const yBasis = transformScreenPointBetweenFrames(from, to, { x: 0, y: 1 });
+  return `matrix(${xBasis.x - origin.x}, ${xBasis.y - origin.y}, ${yBasis.x - origin.x}, ${yBasis.y - origin.y}, ${origin.x}, ${origin.y})`;
 }
 
 export function zoomAroundPoint(
@@ -241,7 +233,7 @@ export function zoomAroundPoint(
   width: number,
   height: number,
   nextZoom: number,
-  mapUpDeg = 0,
+  mapUpDeg = viewport.rotationDeg ?? 0,
 ): MapViewportState {
   const clamped = clampZoom(nextZoom, mapView);
   const anchorWorld = screenToWorld(viewport, anchor, width, height, mapUpDeg);
@@ -255,6 +247,7 @@ export function zoomAroundPoint(
     zoom: clamped,
     centerWorldX: anchorWorld.x - worldAlignedOffset.x / nextScale,
     centerWorldY: anchorWorld.y - worldAlignedOffset.y / nextScale,
+    rotationDeg: viewport.rotationDeg,
   };
 }
 
@@ -318,6 +311,7 @@ export function applyPinchGesture(
     zoom: nextZoom,
     centerWorldX: (centerOne.x + centerTwo.x) / 2,
     centerWorldY: (centerOne.y + centerTwo.y) / 2,
+    rotationDeg: snapshot.viewport.rotationDeg,
   };
 }
 

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
+import conformance from "../../../core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json";
 import { mapView } from "./mapTestFixtures";
 import {
   applyPinchGesture,
@@ -125,6 +126,13 @@ describe("mapViewport", () => {
     expect(sameMapViewport(viewport, nearlySame)).toBe(true);
   });
 
+  it("treats rotation as part of viewport identity", () => {
+    const viewport = createInitialViewport(mapView);
+
+    expect(sameMapViewport(viewport, { ...viewport, rotationDeg: 0 })).toBe(true);
+    expect(sameMapViewport(viewport, { ...viewport, rotationDeg: 15 })).toBe(false);
+  });
+
   it("rejects stale map-follow targets while waiting for a follow-sync acknowledgement", () => {
     const awaited = createInitialViewport(mapView);
     const stale = {
@@ -164,6 +172,61 @@ describe("mapViewport", () => {
 
     expect(carried.x).toBeCloseTo(direct.x, 8);
     expect(carried.y).toBeCloseTo(direct.y, 8);
+  });
+
+  it("matches core's shared antimeridian and rotated-frame vectors", () => {
+    const antimeridian = conformance.map_antimeridian;
+    expect(worldToScreen(
+      {
+        centerWorldX: antimeridian.viewport.center_world_x,
+        centerWorldY: antimeridian.viewport.center_world_y,
+        zoom: antimeridian.viewport.zoom,
+        rotationDeg: antimeridian.viewport.rotation_deg,
+      },
+      antimeridian.world,
+      antimeridian.width,
+      antimeridian.height,
+    )).toEqual(expect.objectContaining({
+      x: expect.closeTo(antimeridian.expected_screen.x, 8),
+      y: expect.closeTo(antimeridian.expected_screen.y, 8),
+    }));
+
+    const frame = conformance.map_frame_transform;
+    const projected = transformScreenPointBetweenFrames(
+      {
+        viewport: {
+          centerWorldX: frame.from_viewport.center_world_x,
+          centerWorldY: frame.from_viewport.center_world_y,
+          zoom: frame.from_viewport.zoom,
+          rotationDeg: frame.from_viewport.rotation_deg,
+        },
+        width: frame.from_width,
+        height: frame.from_height,
+      },
+      {
+        viewport: {
+          centerWorldX: frame.to_viewport.center_world_x,
+          centerWorldY: frame.to_viewport.center_world_y,
+          zoom: frame.to_viewport.zoom,
+          rotationDeg: frame.to_viewport.rotation_deg,
+        },
+        width: frame.to_width,
+        height: frame.to_height,
+      },
+      frame.point,
+    );
+    expect(projected.x).toBeCloseTo(frame.expected_screen.x, 8);
+    expect(projected.y).toBeCloseTo(frame.expected_screen.y, 8);
+  });
+
+  it("preserves viewport rotation through zoom and pinch", () => {
+    const viewport = { ...createInitialViewport(mapView), rotationDeg: 37 };
+    const zoomed = zoomAroundPoint(viewport, mapView, { x: 300, y: 250 }, 1200, 900, viewport.zoom + 0.5);
+    const snapshot = createPinchSnapshot(viewport, { x: 300, y: 450 }, { x: 900, y: 450 }, 1200, 900);
+    const pinched = applyPinchGesture(snapshot, { x: 250, y: 450 }, { x: 950, y: 450 }, mapView, 1200, 900);
+
+    expect(zoomed.rotationDeg).toBe(37);
+    expect(pinched.rotationDeg).toBe(37);
   });
 
   it("round-trips screen and world coordinates with a rotated map", () => {

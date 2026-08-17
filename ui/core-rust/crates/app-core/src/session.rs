@@ -33,9 +33,10 @@ pub use app_ui_contracts::{
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
         UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
-        UiPlaybackPanelState, UiSessionProjectionAssignment, UiSessionProjectionPatch,
-        UiSessionUpdate, UiSessionUpdateGroup, UiSettingsAction, UiSettingsGridItem,
-        UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop,
+        UiNavigationPageId, UiNavigationPageOption, UiNavigationPageState, UiPlaybackPanelState,
+        UiSessionProjectionAssignment, UiSessionProjectionPatch, UiSessionUpdate,
+        UiSessionUpdateGroup, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
+        UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop,
     },
 };
 
@@ -64,6 +65,7 @@ use crate::{
         DataStatusLiveFeedConnectionMode, DataStatusLiveFeedProductInput,
         DataStatusModelCheckpoint, DataStatusNavDbArtifactInput, DataStatusNavDbFamilyRecord,
         DataStatusNavDbPackageRecord, DataStatusPageInput, DataStatusPublicationInput,
+        DataStatusSourcesInput,
     },
     flight_plan_controller::{
         guidance_leg_geometry_from_route, self_contained_guidance_leg_geometry_for_plan,
@@ -178,6 +180,7 @@ pub struct UiSessionSnapshot {
     pub cloud_page_state: UiCloudPageState,
     pub offline_package_preferences_json: String,
     pub home_page_state: UiHomePageState,
+    pub navigation_page_state: UiNavigationPageState,
     pub display_policy: Option<UiDisplayPolicy>,
     pub disclaimer_state: UiDisclaimerState,
     pub debug_state: UiDebugState,
@@ -415,6 +418,7 @@ struct SessionCoordinatorModel {
     wall_clock_epoch_ms: i64,
     altitude_planner_wind_selection: AltitudePlannerWindSelection,
     time_display_mode: crate::TimeDisplayMode,
+    data_sources: Option<DataStatusSourcesInput>,
 }
 
 #[derive(Default)]
@@ -987,6 +991,16 @@ fn data_status_page_input(
             .platform_capabilities
             .client_build
             .clone(),
+        data_sources: session.coordinator.data_sources.clone().map(|mut sources| {
+            if !session
+                .coordinator
+                .debug_state
+                .debug_log_to_developer_server
+            {
+                sources.debug_log_sink_url = None;
+            }
+            sources
+        }),
         nav_db_available: session.nav_data.store().is_some(),
         active_nav_db: session.nav_data.active_artifact().map(|artifact| {
             DataStatusNavDbArtifactInput {
@@ -2149,6 +2163,7 @@ fn create_ui_session_inner(
             wall_clock_epoch_ms,
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             time_display_mode: crate::TimeDisplayMode::Local,
+            data_sources: None,
         },
         projection_versions: SessionProjectionVersionState::default(),
         settings,
@@ -3342,16 +3357,7 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<Had
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
-    let mut recent_airport_ids = vec![airport_id.to_string()];
-    recent_airport_ids.extend(
-        session
-            .coordinator
-            .chart_page_state
-            .recent_airport_ids
-            .iter()
-            .filter(|id| id.as_str() != airport_id)
-            .cloned(),
-    );
+    let (airport_id, recent_airport_ids) = chart_airport_selection(session, airport_id)?;
     session.coordinator.chart_page_state = derive_compact_chart_page_state(
         &plan,
         &recent_airport_ids,
@@ -3360,10 +3366,62 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<Had
             .chart_page_state
             .plate_target_airport_id
             .as_deref(),
-        Some(airport_id),
+        Some(&airport_id),
         None,
     );
     changed_session_update_outcome(session)
+}
+
+pub fn open_chart_airport_in_session(
+    handle: u32,
+    airport_id: &str,
+    chart_id: Option<&str>,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    let plan = session_plan(session)?;
+    let (airport_id, recent_airport_ids) = chart_airport_selection(session, airport_id)?;
+    session.coordinator.chart_page_state =
+        derive_compact_chart_page_state_with_reference(CompactChartPageInput {
+            plan: &plan,
+            stored_recent_airport_ids: &recent_airport_ids,
+            plate_target_airport_id: Some(&airport_id),
+            candidate_airport_id: Some(&airport_id),
+            selected_reference_family_id: None,
+            candidate_chart_id: chart_id,
+            suggested_chart_ids: &[],
+        });
+    changed_session_update_outcome(session)
+}
+
+fn chart_airport_selection(
+    session: &UiSession,
+    airport_id: &str,
+) -> AppResult<(String, Vec<String>)> {
+    let airport_id = normalize_compact_airport_id(Some(airport_id)).ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "airport selection requires a nonempty airport id".to_string(),
+    })?;
+    let mut recent_airport_ids = Vec::with_capacity(
+        session
+            .coordinator
+            .chart_page_state
+            .recent_airport_ids
+            .len()
+            .saturating_add(1),
+    );
+    recent_airport_ids.push(airport_id.clone());
+    recent_airport_ids.extend(
+        session
+            .coordinator
+            .chart_page_state
+            .recent_airport_ids
+            .iter()
+            .filter(|id| !id.eq_ignore_ascii_case(&airport_id))
+            .cloned(),
+    );
+    Ok((airport_id, recent_airport_ids))
 }
 
 pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOperationOutcome> {
@@ -5896,6 +5954,23 @@ pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str)
     let session = &mut *session_guard;
     session.weather.set_source_root_url(source_root_url)?;
     Ok(())
+}
+
+pub fn configure_data_sources_in_session(
+    handle: u32,
+    cycle_data_base_url: &str,
+    live_feeds_base_url: &str,
+    debug_log_sink_url: Option<&str>,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    session.coordinator.data_sources = Some(DataStatusSourcesInput {
+        cycle_data_base_url: cycle_data_base_url.to_string(),
+        live_feeds_base_url: live_feeds_base_url.to_string(),
+        debug_log_sink_url: debug_log_sink_url.map(str::to_string),
+    });
+    changed_session_update_outcome(session)
 }
 
 pub fn live_feed_runtime_decision_in_session(
@@ -11089,6 +11164,7 @@ fn assemble_session_update(
         home: changed_projection_patch(previous.home, current.home, || {
             projection_assignments! {
                 ["home_page_state"] => snapshot.home_page_state,
+                ["navigation_page_state"] => snapshot.navigation_page_state,
             }
         }),
         debug: changed_projection_patch(previous.debug, current.debug, || {
@@ -11210,6 +11286,8 @@ fn try_snapshot_for_session(
     }
     let offline_package_preferences_json = package_projection.offline_package_preferences_json;
     let home_page_state = project_home_page_state(&session.coordinator.platform_capabilities);
+    let navigation_page_state =
+        project_navigation_page_state(&session.coordinator.platform_capabilities);
     let clone_ms = elapsed_ms(clone_started_at);
     let total_ms = elapsed_ms(total_started_at);
     crate::core_perf_debug_log("session.snapshot.core", || {
@@ -11269,6 +11347,7 @@ fn try_snapshot_for_session(
         cloud_page_state,
         offline_package_preferences_json,
         home_page_state,
+        navigation_page_state,
         display_policy,
         disclaimer_state,
         debug_state,
@@ -11454,6 +11533,45 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
         button(UiHomeDestination::About, "ABOUT"),
     ]);
     UiHomePageState { buttons }
+}
+
+fn project_navigation_page_state(capabilities: &PlatformCapabilities) -> UiNavigationPageState {
+    const MAX_HISTORY_DEPTH: usize = 64;
+    let option = |id, label: &str, launcher_label: &str, chart_or_plate_return_target| {
+        UiNavigationPageOption {
+            id,
+            label: label.to_string(),
+            launcher_label: launcher_label.to_string(),
+            chart_or_plate_return_target,
+        }
+    };
+    let mut options = vec![
+        option(UiNavigationPageId::Map, "CHART", "CHART", true),
+        option(UiNavigationPageId::Charts, "PLATE", "PLATE", true),
+        option(UiNavigationPageId::FlightPlan, "FLIGHT PLAN", "PLAN", false),
+        option(
+            UiNavigationPageId::AltitudePlanner,
+            "ALTITUDE PLANNER",
+            "ALT",
+            false,
+        ),
+        option(UiNavigationPageId::DataStatus, "STATUS", "STATUS", false),
+        option(UiNavigationPageId::Settings, "SETTINGS", "SET", false),
+        option(UiNavigationPageId::Home, "HOME", "HOME", false),
+    ];
+    if capabilities.offline_packages.is_some() {
+        options.push(option(
+            UiNavigationPageId::OfflinePackages,
+            "OFFLINE PACKAGES",
+            "PKG",
+            false,
+        ));
+    }
+    UiNavigationPageState {
+        options,
+        max_history_depth: MAX_HISTORY_DEPTH,
+        default_chart_or_plate_return_target: UiNavigationPageId::Map,
+    }
 }
 
 fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<()> {
@@ -13041,8 +13159,7 @@ mod tests {
         OwnshipSourceId, OwnshipSourceKind, PathTermination, PointVectorRecord,
         ProcedureDiscontinuity, ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg,
         ResolvedLegSource, RouteComponent, SequencingMode, Situation, SituationPosition,
-        SituationSample, UiCloudPanelControl, UiDataStatusPageTimeDisplay,
-        REQUIRED_NAV_DB_CONTRACT_ID,
+        SituationSample, UiCloudPanelControl, REQUIRED_NAV_DB_CONTRACT_ID,
     };
     use chrono::SecondsFormat;
     use std::io::Read;
@@ -13191,6 +13308,7 @@ mod tests {
                 wall_clock_epoch_ms: 0,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
                 time_display_mode: crate::TimeDisplayMode::Local,
+                data_sources: None,
             },
             projection_versions: SessionProjectionVersionState::default(),
             settings: SettingsController::default(),
@@ -13464,7 +13582,10 @@ mod tests {
                 "packages",
                 BTreeSet::from(["offline_package_preferences_json"]),
             ),
-            ("home", BTreeSet::from(["home_page_state"])),
+            (
+                "home",
+                BTreeSet::from(["home_page_state", "navigation_page_state"]),
+            ),
             ("debug", BTreeSet::from(["debug_state"])),
         ]);
         let mut all_paths = BTreeSet::new();
@@ -14722,6 +14843,36 @@ mod tests {
     }
 
     #[test]
+    fn opening_chart_airport_atomically_selects_and_reorders_recent_airports() {
+        let init = create_ui_session(
+            FlightPlan::default(),
+            &["KPAE".to_string(), "KSEA".to_string()],
+            Some("KPAE"),
+            None,
+        )
+        .expect("create session");
+
+        let snapshot =
+            open_chart_airport_in_session(init.handle, "ksea", Some("Plate:KSEA:Folder"))
+                .expect("open chart airport");
+
+        assert_eq!(snapshot.chart_page_state.selected_airport_id, "KSEA");
+        assert_eq!(
+            snapshot.chart_page_state.plate_target_airport_id.as_deref(),
+            Some("KSEA")
+        );
+        assert_eq!(
+            snapshot.chart_page_state.selected_chart_id,
+            "Plate:KSEA:Folder"
+        );
+        assert_eq!(
+            snapshot.chart_page_state.recent_airport_ids,
+            vec!["KSEA", "KPAE"]
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn spot_cdi_label_omits_coordinates() {
         assert_eq!(
             nav_ref_label(&NavRef::Spot(LatLon {
@@ -14897,6 +15048,11 @@ mod tests {
         selected_chart_id: Option<&str>,
         suggested_chart_ids: &[String],
     ));
+    snapshot_wrapper!(open_chart_airport_in_session(
+        handle: u32,
+        airport_id: &str,
+        chart_id: Option<&str>,
+    ));
     snapshot_wrapper!(report_live_feed_connection_event_in_session(
         handle: u32,
         event: LiveFeedConnectionEvent,
@@ -15014,6 +15170,48 @@ mod tests {
                 "This client fetches data as needed and does not support managing Offline Packages."
             )
         );
+        assert_eq!(
+            web_snapshot
+                .navigation_page_state
+                .options
+                .iter()
+                .map(|option| (
+                    option.id,
+                    option.label.as_str(),
+                    option.launcher_label.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (UiNavigationPageId::Map, "CHART", "CHART"),
+                (UiNavigationPageId::Charts, "PLATE", "PLATE"),
+                (UiNavigationPageId::FlightPlan, "FLIGHT PLAN", "PLAN"),
+                (
+                    UiNavigationPageId::AltitudePlanner,
+                    "ALTITUDE PLANNER",
+                    "ALT",
+                ),
+                (UiNavigationPageId::DataStatus, "STATUS", "STATUS"),
+                (UiNavigationPageId::Settings, "SETTINGS", "SET"),
+                (UiNavigationPageId::Home, "HOME", "HOME"),
+            ]
+        );
+        assert_eq!(web_snapshot.navigation_page_state.max_history_depth, 64);
+        assert_eq!(
+            web_snapshot
+                .navigation_page_state
+                .default_chart_or_plate_return_target,
+            UiNavigationPageId::Map,
+        );
+        assert_eq!(
+            web_snapshot
+                .navigation_page_state
+                .options
+                .iter()
+                .filter(|option| option.chart_or_plate_return_target)
+                .map(|option| option.id)
+                .collect::<Vec<_>>(),
+            vec![UiNavigationPageId::Map, UiNavigationPageId::Charts],
+        );
 
         let android_snapshot = configure_platform_capabilities_in_session(
             init.handle,
@@ -15046,6 +15244,22 @@ mod tests {
             .expect("offline packages button");
         assert!(android_offline.enabled);
         assert_eq!(android_offline.disabled_reason, None);
+        assert_eq!(
+            android_snapshot
+                .navigation_page_state
+                .options
+                .last()
+                .map(|option| (
+                    option.id,
+                    option.label.as_str(),
+                    option.launcher_label.as_str()
+                )),
+            Some((
+                UiNavigationPageId::OfflinePackages,
+                "OFFLINE PACKAGES",
+                "PKG",
+            ))
+        );
     }
 
     #[test]
@@ -21720,8 +21934,7 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Expires"
                 && fact.value == "2026-05-24 12:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-05-24T12:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
     }
 
@@ -21854,14 +22067,12 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next expires"
                 && fact.value == "2026-07-09 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
     }
 
@@ -21895,14 +22106,12 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next expires"
                 && fact.value == "2026-07-09 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
     }
 
@@ -21933,14 +22142,12 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next expires"
                 && fact.value == "2026-07-09 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
     }
 
@@ -21974,19 +22181,17 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next expires"
                 && fact.value == "2026-07-09 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
     }
 
     #[test]
-    fn data_status_page_delivers_absolute_times_for_web_relative_rendering() {
+    fn data_status_page_delivers_core_rendered_absolute_and_relative_times() {
         let checked_at = utc("2026-05-20T12:00:00Z").timestamp_millis();
         let init =
             create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, checked_at)
@@ -22026,8 +22231,7 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Checked"
                 && fact.value == "2026-05-20 12:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-05-20T12:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Ago)
+                && fact.relative_value.as_deref() == Some("7m ago")
         }));
     }
 
@@ -22476,14 +22680,12 @@ mod tests {
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next expires"
                 && fact.value == "2026-07-09 00:00 UTC"
-                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
-                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+                && fact.relative_value.is_some()
         }));
     }
 

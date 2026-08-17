@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use product_contracts::{LiveFeedProductPolicy, LIVE_FEED_PRODUCT_POLICIES};
 use serde::Deserialize;
@@ -18,9 +18,10 @@ use crate::{
         cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant,
         required_live_feed_age_policy, FreshnessSeverity,
     },
+    time_display::RelativeTimeStyle,
     BundlePackageArtifact, ClientBuildInfo, CloudStatusSummary, DataStatusRecord,
-    UiDataStatusPageFact, UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay,
-    UiDataStatusState, UiStatusSeverity,
+    UiDataStatusPageFact, UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusState,
+    UiStatusSeverity,
 };
 
 const PACKAGE_WARNING_STATUS_PREFIX: &str = "package_ui_warning:";
@@ -122,12 +123,20 @@ pub(crate) struct DataStatusForecastInput {
     pub valid_through_epoch_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DataStatusSourcesInput {
+    pub cycle_data_base_url: String,
+    pub live_feeds_base_url: String,
+    pub debug_log_sink_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DataStatusPageInput {
     pub now_epoch_ms: i64,
     pub time_display_mode: crate::TimeDisplayMode,
     pub local_time_zone: Tz,
     pub client_build: Option<ClientBuildInfo>,
+    pub data_sources: Option<DataStatusSourcesInput>,
     pub nav_db_available: bool,
     pub active_nav_db: Option<DataStatusNavDbArtifactInput>,
     pub nav_db_packages: Vec<DataStatusNavDbPackageRecord>,
@@ -416,8 +425,12 @@ fn project_data_status_page_state(
     records: &BTreeMap<String, DataStatusRecord>,
     input: &DataStatusPageInput,
 ) -> UiDataStatusPageState {
-    let mut rows = vec![
-        client_build_status_page_row(input.client_build.as_ref()),
+    let mut rows = Vec::new();
+    if let Some(data_sources) = input.data_sources.as_ref() {
+        rows.push(data_sources_status_page_row(data_sources));
+    }
+    rows.extend([
+        client_build_status_page_row(input.client_build.as_ref(), input),
         publication_status_page_row(input),
         expected_contract_versions_status_page_row(),
         nav_db_status_page_row(input),
@@ -452,7 +465,7 @@ fn project_data_status_page_state(
             ],
         ),
         live_feed_connection_status_page_row(input),
-    ];
+    ]);
     let mut live_feed_policies = LIVE_FEED_PRODUCT_POLICIES.iter().collect::<Vec<_>>();
     live_feed_policies.sort_by_key(|policy| policy.status_order);
     rows.extend(
@@ -463,14 +476,14 @@ fn project_data_status_page_state(
                 "winds-aloft" => winds_aloft_status_page_row(
                     &input.forecast,
                     records.get(WINDS_ALOFT_UNAVAILABLE_STATUS_ID),
+                    input,
                 ),
                 _ => live_feed_product_status_page_row(input, policy),
             }),
     );
     if let Some(cloud) = input.cloud.as_ref() {
-        rows.insert(3, cloud_status_page_row(cloud));
+        rows.insert(3, cloud_status_page_row(cloud, input));
     }
-    project_status_clock_facts(&mut rows, input);
     rows.extend(package_warning_status_page_rows(records));
     UiDataStatusPageState {
         title: "Status".to_string(),
@@ -479,7 +492,46 @@ fn project_data_status_page_state(
     }
 }
 
-fn cloud_status_page_row(summary: &CloudStatusSummary) -> UiDataStatusPageRow {
+fn data_sources_status_page_row(input: &DataStatusSourcesInput) -> UiDataStatusPageRow {
+    let mut facts = vec![
+        UiDataStatusPageFact {
+            label: "Cycle Data".to_string(),
+            value: input.cycle_data_base_url.clone(),
+            action_id: None,
+            link_url: Some(input.cycle_data_base_url.clone()),
+            relative_value: None,
+        },
+        UiDataStatusPageFact {
+            label: "Live Feeds".to_string(),
+            value: input.live_feeds_base_url.clone(),
+            action_id: None,
+            link_url: Some(input.live_feeds_base_url.clone()),
+            relative_value: None,
+        },
+    ];
+    if let Some(url) = input.debug_log_sink_url.as_ref() {
+        facts.push(UiDataStatusPageFact {
+            label: "Debug log sink".to_string(),
+            value: url.clone(),
+            action_id: None,
+            link_url: Some(url.clone()),
+            relative_value: None,
+        });
+    }
+    UiDataStatusPageRow {
+        id: "data_sources".to_string(),
+        label: "Data Sources".to_string(),
+        value: "Config".to_string(),
+        severity: UiStatusSeverity::Info,
+        detail: "Base URLs used for remote aviation data.".to_string(),
+        facts,
+    }
+}
+
+fn cloud_status_page_row(
+    summary: &CloudStatusSummary,
+    input: &DataStatusPageInput,
+) -> UiDataStatusPageRow {
     status_page_row(
         "cloud:status",
         "Cloud",
@@ -496,7 +548,8 @@ fn cloud_status_page_row(summary: &CloudStatusSummary) -> UiDataStatusPageRow {
                         status_time_fact(
                             fact.label.clone(),
                             utc_from_epoch_ms(epoch_ms),
-                            UiDataStatusPageTimeDisplay::Ago,
+                            RelativeTimeStyle::Ago,
+                            input,
                         )
                     },
                 )
@@ -606,7 +659,10 @@ fn data_status_page_summary(rows: &[UiDataStatusPageRow]) -> String {
     parts.join(", ")
 }
 
-fn client_build_status_page_row(build: Option<&ClientBuildInfo>) -> UiDataStatusPageRow {
+fn client_build_status_page_row(
+    build: Option<&ClientBuildInfo>,
+    input: &DataStatusPageInput,
+) -> UiDataStatusPageRow {
     let Some(build) = build else {
         return status_page_row(
             "client",
@@ -624,7 +680,8 @@ fn client_build_status_page_row(build: Option<&ClientBuildInfo>) -> UiDataStatus
             facts.push(status_time_fact(
                 "Built",
                 instant,
-                UiDataStatusPageTimeDisplay::Ago,
+                RelativeTimeStyle::Ago,
+                input,
             ));
         } else {
             facts.push(status_fact("Built", built_at_utc.to_string()));
@@ -700,7 +757,8 @@ fn publication_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageR
         facts.push(status_time_fact(
             "Published",
             as_of,
-            UiDataStatusPageTimeDisplay::Ago,
+            RelativeTimeStyle::Ago,
+            input,
         ));
     }
     if let Some(checked_at) = publication.checked_epoch_ms {
@@ -708,7 +766,8 @@ fn publication_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageR
         facts.push(status_time_fact(
             "Checked",
             checked_utc,
-            UiDataStatusPageTimeDisplay::Ago,
+            RelativeTimeStyle::Ago,
+            input,
         ));
         return status_page_row(
             "publication:current_artifacts",
@@ -746,7 +805,8 @@ fn live_feed_connection_status_page_row(input: &DataStatusPageInput) -> UiDataSt
         facts.push(status_time_fact(
             "Last server event",
             utc_from_epoch_ms(last_heard),
-            UiDataStatusPageTimeDisplay::Ago,
+            RelativeTimeStyle::Ago,
+            input,
         ));
     }
     if let Some(status) = connection.network_status {
@@ -772,7 +832,8 @@ fn live_feed_connection_status_page_row(input: &DataStatusPageInput) -> UiDataSt
         facts.push(status_time_fact(
             "Last error",
             utc_from_epoch_ms(last_error),
-            UiDataStatusPageTimeDisplay::Ago,
+            RelativeTimeStyle::Ago,
+            input,
         ));
     }
     if let Some(message) = last_error_message {
@@ -910,7 +971,8 @@ fn live_feed_product_status_page_row(
         facts.push(status_time_fact(
             "Collected At",
             collected,
-            UiDataStatusPageTimeDisplay::Old,
+            RelativeTimeStyle::Old,
+            input,
         ));
     }
     if !source.loaded {
@@ -972,6 +1034,7 @@ fn live_feed_product_status_page_row(
 fn winds_aloft_status_page_row(
     forecast: &DataStatusForecastInput,
     unavailable: Option<&DataStatusRecord>,
+    input: &DataStatusPageInput,
 ) -> UiDataStatusPageRow {
     let mut facts = Vec::new();
     if let Some(version) = forecast.version_label.as_ref() {
@@ -987,7 +1050,8 @@ fn winds_aloft_status_page_row(
         facts.push(status_time_fact(
             "Model Cycle",
             cycle,
-            UiDataStatusPageTimeDisplay::Old,
+            RelativeTimeStyle::Old,
+            input,
         ));
     }
     if let Some(valid_through) = forecast
@@ -997,7 +1061,8 @@ fn winds_aloft_status_page_row(
         facts.push(status_time_fact(
             "Valid Through",
             valid_through,
-            UiDataStatusPageTimeDisplay::Until,
+            RelativeTimeStyle::Until,
+            input,
         ));
     }
     if let Some(unavailable) = unavailable {
@@ -1293,7 +1358,8 @@ fn cycle_package_group_status_page_row(
         facts.push(status_time_fact(
             "Effective",
             effective,
-            UiDataStatusPageTimeDisplay::Ago,
+            RelativeTimeStyle::Ago,
+            input,
         ));
     }
     let next_cycle_window = next_published_cycle_window_for_families(input, families, now_utc)
@@ -1302,9 +1368,10 @@ fn cycle_package_group_status_page_row(
         facts.push(status_time_fact(
             "Expires",
             expiration,
-            UiDataStatusPageTimeDisplay::Until,
+            RelativeTimeStyle::Until,
+            input,
         ));
-        push_next_cycle_window_facts(&mut facts, next_cycle_window);
+        push_next_cycle_window_facts(&mut facts, next_cycle_window, input);
         return status_page_row(
             id,
             label,
@@ -1323,7 +1390,7 @@ fn cycle_package_group_status_page_row(
             status_family_list(missing_expiration_families.iter().copied()),
         ));
     }
-    push_next_cycle_window_facts(&mut facts, next_cycle_window);
+    push_next_cycle_window_facts(&mut facts, next_cycle_window, input);
     status_page_row(
         id,
         label,
@@ -1435,6 +1502,7 @@ fn next_cycle_window_for_package_groups(
 fn push_next_cycle_window_facts(
     facts: &mut Vec<UiDataStatusPageFact>,
     window: Option<CycleWindow>,
+    input: &DataStatusPageInput,
 ) {
     let Some(window) = window else {
         return;
@@ -1443,14 +1511,16 @@ fn push_next_cycle_window_facts(
         facts.push(status_time_fact(
             "Next effective",
             effective,
-            UiDataStatusPageTimeDisplay::Until,
+            RelativeTimeStyle::Until,
+            input,
         ));
     }
     if let Some(expiration) = window.expiration {
         facts.push(status_time_fact(
             "Next expires",
             expiration,
-            UiDataStatusPageTimeDisplay::Until,
+            RelativeTimeStyle::Until,
+            input,
         ));
     }
 }
@@ -1523,7 +1593,8 @@ fn static_package_group_status_page_row(
         facts.push(status_time_fact(
             *family_label,
             *effective_utc,
-            UiDataStatusPageTimeDisplay::Old,
+            RelativeTimeStyle::Old,
+            input,
         ));
     }
     if newest_by_family.is_empty() {
@@ -1619,17 +1690,19 @@ fn nav_db_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
         facts.push(status_time_fact(
             "Effective",
             effective,
-            UiDataStatusPageTimeDisplay::Ago,
+            RelativeTimeStyle::Ago,
+            input,
         ));
     }
     if let Some(expiration) = earliest_expiration {
         facts.push(status_time_fact(
             "Expires",
             expiration,
-            UiDataStatusPageTimeDisplay::Until,
+            RelativeTimeStyle::Until,
+            input,
         ));
     }
-    push_next_cycle_window_facts(&mut facts, next_nav_db_cycle_window(input, now_utc));
+    push_next_cycle_window_facts(&mut facts, next_nav_db_cycle_window(input, now_utc), input);
     if expired || not_yet_effective {
         let (value, condition) = match (expired, not_yet_effective) {
             (true, true) => ("INVALID", "not valid"),
@@ -1732,8 +1805,7 @@ fn status_fact(label: impl Into<String>, value: impl Into<String>) -> UiDataStat
         value: value.into(),
         action_id: None,
         link_url: None,
-        time_utc: None,
-        time_display: None,
+        relative_value: None,
     }
 }
 
@@ -1747,37 +1819,32 @@ fn status_link_fact(
         value: value.into(),
         action_id: None,
         link_url: Some(link_url.into()),
-        time_utc: None,
-        time_display: None,
+        relative_value: None,
     }
 }
 
 fn status_time_fact(
     label: impl Into<String>,
     instant: DateTime<Utc>,
-    display: UiDataStatusPageTimeDisplay,
+    display: RelativeTimeStyle,
+    input: &DataStatusPageInput,
 ) -> UiDataStatusPageFact {
     UiDataStatusPageFact {
         label: label.into(),
-        value: format_status_utc(instant),
-        action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
-        link_url: None,
-        time_utc: Some(format_status_rfc3339(instant)),
-        time_display: Some(display),
-    }
-}
-
-fn project_status_clock_facts(rows: &mut [UiDataStatusPageRow], input: &DataStatusPageInput) {
-    for fact in rows.iter_mut().flat_map(|row| row.facts.iter_mut()) {
-        let Some(instant) = fact.time_utc.as_deref().and_then(parse_utc_instant) else {
-            continue;
-        };
-        fact.value = crate::format_dated_time(
+        value: crate::format_dated_time(
             instant.timestamp_millis(),
             input.time_display_mode,
             input.local_time_zone,
             crate::DatedTimeStyle::IsoMinute,
-        );
+        ),
+        action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
+        link_url: None,
+        relative_value: Some(crate::time_display::format_relative_time(
+            instant.timestamp_millis(),
+            input.now_epoch_ms,
+            display,
+            false,
+        )),
     }
 }
 
@@ -1811,10 +1878,6 @@ fn utc_from_epoch_ms(epoch_ms: i64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
 
-fn format_status_utc(instant: DateTime<Utc>) -> String {
-    instant.format("%Y-%m-%d %H:%M UTC").to_string()
-}
-
 fn format_status_time(instant: DateTime<Utc>, input: &DataStatusPageInput) -> String {
     crate::format_dated_time(
         instant.timestamp_millis(),
@@ -1822,10 +1885,6 @@ fn format_status_time(instant: DateTime<Utc>, input: &DataStatusPageInput) -> St
         input.local_time_zone,
         crate::DatedTimeStyle::IsoMinute,
     )
-}
-
-fn format_status_rfc3339(instant: DateTime<Utc>) -> String {
-    instant.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 fn plural_s(count: usize) -> &'static str {
@@ -1858,6 +1917,7 @@ mod tests {
             time_display_mode: crate::TimeDisplayMode::Local,
             local_time_zone: chrono_tz::UTC,
             client_build: None,
+            data_sources: None,
             nav_db_available: false,
             active_nav_db: None,
             nav_db_packages: Vec::new(),
@@ -1896,6 +1956,27 @@ mod tests {
         assert!(!controller.project_state().rebuilt);
         controller.upsert(record("two"));
         assert!(controller.project_state().rebuilt);
+    }
+
+    #[test]
+    fn data_sources_row_uses_configured_base_urls() {
+        let mut input = page_input();
+        input.data_sources = Some(DataStatusSourcesInput {
+            cycle_data_base_url: "https://cycle.example/packages".to_string(),
+            live_feeds_base_url: "https://feeds.example/live-feeds".to_string(),
+            debug_log_sink_url: Some("https://debug.example/logs".to_string()),
+        });
+
+        let page = DataStatusController::default().project_page(input).state;
+        let row = page.rows.first().expect("data sources row");
+        assert_eq!(row.id, "data_sources");
+        assert_eq!(row.facts[0].value, "https://cycle.example/packages");
+        assert_eq!(row.facts[1].value, "https://feeds.example/live-feeds");
+        assert_eq!(
+            row.facts[1].link_url.as_deref(),
+            Some("https://feeds.example/live-feeds")
+        );
+        assert_eq!(row.facts[2].value, "https://debug.example/logs");
     }
 
     #[test]

@@ -430,6 +430,21 @@ pub fn select_airport_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn open_chart_airport_in_session_json(
+    handle: u64,
+    airport_id_json: &str,
+    chart_id_json: &str,
+) -> Result<String, String> {
+    let airport_id: String =
+        serde_json::from_str(airport_id_json).map_err(|err| err.to_string())?;
+    let chart_id: Option<String> =
+        serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::open_chart_airport_in_session(handle as u32, &airport_id, chart_id.as_deref())
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn register_ownship_source_in_session_paged_json(
     handle: u64,
     registration_json: &str,
@@ -837,6 +852,22 @@ pub fn configure_live_feed_source_in_session_json(
     app_core::configure_live_feed_source_in_session(handle as u32, source_root_url)
         .map_err(|err| err.to_string())?;
     Ok("null".to_string())
+}
+
+pub fn configure_data_sources_in_session_json(
+    handle: u64,
+    cycle_data_base_url: &str,
+    live_feeds_base_url: &str,
+    debug_log_sink_url: Option<&str>,
+) -> Result<String, String> {
+    let outcome = app_core::configure_data_sources_in_session(
+        handle as u32,
+        cycle_data_base_url,
+        live_feeds_base_url,
+        debug_log_sink_url,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn refresh_live_feed_current_in_session_json(handle: u64) -> Result<String, String> {
@@ -1415,6 +1446,25 @@ pub fn session_snapshot_refresh_scheduler_request_json(
         serde_json::from_str(priority_json).map_err(|err| err.to_string())?;
     session_snapshot_refresh_scheduler_decision_json(handle, |scheduler| {
         scheduler.request(now_ms, priority, reason)
+    })
+}
+
+pub fn session_snapshot_refresh_scheduler_viewport_gesture_active_changed_json(
+    handle: u64,
+    now_ms: u64,
+    active: bool,
+) -> Result<String, String> {
+    session_snapshot_refresh_scheduler_decision_json(handle, |scheduler| {
+        scheduler.viewport_gesture_active_changed(now_ms, active)
+    })
+}
+
+pub fn session_snapshot_refresh_scheduler_viewport_activity_json(
+    handle: u64,
+    now_ms: u64,
+) -> Result<String, String> {
+    session_snapshot_refresh_scheduler_decision_json(handle, |scheduler| {
+        scheduler.viewport_activity(now_ms)
     })
 }
 
@@ -2688,6 +2738,40 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapsho
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_ms: i64,
+    active: bool,
+) -> jstring {
+    return_string(
+        &mut env,
+        session_snapshot_refresh_scheduler_viewport_gesture_active_changed_json(
+            handle as u64,
+            now_ms.max(0) as u64,
+            active,
+        ),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapshotRefreshSchedulerViewportActivityJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        session_snapshot_refresh_scheduler_viewport_activity_json(
+            handle as u64,
+            now_ms.max(0) as u64,
+        ),
+    )
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapshotRefreshSchedulerPollJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -2729,6 +2813,29 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createLiveFeed
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_configureDataSourcesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    cycle_data_base_url: JString,
+    live_feeds_base_url: JString,
+    debug_log_sink_url: JString,
+) -> jstring {
+    let result = (|| {
+        let cycle_data_base_url = get_java_string(&mut env, cycle_data_base_url)?;
+        let live_feeds_base_url = get_java_string(&mut env, live_feeds_base_url)?;
+        let debug_log_sink_url = get_java_string(&mut env, debug_log_sink_url)?;
+        configure_data_sources_in_session_json(
+            handle as u64,
+            &cycle_data_base_url,
+            &live_feeds_base_url,
+            (!debug_log_sink_url.is_empty()).then_some(debug_log_sink_url.as_str()),
+        )
+    })();
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
@@ -3492,6 +3599,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectAirportI
     let result = (|| {
         let airport_id = get_java_string(&mut env, airport_id_json)?;
         select_airport_in_session_json(handle as u64, &airport_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_openChartAirportInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    airport_id_json: JString,
+    chart_id_json: JString,
+) -> jstring {
+    let result = (|| {
+        let airport_id = get_java_string(&mut env, airport_id_json)?;
+        let chart_id = get_java_string(&mut env, chart_id_json)?;
+        open_chart_airport_in_session_json(handle as u64, &airport_id, &chart_id)
     })();
     return_string(&mut env, result)
 }

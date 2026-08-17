@@ -58,6 +58,7 @@ import type {
   UiDisclaimerState,
   UiDisplayPolicy,
   UiMapLayerState,
+  UiNavigationPageState,
   UiPlaybackPanelState,
   UiSettingsPageState,
 } from "../generated/sessionPageWire";
@@ -93,13 +94,15 @@ export type {
   UiDataStatusPageFact,
   UiDataStatusPageRow,
   UiDataStatusPageState,
-  UiDataStatusPageTimeDisplay,
   UiDataStatusState,
   UiDebugState,
   UiDisclaimerState,
   UiDisplayPolicy,
   UiMapLayerState,
   UiMapLayerToggleState,
+  UiNavigationPageId,
+  UiNavigationPageOption,
+  UiNavigationPageState,
   UiPlaybackPanelState,
   UiSettingsGridItem,
   UiSettingsPageRow,
@@ -129,6 +132,7 @@ import {
   type UiInvalidationListener,
 } from "./navKv";
 import {
+  DebugLogDeveloperServerPath,
   debugLog,
   debugTiming,
   installRustDebugLogBridge,
@@ -268,6 +272,7 @@ export type UiSessionSnapshot = {
   cloud_page_state: UiCloudPageState;
   offline_package_preferences_json: string;
   home_page_state: UiHomePageState;
+  navigation_page_state: UiNavigationPageState;
   display_policy: UiDisplayPolicy | null;
   disclaimer_state: UiDisclaimerState;
   debug_state: UiDebugState;
@@ -842,6 +847,7 @@ export interface UiSession {
   selectMapFamily(familyId: ChartFamilyId): Promise<UiSessionSnapshot>;
   selectRasterMap(selectedMapId: string): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
+  openChartAirport(airportId: string, chartId?: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
   selectChartReference(familyId: ChartFamilyId, suggestedChartIds: string[]): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
@@ -940,6 +946,7 @@ type WasmModule = {
   maintain_nav_db_in_session_at_epoch_ms(handle: number, nowEpochMs: bigint): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  configure_data_sources_in_session(handle: number, cycleDataBaseUrl: string, liveFeedsBaseUrl: string, debugLogSinkUrl?: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   should_prepare_live_feed_resource(resourceId: string): boolean;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   tick_bad_autopilot_in_session_paged(handle: number, nowEpochMs: number): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -997,6 +1004,7 @@ type WasmModule = {
   query_flight_plan_in_session(sessionHandle: number, queryJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  open_chart_airport_in_session(handle: number, airportIdJson: string, chartIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   select_chart_reference_in_session(handle: number, familyIdJson: string, suggestedChartIdsJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
@@ -1232,6 +1240,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
         ), "startup.session.configure_platform"),
+      );
+      const origin = globalThis.location?.origin?.replace(/\/+$/, "") ?? "";
+      const liveFeedRoot = liveFeedSourceUrl().replace(/\/+$/, "");
+      await debugTiming("startup.session.configure_data_sources", async () =>
+        applyResourceFreeBootstrapMutation(module.configure_data_sources_in_session(
+          created.handle,
+          origin ? `${origin}/packages` : "/packages",
+          liveFeedRoot ? `${liveFeedRoot}/live-feeds` : "/live-feeds",
+          origin ? `${origin}${DebugLogDeveloperServerPath}` : DebugLogDeveloperServerPath,
+        ), "startup.session.configure_data_sources"),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
       await debugTiming("startup.session.load_raster_catalog", () =>
@@ -1967,6 +1985,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      openChartAirport: async (airportId, chartId) => {
+        snapshot = await runSessionMutation(() =>
+          this.module.open_chart_airport_in_session(
+            handle,
+            JSON.stringify(airportId),
+            JSON.stringify(chartId ?? null),
+          ),
+        );
+        return snapshot;
+      },
       selectChart: async (chartId) => {
         snapshot = await runSessionMutation(() =>
           this.module.select_chart_in_session(handle, JSON.stringify(chartId)),
@@ -2384,6 +2412,8 @@ async function loadBestAvailableAdapterUncached(
     "destroy_ui_session_work_scheduler",
     "ui_session_work_scheduler_request",
     "ui_session_work_scheduler_complete",
+    "configure_data_sources_in_session",
+    "open_chart_airport_in_session",
     "restore_chart_page_state_in_session",
     "destroy_session",
     "install_rust_debug_logger",

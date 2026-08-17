@@ -35,6 +35,14 @@ interface NativeBridge {
 
     fun sessionSnapshotRefreshSchedulerRefreshCompletedJson(handle: Long, nowMs: Long): String
 
+    fun sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson(
+        handle: Long,
+        nowMs: Long,
+        active: Boolean,
+    ): String
+
+    fun sessionSnapshotRefreshSchedulerViewportActivityJson(handle: Long, nowMs: Long): String
+
     fun sessionSnapshotRefreshSchedulerPollJson(handle: Long, nowMs: Long): String
 
     fun destroySessionSnapshotRefreshScheduler(handle: Long)
@@ -180,6 +188,13 @@ interface NativeBridge {
         settingsStore: CoreSettingsStore,
     ): String
 
+    fun configureDataSourcesInSessionJson(
+        handle: Long,
+        cycleDataBaseUrl: String,
+        liveFeedsBaseUrl: String,
+        debugLogSinkUrl: String,
+    ): String
+
     fun setInstalledPackageIdsInSessionJson(
         handle: Long,
         packageIdsJson: String,
@@ -298,6 +313,12 @@ interface NativeBridge {
     fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
+    ): String
+
+    fun openChartAirportInSessionJson(
+        handle: Long,
+        airportIdJson: String,
+        chartIdJson: String,
     ): String
 
     fun selectChartInSessionJson(
@@ -626,6 +647,17 @@ object NativeBindings : NativeBridge {
         nowMs: Long,
     ): String
 
+    external override fun sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson(
+        handle: Long,
+        nowMs: Long,
+        active: Boolean,
+    ): String
+
+    external override fun sessionSnapshotRefreshSchedulerViewportActivityJson(
+        handle: Long,
+        nowMs: Long,
+    ): String
+
     external override fun sessionSnapshotRefreshSchedulerPollJson(handle: Long, nowMs: Long): String
 
     external override fun destroySessionSnapshotRefreshScheduler(handle: Long)
@@ -784,6 +816,13 @@ object NativeBindings : NativeBridge {
         settingsStore: CoreSettingsStore,
     ): String
 
+    external override fun configureDataSourcesInSessionJson(
+        handle: Long,
+        cycleDataBaseUrl: String,
+        liveFeedsBaseUrl: String,
+        debugLogSinkUrl: String,
+    ): String
+
     external override fun setInstalledPackageIdsInSessionJson(
         handle: Long,
         packageIdsJson: String,
@@ -897,6 +936,12 @@ object NativeBindings : NativeBridge {
     external override fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
+    ): String
+
+    external override fun openChartAirportInSessionJson(
+        handle: Long,
+        airportIdJson: String,
+        chartIdJson: String,
     ): String
 
     external override fun selectChartInSessionJson(

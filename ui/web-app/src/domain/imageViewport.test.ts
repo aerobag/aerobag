@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
+import conformance from "../../../core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json";
 import {
   clampImageViewport,
   createInitialImageViewport,
@@ -48,5 +49,17 @@ describe("imageViewport", () => {
     const rightDragged = dragImageViewport(start, 800, 0, 600, 2400, 1200, 900, 64);
     expect(leftDragged.left).toBeCloseTo(64, 4);
     expect(rightDragged.left).toBeCloseTo(911, 4);
+  });
+
+  it("matches core's shared out-of-range zoom clamp vector", () => {
+    const vector = conformance.image_clamp;
+    expect(clampImageViewport(
+      vector.state,
+      vector.image_width,
+      vector.image_height,
+      vector.viewport_width,
+      vector.viewport_height,
+      vector.overscroll,
+    )).toEqual(vector.expected);
   });
 });

@@ -472,6 +472,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     resolveChartAssetUrl: (...args) => call("resolveChartAssetUrl", args),
     selectMapFamily: (...args) => updateSnapshot(call("selectMapFamily", args)),
     selectRasterMap: (...args) => updateSnapshot(call("selectRasterMap", args)),
+    openChartAirport: (...args) => updateSnapshot(call("openChartAirport", args)),
     selectAirport: (...args) => updateSnapshot(call("selectAirport", args)),
     selectChart: (...args) => updateSnapshot(call("selectChart", args)),
     selectChartReference: (...args) => updateSnapshot(call("selectChartReference", args)),

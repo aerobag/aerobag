@@ -271,7 +271,7 @@ pub enum UiCloudPanelControl {
 #[serde(deny_unknown_fields)]
 pub struct UiCloudTimeFact {
     pub label: String,
-    pub epoch_ms: i64,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

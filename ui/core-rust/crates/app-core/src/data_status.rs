@@ -6,8 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use app_ui_contracts::session::{
     UiDataStatusBox, UiDataStatusPageFact, UiDataStatusPageRow, UiDataStatusPageState,
-    UiDataStatusPageTimeDisplay, UiDataStatusState, UiStatusAction, UiStatusActionStyle,
-    UiStatusSeverity,
+    UiDataStatusState, UiStatusAction, UiStatusActionStyle, UiStatusSeverity,
 };
 
 #[derive(Debug, Clone, PartialEq)]

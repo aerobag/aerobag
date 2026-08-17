@@ -4,8 +4,6 @@
 
 package org.aerobag.app
 
-import android.content.Context
-import android.content.SharedPreferences
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -35,11 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -62,18 +56,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
-import kotlinx.coroutines.delay
 import org.aerobag.app.domain.ControlsTheme
 import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.UiDataStatusPageFact
 import org.aerobag.app.domain.UiDataStatusPageRow
 import org.aerobag.app.domain.UiDataStatusPageState
-import org.aerobag.app.domain.UiDataStatusPageTimeDisplay
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiStatusAction
 import org.aerobag.app.domain.UiStatusActionStyle
 import org.aerobag.app.domain.UiStatusSeverity
-import org.aerobag.app.domain.NativeBindings
 import kotlin.math.roundToInt
 
 @Composable
@@ -353,7 +344,6 @@ private val DataStatusPageFactTextSize = 9.sp
 internal fun DataStatusPage(
     page: AppPage,
     state: UiDataStatusPageState,
-    dataSourcesRow: UiDataStatusPageRow,
     navElement: NavElementUiView?,
     mostRecentChartOrPlatePage: AppPage,
     onOpenPlan: () -> Unit,
@@ -362,13 +352,6 @@ internal fun DataStatusPage(
     onTimeDisplayAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(page) {
-        while (true) {
-            nowMs = System.currentTimeMillis()
-            delay(10_000)
-        }
-    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -437,10 +420,9 @@ internal fun DataStatusPage(
                 horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
                 verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
             ) {
-                lazyGridItems(listOf(dataSourcesRow) + state.rows, key = { it.id }) { row ->
+                lazyGridItems(state.rows, key = { it.id }) { row ->
                     DataStatusPageRowCard(
                         row = row,
-                        nowMs = nowMs,
                         onTimeDisplayAction = onTimeDisplayAction,
                     )
                 }
@@ -452,7 +434,6 @@ internal fun DataStatusPage(
 @Composable
 private fun DataStatusPageRowCard(
     row: UiDataStatusPageRow,
-    nowMs: Long,
     onTimeDisplayAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -522,7 +503,6 @@ private fun DataStatusPageRowCard(
                         factRow.forEach { fact ->
                             DataStatusFactView(
                                 fact = fact,
-                                nowMs = nowMs,
                                 onTimeDisplayAction = onTimeDisplayAction,
                                 modifier = Modifier.weight(1f),
                             )
@@ -537,69 +517,17 @@ private fun DataStatusPageRowCard(
     }
 }
 
-internal fun dataSourcesStatusRow(
-    context: Context,
-    prefs: SharedPreferences,
-): UiDataStatusPageRow {
-    val appContext = context.applicationContext
-    val configuredCycleDataBaseUrl = readPackageSourceBaseUrl(appContext, prefs)
-    val cycleDataBaseUrl = runCatching {
-        resolvePublicationRootUrl(configuredCycleDataBaseUrl)
-    }.getOrElse {
-        configuredCycleDataBaseUrl.trim().trimEnd('/')
-    }
-    val liveFeedsRootUrl = runCatching {
-        configuredLiveFeedSourceRootUrl(
-            appContext,
-            prefs,
-            loadAndroidDevServerBaseUrl(appContext),
-        )
-    }.getOrElse {
-        cycleDataBaseUrl.trimEnd('/').removeSuffix("/$PublicationPackageRootPath")
-    }
-    val liveFeedsStatusUrl = runCatching {
-        NativeBindings.liveFeedStatusUrl(liveFeedsRootUrl)
-    }.getOrElse {
-        liveFeedsRootUrl
-    }
-    return UiDataStatusPageRow(
-        id = "data_sources",
-        label = "Data Sources",
-        value = "Config",
-        severity = UiStatusSeverity.Info,
-        detail = "Base URLs used for remote aviation data.",
-        facts = listOf(
-            UiDataStatusPageFact(
-                label = "Cycle Data",
-                value = cycleDataBaseUrl,
-                actionId = null,
-                linkUrl = cycleDataBaseUrl,
-                timeUtc = null,
-                timeDisplay = null,
-            ),
-            UiDataStatusPageFact(
-                label = "Live Feeds",
-                value = liveFeedsStatusUrl,
-                actionId = null,
-                linkUrl = liveFeedsStatusUrl,
-                timeUtc = null,
-                timeDisplay = null,
-            ),
-        ),
-    )
-}
 
 @Composable
 private fun DataStatusFactView(
     fact: UiDataStatusPageFact,
-    nowMs: Long,
     onTimeDisplayAction: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val uriHandler = LocalUriHandler.current
     val uiTheme = LocalAerobagUiTheme.current
     val textColor = Color(0xFF101820)
-    val value = dataStatusFactDisplayValue(fact, nowMs)
+    val value = fact.relativeValue?.let { "${fact.value}\n($it)" } ?: fact.value
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -642,40 +570,4 @@ private fun DataStatusFactView(
             },
         )
     }
-}
-
-private fun dataStatusFactDisplayValue(fact: UiDataStatusPageFact, nowMs: Long): String {
-    val timeUtc = fact.timeUtc ?: return fact.value
-    val display = fact.timeDisplay ?: return fact.value
-    val instantMs = runCatching { java.time.Instant.parse(timeUtc).toEpochMilli() }.getOrNull()
-        ?: return fact.value
-    val suffix = dataStatusRelativeTimeSuffix(instantMs, nowMs, display)
-    return if (suffix.isBlank()) fact.value else "${fact.value}\n($suffix)"
-}
-
-private fun dataStatusRelativeTimeSuffix(
-    instantMs: Long,
-    nowMs: Long,
-    display: UiDataStatusPageTimeDisplay,
-): String {
-    val deltaMs = instantMs - nowMs
-    val magnitude = formatDataStatusDuration(kotlin.math.abs(deltaMs))
-    return when (display) {
-        UiDataStatusPageTimeDisplay.Old -> "$magnitude old"
-        UiDataStatusPageTimeDisplay.Until -> if (deltaMs >= 0) "in $magnitude" else "$magnitude ago"
-        UiDataStatusPageTimeDisplay.Ago -> if (deltaMs >= 0) "in $magnitude" else "$magnitude ago"
-    }
-}
-
-private fun formatDataStatusDuration(durationMs: Long): String {
-    val minutes = durationMs / 60_000L
-    if (minutes < 60L) return "${minutes}m"
-    val hours = minutes / 60L
-    if (hours < 48L) return "${hours}h"
-    val days = hours / 24L
-    if (days < 60L) return "${days}d"
-    val months = days / 30L
-    if (months < 24L) return "${months}mo"
-    val years = days / 365L
-    return "${years}y"
 }

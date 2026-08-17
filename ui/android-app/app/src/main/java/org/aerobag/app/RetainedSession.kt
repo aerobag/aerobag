@@ -84,6 +84,17 @@ internal class AerobagRetainedModel : ViewModel() {
                 fetchCoreResource(context.applicationContext, resource, "")
             },
         )
+        val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+        val cycleDataBaseUrl = runCatching {
+            resolvePublicationRootUrl(readPackageSourceBaseUrl(context.applicationContext, prefs))
+        }.getOrElse {
+            readPackageSourceBaseUrl(context.applicationContext, prefs).trim().trimEnd('/')
+        }
+        val liveFeedSourceRootUrl = configuredLiveFeedSourceRootUrl(
+            context.applicationContext,
+            prefs,
+            loadAndroidDevServerBaseUrl(context.applicationContext),
+        )
         val uiSession = appCore.createUiSession(
             recentAirportIds,
             selectedAirportId,
@@ -99,14 +110,10 @@ internal class AerobagRetainedModel : ViewModel() {
                 commit = BuildConfig.AEROBAG_GIT_COMMIT,
                 dirty = BuildConfig.AEROBAG_BUILD_DIRTY,
             ),
+            cycleDataBaseUrl = cycleDataBaseUrl,
+            liveFeedsBaseUrl = "${liveFeedSourceRootUrl.trimEnd('/')}/live-feeds",
         )
-        val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
         uiSession.loadOfflinePackageLibraryCache(readOfflinePackagesLibraryCacheJson(prefs))
-        val liveFeedSourceRootUrl = configuredLiveFeedSourceRootUrl(
-            context.applicationContext,
-            prefs,
-            loadAndroidDevServerBaseUrl(context.applicationContext),
-        )
         val liveFeedCache = LiveFeedCacheStore.create(liveFeedSourceRootUrl)
         val resultExecutor = ContextCompat.getMainExecutor(context.applicationContext)
         return AerobagRetainedCoreSession(

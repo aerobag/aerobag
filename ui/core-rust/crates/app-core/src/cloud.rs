@@ -3009,16 +3009,21 @@ impl CloudEngine {
             Vec::new(),
             None,
         );
-        panel.time_facts = self.sync_time_facts();
+        panel.time_facts = self.sync_time_facts(now_epoch_ms);
         panel
     }
 
-    fn sync_time_facts(&self) -> Vec<UiCloudTimeFact> {
+    fn sync_time_facts(&self, now_epoch_ms: i64) -> Vec<UiCloudTimeFact> {
         let mut facts = Vec::new();
         if let Some(epoch_ms) = self.persistent.last_read_epoch_ms {
             facts.push(UiCloudTimeFact {
                 label: "Last read from cloud".to_string(),
-                epoch_ms,
+                value: crate::time_display::format_relative_time(
+                    epoch_ms,
+                    now_epoch_ms,
+                    crate::time_display::RelativeTimeStyle::Ago,
+                    true,
+                ),
             });
         }
         if let Some(epoch_ms) = self
@@ -3030,13 +3035,23 @@ impl CloudEngine {
         {
             facts.push(UiCloudTimeFact {
                 label: "Last update on cloud".to_string(),
-                epoch_ms,
+                value: crate::time_display::format_relative_time(
+                    epoch_ms,
+                    now_epoch_ms,
+                    crate::time_display::RelativeTimeStyle::Ago,
+                    true,
+                ),
             });
         }
         if let Some(epoch_ms) = self.persistent.last_write_epoch_ms {
             facts.push(UiCloudTimeFact {
                 label: "Last write to cloud from this device".to_string(),
-                epoch_ms,
+                value: crate::time_display::format_relative_time(
+                    epoch_ms,
+                    now_epoch_ms,
+                    crate::time_display::RelativeTimeStyle::Ago,
+                    true,
+                ),
             });
         }
         facts
@@ -5264,15 +5279,15 @@ mod tests {
             vec![
                 UiCloudTimeFact {
                     label: "Last read from cloud".to_string(),
-                    epoch_ms: 30,
+                    value: "0s ago".to_string(),
                 },
                 UiCloudTimeFact {
                     label: "Last update on cloud".to_string(),
-                    epoch_ms: 30,
+                    value: "0s ago".to_string(),
                 },
                 UiCloudTimeFact {
                     label: "Last write to cloud from this device".to_string(),
-                    epoch_ms: 30,
+                    value: "0s ago".to_string(),
                 },
             ]
         );
@@ -5288,11 +5303,11 @@ mod tests {
             vec![
                 UiCloudTimeFact {
                     label: "Last read from cloud".to_string(),
-                    epoch_ms: 40,
+                    value: "0s ago".to_string(),
                 },
                 UiCloudTimeFact {
                     label: "Last update on cloud".to_string(),
-                    epoch_ms: 30,
+                    value: "0s ago".to_string(),
                 },
             ]
         );

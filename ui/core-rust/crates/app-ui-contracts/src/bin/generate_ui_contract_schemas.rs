@@ -155,6 +155,9 @@ fn main() {
             description:
                 "Core-owned session page, platform capability, and settings-action wire contract.",
             export_order: &[
+                "UiNavigationPageId",
+                "UiNavigationPageOption",
+                "UiNavigationPageState",
                 "FlightDataCellTone",
                 "FlightEstimateKind",
                 "FlightDataCell",
@@ -165,7 +168,6 @@ fn main() {
                 "UiStatusAction",
                 "UiDataStatusBox",
                 "UiDataStatusState",
-                "UiDataStatusPageTimeDisplay",
                 "UiDataStatusPageFact",
                 "UiDataStatusPageRow",
                 "UiDataStatusPageState",

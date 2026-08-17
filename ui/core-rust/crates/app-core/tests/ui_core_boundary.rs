@@ -1876,3 +1876,104 @@ fn platform_sse_transports_do_not_define_timing_policy() {
         "the live-feed daemon heartbeat must consume the shared SSE policy"
     );
 }
+
+#[test]
+fn cross_platform_ui_policy_is_projected_by_core() {
+    let contracts = read_repo_file("ui/core-rust/crates/app-ui-contracts/src/session.rs");
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt");
+    let web_status = web.as_str();
+    let android_status =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/DataStatusPage.kt");
+
+    assert!(
+        contracts.contains("pub struct UiNavigationPageState")
+            && contracts.contains("pub struct UiNavigationPageOption")
+            && contracts.contains("default_chart_or_plate_return_target")
+            && session.contains("fn project_navigation_page_state"),
+        "page ordering, labels, semantic roles, and history bounds must be projected by core"
+    );
+    assert!(
+        web.contains("navigationPageOptionsFromCore")
+            && web.contains("defaultChartOrPlateReturnPage")
+            && android.contains("navigationPageOptionsFromCore")
+            && android.contains("defaultChartOrPlateReturnPage"),
+        "both platforms must render the core navigation policy"
+    );
+    for (platform, source, forbidden) in [
+        ("web", web.as_str(), "const pageOptions = ["),
+        ("Android", android.as_str(), "private val PageOptions ="),
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "{platform} must not restore a static navigation policy"
+        );
+    }
+
+    for (platform, source) in [("web", web_status), ("Android", android_status.as_str())] {
+        for forbidden in [
+            "formatDataStatusDuration",
+            "dataStatusRelativeTimeSuffix",
+            "UiDataStatusPageTimeDisplay",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{platform} must render core-projected relative times, not define {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
+    let core = read_repo_file("ui/core-rust/crates/app-core/src/ui_geometry.rs");
+    let web_map = read_repo_file("ui/web-app/src/domain/mapViewport.ts");
+    let web_tests = read_repo_file("ui/web-app/src/domain/mapViewport.test.ts");
+    let android_map =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/MapViewport.kt");
+    let android_tests = read_repo_file(
+        "ui/android-app/app/src/test/java/org/aerobag/app/UiGeometryConformanceTest.kt",
+    );
+
+    assert!(
+        core.contains("ui-geometry-conformance.json")
+            && web_tests.contains("ui-geometry-conformance.json")
+            && android_tests.contains("ui-geometry-conformance.json"),
+        "core, web, and Android geometry must execute the same conformance vectors"
+    );
+    for (platform, source) in [("web", web_map.as_str()), ("Android", android_map.as_str())] {
+        assert!(
+            source.contains("Pointer-rate mirror of app_core::ui_geometry"),
+            "{platform} pointer-rate geometry must document its core authority and conformance fence"
+        );
+    }
+}
+
+#[test]
+fn scheduler_viewport_inputs_have_wasm_and_ffi_parity() {
+    let wasm = read_repo_file("ui/core-rust/crates/app-wasm/src/lib.rs");
+    let ffi = read_repo_file("ui/core-rust/crates/app-ffi/src/lib.rs");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeBindings.kt");
+
+    for operation in [
+        "session_snapshot_refresh_scheduler_viewport_gesture_active_changed",
+        "session_snapshot_refresh_scheduler_viewport_activity",
+    ] {
+        assert!(
+            wasm.contains(&format!("pub fn {operation}")),
+            "WASM is missing scheduler input {operation}"
+        );
+        assert!(
+            ffi.contains(&format!("pub fn {operation}_json")),
+            "FFI is missing scheduler input {operation}"
+        );
+    }
+    assert!(
+        android.contains("sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson")
+            && android.contains("sessionSnapshotRefreshSchedulerViewportActivityJson"),
+        "Android must forward both core scheduler viewport inputs"
+    );
+}

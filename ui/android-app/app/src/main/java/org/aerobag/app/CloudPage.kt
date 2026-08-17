@@ -27,12 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -49,7 +45,6 @@ import androidx.compose.ui.zIndex
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-import kotlinx.coroutines.delay
 import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.generated.CloudPlatformEffect
 import org.aerobag.app.generated.CloudUiActionId
@@ -76,13 +71,6 @@ internal fun CloudPage(
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
     val fields = remember { mutableStateMapOf<CloudUiFieldId, String>() }
-    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            nowMs = System.currentTimeMillis()
-            delay(1_000)
-        }
-    }
     val qrScanner = remember(context) {
         val options = GmsBarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
@@ -185,7 +173,6 @@ internal fun CloudPage(
                             heading = state.syncAccountHeading,
                             panels = state.syncAccountPanels,
                             fields = fields,
-                            nowMs = nowMs,
                             onInvoke = ::invoke,
                             modifier = Modifier.weight(1f),
                         )
@@ -193,7 +180,6 @@ internal fun CloudPage(
                             heading = state.providerHeading,
                             panels = listOfNotNull(state.providerCard),
                             fields = fields,
-                            nowMs = nowMs,
                             onInvoke = ::invoke,
                             modifier = Modifier.weight(1f),
                         )
@@ -203,7 +189,6 @@ internal fun CloudPage(
                         heading = state.syncAccountHeading,
                         panels = state.syncAccountPanels + listOfNotNull(state.providerCard),
                         fields = fields,
-                        nowMs = nowMs,
                         onInvoke = ::invoke,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -212,7 +197,6 @@ internal fun CloudPage(
             CloudPanelView(
                 panel = state.overallStatus,
                 fields = fields,
-                nowMs = nowMs,
                 onInvoke = ::invoke,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -225,7 +209,6 @@ private fun CloudPanelColumn(
     heading: String,
     panels: List<UiCloudPanel>,
     fields: MutableMap<CloudUiFieldId, String>,
-    nowMs: Long,
     onInvoke: (UiCloudAction) -> Unit,
     modifier: Modifier,
 ) {
@@ -237,7 +220,7 @@ private fun CloudPanelColumn(
             color = uiTheme.controls.panelFg,
         )
         panels.forEach { panel ->
-            CloudPanelView(panel, fields, nowMs, onInvoke, Modifier.fillMaxWidth())
+            CloudPanelView(panel, fields, onInvoke, Modifier.fillMaxWidth())
         }
     }
 }
@@ -246,7 +229,6 @@ private fun CloudPanelColumn(
 private fun CloudPanelView(
     panel: UiCloudPanel,
     fields: MutableMap<CloudUiFieldId, String>,
-    nowMs: Long,
     onInvoke: (UiCloudAction) -> Unit,
     modifier: Modifier,
 ) {
@@ -304,7 +286,7 @@ private fun CloudPanelView(
                     color = uiTheme.controls.panelMuted,
                 )
                 Text(
-                    text = formatCloudRelativeTime(fact.epochMs, nowMs),
+                    text = fact.value,
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Black),
                     color = uiTheme.controls.panelFg,
                 )
@@ -334,22 +316,6 @@ private fun CloudPanelView(
         }
         panel.actions.forEach { CloudActionButton(it, fields, onInvoke) }
     }
-}
-
-private fun formatCloudRelativeTime(epochMs: Long, nowMs: Long): String {
-    val deltaMs = epochMs - nowMs
-    val magnitude = formatCloudDuration(kotlin.math.abs(deltaMs))
-    return if (deltaMs > 0L) "in $magnitude" else "$magnitude ago"
-}
-
-private fun formatCloudDuration(durationMs: Long): String {
-    val seconds = durationMs / 1_000L
-    if (seconds < 60L) return "${seconds}s"
-    val minutes = seconds / 60L
-    if (minutes < 60L) return "${minutes}m"
-    val hours = minutes / 60L
-    if (hours < 48L) return "${hours}h"
-    return "${hours / 24L}d"
 }
 
 @Composable

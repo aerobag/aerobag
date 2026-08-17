@@ -88,6 +88,10 @@ const snapshotJson = JSON.stringify({
   home_page_state: {
     buttons: [],
   },
+  navigation_page_state: {
+    options: [],
+    max_history_depth: 64,
+  },
   display_policy: null,
   disclaimer_state: {
     agreement_id: "no-warranty-v1",
@@ -183,6 +187,7 @@ describe("loadBestAvailableAdapter", () => {
         return mutationOutcomeJson();
       },
       configure_platform_capabilities_in_session: async () => mutationOutcomeJson(),
+      configure_data_sources_in_session: async () => mutationOutcomeJson(),
       take_cloud_authorization_request_in_session: async () => "null",
       complete_cloud_authorization_in_session: async () => mutationOutcomeJson(),
       perform_cloud_ui_action_in_session: async () => mutationOutcomeJson(),
@@ -206,6 +211,7 @@ describe("loadBestAvailableAdapter", () => {
         result: { flight_plan_route_revision: 0, segments: [] },
       }),
       select_airport_in_session: async () => mutationOutcomeJson(),
+      open_chart_airport_in_session: async () => mutationOutcomeJson(),
       select_chart_in_session: async () => mutationOutcomeJson(),
       select_chart_reference_in_session: async () => mutationOutcomeJson(),
       ingest_point_tiles_in_session: async () => {},

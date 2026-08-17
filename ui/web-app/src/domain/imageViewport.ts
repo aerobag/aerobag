@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 export type ImageViewportState = {
   left: number;
   top: number;
@@ -51,7 +53,8 @@ export function clampImageViewport(
   viewportHeight: number,
   overscrollPx: number,
 ): ImageViewportState {
-  const size = imageDisplaySize(imageWidth, imageHeight, viewportWidth, viewportHeight, state.zoom);
+  const zoom = clampImageZoom(state.zoom);
+  const size = imageDisplaySize(imageWidth, imageHeight, viewportWidth, viewportHeight, zoom);
   const minLeft = viewportWidth - overscrollPx - size.width;
   const maxLeft = overscrollPx;
   const minTop = viewportHeight - overscrollPx - size.height;
@@ -59,7 +62,7 @@ export function clampImageViewport(
   return {
     left: clampToRange(state.left, minLeft, maxLeft),
     top: clampToRange(state.top, minTop, maxTop),
-    zoom: clampImageZoom(state.zoom),
+    zoom,
   };
 }
 

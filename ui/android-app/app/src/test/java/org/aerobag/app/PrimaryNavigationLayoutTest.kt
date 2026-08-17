@@ -9,10 +9,38 @@ import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.aerobag.app.generated.UiNavigationPageId
+import org.aerobag.app.generated.UiNavigationPageOption
+import org.aerobag.app.generated.UiNavigationPageState
 import org.junit.Test
 
 class PrimaryNavigationLayoutTest {
     private val chartsSource = sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
+
+    @Test
+    fun platformMappingPreservesCoreNavigationPolicy() {
+        val policy = navigationPageOptionsFromCore(
+            UiNavigationPageState(
+                maxHistoryDepth = 7,
+                defaultChartOrPlateReturnTarget = UiNavigationPageId.Map,
+                options = listOf(
+                    UiNavigationPageOption(
+                        id = UiNavigationPageId.Charts,
+                        label = "CORE PLATE",
+                        launcherLabel = "CORE",
+                        chartOrPlateReturnTarget = true,
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(7, policy.maxHistoryDepth)
+        assertEquals(AppPage.Map, policy.defaultChartOrPlateReturnPage)
+        assertEquals(AppPage.Charts, policy.options.single().page)
+        assertEquals("CORE PLATE", policy.options.single().label)
+        assertEquals("CORE", policy.options.single().launcherLabel)
+        assertTrue(policy.options.single().chartOrPlateReturnTarget)
+    }
 
     @Test
     fun sharedBottomDockOwnsAllThreeControls() {

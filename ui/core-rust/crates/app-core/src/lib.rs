@@ -55,6 +55,7 @@ mod situation_controller;
 pub mod state;
 pub mod terrain;
 pub mod time_display;
+pub mod ui_geometry;
 pub mod ui_work_scheduler;
 mod weather_controller;
 
@@ -76,6 +77,9 @@ pub use altitude_planner::{
     ParsedAltitudePlannerDeparture, PerformanceAirspeedBasis, TrajectoryLegPrediction,
     TrajectoryPlanInput, TrajectoryPlanner, TrajectoryPlannerError, TrajectoryPrediction,
     TrajectoryRouteLeg, VerticalPerformancePoint,
+};
+pub use app_ui_contracts::session::{
+    UiNavigationPageId, UiNavigationPageOption, UiNavigationPageState,
 };
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
@@ -100,8 +104,8 @@ pub use content::{
 };
 pub use data_status::{
     DataStatusRecord, UiDataStatusBox, UiDataStatusPageFact, UiDataStatusPageRow,
-    UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState, UiStatusAction,
-    UiStatusActionStyle, UiStatusSeverity, RELOAD_APPLICATION_ACTION_ID,
+    UiDataStatusPageState, UiDataStatusState, UiStatusAction, UiStatusActionStyle,
+    UiStatusSeverity, RELOAD_APPLICATION_ACTION_ID,
 };
 pub use debug_log::{
     core_clock_ms, core_debug_log, core_debug_log_value, core_perf_debug_log, set_core_clock_ms,
@@ -270,12 +274,13 @@ pub use session::{
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
     attach_nav_kv_store_to_session_with_open_result, cloud_event_stream_plan_in_session,
     complete_cloud_authorization_in_session, complete_cloud_provider_request_in_session,
-    configure_live_feed_source_in_session, configure_platform_capabilities_in_session,
-    create_ui_session, create_ui_session_at_epoch_ms, create_ui_session_profiled,
-    create_ui_session_profiled_at_epoch_ms, debug_drop_nav_kv_pages_for_attached_sessions,
-    destroy_session, disengage_map_follow_in_session, drain_session_resource_effects,
-    engage_map_follow_in_session, get_map_overlay_in_session,
-    get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
+    configure_data_sources_in_session, configure_live_feed_source_in_session,
+    configure_platform_capabilities_in_session, create_ui_session, create_ui_session_at_epoch_ms,
+    create_ui_session_profiled, create_ui_session_profiled_at_epoch_ms,
+    debug_drop_nav_kv_pages_for_attached_sessions, destroy_session,
+    disengage_map_follow_in_session, drain_session_resource_effects, engage_map_follow_in_session,
+    get_map_overlay_in_session, get_map_overlay_in_session_at_epoch_ms,
+    get_map_overlay_in_session_with_point_display_scale,
     get_map_overlay_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_distance_in_session,
     get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms,
@@ -301,12 +306,12 @@ pub use session::{
     install_prepared_live_feed_cache_product_in_session, live_feed_runtime_decision_in_session,
     load_offline_package_library_cache_in_session, load_playback_trace_in_session,
     load_raster_map_catalog_in_session, maintain_nav_db_in_session_at_epoch_ms,
-    nexrad_tile_bytes_in_session, pause_playback_in_session, perform_cloud_ui_action_in_session,
-    perform_flight_plan_column_action_in_session, perform_flight_plan_command_in_session,
-    perform_map_selection_action_in_session, perform_ownship_text_action_in_session,
-    perform_settings_action_in_session, perform_status_action_in_session,
-    perform_time_display_action_in_session, play_playback_in_session,
-    prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
+    nexrad_tile_bytes_in_session, open_chart_airport_in_session, pause_playback_in_session,
+    perform_cloud_ui_action_in_session, perform_flight_plan_column_action_in_session,
+    perform_flight_plan_command_in_session, perform_map_selection_action_in_session,
+    perform_ownship_text_action_in_session, perform_settings_action_in_session,
+    perform_status_action_in_session, perform_time_display_action_in_session,
+    play_playback_in_session, prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
     push_situation_sample_in_session, query_flight_plan_in_session,
     record_offline_package_preferences_in_session, record_session_serialized_payload_bytes,
     refresh_live_feed_current_in_session, register_ownship_source_in_session,
@@ -352,6 +357,10 @@ pub use time_display::{
     format_dated_time, format_time_of_day, next_time_display_refresh_epoch_ms, time_zone_label,
     DatedTimeStyle, TimeDisplayMode, TimeOfDayDisplay, TimeOfDayStyle,
     TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+};
+pub use ui_geometry::{
+    ui_clamp_image_viewport, ui_plate_image_point, ui_screen_to_world, ui_transform_screen_point,
+    ui_world_to_screen, UiGeometryPoint, UiImageViewportGeometry, UiMapViewportGeometry,
 };
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,

@@ -601,6 +601,23 @@ pub fn configure_live_feed_source_in_session(
 }
 
 #[wasm_bindgen]
+pub fn configure_data_sources_in_session(
+    session_handle: u32,
+    cycle_data_base_url: &str,
+    live_feeds_base_url: &str,
+    debug_log_sink_url: Option<String>,
+) -> Result<String, JsValue> {
+    let outcome = app_core::configure_data_sources_in_session(
+        session_handle,
+        cycle_data_base_url,
+        live_feeds_base_url,
+        debug_log_sink_url.as_deref(),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn live_feed_events_url(source_root_url: &str) -> Result<String, JsValue> {
     app_core::live_feed_events_url(source_root_url)
         .map_err(|err| JsValue::from_str(&err.to_string()))
@@ -1086,6 +1103,21 @@ pub fn accept_disclaimer_in_session(handle: u32, agreement_id: &str) -> Result<S
 #[wasm_bindgen]
 pub fn select_airport_in_session(handle: u32, airport_id_json: &str) -> Result<String, JsValue> {
     select_airport_in_session_json(handle, airport_id_json).map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn open_chart_airport_in_session(
+    handle: u32,
+    airport_id_json: &str,
+    chart_id_json: &str,
+) -> Result<String, JsValue> {
+    let airport_id: String =
+        serde_json::from_str(airport_id_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let chart_id: Option<String> =
+        serde_json::from_str(chart_id_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::open_chart_airport_in_session(handle, &airport_id, chart_id.as_deref())
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

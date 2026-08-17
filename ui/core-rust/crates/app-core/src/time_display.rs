@@ -39,6 +39,13 @@ pub enum DatedTimeStyle {
     Friendly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelativeTimeStyle {
+    Ago,
+    Old,
+    Until,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeOfDayDisplay {
     pub value: String,
@@ -87,6 +94,46 @@ pub fn next_time_display_refresh_epoch_ms(epoch_ms: i64) -> i64 {
         .div_euclid(TIME_DISPLAY_REFRESH_INTERVAL_MS)
         .saturating_add(1)
         .saturating_mul(TIME_DISPLAY_REFRESH_INTERVAL_MS)
+}
+
+pub(crate) fn format_relative_time(
+    instant_epoch_ms: i64,
+    now_epoch_ms: i64,
+    style: RelativeTimeStyle,
+    include_seconds: bool,
+) -> String {
+    let delta_ms = instant_epoch_ms.saturating_sub(now_epoch_ms);
+    let magnitude = format_relative_duration(delta_ms.unsigned_abs(), include_seconds);
+    match style {
+        RelativeTimeStyle::Old => format!("{magnitude} old"),
+        RelativeTimeStyle::Until if delta_ms >= 0 => format!("in {magnitude}"),
+        RelativeTimeStyle::Ago if delta_ms > 0 => format!("in {magnitude}"),
+        RelativeTimeStyle::Ago | RelativeTimeStyle::Until => format!("{magnitude} ago"),
+    }
+}
+
+fn format_relative_duration(duration_ms: u64, include_seconds: bool) -> String {
+    let seconds = duration_ms / 1_000;
+    if include_seconds && seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = duration_ms / 60_000;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    let hours = minutes / 60;
+    if hours < 48 {
+        return format!("{hours}h");
+    }
+    let days = hours / 24;
+    if !include_seconds && days >= 60 {
+        let months = days / 30;
+        if months < 24 {
+            return format!("{months}mo");
+        }
+        return format!("{}y", days / 365);
+    }
+    format!("{days}d")
 }
 
 pub fn format_dated_time(
@@ -212,5 +259,21 @@ mod tests {
         assert_eq!(next_time_display_refresh_epoch_ms(0), 60_000);
         assert_eq!(next_time_display_refresh_epoch_ms(60_000), 120_000);
         assert_eq!(next_time_display_refresh_epoch_ms(119_999), 120_000);
+    }
+
+    #[test]
+    fn relative_time_policy_is_core_owned() {
+        assert_eq!(
+            format_relative_time(90_000, 0, RelativeTimeStyle::Until, false),
+            "in 1m",
+        );
+        assert_eq!(
+            format_relative_time(0, 90_000, RelativeTimeStyle::Ago, false),
+            "1m ago",
+        );
+        assert_eq!(
+            format_relative_time(0, 9_000, RelativeTimeStyle::Old, true),
+            "9s old",
+        );
     }
 }

@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
+import conformance from "../../../core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json";
 import type { FlightPlanRouteSegment, PlateGeoref } from "./types";
-import { projectPlateFlightPlanSegments } from "./plateOverlay";
+import { plateImagePoint, projectPlateFlightPlanSegments } from "./plateOverlay";
 
 const georef: PlateGeoref = {
   kind: "plate_transform_v1",
@@ -41,6 +42,10 @@ const display = {
 };
 
 describe("plate flight-plan projection", () => {
+  it("matches core's shared affine plate vector", () => {
+    const vector = conformance.plate_affine;
+    expect(plateImagePoint(vector.position, vector.georef as PlateGeoref)).toEqual(vector.expected_image);
+  });
   it("projects cooked route geometry through the plate pan and scale", () => {
     expect(projectPlateFlightPlanSegments({ ...display, segments: [segment()] })).toEqual([
       {

@@ -61,6 +61,33 @@ internal class SessionSnapshotRefreshRunner<T>(
         handleDecision(decision)
     }
 
+    fun viewportGestureActiveChanged(active: Boolean) {
+        val decision = synchronized(lock) {
+            if (closed) return
+            decodeDecision(
+                bridge.sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson(
+                    schedulerHandle,
+                    clockMs(),
+                    active,
+                ),
+            )
+        }
+        handleDecision(decision)
+    }
+
+    fun viewportActivity() {
+        val decision = synchronized(lock) {
+            if (closed) return
+            decodeDecision(
+                bridge.sessionSnapshotRefreshSchedulerViewportActivityJson(
+                    schedulerHandle,
+                    clockMs(),
+                ),
+            )
+        }
+        handleDecision(decision)
+    }
+
     override fun close() {
         synchronized(lock) {
             if (closed) return

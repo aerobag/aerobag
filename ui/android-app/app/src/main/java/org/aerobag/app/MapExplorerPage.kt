@@ -637,6 +637,8 @@ internal fun MapExplorerPage(
     pageTilePaintTiming: PageTilePaintTiming?,
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
+    onViewportGestureActiveChange: (Boolean) -> Unit,
+    onViewportGestureActivity: () -> Unit,
     onMapOrientationModeChange: (MapOrientationMode) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
@@ -2551,6 +2553,7 @@ internal fun MapExplorerPage(
                                         )
                                         movedViewportDuringGesture = true
                                         updateViewport(gestureViewport, syncFollow = false)
+                                        onViewportGestureActivity()
                                         endingDragChange.consume()
                                     }
                                 }
@@ -2559,7 +2562,10 @@ internal fun MapExplorerPage(
                             if (pressed.any { mapInputBlockedAt(it.position) }) {
                                 break
                             }
-                            mapGestureActive = true
+                            if (!mapGestureActive) {
+                                mapGestureActive = true
+                                onViewportGestureActiveChange(true)
+                            }
                                 if (!loggedGestureSeed) {
                                     perfLogInfo(MapViewportLogTag) {
                                         "gesture-start map=$selectedMapId seed=${"%.2f".format(viewportState.value.zoom)} local=${"%.2f".format(viewportState.value.zoom)} center=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}"
@@ -2584,6 +2590,7 @@ internal fun MapExplorerPage(
                                     )
                                     movedViewportDuringGesture = true
                                     updateViewport(gestureViewport, syncFollow = false)
+                                    onViewportGestureActivity()
                                     dragLastPosition = change.position
                                 }
                                 change.consume()
@@ -2613,6 +2620,7 @@ internal fun MapExplorerPage(
                                     )
                                 movedViewportDuringGesture = true
                                 updateViewport(gestureViewport, syncFollow = false)
+                                onViewportGestureActivity()
                                 first.consume()
                                 second.consume()
                             }
@@ -2628,7 +2636,10 @@ internal fun MapExplorerPage(
                             val point = dragLastPosition
                             requestMapSelection(point)
                         }
-                        mapGestureActive = false
+                        if (mapGestureActive) {
+                            mapGestureActive = false
+                            onViewportGestureActiveChange(false)
+                        }
                     }
                 }
             }
@@ -2652,6 +2663,7 @@ internal fun MapExplorerPage(
                         nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, interactiveMaxZoom),
                     )
                     updateViewport(nextViewport)
+                    onViewportGestureActivity()
                     true
                 } else {
                     false

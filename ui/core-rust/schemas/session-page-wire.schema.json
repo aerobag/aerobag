@@ -376,17 +376,7 @@
             "null"
           ]
         },
-        "time_display": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/UiDataStatusPageTimeDisplay"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "time_utc": {
+        "relative_value": {
           "type": [
             "string",
             "null"
@@ -459,14 +449,6 @@
         "rows"
       ],
       "type": "object"
-    },
-    "UiDataStatusPageTimeDisplay": {
-      "enum": [
-        "ago",
-        "old",
-        "until"
-      ],
-      "type": "string"
     },
     "UiDataStatusState": {
       "additionalProperties": false,
@@ -717,6 +699,68 @@
       ],
       "type": "object"
     },
+    "UiNavigationPageId": {
+      "enum": [
+        "map",
+        "charts",
+        "flight_plan",
+        "altitude_planner",
+        "data_status",
+        "settings",
+        "home",
+        "offline_packages"
+      ],
+      "type": "string"
+    },
+    "UiNavigationPageOption": {
+      "additionalProperties": false,
+      "properties": {
+        "chart_or_plate_return_target": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/UiNavigationPageId"
+        },
+        "label": {
+          "type": "string"
+        },
+        "launcher_label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "launcher_label",
+        "chart_or_plate_return_target"
+      ],
+      "type": "object"
+    },
+    "UiNavigationPageState": {
+      "additionalProperties": false,
+      "properties": {
+        "default_chart_or_plate_return_target": {
+          "$ref": "#/$defs/UiNavigationPageId"
+        },
+        "max_history_depth": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/UiNavigationPageOption"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "options",
+        "max_history_depth",
+        "default_chart_or_plate_return_target"
+      ],
+      "type": "object"
+    },
     "UiPlaybackPanelState": {
       "additionalProperties": false,
       "properties": {
@@ -944,6 +988,9 @@
     "nav_db": {
       "$ref": "#/$defs/UiNavDbIdentity"
     },
+    "navigation": {
+      "$ref": "#/$defs/UiNavigationPageState"
+    },
     "playback_panel": {
       "$ref": "#/$defs/UiPlaybackPanelState"
     },
@@ -961,6 +1008,7 @@
     }
   },
   "required": [
+    "navigation",
     "chart",
     "map_layers",
     "status",
@@ -976,8 +1024,11 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 3,
+  "x-contract-version": 4,
   "x-export-order": [
+    "UiNavigationPageId",
+    "UiNavigationPageOption",
+    "UiNavigationPageState",
     "FlightDataCellTone",
     "FlightEstimateKind",
     "FlightDataCell",
@@ -988,7 +1039,6 @@
     "UiStatusAction",
     "UiDataStatusBox",
     "UiDataStatusState",
-    "UiDataStatusPageTimeDisplay",
     "UiDataStatusPageFact",
     "UiDataStatusPageRow",
     "UiDataStatusPageState",

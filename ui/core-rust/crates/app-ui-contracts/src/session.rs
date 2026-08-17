@@ -5,6 +5,39 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiNavigationPageId {
+    Map,
+    Charts,
+    FlightPlan,
+    AltitudePlanner,
+    DataStatus,
+    Settings,
+    Home,
+    OfflinePackages,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiNavigationPageOption {
+    pub id: UiNavigationPageId,
+    pub label: String,
+    pub launcher_label: String,
+    pub chart_or_plate_return_target: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiNavigationPageState {
+    pub options: Vec<UiNavigationPageOption>,
+    pub max_history_depth: usize,
+    pub default_chart_or_plate_return_target: UiNavigationPageId,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -122,15 +155,6 @@ pub struct UiDataStatusState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum UiDataStatusPageTimeDisplay {
-    Ago,
-    Old,
-    Until,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiDataStatusPageFact {
     pub label: String,
@@ -140,9 +164,7 @@ pub struct UiDataStatusPageFact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_display: Option<UiDataStatusPageTimeDisplay>,
+    pub relative_value: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -437,6 +459,7 @@ pub struct PlatformCapabilities {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiSessionPageContracts {
+    pub navigation: UiNavigationPageState,
     pub chart: UiChartPageState,
     pub map_layers: UiMapLayerState,
     pub status: UiDataStatusState,

@@ -1012,7 +1012,7 @@ internal data class PlateFlightPlanScreenSegment(
     val path: List<Offset>,
 )
 
-private data class PlateImagePoint(
+internal data class PlateImagePoint(
     val x: Double,
     val y: Double,
 )
@@ -1091,7 +1091,8 @@ private fun platePathBoundsIntersectSurface(
         path.minOf { it.y } <= surfaceHeightPx + marginPx
 }
 
-private fun plateImagePoint(position: LatLonPoint, georef: PlateGeoref): PlateImagePoint =
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+internal fun plateImagePoint(position: LatLonPoint, georef: PlateGeoref): PlateImagePoint =
     when (georef) {
         is PlateGeoref.PlateTransformV1 -> PlateImagePoint(
             x = (position.lon - georef.topLeftLon) * georef.pixelsPerLongitude,
@@ -1142,15 +1143,16 @@ internal fun ChartPlateToggleButton(
     currentPage: AppPage,
     onSelectPage: (AppPage) -> Unit,
 ) {
+    val pageOptions = LocalNavigationPageOptions.current.options
     val targetPage = if (currentPage == AppPage.Map) AppPage.Charts else AppPage.Map
-    val option = PageOptions.firstOrNull { it.page == currentPage }
-        ?: PageOptions.first { it.page == AppPage.Map }
+    val option = pageOptions.firstOrNull { it.page == currentPage }
+        ?: pageOptions.firstOrNull { it.page == AppPage.Map }
     Box(modifier = Modifier.size(ThumbSize)) {
         CompactSquareButton(
-            label = option.launcherLabel,
+            label = option?.launcherLabel ?: currentPage.name.uppercase(),
             modifier = Modifier.matchParentSize(),
             selected = currentPage == AppPage.Map || currentPage == AppPage.Charts,
-            iconResId = option.iconResId,
+            iconResId = option?.iconResId,
             onClick = { onSelectPage(targetPage) },
         )
         PageToggleIndicator(
@@ -1167,13 +1169,14 @@ internal fun ChartPlateReturnButton(
     targetPage: AppPage,
     onClick: () -> Unit,
 ) {
+    val pageOptions = LocalNavigationPageOptions.current.options
     val chartPage = if (targetPage == AppPage.Charts) AppPage.Charts else AppPage.Map
-    val option = PageOptions.firstOrNull { it.page == chartPage }
-        ?: PageOptions.first { it.page == AppPage.Map }
+    val option = pageOptions.firstOrNull { it.page == chartPage }
+        ?: pageOptions.firstOrNull { it.page == AppPage.Map }
     CompactSquareButton(
-        label = option.launcherLabel,
+        label = option?.launcherLabel ?: chartPage.name.uppercase(),
         modifier = Modifier.size(ThumbSize),
-        iconResId = option.iconResId,
+        iconResId = option?.iconResId,
         onClick = onClick,
     )
 }
@@ -1184,12 +1187,12 @@ internal fun HomePageButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val homeOption = PageOptions.first { it.page == AppPage.Home }
+    val homeOption = LocalNavigationPageOptions.current.options.firstOrNull { it.page == AppPage.Home }
     CompactSquareButton(
-        label = homeOption.launcherLabel,
+        label = homeOption?.launcherLabel ?: AppPage.Home.name.uppercase(),
         modifier = modifier.size(ThumbSize),
         selected = currentPage == AppPage.Home,
-        iconResId = homeOption.iconResId,
+        iconResId = homeOption?.iconResId,
         onClick = onClick,
     )
 }
@@ -1205,7 +1208,8 @@ internal fun PrimaryNavigationDock(
     onOpenChartOrPlate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val chartOrPlatePage = currentPage == AppPage.Map || currentPage == AppPage.Charts
+    val chartOrPlatePage = LocalNavigationPageOptions.current.options
+        .any { it.page == currentPage && it.chartOrPlateReturnTarget }
     Row(
         modifier = modifier.testTag("parity:primary-navigation"),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),

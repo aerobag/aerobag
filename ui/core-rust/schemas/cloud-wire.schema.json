@@ -662,17 +662,16 @@
     "UiCloudTimeFact": {
       "additionalProperties": false,
       "properties": {
-        "epoch_ms": {
-          "format": "int64",
-          "type": "integer"
-        },
         "label": {
+          "type": "string"
+        },
+        "value": {
           "type": "string"
         }
       },
       "required": [
         "label",
-        "epoch_ms"
+        "value"
       ],
       "type": "object"
     },
@@ -760,7 +759,7 @@
   ],
   "title": "UiCloudPageState",
   "type": "object",
-  "x-contract-version": 3,
+  "x-contract-version": 4,
   "x-export-order": [
     "CloudProviderKind",
     "CloudProviderPrincipal",

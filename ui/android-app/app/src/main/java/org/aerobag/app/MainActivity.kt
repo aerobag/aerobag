@@ -281,7 +281,6 @@ import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.UiDataStatusPageFact
 import org.aerobag.app.domain.UiDataStatusPageRow
 import org.aerobag.app.domain.UiDataStatusPageState
-import org.aerobag.app.domain.UiDataStatusPageTimeDisplay
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiDisclaimerState
@@ -346,6 +345,8 @@ import org.aerobag.app.generated.pirepSevereTurbulenceSymbol
 import org.aerobag.app.generated.seaplaneAnchorPath
 import org.aerobag.app.generated.vorBandPath
 import org.aerobag.app.generated.vorOuterHexPath
+import org.aerobag.app.generated.UiNavigationPageId
+import org.aerobag.app.generated.UiNavigationPageState
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -503,7 +504,6 @@ internal const val UiPrefsOfflinePackageLibraryCacheKey = "offline_package_libra
 internal const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
 internal const val UiPrefsMapOrientationModeKey = "map_orientation_mode"
 internal const val MapViewportLogTag = "MapViewport"
-internal const val MaxViewHistoryDepth = 64
 internal const val OverlayPlaneControls = 10f
 internal const val OverlayPlaneModalScrim = 80f
 internal const val OverlayPlaneModal = 90f
@@ -686,7 +686,14 @@ internal data class PageTrayOption(
     val page: AppPage,
     val label: String,
     val launcherLabel: String,
+    val chartOrPlateReturnTarget: Boolean,
     @DrawableRes val iconResId: Int? = null,
+)
+
+internal data class NavigationPagePolicy(
+    val options: List<PageTrayOption>,
+    val maxHistoryDepth: Int,
+    val defaultChartOrPlateReturnPage: AppPage,
 )
 
 @Serializable
@@ -1198,23 +1205,45 @@ internal enum class MenuDockStyle(
     ),
 }
 
-internal val PageOptions = listOf(
-    PageTrayOption(AppPage.Map, "CHART", "CHART", R.drawable.page_chart_icon),
-    PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
-    PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
-    PageTrayOption(AppPage.AltitudePlanner, "ALTITUDE PLANNER", "ALT"),
-    PageTrayOption(AppPage.Home, "HOME", "HOME", R.drawable.page_home_icon),
-    PageTrayOption(AppPage.DataStatus, "STATUS", "STATUS"),
-    PageTrayOption(AppPage.Settings, "SETTINGS", "SET"),
-    PageTrayOption(AppPage.OfflinePackages, "OFFLINE PACKAGES", "PKG"),
-)
+internal val LocalNavigationPageOptions = staticCompositionLocalOf<NavigationPagePolicy> {
+    error("navigation page policy is unavailable outside the session provider")
+}
 
-internal fun mostRecentChartOrPlatePageFromHistory(pageHistory: List<AppViewSnapshot>): AppPage =
-    pageHistory
-        .asReversed()
-        .firstOrNull { it.page == AppPage.Map || it.page == AppPage.Charts }
-        ?.page
-        ?: AppPage.Map
+private fun appPageFromNavigationPageId(id: UiNavigationPageId): AppPage =
+    when (id) {
+        UiNavigationPageId.Map -> AppPage.Map
+        UiNavigationPageId.Charts -> AppPage.Charts
+        UiNavigationPageId.FlightPlan -> AppPage.Plan
+        UiNavigationPageId.AltitudePlanner -> AppPage.AltitudePlanner
+        UiNavigationPageId.DataStatus -> AppPage.DataStatus
+        UiNavigationPageId.Settings -> AppPage.Settings
+        UiNavigationPageId.Home -> AppPage.Home
+        UiNavigationPageId.OfflinePackages -> AppPage.OfflinePackages
+    }
+
+internal fun navigationPageOptionsFromCore(state: UiNavigationPageState): NavigationPagePolicy =
+    NavigationPagePolicy(
+        options = state.options.map { option ->
+            val page = appPageFromNavigationPageId(option.id)
+            val iconResId = when (page) {
+                AppPage.Map -> R.drawable.page_chart_icon
+                AppPage.Charts -> R.drawable.page_plate_icon
+                AppPage.Plan -> R.drawable.page_plan1_icon
+                AppPage.Home -> R.drawable.page_home_icon
+                else -> null
+            }
+            PageTrayOption(
+                page,
+                option.label,
+                option.launcherLabel,
+                option.chartOrPlateReturnTarget,
+                iconResId,
+            )
+        },
+        maxHistoryDepth = state.maxHistoryDepth,
+        defaultChartOrPlateReturnPage =
+            appPageFromNavigationPageId(state.defaultChartOrPlateReturnTarget),
+    )
 
 internal data class ChartTrayOption(
     val id: String,
@@ -1225,22 +1254,6 @@ internal data class ChartTrayOption(
     @DrawableRes val iconResId: Int? = null,
     val select: (() -> Unit)?,
 )
-
-internal fun mergeRecentAirportIds(
-    airports: List<ChartAirport>,
-    storedIds: List<String>,
-): List<String> {
-    val validIds = airports.map { it.id }.toSet()
-    val orderedIds = storedIds.filterIndexed { index, id ->
-        validIds.contains(id) && storedIds.indexOf(id) == index
-    }.toMutableList()
-    airports.forEach { airport ->
-        if (!orderedIds.contains(airport.id)) {
-            orderedIds += airport.id
-        }
-    }
-    return orderedIds
-}
 
 @DrawableRes
 internal fun chartFamilyIconResId(chartFamilyId: String): Int = when (chartFamilyId) {
@@ -1264,15 +1277,6 @@ internal fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
     MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
     MapLayerId.OfflineRegions -> R.drawable.layer_offline_regions_icon
 }
-
-internal fun moveAirportToFront(
-    currentIds: List<String>,
-    airportId: String,
-    airports: List<ChartAirport>,
-): List<String> = mergeRecentAirportIds(airports, listOf(airportId) + currentIds.filterNot { it == airportId })
-
-internal fun boundedHistory(history: List<AppViewSnapshot>): List<AppViewSnapshot> =
-    if (history.size <= MaxViewHistoryDepth) history else history.takeLast(MaxViewHistoryDepth)
 
 internal fun routeSegmentColor(uiTheme: UiTheme, status: RouteSegmentStatus): Color =
     when (status) {
@@ -2978,6 +2982,23 @@ internal fun AerobagApp(
     val selectedChart = remember(selectedChartCollection, selectedChartId) {
         selectedChartCollection?.charts?.find { it.id == selectedChartId } ?: selectedChartCollection?.charts?.firstOrNull()
     }
+    val navigationPageOptions = remember(sessionSnapshot.navigationPageState) {
+        navigationPageOptionsFromCore(sessionSnapshot.navigationPageState)
+    }
+    val chartOrPlateReturnPages = remember(navigationPageOptions) {
+        navigationPageOptions.options
+            .filter { it.chartOrPlateReturnTarget }
+            .mapTo(mutableSetOf()) { it.page }
+    }
+
+    fun boundedHistory(history: List<AppViewSnapshot>): List<AppViewSnapshot> {
+        val maxDepth = navigationPageOptions.maxHistoryDepth
+        return if (maxDepth <= 0 || history.size <= maxDepth) history else history.takeLast(maxDepth)
+    }
+
+    fun mostRecentChartOrPlatePageFromHistory(history: List<AppViewSnapshot>): AppPage =
+        history.asReversed().firstOrNull { it.page in chartOrPlateReturnPages }?.page
+            ?: navigationPageOptions.defaultChartOrPlateReturnPage
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
         retainedModel.page = page
@@ -3213,7 +3234,7 @@ internal fun AerobagApp(
         val target =
             pageHistory
                 .asReversed()
-                .firstOrNull { it.page == AppPage.Map || it.page == AppPage.Charts }
+                .firstOrNull { it.page in chartOrPlateReturnPages }
         if (target != null) {
             pushViewSnapshot(target, restoreCore = true)
         } else {
@@ -3226,30 +3247,19 @@ internal fun AerobagApp(
         val selectedChart = chartId
             ?.let { requestedChartId -> airport?.charts?.find { it.id == requestedChartId } }
             ?: airport?.charts?.firstOrNull()
-        val nextRecentAirportIds = moveAirportToFront(
-            sessionSnapshot.chartPageState.recentAirportIds,
-            airportId,
-            derivedChartPageState.airports,
-        )
-        applySessionCommand("restoreChartPageState") {
-            uiSession.restoreChartPageState(
-                recentAirportIds = nextRecentAirportIds,
-                plateTargetAirportId = airportId,
-                selectedAirportId = airportId,
-                selectedReferenceFamilyId = null,
-                selectedChartId = selectedChart?.id,
-                suggestedChartIds = emptyList(),
-            )
+        val opened = applySessionCommand("openChartAirport") {
+            uiSession.openChartAirport(airportId, selectedChart?.id)
         } ?: return
+        val openedChart = opened.chartPageState
         applySnapshotLocally(
             currentSnapshot().copy(
                 page = AppPage.Charts,
                 plateTargetAirportId = airportId,
-                selectedAirportId = airportId,
+                selectedAirportId = openedChart.selectedAirportId,
                 selectedReferenceFamilyId = null,
-                selectedChartId = selectedChart?.id.orEmpty(),
+                selectedChartId = openedChart.selectedChartId,
                 selectedChartLabel = selectedChart?.label.orEmpty(),
-                recentAirportIds = nextRecentAirportIds,
+                recentAirportIds = openedChart.recentAirportIds,
                 suggestedChartIds = emptyList(),
                 chartViewport = null,
                 chartFolderOpen = chartId == null,
@@ -3259,30 +3269,19 @@ internal fun AerobagApp(
     }
 
     fun openPlateTarget(airportId: String, target: String, chartId: String) {
-        val nextRecentAirportIds = moveAirportToFront(
-            sessionSnapshot.chartPageState.recentAirportIds,
-            airportId,
-            derivedChartPageState.airports,
-        )
-        applySessionCommand("restoreChartPageState") {
-            uiSession.restoreChartPageState(
-                recentAirportIds = nextRecentAirportIds,
-                plateTargetAirportId = airportId,
-                selectedAirportId = airportId,
-                selectedReferenceFamilyId = null,
-                selectedChartId = chartId,
-                suggestedChartIds = emptyList(),
-            )
+        val opened = applySessionCommand("openChartAirport") {
+            uiSession.openChartAirport(airportId, chartId)
         } ?: return
+        val openedChart = opened.chartPageState
         applySnapshotLocally(
             currentSnapshot().copy(
                 page = AppPage.Charts,
                 plateTargetAirportId = airportId,
-                selectedAirportId = airportId,
+                selectedAirportId = openedChart.selectedAirportId,
                 selectedReferenceFamilyId = null,
-                selectedChartId = chartId,
+                selectedChartId = openedChart.selectedChartId,
                 selectedChartLabel = "",
-                recentAirportIds = nextRecentAirportIds,
+                recentAirportIds = openedChart.recentAirportIds,
                 suggestedChartIds = emptyList(),
                 chartViewport = null,
                 chartFolderOpen = target == "Folder",
@@ -3299,7 +3298,10 @@ internal fun AerobagApp(
         // Agreement is mandatory; do not let system back bypass it.
     }
 
-    CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
+    CompositionLocalProvider(
+        LocalAerobagUiTheme provides uiTheme,
+        LocalNavigationPageOptions provides navigationPageOptions,
+    ) {
         HighRateSessionEffects(
             sessionRenderModel = sessionRenderModel,
             diagnostics = sessionRenderDiagnostics,
@@ -3357,6 +3359,8 @@ internal fun AerobagApp(
                             }
                         },
                         onViewportChange = { mapViewport = it },
+                        onViewportGestureActiveChange = sessionSnapshotRefreshRunner::viewportGestureActiveChanged,
+                        onViewportGestureActivity = sessionSnapshotRefreshRunner::viewportActivity,
                         onMapOrientationModeChange = { mode ->
                             mapOrientationMode = mode
                             writeStoredMapOrientationMode(prefs, mode)
@@ -3509,16 +3513,20 @@ internal fun AerobagApp(
                             }
                         },
                         onSelectAirport = { airportId ->
-                            if (applySessionCommand("selectAirport") { uiSession.selectAirport(airportId) } != null) {
+                            val selected = applySessionCommand("openChartAirport") {
+                                uiSession.openChartAirport(airportId, null)
+                            }
+                            if (selected != null) {
                                 val airport = chartAirportById[airportId]
+                                val selectedState = selected.chartPageState
                                 applySnapshotLocally(
                                     currentSnapshot().copy(
                                         page = AppPage.Charts,
-                                        selectedAirportId = airportId,
+                                        selectedAirportId = selectedState.selectedAirportId,
                                         selectedReferenceFamilyId = null,
-                                        selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
+                                        selectedChartId = selectedState.selectedChartId,
                                         selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
-                                        recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                                        recentAirportIds = selectedState.recentAirportIds,
                                         suggestedChartIds = emptyList(),
                                         chartViewport = null,
                                         chartFolderOpen = false,
@@ -3617,7 +3625,6 @@ internal fun AerobagApp(
                     DataStatusPage(
                         page = page,
                         state = sessionSnapshot.dataStatusPageState,
-                        dataSourcesRow = dataSourcesStatusRow(appContext, prefs),
                         navElement = navElement,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         onOpenPlan = { navigateToPage(AppPage.Plan) },

@@ -58,7 +58,7 @@
   ],
   "title": "UiHomePageState",
   "type": "object",
-  "x-contract-version": 3,
+  "x-contract-version": 4,
   "x-export-order": [
     "UiHomeDestination",
     "UiHomePageButton",

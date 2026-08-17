@@ -4,6 +4,8 @@
 
 package org.aerobag.app.domain
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 import kotlinx.serialization.Serializable
 import kotlin.math.PI
 import kotlin.math.abs

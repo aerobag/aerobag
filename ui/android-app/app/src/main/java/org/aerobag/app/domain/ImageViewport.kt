@@ -4,6 +4,8 @@
 
 package org.aerobag.app.domain
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 data class ImageViewportState(
     val leftPx: Float,
     val topPx: Float,
@@ -56,12 +58,13 @@ fun clampImageViewport(
     viewportHeightPx: Float,
     overscrollPx: Float,
 ): ImageViewportState {
+    val zoom = clampImageZoom(state.zoom)
     val size = imageDisplaySize(
         imageWidthPx = imageWidthPx,
         imageHeightPx = imageHeightPx,
         viewportWidthPx = viewportWidthPx,
         viewportHeightPx = viewportHeightPx,
-        zoom = state.zoom,
+        zoom = zoom,
     )
     val minLeft = viewportWidthPx - overscrollPx - size.widthPx
     val maxLeft = overscrollPx
@@ -70,7 +73,7 @@ fun clampImageViewport(
     return ImageViewportState(
         leftPx = clampToRange(state.leftPx, minLeft, maxLeft),
         topPx = clampToRange(state.topPx, minTop, maxTop),
-        zoom = clampImageZoom(state.zoom),
+        zoom = zoom,
     )
 }
 

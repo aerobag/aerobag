@@ -5,6 +5,8 @@
 import type { ImageViewportState } from "./imageViewport";
 import type { FlightPlanRouteSegment, LatLon, PlateGeoref } from "./types";
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 export type PlateFlightPlanScreenSegment = {
   id: string;
   status: FlightPlanRouteSegment["status"];

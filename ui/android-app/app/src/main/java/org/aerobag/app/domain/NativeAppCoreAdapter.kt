@@ -33,12 +33,12 @@ import org.aerobag.app.generated.CloudUiActionId
 import org.aerobag.app.generated.CloudUiFieldValue
 import org.aerobag.app.generated.UiCloudPageState
 import org.aerobag.app.generated.UiHomePageState
+import org.aerobag.app.generated.UiNavigationPageState
 import org.aerobag.app.generated.UiChartPageState as WireUiChartPageState
 import org.aerobag.app.generated.UiDataStatusBox as WireUiDataStatusBox
 import org.aerobag.app.generated.UiDataStatusPageFact as WireUiDataStatusPageFact
 import org.aerobag.app.generated.UiDataStatusPageRow as WireUiDataStatusPageRow
 import org.aerobag.app.generated.UiDataStatusPageState as WireUiDataStatusPageState
-import org.aerobag.app.generated.UiDataStatusPageTimeDisplay as WireUiDataStatusPageTimeDisplay
 import org.aerobag.app.generated.UiDataStatusState as WireUiDataStatusState
 import org.aerobag.app.generated.UiDebugState as WireUiDebugState
 import org.aerobag.app.generated.UiDisclaimerState as WireUiDisclaimerState
@@ -477,6 +477,9 @@ class NativeAppCoreAdapter(
         displayPolicySettingsAvailable: Boolean = false,
         aerobagCloudBaseUrl: String? = null,
         clientBuildInfo: ClientBuildInfo? = null,
+        cycleDataBaseUrl: String? = null,
+        liveFeedsBaseUrl: String? = null,
+        debugLogSinkUrl: String? = null,
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
             json.encodeToString(recentAirportIds),
@@ -533,6 +536,9 @@ class NativeAppCoreAdapter(
             }.toString(),
             settingsStore = settingsStore ?: NoopCoreSettingsStore,
         )
+        if (cycleDataBaseUrl != null && liveFeedsBaseUrl != null) {
+            session.configureDataSources(cycleDataBaseUrl, liveFeedsBaseUrl, debugLogSinkUrl)
+        }
         session.setInstalledPackageIds(installedPackageIds)
         session.loadRasterMapCatalog()
         return session.apply {
@@ -708,6 +714,9 @@ private fun landSessionUpdate(
             )
             "home_page_state" -> next.copy(
                 homePageState = json.decodeFromJsonElement<UiHomePageState>(value),
+            )
+            "navigation_page_state" -> next.copy(
+                navigationPageState = json.decodeFromJsonElement<UiNavigationPageState>(value),
             )
             "display_policy" -> next.copy(
                 displayPolicy = json.decodeFromJsonElement<WireUiDisplayPolicy?>(value)?.toUi(),
@@ -1530,6 +1539,16 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun openChartAirport(airportId: String, chartId: String?): UiSessionSnapshot {
+        return runPagedSnapshot("openChartAirport") {
+            bridge.openChartAirportInSessionJson(
+                handle,
+                json.encodeToString(airportId),
+                json.encodeToString(chartId),
+            )
+        }
+    }
+
     fun selectChart(chartId: String): UiSessionSnapshot {
         return runPagedSnapshot("selectChart") {
             bridge.selectChartInSessionJson(handle, json.encodeToString(chartId))
@@ -1600,6 +1619,21 @@ class NativeUiSession internal constructor(
     ): UiSessionSnapshot {
         return runPagedSnapshot("configurePlatformCapabilities") {
             bridge.configurePlatformCapabilitiesInSessionJson(handle, capabilitiesJson, settingsStore)
+        }
+    }
+
+    fun configureDataSources(
+        cycleDataBaseUrl: String,
+        liveFeedsBaseUrl: String,
+        debugLogSinkUrl: String?,
+    ): UiSessionSnapshot {
+        return runPagedSnapshot("configureDataSources") {
+            bridge.configureDataSourcesInSessionJson(
+                handle,
+                cycleDataBaseUrl,
+                liveFeedsBaseUrl,
+                debugLogSinkUrl.orEmpty(),
+            )
         }
     }
 
@@ -2584,6 +2618,7 @@ private data class WireUiSessionSnapshot(
     val cloud_page_state: UiCloudPageState,
     val offline_package_preferences_json: String = "{\"regions\":{},\"products\":{}}",
     val home_page_state: UiHomePageState,
+    val navigation_page_state: UiNavigationPageState,
     val display_policy: WireUiDisplayPolicy? = null,
     val disclaimer_state: WireUiDisclaimerState,
     val debug_state: WireUiDebugState,
@@ -2818,6 +2853,7 @@ data class UiSessionSnapshot(
     val cloudPageState: UiCloudPageState,
     val offlinePackagePreferencesJson: String,
     val homePageState: UiHomePageState,
+    val navigationPageState: UiNavigationPageState,
     val displayPolicy: UiDisplayPolicy?,
     val disclaimerState: UiDisclaimerState,
     val debugState: UiDebugState,
@@ -2887,19 +2923,12 @@ data class UiDataStatusState(
     val launcherSeverity: UiStatusSeverity,
 )
 
-enum class UiDataStatusPageTimeDisplay {
-    Ago,
-    Old,
-    Until,
-}
-
 data class UiDataStatusPageFact(
     val label: String,
     val value: String,
     val actionId: String?,
     val linkUrl: String?,
-    val timeUtc: String?,
-    val timeDisplay: UiDataStatusPageTimeDisplay?,
+    val relativeValue: String?,
 )
 
 data class UiDataStatusPageRow(
@@ -3102,19 +3131,12 @@ private fun WireUiDataStatusState.toUi() = UiDataStatusState(
     launcherSeverity = launcherSeverity.toUi(),
 )
 
-private fun WireUiDataStatusPageTimeDisplay.toUi() = when (this) {
-    WireUiDataStatusPageTimeDisplay.Ago -> UiDataStatusPageTimeDisplay.Ago
-    WireUiDataStatusPageTimeDisplay.Old -> UiDataStatusPageTimeDisplay.Old
-    WireUiDataStatusPageTimeDisplay.Until -> UiDataStatusPageTimeDisplay.Until
-}
-
 private fun WireUiDataStatusPageFact.toUi() = UiDataStatusPageFact(
     label = label,
     value = value,
     actionId = actionId,
     linkUrl = linkUrl,
-    timeUtc = timeUtc,
-    timeDisplay = timeDisplay?.toUi(),
+    relativeValue = relativeValue,
 )
 
 private fun WireUiDataStatusPageRow.toUi() = UiDataStatusPageRow(
@@ -3222,6 +3244,7 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
     cloudPageState = cloud_page_state,
     offlinePackagePreferencesJson = offline_package_preferences_json,
     homePageState = home_page_state,
+    navigationPageState = navigation_page_state,
     displayPolicy = display_policy?.toUi(),
     disclaimerState = disclaimer_state.toUi(),
     debugState = debug_state.toUi(),

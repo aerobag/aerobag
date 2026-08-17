@@ -2337,12 +2337,9 @@ fn textual_published_procedure_names(text: &str, markers: &[&str]) -> BTreeSet<S
             .split(|ch: char| !ch.is_ascii_alphanumeric())
             .filter(|word| !word.is_empty())
             .collect::<Vec<_>>();
-        if words
+        let starts_with_heading = words
             .first()
-            .is_some_and(|word| matches!(*word, "SID" | "STAR" | "ODP" | "IAP" | "SPECIAL"))
-        {
-            continue;
-        }
+            .is_some_and(|word| matches!(*word, "SID" | "STAR" | "ODP" | "IAP" | "SPECIAL"));
         for marker_index in words
             .iter()
             .enumerate()
@@ -2352,8 +2349,24 @@ fn textual_published_procedure_names(text: &str, markers: &[&str]) -> BTreeSet<S
             if end > 0 && words[end - 1] == "RNAV" {
                 end -= 1;
             }
-            let candidate = words[..end].join(" ");
-            if ProcedurePublishedName::parse(&candidate).is_ok() {
+            let candidate = if starts_with_heading {
+                // Some NMS rows omit the separator between the airport heading
+                // and the procedure. The shortest valid suffix before ARRIVAL
+                // or DEPARTURE isolates the published name without absorbing
+                // the airport name into the identity.
+                (1..end).rev().find_map(|start| {
+                    let candidate = words[start..end].join(" ");
+                    ProcedurePublishedName::parse(&candidate)
+                        .is_ok()
+                        .then_some(candidate)
+                })
+            } else {
+                let candidate = words[..end].join(" ");
+                ProcedurePublishedName::parse(&candidate)
+                    .is_ok()
+                    .then_some(candidate)
+            };
+            if let Some(candidate) = candidate {
                 names.insert(candidate);
             }
         }
@@ -3712,7 +3725,10 @@ mod tests {
         )?;
         assert_eq!(
             keys,
-            BTreeSet::from([ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap()])
+            BTreeSet::from([
+                ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap(),
+                ProcedureRendezvousKey::shared_arrival_published_name("CHINS FIVE").unwrap(),
+            ])
         );
         assert_eq!(
             notam_keyword_from_text("STAR CHINS FIVE ARRIVAL PROCEDURE NA").as_deref(),
@@ -3824,6 +3840,14 @@ mod tests {
             (
                 "STAR PROVO. TAYTR THREE ARRIVAL..CHANGE ARRIVAL ROUTE DESCRIPTION",
                 "TAYTR THREE",
+            ),
+            (
+                "STAR GROSSE ILE MUNICIPAL AIRPORT, DETROIT/GROSSE ILE, MI\n PETTE TWO ARRIVAL...HOSSA TRANSITION",
+                "PETTE TWO",
+            ),
+            (
+                "STAR SARDI ONE ARRIVAL. DISREGARD NOTE: STAR LIMITED TO JET AIRCRAFT.",
+                "SARDI ONE",
             ),
         ] {
             assert_eq!(

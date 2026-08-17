@@ -19,7 +19,7 @@ use crate::{
     InitialLoadCaptureSource, NmsApiSource,
 };
 
-const NMS_API_STORE_SCHEMA_VERSION: u32 = 4;
+const NMS_API_STORE_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct CollectorOptions {
@@ -106,8 +106,8 @@ impl NmsApiCollectorStore {
                 "schema_version",
                 &NMS_API_STORE_SCHEMA_VERSION.to_string(),
             ),
-            Some("1") | Some("2") | Some("3") => {
-                // Versions 2 through 4 change semantic procedure identities
+            Some("1") | Some("2") | Some("3") | Some("4") => {
+                // Versions 2 through 5 change semantic procedure identities
                 // derived from raw AIXM. Stored rows do not retain enough source
                 // data to recompute those changes, so require an authoritative
                 // Initial Load refresh.
@@ -136,7 +136,7 @@ impl NmsApiCollectorStore {
                 tx.commit()
                     .context("failed to commit NMS procedure-key schema migration")
             }
-            Some("4") => Ok(()),
+            Some("5") => Ok(()),
             Some(version) => bail!(
                 "unsupported NMS API collector schema {version}; required {NMS_API_STORE_SCHEMA_VERSION}"
             ),
@@ -996,7 +996,7 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let connection = store.open_connection()?;
-        set_metadata(&connection, "schema_version", "3")?;
+        set_metadata(&connection, "schema_version", "4")?;
         set_metadata(
             &connection,
             "baseline_installed_at_utc",
@@ -1018,7 +1018,7 @@ mod tests {
         let connection = store.open_connection()?;
         assert_eq!(
             metadata(&connection, "schema_version")?.as_deref(),
-            Some("4")
+            Some("5")
         );
         assert!(!store.is_baseline_installed()?);
         assert!(store.current_records()?.is_empty());

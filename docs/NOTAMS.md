@@ -43,15 +43,20 @@ three minutes, looking back ten minutes. Payload hashes make that overlap
 idempotent.
 
 The durable NMS source store is `state.sqlite`. Each successful poll applies all
-updates, cancellations, and expirations in one transaction and only then
-advances the cursor. A failed poll leaves both state and cursor unchanged. A
+updates, cancellations, and expirations and appends their exact canonical
+mutations in one transaction, then advances both the poll cursor and mutation
+sequence. A failed poll leaves the records, journal, and cursors unchanged. A
 process lock prevents two collectors from sharing a state directory.
 
-After each successful source transaction, the daemon synchronizes the canonical
-`current_notams` rows into the separate `publication/` store. That store owns
-the Merkle state, publication journal, deltas, checkpoints, and acknowledgement
-cursor. Keeping these stores separate prevents NMS polling concerns from
-leaking into the client publication contract.
+After each successful source transaction, the daemon gives the publication
+store only the mutations after its persisted source cursor. The publication
+store commits those changes, its Merkle state, and the new source cursor
+atomically; only then may the collector prune the acknowledged journal prefix.
+Startup, an epoch mismatch, or a missing journal range uses one atomic
+`current_notams` snapshot to recover. Thus ordinary polls do work proportional
+to changed records rather than decoding and reconciling the complete source and
+publication states. The separate `publication/` store still owns the client
+publication journal, deltas, checkpoints, and acknowledgement cursor.
 
 Startup always synchronizes and queues the persisted state for publication.
 Every successful poll queues a refresh: changed state produces a new version,
@@ -78,9 +83,12 @@ replacement from an immutable copy of collector state with:
 ```
 
 The capture excludes credentials, API URLs, local source paths, and redundant
-normalized output. The ignored artifact-backed test reparses the raw source,
-replays collector transitions at their captured completion times, and verifies
-checkpoint/delta convergence in app core.
+normalized output. The ignored artifact-backed test reparses the raw source and
+replays every collector transition at its captured completion time through both
+full-state reconciliation and the incremental source journal. It requires exact
+agreement for every client-visible publication transition and final checkpoint,
+then verifies checkpoint/delta convergence in app core across varied disconnect
+and catch-up schedules.
 
 ## Development
 

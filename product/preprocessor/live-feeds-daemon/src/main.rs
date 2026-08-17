@@ -1662,18 +1662,29 @@ fn queue_nms_notam_state_event(
     sender: &Sender<UpstreamEvent>,
     observed_at_utc: &str,
 ) -> anyhow::Result<()> {
-    let records = store.current_records()?;
-    let synchronized = match publication_store
-        .synchronize_current_records(&records, observed_at_utc)
-    {
+    let synchronized = match synchronize_nms_notam_publication(
+        store,
+        publication_store,
+        observed_at_utc,
+    ) {
         Ok(synchronized) => synchronized,
         Err(error) if is_incompatible_notam_store_schema(&error) => {
             eprintln!(
                 "NMS NOTAM derived publication cache is incompatible; rebuilding from canonical state: {error:#}"
             );
+            let snapshot = store.canonical_source_snapshot()?;
             publication_store
-                .rebuild_derived_projection(&records, observed_at_utc)
-                .context("failed to rebuild derived NMS NOTAM publication cache")?
+                .rebuild_derived_projection(&snapshot.records, observed_at_utc)
+                .context("failed to rebuild derived NMS NOTAM publication cache")?;
+            let synchronized = publication_store
+                .synchronize_canonical_source_snapshot(
+                    &snapshot.records,
+                    observed_at_utc,
+                    &snapshot.cursor,
+                )
+                .context("failed to install NMS source cursor after publication rebuild")?;
+            store.prune_canonical_changes_through(&snapshot.cursor)?;
+            synchronized
         }
         Err(error) => return Err(error),
     };
@@ -1686,6 +1697,34 @@ fn queue_nms_notam_state_event(
             payload_path: None,
         })
         .context("failed to queue NMS NOTAM state event")
+}
+
+fn synchronize_nms_notam_publication(
+    store: &NmsApiCollectorStore,
+    publication_store: &NotamPersistentStore,
+    observed_at_utc: &str,
+) -> anyhow::Result<preprocessor_live_feeds::notam_store::SynchronizedNotamSummary> {
+    if let Some(publication_cursor) = publication_store.canonical_source_cursor()? {
+        if let Some(batch) = store.canonical_changes_after(&publication_cursor)? {
+            let synchronized = publication_store
+                .apply_canonical_source_batch(&batch, observed_at_utc)
+                .context("failed to apply incremental NMS NOTAM changes")?;
+            store.prune_canonical_changes_through(
+                &preprocessor_live_feeds::notam_store::CanonicalNotamSourceCursor {
+                    epoch: batch.epoch,
+                    through_sequence: batch.through_sequence,
+                },
+            )?;
+            return Ok(synchronized);
+        }
+    }
+
+    let snapshot = store.canonical_source_snapshot()?;
+    let synchronized = publication_store
+        .synchronize_canonical_source_snapshot(&snapshot.records, observed_at_utc, &snapshot.cursor)
+        .context("failed to recover NMS NOTAM publication from a full snapshot")?;
+    store.prune_canonical_changes_through(&snapshot.cursor)?;
+    Ok(synchronized)
 }
 
 fn parse_utc_timestamp(value: &str, label: &str) -> anyhow::Result<chrono::DateTime<Utc>> {
@@ -2616,6 +2655,77 @@ mod tests {
     };
     use tempfile::tempdir;
 
+    fn install_test_nms_baseline(
+        store: &NmsApiCollectorStore,
+    ) -> anyhow::Result<preprocessor_live_feeds::StructuredNotamRecord> {
+        let record = test_nms_record("1000000000000001", "1", "TEST ONLY")?;
+        let second = test_nms_record("1000000000000002", "2", "SECOND TEST ONLY")?;
+        store.install_baseline(
+            "fixture",
+            None,
+            parse_utc_timestamp("2026-07-24T00:00:00Z", "test baseline")?,
+            Path::new("/fixture/initial-load"),
+            &[record.clone(), second],
+        )?;
+        Ok(record)
+    }
+
+    fn test_nms_record(
+        nms_id: &str,
+        number: &str,
+        text: &str,
+    ) -> anyhow::Result<preprocessor_live_feeds::StructuredNotamRecord> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "id": format!("NMS:{nms_id}"),
+            "nms_id": nms_id,
+            "source_type": "D",
+            "notam_status": "ACTIVE",
+            "notam_function": "NOTAMN",
+            "notam_keyword": "RWY",
+            "last_updated_utc": "2026-07-24T00:00:00Z",
+            "airport_id": "AAA",
+            "airport_effects": ["other"],
+            "location": "AAA",
+            "notam_number": number,
+            "notam_year": "2026",
+            "notam_type": "N",
+            "effective_end_utc": "2099-07-24T00:00:00Z",
+            "text": text
+        }))?)
+    }
+
+    fn test_nms_update_xml(text: &str) -> String {
+        format!(
+            r#"<AIXMBasicMessage xmlns="http://www.aixm.aero/schema/5.1/message"
+                xmlns:event="http://www.aixm.aero/schema/5.1/event"
+                xmlns:gml="http://www.opengis.net/gml/3.2"
+                xmlns:fnse="http://www.aixm.aero/schema/5.1/extensions/FAA/FNSE"
+                gml:id="NMS_ID_1000000000000001">
+              <hasMember><event:Event><event:timeSlice><event:EventTimeSlice>
+                <event:scenario>110</event:scenario>
+                <event:textNOTAM><event:NOTAM>
+                  <event:number>1</event:number>
+                  <event:year>2026</event:year>
+                  <event:type>N</event:type>
+                  <event:issued>2026-07-24T00:00:00Z</event:issued>
+                  <event:location>AAA</event:location>
+                  <event:effectiveStart>202607240000</event:effectiveStart>
+                  <event:effectiveEnd>209907240000</event:effectiveEnd>
+                  <event:text>{text}</event:text>
+                  <event:translation><event:NOTAMTranslation>
+                    <event:type>LOCAL_FORMAT</event:type>
+                    <event:simpleText>!AAA 07/001 AAA TEST</event:simpleText>
+                  </event:NOTAMTranslation></event:translation>
+                </event:NOTAM></event:textNOTAM>
+                <event:extension><fnse:EventExtension>
+                  <fnse:classification>DOM</fnse:classification>
+                  <fnse:lastUpdated>2026-07-24T00:03:00Z</fnse:lastUpdated>
+                </fnse:EventExtension></event:extension>
+              </event:EventTimeSlice></event:timeSlice></event:Event></hasMember>
+            </AIXMBasicMessage>"#
+        )
+    }
+
     #[test]
     fn production_task_registry_includes_every_public_polling_product() {
         let tasks = production_tasks(
@@ -3198,6 +3308,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
+        install_test_nms_baseline(&store)?;
         let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         let (sender, receiver) = mpsc::channel();
 
@@ -3214,6 +3325,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
+        install_test_nms_baseline(&store)?;
         let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         publication_store.initialize()?;
         let connection = rusqlite::Connection::open(publication_store.sqlite_path())?;
@@ -3235,8 +3347,64 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "9"
+            "11"
         );
+        assert!(publication_store.canonical_source_cursor()?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn nms_publication_consumes_retained_changes_without_full_state_scan() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let collector_root = temp.path().join("collector");
+        let store = NmsApiCollectorStore::new(&collector_root);
+        store.initialize()?;
+        install_test_nms_baseline(&store)?;
+        let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
+
+        let initial =
+            synchronize_nms_notam_publication(&store, &publication_store, "2026-07-24T00:00:00Z")?;
+        let initial_cursor = publication_store
+            .canonical_source_cursor()?
+            .expect("initial source cursor");
+
+        let connection = rusqlite::Connection::open(collector_root.join("state.sqlite"))?;
+        connection.execute(
+            "UPDATE current_notams
+             SET record_json = '{invalid-json'
+             WHERE id = 'NMS:1000000000000002'",
+            [],
+        )?;
+        assert!(store.current_records().is_err());
+
+        let summary = store.apply_poll(
+            parse_utc_timestamp("2026-07-24T00:04:00Z", "test poll")?,
+            parse_utc_timestamp("2026-07-23T23:50:00Z", "test query")?,
+            vec![test_nms_update_xml("UPDATED TEST ONLY")],
+            Vec::new(),
+        )?;
+        assert_eq!(summary.upserted, 1);
+
+        let updated =
+            synchronize_nms_notam_publication(&store, &publication_store, "2026-07-24T00:04:00Z")?;
+        assert_ne!(updated.state_id, initial.state_id);
+        assert_eq!(
+            publication_store
+                .canonical_source_cursor()?
+                .expect("updated source cursor")
+                .through_sequence,
+            initial_cursor.through_sequence + 1
+        );
+        let records = publication_store.current_records()?;
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.id == "NMS:1000000000000001")
+                .and_then(|record| record.text.as_deref()),
+            Some("UPDATED TEST ONLY")
+        );
+        assert!(store.canonical_changes_after(&initial_cursor)?.is_none());
         Ok(())
     }
 
@@ -3245,6 +3413,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
+        install_test_nms_baseline(&store)?;
         let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         let (sender, receiver) = mpsc::channel();
         let status = DaemonStatus::default();
@@ -3285,6 +3454,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
+        install_test_nms_baseline(&store)?;
         let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         let (sender, receiver) = mpsc::channel();
         let status = DaemonStatus::default();

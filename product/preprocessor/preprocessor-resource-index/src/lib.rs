@@ -387,9 +387,22 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         .parent()
         .context("resource-index output path must have a parent directory")?
         .join("thumbnails");
-    let plates = collect_plate_records(&request.tpp_sources, &airport_aliases, &thumbnail_root)?;
+    let plate_collection =
+        collect_plate_records(&request.tpp_sources, &airport_aliases, &thumbnail_root)?;
+    let plates = plate_collection.records;
     log_progress(request, "collected plate records")?;
-    let csups = collect_csup_records(&request.csup_sources, &airport_aliases, &thumbnail_root)?;
+    let csup_collection =
+        collect_csup_records(&request.csup_sources, &airport_aliases, &thumbnail_root)?;
+    let csups = csup_collection.records;
+    let mut package_member_inventories = plate_collection.package_members;
+    for (package_id, members) in csup_collection.package_members {
+        if package_member_inventories
+            .insert(package_id.clone(), members)
+            .is_some()
+        {
+            bail!("duplicate asset package inventory {package_id}");
+        }
+    }
     log_progress(request, "collected csup records")?;
     let airport_resources = collect_airport_resources(&plates, &csups);
     log_progress(request, "collected airport resources")?;
@@ -440,7 +453,12 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     log_progress(request, "built index structure")?;
     validate_thumbnail_paths(&index, &thumbnail_root)?;
     log_progress(request, "validated thumbnails")?;
-    validate_packaged_assets(&index, &index.packages, &artifact_root)?;
+    validate_packaged_assets(
+        &index,
+        &index.packages,
+        &artifact_root,
+        &package_member_inventories,
+    )?;
     log_progress(request, "validated packaged assets")?;
     Ok(index)
 }
@@ -689,6 +707,7 @@ fn validate_packaged_assets(
     index: &ResourceIndex,
     packages: &[ResourcePackage],
     artifact_root: &Path,
+    preloaded_members: &BTreeMap<String, BTreeSet<String>>,
 ) -> anyhow::Result<()> {
     let package_map = packages
         .iter()
@@ -700,10 +719,17 @@ fn validate_packaged_assets(
         })
         .collect::<BTreeMap<_, _>>();
     let package_members = package_map
-        .iter()
+        .par_iter()
         .map(|(package_id, package_path)| {
-            Ok::<_, anyhow::Error>((package_id.clone(), read_package_members(package_path)?))
+            let members = preloaded_members
+                .get(package_id)
+                .cloned()
+                .map(Ok)
+                .unwrap_or_else(|| read_package_members(package_path))?;
+            Ok::<_, anyhow::Error>((package_id.clone(), members))
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     for plate in &index.plates {
         validate_packaged_member(
@@ -1647,35 +1673,38 @@ fn collect_plate_records(
     sources: &[AssetSource],
     airport_aliases: &BTreeMap<String, String>,
     thumbnail_root: &Path,
-) -> anyhow::Result<Vec<PlateRecord>> {
-    let mut records = collect_asset_records_parallel(sources, "tpp", thumbnail_root, |packaged| {
-        let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
-        PlateRecord {
-            id: packaged.asset.id.clone(),
-            airport_id,
-            icao_airport_id: packaged.asset.icao_airport_id.clone(),
-            region_id: packaged.region_id.clone(),
-            package_id: packaged.package_id.clone(),
-            label: pretty_tpp_label(&packaged.asset.label, &packaged.asset.document_type),
-            asset_kind: packaged.asset.asset_kind.clone(),
-            document_type: packaged.asset.document_type.clone(),
-            procedure_uid: packaged.asset.procedure_uid.clone(),
-            cifp_procedure_id: packaged.asset.cifp_procedure_id.clone(),
-            georef: packaged.asset.georef.clone(),
-            asset_path: packaged.asset.asset_path.clone(),
-            thumbnail_path: packaged.asset.thumbnail_path.clone(),
-        }
-    })?;
-    records.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(records)
+) -> anyhow::Result<CollectedAssetRecords<PlateRecord>> {
+    let mut collected =
+        collect_asset_records_parallel(sources, "tpp", thumbnail_root, |packaged| {
+            let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
+            PlateRecord {
+                id: packaged.asset.id.clone(),
+                airport_id,
+                icao_airport_id: packaged.asset.icao_airport_id.clone(),
+                region_id: packaged.region_id.clone(),
+                package_id: packaged.package_id.clone(),
+                label: pretty_tpp_label(&packaged.asset.label, &packaged.asset.document_type),
+                asset_kind: packaged.asset.asset_kind.clone(),
+                document_type: packaged.asset.document_type.clone(),
+                procedure_uid: packaged.asset.procedure_uid.clone(),
+                cifp_procedure_id: packaged.asset.cifp_procedure_id.clone(),
+                georef: packaged.asset.georef.clone(),
+                asset_path: packaged.asset.asset_path.clone(),
+                thumbnail_path: packaged.asset.thumbnail_path.clone(),
+            }
+        })?;
+    collected
+        .records
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(collected)
 }
 
 fn collect_csup_records(
     sources: &[AssetSource],
     airport_aliases: &BTreeMap<String, String>,
     thumbnail_root: &Path,
-) -> anyhow::Result<Vec<CsupRecord>> {
-    let mut records =
+) -> anyhow::Result<CollectedAssetRecords<CsupRecord>> {
+    let mut collected =
         collect_asset_records_parallel(sources, "csup", thumbnail_root, |packaged| {
             let airport_id = canonicalize_airport_id(&packaged.asset.airport_id, airport_aliases);
             CsupRecord {
@@ -1690,8 +1719,13 @@ fn collect_csup_records(
                 asset_path: packaged.asset.asset_path.clone(),
             }
         })?;
-    records.sort();
-    Ok(records)
+    collected.records.sort();
+    Ok(collected)
+}
+
+struct CollectedAssetRecords<T> {
+    records: Vec<T>,
+    package_members: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn collect_asset_records_parallel<T, F>(
@@ -1699,14 +1733,14 @@ fn collect_asset_records_parallel<T, F>(
     expected_family_id: &str,
     thumbnail_root: &Path,
     build_record: F,
-) -> anyhow::Result<Vec<T>>
+) -> anyhow::Result<CollectedAssetRecords<T>>
 where
     T: Send,
     F: Fn(&PackagedAssetEntry) -> T + Sync,
 {
-    let packaged_entries = sources
+    let package_descriptors = sources
         .par_iter()
-        .map(|source| packaged_asset_entries(source, expected_family_id))
+        .map(|source| asset_package_descriptors(source, expected_family_id))
         .collect::<Vec<_>>()
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?
@@ -1714,124 +1748,173 @@ where
         .flatten()
         .collect::<Vec<_>>();
 
-    packaged_entries
+    let inventories = package_descriptors
         .par_iter()
-        .map(|packaged| {
-            mirror_thumbnail_from_package(
-                &packaged.package_zip_path,
-                thumbnail_root,
-                &packaged.asset.thumbnail_path,
-            )?;
-            Ok::<T, anyhow::Error>(build_record(packaged))
-        })
+        .map(|descriptor| read_asset_package_inventory(descriptor, thumbnail_root))
         .collect::<Vec<_>>()
         .into_iter()
-        .collect()
-}
-
-#[derive(Debug, Clone)]
-struct PackagedAssetEntry {
-    package_id: String,
-    region_id: String,
-    package_zip_path: PathBuf,
-    asset: PackageAssetRecord,
-}
-
-fn packaged_asset_entries(
-    source: &AssetSource,
-    expected_family_id: &str,
-) -> anyhow::Result<Vec<PackagedAssetEntry>> {
-    let mut entries = Vec::new();
-    for record in read_package_outputs(&source.package_outputs_path)? {
-        let package_zip_path = source.package_root.join(&record.zip);
-        let manifest = read_package_asset_manifest(&package_zip_path)?;
-        if manifest.family_id != expected_family_id {
-            bail!(
-                "unexpected package asset manifest family {} in {}",
-                manifest.family_id,
-                package_zip_path.display()
-            );
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut records = Vec::new();
+    let mut package_members = BTreeMap::new();
+    for inventory in inventories {
+        if package_members
+            .insert(inventory.package_id.clone(), inventory.members)
+            .is_some()
+        {
+            bail!("duplicate asset package inventory {}", inventory.package_id);
         }
-        let package_id = package_id_from_manifest_name(&record.manifest);
-        if manifest.package_id != package_id {
-            bail!(
-                "package asset manifest id {} != package output manifest {} in {}",
-                manifest.package_id,
-                package_id,
-                package_zip_path.display()
-            );
-        }
-        for asset in manifest.assets {
-            entries.push(PackagedAssetEntry {
-                package_id: package_id.clone(),
-                region_id: record.region.to_ascii_lowercase(),
-                package_zip_path: package_zip_path.clone(),
+        records.extend(inventory.assets.into_iter().map(|asset| {
+            build_record(&PackagedAssetEntry {
+                package_id: inventory.package_id.clone(),
+                region_id: inventory.region_id.clone(),
                 asset,
-            });
-        }
+            })
+        }));
     }
-    Ok(entries)
-}
-
-fn read_package_asset_manifest(package_zip_path: &Path) -> anyhow::Result<PackageAssetManifest> {
-    let file = fs::File::open(package_zip_path)
-        .with_context(|| format!("failed to open {}", package_zip_path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("failed to open zip {}", package_zip_path.display()))?;
-    let mut entry = archive
-        .by_name(PACKAGE_ASSET_MANIFEST_NAME)
-        .with_context(|| {
-            format!(
-                "missing {} in {}",
-                PACKAGE_ASSET_MANIFEST_NAME,
-                package_zip_path.display()
-            )
-        })?;
-    serde_json::from_reader(&mut entry).with_context(|| {
-        format!(
-            "failed to parse {} in {}",
-            PACKAGE_ASSET_MANIFEST_NAME,
-            package_zip_path.display()
-        )
+    Ok(CollectedAssetRecords {
+        records,
+        package_members,
     })
 }
 
-fn mirror_thumbnail_from_package(
-    package_zip_path: &Path,
+#[derive(Debug, Clone)]
+struct AssetPackageDescriptor {
+    package_id: String,
+    region_id: String,
+    package_zip_path: PathBuf,
+    expected_family_id: String,
+}
+
+struct AssetPackageInventory {
+    package_id: String,
+    region_id: String,
+    assets: Vec<PackageAssetRecord>,
+    members: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct PackagedAssetEntry {
+    package_id: String,
+    region_id: String,
+    asset: PackageAssetRecord,
+}
+
+fn asset_package_descriptors(
+    source: &AssetSource,
+    expected_family_id: &str,
+) -> anyhow::Result<Vec<AssetPackageDescriptor>> {
+    read_package_outputs(&source.package_outputs_path)?
+        .into_iter()
+        .map(|record| {
+            Ok(AssetPackageDescriptor {
+                package_id: package_id_from_manifest_name(&record.manifest),
+                region_id: record.region.to_ascii_lowercase(),
+                package_zip_path: source.package_root.join(record.zip),
+                expected_family_id: expected_family_id.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn read_asset_package_inventory(
+    descriptor: &AssetPackageDescriptor,
     thumbnail_root: &Path,
-    thumbnail_member_path: &str,
-) -> anyhow::Result<()> {
-    let target_path = thumbnail_root
-        .parent()
-        .unwrap_or(thumbnail_root)
-        .join(thumbnail_member_path);
-    if target_path.is_file() {
-        return Ok(());
-    }
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let file = fs::File::open(package_zip_path)
-        .with_context(|| format!("failed to open {}", package_zip_path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("failed to open zip {}", package_zip_path.display()))?;
-    let mut entry = archive.by_name(thumbnail_member_path).with_context(|| {
+) -> anyhow::Result<AssetPackageInventory> {
+    let file = fs::File::open(&descriptor.package_zip_path)
+        .with_context(|| format!("failed to open {}", descriptor.package_zip_path.display()))?;
+    let mut archive = ZipArchive::new(file).with_context(|| {
         format!(
-            "missing {thumbnail_member_path} in {}",
-            package_zip_path.display()
+            "failed to open zip {}",
+            descriptor.package_zip_path.display()
         )
     })?;
-    let mut output = fs::File::create(&target_path)
-        .with_context(|| format!("failed to create {}", target_path.display()))?;
-    std::io::copy(&mut entry, &mut output).with_context(|| {
-        format!(
-            "failed to extract {} from {}",
-            thumbnail_member_path,
-            package_zip_path.display()
-        )
-    })?;
-    Ok(())
+    let manifest: PackageAssetManifest = {
+        let mut entry = archive
+            .by_name(PACKAGE_ASSET_MANIFEST_NAME)
+            .with_context(|| {
+                format!(
+                    "missing {} in {}",
+                    PACKAGE_ASSET_MANIFEST_NAME,
+                    descriptor.package_zip_path.display()
+                )
+            })?;
+        serde_json::from_reader(&mut entry).with_context(|| {
+            format!(
+                "failed to parse {} in {}",
+                PACKAGE_ASSET_MANIFEST_NAME,
+                descriptor.package_zip_path.display()
+            )
+        })?
+    };
+    if manifest.family_id != descriptor.expected_family_id {
+        bail!(
+            "unexpected package asset manifest family {} in {}",
+            manifest.family_id,
+            descriptor.package_zip_path.display()
+        );
+    }
+    if manifest.package_id != descriptor.package_id {
+        bail!(
+            "package asset manifest id {} != expected {} in {}",
+            manifest.package_id,
+            descriptor.package_id,
+            descriptor.package_zip_path.display()
+        );
+    }
+
+    let requested_thumbnails = manifest
+        .assets
+        .iter()
+        .map(|asset| asset.thumbnail_path.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut found_thumbnails = BTreeSet::new();
+    let mut members = BTreeSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).with_context(|| {
+            format!(
+                "failed to read zip member #{index} from {}",
+                descriptor.package_zip_path.display()
+            )
+        })?;
+        let member_name = entry.name().to_string();
+        members.insert(member_name.clone());
+        if !requested_thumbnails.contains(member_name.as_str()) {
+            continue;
+        }
+        found_thumbnails.insert(member_name.clone());
+        let target_path = thumbnail_root
+            .parent()
+            .unwrap_or(thumbnail_root)
+            .join(&member_name);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let mut output = fs::File::create(&target_path)
+            .with_context(|| format!("failed to create {}", target_path.display()))?;
+        std::io::copy(&mut entry, &mut output).with_context(|| {
+            format!(
+                "failed to extract {member_name} from {}",
+                descriptor.package_zip_path.display()
+            )
+        })?;
+    }
+    if found_thumbnails.len() != requested_thumbnails.len() {
+        let missing = requested_thumbnails
+            .into_iter()
+            .filter(|member| !found_thumbnails.contains(*member))
+            .collect::<Vec<_>>();
+        bail!(
+            "missing package thumbnails {missing:?} in {}",
+            descriptor.package_zip_path.display()
+        );
+    }
+    Ok(AssetPackageInventory {
+        package_id: descriptor.package_id.clone(),
+        region_id: descriptor.region_id.clone(),
+        assets: manifest.assets,
+        members,
+    })
 }
 
 fn collect_airport_resources(
@@ -2724,6 +2807,70 @@ mod tests {
             )
             .expect("encode test png");
         bytes
+    }
+
+    #[test]
+    fn asset_package_inventory_extracts_all_thumbnails_in_one_archive_scan() {
+        let temp = tempdir().expect("tempdir");
+        let zip_path = temp.path().join("NW_TPP.zip");
+        let assets = ["ONE", "TWO"]
+            .into_iter()
+            .map(|name| PackageAssetRecord {
+                id: format!("plate:KSEA:{name}.png"),
+                airport_id: "KSEA".to_string(),
+                icao_airport_id: None,
+                label: name.to_string(),
+                asset_kind: "plate".to_string(),
+                document_type: "approach".to_string(),
+                asset_path: format!("plates/KSEA/{name}.png"),
+                thumbnail_path: format!("thumbnails/plates/KSEA/{name}.png"),
+                procedure_uid: None,
+                cifp_procedure_id: None,
+                georef: None,
+            })
+            .collect::<Vec<_>>();
+        let manifest = PackageAssetManifest {
+            schema_version: 2,
+            family_id: "tpp".to_string(),
+            package_id: "NW_TPP".to_string(),
+            assets: assets.clone(),
+        };
+        let file = fs::File::create(&zip_path).expect("create asset zip");
+        let mut zip = ZipWriter::new(file);
+        zip.start_file(PACKAGE_ASSET_MANIFEST_NAME, SimpleFileOptions::default())
+            .expect("start manifest");
+        zip.write_all(&serde_json::to_vec(&manifest).expect("encode manifest"))
+            .expect("write manifest");
+        for asset in &assets {
+            zip.start_file(&asset.asset_path, SimpleFileOptions::default())
+                .expect("start asset");
+            zip.write_all(b"asset").expect("write asset");
+            zip.start_file(&asset.thumbnail_path, SimpleFileOptions::default())
+                .expect("start thumbnail");
+            zip.write_all(asset.id.as_bytes()).expect("write thumbnail");
+        }
+        zip.finish().expect("finish asset zip");
+
+        let output_root = temp.path().join("output");
+        let inventory = read_asset_package_inventory(
+            &AssetPackageDescriptor {
+                package_id: "NW_TPP".to_string(),
+                region_id: "nw".to_string(),
+                package_zip_path: zip_path,
+                expected_family_id: "tpp".to_string(),
+            },
+            &output_root.join("thumbnails"),
+        )
+        .expect("read asset inventory");
+
+        assert_eq!(inventory.assets, assets);
+        assert_eq!(inventory.members.len(), 5);
+        for asset in &inventory.assets {
+            assert_eq!(
+                fs::read(output_root.join(&asset.thumbnail_path)).expect("read thumbnail"),
+                asset.id.as_bytes()
+            );
+        }
     }
 
     fn write_chart_zip(path: &Path, tiles: &[(u32, u32, u32)]) {

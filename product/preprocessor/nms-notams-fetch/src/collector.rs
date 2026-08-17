@@ -9,6 +9,10 @@ use chrono::{DateTime, Utc};
 use preprocessor_live_feeds::nms_initial_load::{
     parse_nms_api_update, NmsApiUpdate, NmsApiUpdateAction, NmsNotamClassification,
 };
+use preprocessor_live_feeds::notam_store::{
+    CanonicalNotamSourceBatch, CanonicalNotamSourceChange, CanonicalNotamSourceCursor,
+    CanonicalNotamSourceMutation,
+};
 use preprocessor_live_feeds::StructuredNotamRecord;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -19,7 +23,15 @@ use crate::{
     InitialLoadCaptureSource, NmsApiSource,
 };
 
-const NMS_API_STORE_SCHEMA_VERSION: u32 = 6;
+const NMS_API_STORE_SCHEMA_VERSION: u32 = 7;
+const SOURCE_EPOCH_METADATA_KEY: &str = "canonical_change_epoch";
+const SOURCE_SEQUENCE_METADATA_KEY: &str = "canonical_change_sequence";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NmsCollectorSnapshot {
+    pub cursor: CanonicalNotamSourceCursor,
+    pub records: Vec<StructuredNotamRecord>,
+}
 
 #[derive(Debug, Clone)]
 pub struct CollectorOptions {
@@ -101,13 +113,16 @@ impl NmsApiCollectorStore {
         let mut connection = self.open_connection()?;
         let schema_version = metadata(&connection, "schema_version")?;
         match schema_version.as_deref() {
-            None => set_metadata(
-                &connection,
-                "schema_version",
-                &NMS_API_STORE_SCHEMA_VERSION.to_string(),
-            ),
+            None => {
+                set_metadata(
+                    &connection,
+                    "schema_version",
+                    &NMS_API_STORE_SCHEMA_VERSION.to_string(),
+                )?;
+                set_metadata(&connection, SOURCE_SEQUENCE_METADATA_KEY, "0")
+            }
             Some("1") | Some("2") | Some("3") | Some("4") | Some("5") => {
-                // Versions 2 through 6 change semantic procedure identities
+                // Versions 1 through 5 used obsolete semantic procedure identities
                 // derived from raw AIXM. Stored rows do not retain enough source
                 // data to recompute those changes, so require an authoritative
                 // Initial Load refresh.
@@ -120,10 +135,14 @@ impl NmsApiCollectorStore {
                     .context("failed to clear old NMS poll history")?;
                 tx.execute("DELETE FROM current_notams", [])
                     .context("failed to clear old NMS current state")?;
+                tx.execute("DELETE FROM canonical_changes", [])
+                    .context("failed to clear old NMS canonical change journal")?;
                 for key in [
                     "baseline_capture_path",
                     "baseline_installed_at_utc",
                     "poll_cursor_utc",
+                    SOURCE_EPOCH_METADATA_KEY,
+                    SOURCE_SEQUENCE_METADATA_KEY,
                 ] {
                     tx.execute("DELETE FROM metadata WHERE key = ?1", [key])
                         .with_context(|| format!("failed to clear NMS migration metadata {key}"))?;
@@ -133,14 +152,50 @@ impl NmsApiCollectorStore {
                     "schema_version",
                     &NMS_API_STORE_SCHEMA_VERSION.to_string(),
                 )?;
+                set_metadata(&tx, SOURCE_SEQUENCE_METADATA_KEY, "0")?;
                 tx.commit()
                     .context("failed to commit NMS procedure-key schema migration")
             }
-            Some("6") => Ok(()),
+            Some("6") => self.migrate_schema_v6_to_v7(&mut connection),
+            Some("7") => self.validate_change_journal_metadata(&connection),
             Some(version) => bail!(
                 "unsupported NMS API collector schema {version}; required {NMS_API_STORE_SCHEMA_VERSION}"
             ),
         }
+    }
+
+    fn migrate_schema_v6_to_v7(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        let records = current_records_from_connection(connection)?;
+        let baseline_installed = metadata(connection, "baseline_installed_at_utc")?.is_some();
+        let tx = connection
+            .transaction()
+            .context("failed to start NMS canonical journal migration")?;
+        if baseline_installed {
+            let epoch = source_epoch_for_records(&records)?;
+            set_metadata(&tx, SOURCE_EPOCH_METADATA_KEY, &epoch)?;
+        }
+        set_metadata(&tx, SOURCE_SEQUENCE_METADATA_KEY, "0")?;
+        set_metadata(
+            &tx,
+            "schema_version",
+            &NMS_API_STORE_SCHEMA_VERSION.to_string(),
+        )?;
+        tx.commit()
+            .context("failed to commit NMS canonical journal migration")
+    }
+
+    fn validate_change_journal_metadata(&self, connection: &Connection) -> anyhow::Result<()> {
+        let sequence = metadata(connection, SOURCE_SEQUENCE_METADATA_KEY)?
+            .context("NMS API collector has no canonical change sequence")?;
+        sequence
+            .parse::<i64>()
+            .context("failed to parse NMS API collector canonical change sequence")?;
+        if metadata(connection, "baseline_installed_at_utc")?.is_some()
+            && metadata(connection, SOURCE_EPOCH_METADATA_KEY)?.is_none()
+        {
+            bail!("NMS API collector baseline has no canonical change epoch");
+        }
+        Ok(())
     }
 
     pub fn is_baseline_installed(&self) -> anyhow::Result<bool> {
@@ -205,6 +260,8 @@ impl NmsApiCollectorStore {
             .context("failed to start NMS API baseline transaction")?;
         tx.execute("DELETE FROM current_notams", [])
             .context("failed to clear NMS API current state")?;
+        tx.execute("DELETE FROM canonical_changes", [])
+            .context("failed to clear NMS API canonical change journal")?;
         for record in records {
             if record.notam_status.as_deref() != Some("ACTIVE") {
                 bail!("Initial Load record {} is not active", record.id);
@@ -220,6 +277,11 @@ impl NmsApiCollectorStore {
             ),
             ("baseline_installed_at_utc", installed_at.to_rfc3339()),
             ("poll_cursor_utc", capture_started_at.to_rfc3339()),
+            (
+                SOURCE_EPOCH_METADATA_KEY,
+                source_epoch_for_records(records)?,
+            ),
+            (SOURCE_SEQUENCE_METADATA_KEY, "0".to_string()),
         ] {
             set_metadata(&tx, key, &value)?;
         }
@@ -357,6 +419,7 @@ impl NmsApiCollectorStore {
         for rejected_update in &rejected {
             retain_rejected_update(&tx, poll_id, completed_at, rejected_update)?;
         }
+        let mut canonical_change_sequence = canonical_change_sequence(&tx)?;
         let mut upserted = 0usize;
         let mut removed = 0usize;
         for parsed_update in parsed {
@@ -388,12 +451,33 @@ impl NmsApiCollectorStore {
                 continue;
             }
             new_payloads += 1;
-            let (changed, deleted) =
-                apply_update(&tx, &parsed_update.update, parsed_update.last_updated)?;
+            let (changed, deleted) = apply_update(
+                &tx,
+                poll_id,
+                &mut canonical_change_sequence,
+                &parsed_update.update,
+                parsed_update.last_updated,
+            )?;
             upserted += changed;
             removed += deleted;
         }
-        let expired = prune_expired(&tx, completed_at)?;
+        let expired_ids = prune_expired(&tx, completed_at)?;
+        for notam_id in &expired_ids {
+            append_canonical_change(
+                &tx,
+                poll_id,
+                &mut canonical_change_sequence,
+                CanonicalNotamSourceMutation::Remove {
+                    notam_id: notam_id.clone(),
+                },
+            )?;
+        }
+        let expired = expired_ids.len();
+        set_metadata(
+            &tx,
+            SOURCE_SEQUENCE_METADATA_KEY,
+            &canonical_change_sequence.to_string(),
+        )?;
         set_metadata(&tx, "poll_cursor_utc", &started_at.to_rfc3339())?;
         let current_records =
             tx.query_row("SELECT COUNT(*) FROM current_notams", [], |row| {
@@ -418,17 +502,131 @@ impl NmsApiCollectorStore {
 
     pub fn current_records(&self) -> anyhow::Result<Vec<StructuredNotamRecord>> {
         let connection = self.open_connection()?;
-        let mut statement = connection
-            .prepare("SELECT record_json FROM current_notams ORDER BY id")
-            .context("failed to prepare NMS API current-state query")?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .context("failed to query NMS API current state")?;
-        rows.map(|row| {
-            let json = row.context("failed to read NMS API current record")?;
-            serde_json::from_str(&json).context("failed to decode NMS API current record")
-        })
-        .collect()
+        current_records_from_connection(&connection)
+    }
+
+    pub fn canonical_source_cursor(&self) -> anyhow::Result<CanonicalNotamSourceCursor> {
+        let connection = self.open_connection()?;
+        canonical_source_cursor_from_connection(&connection)
+    }
+
+    pub fn canonical_source_snapshot(&self) -> anyhow::Result<NmsCollectorSnapshot> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start NMS canonical snapshot read")?;
+        let cursor = canonical_source_cursor_from_connection(&tx)?;
+        let records = current_records_from_connection(&tx)?;
+        tx.commit()
+            .context("failed to finish NMS canonical snapshot read")?;
+        Ok(NmsCollectorSnapshot { cursor, records })
+    }
+
+    pub fn canonical_changes_after(
+        &self,
+        cursor: &CanonicalNotamSourceCursor,
+    ) -> anyhow::Result<Option<CanonicalNotamSourceBatch>> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start NMS canonical change read")?;
+        let current = canonical_source_cursor_from_connection(&tx)?;
+        if current.epoch != cursor.epoch || cursor.through_sequence > current.through_sequence {
+            return Ok(None);
+        }
+        let rows = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT sequence, operation, notam_id, record_json
+                     FROM canonical_changes
+                     WHERE sequence > ?1
+                     ORDER BY sequence",
+                )
+                .context("failed to prepare NMS canonical change query")?;
+            let rows = statement
+                .query_map([cursor.through_sequence], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .context("failed to query NMS canonical changes")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read NMS canonical changes")?;
+            rows
+        };
+        let expected_count = usize::try_from(current.through_sequence - cursor.through_sequence)
+            .context("NMS canonical change range exceeds usize")?;
+        if rows.len() != expected_count {
+            return Ok(None);
+        }
+        let mut changes = Vec::with_capacity(rows.len());
+        for (offset, (sequence, operation, notam_id, record_json)) in rows.into_iter().enumerate() {
+            let expected_sequence = cursor.through_sequence + offset as i64 + 1;
+            if sequence != expected_sequence {
+                return Ok(None);
+            }
+            let mutation = match operation.as_str() {
+                "upsert" => {
+                    let json = record_json.with_context(|| {
+                        format!("NMS canonical upsert {sequence}/{notam_id} has no record")
+                    })?;
+                    let record = serde_json::from_str::<StructuredNotamRecord>(&json)
+                        .with_context(|| {
+                            format!("failed to decode NMS canonical upsert {sequence}/{notam_id}")
+                        })?;
+                    if record.id != notam_id {
+                        bail!(
+                            "NMS canonical upsert {sequence} names {notam_id}, but contains {}",
+                            record.id
+                        );
+                    }
+                    CanonicalNotamSourceMutation::Upsert(Box::new(record))
+                }
+                "remove" => {
+                    if record_json.is_some() {
+                        bail!("NMS canonical removal {sequence}/{notam_id} contains a record");
+                    }
+                    CanonicalNotamSourceMutation::Remove { notam_id }
+                }
+                other => bail!("NMS canonical change {sequence} has unknown operation {other}"),
+            };
+            changes.push(CanonicalNotamSourceChange { sequence, mutation });
+        }
+        tx.commit()
+            .context("failed to finish NMS canonical change read")?;
+        Ok(Some(CanonicalNotamSourceBatch {
+            epoch: current.epoch,
+            from_sequence: cursor.through_sequence,
+            through_sequence: current.through_sequence,
+            changes,
+        }))
+    }
+
+    pub fn prune_canonical_changes_through(
+        &self,
+        cursor: &CanonicalNotamSourceCursor,
+    ) -> anyhow::Result<()> {
+        let connection = self.open_connection()?;
+        let current = canonical_source_cursor_from_connection(&connection)?;
+        if current.epoch != cursor.epoch || cursor.through_sequence > current.through_sequence {
+            bail!(
+                "cannot prune NMS canonical changes through {}:{}; current source is {}:{}",
+                cursor.epoch,
+                cursor.through_sequence,
+                current.epoch,
+                current.through_sequence
+            );
+        }
+        connection
+            .execute(
+                "DELETE FROM canonical_changes WHERE sequence <= ?1",
+                [cursor.through_sequence],
+            )
+            .context("failed to prune NMS canonical change journal")?;
+        Ok(())
     }
 
     pub fn current_fingerprint(&self) -> anyhow::Result<String> {
@@ -500,7 +698,14 @@ impl NmsApiCollectorStore {
                     occurrence_count INTEGER NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS rejected_updates_last_poll_idx
-                    ON rejected_updates(last_poll_id);",
+                    ON rejected_updates(last_poll_id);
+                 CREATE TABLE IF NOT EXISTS canonical_changes (
+                    sequence INTEGER PRIMARY KEY,
+                    poll_id INTEGER NOT NULL REFERENCES poll_runs(poll_id),
+                    operation TEXT NOT NULL,
+                    notam_id TEXT NOT NULL,
+                    record_json TEXT
+                 );",
             )
             .context("failed to initialize NMS API sqlite schema")?;
         Ok(connection)
@@ -736,6 +941,8 @@ fn retain_rejected_update(
 
 fn apply_update(
     tx: &Transaction<'_>,
+    poll_id: i64,
+    canonical_change_sequence: &mut i64,
     update: &NmsApiUpdate,
     source_updated_at: DateTime<Utc>,
 ) -> anyhow::Result<(usize, usize)> {
@@ -743,14 +950,42 @@ fn apply_update(
         NmsApiUpdateAction::Upsert => {
             let mut removed = 0;
             if let Some(reference) = &update.referenced_notam {
-                removed += remove_referenced(tx, &reference.human_identity(), source_updated_at)?;
+                if let Some(notam_id) =
+                    remove_referenced(tx, &reference.human_identity(), source_updated_at)?
+                {
+                    append_canonical_change(
+                        tx,
+                        poll_id,
+                        canonical_change_sequence,
+                        CanonicalNotamSourceMutation::Remove { notam_id },
+                    )?;
+                    removed += 1;
+                }
             }
             let changed = upsert_current(tx, &update.record, Utc::now())?;
+            if changed > 0 {
+                append_canonical_change(
+                    tx,
+                    poll_id,
+                    canonical_change_sequence,
+                    CanonicalNotamSourceMutation::Upsert(Box::new(update.record.clone())),
+                )?;
+            }
             Ok((changed, removed))
         }
         NmsApiUpdateAction::RemoveSelf => {
             let removed = delete_if_not_newer(tx, &update.record.id, source_updated_at)?;
-            Ok((0, removed))
+            if let Some(notam_id) = removed {
+                append_canonical_change(
+                    tx,
+                    poll_id,
+                    canonical_change_sequence,
+                    CanonicalNotamSourceMutation::Remove { notam_id },
+                )?;
+                Ok((0, 1))
+            } else {
+                Ok((0, 0))
+            }
         }
         NmsApiUpdateAction::RemoveReferenced => {
             let reference = update
@@ -758,7 +993,17 @@ fn apply_update(
                 .as_ref()
                 .context("NMS API cancellation has no referenced NOTAM")?;
             let removed = remove_referenced(tx, &reference.human_identity(), source_updated_at)?;
-            Ok((0, removed))
+            if let Some(notam_id) = removed {
+                append_canonical_change(
+                    tx,
+                    poll_id,
+                    canonical_change_sequence,
+                    CanonicalNotamSourceMutation::Remove { notam_id },
+                )?;
+                Ok((0, 1))
+            } else {
+                Ok((0, 0))
+            }
         }
     }
 }
@@ -821,7 +1066,7 @@ fn delete_if_not_newer(
     tx: &Transaction<'_>,
     id: &str,
     cancellation_time: DateTime<Utc>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Option<String>> {
     let existing = tx
         .query_row(
             "SELECT last_updated_utc FROM current_notams WHERE id = ?1",
@@ -831,20 +1076,21 @@ fn delete_if_not_newer(
         .optional()
         .with_context(|| format!("failed to query canceled NMS API record {id}"))?;
     let Some(existing) = existing else {
-        return Ok(0);
+        return Ok(None);
     };
     if parse_timestamp(&existing, "stored NMS API record")? > cancellation_time {
-        return Ok(0);
+        return Ok(None);
     }
     tx.execute("DELETE FROM current_notams WHERE id = ?1", [id])
-        .with_context(|| format!("failed to remove canceled NMS API record {id}"))
+        .with_context(|| format!("failed to remove canceled NMS API record {id}"))?;
+    Ok(Some(id.to_string()))
 }
 
 fn remove_referenced(
     tx: &Transaction<'_>,
     human_identity: &str,
     cancellation_time: DateTime<Utc>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Option<String>> {
     let matches = {
         let mut statement = tx
             .prepare(
@@ -868,16 +1114,17 @@ fn remove_referenced(
         );
     }
     let Some((id, existing_updated)) = matches.into_iter().next() else {
-        return Ok(0);
+        return Ok(None);
     };
     if parse_timestamp(&existing_updated, "stored NMS API record")? > cancellation_time {
-        return Ok(0);
+        return Ok(None);
     }
     tx.execute("DELETE FROM current_notams WHERE id = ?1", [&id])
-        .with_context(|| format!("failed to remove referenced NMS API record {id}"))
+        .with_context(|| format!("failed to remove referenced NMS API record {id}"))?;
+    Ok(Some(id))
 }
 
-fn prune_expired(tx: &Transaction<'_>, now: DateTime<Utc>) -> anyhow::Result<usize> {
+fn prune_expired(tx: &Transaction<'_>, now: DateTime<Utc>) -> anyhow::Result<Vec<String>> {
     let expired_ids = {
         let mut statement = tx
             .prepare(
@@ -902,7 +1149,7 @@ fn prune_expired(tx: &Transaction<'_>, now: DateTime<Utc>) -> anyhow::Result<usi
     for id in &expired_ids {
         tx.execute("DELETE FROM current_notams WHERE id = ?1", [id])?;
     }
-    Ok(expired_ids.len())
+    Ok(expired_ids)
 }
 
 fn human_identity(record: &StructuredNotamRecord) -> anyhow::Result<String> {
@@ -928,6 +1175,77 @@ fn action_name(action: NmsApiUpdateAction) -> &'static str {
         NmsApiUpdateAction::RemoveSelf => "remove_self",
         NmsApiUpdateAction::RemoveReferenced => "remove_referenced",
     }
+}
+
+fn current_records_from_connection(
+    connection: &Connection,
+) -> anyhow::Result<Vec<StructuredNotamRecord>> {
+    let mut statement = connection
+        .prepare("SELECT record_json FROM current_notams ORDER BY id")
+        .context("failed to prepare NMS API current-state query")?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .context("failed to query NMS API current state")?;
+    rows.map(|row| {
+        let json = row.context("failed to read NMS API current record")?;
+        serde_json::from_str(&json).context("failed to decode NMS API current record")
+    })
+    .collect()
+}
+
+fn source_epoch_for_records(records: &[StructuredNotamRecord]) -> anyhow::Result<String> {
+    let records = records
+        .iter()
+        .map(|record| (record.id.clone(), record))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut digest = Sha256::new();
+    digest.update(b"aerobag-nms-canonical-source-epoch-v1\0");
+    digest.update(serde_json::to_vec(&records)?);
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn canonical_change_sequence(connection: &Connection) -> anyhow::Result<i64> {
+    metadata(connection, SOURCE_SEQUENCE_METADATA_KEY)?
+        .context("NMS API collector has no canonical change sequence")?
+        .parse()
+        .context("failed to parse NMS API collector canonical change sequence")
+}
+
+fn canonical_source_cursor_from_connection(
+    connection: &Connection,
+) -> anyhow::Result<CanonicalNotamSourceCursor> {
+    Ok(CanonicalNotamSourceCursor {
+        epoch: metadata(connection, SOURCE_EPOCH_METADATA_KEY)?
+            .context("NMS API collector has no canonical change epoch")?,
+        through_sequence: canonical_change_sequence(connection)?,
+    })
+}
+
+fn append_canonical_change(
+    tx: &Transaction<'_>,
+    poll_id: i64,
+    sequence: &mut i64,
+    mutation: CanonicalNotamSourceMutation,
+) -> anyhow::Result<()> {
+    *sequence = sequence
+        .checked_add(1)
+        .context("NMS canonical change sequence overflow")?;
+    let (operation, notam_id, record_json) = match mutation {
+        CanonicalNotamSourceMutation::Upsert(record) => {
+            let notam_id = record.id.clone();
+            let record_json = serde_json::to_string(&record)
+                .with_context(|| format!("failed to encode NMS canonical NOTAM {notam_id}"))?;
+            ("upsert", notam_id, Some(record_json))
+        }
+        CanonicalNotamSourceMutation::Remove { notam_id } => ("remove", notam_id, None),
+    };
+    tx.execute(
+        "INSERT INTO canonical_changes(sequence, poll_id, operation, notam_id, record_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![*sequence, poll_id, operation, notam_id, record_json],
+    )
+    .with_context(|| format!("failed to append NMS canonical change {}", *sequence))?;
+    Ok(())
 }
 
 fn metadata(connection: &Connection, key: &str) -> anyhow::Result<Option<String>> {
@@ -1018,7 +1336,7 @@ mod tests {
         let connection = store.open_connection()?;
         assert_eq!(
             metadata(&connection, "schema_version")?.as_deref(),
-            Some("6")
+            Some("7")
         );
         assert!(!store.is_baseline_installed()?);
         assert!(store.current_records()?.is_empty());
@@ -1051,6 +1369,55 @@ mod tests {
         assert!(
             format!("{error:#}").contains("source mismatch"),
             "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v6_migration_establishes_a_cursor_for_existing_state() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let baseline = parse_nms_api_update(
+            &update_xml(
+                UpdateIdentity {
+                    nms_id: "1000000000000001",
+                    classification: "DOM",
+                    location: "MHK",
+                    number: "101",
+                },
+                Some("N"),
+                "!MHK 07/101 MHK TEST",
+                "TEST ONLY",
+                "2026-07-23T14:00:00Z",
+                None,
+                "209907241405",
+            ),
+            NmsNotamClassification::Domestic,
+        )?;
+        store.install_baseline(
+            "fixture",
+            None,
+            timestamp("2026-07-23T14:00:00Z"),
+            Path::new("/fixture/initial-load"),
+            &[baseline.record],
+        )?;
+        let expected_cursor = store.canonical_source_cursor()?;
+
+        let connection = store.open_connection()?;
+        set_metadata(&connection, "schema_version", "6")?;
+        connection.execute(
+            "DELETE FROM metadata WHERE key IN (?1, ?2)",
+            params![SOURCE_EPOCH_METADATA_KEY, SOURCE_SEQUENCE_METADATA_KEY],
+        )?;
+        drop(connection);
+
+        store.initialize()?;
+        assert_eq!(store.canonical_source_cursor()?, expected_cursor);
+        let connection = store.open_connection()?;
+        assert_eq!(
+            metadata(&connection, "schema_version")?.as_deref(),
+            Some("7")
         );
         Ok(())
     }
@@ -1142,6 +1509,103 @@ mod tests {
         )?;
         assert_eq!(summary.removed, 1);
         assert!(restarted.current_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_change_journal_is_cursor_addressed_and_prunable() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let baseline_xml = update_xml(
+            UpdateIdentity {
+                nms_id: "1000000000000001",
+                classification: "FDC",
+                location: "MHK",
+                number: "7893",
+            },
+            Some("N"),
+            "!FDC 6/7893 MHK TEST",
+            "TEST V1",
+            "2026-07-23T14:00:00Z",
+            None,
+            "209907241405",
+        );
+        let baseline = parse_nms_api_update(&baseline_xml, NmsNotamClassification::Fdc)?;
+        let baseline_id = baseline.record.id.clone();
+        store.install_baseline(
+            "fixture",
+            None,
+            timestamp("2026-07-23T14:00:00Z"),
+            Path::new("/fixture/initial-load"),
+            &[baseline.record],
+        )?;
+        let baseline_cursor = store.canonical_source_cursor()?;
+
+        let updated_xml = update_xml(
+            UpdateIdentity {
+                nms_id: "1000000000000001",
+                classification: "FDC",
+                location: "MHK",
+                number: "7893",
+            },
+            Some("N"),
+            "!FDC 6/7893 MHK TEST",
+            "TEST V2",
+            "2026-07-23T14:03:00Z",
+            None,
+            "209907241405",
+        );
+        store.apply_poll(
+            timestamp("2026-07-23T14:04:00Z"),
+            timestamp("2026-07-23T13:50:00Z"),
+            Vec::new(),
+            vec![updated_xml.clone(), updated_xml],
+        )?;
+        let cancellation = update_xml(
+            UpdateIdentity {
+                nms_id: "1000000000000099",
+                classification: "FDC",
+                location: "FDC",
+                number: "7893",
+            },
+            Some("C"),
+            "!FDC 6/7893 FDC CANCEL 6/7893 MHK",
+            "FDC 6/7893 NOTAMC 6/7893 A) MHK",
+            "2026-07-23T14:08:00Z",
+            None,
+            "202607261408",
+        );
+        store.apply_poll(
+            timestamp("2026-07-23T14:10:00Z"),
+            timestamp("2026-07-23T13:57:00Z"),
+            Vec::new(),
+            vec![cancellation],
+        )?;
+
+        let batch = store
+            .canonical_changes_after(&baseline_cursor)?
+            .context("baseline cursor should be replayable")?;
+        assert_eq!(batch.from_sequence, 0);
+        assert_eq!(batch.through_sequence, 2);
+        assert!(matches!(
+            &batch.changes[0].mutation,
+            CanonicalNotamSourceMutation::Upsert(record)
+                if record.text.as_deref() == Some("TEST V2")
+        ));
+        assert!(matches!(
+            &batch.changes[1].mutation,
+            CanonicalNotamSourceMutation::Remove { notam_id }
+                if notam_id == &baseline_id
+        ));
+
+        let current_cursor = store.canonical_source_cursor()?;
+        store.prune_canonical_changes_through(&current_cursor)?;
+        assert!(store.canonical_changes_after(&baseline_cursor)?.is_none());
+        let empty = store
+            .canonical_changes_after(&current_cursor)?
+            .context("current cursor should remain replayable")?;
+        assert!(empty.changes.is_empty());
         Ok(())
     }
 

@@ -29,10 +29,12 @@ use crate::{
     validate_canonical_structured_notam_record, NotamProjectionAction, StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 10;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 11;
 const LEGACY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const STATE_ID_METADATA_KEY: &str = "notam_state_id";
+const CANONICAL_SOURCE_EPOCH_METADATA_KEY: &str = "canonical_source_epoch";
+const CANONICAL_SOURCE_SEQUENCE_METADATA_KEY: &str = "canonical_source_sequence";
 const NOTAM_COUNT_METADATA_KEY: &str = "notam_count";
 const AIRPORT_NOTAM_COUNT_METADATA_KEY: &str = "airport_notam_count";
 const MULTIPLE_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_multiple_effects";
@@ -217,6 +219,32 @@ pub struct SynchronizedNotamSummary {
     pub removed_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalNotamSourceCursor {
+    pub epoch: String,
+    pub through_sequence: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CanonicalNotamSourceMutation {
+    Upsert(Box<StructuredNotamRecord>),
+    Remove { notam_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalNotamSourceChange {
+    pub sequence: i64,
+    pub mutation: CanonicalNotamSourceMutation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalNotamSourceBatch {
+    pub epoch: String,
+    pub from_sequence: i64,
+    pub through_sequence: i64,
+    pub changes: Vec<CanonicalNotamSourceChange>,
+}
+
 impl NotamPersistentStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -273,6 +301,30 @@ impl NotamPersistentStore {
         &self,
         records: &[StructuredNotamRecord],
         observed_at_utc: &str,
+    ) -> anyhow::Result<SynchronizedNotamSummary> {
+        self.synchronize_current_records_with_source_cursor(records, observed_at_utc, None)
+    }
+
+    pub fn synchronize_canonical_source_snapshot(
+        &self,
+        records: &[StructuredNotamRecord],
+        observed_at_utc: &str,
+        cursor: &CanonicalNotamSourceCursor,
+    ) -> anyhow::Result<SynchronizedNotamSummary> {
+        if cursor.epoch.is_empty() {
+            bail!("canonical NOTAM source epoch must not be empty");
+        }
+        if cursor.through_sequence < 0 {
+            bail!("canonical NOTAM source sequence must not be negative");
+        }
+        self.synchronize_current_records_with_source_cursor(records, observed_at_utc, Some(cursor))
+    }
+
+    fn synchronize_current_records_with_source_cursor(
+        &self,
+        records: &[StructuredNotamRecord],
+        observed_at_utc: &str,
+        source_cursor: Option<&CanonicalNotamSourceCursor>,
     ) -> anyhow::Result<SynchronizedNotamSummary> {
         let mut incoming = BTreeMap::new();
         for record in records {
@@ -356,6 +408,10 @@ impl NotamPersistentStore {
             [source_sequence.to_string()],
         )
         .context("failed to update canonical NOTAM source sequence")?;
+        match source_cursor {
+            Some(cursor) => write_canonical_source_cursor(&tx, cursor)?,
+            None => clear_canonical_source_cursor(&tx)?,
+        }
         let state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
             .context("NOTAM projection is missing its current state ID")?;
         tx.commit()
@@ -415,6 +471,95 @@ impl NotamPersistentStore {
             }
             (Err(error), _) => Err(error),
         }
+    }
+
+    pub fn canonical_source_cursor(&self) -> anyhow::Result<Option<CanonicalNotamSourceCursor>> {
+        let connection = self.open_connection()?;
+        read_canonical_source_cursor(&connection)
+    }
+
+    pub fn apply_canonical_source_batch(
+        &self,
+        batch: &CanonicalNotamSourceBatch,
+        observed_at_utc: &str,
+    ) -> anyhow::Result<SynchronizedNotamSummary> {
+        validate_canonical_source_batch(batch)?;
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start canonical NOTAM source transaction")?;
+        let current = read_canonical_source_cursor(&tx)?
+            .context("canonical NOTAM source batch requires an installed source snapshot")?;
+        if current.epoch != batch.epoch || current.through_sequence != batch.from_sequence {
+            bail!(
+                "canonical NOTAM source batch starts at {}:{}, but publication state is {}:{}",
+                batch.epoch,
+                batch.from_sequence,
+                current.epoch,
+                current.through_sequence
+            );
+        }
+
+        let mut touched = BTreeMap::<String, Option<NotamRecord>>::new();
+        for change in &batch.changes {
+            let notam_id = match &change.mutation {
+                CanonicalNotamSourceMutation::Upsert(record) => &record.id,
+                CanonicalNotamSourceMutation::Remove { notam_id } => notam_id,
+            };
+            if !touched.contains_key(notam_id) {
+                touched.insert(notam_id.clone(), read_client_record(&tx, notam_id)?);
+            }
+            match &change.mutation {
+                CanonicalNotamSourceMutation::Upsert(record) => {
+                    validate_canonical_structured_notam_record(record)
+                        .with_context(|| format!("invalid canonical NOTAM {}", record.id))?;
+                    if notam_projection_action(record)? != NotamProjectionAction::Upsert {
+                        bail!(
+                            "canonical NOTAM source upsert contains inactive NOTAM {}",
+                            record.id
+                        );
+                    }
+                    apply_record_to_projection(
+                        &tx,
+                        ProjectionTable::Current,
+                        record,
+                        observed_at_utc,
+                    )?;
+                }
+                CanonicalNotamSourceMutation::Remove { notam_id } => {
+                    remove_record_from_projection(&tx, notam_id)?;
+                }
+            }
+        }
+
+        let source_first_sequence = batch
+            .changes
+            .first()
+            .map(|change| change.sequence)
+            .unwrap_or(batch.through_sequence);
+        let (changed_count, removed_count) = finalize_projection_transition(
+            &tx,
+            source_first_sequence,
+            batch.through_sequence,
+            observed_at_utc,
+            &touched,
+        )?;
+        write_canonical_source_cursor(
+            &tx,
+            &CanonicalNotamSourceCursor {
+                epoch: batch.epoch.clone(),
+                through_sequence: batch.through_sequence,
+            },
+        )?;
+        let state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
+            .context("NOTAM projection is missing its current state ID")?;
+        tx.commit()
+            .context("failed to commit canonical NOTAM source transaction")?;
+        Ok(SynchronizedNotamSummary {
+            state_id,
+            changed_count,
+            removed_count,
+        })
     }
 
     pub fn apply_pending_raw_messages(
@@ -1166,7 +1311,8 @@ impl NotamPersistentStore {
             .context("failed to query NOTAM sqlite schema version")?;
         match schema_version.as_deref() {
             None => self.migrate_incremental_schema(connection),
-            Some("10") => Ok(()),
+            Some("11") => Ok(()),
+            Some("10") => self.migrate_schema_v10_to_v11(connection),
             Some("7") => self.migrate_incremental_schema(connection),
             Some("6") => {
                 self.migrate_schema_v6_to_v7(connection)?;
@@ -1266,6 +1412,16 @@ impl NotamPersistentStore {
         .context("failed to promote NOTAM sqlite schema 7")?;
         tx.commit()
             .context("failed to commit NOTAM schema 6 journal migration")
+    }
+
+    fn migrate_schema_v10_to_v11(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        connection
+            .execute(
+                "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+                [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+            )
+            .context("failed to promote NOTAM sqlite schema 11")?;
+        Ok(())
     }
 
     fn migrate_incremental_schema(&self, connection: &mut Connection) -> anyhow::Result<()> {
@@ -1738,6 +1894,120 @@ fn read_client_record(tx: &Transaction<'_>, id: &str) -> anyhow::Result<Option<N
                 .with_context(|| format!("failed to decode published NOTAM {id}"))
         })
         .transpose()
+}
+
+fn remove_record_from_projection(tx: &Transaction<'_>, notam_id: &str) -> anyhow::Result<()> {
+    tx.execute("DELETE FROM current_notams WHERE id = ?1", [notam_id])
+        .with_context(|| format!("failed to remove canonical NOTAM {notam_id}"))?;
+    tx.execute("DELETE FROM notam_client_records WHERE id = ?1", [notam_id])
+        .with_context(|| format!("failed to remove published NOTAM {notam_id}"))?;
+    Ok(())
+}
+
+fn validate_canonical_source_batch(batch: &CanonicalNotamSourceBatch) -> anyhow::Result<()> {
+    if batch.epoch.is_empty() {
+        bail!("canonical NOTAM source epoch must not be empty");
+    }
+    if batch.from_sequence < 0 || batch.through_sequence < batch.from_sequence {
+        bail!(
+            "invalid canonical NOTAM source sequence range {}..{}",
+            batch.from_sequence,
+            batch.through_sequence
+        );
+    }
+    let expected_count = usize::try_from(batch.through_sequence - batch.from_sequence)
+        .context("canonical NOTAM source sequence range exceeds usize")?;
+    if batch.changes.len() != expected_count {
+        bail!(
+            "canonical NOTAM source batch {}..{} contains {} changes; expected {expected_count}",
+            batch.from_sequence,
+            batch.through_sequence,
+            batch.changes.len()
+        );
+    }
+    for (offset, change) in batch.changes.iter().enumerate() {
+        let expected = batch.from_sequence + offset as i64 + 1;
+        if change.sequence != expected {
+            bail!(
+                "canonical NOTAM source batch expected sequence {expected}, got {}",
+                change.sequence
+            );
+        }
+        match &change.mutation {
+            CanonicalNotamSourceMutation::Upsert(record) if record.id.is_empty() => {
+                bail!("canonical NOTAM source upsert has an empty ID")
+            }
+            CanonicalNotamSourceMutation::Remove { notam_id } if notam_id.is_empty() => {
+                bail!("canonical NOTAM source removal has an empty ID")
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn read_canonical_source_cursor(
+    connection: &Connection,
+) -> anyhow::Result<Option<CanonicalNotamSourceCursor>> {
+    let epoch = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            [CANONICAL_SOURCE_EPOCH_METADATA_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .context("failed to read canonical NOTAM source epoch")?;
+    let sequence = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            [CANONICAL_SOURCE_SEQUENCE_METADATA_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .context("failed to read canonical NOTAM source sequence")?;
+    match (epoch, sequence) {
+        (None, None) => Ok(None),
+        (Some(epoch), Some(sequence)) => Ok(Some(CanonicalNotamSourceCursor {
+            epoch,
+            through_sequence: sequence
+                .parse()
+                .context("failed to parse canonical NOTAM source sequence")?,
+        })),
+        _ => bail!("canonical NOTAM source cursor metadata is incomplete"),
+    }
+}
+
+fn write_canonical_source_cursor(
+    tx: &Transaction<'_>,
+    cursor: &CanonicalNotamSourceCursor,
+) -> anyhow::Result<()> {
+    for (key, value) in [
+        (CANONICAL_SOURCE_EPOCH_METADATA_KEY, cursor.epoch.clone()),
+        (
+            CANONICAL_SOURCE_SEQUENCE_METADATA_KEY,
+            cursor.through_sequence.to_string(),
+        ),
+    ] {
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .with_context(|| format!("failed to write canonical NOTAM source metadata {key}"))?;
+    }
+    Ok(())
+}
+
+fn clear_canonical_source_cursor(tx: &Transaction<'_>) -> anyhow::Result<()> {
+    tx.execute(
+        "DELETE FROM metadata WHERE key IN (?1, ?2)",
+        params![
+            CANONICAL_SOURCE_EPOCH_METADATA_KEY,
+            CANONICAL_SOURCE_SEQUENCE_METADATA_KEY
+        ],
+    )
+    .context("failed to clear canonical NOTAM source cursor")?;
+    Ok(())
 }
 
 fn read_journal_mutations(
@@ -2264,6 +2534,113 @@ mod tests {
             replayed.checkpoint().records,
             vec![published_notam_record(&updated)]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_source_batch_advances_exact_cursor_without_full_reconciliation(
+    ) -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        let first = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("RWY"),
+            "1",
+            Some("N"),
+            "RWY 01 CLSD.",
+        ))?
+        .context("missing first canonical NOTAM")?;
+        let second = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("TWY"),
+            "2",
+            Some("N"),
+            "TWY A CLSD.",
+        ))?
+        .context("missing second canonical NOTAM")?;
+        let initial_cursor = CanonicalNotamSourceCursor {
+            epoch: "baseline-a".to_string(),
+            through_sequence: 0,
+        };
+        store.synchronize_canonical_source_snapshot(
+            std::slice::from_ref(&first),
+            "2026-07-24T12:00:00Z",
+            &initial_cursor,
+        )?;
+
+        let batch = CanonicalNotamSourceBatch {
+            epoch: initial_cursor.epoch.clone(),
+            from_sequence: 0,
+            through_sequence: 2,
+            changes: vec![
+                CanonicalNotamSourceChange {
+                    sequence: 1,
+                    mutation: CanonicalNotamSourceMutation::Upsert(Box::new(second.clone())),
+                },
+                CanonicalNotamSourceChange {
+                    sequence: 2,
+                    mutation: CanonicalNotamSourceMutation::Remove {
+                        notam_id: first.id.clone(),
+                    },
+                },
+            ],
+        };
+        let summary = store.apply_canonical_source_batch(&batch, "2026-07-24T12:03:00Z")?;
+
+        assert_eq!(summary.changed_count, 1);
+        assert_eq!(summary.removed_count, 1);
+        assert_eq!(
+            store.canonical_source_cursor()?,
+            Some(CanonicalNotamSourceCursor {
+                epoch: "baseline-a".to_string(),
+                through_sequence: 2,
+            })
+        );
+        assert_eq!(store.current_records()?, vec![second]);
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_source_batch_gap_is_rejected_without_mutation() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        let record = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("RWY"),
+            "1",
+            Some("N"),
+            "RWY 01 CLSD.",
+        ))?
+        .context("missing canonical NOTAM")?;
+        let cursor = CanonicalNotamSourceCursor {
+            epoch: "baseline-a".to_string(),
+            through_sequence: 0,
+        };
+        store.synchronize_canonical_source_snapshot(
+            std::slice::from_ref(&record),
+            "2026-07-24T12:00:00Z",
+            &cursor,
+        )?;
+        let checkpoint = store.current_checkpoint()?;
+
+        let error = store
+            .apply_canonical_source_batch(
+                &CanonicalNotamSourceBatch {
+                    epoch: cursor.epoch.clone(),
+                    from_sequence: 1,
+                    through_sequence: 1,
+                    changes: Vec::new(),
+                },
+                "2026-07-24T12:03:00Z",
+            )
+            .expect_err("source cursor gap must fail");
+
+        assert!(format!("{error:#}").contains("starts at"));
+        assert_eq!(store.current_checkpoint()?, checkpoint);
+        assert_eq!(store.canonical_source_cursor()?, Some(cursor));
         Ok(())
     }
 
@@ -2846,7 +3223,7 @@ mod tests {
         assert!(is_incompatible_notam_store_schema(&error));
         assert!(error
             .to_string()
-            .contains("unsupported NOTAM sqlite schema 9; required 10"));
+            .contains("unsupported NOTAM sqlite schema 9; required 11"));
         Ok(())
     }
 

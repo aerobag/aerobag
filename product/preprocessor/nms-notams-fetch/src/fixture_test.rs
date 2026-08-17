@@ -94,13 +94,24 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
         &baseline_records,
     )?;
 
-    let store = NotamPersistentStore::new(temp.path().join("notam-store"));
-    store.initialize()?;
-    store.synchronize_current_records(
-        &collector.current_records()?,
+    let reference_store = NotamPersistentStore::new(temp.path().join("notam-store-reference"));
+    reference_store.initialize()?;
+    let incremental_store = NotamPersistentStore::new(temp.path().join("notam-store-incremental"));
+    incremental_store.initialize()?;
+    let source_snapshot = collector.canonical_source_snapshot()?;
+    let reference_baseline = reference_store.synchronize_current_records(
+        &source_snapshot.records,
         &fixture.manifest.initial_load_captured_at_utc,
     )?;
-    let baseline_snapshot = store.publication_snapshot()?;
+    let incremental_baseline = incremental_store.synchronize_canonical_source_snapshot(
+        &source_snapshot.records,
+        &fixture.manifest.initial_load_captured_at_utc,
+        &source_snapshot.cursor,
+    )?;
+    assert_eq!(reference_baseline, incremental_baseline);
+    let baseline_snapshot = reference_store.publication_snapshot()?;
+    let incremental_baseline_snapshot = incremental_store.publication_snapshot()?;
+    assert_equivalent_publication(&baseline_snapshot, &incremental_baseline_snapshot);
     if baseline_snapshot.transitions.len() != 1 {
         bail!(
             "NMS fixture baseline produced {} publication transitions; expected one",
@@ -108,12 +119,20 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
         );
     }
     let baseline_transition = &baseline_snapshot.transitions[0];
-    store.advance_publication_cursor(
+    reference_store.advance_publication_cursor(
         baseline_transition.journal_seq,
         None,
         &baseline_transition.to_state_id,
     )?;
-    let initial_checkpoint = store.current_checkpoint()?;
+    let incremental_baseline_transition = &incremental_baseline_snapshot.transitions[0];
+    incremental_store.advance_publication_cursor(
+        incremental_baseline_transition.journal_seq,
+        None,
+        &incremental_baseline_transition.to_state_id,
+    )?;
+    let initial_checkpoint = reference_store.current_checkpoint()?;
+    assert_eq!(incremental_store.current_checkpoint()?, initial_checkpoint);
+    let mut reference_state_id = reference_baseline.state_id;
 
     for poll in &fixture.polls {
         let mut domestic = Vec::new();
@@ -137,17 +156,52 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
         if summary.new_payloads != poll.updates.len() || summary.duplicate_payloads != 0 {
             bail!("NMS fixture poll did not preserve unique payload identity");
         }
-        if summary.upserted + summary.removed + summary.expired > 0 {
-            store.synchronize_current_records(
+        let reference_summary = if summary.upserted + summary.removed + summary.expired > 0 {
+            let synchronized = reference_store.synchronize_current_records(
                 &collector.current_records()?,
                 &poll.completed_at_utc,
             )?;
+            reference_state_id.clone_from(&synchronized.state_id);
+            Some(synchronized)
+        } else {
+            None
+        };
+        let incremental_cursor = incremental_store
+            .canonical_source_cursor()?
+            .context("incremental fixture store lost its NMS source cursor")?;
+        let batch = collector
+            .canonical_changes_after(&incremental_cursor)?
+            .with_context(|| {
+                format!(
+                    "NMS fixture journal cannot continue from {}:{} after poll {}",
+                    incremental_cursor.epoch,
+                    incremental_cursor.through_sequence,
+                    poll.started_at_utc
+                )
+            })?;
+        let acknowledged_cursor =
+            preprocessor_live_feeds::notam_store::CanonicalNotamSourceCursor {
+                epoch: batch.epoch.clone(),
+                through_sequence: batch.through_sequence,
+            };
+        let incremental_summary =
+            incremental_store.apply_canonical_source_batch(&batch, &poll.completed_at_utc)?;
+        if let Some(reference_summary) = reference_summary {
+            assert_eq!(incremental_summary, reference_summary);
+        } else {
+            assert_eq!(incremental_summary.state_id, reference_state_id);
+            assert_eq!(incremental_summary.changed_count, 0);
+            assert_eq!(incremental_summary.removed_count, 0);
         }
+        collector.prune_canonical_changes_through(&acknowledged_cursor)?;
     }
 
-    let snapshot = store.publication_snapshot()?;
+    let snapshot = reference_store.publication_snapshot()?;
+    let incremental_snapshot = incremental_store.publication_snapshot()?;
+    assert_equivalent_publication(&snapshot, &incremental_snapshot);
     let transitions = snapshot.transitions;
-    let final_checkpoint = store.current_checkpoint()?;
+    let final_checkpoint = reference_store.current_checkpoint()?;
+    assert_eq!(incremental_store.current_checkpoint()?, final_checkpoint);
     validate_trace_chain(&initial_checkpoint, &transitions, &final_checkpoint)?;
     let mutation_count = transitions
         .iter()
@@ -307,6 +361,68 @@ fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> any
         final_checkpoint.state_id
     );
     Ok(())
+}
+
+fn assert_equivalent_publication(
+    reference: &NotamPublicationSnapshot,
+    incremental: &NotamPublicationSnapshot,
+) {
+    // Full reconciliation numbers source rounds; the journal numbers individual
+    // source mutations. Those ranges are producer diagnostics, not published
+    // client state, so validate each independently and compare every other field.
+    assert_eq!(incremental.current_state_id, reference.current_state_id);
+    assert_eq!(incremental.counters, reference.counters);
+    assert_eq!(incremental.cursor, reference.cursor);
+    assert_eq!(incremental.transitions.len(), reference.transitions.len());
+    for (index, (reference, incremental)) in reference
+        .transitions
+        .iter()
+        .zip(&incremental.transitions)
+        .enumerate()
+    {
+        assert_eq!(
+            incremental.journal_seq, reference.journal_seq,
+            "publication journal sequence diverged at transition {index}"
+        );
+        assert_eq!(
+            incremental.observed_at_utc, reference.observed_at_utc,
+            "observation time diverged at transition {index}"
+        );
+        assert_eq!(
+            incremental.from_state_id, reference.from_state_id,
+            "source state diverged at transition {index}"
+        );
+        assert_eq!(
+            incremental.to_state_id, reference.to_state_id,
+            "destination state diverged at transition {index}"
+        );
+        assert_eq!(
+            incremental.counters, reference.counters,
+            "counters diverged at transition {index}"
+        );
+        assert_eq!(
+            incremental.mutations, reference.mutations,
+            "mutations diverged at transition {index}"
+        );
+    }
+    for (label, snapshot) in [("reference", reference), ("incremental", incremental)] {
+        let mut previous_last = None;
+        for transition in &snapshot.transitions {
+            assert!(
+                transition.source_first_ingest_seq <= transition.source_last_ingest_seq,
+                "{label} publication transition {} has a reversed source range",
+                transition.journal_seq
+            );
+            if let Some(previous_last) = previous_last {
+                assert!(
+                    transition.source_first_ingest_seq > previous_last,
+                    "{label} publication transition {} overlaps its predecessor",
+                    transition.journal_seq
+                );
+            }
+            previous_last = Some(transition.source_last_ingest_seq);
+        }
+    }
 }
 
 fn load_trace_fixture() -> anyhow::Result<LoadedNmsFixture> {

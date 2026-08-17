@@ -6,12 +6,13 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs::{self, File, OpenOptions},
     io::Write as _,
+    ops::Deref,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -24,7 +25,9 @@ use product_contracts::{
     AcsSseEvent, AcsStatusMetric, AcsStatusResponse, AcsStatusTopContributor, ACS_CONTRACT_ID,
     ACS_FIXED_ROOT_ID, ACS_SSE_TICKET_TTL_MS,
 };
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
@@ -39,6 +42,7 @@ const MAX_LIST_LIMIT: u32 = 500;
 const RATE_WINDOW_MS: i64 = 60_000;
 const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
 const MAX_TRACKED_NETWORK_WINDOWS: usize = 4_096;
+const READ_CONNECTION_POOL_SIZE: usize = 8;
 const OBJECT_STORAGE_ACCOUNTING_OVERHEAD_BYTES: u64 = 512;
 const ROOT_STORAGE_ACCOUNTING_OVERHEAD_BYTES: u64 = 512;
 
@@ -424,11 +428,80 @@ struct RuntimeLimits {
     network_sse: HashMap<String, u64>,
 }
 
+struct ReadConnectionPool {
+    available: Mutex<Vec<Connection>>,
+    ready: Condvar,
+}
+
+impl ReadConnectionPool {
+    fn open(database_path: &Path) -> StoreResult<Self> {
+        let mut available = Vec::with_capacity(READ_CONNECTION_POOL_SIZE);
+        for _ in 0..READ_CONNECTION_POOL_SIZE {
+            let connection =
+                Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map_err(StoreError::sqlite)?;
+            configure_read_database(&connection)?;
+            available.push(connection);
+        }
+        Ok(Self {
+            available: Mutex::new(available),
+            ready: Condvar::new(),
+        })
+    }
+
+    fn acquire(&self) -> StoreResult<ReadConnection<'_>> {
+        let mut available = self
+            .available
+            .lock()
+            .map_err(|_| StoreError::internal("cloud reader pool mutex is poisoned"))?;
+        loop {
+            if let Some(connection) = available.pop() {
+                return Ok(ReadConnection {
+                    pool: self,
+                    connection: Some(connection),
+                });
+            }
+            available = self
+                .ready
+                .wait(available)
+                .map_err(|_| StoreError::internal("cloud reader pool mutex is poisoned"))?;
+        }
+    }
+}
+
+struct ReadConnection<'a> {
+    pool: &'a ReadConnectionPool,
+    connection: Option<Connection>,
+}
+
+impl Deref for ReadConnection<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("pooled reader must hold a connection")
+    }
+}
+
+impl Drop for ReadConnection<'_> {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        if let Ok(mut available) = self.pool.available.lock() {
+            available.push(connection);
+            self.pool.ready.notify_one();
+        }
+    }
+}
+
 struct StoreInner {
     config: StoreConfig,
     layout: StorageLayout,
     database_path: PathBuf,
     blob_root: PathBuf,
+    readers: ReadConnectionPool,
     connection: Mutex<Connection>,
     started_at_epoch_ms: i64,
     last_durable_read_epoch_ms: AtomicI64,
@@ -475,6 +548,7 @@ impl CloudStore {
         configure_database(&connection)?;
         initialize_schema(&connection)?;
         repair_storage_accounting(&mut connection, config.global_storage_limit_bytes)?;
+        let readers = ReadConnectionPool::open(&database_path)?;
         let (events, _) = broadcast::channel(512);
         let store = Self {
             inner: Arc::new(StoreInner {
@@ -482,6 +556,7 @@ impl CloudStore {
                 layout,
                 database_path,
                 blob_root,
+                readers,
                 connection: Mutex::new(connection),
                 started_at_epoch_ms: now_epoch_ms(),
                 last_durable_read_epoch_ms: AtomicI64::new(0),
@@ -501,6 +576,10 @@ impl CloudStore {
             .connection
             .lock()
             .map_err(|_| StoreError::internal("cloud database mutex is poisoned"))
+    }
+
+    fn read_connection(&self) -> StoreResult<ReadConnection<'_>> {
+        self.inner.readers.acquire()
     }
 
     pub(crate) fn increment_authentication_rejection(&self, replay: bool) {
@@ -1063,7 +1142,7 @@ impl CloudStore {
         account_locator: &str,
         write: bool,
     ) -> StoreResult<AccountAuthentication> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let service_mode: String = connection
             .query_row(
                 "SELECT mode FROM service_state WHERE singleton = 1",
@@ -1232,7 +1311,7 @@ impl CloudStore {
         network_pseudonym: &str,
     ) -> StoreResult<AcsObjectSnapshot> {
         validate_opaque_id(object_id, "object ID")?;
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         ensure_account_readable(&connection, account_locator)?;
         let row = connection
             .query_row(
@@ -1293,7 +1372,7 @@ impl CloudStore {
             validate_opaque_id(cursor, "object list cursor")?;
         }
         let cursor = cursor.unwrap_or("");
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         ensure_account_readable(&connection, account_locator)?;
         let total_object_count = connection
             .query_row(
@@ -1349,7 +1428,7 @@ impl CloudStore {
         account_locator: &str,
         network_pseudonym: &str,
     ) -> StoreResult<AcsRootSnapshot> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         ensure_account_readable(&connection, account_locator)?;
         let root = read_root_row(&connection, account_locator)?
             .ok_or_else(|| StoreError::new(AcsErrorCode::NotFound, "cloud account has no root"))?;
@@ -1585,7 +1664,7 @@ impl CloudStore {
         account_locator: &str,
         cursor: Option<u64>,
     ) -> StoreResult<Vec<AcsSseEvent>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         ensure_account_readable(&connection, account_locator)?;
         let (current_sequence, current_revision, current_hash) =
             current_event_state(&connection, account_locator)?;
@@ -1645,7 +1724,7 @@ impl CloudStore {
     }
 
     pub(crate) fn heartbeat_event(&self, account_locator: &str) -> StoreResult<AcsSseEvent> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let (sequence, root_revision, root_hash) =
             current_event_state(&connection, account_locator)?;
         Ok(AcsSseEvent::Heartbeat {
@@ -2062,7 +2141,7 @@ impl CloudStore {
     }
 
     pub(crate) fn status(&self, now_epoch_ms: i64) -> StoreResult<AcsStatusResponse> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mode = AccountMode::parse(
             &connection
                 .query_row(
@@ -2496,7 +2575,7 @@ impl CloudStore {
     }
 
     pub(crate) fn health(&self, now_epoch_ms: i64) -> StoreResult<AcsHealthResponse> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mode = AccountMode::parse(
             &connection
                 .query_row(
@@ -2660,6 +2739,18 @@ fn configure_database(connection: &Connection) -> StoreResult<()> {
              PRAGMA synchronous = FULL;
              PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(StoreError::sqlite)
+}
+
+fn configure_read_database(connection: &Connection) -> StoreResult<()> {
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(StoreError::sqlite)?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA query_only = ON;",
         )
         .map_err(StoreError::sqlite)
 }
@@ -3544,6 +3635,27 @@ mod tests {
 
     fn value(bytes: &[u8], children: Vec<String>) -> AcsEncryptedValue {
         AcsEncryptedValue::from_ciphertext(bytes, children)
+    }
+
+    #[test]
+    fn read_queries_do_not_wait_for_the_writer_connection() {
+        let (_root, store) = store_with_inline_threshold(u64::MAX);
+        let writer = store.connection().unwrap();
+        let reader = store.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            sender.send(reader.health(123)).unwrap();
+        });
+
+        let result = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        drop(writer);
+        thread.join().unwrap();
+
+        assert!(
+            result.is_ok(),
+            "read-only queries must use a WAL reader instead of waiting for the writer"
+        );
+        assert_eq!(result.unwrap().unwrap().server_time_epoch_ms, 123);
     }
 
     #[test]

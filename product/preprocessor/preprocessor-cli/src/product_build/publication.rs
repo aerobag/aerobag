@@ -1619,6 +1619,7 @@ pub(super) fn validate_merged_current_artifacts(
             let bundle_path = manifest_packaged_root.join(&bundle_ref.filename);
             ensure_public_file_exists(&bundle_path)?;
             let bundle = validate_bundle_manifest_for_merge(&manifest_packaged_root, &bundle_path)?;
+            validate_current_bundle_reference(bundle_ref, &bundle, &bundle_path)?;
             validate_bundle_contracts_match_current(&bundle, manifest)?;
         }
         if let Some(diagnostics) = &manifest.diagnostics {
@@ -1628,6 +1629,51 @@ pub(super) fn validate_merged_current_artifacts(
             )?;
             ensure_public_file_exists(&manifest_packaged_root.join(&diagnostics.filename))?;
         }
+    }
+    Ok(())
+}
+
+fn validate_current_bundle_reference(
+    bundle_ref: &CurrentBundleEntry,
+    bundle: &BundleManifest,
+    bundle_path: &Path,
+) -> anyhow::Result<()> {
+    if bundle_ref.filename != bundle_ref.relative_path {
+        bail!(
+            "bundle reference filename/relative_path mismatch: {} != {}",
+            bundle_ref.filename,
+            bundle_ref.relative_path
+        );
+    }
+    verify_artifact_file(
+        bundle_path,
+        &bundle_ref.checksum_sha256,
+        bundle_ref.size_bytes,
+        &format!("referenced bundle {}", bundle_ref.id),
+    )?;
+    let expected = (
+        bundle.bundle_id.as_str(),
+        bundle.bundle_type.as_str(),
+        bundle.cycle.as_str(),
+        bundle.cycle_version.as_str(),
+        bundle.start_valid.as_str(),
+        bundle.end_valid.as_str(),
+    );
+    let actual = (
+        bundle_ref.id.as_str(),
+        bundle_ref.bundle_type.as_str(),
+        bundle_ref.cycle.as_str(),
+        bundle_ref.cycle_version.as_str(),
+        bundle_ref.start_valid.as_str(),
+        bundle_ref.end_valid.as_str(),
+    );
+    if actual != expected {
+        bail!(
+            "bundle identity mismatch for {}: reference {:?} != payload {:?}",
+            bundle_ref.filename,
+            actual,
+            expected
+        );
     }
     Ok(())
 }

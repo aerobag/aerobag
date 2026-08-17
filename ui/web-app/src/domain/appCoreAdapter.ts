@@ -1187,86 +1187,97 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
-      assertUiContractVersion(created.snapshot);
-      const snapshotAccumulator = new SessionUpdateAccumulator(
-        created.snapshot,
-        UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
-      );
-      const loadFullSnapshot = () => runSessionSnapshotForHandle<unknown>(created.handle, () =>
-        this.module.get_session_snapshot_paged(created.handle));
-      const applyResourceFreeBootstrapMutation = async (
-        responseJson: SessionMutationOperationJson | Promise<SessionMutationOperationJson>,
-        operationLabel: string,
-      ) => {
-        const update = await completeResourceFreeSessionMutation<unknown>(responseJson, operationLabel);
-        const disposition = snapshotAccumulator.apply(update);
-        if (disposition === "resync_required") {
-          throw new Error(`${operationLabel} produced a bootstrap session revision gap`);
-        }
-      };
-      const applyPagedBootstrapMutation = async (operation: SessionMutationOperation) => {
-        const completion = await runSessionMutationForHandle<unknown, unknown>(
-          created.handle,
-          operation,
+      try {
+        assertUiContractVersion(created.snapshot);
+        const snapshotAccumulator = new SessionUpdateAccumulator(
+          created.snapshot,
+          UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
         );
-        if (completion.kind === "session_snapshot") {
-          snapshotAccumulator.replaceFullSnapshot(completion.snapshot);
-        } else {
-          await snapshotAccumulator.applyOrResync(completion.update, loadFullSnapshot);
-        }
-      };
-      await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
-      await debugTiming("startup.session.set_resource_policy", async () =>
-        applyResourceFreeBootstrapMutation(module.set_resource_policy_in_session(
-          created.handle,
-          JSON.stringify("public_unpacked"),
-        ), "startup.session.set_resource_policy"),
-      );
-      await debugTiming("startup.session.configure_platform", async () =>
-        applyResourceFreeBootstrapMutation(module.configure_platform_capabilities_in_session(
-          created.handle,
-          JSON.stringify({
-            display_policy: null,
-            offline_packages: null,
-            cloud: {
-              qr_scan: false,
-              aerobag_cloud_base_url: new URL(
-                __AEROBAG_CLOUD_SERVER_BASE_URL__?.trim() || "/cloud/",
-                globalThis.location.href,
-              ).toString(),
-            },
-            live_feeds: { acquisition_policy: "jit_public_resources" },
-            client_build: __AEROBAG_CLIENT_BUILD_INFO__,
-            local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          }),
-        ), "startup.session.configure_platform"),
-      );
-      const origin = globalThis.location?.origin?.replace(/\/+$/, "") ?? "";
-      const liveFeedRoot = liveFeedSourceUrl().replace(/\/+$/, "");
-      await debugTiming("startup.session.configure_data_sources", async () =>
-        applyResourceFreeBootstrapMutation(module.configure_data_sources_in_session(
-          created.handle,
-          origin ? `${origin}/packages` : "/packages",
-          liveFeedRoot ? `${liveFeedRoot}/live-feeds` : "/live-feeds",
-          origin ? `${origin}${DebugLogDeveloperServerPath}` : DebugLogDeveloperServerPath,
-        ), "startup.session.configure_data_sources"),
-      );
-      await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
-      await debugTiming("startup.session.load_raster_catalog", () =>
-        applyPagedBootstrapMutation(() => module.load_raster_map_catalog_in_session(created.handle)));
-      return {
-        ...created,
-        snapshot: assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot),
-        snapshotAccumulator,
-      };
+        const loadFullSnapshot = () => runSessionSnapshotForHandle<unknown>(created.handle, () =>
+          this.module.get_session_snapshot_paged(created.handle));
+        const applyResourceFreeBootstrapMutation = async (
+          responseJson: SessionMutationOperationJson | Promise<SessionMutationOperationJson>,
+          operationLabel: string,
+        ) => {
+          const update = await completeResourceFreeSessionMutation<unknown>(responseJson, operationLabel);
+          const disposition = snapshotAccumulator.apply(update);
+          if (disposition === "resync_required") {
+            throw new Error(`${operationLabel} produced a bootstrap session revision gap`);
+          }
+        };
+        const applyPagedBootstrapMutation = async (operation: SessionMutationOperation) => {
+          const completion = await runSessionMutationForHandle<unknown, unknown>(
+            created.handle,
+            operation,
+          );
+          if (completion.kind === "session_snapshot") {
+            snapshotAccumulator.replaceFullSnapshot(completion.snapshot);
+          } else {
+            await snapshotAccumulator.applyOrResync(completion.update, loadFullSnapshot);
+          }
+        };
+        await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
+        await debugTiming("startup.session.set_resource_policy", async () =>
+          applyResourceFreeBootstrapMutation(module.set_resource_policy_in_session(
+            created.handle,
+            JSON.stringify("public_unpacked"),
+          ), "startup.session.set_resource_policy"),
+        );
+        await debugTiming("startup.session.configure_platform", async () =>
+          applyResourceFreeBootstrapMutation(module.configure_platform_capabilities_in_session(
+            created.handle,
+            JSON.stringify({
+              display_policy: null,
+              offline_packages: null,
+              cloud: {
+                qr_scan: false,
+                aerobag_cloud_base_url: new URL(
+                  __AEROBAG_CLOUD_SERVER_BASE_URL__?.trim() || "/cloud/",
+                  globalThis.location.href,
+                ).toString(),
+              },
+              live_feeds: { acquisition_policy: "jit_public_resources" },
+              client_build: __AEROBAG_CLIENT_BUILD_INFO__,
+              local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            }),
+          ), "startup.session.configure_platform"),
+        );
+        const origin = globalThis.location?.origin?.replace(/\/+$/, "") ?? "";
+        const liveFeedRoot = liveFeedSourceUrl().replace(/\/+$/, "");
+        await debugTiming("startup.session.configure_data_sources", async () =>
+          applyResourceFreeBootstrapMutation(module.configure_data_sources_in_session(
+            created.handle,
+            origin ? `${origin}/packages` : "/packages",
+            liveFeedRoot ? `${liveFeedRoot}/live-feeds` : "/live-feeds",
+            origin ? `${origin}${DebugLogDeveloperServerPath}` : DebugLogDeveloperServerPath,
+          ), "startup.session.configure_data_sources"),
+        );
+        await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
+        await debugTiming("startup.session.load_raster_catalog", () =>
+          applyPagedBootstrapMutation(() => module.load_raster_map_catalog_in_session(created.handle)));
+        return {
+          ...created,
+          snapshot: assertUiContractVersion(snapshotAccumulator.snapshot as UiSessionSnapshot),
+          snapshotAccumulator,
+        };
+      } catch (error) {
+        module.destroy_session(created.handle);
+        throw error;
+      }
     };
     const init = await createSession(recentAirportIds, selectedAirportId, selectedChartId);
     let handle = init.handle;
     const snapshotAccumulator = init.snapshotAccumulator;
     let snapshot = init.snapshot;
-    const snapshotRefreshSchedulerHandle = await debugTiming("startup.session.create_snapshot_scheduler", () =>
-      this.module.create_session_snapshot_refresh_scheduler(),
-    );
+    let snapshotRefreshSchedulerHandle: number;
+    try {
+      snapshotRefreshSchedulerHandle = await debugTiming("startup.session.create_snapshot_scheduler", () =>
+        this.module.create_session_snapshot_refresh_scheduler(),
+      );
+    } catch (error) {
+      this.module.destroy_session(handle);
+      throw error;
+    }
     let destroyPromise: Promise<void> | null = null;
     const runSessionResult = <T>(
       operation: SessionResultOperation,
@@ -1357,7 +1368,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     };
     const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
       JSON.parse(await json) as SessionSnapshotRefreshDecision;
-    let liveFeedSubscription: LiveFeedSubscription | null = null;
+    let liveFeedSubscriptionOwner: SerializedSubscriptionOwner<LiveFeedSubscription> | null = null;
     let liveFeedResourceRetryTimer: number | null = null;
     let liveFeedResourceRetryDueMs: number | null = null;
     let configuredLiveFeedSourceUrl: string | null = null;
@@ -1456,6 +1467,26 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       }
       return decision;
     };
+    liveFeedSubscriptionOwner = new SerializedSubscriptionOwner(
+      async () => {
+        await handleLiveFeedRuntimeEvent({ kind: "start" });
+        return createLiveFeedSubscription(
+          () => this.module.live_feed_events_url(liveFeedSourceUrl()),
+          handleLiveFeedRuntimeEvent,
+          async (events) => {
+            await runSessionResult<unknown>(
+              () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
+              (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+              "live_feeds.sse_ingest",
+            );
+          },
+          (tag, data) => debugLog(tag, data),
+        );
+      },
+      async () => {
+        await handleLiveFeedRuntimeEvent({ kind: "closed" });
+      },
+    );
     const syncGuidanceGeometry = async (reason = "unspecified") => {
       snapshot = await debugTiming("plan.guidance.sync", () =>
         runSessionMutation(() =>
@@ -1481,19 +1512,29 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       runSessionResult<T>(
         () => this.module.query_flight_plan_in_session(handle, JSON.stringify(query)),
       );
-    await debugTiming("startup.session.sync_guidance_geometry.initial", () => syncGuidanceGeometry());
-    const uiSessionWorkRunner = await debugTiming(
-      "startup.session.create_work_scheduler",
-      () => WebUiSessionWorkRunner.create({
-        create: () => this.module.create_ui_session_work_scheduler(),
-        request: (schedulerHandle, requestJson) =>
-          this.module.ui_session_work_scheduler_request(schedulerHandle, requestJson),
-        complete: (schedulerHandle, requestId) =>
-          this.module.ui_session_work_scheduler_complete(schedulerHandle, requestId),
-        destroy: (schedulerHandle) =>
-          this.module.destroy_ui_session_work_scheduler(schedulerHandle),
-      }),
-    );
+    let uiSessionWorkRunner: WebUiSessionWorkRunner;
+    try {
+      await debugTiming("startup.session.sync_guidance_geometry.initial", () => syncGuidanceGeometry());
+      uiSessionWorkRunner = await debugTiming(
+        "startup.session.create_work_scheduler",
+        () => WebUiSessionWorkRunner.create({
+          create: () => this.module.create_ui_session_work_scheduler(),
+          request: (schedulerHandle, requestJson) =>
+            this.module.ui_session_work_scheduler_request(schedulerHandle, requestJson),
+          complete: (schedulerHandle, requestId) =>
+            this.module.ui_session_work_scheduler_complete(schedulerHandle, requestId),
+          destroy: (schedulerHandle) =>
+            this.module.destroy_ui_session_work_scheduler(schedulerHandle),
+        }),
+      );
+    } catch (error) {
+      try {
+        await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle);
+      } finally {
+        this.module.destroy_session(handle);
+      }
+      throw error;
+    }
     return {
       setInvalidationListener: (listener) => {
         invalidationListener = listener;
@@ -2148,37 +2189,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.project_flight_plan_route_in_session(handle),
         ),
       syncLiveFeeds,
-      startLiveFeedSubscription: async () => {
-        await handleLiveFeedRuntimeEvent({ kind: "start" });
-        if (liveFeedSubscription) {
-          return;
-        }
-        liveFeedSubscription = createLiveFeedSubscription(
-          () => this.module.live_feed_events_url(liveFeedSourceUrl()),
-          handleLiveFeedRuntimeEvent,
-          async (events) => {
-            await runSessionResult<unknown>(
-              () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
-              (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
-              "live_feeds.sse_ingest",
-            );
-          },
-          (tag, data) => debugLog(tag, data),
-        );
-      },
+      startLiveFeedSubscription: () => liveFeedSubscriptionOwner!.start(),
       notifyLiveFeedOnline: () => {
-        liveFeedSubscription?.notifyOnline();
+        liveFeedSubscriptionOwner?.current()?.notifyOnline();
       },
-      stopLiveFeedSubscription: async () => {
-        if (liveFeedSubscription) {
-          const closing = liveFeedSubscription;
-          liveFeedSubscription = null;
-          closing.close();
-          await handleLiveFeedRuntimeEvent({ kind: "closed" });
-          return;
-        }
-        liveFeedSubscription = null;
-      },
+      stopLiveFeedSubscription: () => liveFeedSubscriptionOwner!.stop(),
       ingestLiveFeedSseEvent: async (event) => {
         await runSessionResult<unknown>(
           () => this.module.ingest_live_feed_sse_event_in_session(handle, JSON.stringify(event)),
@@ -2218,8 +2233,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           return destroyPromise;
         }
         destroyPromise = (async () => {
-          liveFeedSubscription?.close();
-          liveFeedSubscription = null;
+          try {
+            await liveFeedSubscriptionOwner?.stop();
+          } catch (error) {
+            debugLog("live_feeds.subscription_stop.failed", {
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+          liveFeedSubscriptionOwner = null;
           if (liveFeedResourceRetryTimer !== null) {
             globalThis.clearTimeout(liveFeedResourceRetryTimer);
             liveFeedResourceRetryTimer = null;
@@ -2511,6 +2532,64 @@ type LiveFeedRuntimeDecision = {
   commands: LiveFeedRuntimeCommand[];
 };
 
+type CloseableSubscription = {
+  close(): void;
+};
+
+export class SerializedSubscriptionOwner<T extends CloseableSubscription> {
+  private desiredRunning = false;
+  private subscription: T | null = null;
+  private lifecycle: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly create: () => Promise<T>,
+    private readonly reportStopped: () => Promise<void>,
+  ) {}
+
+  start(): Promise<void> {
+    this.desiredRunning = true;
+    return this.serialize(async () => {
+      if (!this.desiredRunning || this.subscription) {
+        return;
+      }
+      const candidate = await this.create();
+      if (!this.desiredRunning) {
+        candidate.close();
+        await this.reportStopped();
+        return;
+      }
+      this.subscription = candidate;
+    });
+  }
+
+  stop(): Promise<void> {
+    this.desiredRunning = false;
+    return this.serialize(async () => {
+      const closing = this.subscription;
+      this.subscription = null;
+      if (!closing) {
+        return;
+      }
+      closing.close();
+      await this.reportStopped();
+    });
+  }
+
+  current(): T | null {
+    return this.subscription;
+  }
+
+  hasSubscription(): boolean {
+    return this.subscription !== null;
+  }
+
+  private serialize(operation: () => Promise<void>): Promise<void> {
+    const result = this.lifecycle.then(operation);
+    this.lifecycle = result.catch(() => undefined);
+    return result;
+  }
+}
+
 export function createLiveFeedSubscription(
   liveFeedEventsUrl: () => Promise<string> | string,
   handleRuntimeEvent: (input: LiveFeedRuntimeInput) => Promise<LiveFeedRuntimeDecision>,
@@ -2591,6 +2670,9 @@ export function createLiveFeedSubscription(
     const batch = queuedEvents.splice(0, queuedEvents.length);
     flushInFlight = true;
     void ingestEvents(batch).catch((error: unknown) => {
+      if (!closed) {
+        queuedEvents.unshift(...batch);
+      }
       log("live_feeds.sse_events.failed", { message: error instanceof Error ? error.message : String(error) });
     }).finally(() => {
       flushInFlight = false;

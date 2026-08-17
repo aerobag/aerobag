@@ -4889,6 +4889,95 @@ mod tests {
     }
 
     #[test]
+    fn merged_discovery_rejects_bundle_identity_that_disagrees_with_payload() {
+        let temp = tempdir().unwrap();
+        let build_root = temp.path();
+        let packaged_root = build_root.join("published").join("packaged");
+        fs::create_dir_all(&packaged_root).unwrap();
+
+        let package_path = packaged_root.join(format!(
+            "nav_db_{}_2608_01_{}.zip",
+            NAV_DB_CONTRACT_ID,
+            Sha256::digest([])
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        ));
+        fs::write(&package_path, []).unwrap();
+        let package_filename = package_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let bundle = BundleManifest {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            bundle_id: "cycle_2608_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2608".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-08-06T00:00:00Z".to_string(),
+            effective_date: "2026-08-06".to_string(),
+            expiration_date: "2026-09-03".to_string(),
+            start_valid: "2026-08-06".to_string(),
+            end_valid: "2026-09-03".to_string(),
+            packages: vec![BundlePackageArtifact {
+                id: format!("NAV_DB_{}_2608_01", NAV_DB_CONTRACT_ID),
+                family_id: "nav-db".to_string(),
+                contract_id: NAV_DB_CONTRACT_ID.to_string(),
+                region_id: None,
+                filename: package_filename.clone(),
+                relative_path: package_filename,
+                cycle: Some("2608".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: Sha256::digest([])
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+                size_bytes: 0,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-08-06".to_string()),
+                expiration_date: Some("2026-09-03".to_string()),
+                warning_text: None,
+                metadata: BTreeMap::new(),
+            }],
+            ancillary: vec![],
+        };
+        let bundle_bytes = serde_json::to_vec_pretty(&bundle).unwrap();
+        let bundle_hash = Sha256::digest(&bundle_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let bundle_path = packaged_root.join(format!("bundle_cycle_2608_01_{bundle_hash}.json"));
+        fs::write(&bundle_path, bundle_bytes).unwrap();
+        let mut bundle_ref = publication::current_bundle_entry_from_path(&bundle_path).unwrap();
+        bundle_ref.id = "cycle_2607_01".to_string();
+        let current = CurrentArtifactsManifest {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
+            artifact_roots: CurrentArtifactRoots {
+                packaged: "packaged/".to_string(),
+                unpacked: "unpacked/".to_string(),
+            },
+            as_of_date: "2026-08-06".to_string(),
+            as_of_utc: "2026-08-06T00:00:00Z".to_string(),
+            bundles: vec![bundle_ref],
+            startup_prefetch: None,
+            diagnostics: None,
+        };
+
+        let error = publication::validate_merged_current_artifacts(build_root, &[current])
+            .expect_err("discovery must not misidentify its referenced bundle");
+
+        assert!(
+            error.to_string().contains("bundle identity mismatch"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn product_artifacts_manifest_lives_in_publish_dir_and_names_roots() {
         let temp = tempdir().unwrap();
         let publish_dir = temp

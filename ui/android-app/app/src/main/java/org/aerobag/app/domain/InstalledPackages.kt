@@ -48,7 +48,22 @@ data class InstalledPackageStorageStats(
 
 object InstalledPackages {
     fun internalPackageFile(context: Context, filename: String): File =
-        File(File(context.filesDir, InstalledPackagesDirectoryName), filename)
+        packageFileInDirectory(File(context.filesDir, InstalledPackagesDirectoryName), filename)
+
+    internal fun packageFileInDirectory(directory: File, filename: String): File {
+        require(
+            filename.isNotBlank() &&
+                filename != "." &&
+                filename != ".." &&
+                !filename.contains('/') &&
+                !filename.contains('\\') &&
+                !File(filename).isAbsolute
+        ) { "package filename must be a basename: $filename" }
+        val root = directory.canonicalFile
+        val target = File(root, filename).canonicalFile
+        require(target.parentFile == root) { "package filename escapes package directory: $filename" }
+        return target
+    }
 
     fun packageStorageStats(context: Context): InstalledPackageStorageStats {
         val directory = File(context.filesDir, InstalledPackagesDirectoryName)

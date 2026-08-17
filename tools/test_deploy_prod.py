@@ -20,6 +20,17 @@ import deploy_prod  # noqa: E402
 
 
 class ProductPublicationTests(unittest.TestCase):
+    def test_live_feed_publication_path_matches_current_contract(self) -> None:
+        self.assertEqual(deploy_prod.LIVE_FEEDS_CONTRACT_PATH, "v3")
+        core_contract = (
+            deploy_prod.REPO_ROOT
+            / "ui/core-rust/crates/app-core/src/live_feeds.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f'LIVE_FEEDS_BASE_PATH: &str = "/live-feeds/{deploy_prod.LIVE_FEEDS_CONTRACT_PATH}"',
+            core_contract,
+        )
+
     def test_deployment_names_checkout_revision_as_primary(self) -> None:
         script = deploy_prod.build_product_script(
             {

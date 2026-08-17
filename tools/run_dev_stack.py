@@ -24,6 +24,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from admin_index import admin_index_html
+from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +37,6 @@ DEFAULT_LIVE_FEEDS = "127.0.0.1:18095"
 DEFAULT_CLOUD_SERVER = "127.0.0.1:18096"
 DEFAULT_BUILD_WATCH = "127.0.0.1:18097"
 DEFAULT_PIPELINE_HEALTH = "127.0.0.1:18098"
-LIVE_FEEDS_CONTRACT_PATH = "v2"
 DEFAULT_NMS_NOTAMS_CONFIG = Path(
     "/root/aerobag-credentials/dev-stack/nms-notams-staging.json"
 )

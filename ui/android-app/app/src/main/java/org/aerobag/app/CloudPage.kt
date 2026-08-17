@@ -6,7 +6,6 @@ package org.aerobag.app
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,8 +26,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -45,6 +46,7 @@ import androidx.compose.ui.zIndex
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import java.util.concurrent.atomic.AtomicBoolean
 import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.generated.CloudPlatformEffect
 import org.aerobag.app.generated.CloudUiActionId
@@ -71,6 +73,12 @@ internal fun CloudPage(
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
     val fields = remember { mutableStateMapOf<CloudUiFieldId, String>() }
+    val currentOnAction = rememberUpdatedState(onAction)
+    val compositionActive = remember { AtomicBoolean(true) }
+    DisposableEffect(Unit) {
+        compositionActive.set(true)
+        onDispose { compositionActive.set(false) }
+    }
     val qrScanner = remember(context) {
         val options = GmsBarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
@@ -87,26 +95,28 @@ internal fun CloudPage(
             is CloudPlatformEffect.ScanQrCode -> {
                 qrScanner.startScan()
                     .addOnSuccessListener { barcode ->
+                        if (!compositionActive.get()) return@addOnSuccessListener
                         val setupCode = barcode.rawValue?.trim().orEmpty()
                         if (setupCode.isNotEmpty()) {
-                        onAction(
-                            effect.completionAction,
-                            listOf(CloudUiFieldValue(effect.fieldId, setupCode)),
-                        )
+                            currentOnAction.value(
+                                effect.completionAction,
+                                listOf(CloudUiFieldValue(effect.fieldId, setupCode)),
+                            )
                         } else {
-                            Toast.makeText(
+                            showActionToast(
                                 context,
                                 "The QR code contained no Device Setup Code.",
-                                Toast.LENGTH_LONG,
-                            ).show()
+                                long = true,
+                            )
                         }
                     }
                     .addOnFailureListener { error ->
-                        Toast.makeText(
+                        if (!compositionActive.get()) return@addOnFailureListener
+                        showActionToast(
                             context,
                             "Could not scan QR code: ${error.message ?: "scanner failed"}",
-                            Toast.LENGTH_LONG,
-                        ).show()
+                            long = true,
+                        )
                     }
             }
             is CloudPlatformEffect.CopyText -> {

@@ -4,6 +4,8 @@
 
 use super::*;
 
+const MALFORMED_LOCK_GRACE: Duration = Duration::from_secs(30);
+
 pub(super) fn try_load_node_record(
     prepared: &PreparedNode,
     expected_outputs: &[PathBuf],
@@ -179,11 +181,20 @@ pub(super) fn remove_stale_lock_if_needed(lock_path: &Path) -> anyhow::Result<()
     if !lock_path.is_file() {
         return Ok(());
     }
-    let Some(pid) = read_lock_pid(lock_path)? else {
-        return Ok(());
-    };
-    if process_is_alive(pid) {
-        return Ok(());
+    match read_lock_pid(lock_path)? {
+        Some(pid) if process_is_alive(pid) => return Ok(()),
+        Some(_) => {}
+        None => {
+            let modified = fs::metadata(lock_path)
+                .and_then(|metadata| metadata.modified())
+                .with_context(|| format!("failed to inspect {}", lock_path.display()))?;
+            let age = SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or_default();
+            if age < MALFORMED_LOCK_GRACE {
+                return Ok(());
+            }
+        }
     }
     match fs::remove_file(lock_path) {
         Ok(()) => Ok(()),
@@ -499,7 +510,37 @@ pub(super) fn load_existing_node_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::FileTimes;
     use tempfile::tempdir;
+
+    #[test]
+    fn abandoned_malformed_lock_does_not_wedge_future_builds() {
+        let temp = tempdir().expect("tempdir");
+        let lock_path = temp.path().join("node.lock");
+        fs::write(&lock_path, "pid=not-a-pid\n").expect("malformed lock");
+        let lock_file = fs::OpenOptions::new()
+            .write(true)
+            .open(&lock_path)
+            .expect("open lock");
+        lock_file
+            .set_times(FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(60)))
+            .expect("age lock");
+
+        remove_stale_lock_if_needed(&lock_path).expect("remove abandoned lock");
+
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn newly_created_empty_lock_is_given_time_to_publish_its_pid() {
+        let temp = tempdir().expect("tempdir");
+        let lock_path = temp.path().join("node.lock");
+        fs::write(&lock_path, "").expect("empty lock");
+
+        remove_stale_lock_if_needed(&lock_path).expect("inspect new lock");
+
+        assert!(lock_path.exists());
+    }
 
     #[test]
     fn node_fetch_cache_refs_ignores_legacy_provenance_when_node_provenance_exists() {

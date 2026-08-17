@@ -440,7 +440,11 @@ def add_build_watch_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]
         return
     result = build_watch.get("result")
     result_status = result.get("status") if isinstance(result, dict) else None
-    severity = "critical" if result_status == "fail" else "ok"
+    severity = {
+        "pass": "ok",
+        "in_progress": "ok",
+        "fail": "critical",
+    }.get(result_status, "warning")
     add_metric(
         metrics,
         metric_id="cycle_build.latest_result",
@@ -450,7 +454,11 @@ def add_build_watch_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]
         message=(
             "latest cycle build failed"
             if result_status == "fail"
-            else f"latest cycle build result is {result_status}"
+            else (
+                f"latest cycle build result is {result_status}"
+                if result_status in {"pass", "in_progress"}
+                else f"latest cycle build has unknown result status {result_status!r}"
+            )
         ),
     )
     process = build_watch.get("process")

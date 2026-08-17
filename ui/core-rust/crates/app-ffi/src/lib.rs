@@ -2270,23 +2270,15 @@ pub fn dispatch_offline_packages_controller_json(
 ) -> Result<String, String> {
     let input: OfflinePackagesControllerInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
-    let library_cache_changed = matches!(
-        &input.event,
-        OfflinePackagesControllerEventWire::LibraryRefreshSucceeded(_)
-    );
-    let mut controllers = offline_packages_controllers()
-        .lock()
-        .map_err(|_| "offline packages controller store poisoned".to_string())?;
-    let state = controllers
-        .remove(&(handle as u32))
-        .ok_or_else(|| format!("invalid offline packages controller handle: {handle}"))?;
-    let event = match input.event {
-        OfflinePackagesControllerEventWire::EnsureLibrary => {
-            app_core::OfflinePackagesControllerEvent::EnsureLibrary
-        }
-        OfflinePackagesControllerEventWire::RefreshLibraryRequested => {
-            app_core::OfflinePackagesControllerEvent::RefreshLibraryRequested
-        }
+    let (event, library_cache_changed) = match input.event {
+        OfflinePackagesControllerEventWire::EnsureLibrary => (
+            app_core::OfflinePackagesControllerEvent::EnsureLibrary,
+            false,
+        ),
+        OfflinePackagesControllerEventWire::RefreshLibraryRequested => (
+            app_core::OfflinePackagesControllerEvent::RefreshLibraryRequested,
+            false,
+        ),
         OfflinePackagesControllerEventWire::LibraryRefreshSucceeded(payload) => {
             let discovery_manifests = payload
                 .discovery_jsons
@@ -2300,34 +2292,51 @@ pub fn dispatch_offline_packages_controller_json(
                     app_core::decode_bundle_manifest(&json).map(|bundle| (filename, bundle))
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()?;
-            app_core::OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
-                fetched_at_epoch_ms: payload.fetched_at_epoch_ms,
-                discovery_manifests,
-                bundle_manifests_by_filename,
-            }
+            (
+                app_core::OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+                    fetched_at_epoch_ms: payload.fetched_at_epoch_ms,
+                    discovery_manifests,
+                    bundle_manifests_by_filename,
+                },
+                true,
+            )
         }
-        OfflinePackagesControllerEventWire::LibraryRefreshFailed { message } => {
-            app_core::OfflinePackagesControllerEvent::LibraryRefreshFailed { message }
-        }
-        OfflinePackagesControllerEventWire::PackagesEvent { event } => {
-            app_core::OfflinePackagesControllerEvent::PackagesEvent { event }
-        }
-        OfflinePackagesControllerEventWire::ApplySynchronizedPreferences { preferences_json } => {
+        OfflinePackagesControllerEventWire::LibraryRefreshFailed { message } => (
+            app_core::OfflinePackagesControllerEvent::LibraryRefreshFailed { message },
+            false,
+        ),
+        OfflinePackagesControllerEventWire::PackagesEvent { event } => (
+            app_core::OfflinePackagesControllerEvent::PackagesEvent { event },
+            false,
+        ),
+        OfflinePackagesControllerEventWire::ApplySynchronizedPreferences { preferences_json } => (
             app_core::OfflinePackagesControllerEvent::ApplySynchronizedPreferences {
                 preferences: serde_json::from_str(&preferences_json)
                     .map_err(|err| err.to_string())?,
-            }
-        }
-        OfflinePackagesControllerEventWire::SyncRequested => {
-            app_core::OfflinePackagesControllerEvent::SyncRequested
-        }
-        OfflinePackagesControllerEventWire::SyncProgressObserved { progress } => {
-            app_core::OfflinePackagesControllerEvent::SyncProgressObserved { progress }
-        }
-        OfflinePackagesControllerEventWire::SyncFinished { summary } => {
-            app_core::OfflinePackagesControllerEvent::SyncFinished { summary }
-        }
+            },
+            false,
+        ),
+        OfflinePackagesControllerEventWire::SyncRequested => (
+            app_core::OfflinePackagesControllerEvent::SyncRequested,
+            false,
+        ),
+        OfflinePackagesControllerEventWire::SyncProgressObserved { progress } => (
+            app_core::OfflinePackagesControllerEvent::SyncProgressObserved { progress },
+            false,
+        ),
+        OfflinePackagesControllerEventWire::SyncFinished { summary } => (
+            app_core::OfflinePackagesControllerEvent::SyncFinished { summary },
+            false,
+        ),
     };
+    // Decode every fallible caller-controlled payload before transferring ownership
+    // of the opaque controller out of the handle table.
+    let mut controllers = offline_packages_controllers()
+        .lock()
+        .map_err(|_| "offline packages controller store poisoned".to_string())?;
+    let state = controllers
+        .remove(&(handle as u32))
+        .ok_or_else(|| format!("invalid offline packages controller handle: {handle}"))?;
     let installed = input.installed.clone();
     let result = app_core::reduce_offline_packages_controller_owned(
         app_core::OfflinePackagesControllerInput {
@@ -4715,6 +4724,36 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_coreHadOperati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_offline_event_does_not_destroy_controller() {
+        let handle = create_offline_packages_controller_json(None, None).unwrap();
+        let input = |event: serde_json::Value| {
+            serde_json::json!({
+                "package_source_base_url": "https://packages.example.test/",
+                "discovery_filenames": [],
+                "now_epoch_ms": 1_000,
+                "installed": [],
+                "event": event,
+            })
+            .to_string()
+        };
+        let malformed = input(serde_json::json!({
+            "kind": "apply_synchronized_preferences",
+            "preferences_json": "not json",
+        }));
+
+        dispatch_offline_packages_controller_json(handle, &malformed)
+            .expect_err("malformed nested payload must fail");
+
+        let valid = input(serde_json::json!({"kind": "ensure_library"}));
+        let result = dispatch_offline_packages_controller_json(handle, &valid);
+        assert!(
+            result.is_ok(),
+            "controller was lost after malformed input: {result:?}"
+        );
+        destroy_offline_packages_controller_json(handle).unwrap();
+    }
 
     #[test]
     fn stale_ui_session_work_completion_after_destroy_drops_result() {

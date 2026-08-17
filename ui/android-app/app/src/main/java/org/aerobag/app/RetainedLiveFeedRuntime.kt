@@ -68,6 +68,9 @@ internal class RetainedLiveFeedRuntime(
                     LiveFeedCacheStore.listInstalledSummaries(appContext)
                 }
                 initialPromotionGate.awaitPromotion(installed)
+                // TODO(live-feed-restore-transaction): Native restore has begin/finish but no
+                // abort/reconcile operation. Add that protocol before attempting to recover from
+                // a failed promotion here; otherwise partial restored state is ambiguous.
                 installed.forEach { summary -> promote(summary) }
                 client.bootstrapAndRun(
                     promote = { summary ->

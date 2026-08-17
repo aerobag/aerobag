@@ -50,9 +50,26 @@ describe("web UI session work boundary", () => {
     expect(workerSource).toContain("loadWasmAdapterOnThisThread");
     expect(workerSource).not.toContain("WebUiSessionWorkRunner");
 
-    const destroySource = propertySource("destroy", "");
+    const destroyStart = adapterSource.lastIndexOf("\n      destroy:");
+    const destroyEnd = adapterSource.indexOf("\n    };", destroyStart);
+    const destroySource = adapterSource.slice(destroyStart, destroyEnd);
     expect(destroySource).toContain("await uiSessionWorkRunner.close()");
     expect(destroySource.indexOf("await uiSessionWorkRunner.close()"))
       .toBeLessThan(destroySource.indexOf("this.module.destroy_session(handle)"));
+  });
+
+  it("rolls back every native owner acquired during failed session startup", () => {
+    const bootstrapStart = adapterSource.indexOf("const createSession = async (");
+    const schedulerStart = adapterSource.indexOf("let snapshotRefreshSchedulerHandle: number;", bootstrapStart);
+    const returnedSession = adapterSource.indexOf("\n    return {", schedulerStart);
+    const bootstrap = adapterSource.slice(bootstrapStart, schedulerStart);
+    const scheduledStartup = adapterSource.slice(schedulerStart, returnedSession);
+
+    expect(bootstrap).toContain("module.destroy_session(created.handle)");
+    expect(scheduledStartup).toContain(
+      "await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle)",
+    );
+    expect(scheduledStartup.lastIndexOf("destroy_session_snapshot_refresh_scheduler"))
+      .toBeLessThan(scheduledStartup.lastIndexOf("this.module.destroy_session(handle)"));
   });
 });

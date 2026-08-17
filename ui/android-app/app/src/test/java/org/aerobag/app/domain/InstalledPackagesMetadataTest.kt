@@ -4,11 +4,28 @@
 
 package org.aerobag.app.domain
 
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class InstalledPackagesMetadataTest {
+    @Test
+    fun remotePackageFilenameCannotEscapeItsStorageDirectory() {
+        val root = File("build/test-package-root")
+
+        assertEquals(
+            File(root.canonicalFile, "nav-db.zip"),
+            InstalledPackages.packageFileInDirectory(root, "nav-db.zip"),
+        )
+        for (filename in listOf("../secret", "/tmp/secret", "nested/file.zip", "nested\\file.zip", ".", "")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                InstalledPackages.packageFileInDirectory(root, filename)
+            }
+        }
+    }
+
     @Test
     fun groupingFieldsRoundTripThroughInstalledSidecar() {
         val metadata = InstalledArtifactMetadata(

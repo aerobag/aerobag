@@ -708,14 +708,31 @@ internal fun FlightPlanPage(
             return@LaunchedEffect
         }
         airportInsert = editor.copy(loading = true)
-        runCatching {
-            withContext(Dispatchers.IO) {
+        try {
+            val suggestions = withContext(Dispatchers.IO) {
                 uiSession.suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, query, 8)
             }
-        }.onSuccess { suggestions ->
-            airportInsert = airportInsert?.copy(loading = false, suggestions = suggestions)
-        }.onFailure { error ->
-            airportInsert = airportInsert?.copy(loading = false, suggestions = emptyList(), error = error.message ?: error.toString())
+            airportInsert = airportInsert
+                ?.takeIf {
+                    it.rowUid == editor.rowUid &&
+                        it.before == editor.before &&
+                        it.airportId.trim().uppercase() == query
+                }
+                ?.copy(loading = false, suggestions = suggestions)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            airportInsert = airportInsert
+                ?.takeIf {
+                    it.rowUid == editor.rowUid &&
+                        it.before == editor.before &&
+                        it.airportId.trim().uppercase() == query
+                }
+                ?.copy(
+                    loading = false,
+                    suggestions = emptyList(),
+                    error = error.message ?: error.toString(),
+                )
         }
     }
 

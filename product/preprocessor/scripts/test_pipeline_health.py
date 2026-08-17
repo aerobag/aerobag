@@ -53,6 +53,21 @@ def evaluate_health(
 
 
 class PipelineHealthTests(unittest.TestCase):
+    def test_unknown_build_result_cannot_report_healthy(self) -> None:
+        metrics: list[dict] = []
+        facts = {
+            "inputs": {
+                "build_watch": {
+                    "payload": {"result": {"status": "mystery"}},
+                }
+            }
+        }
+
+        pipeline_health.add_build_watch_metrics(metrics, facts)
+
+        self.assertEqual(metrics[0]["id"], "cycle_build.latest_result")
+        self.assertEqual(metrics[0]["severity"], "warning")
+
     def test_live_feed_health_requires_daemon_product_policy(self) -> None:
         now = datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc)
         facts = {

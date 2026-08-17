@@ -413,6 +413,7 @@ struct SessionCoordinatorModel {
     chart_page_state: UiChartPageState,
     platform_capabilities: PlatformCapabilities,
     persistence_storage: Option<SettingsStorageHandle>,
+    persistence_write_block_reason: Option<String>,
     debug_state: UiDebugState,
     cycle_product_freshness: CycleProductFreshnessState,
     wall_clock_epoch_ms: i64,
@@ -2155,6 +2156,7 @@ fn create_ui_session_inner(
             chart_page_state,
             platform_capabilities,
             persistence_storage: None,
+            persistence_write_block_reason: None,
             debug_state,
             cycle_product_freshness: CycleProductFreshnessState {
                 dirty: true,
@@ -2441,6 +2443,7 @@ pub fn configure_platform_capabilities_in_session(
     run_session_model_transaction_without_persistence(session, move |session| {
         session.coordinator.platform_capabilities = capabilities;
         session.coordinator.persistence_storage = settings_storage;
+        session.coordinator.persistence_write_block_reason = None;
         load_session_persistence_from_storage(session)?;
         let acs_default_base_url = session
             .coordinator
@@ -11581,7 +11584,13 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     let Some(bytes) = storage.read_settings()? else {
         return Ok(());
     };
-    let document = decode_session_persistence(&bytes);
+    let document = match decode_session_persistence(&bytes) {
+        Ok(document) => document,
+        Err(reason) => {
+            session.coordinator.persistence_write_block_reason = Some(reason);
+            return Ok(());
+        }
+    };
     session.settings.restore_preferences(document.preferences);
     session.cloud = CloudController::new(document.cloud);
     if let Some(timeout) = session.cloud.inactivity_sleep_timeout()? {
@@ -11601,26 +11610,33 @@ fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
     let Some(storage) = session.coordinator.persistence_storage.as_ref() else {
         return Ok(());
     };
+    if let Some(reason) = session
+        .coordinator
+        .persistence_write_block_reason
+        .as_deref()
+    {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("settings persistence writes are blocked: {reason}"),
+        });
+    }
     let bytes = encode_session_persistence(session)?;
     storage.write_settings(&bytes)
 }
 
-fn decode_session_persistence(bytes: &[u8]) -> SettingsPersistenceDocument {
+fn decode_session_persistence(bytes: &[u8]) -> Result<SettingsPersistenceDocument, String> {
     if bytes.is_empty() {
-        return default_session_persistence();
+        return Err("stored settings are empty or truncated".to_string());
     }
-    serde_json::from_slice::<SettingsPersistenceDocument>(bytes)
-        .ok()
-        .filter(|document| document.version == SETTINGS_PERSISTENCE_VERSION)
-        .unwrap_or_else(default_session_persistence)
-}
-
-fn default_session_persistence() -> SettingsPersistenceDocument {
-    SettingsPersistenceDocument {
-        version: SETTINGS_PERSISTENCE_VERSION,
-        preferences: SettingsPreferences::default(),
-        cloud: CloudPersistentState::default(),
+    let document = serde_json::from_slice::<SettingsPersistenceDocument>(bytes)
+        .map_err(|error| format!("stored settings are malformed: {error}"))?;
+    if document.version != SETTINGS_PERSISTENCE_VERSION {
+        return Err(format!(
+            "stored settings version {} is unsupported by version {}",
+            document.version, SETTINGS_PERSISTENCE_VERSION
+        ));
     }
+    Ok(document)
 }
 
 fn encode_session_persistence(session: &UiSession) -> AppResult<Vec<u8>> {
@@ -13303,6 +13319,7 @@ mod tests {
                 ),
                 platform_capabilities: PlatformCapabilities::default(),
                 persistence_storage: None,
+                persistence_write_block_reason: None,
                 debug_state: default_debug_state(),
                 cycle_product_freshness: CycleProductFreshnessState::default(),
                 wall_clock_epoch_ms: 0,
@@ -15125,6 +15142,42 @@ mod tests {
         fn write_settings(&self, bytes: &[u8]) -> AppResult<()> {
             *self.bytes.lock().expect("settings lock") = Some(bytes.to_vec());
             Ok(())
+        }
+    }
+
+    #[test]
+    fn corrupt_persistence_cannot_be_overwritten_by_later_settings_changes() {
+        for original in [
+            b"truncated json".to_vec(),
+            br#"{"version":999,"preferences":{},"cloud":{}}"#.to_vec(),
+        ] {
+            let storage = Arc::new(MemorySettingsStorage {
+                bytes: Mutex::new(Some(original.clone())),
+            });
+            let init =
+                create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+            configure_platform_capabilities_in_session(
+                init.handle,
+                PlatformCapabilities::default(),
+                Some(storage.clone()),
+            )
+            .expect("session remains usable with protected persistence");
+
+            let error = perform_settings_action_in_session(
+                init.handle,
+                UiSettingsAction {
+                    action_id: "debug_flag.tile_labels".to_string(),
+                    value_id: "on".to_string(),
+                },
+                1_000,
+            )
+            .expect_err("a settings write must not replace unreadable persistence");
+
+            assert!(
+                error.message.contains("persistence writes are blocked"),
+                "{error:?}"
+            );
+            assert_eq!(storage.read_settings().unwrap(), Some(original));
         }
     }
 

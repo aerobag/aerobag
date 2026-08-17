@@ -352,12 +352,14 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
             effective_date: None,
             expiration_date: None,
         });
-    let cycle = infer_cycle(
-        &request.chart_sources,
-        &request.tpp_sources,
-        &request.csup_sources,
-    )?
-    .or_else(|| nav_cycle_code.clone());
+    let cycle = resolve_resource_cycle(
+        infer_cycle(
+            &request.chart_sources,
+            &request.tpp_sources,
+            &request.csup_sources,
+        )?,
+        nav_cycle_code.clone(),
+    )?;
     let packages = collect_packages(
         &request.chart_sources,
         &request.tpp_sources,
@@ -850,7 +852,25 @@ fn infer_cycle(
             values.insert(infer_cycle_from_manifest(&record.manifest));
         }
     }
-    Ok(values.into_iter().flatten().next())
+    let cycles = values.into_iter().flatten().collect::<Vec<_>>();
+    match cycles.as_slice() {
+        [] => Ok(None),
+        [cycle] => Ok(Some(cycle.clone())),
+        _ => bail!("package outputs contain multiple cycles: {cycles:?}"),
+    }
+}
+
+fn resolve_resource_cycle(
+    package_cycle: Option<String>,
+    nav_cycle: Option<String>,
+) -> anyhow::Result<Option<String>> {
+    match (package_cycle, nav_cycle) {
+        (Some(package), Some(nav)) if package != nav => {
+            bail!("package cycle {package} does not match nav-db cycle {nav}")
+        }
+        (Some(package), _) => Ok(Some(package)),
+        (None, nav) => Ok(nav),
+    }
 }
 
 fn collect_packages(
@@ -2587,6 +2607,53 @@ mod tests {
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+
+    #[test]
+    fn resource_index_rejects_package_outputs_from_multiple_cycles() {
+        let temp = tempdir().expect("temp dir");
+        let package_outputs_path = temp.path().join("package-outputs.jsonl");
+        fs::write(
+            &package_outputs_path,
+            [
+                serde_json::json!({
+                    "event": "package_output",
+                    "manifest": "NW_2607_SEC.manifest"
+                })
+                .to_string(),
+                serde_json::json!({
+                    "event": "package_output",
+                    "manifest": "NW_2608_TAC.manifest"
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        )
+        .expect("package outputs");
+        let source = ChartSource {
+            family_id: "sec".to_string(),
+            package_outputs_path,
+            asset_root: temp.path().to_path_buf(),
+            package_root: temp.path().to_path_buf(),
+            unpack_source_root: temp.path().to_path_buf(),
+            source_urls_path: None,
+        };
+
+        let error = infer_cycle(&[source], &[], &[])
+            .expect_err("mixed package cycles must not silently select one");
+
+        assert!(error.to_string().contains("multiple cycles"), "{error:#}");
+    }
+
+    #[test]
+    fn resource_index_rejects_package_cycle_that_disagrees_with_nav_db() {
+        let error = resolve_resource_cycle(Some("2607".to_string()), Some("2608".to_string()))
+            .expect_err("package and nav-db cycles must agree");
+
+        assert!(
+            error.to_string().contains("does not match nav-db"),
+            "{error:#}"
+        );
+    }
 
     fn catalog_package(id: &str, artifact_path: &str, tier: ChartPackageTier) -> ResourcePackage {
         ResourcePackage {

@@ -18,11 +18,14 @@ export type DebugLogRecord = {
 
 const queue: DebugLogRecord[] = [];
 const observers = new Set<(record: DebugLogRecord) => void>();
-const flushDelayMs = 250;
+const initialFlushDelayMs = 250;
+const maxFlushDelayMs = 30_000;
 const maxFlushBatchSize = 1000;
+const maxQueuedRecords = 10_000;
 const debugLogDeveloperServerUploadStorageKey = "aerobag.web.debugLogToDeveloperServer.v1";
 let flushScheduled = false;
 let flushInFlight = false;
+let retryDelayMs = initialFlushDelayMs;
 let browserInstanceId = resolveBrowserInstanceId();
 let developerServerUploadEnabled = readPersistedDebugLogDeveloperServerUploadEnabled();
 
@@ -34,6 +37,7 @@ export function setDebugLogDeveloperServerUploadEnabled(enabled: boolean): void 
   developerServerUploadEnabled = enabled;
   if (!shouldUploadDebugLog()) {
     queue.splice(0, queue.length);
+    retryDelayMs = initialFlushDelayMs;
     return;
   }
   if (!wasEnabled) {
@@ -56,7 +60,7 @@ function scheduleFlush() {
   globalThis.setTimeout(() => {
     flushScheduled = false;
     void flushQueue();
-  }, flushDelayMs);
+  }, retryDelayMs);
 }
 
 async function flushQueue() {
@@ -74,15 +78,21 @@ async function flushQueue() {
   flushInFlight = true;
   const batch = queue.splice(0, Math.min(queue.length, maxFlushBatchSize));
   try {
-    await fetch(DebugLogDeveloperServerPath, {
+    const response = await fetch(DebugLogDeveloperServerPath, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(batch),
     });
+    if (!response.ok) {
+      throw new Error(`debug log upload failed with HTTP ${response.status}`);
+    }
+    retryDelayMs = initialFlushDelayMs;
   } catch {
     queue.unshift(...batch);
+    trimQueue();
+    retryDelayMs = Math.min(maxFlushDelayMs, retryDelayMs * 2);
   } finally {
     flushInFlight = false;
     if (queue.length > 0) {
@@ -119,7 +129,15 @@ export function debugLog(tag: string, data?: unknown) {
   }
   if (shouldUploadDebugLog()) {
     queue.push(record);
+    trimQueue();
     scheduleFlush();
+  }
+}
+
+function trimQueue(): void {
+  const overflow = queue.length - maxQueuedRecords;
+  if (overflow > 0) {
+    queue.splice(0, overflow);
   }
 }
 

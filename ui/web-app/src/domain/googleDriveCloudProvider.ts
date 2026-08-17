@@ -61,6 +61,9 @@ function oauth2(): GoogleOauth2 | null {
 }
 
 export function preloadGoogleDriveAuthorization(): Promise<void> {
+  // TODO(acs-migration): A failed script element cannot currently be retried. Do not
+  // grow this legacy Google path while cloud ownership is moving to ACS; remove the
+  // provider rather than designing another authorization lifecycle around it.
   if (oauth2()) {
     return Promise.resolve();
   }

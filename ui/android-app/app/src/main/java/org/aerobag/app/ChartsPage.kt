@@ -607,7 +607,7 @@ internal fun ChartsPage(
                 ))
                 true
             }
-            .pointerInput(bitmap, surfaceSize, trayOpen) {
+            .pointerInput(bitmap, surfaceSize, trayOpen, folderOpen) {
                 if (bitmap == null || viewportState.value == null || trayOpen || folderOpen) {
                     return@pointerInput
                 }
@@ -627,7 +627,7 @@ internal fun ChartsPage(
                     },
                 )
             }
-            .pointerInput(bitmap, surfaceSize, trayOpen) {
+            .pointerInput(bitmap, surfaceSize, trayOpen, folderOpen) {
                 if (bitmap == null || viewportState.value == null || trayOpen || folderOpen) {
                     return@pointerInput
                 }
@@ -690,6 +690,7 @@ internal fun ChartsPage(
                 charts = sortedCharts,
                 selectedChartId = selectedChart?.id,
                 suggestedChartIds = suggestedChartIds,
+                chartAssetDataRevision = chartAssetDataRevision,
                 sessionWorkRunner = sessionWorkRunner,
                 uiTheme = uiTheme,
                 devServerBaseUrl = devServerBaseUrl,
@@ -1745,6 +1746,7 @@ internal fun PlateFolderGrid(
     charts: List<ChartAsset>,
     selectedChartId: String?,
     suggestedChartIds: List<String>,
+    chartAssetDataRevision: Int,
     sessionWorkRunner: UiSessionWorkRunner,
     uiTheme: UiTheme,
     devServerBaseUrl: String,
@@ -1759,7 +1761,8 @@ internal fun PlateFolderGrid(
         verticalArrangement = Arrangement.spacedBy(FolderThumbGutter),
     ) {
         lazyGridItems(charts, key = { it.id }) { chart ->
-            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.hasThumbnail, sessionWorkRunner, devServerBaseUrl) {
+            val thumbnailLoadKey = chartAssetLoadKey(chart.id, chartAssetDataRevision)
+            val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, thumbnailLoadKey, chart.hasThumbnail, sessionWorkRunner, devServerBaseUrl) {
                 value = if (chart.hasThumbnail) {
                     withContext(Dispatchers.IO) {
                         var attemptedResource: CoreResourceRequest? = null

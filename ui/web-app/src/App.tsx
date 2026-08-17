@@ -2227,7 +2227,86 @@ const RenderDependencyBoundary = memo(
     && previous.dependencies.every((value, index) => Object.is(value, next.dependencies[index])),
 );
 
+const appThemeVars = {
+  "--theme-button-checked": controlTheme.button_checked,
+  "--theme-button-unchecked": controlTheme.button_unchecked,
+  "--theme-header-button": controlTheme.header_button,
+  "--theme-button-disabled": controlTheme.button_disabled,
+  "--theme-button-disabled-icon-saturation": String(controlTheme.button_disabled_icon_saturation),
+  "--theme-button-disabled-icon-opacity": String(controlTheme.button_disabled_icon_opacity),
+  "--theme-disabled-accent-percent": `${plateFolderTheme.disabled_accent_percent}%`,
+  "--theme-plate-notam-badge-bg": plateFolderTheme.notam_badge_bg,
+  "--theme-plate-notam-badge-fg": plateFolderTheme.notam_badge_fg,
+  "--theme-plate-notam-badge-stroke": plateFolderTheme.notam_badge_stroke,
+  "--theme-button-fg": controlTheme.button_fg,
+  "--theme-control-group-bg": controlTheme.control_group_bg,
+  "--theme-text-input-bg": controlTheme.text_input_bg,
+  "--theme-button-icon-secondary": controlTheme.button_icon_secondary,
+  "--theme-flight-plan-active": loadedUiTheme.flight_plan_route.active,
+  "--theme-flight-plan-guidance-arrow": loadedUiTheme.flight_plan_route.guidance_arrow,
+  "--theme-panel-bg": controlTheme.panel_bg,
+  "--theme-panel-border": controlTheme.panel_border,
+  "--theme-panel-fg": controlTheme.panel_fg,
+  "--theme-panel-muted": controlTheme.panel_muted,
+  "--theme-map-selection-display-bg": controlTheme.map_selection_display_bg,
+  "--theme-map-selection-display-fg": controlTheme.map_selection_display_fg,
+  "--theme-situation-status-bg": controlTheme.situation_status_bg,
+  "--theme-situation-status-fg": controlTheme.situation_status_fg,
+  "--theme-situation-status-unavailable-fg": controlTheme.situation_status_unavailable_fg,
+  "--theme-data-status-ok-bg": controlTheme.data_status_ok_bg,
+  "--theme-data-status-ok-stroke": controlTheme.data_status_ok_stroke,
+  "--theme-data-status-info-bg": controlTheme.data_status_info_bg,
+  "--theme-data-status-info-stroke": controlTheme.data_status_info_stroke,
+  "--theme-data-status-caution-bg": controlTheme.data_status_caution_bg,
+  "--theme-data-status-caution-stroke": controlTheme.data_status_caution_stroke,
+  "--theme-data-status-warning-bg": controlTheme.data_status_warning_bg,
+  "--theme-data-status-warning-stroke": controlTheme.data_status_warning_stroke,
+  "--theme-data-status-unavailable-bg": controlTheme.data_status_unavailable_bg,
+  "--theme-data-status-unavailable-stroke": controlTheme.data_status_unavailable_stroke,
+  "--theme-data-status-quiet-bg": controlTheme.data_status_quiet_bg,
+  "--theme-data-status-quiet-stroke": controlTheme.data_status_quiet_stroke,
+  "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
+  "--theme-flight-data-bg": controlTheme.flight_data_bg,
+  "--theme-flight-data-border": controlTheme.flight_data_border,
+  "--theme-flight-data-label": controlTheme.flight_data_label,
+  "--theme-flight-data-value": controlTheme.flight_data_value,
+  "--theme-flight-data-missing-value": controlTheme.flight_data_missing_value,
+  "--theme-flight-data-passed-value": controlTheme.flight_data_passed_value,
+  "--theme-flight-data-active-value": controlTheme.flight_data_active_value,
+  "--theme-flight-data-modeled-value": controlTheme.flight_data_modeled_value,
+  "--theme-cdi-pointer": controlTheme.cdi_pointer,
+  "--theme-compass-north": controlTheme.compass_north,
+  "--theme-compass-south": controlTheme.compass_south,
+  "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
+  "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
+  "--theme-tfr-active": loadedUiTheme.aviation.tfr_active,
+  "--theme-tfr-upcoming": loadedUiTheme.aviation.tfr_upcoming,
+  "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
+  "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
+  "--theme-obstacle-danger": loadedUiTheme.aviation.obstacle_danger,
+  "--theme-obstacle-caution": loadedUiTheme.aviation.obstacle_caution,
+  "--theme-obstacle-muted": loadedUiTheme.aviation.obstacle_muted,
+  "--theme-obstacle-under": loadedUiTheme.aviation.obstacle_under,
+  "--theme-airport-runway-paved": loadedUiTheme.aviation.airport_runway_paved,
+  "--theme-airport-runway-turf": loadedUiTheme.aviation.airport_runway_turf,
+  "--theme-airport-runway-unpaved": loadedUiTheme.aviation.airport_runway_unpaved,
+  "--theme-airport-runway-water": loadedUiTheme.aviation.airport_runway_water,
+  "--theme-airport-runway-inactive": loadedUiTheme.aviation.airport_runway_inactive,
+  "--theme-airport-runway-pattern": loadedUiTheme.aviation.airport_runway_pattern,
+} as CSSProperties;
+
 export default function App() {
+  if (appPageForCurrentPath() === "about") {
+    return (
+      <main className="appShell" style={appThemeVars}>
+        <AboutPage />
+      </main>
+    );
+  }
+  return <OperationalApp />;
+}
+
+function OperationalApp() {
   recordSessionRender("app");
   const [sessionStartMs] = useState(() => Date.now());
   const initialDebugState = useMemo(defaultUiDebugState, []);
@@ -3805,77 +3884,7 @@ export default function App() {
       });
   }
 
-  const themeVars = useMemo(
-    () =>
-      ({
-        "--theme-button-checked": controlTheme.button_checked,
-        "--theme-button-unchecked": controlTheme.button_unchecked,
-        "--theme-header-button": controlTheme.header_button,
-        "--theme-button-disabled": controlTheme.button_disabled,
-        "--theme-button-disabled-icon-saturation": String(controlTheme.button_disabled_icon_saturation),
-        "--theme-button-disabled-icon-opacity": String(controlTheme.button_disabled_icon_opacity),
-        "--theme-disabled-accent-percent": `${plateFolderTheme.disabled_accent_percent}%`,
-        "--theme-plate-notam-badge-bg": plateFolderTheme.notam_badge_bg,
-        "--theme-plate-notam-badge-fg": plateFolderTheme.notam_badge_fg,
-        "--theme-plate-notam-badge-stroke": plateFolderTheme.notam_badge_stroke,
-        "--theme-button-fg": controlTheme.button_fg,
-        "--theme-control-group-bg": controlTheme.control_group_bg,
-        "--theme-text-input-bg": controlTheme.text_input_bg,
-        "--theme-button-icon-secondary": controlTheme.button_icon_secondary,
-        "--theme-flight-plan-active": loadedUiTheme.flight_plan_route.active,
-        "--theme-flight-plan-guidance-arrow": loadedUiTheme.flight_plan_route.guidance_arrow,
-        "--theme-panel-bg": controlTheme.panel_bg,
-        "--theme-panel-border": controlTheme.panel_border,
-        "--theme-panel-fg": controlTheme.panel_fg,
-        "--theme-panel-muted": controlTheme.panel_muted,
-        "--theme-map-selection-display-bg": controlTheme.map_selection_display_bg,
-        "--theme-map-selection-display-fg": controlTheme.map_selection_display_fg,
-        "--theme-situation-status-bg": controlTheme.situation_status_bg,
-        "--theme-situation-status-fg": controlTheme.situation_status_fg,
-        "--theme-situation-status-unavailable-fg": controlTheme.situation_status_unavailable_fg,
-        "--theme-data-status-ok-bg": controlTheme.data_status_ok_bg,
-        "--theme-data-status-ok-stroke": controlTheme.data_status_ok_stroke,
-        "--theme-data-status-info-bg": controlTheme.data_status_info_bg,
-        "--theme-data-status-info-stroke": controlTheme.data_status_info_stroke,
-        "--theme-data-status-caution-bg": controlTheme.data_status_caution_bg,
-        "--theme-data-status-caution-stroke": controlTheme.data_status_caution_stroke,
-        "--theme-data-status-warning-bg": controlTheme.data_status_warning_bg,
-        "--theme-data-status-warning-stroke": controlTheme.data_status_warning_stroke,
-        "--theme-data-status-unavailable-bg": controlTheme.data_status_unavailable_bg,
-        "--theme-data-status-unavailable-stroke": controlTheme.data_status_unavailable_stroke,
-        "--theme-data-status-quiet-bg": controlTheme.data_status_quiet_bg,
-        "--theme-data-status-quiet-stroke": controlTheme.data_status_quiet_stroke,
-        "--theme-chart-surface-bg": controlTheme.chart_surface_bg,
-        "--theme-flight-data-bg": controlTheme.flight_data_bg,
-        "--theme-flight-data-border": controlTheme.flight_data_border,
-        "--theme-flight-data-label": controlTheme.flight_data_label,
-        "--theme-flight-data-value": controlTheme.flight_data_value,
-        "--theme-flight-data-missing-value": controlTheme.flight_data_missing_value,
-        "--theme-flight-data-passed-value": controlTheme.flight_data_passed_value,
-        "--theme-flight-data-active-value": controlTheme.flight_data_active_value,
-        "--theme-flight-data-modeled-value": controlTheme.flight_data_modeled_value,
-        "--theme-cdi-pointer": controlTheme.cdi_pointer,
-        "--theme-compass-north": controlTheme.compass_north,
-        "--theme-compass-south": controlTheme.compass_south,
-        "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
-        "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
-        "--theme-tfr-active": loadedUiTheme.aviation.tfr_active,
-        "--theme-tfr-upcoming": loadedUiTheme.aviation.tfr_upcoming,
-        "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
-        "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
-        "--theme-obstacle-danger": loadedUiTheme.aviation.obstacle_danger,
-        "--theme-obstacle-caution": loadedUiTheme.aviation.obstacle_caution,
-        "--theme-obstacle-muted": loadedUiTheme.aviation.obstacle_muted,
-        "--theme-obstacle-under": loadedUiTheme.aviation.obstacle_under,
-        "--theme-airport-runway-paved": loadedUiTheme.aviation.airport_runway_paved,
-        "--theme-airport-runway-turf": loadedUiTheme.aviation.airport_runway_turf,
-        "--theme-airport-runway-unpaved": loadedUiTheme.aviation.airport_runway_unpaved,
-        "--theme-airport-runway-water": loadedUiTheme.aviation.airport_runway_water,
-        "--theme-airport-runway-inactive": loadedUiTheme.aviation.airport_runway_inactive,
-        "--theme-airport-runway-pattern": loadedUiTheme.aviation.airport_runway_pattern,
-      }) as CSSProperties,
-    [],
-  );
+  const themeVars = appThemeVars;
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -4222,6 +4231,7 @@ export default function App() {
           page={page}
           planUiState={planUiState}
           flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
+          navDataEpoch={sessionSnapshot.nav_data_epoch}
           airportMenuEntries={airportMenuEntries}
           selectedCollection={selectedChartCollection}
           selectedChart={selectedChart}
@@ -4283,24 +4293,31 @@ export default function App() {
               requested_chart_id: chartId,
               requested_chart_label: nextChart?.label ?? null,
             });
-            if (uiSession) {
-              void uiSession.selectChart(chartId).then((nextSnapshot) => {
-                debugLog("charts.select.snapshot", {
-                  requested_chart_id: chartId,
-                  selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
-                  selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
-                });
-                applySessionSnapshot(nextSnapshot, "select_chart");
-              }).catch(() => {});
+            if (!uiSession) {
+              return;
             }
-            pushViewSnapshot({
-              page: "charts",
-              selectedReferenceFamilyId,
-              selectedChartId: chartId,
-              selectedChartLabel: nextChart?.label ?? "",
-              suggestedChartIds: derivedChartPageState.suggested_chart_ids,
-              chartViewport: null,
-              chartFolderOpen: false,
+            void uiSession.selectChart(chartId).then((nextSnapshot) => {
+              debugLog("charts.select.snapshot", {
+                requested_chart_id: chartId,
+                selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
+                selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
+              });
+              applySessionSnapshot(nextSnapshot, "select_chart");
+              pushViewSnapshot({
+                page: "charts",
+                selectedReferenceFamilyId,
+                selectedChartId: chartId,
+                selectedChartLabel: nextChart?.label ?? "",
+                suggestedChartIds: derivedChartPageState.suggested_chart_ids,
+                chartViewport: null,
+                chartFolderOpen: false,
+              });
+            }).catch((error) => {
+              debugLog("charts.select.failed", {
+                requested_chart_id: chartId,
+                error: errorMessage(error),
+              });
+              setChartPageStateLoadError(`failed to select chart: ${errorMessage(error)}`);
             });
           }}
           playbackSourcePath={playbackSourcePath}
@@ -4626,7 +4643,6 @@ function MapPage(props: {
   const nexradLastPaintTimingRef = useRef<NexradPaintTiming | null>(null);
   const nexradTimerSeqRef = useRef(0);
   const nexradViewportRefreshTimerRef = useRef<number | null>(null);
-  const nexradHasPaintableFrameRef = useRef(false);
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
@@ -4692,6 +4708,7 @@ function MapPage(props: {
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<ReturnType<typeof createPinchSnapshot> | null>(null);
   const clickCandidateRef = useRef<{ pointerId: number; start: ScreenPoint; latest: ScreenPoint } | null>(null);
+  const mapSelectionRequestGenerationRef = useRef(0);
   const gestureActiveRef = useRef(false);
   const viewportGestureUntilRef = useRef(0);
   const followSyncSerialRef = useRef(0);
@@ -5348,12 +5365,13 @@ function MapPage(props: {
   }, [mapOverlay, mapOverlayFrame]);
 
   useLayoutEffect(() => {
+    mapSelectionRequestGenerationRef.current += 1;
     committedViewportRef.current = viewport;
     if (activePointersRef.current.size === 0 && !pendingReactViewportRef.current) {
       viewportRef.current = viewport;
     }
     applyImperativeMapContentTransform();
-  }, [viewport]);
+  }, [surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   useEffect(() => () => {
     clearPendingReactViewportCommit();
@@ -5932,10 +5950,6 @@ function MapPage(props: {
     pumpTerrainRenderQueue();
   }, [mapIsVisible, mapLayerState.terrain_warning.visible, navDataEpoch, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
-  useEffect(() => {
-    nexradHasPaintableFrameRef.current = nexradOverlayFrame != null && nexradOverlay.tiles.length > 0;
-  }, [nexradOverlay.tiles.length, nexradOverlayFrame]);
-
   useEffect(() => () => clearNexradViewportRefreshTimer(), []);
 
   useEffect(() => {
@@ -5943,11 +5957,19 @@ function MapPage(props: {
       clearNexradViewportRefreshTimer();
       return;
     }
-    if (!nexradHasPaintableFrameRef.current) {
+    const lastRequest = nexradQueryRequestRef.current;
+    if (!nexradOverlayFrame && !lastRequest) {
+      return;
+    }
+    if (
+      lastRequest?.viewport === viewport &&
+      lastRequest.width === planningSurfaceSize.width &&
+      lastRequest.height === planningSurfaceSize.height
+    ) {
       return;
     }
     requestThrottledNexradViewportRefresh();
-  }, [mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [mapIsVisible, mapLayerState.nexrad.visible, nexradOverlayFrame, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   useEffect(() => {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
@@ -6357,6 +6379,7 @@ function MapPage(props: {
   }
 
   function updateViewport(next: MapViewportState, options: { deferReactCommit?: boolean } = {}) {
+    mapSelectionRequestGenerationRef.current += 1;
     viewportRef.current = next;
     applyImperativeMapContentTransform();
     if (options.deferReactCommit) {
@@ -6764,9 +6787,13 @@ function MapPage(props: {
         mapUpDegRef.current,
       );
       const click = worldToLatLon(world.x, world.y);
+      const selectionGeneration = ++mapSelectionRequestGenerationRef.current;
       void uiSession
         .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click)
         .then((result) => {
+          if (selectionGeneration !== mapSelectionRequestGenerationRef.current) {
+            return;
+          }
           setMapSelection({
             point: clickCandidate.latest,
             result,
@@ -11607,6 +11634,7 @@ function ChartsPage(props: {
   page: AppPage;
   planUiState: FlightPlanUiState | null;
   flightPlanRouteRevision: number;
+  navDataEpoch: number;
   airportMenuEntries: DerivedChartPageState["airport_menu_entries"];
   selectedCollection: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -11643,7 +11671,7 @@ function ChartsPage(props: {
   const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
   const playbackUiState = highRateSnapshot.playback_ui_state;
   const playbackPanelState = highRateSnapshot.playback_panel_state;
-  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, onFirstVisualReady, navDataEpoch } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -11793,11 +11821,12 @@ function ChartsPage(props: {
   }, []);
 
   useEffect(() => {
+    setResolvedChartUrls({});
     setImageSize(null);
     viewportRef.current = null;
     lastLocalViewportRef.current = null;
     lastChartLayoutKeyRef.current = "";
-  }, [selectedChart?.id]);
+  }, [navDataEpoch, selectedChart?.id]);
 
   useEffect(() => {
     if (!selectedChart || !uiSession) {
@@ -11835,7 +11864,7 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [selectedChart?.id, uiSession]);
+  }, [selectedChart?.id, uiSession, navDataEpoch]);
 
   useEffect(() => {
     if (!folderOpen || !uiSession) {
@@ -11881,7 +11910,7 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [folderOpen, resolvedChartUrls, sortedCharts, uiSession]);
+  }, [folderOpen, navDataEpoch, resolvedChartUrls, sortedCharts, uiSession]);
 
   useEffect(() => {
     const img = imageRef.current;

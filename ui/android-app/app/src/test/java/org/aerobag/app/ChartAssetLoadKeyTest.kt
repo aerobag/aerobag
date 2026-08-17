@@ -59,6 +59,11 @@ class ChartAssetLoadKeyTest {
                 source.contains("chartAssetRetryDelayMs") ||
                 source.contains("delay(chartAsset"),
         )
+        assertTrue(
+            "Plate folder thumbnails must reload from the new package revision too.",
+            source.contains("val thumbnailLoadKey = chartAssetLoadKey(chart.id, chartAssetDataRevision)") &&
+                source.contains("initialValue = null, thumbnailLoadKey, chart.hasThumbnail"),
+        )
     }
 
     @Test

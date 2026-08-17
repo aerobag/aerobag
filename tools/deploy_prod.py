@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from admin_index import admin_index_html
+from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,6 @@ BUILD_WATCH_LISTEN = "127.0.0.1:8097"
 PIPELINE_HEALTH_LISTEN = "127.0.0.1:8098"
 ANDROID_SDK_ROOT = "/usr/lib/android-sdk"
 ANDROID_NDK_VERSION = "26.3.11579264"
-LIVE_FEEDS_CONTRACT_PATH = "v2"
 ANDROID_SIGNING_EXPECTED_CERT_SHA256 = (
     "09d7edbf70e51b1b6296097876bd39d19b4e71364e82166030228b5674224be1"
 )

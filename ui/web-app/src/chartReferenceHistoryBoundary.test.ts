@@ -37,6 +37,30 @@ describe("chart-reference view history boundary", () => {
     expect(handler).not.toContain("restoreChartPageState");
   });
 
+  it("records chart history only after core accepts the selection", () => {
+    const handler = sourceBetween(
+      "onSelectChart={(chartId) => {",
+      "playbackSourcePath={playbackSourcePath}",
+    );
+    const acceptance = handler.indexOf(".then((nextSnapshot) => {");
+    const historyPush = handler.indexOf("pushViewSnapshot({");
+    const rejection = handler.indexOf("charts.select.failed");
+
+    expect(acceptance).toBeGreaterThanOrEqual(0);
+    expect(historyPush).toBeGreaterThan(acceptance);
+    expect(handler.indexOf("});", historyPush)).toBeLessThan(handler.indexOf(".catch", acceptance));
+    expect(rejection).toBeGreaterThanOrEqual(0);
+  });
+
+  it("keys chart asset resolution to the NAV data revision", () => {
+    const chartsPage = sourceBetween("function ChartsPage(props:", "function HomePage(");
+
+    expect(chartsPage).toContain("navDataEpoch: number;");
+    expect(chartsPage).toContain("setResolvedChartUrls({});");
+    expect(chartsPage).toContain("[selectedChart?.id, uiSession, navDataEpoch]");
+    expect(chartsPage).toContain("[folderOpen, navDataEpoch, resolvedChartUrls, sortedCharts, uiSession]");
+  });
+
   it("keeps ordinary history pushes local unless restoring an older view", () => {
     const helper = sourceBetween(
       "function pushViewSnapshot(",

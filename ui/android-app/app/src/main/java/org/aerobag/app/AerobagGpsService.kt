@@ -102,13 +102,19 @@ class AerobagGpsService : Service() {
             fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
                 .addOnFailureListener { error ->
                     Log.e(LogTag, "Failed to request GPS updates", error)
-                    publishFinalStatus(AndroidGpsSource.failedStatus("GPS request failed"))
+                    stopAfterTerminalFailure(AndroidGpsSource.failedStatus("GPS request failed"))
                 }
         } catch (error: SecurityException) {
             Log.e(LogTag, "Location permission was revoked before GPS updates started", error)
-            publishFinalStatus(AndroidGpsSource.unavailableStatus("Location permission required"))
-            stopSelf()
+            stopAfterTerminalFailure(AndroidGpsSource.unavailableStatus("Location permission required"))
         }
+    }
+
+    private fun stopAfterTerminalFailure(status: org.aerobag.app.domain.OwnshipSourceStatusUpdate) {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+        publishFinalStatus(status)
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun pauseFromCore() {

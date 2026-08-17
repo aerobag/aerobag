@@ -16,6 +16,15 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("About navigation policy", () => {
+  it("serves a direct about request without mounting the operational app", () => {
+    const entry = sourceBetween("export default function App()", "function OperationalApp()");
+
+    expect(entry).toContain('appPageForCurrentPath() === "about"');
+    expect(entry).toContain("<AboutPage />");
+    expect(entry).toContain("<OperationalApp />");
+    expect(entry).not.toContain("useEffect(");
+  });
+
   it("opens the web app through document navigation without requiring a ready core session", () => {
     const aboutPage = sourceBetween("function AboutPage(", "function formatApkSize(");
 

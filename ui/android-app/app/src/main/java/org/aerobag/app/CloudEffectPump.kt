@@ -49,6 +49,9 @@ internal fun CloudEffectPump(
     val eventStreamEvents = remember(uiSession) { Channel<CloudEventStreamEvent>(Channel.UNLIMITED) }
     val currentOnSnapshot by rememberUpdatedState(onSnapshot)
     val scope = rememberCoroutineScope()
+    // TODO(cloud-auth-recreation): Core marks an authorization request in flight before this
+    // Compose-local slot owns it. Move pending interactive authorization identity into retained,
+    // durable session/platform state so activity recreation can resume or cancel it explicitly.
     var pendingInteractiveRequest by remember(uiSession) {
         mutableStateOf<CloudAuthorizationRequest?>(null)
     }

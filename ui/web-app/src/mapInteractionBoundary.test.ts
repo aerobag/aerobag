@@ -137,6 +137,21 @@ describe("map interaction boundaries", () => {
     expect(releaseSource).not.toContain("selectedItem: null");
   });
 
+  it("rejects a raw map-click result after a newer click or viewport", () => {
+    const releaseSource = functionSource("handlePointerRelease");
+    const viewportSource = functionSource("updateViewport");
+
+    expect(releaseSource).toContain("mapSelectionRequestGenerationRef.current");
+    expect(releaseSource).toContain("selectionGeneration !== mapSelectionRequestGenerationRef.current");
+    expect(viewportSource).toContain("mapSelectionRequestGenerationRef.current += 1");
+  });
+
+  it("refreshes NEXRAD for viewport changes before the first frame lands", () => {
+    expect(appSource).not.toContain("nexradHasPaintableFrameRef");
+    expect(appSource).toContain("if (!nexradOverlayFrame && !lastRequest)");
+    expect(appSource).toContain("requestThrottledNexradViewportRefresh()");
+  });
+
   it("uses lightweight hover weather for METAR symbols without opening the map inspector", () => {
     const hoverSource = sourceBetween(
       "const handleMetarHoverEnter",

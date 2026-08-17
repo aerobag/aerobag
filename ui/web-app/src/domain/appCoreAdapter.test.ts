@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl, UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "./appCoreAdapter";
+import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl, SerializedSubscriptionOwner, UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "./appCoreAdapter";
 import * as navKv from "./navKv";
 
 const TEST_SSE_TRANSPORT_POLICY = {
@@ -370,13 +370,18 @@ describe("createLiveFeedSubscription", () => {
     onopen: (() => void) | null = null;
     onerror: (() => void) | null = null;
     closed = false;
+    private readonly listeners = new Map<string, EventListenerOrEventListenerObject[]>();
 
     constructor(url: string) {
       this.url = url;
       FakeEventSource.instances.push(this);
     }
 
-    addEventListener(_eventName: string, _listener: EventListenerOrEventListenerObject): void {}
+    addEventListener(eventName: string, listener: EventListenerOrEventListenerObject): void {
+      const listeners = this.listeners.get(eventName) ?? [];
+      listeners.push(listener);
+      this.listeners.set(eventName, listeners);
+    }
 
     close(): void {
       this.closed = true;
@@ -391,6 +396,17 @@ describe("createLiveFeedSubscription", () => {
     markOpen(): void {
       this.readyState = FakeEventSource.OPEN;
       this.onopen?.();
+    }
+
+    emitCurrent(id: string, data: string): void {
+      const event = { lastEventId: id, data } as MessageEvent<string>;
+      for (const listener of this.listeners.get("live-feed-current") ?? []) {
+        if (typeof listener === "function") {
+          listener(event);
+        } else {
+          listener.handleEvent(event);
+        }
+      }
     }
   }
 
@@ -559,5 +575,79 @@ describe("createLiveFeedSubscription", () => {
     expect(runtimeEvents).toContain("idle_timeout");
     expect(FakeEventSource.instances[0].closed).toBe(true);
     subscription.close();
+  });
+
+  it("retains an SSE batch until core ingestion succeeds", async () => {
+    vi.useFakeTimers();
+    const global = globalThis as unknown as TestGlobal;
+    global.EventSource = FakeEventSource;
+    const ingested: unknown[][] = [];
+    let attempts = 0;
+    const subscription = createLiveFeedSubscription(
+      () => "https://feeds.example.test/live-feeds/v3/events",
+      async () => ({ transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: [] }),
+      async (events) => {
+        ingested.push(events);
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("transient ingest failure");
+        }
+      },
+      () => {},
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    FakeEventSource.instances[0].emitCurrent("17", "payload");
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(ingested).toHaveLength(2);
+    expect(ingested[1]).toEqual(ingested[0]);
+    subscription.close();
+  });
+});
+
+describe("SerializedSubscriptionOwner", () => {
+  it("does not install a subscription after stop wins an async start race", async () => {
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const closed: string[] = [];
+    const owner = new SerializedSubscriptionOwner(
+      async () => {
+        await started;
+        return { close: () => closed.push("subscription") };
+      },
+      async () => {
+        closed.push("runtime");
+      },
+    );
+
+    const starting = owner.start();
+    await Promise.resolve();
+    const stopping = owner.stop();
+    releaseStart();
+    await Promise.all([starting, stopping]);
+
+    expect(owner.hasSubscription()).toBe(false);
+    expect(closed).toEqual(["subscription", "runtime"]);
+  });
+
+  it("coalesces concurrent starts into one subscription", async () => {
+    let starts = 0;
+    const owner = new SerializedSubscriptionOwner(
+      async () => {
+        starts += 1;
+        return { close: () => {} };
+      },
+      async () => {},
+    );
+
+    await Promise.all([owner.start(), owner.start(), owner.start()]);
+
+    expect(starts).toBe(1);
+    expect(owner.hasSubscription()).toBe(true);
+    await owner.stop();
   });
 });

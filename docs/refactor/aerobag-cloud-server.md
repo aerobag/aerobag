@@ -357,11 +357,12 @@ client finishing a read from a recently superseded root and collects:
 - pages staged by a writer that lost a CAS race and never reused them; and
 - pages reachable only from superseded roots.
 
-Shared pages remain reachable from the current root. A sweep records the root
-revision it marked and rechecks that revision before deletion so a concurrent
-root advance cannot cause reachable data to be collected. Recent-root retention
-may be added for operational rollback, but an unbounded successor-chain spine
-is not part of the ACS design.
+Shared pages remain reachable from the current root. Each account is marked and
+swept inside its own immediate SQLite transaction, keeping that account's root
+and immutable object graph stable until deletion commits. The collector releases
+the sole writer between accounts so unrelated requests do not wait behind a
+service-wide traversal. Recent-root retention may be added for operational
+rollback, but an unbounded successor-chain spine is not part of the ACS design.
 
 ## Client Product Flow
 
@@ -538,12 +539,12 @@ ACS reports this shape where applicable for:
 - concurrent HTTP requests and current/peak SSE connections; and
 - authentication, replay, malformed-request, quota, and rate-limit rejections.
 
-GC additionally reports run count, last and peak SQLite write-lock pause,
-cumulative write-lock pause, and last and peak total elapsed time. Every GC run
-emits one low-frequency structured log line containing those timings and its
-mark/delete counts. The checked-in policy supplies conservative initial
-warning/critical thresholds; production-shaped measurement and threshold
-validation remain an explicit TODO below.
+GC additionally reports run count, the last and peak longest contiguous SQLite
+write-lock pause, cumulative database-writer work, and last and peak total
+elapsed time. Every GC run emits one low-frequency structured log line containing
+those timings and its mark/delete counts. The checked-in policy supplies
+conservative initial warning/critical thresholds; production-shaped measurement
+and threshold validation remain an explicit TODO below.
 
 The status response also includes bounded operator-only summaries of the
 accounts and network pseudonyms currently responsible for the largest storage,
@@ -849,15 +850,6 @@ recorded rather than hidden behind compatibility behavior or guessed policy:
   Add a resumable large-object transport when the blessed large-object quota
   class is designed; do not force application-level chunking merely to bypass
   this limit.
-- **GC at scale:** the current collector holds SQLite's in-process connection
-  mutex and an immediate write transaction while traversing every account. The
-  repeatable production-shaped baseline currently pauses SQLite for 26 ms over
-  32 accounts and 1,536 objects, and CI proves pipeline-health classifies the
-  configured thresholds. Continue watching `gc_database_pause_ms` and
-  `gc_elapsed_ms` after deployment. If real growth approaches the warning,
-  refactor marking into bounded read phases and short validated delete
-  transactions rather than merely increasing an alarm threshold.
-
 ## Deferred Work
 
 - Large GPS trace synchronization, resumable transfer, and its blessed-account

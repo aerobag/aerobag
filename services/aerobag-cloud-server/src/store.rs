@@ -12,6 +12,7 @@ use std::{
         atomic::{AtomicI64, AtomicU64, Ordering},
         Arc, Condvar, Mutex, MutexGuard,
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -199,7 +200,10 @@ pub struct GcReport {
     pub deleted_objects: u64,
     pub deleted_ciphertext_bytes: u64,
     pub deleted_blob_files: u64,
+    /// Longest contiguous hold of the database writer during this run.
     pub database_pause_ms: u64,
+    /// Sum of all database-writer holds during this run.
+    pub database_work_ms: u64,
     pub total_elapsed_ms: u64,
 }
 
@@ -296,7 +300,7 @@ struct OperationCounters {
     gc_runs: AtomicU64,
     gc_last_database_pause_ms: AtomicU64,
     gc_peak_database_pause_ms: AtomicU64,
-    gc_total_database_pause_ms: AtomicU64,
+    gc_total_database_work_ms: AtomicU64,
     gc_last_elapsed_ms: AtomicU64,
     gc_peak_elapsed_ms: AtomicU64,
 }
@@ -2006,8 +2010,8 @@ impl CloudStore {
             .gc_peak_database_pause_ms
             .fetch_max(report.database_pause_ms, Ordering::Relaxed);
         counters
-            .gc_total_database_pause_ms
-            .fetch_add(report.database_pause_ms, Ordering::Relaxed);
+            .gc_total_database_work_ms
+            .fetch_add(report.database_work_ms, Ordering::Relaxed);
         counters
             .gc_last_elapsed_ms
             .store(report.total_elapsed_ms, Ordering::Relaxed);
@@ -2018,34 +2022,39 @@ impl CloudStore {
     }
 
     fn run_gc_inner(&self, now_epoch_ms: i64, grace_ms: i64) -> StoreResult<GcReport> {
+        self.run_gc_inner_with_progress(now_epoch_ms, grace_ms, |_| {})
+    }
+
+    fn run_gc_inner_with_progress(
+        &self,
+        now_epoch_ms: i64,
+        grace_ms: i64,
+        mut account_complete: impl FnMut(&str),
+    ) -> StoreResult<GcReport> {
         let cutoff = now_epoch_ms - grace_ms;
-        let mut connection = self.connection()?;
-        let database_pause_started = Instant::now();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(StoreError::sqlite)?;
-        let accounts = query_strings(
-            &transaction,
-            "SELECT account_locator FROM accounts ORDER BY account_locator",
-            [],
-        )?;
+        let accounts = {
+            let connection = self.read_connection()?;
+            query_strings(
+                &connection,
+                "SELECT account_locator FROM accounts ORDER BY account_locator",
+                [],
+            )?
+        };
         let mut report = GcReport {
             marked_objects: 0,
             deleted_objects: 0,
             deleted_ciphertext_bytes: 0,
             deleted_blob_files: 0,
             database_pause_ms: 0,
+            database_work_ms: 0,
             total_elapsed_ms: 0,
         };
         let mut blob_keys = Vec::new();
         for account in accounts {
-            let root_revision_before = transaction
-                .query_row(
-                    "SELECT revision FROM roots WHERE account_locator = ?1",
-                    [&account],
-                    |row| row.get::<_, u64>(0),
-                )
-                .optional()
+            let mut connection = self.connection()?;
+            let database_pause_started = Instant::now();
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(StoreError::sqlite)?;
             let object_rows = load_object_graph(&transaction, &account)?;
             let root_children = transaction
@@ -2087,31 +2096,24 @@ impl CloudStore {
                     blob_keys.push(key);
                 }
             }
-            let root_revision_after = transaction
-                .query_row(
-                    "SELECT revision FROM roots WHERE account_locator = ?1",
-                    [&account],
-                    |row| row.get::<_, u64>(0),
-                )
-                .optional()
-                .map_err(StoreError::sqlite)?;
-            if root_revision_before != root_revision_after {
-                return Err(StoreError::new(
-                    AcsErrorCode::Conflict,
-                    "account root changed during garbage collection",
-                ));
-            }
+            transaction.commit().map_err(StoreError::sqlite)?;
+            let database_work_ms = elapsed_ms(database_pause_started);
+            report.database_pause_ms = report.database_pause_ms.max(database_work_ms);
+            report.database_work_ms = report.database_work_ms.saturating_add(database_work_ms);
+            drop(connection);
+            account_complete(&account);
+            thread::yield_now();
         }
-        let referenced_blob_keys = query_strings(
-            &transaction,
-            "SELECT blob_storage_key FROM objects WHERE blob_storage_key IS NOT NULL",
-            [],
-        )?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-        transaction.commit().map_err(StoreError::sqlite)?;
-        report.database_pause_ms = elapsed_ms(database_pause_started);
-        drop(connection);
+        let referenced_blob_keys = {
+            let connection = self.read_connection()?;
+            query_strings(
+                &connection,
+                "SELECT blob_storage_key FROM objects WHERE blob_storage_key IS NOT NULL",
+                [],
+            )?
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        };
         for key in blob_keys {
             if remove_file_if_present(&self.blob_path(&key))? {
                 report.deleted_blob_files += 1;
@@ -2352,8 +2354,8 @@ impl CloudStore {
                 self.inner.config.gc_database_pause_ms_critical,
             ),
             gauge(
-                "gc_database_pause_ms_total",
-                counters.gc_total_database_pause_ms.load(Ordering::Relaxed),
+                "gc_database_work_ms_total",
+                counters.gc_total_database_work_ms.load(Ordering::Relaxed),
                 None,
                 None,
                 None,
@@ -3656,6 +3658,27 @@ mod tests {
             "read-only queries must use a WAL reader instead of waiting for the writer"
         );
         assert_eq!(result.unwrap().unwrap().server_time_epoch_ms, 123);
+    }
+
+    #[test]
+    fn gc_releases_the_writer_between_accounts() {
+        let (_root, store) = store_with_inline_threshold(u64::MAX);
+        create_account(&store, "account-a", 10);
+        create_account(&store, "account-b", 11);
+        let mut completed = Vec::new();
+
+        let report = store
+            .run_gc_inner_with_progress(1_000, 100, |account| {
+                assert!(
+                    store.inner.connection.try_lock().is_ok(),
+                    "GC must release the writer before advancing to another account"
+                );
+                completed.push(account.to_string());
+            })
+            .unwrap();
+
+        assert_eq!(completed, ["account-a", "account-b"]);
+        assert!(report.database_pause_ms <= report.database_work_ms);
     }
 
     #[test]

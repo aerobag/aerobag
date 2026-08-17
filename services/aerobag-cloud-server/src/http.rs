@@ -225,12 +225,13 @@ pub async fn run_server(store: CloudStore, config: ServerConfig) -> anyhow::Resu
             let store = gc_store.clone();
             match blocking(store, move |store| store.run_gc(now_epoch_ms(), gc_grace_ms)).await {
                 Ok(report) => eprintln!(
-                    "ACS garbage collection marked={} deleted_objects={} deleted_blob_files={} deleted_bytes={} database_pause_ms={} elapsed_ms={}",
+                    "ACS garbage collection marked={} deleted_objects={} deleted_blob_files={} deleted_bytes={} database_pause_ms={} database_work_ms={} elapsed_ms={}",
                     report.marked_objects,
                     report.deleted_objects,
                     report.deleted_blob_files,
                     report.deleted_ciphertext_bytes,
                     report.database_pause_ms,
+                    report.database_work_ms,
                     report.total_elapsed_ms,
                 ),
                 Err(error) => eprintln!("ACS garbage collection failed: {error}"),

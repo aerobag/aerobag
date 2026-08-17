@@ -9,11 +9,12 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
     sync::{
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
-        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc::Sender,
+        Arc, Condvar, Mutex, Weak,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context};
@@ -56,6 +57,7 @@ use serde::Serialize;
 const STATUS_HISTORY_LIMIT: usize = 256;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
 const SIMULATION_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
+const MAX_PENDING_SSE_PRODUCTS_PER_CLIENT: usize = 32;
 
 fn live_feeds_contract_dir_name() -> String {
     format!("v{LIVE_FEEDS_SCHEMA_VERSION}")
@@ -1939,6 +1941,11 @@ fn handle_connection(
         if method == "HEAD" {
             return write_sse_headers(&mut stream);
         }
+        stream
+            .set_write_timeout(Some(Duration::from_millis(
+                AEROBAG_SSE_TRANSPORT_POLICY.idle_timeout_ms as u64,
+            )))
+            .context("failed to set SSE client write timeout")?;
         return write_sse_stream(
             &mut stream,
             &live_feeds_contract_root(&config.live_root),
@@ -2023,11 +2030,11 @@ fn write_sse_stream(
                     return Ok(());
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {
+            Err(BrokerReceiveError::Timeout) => {
                 write_sse_heartbeat(writer).context("failed to write SSE heartbeat")?;
                 writer.flush().context("failed to flush SSE heartbeat")?;
             }
-            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(BrokerReceiveError::Disconnected) => return Ok(()),
         }
     }
 }
@@ -2090,40 +2097,199 @@ fn live_feed_sse_event_from_invalidation(invalidation: LiveFeedInvalidation) -> 
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct BroadcastSseBroker {
-    subscribers: Arc<Mutex<Vec<Sender<BrokerSseEvent>>>>,
+    inner: Arc<BroadcastSseBrokerInner>,
+}
+
+struct BroadcastSseBrokerInner {
+    next_subscriber_id: AtomicU64,
+    next_event_sequence: AtomicU64,
+    subscribers: Mutex<BTreeMap<u64, Weak<BrokerSubscriber>>>,
 }
 
 #[derive(Debug, Clone)]
 struct BrokerSseEvent {
+    sequence: u64,
     invalidation: LiveFeedInvalidation,
     announced_at_utc: chrono::DateTime<Utc>,
 }
 
+#[derive(Default)]
+struct BrokerSubscriberQueue {
+    pending_by_product: BTreeMap<String, BrokerSseEvent>,
+    disconnected: bool,
+}
+
+#[derive(Default)]
+struct BrokerSubscriber {
+    queue: Mutex<BrokerSubscriberQueue>,
+    ready: Condvar,
+}
+
+struct BrokerSubscription {
+    id: u64,
+    broker: Weak<BroadcastSseBrokerInner>,
+    subscriber: Arc<BrokerSubscriber>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrokerReceiveError {
+    Timeout,
+    Disconnected,
+}
+
+impl std::fmt::Display for BrokerReceiveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Timeout => "live-feed SSE receive timed out",
+            Self::Disconnected => "live-feed SSE subscription disconnected",
+        })
+    }
+}
+
+impl std::error::Error for BrokerReceiveError {}
+
+impl Default for BroadcastSseBroker {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(BroadcastSseBrokerInner {
+                next_subscriber_id: AtomicU64::new(1),
+                next_event_sequence: AtomicU64::new(1),
+                subscribers: Mutex::new(BTreeMap::new()),
+            }),
+        }
+    }
+}
+
 impl BroadcastSseBroker {
-    fn subscribe(&self) -> Receiver<BrokerSseEvent> {
-        let (sender, receiver) = mpsc::channel();
-        self.subscribers
+    fn subscribe(&self) -> BrokerSubscription {
+        let id = self
+            .inner
+            .next_subscriber_id
+            .fetch_add(1, Ordering::Relaxed);
+        let subscriber = Arc::new(BrokerSubscriber::default());
+        self.inner
+            .subscribers
             .lock()
             .expect("live-feed SSE subscriber lock")
-            .push(sender);
-        receiver
+            .insert(id, Arc::downgrade(&subscriber));
+        BrokerSubscription {
+            id,
+            broker: Arc::downgrade(&self.inner),
+            subscriber,
+        }
+    }
+
+    #[cfg(test)]
+    fn subscriber_count(&self) -> usize {
+        self.inner
+            .subscribers
+            .lock()
+            .expect("live-feed SSE subscriber lock")
+            .len()
     }
 }
 
 impl SseBroker for BroadcastSseBroker {
     fn announce(&self, event: LiveFeedInvalidation) -> anyhow::Result<()> {
         let queued = BrokerSseEvent {
+            sequence: self
+                .inner
+                .next_event_sequence
+                .fetch_add(1, Ordering::Relaxed),
             invalidation: event,
             announced_at_utc: Utc::now(),
         };
         let mut subscribers = self
+            .inner
             .subscribers
             .lock()
             .expect("live-feed SSE subscriber lock");
-        subscribers.retain(|subscriber| subscriber.send(queued.clone()).is_ok());
+        subscribers.retain(|_, subscriber| {
+            let Some(subscriber) = subscriber.upgrade() else {
+                return false;
+            };
+            subscriber.enqueue(queued.clone());
+            true
+        });
         Ok(())
+    }
+}
+
+impl BrokerSubscriber {
+    fn enqueue(&self, event: BrokerSseEvent) {
+        let mut queue = self.queue.lock().expect("live-feed SSE queue lock");
+        if queue.disconnected {
+            return;
+        }
+        let product = event.invalidation.product.clone();
+        if !queue.pending_by_product.contains_key(&product)
+            && queue.pending_by_product.len() >= MAX_PENDING_SSE_PRODUCTS_PER_CLIENT
+        {
+            queue.pending_by_product.clear();
+            queue.disconnected = true;
+            self.ready.notify_one();
+            return;
+        }
+        queue.pending_by_product.insert(product, event);
+        self.ready.notify_one();
+    }
+}
+
+impl BrokerSubscription {
+    fn recv_timeout(&self, timeout: Duration) -> Result<BrokerSseEvent, BrokerReceiveError> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let mut queue = self
+            .subscriber
+            .queue
+            .lock()
+            .expect("live-feed SSE queue lock");
+        loop {
+            if queue.disconnected {
+                return Err(BrokerReceiveError::Disconnected);
+            }
+            if let Some(product) = queue
+                .pending_by_product
+                .iter()
+                .min_by_key(|(_, event)| event.sequence)
+                .map(|(product, _)| product.clone())
+            {
+                return Ok(queue
+                    .pending_by_product
+                    .remove(&product)
+                    .expect("selected SSE event disappeared"));
+            }
+            if self.broker.upgrade().is_none() {
+                return Err(BrokerReceiveError::Disconnected);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(BrokerReceiveError::Timeout);
+            };
+            let (next_queue, wait) = self
+                .subscriber
+                .ready
+                .wait_timeout(queue, remaining)
+                .expect("live-feed SSE queue lock");
+            queue = next_queue;
+            if wait.timed_out() && queue.pending_by_product.is_empty() {
+                return Err(BrokerReceiveError::Timeout);
+            }
+        }
+    }
+}
+
+impl Drop for BrokerSubscription {
+    fn drop(&mut self) {
+        if let Some(broker) = self.broker.upgrade() {
+            broker
+                .subscribers
+                .lock()
+                .expect("live-feed SSE subscriber lock")
+                .remove(&self.id);
+        }
     }
 }
 
@@ -2647,6 +2813,7 @@ fn next_path(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Res
 mod tests {
     use super::*;
     use std::io::Read;
+    use std::sync::mpsc;
 
     use preprocessor_live_feeds::engine::{
         run_live_feed_publish_tick, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
@@ -2724,6 +2891,20 @@ mod tests {
               </event:EventTimeSlice></event:timeSlice></event:Event></hasMember>
             </AIXMBasicMessage>"#
         )
+    }
+
+    fn test_live_feed_invalidation(product: &str, version: &str) -> LiveFeedInvalidation {
+        LiveFeedInvalidation {
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+            product: product.to_string(),
+            version: version.to_string(),
+            version_manifest_url: format!("versions/{product}/{version}.json"),
+            state_url: format!("states/{product}/{version}.json"),
+            state_sha256: version.repeat(64).chars().take(64).collect(),
+            published_at_utc: None,
+            collected_at_utc: None,
+            history: Vec::new(),
+        }
     }
 
     #[test]
@@ -2898,6 +3079,69 @@ mod tests {
         assert_eq!(event.invalidation.product, "metars");
         assert_eq!(event.invalidation.version, "m1");
         Ok(())
+    }
+
+    #[test]
+    fn slow_sse_subscriber_keeps_only_the_latest_event_per_product() -> anyhow::Result<()> {
+        let broker = BroadcastSseBroker::default();
+        let subscriber = broker.subscribe();
+
+        broker.announce(test_live_feed_invalidation("metars", "m1"))?;
+        broker.announce(test_live_feed_invalidation("nexrad", "n1"))?;
+        broker.announce(test_live_feed_invalidation("metars", "m2"))?;
+
+        let first = subscriber.recv_timeout(Duration::ZERO)?;
+        let second = subscriber.recv_timeout(Duration::ZERO)?;
+        assert_eq!(
+            (
+                first.invalidation.product.as_str(),
+                first.invalidation.version.as_str()
+            ),
+            ("nexrad", "n1")
+        );
+        assert_eq!(
+            (
+                second.invalidation.product.as_str(),
+                second.invalidation.version.as_str()
+            ),
+            ("metars", "m2")
+        );
+        assert!(matches!(
+            subscriber.recv_timeout(Duration::ZERO),
+            Err(BrokerReceiveError::Timeout)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn sse_subscriber_disconnects_before_distinct_products_can_exceed_bound() -> anyhow::Result<()>
+    {
+        let broker = BroadcastSseBroker::default();
+        let subscriber = broker.subscribe();
+
+        for index in 0..=MAX_PENDING_SSE_PRODUCTS_PER_CLIENT {
+            broker.announce(test_live_feed_invalidation(
+                &format!("product-{index}"),
+                "v1",
+            ))?;
+        }
+
+        assert!(matches!(
+            subscriber.recv_timeout(Duration::ZERO),
+            Err(BrokerReceiveError::Disconnected)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_sse_subscription_removes_it_without_an_announcement() {
+        let broker = BroadcastSseBroker::default();
+        let subscriber = broker.subscribe();
+        assert_eq!(broker.subscriber_count(), 1);
+
+        drop(subscriber);
+
+        assert_eq!(broker.subscriber_count(), 0);
     }
 
     #[test]

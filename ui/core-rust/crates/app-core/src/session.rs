@@ -6316,6 +6316,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
         )) => Some(delta.mutations.len()),
         _ => None,
     };
+    let prepared_payload = prepare_live_feed_for_session(envelope.payload.clone())?;
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
@@ -6325,7 +6326,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     {
         return Ok(());
     }
-    if let Err(error) = install_prepared_live_feed(session, envelope.payload) {
+    if let Err(error) = commit_prepared_live_feed(session, prepared_payload) {
         if envelope_product == "notams" {
             crate::core_debug_log(
                 "live_feed.notams.integrity_failure",
@@ -6379,11 +6380,48 @@ pub fn install_live_feed_installed_state_in_session(
     handle: u32,
     installed: &crate::LiveFeedInstalledState,
 ) -> AppResult<HadOperationOutcome> {
+    install_live_feed_installed_state_with_preparer(
+        handle,
+        installed,
+        prepare_durable_live_feed_install,
+    )
+}
+
+fn install_live_feed_installed_state_with_preparer<F>(
+    handle: u32,
+    installed: &crate::LiveFeedInstalledState,
+    prepare: F,
+) -> AppResult<HadOperationOutcome>
+where
+    F: FnOnce(&crate::LiveFeedInstalledState) -> AppResult<PreparedDurableLiveFeedInstall>,
+{
+    let total_started_at = crate::core_clock_ms();
+    let prepare_started_at = crate::core_clock_ms();
+    let prepared = prepare(installed)?;
+    let prepare_ms = elapsed_ms(prepare_started_at);
+    let lock_started_at = crate::core_clock_ms();
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
+    let lock_ms = elapsed_ms(lock_started_at);
     let session = &mut *session_guard;
-    install_live_feed_installed_state(session, installed)?;
-    changed_session_update_outcome(session)
+    let commit_started_at = crate::core_clock_ms();
+    commit_durable_live_feed_install(session, installed, prepared)?;
+    let commit_ms = elapsed_ms(commit_started_at);
+    let update_started_at = crate::core_clock_ms();
+    let outcome = changed_session_update_outcome(session)?;
+    let update_ms = elapsed_ms(update_started_at);
+    crate::core_perf_debug_log("live_feed.install.session", || {
+        serde_json::json!({
+            "product": installed.product,
+            "version": installed.version,
+            "prepare_ms": prepare_ms,
+            "lock_ms": lock_ms,
+            "commit_ms": commit_ms,
+            "update_ms": update_ms,
+            "total_ms": elapsed_ms(total_started_at),
+        })
+    });
+    Ok(outcome)
 }
 
 pub fn install_prepared_live_feed_cache_product_in_session(
@@ -6409,10 +6447,12 @@ pub fn install_prepared_live_feed_cache_product_in_session(
             ),
         });
     }
+    let state_manifest = installed_live_feed_state_manifest(installed);
+    let prepared_payload = prepare_live_feed_for_session(envelope.payload)?;
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    install_prepared_live_feed(session, envelope.payload)?;
+    commit_prepared_live_feed(session, prepared_payload)?;
     session
         .weather
         .live_feeds_mut()
@@ -6421,65 +6461,53 @@ pub fn install_prepared_live_feed_cache_product_in_session(
             installed.version.clone(),
             installed.state_sha256.clone(),
             installed.collected_at_utc.clone(),
-            installed_live_feed_state_manifest(installed),
+            state_manifest,
         );
     sync_live_feed_overlay_status_records(session);
     changed_session_update_outcome(session)
 }
 
-fn install_live_feed_installed_state(
-    session: &mut UiSession,
+struct PreparedDurableLiveFeedInstall {
+    payload: PreparedDurableLiveFeedPayload,
+    state_manifest: Option<serde_json::Value>,
+}
+
+enum PreparedDurableLiveFeedPayload {
+    Projection(PreparedSessionLiveFeedPayload),
+    Obstacles {
+        manifest: serde_json::Value,
+        store: NavKvStore,
+    },
+    Nexrad(LiveNexradInstalledState),
+    WindsAloft(crate::InstalledForecastAtmosphere),
+}
+
+fn prepare_durable_live_feed_install(
     installed: &crate::LiveFeedInstalledState,
-) -> AppResult<()> {
+) -> AppResult<PreparedDurableLiveFeedInstall> {
     match (&*installed.product, &installed.payload) {
-        ("metars", crate::LiveFeedInstalledPayload::Json { bytes }) => {
-            let payload: MetarProductPayload =
-                serde_json::from_slice(bytes).map_err(|err| AppError {
+        (
+            product @ ("metars" | "pireps" | "tafs" | "tfrs"),
+            crate::LiveFeedInstalledPayload::Json { bytes },
+        ) => {
+            let state_manifest: serde_json::Value =
+                serde_json::from_slice(bytes).map_err(|error| AppError {
                     kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse installed METAR live feed: {err}"),
+                    message: format!("failed to parse installed {product} live feed: {error}"),
                 })?;
-            session.weather.runtime_mut().metar_payload = Some(payload);
-            session.weather.runtime_mut().prepared_metar_tiles = None;
-            rebuild_metar_tile_cache(session);
-            clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
+            let payload = prepare_live_feed_for_session(
+                crate::live_feeds::prepare_live_feed_payload(product, state_manifest.clone())?,
+            )?;
+            Ok(PreparedDurableLiveFeedInstall {
+                payload: PreparedDurableLiveFeedPayload::Projection(payload),
+                state_manifest: Some(state_manifest),
+            })
         }
-        ("pireps", crate::LiveFeedInstalledPayload::Json { bytes }) => {
-            let payload: crate::PirepProductPayload =
-                serde_json::from_slice(bytes).map_err(|err| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse installed PIREP live feed: {err}"),
-                })?;
-            session.weather.runtime_mut().pirep_payload = Some(payload);
-            session.weather.runtime_mut().prepared_pirep_tiles = None;
-            rebuild_metar_tile_cache(session);
-            clear_data_status_record(session, LIVE_FEED_PIREPS_STATUS_ID);
-        }
-        ("tafs", crate::LiveFeedInstalledPayload::Json { bytes }) => {
-            let payload: TafProductPayload =
-                serde_json::from_slice(bytes).map_err(|err| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse installed TAF live feed: {err}"),
-                })?;
-            session.weather.runtime_mut().taf_payload = Some(payload);
-            let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
-            clear_data_status_record(session, &status_id);
-        }
-        ("tfrs", crate::LiveFeedInstalledPayload::Json { bytes }) => {
-            let payload: TfrProductPayload =
-                serde_json::from_slice(bytes).map_err(|err| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse installed TFR live feed: {err}"),
-                })?;
-            session.weather.runtime_mut().tfr_payload = Some(payload);
-            clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
-        }
-        ("notams", crate::LiveFeedInstalledPayload::NotamResources { .. }) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: "NOTAM resources must be prepared off-thread before session install"
-                    .to_string(),
-            });
-        }
+        ("notams", crate::LiveFeedInstalledPayload::NotamResources { .. }) => Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "NOTAM resources must be prepared off-thread before session install"
+                .to_string(),
+        }),
         (
             "obstacles",
             crate::LiveFeedInstalledPayload::NavKv {
@@ -6488,10 +6516,10 @@ fn install_live_feed_installed_state(
                 pages,
             },
         ) => {
-            let manifest_value: serde_json::Value =
-                serde_json::from_slice(manifest).map_err(|err| AppError {
+            let manifest: serde_json::Value =
+                serde_json::from_slice(manifest).map_err(|error| AppError {
                     kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse installed obstacle live feed: {err}"),
+                    message: format!("failed to parse installed obstacle live feed: {error}"),
                 })?;
             let store = nav_kv_store_from_installed_live_feed(
                 "obstacles",
@@ -6500,16 +6528,10 @@ fn install_live_feed_installed_state(
                 root,
                 pages,
             )?;
-            install_live_obstacle_had_with_store(
-                session,
-                manifest_value,
-                installed.version.clone(),
-                format!(
-                    "android-installed/obstacles/{}/manifest.json",
-                    installed.version
-                ),
-                Some(store),
-            )?;
+            Ok(PreparedDurableLiveFeedInstall {
+                state_manifest: Some(manifest.clone()),
+                payload: PreparedDurableLiveFeedPayload::Obstacles { manifest, store },
+            })
         }
         (
             "nexrad",
@@ -6519,12 +6541,100 @@ fn install_live_feed_installed_state(
                 ..
             },
         ) => {
-            let installed = installed_nexrad_descriptor(
+            let descriptor = installed_nexrad_descriptor(
                 &installed.version,
                 &installed.state_sha256,
                 manifest,
                 package_blob_sha256,
             )?;
+            Ok(PreparedDurableLiveFeedInstall {
+                state_manifest: Some(descriptor.manifest.clone()),
+                payload: PreparedDurableLiveFeedPayload::Nexrad(descriptor),
+            })
+        }
+        (
+            "winds-aloft",
+            crate::LiveFeedInstalledPayload::NavKv {
+                manifest,
+                root,
+                pages,
+            },
+        ) => {
+            let state_manifest: serde_json::Value =
+                serde_json::from_slice(manifest).map_err(|error| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed atmosphere manifest: {error}"),
+                })?;
+            let manifest: product_contracts::AtmosphereManifest =
+                serde_json::from_value(state_manifest.clone()).map_err(|error| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed atmosphere manifest: {error}"),
+                })?;
+            if manifest.version_label != installed.version
+                || manifest.state_sha256 != installed.state_sha256
+            {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!(
+                        "atmosphere manifest {}/{} did not match installed {}/{}",
+                        manifest.version_label,
+                        manifest.state_sha256,
+                        installed.version,
+                        installed.state_sha256
+                    ),
+                });
+            }
+            let store = nav_kv_store_from_installed_live_feed(
+                "winds-aloft",
+                &installed.version,
+                &installed.state_sha256,
+                root,
+                pages,
+            )?;
+            let atmosphere =
+                crate::InstalledForecastAtmosphere::new(manifest, store).map_err(|message| {
+                    AppError {
+                        kind: AppErrorKind::InvalidManifest,
+                        message,
+                    }
+                })?;
+            Ok(PreparedDurableLiveFeedInstall {
+                payload: PreparedDurableLiveFeedPayload::WindsAloft(atmosphere),
+                state_manifest: Some(state_manifest),
+            })
+        }
+        (product, payload) => Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "installed live feed {product} has incompatible payload kind {}",
+                payload.kind_name()
+            ),
+        }),
+    }
+}
+
+fn commit_durable_live_feed_install(
+    session: &mut UiSession,
+    installed: &crate::LiveFeedInstalledState,
+    prepared: PreparedDurableLiveFeedInstall,
+) -> AppResult<()> {
+    match prepared.payload {
+        PreparedDurableLiveFeedPayload::Projection(payload) => {
+            commit_prepared_live_feed(session, payload)?;
+        }
+        PreparedDurableLiveFeedPayload::Obstacles { manifest, store } => {
+            install_live_obstacle_had_with_store(
+                session,
+                manifest,
+                installed.version.clone(),
+                format!(
+                    "android-installed/obstacles/{}/manifest.json",
+                    installed.version
+                ),
+                Some(store),
+            )?;
+        }
+        PreparedDurableLiveFeedPayload::Nexrad(installed) => {
             session
                 .weather
                 .runtime_mut()
@@ -6568,58 +6678,9 @@ fn install_live_feed_installed_state(
                 });
             clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
         }
-        (
-            "winds-aloft",
-            crate::LiveFeedInstalledPayload::NavKv {
-                manifest,
-                root,
-                pages,
-            },
-        ) => {
-            let manifest: product_contracts::AtmosphereManifest = serde_json::from_slice(manifest)
-                .map_err(|error| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to parse installed atmosphere manifest: {error}"),
-                })?;
-            if manifest.version_label != installed.version
-                || manifest.state_sha256 != installed.state_sha256
-            {
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!(
-                        "atmosphere manifest {}/{} did not match installed {}/{}",
-                        manifest.version_label,
-                        manifest.state_sha256,
-                        installed.version,
-                        installed.state_sha256
-                    ),
-                });
-            }
-            let store = nav_kv_store_from_installed_live_feed(
-                "winds-aloft",
-                &installed.version,
-                &installed.state_sha256,
-                root,
-                pages,
-            )?;
-            session.weather.runtime_mut().forecast_atmosphere = Some(
-                crate::InstalledForecastAtmosphere::new(manifest, store).map_err(|message| {
-                    AppError {
-                        kind: AppErrorKind::InvalidManifest,
-                        message,
-                    }
-                })?,
-            );
+        PreparedDurableLiveFeedPayload::WindsAloft(atmosphere) => {
+            session.weather.runtime_mut().forecast_atmosphere = Some(atmosphere);
             session.weather.runtime_mut().forecast_atmosphere_state = None;
-        }
-        (product, payload) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!(
-                    "installed live feed {product} has incompatible payload kind {}",
-                    payload.kind_name()
-                ),
-            });
         }
     }
     session
@@ -6630,7 +6691,7 @@ fn install_live_feed_installed_state(
             installed.version.clone(),
             installed.state_sha256.clone(),
             installed.collected_at_utc.clone(),
-            installed_live_feed_state_manifest(installed),
+            prepared.state_manifest,
         );
     sync_live_feed_overlay_status_records(session);
     Ok(())
@@ -6666,42 +6727,72 @@ fn installed_live_feed_state_manifest(
     }
 }
 
-fn install_prepared_live_feed(
-    session: &mut UiSession,
+enum PreparedSessionLiveFeedPayload {
+    Ready(crate::PreparedLiveFeedPayload),
+    NotamCheckpoint(NotamDisplayIndex),
+}
+
+fn prepare_live_feed_for_session(
     payload: crate::PreparedLiveFeedPayload,
+) -> AppResult<PreparedSessionLiveFeedPayload> {
+    match payload {
+        crate::PreparedLiveFeedPayload::Metars(ref feed) if feed.schema_version != 1 => {
+            Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("unsupported prepared METAR schema {}", feed.schema_version),
+            })
+        }
+        crate::PreparedLiveFeedPayload::Pireps(ref feed) if feed.schema_version != 1 => {
+            Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("unsupported prepared PIREP schema {}", feed.schema_version),
+            })
+        }
+        crate::PreparedLiveFeedPayload::Notams(
+            crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
+        ) => NotamDisplayIndex::from_projection_checkpoint(checkpoint)
+            .map(PreparedSessionLiveFeedPayload::NotamCheckpoint)
+            .map_err(|error| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to install NOTAM display projection: {error}"),
+            }),
+        payload => Ok(PreparedSessionLiveFeedPayload::Ready(payload)),
+    }
+}
+
+fn commit_prepared_live_feed(
+    session: &mut UiSession,
+    payload: PreparedSessionLiveFeedPayload,
 ) -> AppResult<()> {
     match payload {
-        crate::PreparedLiveFeedPayload::Metars(feed) => {
-            if feed.schema_version != 1 {
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("unsupported prepared METAR schema {}", feed.schema_version),
-                });
-            }
+        PreparedSessionLiveFeedPayload::Ready(crate::PreparedLiveFeedPayload::Metars(feed)) => {
             session.weather.runtime_mut().metar_payload = Some(feed.payload);
             session.weather.runtime_mut().prepared_metar_tiles = Some(feed.tiles);
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
-        crate::PreparedLiveFeedPayload::Tafs(payload) => {
+        PreparedSessionLiveFeedPayload::Ready(crate::PreparedLiveFeedPayload::Tafs(payload)) => {
             session.weather.runtime_mut().taf_payload = Some(payload);
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
-        crate::PreparedLiveFeedPayload::Tfrs(payload) => {
+        PreparedSessionLiveFeedPayload::Ready(crate::PreparedLiveFeedPayload::Tfrs(payload)) => {
             session.weather.runtime_mut().tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
-        crate::PreparedLiveFeedPayload::Notams(message) => {
+        PreparedSessionLiveFeedPayload::NotamCheckpoint(index) => {
+            session.weather.runtime_mut().notam_display_index = Some(index);
+            let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
+            clear_data_status_record(session, &status_id);
+        }
+        PreparedSessionLiveFeedPayload::Ready(crate::PreparedLiveFeedPayload::Notams(message)) => {
             match message {
-                crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint) => {
-                    let index = NotamDisplayIndex::from_projection_checkpoint(checkpoint).map_err(
-                        |error| AppError {
-                            kind: AppErrorKind::InvalidManifest,
-                            message: format!("failed to install airport NOTAM projection: {error}"),
-                        },
-                    )?;
-                    session.weather.runtime_mut().notam_display_index = Some(index);
+                crate::PreparedNotamPayload::InstallDisplayCheckpoint(_) => {
+                    return Err(AppError {
+                        kind: AppErrorKind::Internal,
+                        message: "prepared NOTAM checkpoint reached the session commit boundary"
+                            .to_string(),
+                    });
                 }
                 crate::PreparedNotamPayload::ApplyDisplayDelta(delta) => {
                     let index = session
@@ -6733,13 +6824,7 @@ fn install_prepared_live_feed(
             let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
-        crate::PreparedLiveFeedPayload::Pireps(feed) => {
-            if feed.schema_version != 1 {
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("unsupported prepared PIREP schema {}", feed.schema_version),
-                });
-            }
+        PreparedSessionLiveFeedPayload::Ready(crate::PreparedLiveFeedPayload::Pireps(feed)) => {
             session.weather.runtime_mut().pirep_payload = Some(feed.payload);
             session.weather.runtime_mut().prepared_pirep_tiles = Some(feed.tiles);
             rebuild_metar_tile_cache(session);
@@ -8776,8 +8861,10 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         && !session.map.layer_state().offline_regions.visible
         && !display_traffic
     {
+        let overlay = empty_map_overlay_query();
+        drop(session_guard);
         return Ok(HadOperationOutcome::complete(
-            serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
+            serde_json::to_value(overlay).map_err(internal_json_error)?,
         ));
     }
     let mut supplemental_status_records = Vec::new();
@@ -8889,6 +8976,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
     let status_ms = 0;
+    drop(session_guard);
     let to_value_started_at = crate::core_clock_ms();
     let overlay_value = serde_json::to_value(overlay).map_err(internal_json_error)?;
     let to_value_ms = elapsed_ms(to_value_started_at);
@@ -9113,6 +9201,7 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
     };
+    drop(session_guard);
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(selection).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
@@ -10925,19 +11014,32 @@ fn changed_session_update_outcome_with_invalidations(
     let previous_versions = session.projection_versions.versions();
     advance_session_revision(session);
     dedupe_invalidations(&mut invalidations);
+    let project_started_at = crate::core_clock_ms();
     match try_project_session_update(session, previous_versions) {
-        Ok(update) => serde_json::to_value(update)
-            .map(|update| {
-                if invalidations.is_empty() {
-                    HadOperationOutcome::complete(update)
-                } else {
-                    HadOperationOutcome::complete_with_invalidations(update, invalidations)
-                }
-            })
-            .map_err(|err| AppError {
-                kind: AppErrorKind::Internal,
-                message: err.to_string(),
-            }),
+        Ok(update) => {
+            let project_ms = elapsed_ms(project_started_at);
+            let encode_started_at = crate::core_clock_ms();
+            let result = serde_json::to_value(update)
+                .map(|update| {
+                    if invalidations.is_empty() {
+                        HadOperationOutcome::complete(update)
+                    } else {
+                        HadOperationOutcome::complete_with_invalidations(update, invalidations)
+                    }
+                })
+                .map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                });
+            crate::core_perf_debug_log("session.update.total", || {
+                serde_json::json!({
+                    "project_ms": project_ms,
+                    "encode_ms": elapsed_ms(encode_started_at),
+                    "status": if result.is_ok() { "ok" } else { "error" },
+                })
+            });
+            result
+        }
         Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
             Ok(HadOperationOutcome::NeedSnapshotResources {
                 resources,
@@ -13249,6 +13351,14 @@ mod tests {
 
     fn next_test_nav_kv_store_id() -> u32 {
         NEXT_TEST_NAV_KV_STORE_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn install_prepared_live_feed_for_test(
+        session: &mut UiSession,
+        payload: crate::PreparedLiveFeedPayload,
+    ) -> AppResult<()> {
+        let prepared = prepare_live_feed_for_session(payload)?;
+        commit_prepared_live_feed(session, prepared)
     }
 
     fn live_current_manifest_for_test(
@@ -18411,7 +18521,7 @@ mod tests {
 
         let mut sessions = lock_sessions();
         let mut session = session_mut(&mut sessions, init.handle).expect("session");
-        install_prepared_live_feed(
+        install_prepared_live_feed_for_test(
             &mut session,
             crate::PreparedLiveFeedPayload::Notams(
                 crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint.clone()),
@@ -18424,7 +18534,7 @@ mod tests {
             to_state_id: "d".repeat(64),
             mutations: Vec::new(),
         };
-        assert!(install_prepared_live_feed(
+        assert!(install_prepared_live_feed_for_test(
             &mut session,
             crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDisplayDelta(
                 stale
@@ -18441,7 +18551,7 @@ mod tests {
             Some(base_id.as_str())
         );
 
-        install_prepared_live_feed(
+        install_prepared_live_feed_for_test(
             &mut session,
             crate::PreparedLiveFeedPayload::Notams(
                 crate::PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
@@ -18463,7 +18573,7 @@ mod tests {
                 },
             )],
         };
-        assert!(install_prepared_live_feed(
+        assert!(install_prepared_live_feed_for_test(
             &mut session,
             crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDisplayDelta(
                 invalid
@@ -20407,6 +20517,51 @@ mod tests {
             AltitudePlannerWindSelection::Gfs
         );
         assert_eq!(session.coordinator.session_revision, revision_before + 1);
+    }
+
+    #[test]
+    fn durable_live_feed_preparation_does_not_hold_session_lock() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let installed = crate::LiveFeedInstalledState {
+            product: "tafs".to_string(),
+            version: "taf-v1".to_string(),
+            state_sha256: "test-state".to_string(),
+            collected_at_utc: None,
+            payload: crate::LiveFeedInstalledPayload::Json {
+                bytes: serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 1,
+                    "version_label": "taf-v1",
+                    "taf_count": 0,
+                    "tafs_by_station": {}
+                }))
+                .expect("TAF JSON"),
+            },
+        };
+        let (preparing_tx, preparing_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let handle = init.handle;
+        let installer = std::thread::spawn(move || {
+            install_live_feed_installed_state_with_preparer(handle, &installed, |installed| {
+                preparing_tx.send(()).expect("report preparation");
+                resume_rx.recv().expect("resume preparation");
+                prepare_durable_live_feed_install(installed)
+            })
+        });
+
+        preparing_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("preparation started");
+        let slot = session_slot(init.handle).expect("session slot");
+        assert!(
+            slot.session.try_lock().is_ok(),
+            "live-feed preparation must run before taking the session lock"
+        );
+        resume_tx.send(()).expect("resume install");
+        installer
+            .join()
+            .expect("installer thread")
+            .expect("install prepared TAF");
     }
 
     #[test]

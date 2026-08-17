@@ -34,7 +34,7 @@ adb -s "$ANDROID_SERIAL" shell am force-stop "$APP_ID"
 adb -s "$ANDROID_SERIAL" shell am start -W -n "$ACTIVITY" --es aerobag_perf_scenario "$SCENARIO"
 sleep "$WAIT_SECONDS"
 
-LOG="$(adb -s "$ANDROID_SERIAL" logcat -d -v threadtime AndroidRuntime:E AerobagPerfScenario:V AerobagSessionWork:V ActivityManager:I '*:S')"
+LOG="$(adb -s "$ANDROID_SERIAL" logcat -d -v threadtime AndroidRuntime:E AerobagPerfScenario:V AerobagSessionWork:V map.overlay.session:V map.overlay.core:V session.operation:V session.snapshot.total:V session.snapshot.core:V session.update.total:V live_feed.install.session:V ActivityManager:I '*:S')"
 printf '%s\n' "$LOG" >"$LOG_PATH"
 echo "log=$LOG_PATH"
 python3 "$ROOT/ui/android-app/scripts/analyze_perf_scenario.py" --scenario "$SCENARIO" --log "$LOG_PATH"

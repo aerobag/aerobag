@@ -109,7 +109,8 @@ pub use data_status::{
 };
 pub use debug_log::{
     core_clock_ms, core_debug_log, core_debug_log_value, core_perf_debug_log, set_core_clock_ms,
-    set_core_debug_logger, CoreClockMs, CoreDebugLogger, CoreDebugTimer, CORE_VERBOSE_PERF_LOGS,
+    set_core_debug_logger, set_core_verbose_perf_logs, CoreClockMs, CoreDebugLogger,
+    CoreDebugTimer,
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{

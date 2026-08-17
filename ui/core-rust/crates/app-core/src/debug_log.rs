@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
@@ -13,7 +14,11 @@ pub type CoreClockMs = fn() -> f64;
 static CORE_DEBUG_LOGGER: OnceLock<Mutex<Option<CoreDebugLogger>>> = OnceLock::new();
 static CORE_CLOCK_MS: OnceLock<Mutex<Option<CoreClockMs>>> = OnceLock::new();
 
-pub const CORE_VERBOSE_PERF_LOGS: bool = false;
+static CORE_VERBOSE_PERF_LOGS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_core_verbose_perf_logs(enabled: bool) {
+    CORE_VERBOSE_PERF_LOGS.store(enabled, Ordering::Relaxed);
+}
 
 pub fn set_core_debug_logger(logger: Option<CoreDebugLogger>) {
     *CORE_DEBUG_LOGGER
@@ -60,7 +65,7 @@ where
     T: Serialize,
     F: FnOnce() -> T,
 {
-    if !CORE_VERBOSE_PERF_LOGS {
+    if !CORE_VERBOSE_PERF_LOGS.load(Ordering::Relaxed) {
         return;
     }
     core_debug_log(tag, &data());

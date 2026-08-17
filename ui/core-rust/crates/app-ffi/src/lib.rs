@@ -15,6 +15,8 @@ use std::ffi::CString;
 use std::io::Write;
 #[cfg(target_os = "android")]
 use std::os::raw::{c_char, c_int};
+#[cfg(target_os = "android")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -22,7 +24,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "android")]
 const ANDROID_LOG_INFO: c_int = 4;
 #[cfg(target_os = "android")]
-const ANDROID_CORE_DEBUG_LOGCAT_ENABLED: bool = false;
+static ANDROID_CORE_PERF_LOGCAT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "android")]
 static GPS_CAPTURE_LOG_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -36,6 +38,12 @@ unsafe extern "C" {
 pub fn install_core_debug_logger() {
     app_core::set_core_debug_logger(Some(log_core_debug));
     app_core::set_core_clock_ms(Some(monotonic_clock_ms));
+}
+
+pub fn set_core_perf_debug_logging_enabled(enabled: bool) {
+    app_core::set_core_verbose_perf_logs(enabled);
+    #[cfg(target_os = "android")]
+    ANDROID_CORE_PERF_LOGCAT_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 fn now_epoch_ms() -> i64 {
@@ -54,7 +62,14 @@ fn monotonic_clock_ms() -> f64 {
 fn log_core_debug(tag: &str, data: &serde_json::Value) {
     append_gps_capture_log_record(tag, data);
 
-    if !ANDROID_CORE_DEBUG_LOGCAT_ENABLED {
+    if !ANDROID_CORE_PERF_LOGCAT_ENABLED.load(Ordering::Relaxed)
+        || !(tag.starts_with("map.overlay.")
+            || tag == "session.operation"
+            || tag == "live_feed.install.session"
+            || tag == "session.snapshot.total"
+            || tag == "session.snapshot.core"
+            || tag == "session.update.total")
+    {
         return;
     }
     let Ok(tag) = CString::new(tag) else {
@@ -2515,6 +2530,15 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_installCoreDeb
     _class: JClass,
 ) {
     install_core_debug_logger();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setCorePerfDebugLoggingEnabled(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: bool,
+) {
+    set_core_perf_debug_logging_enabled(enabled);
 }
 
 #[unsafe(no_mangle)]

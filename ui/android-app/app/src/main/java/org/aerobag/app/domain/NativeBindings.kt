@@ -614,6 +614,8 @@ object NativeBindings : NativeBridge {
 
     private external fun installCoreDebugLogger()
 
+    external fun setCorePerfDebugLoggingEnabled(enabled: Boolean)
+
     external fun configureGpsCaptureLogPath(path: String)
 
     external override fun createOfflinePackagesController(

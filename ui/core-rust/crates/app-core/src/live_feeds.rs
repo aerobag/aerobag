@@ -2378,7 +2378,10 @@ pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
     }
 }
 
-fn prepare_live_feed_payload(product: &str, state: Value) -> AppResult<PreparedLiveFeedPayload> {
+pub(crate) fn prepare_live_feed_payload(
+    product: &str,
+    state: Value,
+) -> AppResult<PreparedLiveFeedPayload> {
     use product_contracts::LiveFeedPreparationPolicy as Preparation;
 
     let preparation = product_contracts::live_feed_product_policy(product)

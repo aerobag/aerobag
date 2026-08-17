@@ -2208,6 +2208,7 @@ class MainActivity : ComponentActivity() {
         val perfScenario = androidPerfScenarioFromIntentValue(
             intent?.getStringExtra(AndroidPerfScenarioExtra),
         )
+        NativeBindings.setCorePerfDebugLoggingEnabled(BuildConfig.DEBUG && perfScenario != null)
         val armLayerNavKvFault = BuildConfig.DEBUG &&
             intent?.getBooleanExtra(DebugArmLayerNavKvFaultExtra, false) == true
         intent?.removeExtra(DebugArmLayerNavKvFaultExtra)

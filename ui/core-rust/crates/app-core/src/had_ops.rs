@@ -23,7 +23,7 @@ use crate::navdb_types::{
 use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{
-        chart_page_airport_ids_from_plan, derive_chart_page_state_from_collections,
+        chart_page_airport_candidates, derive_chart_page_state_from_collections,
         ChartReferenceFamilyRecord, ChartReferenceFamilySummary, PlateAirportRecord,
     },
     describe_plate_procedure_load_menu, describe_show_plate_for_procedure, flight_leg_distance_nm,
@@ -2411,12 +2411,6 @@ pub(crate) fn chart_page_state(
         plate_target_airport_id,
         candidate_airport_id,
     ) {
-        if airports
-            .iter()
-            .any(|airport: &crate::DerivedChartAirport| airport.id == airport_id)
-        {
-            continue;
-        }
         if let Some(airport) = resolve_plate_airport(store, &airport_id)? {
             airports.push(airport);
         }
@@ -2559,45 +2553,6 @@ fn read_chart_asset_by_id(
         ))),
         NavKvLookup::MissingPages(pages) => Ok(ChartAssetByIdRead::MissingPages(pages)),
     }
-}
-
-fn chart_page_airport_candidates(
-    plan: &FlightPlan,
-    stored_recent_airport_ids: &[String],
-    plate_target_airport_id: Option<&str>,
-    candidate_airport_id: Option<&str>,
-) -> Vec<String> {
-    let mut airport_ids = Vec::new();
-    if let Some(plate_target_airport_id) = plate_target_airport_id
-        .map(str::trim)
-        .filter(|airport_id| !airport_id.is_empty())
-    {
-        airport_ids.push(plate_target_airport_id.to_ascii_uppercase());
-    }
-    if let Some(candidate_airport_id) = candidate_airport_id
-        .map(str::trim)
-        .filter(|airport_id| !airport_id.is_empty())
-    {
-        airport_ids.push(candidate_airport_id.to_ascii_uppercase());
-    }
-    for airport_id in stored_recent_airport_ids {
-        let airport_id = airport_id.trim();
-        if !airport_id.is_empty() {
-            airport_ids.push(airport_id.to_ascii_uppercase());
-        }
-    }
-    airport_ids.extend(chart_page_airport_ids_from_plan(plan));
-
-    let mut unique_airport_ids = Vec::new();
-    for airport_id in airport_ids {
-        if !unique_airport_ids
-            .iter()
-            .any(|existing| existing == &airport_id)
-        {
-            unique_airport_ids.push(airport_id);
-        }
-    }
-    unique_airport_ids
 }
 
 const NO_RASTER_FAMILY_ID: &str = "none";

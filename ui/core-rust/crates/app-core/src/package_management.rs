@@ -1526,22 +1526,19 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
         .iter()
         .cloned()
         .collect();
-    let effective_installed_by_filename: BTreeMap<String, &InstalledArtifact> =
-        installed_by_filename
-            .iter()
-            .filter(|(filename, _)| !forced_gc_filenames.contains(*filename))
-            .map(|(filename, artifact)| (filename.clone(), *artifact))
-            .collect();
+    let mut effective_installed_filenames_by_artifact_id: BTreeMap<&str, Vec<&str>> =
+        BTreeMap::new();
+    for (filename, artifact) in &installed_by_filename {
+        if !forced_gc_filenames.contains(filename) {
+            effective_installed_filenames_by_artifact_id
+                .entry(artifact.artifact_id.as_str())
+                .or_default()
+                .push(filename.as_str());
+        }
+    }
     let suppressed_fetch_filenames: BTreeSet<String> =
         input.suppressed_fetch_filenames.iter().cloned().collect();
-    let effective_installed_filenames_for_artifact_id = |artifact_id: &str| -> Vec<String> {
-        effective_installed_by_filename
-            .values()
-            .filter(|installed| installed.artifact_id == artifact_id)
-            .map(|installed| installed.filename.clone())
-            .collect()
-    };
-    let mut fetch = Vec::new();
+    let mut fetch_candidates = Vec::new();
     let mut fetch_set = BTreeSet::new();
     let mut retain_installed = BTreeSet::new();
     let mut protected_by_pause = BTreeSet::new();
@@ -1549,11 +1546,13 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
     let mut stale_selected_installed = Vec::new();
 
     for artifact in &available_artifacts {
-        let matching_installed_filenames =
-            effective_installed_filenames_for_artifact_id(&artifact.artifact_id);
+        let matching_installed_filenames = effective_installed_filenames_by_artifact_id
+            .get(artifact.artifact_id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let desired_filename_installed = matching_installed_filenames
             .iter()
-            .any(|filename| filename == &artifact.filename);
+            .any(|filename| *filename == artifact.filename);
         match artifact_policy(input, artifact) {
             ArtifactPolicy::Desired => {
                 if desired_filename_installed {
@@ -1562,8 +1561,12 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
                 } else if suppressed_fetch_filenames.contains(&artifact.filename) {
                     // Known-bad immutable remote artifact for this app run; do not requeue fetch.
                 } else {
-                    push_fetch_artifact(&mut fetch, &mut fetch_set, artifact);
-                    retain_installed.extend(matching_installed_filenames);
+                    push_fetch_artifact(&mut fetch_candidates, &mut fetch_set, artifact);
+                    retain_installed.extend(
+                        matching_installed_filenames
+                            .iter()
+                            .map(|filename| (*filename).to_string()),
+                    );
                 }
             }
             ArtifactPolicy::ProtectedByPause => {
@@ -1579,8 +1582,8 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
                 {
                     stale_selected_installed.extend(
                         matching_installed_filenames
-                            .into_iter()
-                            .map(|filename| (artifact, filename)),
+                            .iter()
+                            .map(|filename| (artifact, (*filename).to_string())),
                     );
                 }
             }
@@ -1592,6 +1595,12 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
             retain_installed.insert(filename);
         }
     }
+
+    fetch_candidates.sort_unstable_by(|left, right| left.cmp(right));
+    let fetch = fetch_candidates
+        .into_iter()
+        .map(|(_, artifact_id)| artifact_id)
+        .collect();
 
     let mut gc = BTreeSet::new();
     for (filename, installed) in &installed_by_filename {
@@ -1614,32 +1623,17 @@ pub fn plan_offline_packages(input: &PackageManagementInput) -> PackageManagemen
 }
 
 fn push_fetch_artifact(
-    fetch: &mut Vec<String>,
+    fetch: &mut Vec<(u8, String)>,
     fetch_set: &mut BTreeSet<String>,
     artifact: &AvailablePackageArtifact,
 ) {
     if !fetch_set.insert(artifact.artifact_id.clone()) {
         return;
     }
-    let key = fetch_sort_key(artifact);
-    let insert_at = fetch
-        .binary_search_by(|existing_id| fetch_sort_key_for_id(existing_id).cmp(&key))
-        .unwrap_or_else(|index| index);
-    fetch.insert(insert_at, artifact.artifact_id.clone());
-}
-
-fn fetch_sort_key(artifact: &AvailablePackageArtifact) -> (u8, &str) {
-    (
+    fetch.push((
         fetch_product_priority(&artifact.product_id),
-        artifact.artifact_id.as_str(),
-    )
-}
-
-fn fetch_sort_key_for_id(artifact_id: &str) -> (u8, &str) {
-    (
-        fetch_product_priority_from_artifact_id(artifact_id),
-        artifact_id,
-    )
+        artifact.artifact_id.clone(),
+    ));
 }
 
 fn fetch_product_priority(product_id: &str) -> u8 {
@@ -1647,17 +1641,6 @@ fn fetch_product_priority(product_id: &str) -> u8 {
         "nav-db" => 0,
         "geo" => 1,
         _ => 2,
-    }
-}
-
-fn fetch_product_priority_from_artifact_id(artifact_id: &str) -> u8 {
-    let normalized = artifact_id.to_ascii_lowercase().replace('_', "-");
-    if normalized.starts_with("nav-db-") {
-        0
-    } else if normalized.starts_with("geo-") {
-        1
-    } else {
-        2
     }
 }
 
@@ -3108,6 +3091,48 @@ mod tests {
             region_id: region_id.map(str::to_string),
             chart_package_tier: None,
         }
+    }
+
+    #[test]
+    fn fetch_order_uses_manifest_product_identity_not_artifact_id_spelling() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(
+                Vec::<String>::new(),
+                ["nav-db", "sec"],
+            ),
+            bundle: BundleManifest {
+                packages: vec![
+                    pkg(
+                        "zz-opaque-navigation-artifact",
+                        "nav-db",
+                        None,
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                    pkg(
+                        "aa-ordinary-chart-artifact",
+                        "sec",
+                        None,
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                ],
+            },
+            installed: Vec::new(),
+            forced_gc_installed_filenames: Vec::new(),
+            suppressed_fetch_filenames: Vec::new(),
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(
+            plan.fetch,
+            vec![
+                "zz-opaque-navigation-artifact",
+                "aa-ordinary-chart-artifact"
+            ]
+        );
     }
 
     #[test]

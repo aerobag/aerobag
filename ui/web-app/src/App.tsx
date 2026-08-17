@@ -7030,14 +7030,15 @@ function MapPage(props: {
     });
   }
 
-  const visibleTerrainImages = useMemo(
-    () => terrainOverlay.query
-      ? terrainOverlay.images
-        .filter((image) => terrainOverlay.query?.tile_requests.some((request) => request.key === image.key))
-        .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height))
-      : [],
-    [terrainOverlay, viewport, surfaceSize.height, surfaceSize.width],
-  );
+  const visibleTerrainImages = useMemo(() => {
+    if (!terrainOverlay.query) {
+      return [];
+    }
+    const requestedKeys = new Set(terrainOverlay.query.tile_requests.map((request) => request.key));
+    return terrainOverlay.images
+      .filter((image) => requestedKeys.has(image.key))
+      .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height));
+  }, [terrainOverlay, viewport, surfaceSize.height, surfaceSize.width]);
   const layerTrayOptions: TrayOption[] = mapLayerState.options.map((option) => {
     const toggleState = mapLayerToggleState(mapLayerState, option.layer_id);
     return {

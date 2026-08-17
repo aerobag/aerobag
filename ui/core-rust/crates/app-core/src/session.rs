@@ -42,8 +42,7 @@ pub use app_ui_contracts::{
 use crate::CoreResourcePolicy;
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
-    chart_page::chart_page_airport_ids_from_plan,
-    chart_page::ChartAssetRecord,
+    chart_page::{chart_page_airport_candidates, merge_recent_airport_ids, ChartAssetRecord},
     cloud::{
         CloudAuthorizationRequest, CloudAuthorizationResponse, CloudHttpRequest, CloudHttpResponse,
         CloudPersistentState, CloudUiActionId, CloudUiFieldValue, UiCloudPageState,
@@ -8842,14 +8841,11 @@ fn flight_plan_overlay_features(
     width_px: f64,
     height_px: f64,
 ) -> Result<Vec<crate::VisibleMapFeature>, HadReadError> {
-    let points = flight_plan_selection_points(session)?;
     let Some(plan) = session.flight_plan.active_plan() else {
         return Ok(Vec::new());
     };
-    let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
-        HadReadError::Fatal(format!("failed to build flight plan overlay plan: {err}"))
-    })?;
-    let active_target = crate::active_guidance_leg(&plan).map(|leg| leg.to);
+    let points = flight_plan_selection_points(session, plan)?;
+    let active_target = crate::active_guidance_leg(plan).map(|leg| leg.to);
     Ok(points
         .into_iter()
         .map(|point| {
@@ -8875,31 +8871,37 @@ fn flight_plan_overlay_features(
 
 fn flight_plan_selection_points(
     session: &UiSession,
+    plan: &FlightPlan,
 ) -> Result<Vec<NavRefSelectionPoint>, HadReadError> {
-    let Some(plan) = session.flight_plan.active_plan() else {
-        return Ok(Vec::new());
-    };
-    let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
-        HadReadError::Fatal(format!("failed to build flight plan overlay plan: {err}"))
-    })?;
     let Some(store) = session.nav_data.store() else {
         return Ok(Vec::new());
     };
     let mut nav_refs = Vec::<(NavRef, Option<String>)>::new();
+    let mut seen_nav_refs = HashSet::new();
     for leg in &plan.resolved_legs {
         let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
             (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.clone())
         });
-        push_unique_nav_ref(&mut nav_refs, &leg.from, procedure_airport_id.clone());
-        push_unique_nav_ref(&mut nav_refs, &leg.to, procedure_airport_id);
+        push_unique_nav_ref(
+            &mut nav_refs,
+            &mut seen_nav_refs,
+            &leg.from,
+            procedure_airport_id.clone(),
+        );
+        push_unique_nav_ref(
+            &mut nav_refs,
+            &mut seen_nav_refs,
+            &leg.to,
+            procedure_airport_id,
+        );
     }
     if let Some(direct_to) = plan
         .guidance
         .as_ref()
         .and_then(|guidance| guidance.direct_to.as_ref())
     {
-        push_unique_nav_ref(&mut nav_refs, &direct_to.start, None);
-        push_unique_nav_ref(&mut nav_refs, &direct_to.target, None);
+        push_unique_nav_ref(&mut nav_refs, &mut seen_nav_refs, &direct_to.start, None);
+        push_unique_nav_ref(&mut nav_refs, &mut seen_nav_refs, &direct_to.target, None);
     }
 
     let mut features = Vec::new();
@@ -8923,13 +8925,14 @@ fn flight_plan_selection_points(
 
 fn push_unique_nav_ref(
     nav_refs: &mut Vec<(NavRef, Option<String>)>,
+    seen_nav_refs: &mut HashSet<String>,
     nav_ref: &NavRef,
     procedure_airport_id: Option<String>,
 ) {
     if matches!(nav_ref, NavRef::LatLon(_) | NavRef::Spot(_)) {
         return;
     }
-    if !nav_refs.iter().any(|(existing, _)| existing == nav_ref) {
+    if seen_nav_refs.insert(nav_ref_overlay_key(nav_ref)) {
         nav_refs.push((nav_ref.clone(), procedure_airport_id));
     }
 }
@@ -9177,11 +9180,12 @@ fn materialize_map_selection_in_session(
     } else {
         Vec::new()
     };
-    let mut supplemental_nav_ref_points = match flight_plan_selection_points(session) {
-        Ok(points) => points,
-        Err(err) => {
-            return had_read_error_to_map_selection_materialization(err);
-        }
+    let mut supplemental_nav_ref_points = match plan {
+        Some(plan) => match flight_plan_selection_points(session, plan) {
+            Ok(points) => points,
+            Err(err) => return had_read_error_to_map_selection_materialization(err),
+        },
+        None => Vec::new(),
     };
     if let Some(point) = requested_nav_ref_point {
         if !supplemental_nav_ref_points
@@ -12937,55 +12941,25 @@ fn derive_compact_chart_page_state_with_reference(
         candidate_chart_id,
         suggested_chart_ids,
     } = input;
-    let mut ordered_airport_ids = Vec::new();
-    for airport_id in compact_chart_page_airport_candidates(
+    let ordered_airport_ids = chart_page_airport_candidates(
         plan,
         stored_recent_airport_ids,
         plate_target_airport_id,
         candidate_airport_id,
-    ) {
-        if !ordered_airport_ids
-            .iter()
-            .any(|existing| existing == &airport_id)
-        {
-            ordered_airport_ids.push(airport_id);
-        }
-    }
-    let mut recent_airport_ids = Vec::new();
-    for airport_id in stored_recent_airport_ids {
-        if ordered_airport_ids
-            .iter()
-            .any(|existing| existing == airport_id)
-            && !recent_airport_ids
-                .iter()
-                .any(|existing| existing == airport_id)
-        {
-            recent_airport_ids.push(airport_id.clone());
-        }
-    }
-    for airport_id in &ordered_airport_ids {
-        if !recent_airport_ids
-            .iter()
-            .any(|existing| existing == airport_id)
-        {
-            recent_airport_ids.push(airport_id.clone());
-        }
-    }
+    );
+    let recent_airport_ids =
+        merge_recent_airport_ids(&ordered_airport_ids, stored_recent_airport_ids);
+    let ordered_airport_id_set = ordered_airport_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     let selected_airport_id = normalize_compact_airport_id(candidate_airport_id)
-        .filter(|airport_id| {
-            ordered_airport_ids
-                .iter()
-                .any(|existing| existing == airport_id)
-        })
+        .filter(|airport_id| ordered_airport_id_set.contains(airport_id.as_str()))
         .or_else(|| recent_airport_ids.first().cloned())
         .or_else(|| ordered_airport_ids.first().cloned())
         .unwrap_or_default();
-    let plate_target_airport_id =
-        normalize_compact_airport_id(plate_target_airport_id).filter(|airport_id| {
-            ordered_airport_ids
-                .iter()
-                .any(|existing| existing == airport_id)
-        });
+    let plate_target_airport_id = normalize_compact_airport_id(plate_target_airport_id)
+        .filter(|airport_id| ordered_airport_id_set.contains(airport_id.as_str()));
     UiChartPageState {
         ordered_airport_ids,
         recent_airport_ids,
@@ -12995,45 +12969,6 @@ fn derive_compact_chart_page_state_with_reference(
         selected_chart_id: candidate_chart_id.unwrap_or_default().to_string(),
         suggested_chart_ids: suggested_chart_ids.to_vec(),
     }
-}
-
-fn compact_chart_page_airport_candidates(
-    plan: &FlightPlan,
-    stored_recent_airport_ids: &[String],
-    plate_target_airport_id: Option<&str>,
-    candidate_airport_id: Option<&str>,
-) -> Vec<String> {
-    let mut airport_ids = Vec::new();
-    if let Some(plate_target_airport_id) = plate_target_airport_id
-        .map(str::trim)
-        .filter(|airport_id| !airport_id.is_empty())
-    {
-        airport_ids.push(plate_target_airport_id.to_ascii_uppercase());
-    }
-    if let Some(candidate_airport_id) = candidate_airport_id
-        .map(str::trim)
-        .filter(|airport_id| !airport_id.is_empty())
-    {
-        airport_ids.push(candidate_airport_id.to_ascii_uppercase());
-    }
-    for airport_id in stored_recent_airport_ids {
-        let airport_id = airport_id.trim();
-        if !airport_id.is_empty() {
-            airport_ids.push(airport_id.to_ascii_uppercase());
-        }
-    }
-    airport_ids.extend(chart_page_airport_ids_from_plan(plan));
-
-    let mut unique_airport_ids = Vec::new();
-    for airport_id in airport_ids {
-        if !unique_airport_ids
-            .iter()
-            .any(|existing| existing == &airport_id)
-        {
-            unique_airport_ids.push(airport_id);
-        }
-    }
-    unique_airport_ids
 }
 
 fn normalize_compact_airport_id(airport_id: Option<&str>) -> Option<String> {
@@ -13101,6 +13036,34 @@ mod tests {
 
     // Page delivery broadcasts by store ID, so unrelated test databases need distinct identities.
     static NEXT_TEST_NAV_KV_STORE_ID: AtomicU32 = AtomicU32::new(1_000_000);
+
+    #[test]
+    fn flight_plan_nav_ref_deduplication_preserves_first_occurrence() {
+        let mut nav_refs = Vec::new();
+        let mut seen_nav_refs = HashSet::new();
+        let airport = NavRef::Airport("KPAE".to_string());
+
+        push_unique_nav_ref(
+            &mut nav_refs,
+            &mut seen_nav_refs,
+            &airport,
+            Some("FIRST".to_string()),
+        );
+        push_unique_nav_ref(
+            &mut nav_refs,
+            &mut seen_nav_refs,
+            &airport,
+            Some("SECOND".to_string()),
+        );
+        push_unique_nav_ref(
+            &mut nav_refs,
+            &mut seen_nav_refs,
+            &NavRef::Spot(LatLon { lat: 1.0, lon: 2.0 }),
+            None,
+        );
+
+        assert_eq!(nav_refs, vec![(airport, Some("FIRST".to_string()))]);
+    }
 
     fn next_test_nav_kv_store_id() -> u32 {
         NEXT_TEST_NAV_KV_STORE_ID.fetch_add(1, Ordering::Relaxed)
@@ -22407,7 +22370,7 @@ mod tests {
             .data_status_page_state
             .rows
             .iter()
-            .take(14)
+            .take(16)
             .map(|row| row.id.as_str())
             .collect::<Vec<_>>();
 
@@ -22425,9 +22388,11 @@ mod tests {
                 "live_feed:tfrs",
                 "live_feed:notams",
                 "live_feed:metars",
+                "live_feed:pireps",
                 "live_feed:tafs",
                 "live_feed:nexrad",
                 "live_feed:obstacles",
+                "live_feed:winds-aloft",
             ]
         );
     }
@@ -25520,7 +25485,7 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "desired_track")
             .expect("DTK flight data cell");
-        assert_eq!(dtk_cell.label, "DTK");
+        assert_eq!(dtk_cell.label, "DTK °M");
         assert!(
             dtk_cell.value.is_some(),
             "DTK cell should contain active leg course"

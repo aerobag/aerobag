@@ -1404,6 +1404,7 @@ internal suspend fun gcOfflinePackages(
 ): OfflinePackageGcResult {
     val packagesById = bundle.packages.associateBy { it.id }
     val installedByFilename = listInstalledPackageArtifacts(context).associateBy { it.filename }
+    val fetchedIds = plan.fetch.toHashSet()
     val warnings = mutableListOf<OfflinePackagesWarning>()
     var gcCount = 0
     plan.gc.forEachIndexed { index, filename ->
@@ -1423,7 +1424,7 @@ internal suspend fun gcOfflinePackages(
                 return@runCatching
             }
             val keepFilename = packagesById[installedArtifact.artifactId]?.filename
-                ?.takeIf { plan.fetch.contains(installedArtifact.artifactId) }
+                ?.takeIf { installedArtifact.artifactId in fetchedIds }
             deleteInstalledArtifact(context, installedArtifact.artifactId, filename, keepFilename)
             gcCount += 1
             diagnosticLogInfo("OfflinePackages") {

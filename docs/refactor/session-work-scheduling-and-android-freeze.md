@@ -301,9 +301,26 @@ work with 16 concurrent loads. This is evidence that sibling reads overlap, not
 an additional map-selection measurement. More repetitions are required before
 treating either result as a stable benchmark.
 
-The broader stress scenario still detected a separate 879 ms map-overlay core
-outlier and a 1,183 ms frame gap; this optimization does not conceal or relax
-that existing threshold failure.
+The broader stress scenario then detected a separate 879 ms map-overlay core
+outlier and a 1,183 ms frame gap. Session-operation timing showed that the map
+query was waiting behind live-feed installation: obstacle and winds-aloft
+products spent roughly 0.8 and 1.0 seconds respectively constructing and
+validating durable state while holding the session lock.
+
+Live-feed installation now prepares and validates durable product state before
+acquiring the session lock. The short commit installs the prepared value and
+projects its update under the lock; map-query result encoding likewise happens
+after releasing the lock. A deterministic core test pauses preparation and
+proves that another operation can acquire the same session during that pause.
+
+Two post-change emulator runs passed the unchanged `map_selection_freeze`
+scenario while live feeds were active. The frame summaries were 206 frames at
+83 ms p95/183 ms maximum and 216 frames at 83 ms p95/200 ms maximum, below the
+250 ms threshold. Maximum map-overlay core time was 80 ms and 67 ms, and both
+map selections landed within 113 ms and 108 ms end to end. Obstacle preparation
+still took as much as 818 ms and winds-aloft preparation 1,062 ms, but maximum
+session-lock hold was 37 ms and 39 ms. The original core outlier and frame-gap
+failure are therefore resolved without hiding or relaxing either threshold.
 
 Pass/fail thresholds should start conservative:
 
@@ -352,11 +369,12 @@ Web regression tests:
 
 ## Implementation Phases
 
-1. In progress: the Android stall watchdog, perf scenarios, and slow-call audit
-   reproduce the original freeze class. The dense map-selection workload now
-   has queue/core/resource/delivery/landing timings and frame-gap thresholds;
-   extend the same instrumentation to additional workloads when they need
-   deeper diagnosis.
+1. Completed for the map-selection freeze workload: the Android stall watchdog,
+   perf scenario, and slow-call audit reproduce the original freeze class. The
+   dense map-selection workload has queue/core/resource/delivery/landing
+   timings and frame-gap thresholds and passes after resource-frontier and
+   live-feed prepare/commit fixes. Extend the same gated instrumentation to
+   additional workloads only when they need deeper diagnosis.
 2. Completed: introduce the core `UiSessionWorkScheduler`, reusing the shape of
    `SessionSnapshotRefreshScheduler`.
 3. Completed: add Android `UiSessionWorkRunner` and route map overlay plus map

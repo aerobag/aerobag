@@ -9,7 +9,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::Sender,
         Arc, Condvar, Mutex, Weak,
     },
@@ -60,6 +60,44 @@ const LIVE_FEED_TASK_WORKERS: usize = 4;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
 const SIMULATION_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 const MAX_PENDING_SSE_PRODUCTS_PER_CLIENT: usize = 32;
+const MAX_REQUEST_CONNECTION_THREADS: usize = 256;
+
+#[derive(Clone)]
+struct ConnectionGate {
+    active: Arc<AtomicUsize>,
+    limit: usize,
+}
+
+impl ConnectionGate {
+    fn new(limit: usize) -> Self {
+        assert!(limit > 0, "connection limit must be positive");
+        Self {
+            active: Arc::new(AtomicUsize::new(0)),
+            limit,
+        }
+    }
+
+    fn try_acquire(&self) -> Option<ConnectionPermit> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.limit).then_some(active + 1)
+            })
+            .ok()?;
+        Some(ConnectionPermit {
+            active: Arc::clone(&self.active),
+        })
+    }
+}
+
+struct ConnectionPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 fn live_feeds_contract_dir_name() -> String {
     format!("v{LIVE_FEEDS_SCHEMA_VERSION}")
@@ -910,6 +948,7 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {}", config.listen))?;
     let broker = BroadcastSseBroker::default();
     let status = DaemonStatus::default();
+    let connection_gate = ConnectionGate::new(MAX_REQUEST_CONNECTION_THREADS);
     start_live_feed_driver(&config, broker.clone(), status.clone())?;
     eprintln!(
         "aerobag-live-feedsd serving {} under /live-feeds/{}/ on http://{}",
@@ -920,10 +959,15 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let Some(permit) = connection_gate.try_acquire() else {
+                    drop(stream);
+                    continue;
+                };
                 let config = config.clone();
                 let broker = broker.clone();
                 let status = status.clone();
                 thread::spawn(move || {
+                    let _permit = permit;
                     if let Err(error) = handle_connection(stream, &config, &broker, &status) {
                         eprintln!("live-feed request failed: {error:#}");
                     }
@@ -1925,6 +1969,11 @@ fn handle_connection(
     broker: &BroadcastSseBroker,
     status: &DaemonStatus,
 ) -> anyhow::Result<()> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(
+            AEROBAG_SSE_TRANSPORT_POLICY.connect_timeout_ms as u64,
+        )))
+        .context("failed to set request read timeout")?;
     let mut reader = BufReader::new(stream.try_clone().context("failed to clone TCP stream")?);
     let mut request_line = String::new();
     reader
@@ -3156,6 +3205,22 @@ mod tests {
         drop(subscriber);
 
         assert_eq!(broker.subscriber_count(), 0);
+    }
+
+    #[test]
+    fn connection_gate_bounds_threads_and_reuses_released_capacity() {
+        let gate = ConnectionGate::new(2);
+        let first = gate.try_acquire().expect("first connection");
+        let second = gate.try_acquire().expect("second connection");
+        assert!(gate.try_acquire().is_none());
+
+        drop(first);
+        let replacement = gate.try_acquire().expect("released connection capacity");
+        assert!(gate.try_acquire().is_none());
+
+        drop(second);
+        drop(replacement);
+        assert!(gate.try_acquire().is_some());
     }
 
     #[test]

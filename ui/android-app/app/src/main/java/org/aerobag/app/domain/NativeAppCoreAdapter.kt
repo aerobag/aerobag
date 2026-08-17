@@ -480,13 +480,22 @@ class NativeAppCoreAdapter(
         cycleDataBaseUrl: String? = null,
         liveFeedsBaseUrl: String? = null,
         debugLogSinkUrl: String? = null,
+        onStartupStage: ((stage: String, durationMs: Long) -> Unit)? = null,
     ): NativeUiSession {
+        fun markStage(stage: String, startedAtMs: Long) {
+            onStartupStage?.invoke(stage, SystemClock.elapsedRealtime() - startedAtMs)
+        }
+
+        var stageStartedAtMs = SystemClock.elapsedRealtime()
         val resultJson = bridge.createUiSessionJson(
             json.encodeToString(recentAirportIds),
             json.encodeToString(selectedAirportId),
             json.encodeToString(selectedChartId),
         )
+        markStage("session_core_created", stageStartedAtMs)
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         val result = json.decodeFromString<WireUiSessionInitResult>(resultJson)
+        markStage("session_core_decoded", stageStartedAtMs)
         val session = NativeUiSession(
             handle = result.handle,
             bridge = bridge,
@@ -495,7 +504,10 @@ class NativeAppCoreAdapter(
             sessionResourceFetcher = sessionResourceFetcher,
             initialSnapshot = result.snapshot,
         )
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         navKvStore?.attachToSession(result.handle)
+        markStage("session_nav_attached", stageStartedAtMs)
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         session.configurePlatformCapabilities(
             capabilitiesJson = buildJsonObject {
                 put(
@@ -539,10 +551,17 @@ class NativeAppCoreAdapter(
         if (cycleDataBaseUrl != null && liveFeedsBaseUrl != null) {
             session.configureDataSources(cycleDataBaseUrl, liveFeedsBaseUrl, debugLogSinkUrl)
         }
+        markStage("session_capabilities_configured", stageStartedAtMs)
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         session.setInstalledPackageIds(installedPackageIds)
+        markStage("session_packages_configured", stageStartedAtMs)
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         session.loadRasterMapCatalog()
+        markStage("session_raster_catalog_loaded", stageStartedAtMs)
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         return session.apply {
             syncGuidanceGeometry()
+            markStage("session_guidance_synced", stageStartedAtMs)
         }
     }
 

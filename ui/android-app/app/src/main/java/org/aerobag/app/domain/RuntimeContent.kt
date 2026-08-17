@@ -43,14 +43,21 @@ object AndroidRuntimeContent {
     fun loadInstalledRuntime(
         context: Context,
         libraryCacheJson: String,
+        onStartupStage: ((stage: String, durationMs: Long) -> Unit)? = null,
     ): RuntimeContent {
-        val navKvOpenStartMs = SystemClock.elapsedRealtime()
+        var stageStartedAtMs = SystemClock.elapsedRealtime()
         val installedArtifacts = InstalledPackages.listInstalledArtifacts(context.applicationContext)
+        onStartupStage?.invoke(
+            "runtime_artifacts_scanned",
+            SystemClock.elapsedRealtime() - stageStartedAtMs,
+        )
+        stageStartedAtMs = SystemClock.elapsedRealtime()
         val navKvStore = NavKvStore.openInstalledArtifacts(
             installedArtifacts,
             libraryCacheJson = libraryCacheJson,
         )
-        val navKvOpenMs = SystemClock.elapsedRealtime() - navKvOpenStartMs
+        val navKvOpenMs = SystemClock.elapsedRealtime() - stageStartedAtMs
+        onStartupStage?.invoke("runtime_nav_opened", navKvOpenMs)
         val installedPackageIds = installedArtifacts
             .map { it.artifactId }
             .distinct()

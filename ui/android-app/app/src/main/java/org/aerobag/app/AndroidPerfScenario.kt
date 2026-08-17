@@ -10,10 +10,13 @@ import android.os.Debug
 import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.ceil
 
 internal const val AndroidPerfScenarioExtra = "aerobag_perf_scenario"
 internal const val AndroidPerfScenarioMapSelectionFreeze = "map_selection_freeze"
+internal const val AndroidPerfScenarioColdStartChart = "cold_start_chart"
 internal const val AndroidPerfScenarioTerrainNexradMemoryStress = "terrain_nexrad_memory_stress"
 internal const val AndroidPerfScenarioSessionRenderInvalidation = "session_render_invalidation"
 internal const val AndroidPerfScenarioTag = "AerobagPerfScenario"
@@ -87,6 +90,10 @@ internal class AndroidFrameGapMonitor(
 internal fun androidPerfScenarioFromIntentValue(value: String?): AndroidPerfScenario? =
     when (value) {
         AndroidPerfScenarioMapSelectionFreeze -> AndroidPerfScenario(id = value)
+        AndroidPerfScenarioColdStartChart -> AndroidPerfScenario(
+            id = value,
+            frameGapThresholdMs = 500L,
+        )
         AndroidPerfScenarioSessionRenderInvalidation -> AndroidPerfScenario(id = value)
         AndroidPerfScenarioTerrainNexradMemoryStress -> AndroidPerfScenario(
             id = value,
@@ -99,6 +106,46 @@ internal fun androidPerfScenarioFromIntentValue(value: String?): AndroidPerfScen
             null
         }
     }
+
+internal class AndroidStartupPerfTrace(
+    private val scenario: AndroidPerfScenario,
+    private val startedAtMs: Long,
+) {
+    private val markedStages = ConcurrentHashMap.newKeySet<String>()
+    private val finished = AtomicBoolean(false)
+    private val watchdog = AndroidMainThreadStallWatchdog(scenario)
+    private val frameGapMonitor = AndroidFrameGapMonitor(scenario)
+
+    fun start() {
+        Log.i(AndroidPerfScenarioTag, "start scenario=${scenario.id}")
+        watchdog.start()
+        frameGapMonitor.start()
+    }
+
+    fun mark(
+        stage: String,
+        stageStartedAtMs: Long? = null,
+        detail: String? = null,
+    ) {
+        if (finished.get() || !markedStages.add(stage)) return
+        val nowMs = SystemClock.elapsedRealtime()
+        val duration = stageStartedAtMs?.let { " durationMs=${(nowMs - it).coerceAtLeast(0L)}" }.orEmpty()
+        val suffix = detail?.takeIf(String::isNotBlank)?.let { " $it" }.orEmpty()
+        Log.i(
+            AndroidPerfScenarioTag,
+            "startup_stage scenario=${scenario.id} stage=$stage " +
+                "elapsedMs=${(nowMs - startedAtMs).coerceAtLeast(0L)}$duration$suffix",
+        )
+    }
+
+    fun finish() {
+        if (!finished.compareAndSet(false, true)) return
+        val elapsedMs = (SystemClock.elapsedRealtime() - startedAtMs).coerceAtLeast(0L)
+        Log.i(AndroidPerfScenarioTag, "done scenario=${scenario.id} elapsedMs=$elapsedMs")
+        frameGapMonitor.stop()
+        watchdog.stop()
+    }
+}
 
 internal class AndroidMainThreadStallWatchdog(
     private val scenario: AndroidPerfScenario,

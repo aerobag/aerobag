@@ -58,6 +58,43 @@ def passing_log() -> list[str]:
     return lines
 
 
+def cold_start_passing_log() -> list[str]:
+    stages = [
+        ("activity_created", 8, 8),
+        ("runtime_load_started", 22, None),
+        ("runtime_loaded", 118, 96),
+        ("session_create_started", 124, None),
+        ("session_created", 190, 66),
+        ("app_ui_frame", 232, None),
+        ("map_surface_ready", 245, None),
+        ("raster_frame_ready", 330, None),
+        ("vector_frame_ready", 412, None),
+        ("chart_usable", 430, None),
+    ]
+    lines = [
+        scenario("start scenario=cold_start_chart"),
+        work("event=instrumentation_enabled"),
+    ]
+    for stage, elapsed_ms, duration_ms in stages:
+        duration = "" if duration_ms is None else f" durationMs={duration_ms}"
+        lines.append(
+            scenario(
+                f"startup_stage scenario=cold_start_chart stage={stage} "
+                f"elapsedMs={elapsed_ms}{duration}"
+            )
+        )
+    lines.extend(
+        [
+            scenario("done scenario=cold_start_chart elapsedMs=430"),
+            scenario(
+                "frame_summary scenario=cold_start_chart frames=24 "
+                "p95Ms=18 maxMs=44 thresholdMs=500"
+            ),
+        ]
+    )
+    return lines
+
+
 class AnalyzePerfScenarioTest(unittest.TestCase):
     def test_accepts_complete_responsive_scenario_and_summarizes_work(self) -> None:
         analysis = analyze_lines(passing_log(), "map_selection_freeze")
@@ -106,6 +143,38 @@ class AnalyzePerfScenarioTest(unittest.TestCase):
         analysis = analyze_lines(lines, "map_selection_freeze")
         self.assertTrue(analysis.passed, analysis.failures)
         self.assertNotIn("9000", "\n".join(summary_lines(analysis)))
+
+    def test_accepts_complete_cold_start_and_summarizes_stages(self) -> None:
+        analysis = analyze_lines(cold_start_passing_log(), "cold_start_chart")
+        self.assertTrue(analysis.passed, analysis.failures)
+        summaries = summary_lines(analysis)
+        self.assertIn(
+            "STARTUP stage=runtime_loaded elapsed_ms=118 duration_ms=96",
+            summaries,
+        )
+        self.assertIn(
+            "STARTUP stage=chart_usable elapsed_ms=430 duration_ms=?",
+            summaries,
+        )
+
+    def test_rejects_cold_start_without_a_usable_chart(self) -> None:
+        lines = [
+            line
+            for line in cold_start_passing_log()
+            if "stage=chart_usable" not in line
+        ]
+        analysis = analyze_lines(lines, "cold_start_chart")
+        self.assertFalse(analysis.passed)
+        self.assertTrue(any("chart_usable" in failure for failure in analysis.failures))
+
+    def test_rejects_cold_start_over_time_to_usable_budget(self) -> None:
+        lines = [
+            line.replace("stage=chart_usable elapsedMs=430", "stage=chart_usable elapsedMs=2201")
+            for line in cold_start_passing_log()
+        ]
+        analysis = analyze_lines(lines, "cold_start_chart")
+        self.assertFalse(analysis.passed)
+        self.assertTrue(any("limit is 2200 ms" in failure for failure in analysis.failures))
 
     def test_nearest_rank_percentile_is_deterministic(self) -> None:
         self.assertEqual(percentile([1, 2, 3, 4, 5], 0.50), 3)

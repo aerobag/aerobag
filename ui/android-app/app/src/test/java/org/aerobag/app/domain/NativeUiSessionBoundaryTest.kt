@@ -281,7 +281,7 @@ class NativeUiSessionBoundaryTest {
             retainedSession.contains("val sessionSnapshotRefreshRunner:") &&
                 retainedSession.contains("val liveFeedRuntime: RetainedLiveFeedRuntime") &&
                 retainedSession.contains("val uiSessionWorkRunner: UiSessionWorkRunner") &&
-                retainedSession.contains("it.liveFeedRuntime.start()") &&
+                retainedSession.contains("retainedSession.liveFeedRuntime.start()") &&
                 mainActivity.contains("retainedCoreSession.liveFeedRuntime") &&
                 mainActivity.contains("retainedCoreSession.uiSessionWorkRunner"),
         )

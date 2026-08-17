@@ -2191,6 +2191,7 @@ class MainActivity : ComponentActivity() {
 
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        val activityCreateStartedAtMs = SystemClock.elapsedRealtime()
         super.onCreate(savedInstanceState)
         runCatching {
             NativeBindings.configureGpsCaptureLogPath(
@@ -2208,7 +2209,17 @@ class MainActivity : ComponentActivity() {
         val perfScenario = androidPerfScenarioFromIntentValue(
             intent?.getStringExtra(AndroidPerfScenarioExtra),
         )
+        val startupPerfTrace = perfScenario
+            ?.takeIf { it.id == AndroidPerfScenarioColdStartChart }
+            ?.let { scenario ->
+                AndroidStartupPerfTrace(scenario, activityCreateStartedAtMs).also { trace ->
+                    trace.start()
+                    trace.mark("activity_created", activityCreateStartedAtMs)
+                    retainedModel.page = AppPage.Map
+                }
+            }
         NativeBindings.setCorePerfDebugLoggingEnabled(BuildConfig.DEBUG && perfScenario != null)
+        retainedModel.beginStartupPreparation(applicationContext, startupPerfTrace)
         val armLayerNavKvFault = BuildConfig.DEBUG &&
             intent?.getBooleanExtra(DebugArmLayerNavKvFaultExtra, false) == true
         intent?.removeExtra(DebugArmLayerNavKvFaultExtra)
@@ -2224,6 +2235,7 @@ class MainActivity : ComponentActivity() {
                     AerobagApp(
                         retainedModel = retainedModel,
                         perfScenario = perfScenario,
+                        startupPerfTrace = startupPerfTrace,
                         armLayerNavKvFault = armLayerNavKvFault,
                     )
                 }
@@ -2529,6 +2541,7 @@ private fun FlightPlanOverlayHost(
 internal fun AerobagApp(
     retainedModel: AerobagRetainedModel,
     perfScenario: AndroidPerfScenario? = null,
+    startupPerfTrace: AndroidStartupPerfTrace? = null,
     armLayerNavKvFault: Boolean = false,
 ) {
     val context = LocalContext.current
@@ -2552,21 +2565,10 @@ internal fun AerobagApp(
     }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
     LaunchedEffect(context, runtimeReloadToken) {
-        retainedModel.runtimeResult?.let {
-            runtimeFixture = it
-            return@LaunchedEffect
-        }
-        runtimeFixture = null
-        val loaded = withContext(Dispatchers.IO) {
-            runCatching {
-                AndroidRuntimeContent.loadInstalledRuntime(
-                    context.applicationContext,
-                    readOfflinePackagesLibraryCacheJson(prefs),
-                )
-            }
-        }
-        retainedModel.runtimeResult = loaded
-        runtimeFixture = loaded
+        runtimeFixture = retainedModel.awaitStartupPreparation(
+            context.applicationContext,
+            startupPerfTrace,
+        )
     }
     var runtimeFailureMessage by remember { mutableStateOf<String?>(null) }
     @Composable
@@ -2619,21 +2621,18 @@ internal fun AerobagApp(
     val fixture = runtimeFixture!!.getOrThrow()
     val sessionStartElapsedMs = remember { SystemClock.elapsedRealtime() }
     val uptimeLabel = rememberUptimeLabel(sessionStartElapsedMs)
-    val storedRecentAirportIds = remember { readRecentAirportIds(context.applicationContext) }
-    val storedSelectedAirportId = remember { prefs.getString(UiPrefsSelectedAirportKey, null).orEmpty() }
-    val storedSelectedChartId = remember { prefs.getString(UiPrefsSelectedChartKey, null).orEmpty() }
-    val retainedCoreSession = retainedModel.getOrCreateCoreSession(
-        context = appContext,
-        runtimeContent = fixture,
-        recentAirportIds = storedRecentAirportIds,
-        selectedAirportId = storedSelectedAirportId.ifBlank { null },
-        selectedChartId = storedSelectedChartId.ifBlank { null },
-    )
+    val retainedCoreSession = retainedModel.preparedCoreSession(fixture)
     val appCore = retainedCoreSession.appCore
     val situationRingCandidates = retainedCoreSession.situationRingCandidates
     val uiSession = retainedCoreSession.uiSession
     val uiSessionWorkRunner = retainedCoreSession.uiSessionWorkRunner
     uiSessionWorkRunner.setPerfMetricsEnabled(perfScenario != null)
+    LaunchedEffect(uiSession, startupPerfTrace) {
+        if (startupPerfTrace != null) {
+            withFrameNanos { }
+            startupPerfTrace.mark("app_ui_frame")
+        }
+    }
     var page by remember {
         mutableStateOf(
             retainedModel.page ?: readStoredPage(prefs),
@@ -3354,6 +3353,7 @@ internal fun AerobagApp(
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
                         perfScenario = perfScenario,
+                        startupPerfTrace = startupPerfTrace,
                         pageTilePaintTiming = pageTilePaintTiming,
                         onPageTilePaintTimingComplete = { completedId ->
                             if (pageTilePaintTiming?.id == completedId) {

@@ -5,10 +5,20 @@
 package org.aerobag.app
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import org.aerobag.app.domain.ClientBuildInfo
+import org.aerobag.app.domain.AndroidRuntimeContent
 import org.aerobag.app.domain.LiveFeedCacheStore
 import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.NativeAppCoreAdapter
@@ -47,37 +57,168 @@ internal class AerobagRetainedCoreSession(
 }
 
 internal class AerobagRetainedModel : ViewModel() {
+    private val startupLock = Any()
+    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var startupGeneration = 0L
+    private var startupPreparation: Deferred<Result<RuntimeContent>>? = null
+
+    @Volatile
     var runtimeResult: Result<RuntimeContent>? = null
+        private set
+
+    @Volatile
     var coreSession: AerobagRetainedCoreSession? = null
+        private set
+
     var page: AppPage? = null
     var pageHistory: List<AppViewSnapshot> = emptyList()
     var mapViewport: MapViewportState? = null
 
     fun resetRuntime() {
-        val sessionRuntime = coreSession?.runtimeContent
-        coreSession?.close()
-        coreSession = null
-        runtimeResult?.getOrNull()
+        val (preparation, session, runtime) = synchronized(startupLock) {
+            startupGeneration += 1
+            val detached = Triple(
+                startupPreparation,
+                coreSession,
+                runtimeResult?.getOrNull(),
+            )
+            startupPreparation = null
+            coreSession = null
+            runtimeResult = null
+            detached
+        }
+        preparation?.cancel()
+        val sessionRuntime = session?.runtimeContent
+        session?.close()
+        runtime
             ?.takeIf { it !== sessionRuntime }
             ?.let { runtime ->
                 runCatching { runtime.navKvStore.close() }
                     .onFailure { Log.w("AerobagRetainedState", "failed to close retained runtime", it) }
             }
-        runtimeResult = null
     }
 
-    fun getOrCreateCoreSession(
+    fun beginStartupPreparation(
+        context: Context,
+        startupPerfTrace: AndroidStartupPerfTrace? = null,
+    ) {
+        val appContext = context.applicationContext
+        val preparation = synchronized(startupLock) {
+            if (runtimeResult != null || startupPreparation != null) {
+                return
+            }
+            val generation = startupGeneration
+            startupScope.async(start = CoroutineStart.LAZY) {
+                prepareStartup(appContext, generation, startupPerfTrace)
+            }.also { startupPreparation = it }
+        }
+        preparation.start()
+    }
+
+    suspend fun awaitStartupPreparation(
+        context: Context,
+        startupPerfTrace: AndroidStartupPerfTrace? = null,
+    ): Result<RuntimeContent> {
+        beginStartupPreparation(context, startupPerfTrace)
+        val (result, preparation) = synchronized(startupLock) {
+            runtimeResult to startupPreparation
+        }
+        return result ?: checkNotNull(preparation) {
+            "startup preparation has neither a result nor an active job"
+        }.await()
+    }
+
+    fun preparedCoreSession(runtimeContent: RuntimeContent): AerobagRetainedCoreSession =
+        checkNotNull(coreSession?.takeIf { it.runtimeContent === runtimeContent }) {
+            "runtime content was published without its prepared core session"
+        }
+
+    private fun prepareStartup(
+        context: Context,
+        generation: Long,
+        startupPerfTrace: AndroidStartupPerfTrace?,
+    ): Result<RuntimeContent> {
+        var runtimeContent: RuntimeContent? = null
+        var retainedSession: AerobagRetainedCoreSession? = null
+        try {
+            val prefs = context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+            val runtimeLoadStartedAtMs = SystemClock.elapsedRealtime()
+            startupPerfTrace?.mark("runtime_load_started")
+            val loadedRuntime = AndroidRuntimeContent.loadInstalledRuntime(
+                context,
+                readOfflinePackagesLibraryCacheJson(prefs),
+                onStartupStage = { stage, durationMs ->
+                    startupPerfTrace?.mark(
+                        stage,
+                        SystemClock.elapsedRealtime() - durationMs,
+                    )
+                },
+            )
+            runtimeContent = loadedRuntime
+            startupPerfTrace?.mark(
+                "runtime_loaded",
+                runtimeLoadStartedAtMs,
+                "outcome=success",
+            )
+
+            val sessionCreateStartedAtMs = SystemClock.elapsedRealtime()
+            startupPerfTrace?.mark("session_create_started")
+            retainedSession = buildCoreSession(
+                context = context,
+                runtimeContent = loadedRuntime,
+                recentAirportIds = readRecentAirportIds(context),
+                selectedAirportId = prefs.getString(UiPrefsSelectedAirportKey, null),
+                selectedChartId = prefs.getString(UiPrefsSelectedChartKey, null),
+                startupPerfTrace = startupPerfTrace,
+            )
+            retainedSession.liveFeedRuntime.start()
+            startupPerfTrace?.mark("live_feed_runtime_started")
+            startupPerfTrace?.mark("session_created", sessionCreateStartedAtMs)
+
+            val result = Result.success(loadedRuntime)
+            val published = synchronized(startupLock) {
+                if (generation != startupGeneration) {
+                    false
+                } else {
+                    coreSession = retainedSession
+                    runtimeResult = result
+                    startupPreparation = null
+                    true
+                }
+            }
+            if (!published) {
+                retainedSession.close()
+            }
+            return result
+        } catch (error: Throwable) {
+            retainedSession?.close()
+                ?: runtimeContent?.let { runtime ->
+                    runCatching { runtime.navKvStore.close() }
+                        .onFailure { Log.w("AerobagRetainedState", "failed to close failed startup runtime", it) }
+                }
+            if (error is CancellationException) {
+                throw error
+            }
+            startupPerfTrace?.mark("runtime_loaded", detail = "outcome=failure")
+            val result = Result.failure<RuntimeContent>(error)
+            synchronized(startupLock) {
+                if (generation == startupGeneration) {
+                    runtimeResult = result
+                    startupPreparation = null
+                }
+            }
+            return result
+        }
+    }
+
+    private fun buildCoreSession(
         context: Context,
         runtimeContent: RuntimeContent,
         recentAirportIds: List<String>,
         selectedAirportId: String?,
         selectedChartId: String?,
+        startupPerfTrace: AndroidStartupPerfTrace?,
     ): AerobagRetainedCoreSession {
-        coreSession
-            ?.takeIf { it.runtimeContent === runtimeContent }
-            ?.let { return it }
-
-        coreSession?.close()
         val appCore = NativeAppCoreAdapter(
             navKvStore = runtimeContent.navKvStore,
             sessionResourceFetcher = { resource ->
@@ -112,15 +253,26 @@ internal class AerobagRetainedModel : ViewModel() {
             ),
             cycleDataBaseUrl = cycleDataBaseUrl,
             liveFeedsBaseUrl = "${liveFeedSourceRootUrl.trimEnd('/')}/live-feeds",
+            onStartupStage = { stage, durationMs ->
+                startupPerfTrace?.mark(
+                    stage,
+                    SystemClock.elapsedRealtime() - durationMs,
+                )
+            },
         )
+        val situationCandidatesStartedAtMs = SystemClock.elapsedRealtime()
+        val situationRingCandidates = appCore.situationRingCandidates()
+        startupPerfTrace?.mark("session_situation_candidates_loaded", situationCandidatesStartedAtMs)
+        val packageCacheStartedAtMs = SystemClock.elapsedRealtime()
         uiSession.loadOfflinePackageLibraryCache(readOfflinePackagesLibraryCacheJson(prefs))
+        startupPerfTrace?.mark("session_package_cache_loaded", packageCacheStartedAtMs)
         val liveFeedCache = LiveFeedCacheStore.create(liveFeedSourceRootUrl)
         val resultExecutor = ContextCompat.getMainExecutor(context.applicationContext)
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
             appCore = appCore,
             uiSession = uiSession,
-            situationRingCandidates = appCore.situationRingCandidates(),
+            situationRingCandidates = situationRingCandidates,
             decodedTileBitmapCache = DecodedTileBitmapCache(DecodedTileCacheMaxBytes),
             liveFeedRuntime = RetainedLiveFeedRuntime(
                 context = context.applicationContext,
@@ -129,20 +281,19 @@ internal class AerobagRetainedModel : ViewModel() {
                 sourceRootUrl = liveFeedSourceRootUrl,
                 resultExecutor = resultExecutor,
                 initialPromotionGate = createInitialLiveFeedPromotionGate(context.applicationContext),
+                startupPerfTrace = startupPerfTrace,
             ),
             sessionSnapshotRefreshRunner = SessionSnapshotRefreshRunner(
                 refresh = uiSession::refreshSnapshot,
                 resultExecutor = resultExecutor,
             ),
             uiSessionWorkRunner = UiSessionWorkRunner(uiSession),
-        ).also {
-            coreSession = it
-            it.liveFeedRuntime.start()
-        }
+        )
     }
 
     override fun onCleared() {
         resetRuntime()
+        startupScope.cancel()
         super.onCleared()
     }
 }

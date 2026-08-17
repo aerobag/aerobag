@@ -18,6 +18,22 @@ from typing import Iterable
 WORK_TAG = re.compile(r"AerobagSessionWork(?:\([^)]*\))?:\s+(.*)$")
 SCENARIO_TAG = re.compile(r"AerobagPerfScenario(?:\([^)]*\))?:\s+(.*)$")
 
+MAP_SELECTION_FREEZE_SCENARIO = "map_selection_freeze"
+COLD_START_CHART_SCENARIO = "cold_start_chart"
+COLD_START_CHART_MAX_MS = 2_200
+COLD_START_REQUIRED_STAGES = (
+    "activity_created",
+    "runtime_load_started",
+    "runtime_loaded",
+    "session_create_started",
+    "session_created",
+    "app_ui_frame",
+    "map_surface_ready",
+    "vector_frame_ready",
+    "raster_frame_ready",
+    "chart_usable",
+)
+
 
 def parse_fields(message: str) -> dict[str, str]:
     fields: dict[str, str] = {}
@@ -115,22 +131,68 @@ def analyze_lines(
 
     started = [record for record in work if record.get("event") == "started"]
     finished = [record for record in work if record.get("event") == "finished"]
-    requested_overlays = [
-        record
-        for record in work
-        if record.get("event") == "requested" and record.get("kind") == "map_overlay"
-    ]
-    if len(requested_overlays) < 64:
-        failures.append(f"dense overlay burst submitted only {len(requested_overlays)} requests")
-
     selection_finished = [record for record in finished if record.get("kind") == "map_selection"]
     successful_selections = [
         record
         for record in selection_finished
         if record.get("action") == "land" and record.get("outcome") == "success"
     ]
-    if len(successful_selections) < 2:
-        failures.append(f"expected two successful map selections, observed {len(successful_selections)}")
+    if scenario == MAP_SELECTION_FREEZE_SCENARIO:
+        requested_overlays = [
+            record
+            for record in work
+            if record.get("event") == "requested" and record.get("kind") == "map_overlay"
+        ]
+        if len(requested_overlays) < 64:
+            failures.append(f"dense overlay burst submitted only {len(requested_overlays)} requests")
+        if len(successful_selections) < 2:
+            failures.append(
+                f"expected two successful map selections, observed {len(successful_selections)}"
+            )
+    elif scenario == COLD_START_CHART_SCENARIO:
+        startup_stage_records = [
+            parse_fields(message)
+            for message in scenario_messages
+            if message.startswith(f"startup_stage scenario={scenario} ")
+        ]
+        startup_stages = [record.get("stage") for record in startup_stage_records]
+        for stage in COLD_START_REQUIRED_STAGES:
+            if stage not in startup_stages:
+                failures.append(f"cold startup stage {stage} is missing")
+        elapsed_by_stage = {
+            record["stage"]: elapsed
+            for record in startup_stage_records
+            if "stage" in record and (elapsed := integer(record, "elapsedMs")) is not None
+        }
+        foundation = (
+            "activity_created",
+            "runtime_load_started",
+            "runtime_loaded",
+            "session_create_started",
+            "session_created",
+        )
+        foundation_elapsed = [
+            elapsed_by_stage[stage] for stage in foundation if stage in elapsed_by_stage
+        ]
+        if foundation_elapsed != sorted(foundation_elapsed):
+            failures.append("cold startup foundation stages arrived out of order")
+        chart_usable_elapsed = elapsed_by_stage.get("chart_usable")
+        if chart_usable_elapsed is not None and chart_usable_elapsed > COLD_START_CHART_MAX_MS:
+            failures.append(
+                f"cold startup chart became usable after {chart_usable_elapsed} ms; "
+                f"limit is {COLD_START_CHART_MAX_MS} ms"
+            )
+        content_elapsed = [
+            elapsed_by_stage[stage]
+            for stage in ("app_ui_frame", "map_surface_ready", "vector_frame_ready", "raster_frame_ready")
+            if stage in elapsed_by_stage
+        ]
+        if (
+            chart_usable_elapsed is not None
+            and content_elapsed
+            and chart_usable_elapsed < max(content_elapsed)
+        ):
+            failures.append("cold startup chart became usable before its required content")
 
     main_thread_work = [record for record in finished if record.get("main_thread") == "true"]
     if main_thread_work:
@@ -185,6 +247,16 @@ def summary_lines(analysis: Analysis) -> list[str]:
             f"p95_ms={frame_summary.get('p95Ms', '?')} "
             f"max_ms={frame_summary.get('maxMs', '?')} "
             f"threshold_ms={frame_summary.get('thresholdMs', '?')}"
+        )
+    for message in analysis.scenario_messages:
+        if not message.startswith("startup_stage "):
+            continue
+        fields = parse_fields(message)
+        lines.append(
+            "STARTUP "
+            f"stage={fields.get('stage', '?')} "
+            f"elapsed_ms={fields.get('elapsedMs', '?')} "
+            f"duration_ms={fields.get('durationMs', '?')}"
         )
     for kind in sorted({record.get("kind", "unknown") for record in finished}):
         records = [record for record in finished if record.get("kind") == kind]

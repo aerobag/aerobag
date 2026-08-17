@@ -5,6 +5,7 @@
 package org.aerobag.app
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -37,6 +38,7 @@ internal class RetainedLiveFeedRuntime(
     sourceRootUrl: String,
     private val resultExecutor: Executor,
     private val initialPromotionGate: InitialLiveFeedPromotionGate,
+    private val startupPerfTrace: AndroidStartupPerfTrace? = null,
 ) : AutoCloseable {
     private val lock = Any()
     private val workerDispatcher: ExecutorCoroutineDispatcher =
@@ -61,17 +63,31 @@ internal class RetainedLiveFeedRuntime(
             if (started) return
             started = true
         }
+        startupPerfTrace?.mark("live_feed_restore_started")
         scope.launch {
             try {
+                val restoreStartedAtMs = SystemClock.elapsedRealtime()
                 val installed = withContext(Dispatchers.IO) {
                     LiveFeedCacheStore.restore(appContext, cache)
                     LiveFeedCacheStore.listInstalledSummaries(appContext)
                 }
+                startupPerfTrace?.mark(
+                    "live_feed_cache_restored",
+                    restoreStartedAtMs,
+                    "products=${installed.size}",
+                )
+                val promotionStartedAtMs = SystemClock.elapsedRealtime()
                 initialPromotionGate.awaitPromotion(installed)
                 // TODO(live-feed-restore-transaction): Native restore has begin/finish but no
                 // abort/reconcile operation. Add that protocol before attempting to recover from
                 // a failed promotion here; otherwise partial restored state is ambiguous.
                 installed.forEach { summary -> promote(summary) }
+                startupPerfTrace?.mark(
+                    "live_feed_products_promoted",
+                    promotionStartedAtMs,
+                    "products=${installed.size}",
+                )
+                startupPerfTrace?.mark("live_feed_connection_started")
                 client.bootstrapAndRun(
                     promote = { summary ->
                         check(promote(summary)) {

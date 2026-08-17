@@ -322,6 +322,30 @@ still took as much as 818 ms and winds-aloft preparation 1,062 ms, but maximum
 session-lock hold was 37 ms and 39 ms. The original core outlier and frame-gap
 failure are therefore resolved without hiding or relaxing either threshold.
 
+The next measured workload is Android cold process startup with warmed offline
+packages, ending when the first vector and raster chart content have both
+reached a frame. The gated `cold_start_chart` scenario records runtime, native
+session, map-surface, vector, and raster milestones. Its analyzer requires the
+complete lifecycle, rejects scheduled work on the main thread, allows at most a
+500 ms gap during the noninteractive first render, and enforces a 2.2 second
+time-to-usable budget.
+
+The first trace showed that installed-runtime loading did not begin until the
+first Compose effect and native session construction then occupied the UI
+thread. Runtime and session preparation now form one retained, generation-
+checked IO transaction that starts before `setContent`. Package reset cancels
+and invalidates the transaction; a late completion closes its native resources
+instead of publishing stale state. Compose only awaits the retained result.
+
+On the isolated emulator, three post-change cold runs reached the usable chart
+at 1.829, 1.805, and 1.740 seconds. Session preparation completed at 646, 659,
+and 632 ms; map composition, vector completion, and first raster delivery each
+moved roughly 230 to 250 ms earlier than the comparable traced run. The
+remaining repeatable 433 ms gap occurs in the first Compose/map render before
+the chart becomes interactive. It is now visible separately from runtime and
+session construction and is the next startup-render target if cold-start work
+continues.
+
 Pass/fail thresholds should start conservative:
 
 - No expensive session work starts on Android main thread.

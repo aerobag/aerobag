@@ -634,6 +634,7 @@ internal fun MapExplorerPage(
     decodedTileBitmapCache: DecodedTileBitmapCache,
     debugState: UiDebugState,
     perfScenario: AndroidPerfScenario? = null,
+    startupPerfTrace: AndroidStartupPerfTrace? = null,
     pageTilePaintTiming: PageTilePaintTiming?,
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
@@ -656,6 +657,7 @@ internal fun MapExplorerPage(
     planUiState: FlightPlanUiState?,
 ) {
     SideEffect(sessionRenderDiagnostics::recordMap)
+    SideEffect { startupPerfTrace?.mark("map_composed") }
     val highRate by sessionRenderModel.highRateProjectionState
     val sessionSnapshot = remember(shellSessionSnapshot, highRate) {
         shellSessionSnapshot.withHighRateProjection(highRate)
@@ -769,6 +771,10 @@ internal fun MapExplorerPage(
     var terrainNoPaintStartedMs by remember(uiSession) { mutableLongStateOf(0L) }
     var terrainNoPaintLastWarningMs by remember(uiSession) { mutableLongStateOf(0L) }
     var terrainStaleNoPositionWarningLastMs by remember(uiSession) { mutableLongStateOf(0L) }
+    var startupVectorContentReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
+    var startupVectorFrameReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
+    var startupRasterContentReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
+    var startupRasterFrameReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
     val terrainTileBitmapCache = remember(uiSession) {
         LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>(
             TerrainTileBitmapCacheMaxEntries,
@@ -887,6 +893,14 @@ internal fun MapExplorerPage(
     val terrainOwnshipLauncherLabelState = rememberUpdatedState(ownshipControls.launcherLabel)
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
+    LaunchedEffect(startupPerfTrace, surfaceSize) {
+        if (startupPerfTrace != null && surfaceSize.width > 0 && surfaceSize.height > 0) {
+            startupPerfTrace.mark(
+                "map_surface_ready",
+                detail = "surface=${surfaceSize.width}x${surfaceSize.height}",
+            )
+        }
+    }
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
@@ -904,6 +918,11 @@ internal fun MapExplorerPage(
                 ),
             )
             val planMs = SystemClock.elapsedRealtime() - planStartMs
+            startupPerfTrace?.mark(
+                "raster_plan_ready",
+                planStartMs,
+                "tiles=${plan.tiles.size}",
+            )
             pageTilePaintTiming?.let { timing ->
                 perfLogInfo(TileBudgetLogTag) {
                     "tile-paint-plan id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=${debugState.fastTiles}"
@@ -931,6 +950,57 @@ internal fun MapExplorerPage(
     }
     val tiles = rasterPlanFrame.tiles
     val chartReferenceAction = rasterPlanFrame.chartReferenceAction
+    LaunchedEffect(startupPerfTrace, startupVectorContentReady) {
+        if (startupPerfTrace != null && startupVectorContentReady && !startupVectorFrameReady) {
+            withFrameNanos { }
+            startupPerfTrace.mark("vector_frame_ready")
+            startupVectorFrameReady = true
+        }
+    }
+    LaunchedEffect(startupPerfTrace, startupRasterContentReady) {
+        if (startupPerfTrace != null && startupRasterContentReady && !startupRasterFrameReady) {
+            withFrameNanos { }
+            startupPerfTrace.mark("raster_frame_ready")
+            startupRasterFrameReady = true
+        }
+    }
+    LaunchedEffect(
+        startupPerfTrace,
+        startupVectorFrameReady,
+        startupRasterFrameReady,
+        surfaceSize,
+    ) {
+        if (
+            startupPerfTrace != null &&
+            startupVectorFrameReady &&
+            startupRasterFrameReady &&
+            surfaceSize.width > 0 &&
+            surfaceSize.height > 0
+        ) {
+            withFrameNanos { }
+            // The terminal observation is authoritative and closes the trace. Restate
+            // its prerequisites so concurrent frame effects cannot lose their markers.
+            startupPerfTrace.mark("vector_frame_ready")
+            startupPerfTrace.mark("raster_frame_ready")
+            startupPerfTrace.mark(
+                "chart_usable",
+                detail = "surface=${surfaceSize.width}x${surfaceSize.height} tiles=${tiles.size}",
+            )
+            startupPerfTrace.finish()
+        }
+    }
+    LaunchedEffect(
+        startupPerfTrace,
+        mapLayerState.terrainWarning.visible,
+        ownship.position,
+        ownship.terrainAltitudeBucketFt,
+    ) {
+        startupPerfTrace?.mark(
+            "terrain_startup_state",
+            detail = "visible=${mapLayerState.terrainWarning.visible} " +
+                "position=${ownship.position != null} altitude=${ownship.terrainAltitudeBucketFt != null}",
+        )
+    }
     val terrainVisibleState = rememberUpdatedState(mapLayerState.terrainWarning.visible)
     LaunchedEffect(uiSession) {
         while (true) {
@@ -1671,6 +1741,9 @@ internal fun MapExplorerPage(
                 }
             }
         }
+        if (tiles.isNotEmpty() && tileBitmapCache.values.any { bitmap -> bitmap != null }) {
+            startupRasterContentReady = true
+        }
         val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
         perfLogInfo(TileBudgetLogTag) {
             val decodedCacheStats = decodedTileBitmapCache.stats()
@@ -1678,6 +1751,12 @@ internal fun MapExplorerPage(
             "visible map=$selectedMapId total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size}/${localBitmapBytes}B localBitmaps=$localBitmapEntries pruned=${staleLocalKeys.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]"
         }
         if (missingTiles.isEmpty()) {
+            if (tiles.isNotEmpty()) {
+                startupPerfTrace?.mark(
+                    "raster_cache_ready",
+                    detail = "tiles=${tiles.size}",
+                )
+            }
             pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
                 withFrameNanos { }
                 perfLogInfo(TileBudgetLogTag) {
@@ -1713,6 +1792,10 @@ internal fun MapExplorerPage(
             var request = initialRequest
             while (true) {
                 val loadStartMs = SystemClock.elapsedRealtime()
+                startupPerfTrace?.mark(
+                    "raster_load_started",
+                    detail = "tiles=${request.missingTiles.size}",
+                )
                 val generationId = TileLoadGenerationIds.incrementAndGet()
                 perfLogInfo(TileBudgetLogTag) {
                     "generation-start gen=$generationId request=${request.id} map=${request.mapId} zoom=${"%.2f".format(request.zoom)} center=${"%.3f".format(request.centerLat)},${"%.3f".format(request.centerLon)} total=${request.visibleTiles.size} missing=${request.missingTiles.size} cache=${tileBitmapCache.size}"
@@ -1732,6 +1815,12 @@ internal fun MapExplorerPage(
                         if (bitmap != null) {
                             loadedThisPassCount += 1
                             decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile, loadEpoch), bitmap, loaded.result.decodedBytes)
+                            startupPerfTrace?.mark(
+                                "raster_first_tile_loaded",
+                                loadStartMs,
+                                "readMs=${loaded.result.readMs} decodeMs=${loaded.result.decodeMs}",
+                            )
+                            startupRasterContentReady = true
                         } else {
                             Log.w(
                                 TileBudgetLogTag,
@@ -1744,6 +1833,16 @@ internal fun MapExplorerPage(
                         "generation-cancel gen=$generationId request=${request.id} map=${request.mapId} loaded=$loadedThisPassCount/${request.missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}"
                     }
                     throw error
+                }
+                if (request.visibleTiles.isNotEmpty() && tileBitmapCache.values.any { bitmap -> bitmap != null }) {
+                    val tileResults = loadedTiles.map { it.result }
+                    startupPerfTrace?.mark(
+                        "raster_tiles_loaded",
+                        loadStartMs,
+                        "loaded=$loadedThisPassCount requested=${request.missingTiles.size} " +
+                            "readMs=${tileResults.sumOf { it.readMs }} " +
+                            "decodeMs=${tileResults.sumOf { it.decodeMs }}",
+                    )
                 }
                 val staleRequest = request.id != latestRasterTileLoadRequestIdState.value
                 if (VerbosePerfLogs) {
@@ -1969,6 +2068,10 @@ internal fun MapExplorerPage(
         val overlayWidthPx = planningEnvelope.x
         val overlayHeightPx = planningEnvelope.y
         val overlayStartMs = SystemClock.elapsedRealtime()
+        startupPerfTrace?.mark(
+            "vector_query_started",
+            detail = "surface=${surfaceSize.width}x${surfaceSize.height}",
+        )
         val queryEpoch = navDataEpoch
         sessionWorkRunner.submitOverlay(
             viewport = currentViewport,
@@ -1991,6 +2094,12 @@ internal fun MapExplorerPage(
                 committedOverlayViewport = currentViewport
                 committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
                 mapOverlayError = null
+                startupVectorContentReady = true
+                startupPerfTrace?.mark(
+                    "vector_query_completed",
+                    overlayStartMs,
+                    "features=${overlay.visibleFeatures.size}",
+                )
             },
             onError = { error ->
                 mapOverlayError = error.message ?: error::class.java.simpleName

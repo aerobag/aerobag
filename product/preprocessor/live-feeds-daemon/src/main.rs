@@ -28,12 +28,13 @@ use nms_notams_fetch::{
 use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
-        default_poll_interval, prune_live_feed_scratch_root, run_upstream_live_feed_publish_tick,
-        write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
-        FixtureCacheKeyPart, LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder,
-        LiveFeedTaskPhase, LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest,
-        ProductBuilder, PublishedLiveFeedUpdate, QueuedLiveFeedSource, SseBroker, SystemClock,
-        UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
+        default_poll_interval, prune_live_feed_scratch_root,
+        run_upstream_live_feed_publish_tick_parallel, write_live_feeds_current_manifest,
+        CompiledFixtureCache, FileLiveFeedPublisher, FixedClock, FixtureCacheKeyPart,
+        LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTaskPhase,
+        LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest, ProductBuilder,
+        PublishedLiveFeedUpdate, QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent,
+        LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
     notam_store::{is_incompatible_notam_store_schema, NotamPersistentStore},
     products::{
@@ -55,6 +56,7 @@ use product_contracts::{
 use serde::Serialize;
 
 const STATUS_HISTORY_LIMIT: usize = 256;
+const LIVE_FEED_TASK_WORKERS: usize = 4;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
 const SIMULATION_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 const MAX_PENDING_SSE_PRODUCTS_PER_CLIENT: usize = 32;
@@ -952,6 +954,7 @@ fn start_live_feed_driver(
     {
         eprintln!("live-feed startup scratch prune failed: {error:#}");
     }
+    let task_pool = live_feed_task_pool()?;
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let notam_state_root_for_enrichment = nms_notams
@@ -990,7 +993,8 @@ fn start_live_feed_driver(
         }
         loop {
             let now = Utc::now();
-            let result = run_upstream_live_feed_publish_tick(
+            let result = run_upstream_live_feed_publish_tick_parallel(
+                &task_pool,
                 now,
                 &mut tasks,
                 &scratch_root,
@@ -1034,6 +1038,7 @@ fn start_simulation_driver(
     let scratch_root = config.scratch_root.join("live-feed-simulation");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
     let speedup = simulation.speedup;
+    let task_pool = live_feed_task_pool()?;
     reset_simulation_publication(&live_root)?;
     reset_simulation_scratch(&scratch_root)?;
     thread::spawn(move || {
@@ -1068,7 +1073,8 @@ fn start_simulation_driver(
             };
             loop {
                 let now = Utc::now();
-                let result = run_upstream_live_feed_publish_tick(
+                let result = run_upstream_live_feed_publish_tick_parallel(
+                    &task_pool,
                     now,
                     &mut tasks,
                     &scratch_root,
@@ -1110,6 +1116,14 @@ fn start_simulation_driver(
         }
     });
     Ok(())
+}
+
+fn live_feed_task_pool() -> anyhow::Result<rayon::ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(LIVE_FEED_TASK_WORKERS)
+        .thread_name(|index| format!("aerobag-live-feed-{index}"))
+        .build()
+        .context("failed to create live-feed task worker pool")
 }
 
 fn reset_simulation_publication(live_root: &Path) -> anyhow::Result<()> {

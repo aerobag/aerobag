@@ -18,6 +18,7 @@ preprocessor-zip = { path = "../preprocessor-zip" }
 product-contracts = { path = "../../../crates/product-contracts" }
 notam-state = { path = "../../../crates/notam-state" }
 quick-xml.workspace = true
+rayon.workspace = true
 roxmltree.workspace = true
 libc = "0.2"
 rusqlite.workspace = true

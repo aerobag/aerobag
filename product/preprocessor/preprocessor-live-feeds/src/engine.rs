@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
     io::Write,
     path::{Component, Path, PathBuf},
@@ -33,6 +33,7 @@ pub use product_contracts::live_feeds::v3::{
     RecordDelta as LiveFeedRecordDelta, VersionManifest as LiveFeedVersionManifest,
 };
 use product_contracts::{live_feed_product_policy, versioned_json, LIVE_FEED_PRODUCT_POLICIES};
+use rayon::prelude::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -503,50 +504,199 @@ where
             }
         };
         for event in events {
-            if event.product != product_id {
-                failures.push(FailedLiveFeedTask {
-                    product: product_id.clone(),
-                    phase: LiveFeedTaskPhase::Build,
-                    error: format!("source emitted event for product {}", event.product),
-                });
-                continue;
-            }
-            let scratch_dir = live_feed_event_scratch_dir(scratch_root, &product_id, &event);
-            let built = match task.build_state(&event, &scratch_dir) {
-                Ok(built) => built,
-                Err(error) => {
-                    failures.push(FailedLiveFeedTask {
-                        product: product_id.clone(),
-                        phase: LiveFeedTaskPhase::Build,
-                        error: format!("{error:#}"),
-                    });
-                    retain_failed_live_feed_scratch(
-                        scratch_root,
-                        &product_id,
-                        Some(&scratch_dir),
-                        &mut failures,
-                    );
-                    continue;
-                }
-            };
-            if let Some(update) =
-                publish_and_announce(product_id.clone(), built, publisher, broker, &mut failures)
-            {
-                cleanup_successful_live_feed_scratch(&product_id, &scratch_dir, &mut failures);
-                published.push(update);
-            } else {
-                retain_failed_live_feed_scratch(
-                    scratch_root,
-                    &product_id,
-                    Some(&scratch_dir),
-                    &mut failures,
-                );
-            }
+            let attempt = prepare_upstream_live_feed_event(task, &product_id, event, scratch_root);
+            finish_upstream_live_feed_event(
+                attempt,
+                scratch_root,
+                publisher,
+                broker,
+                &mut published,
+                &mut failures,
+            );
         }
     }
     LiveFeedTickResult {
         published,
         failures,
+    }
+}
+
+pub fn run_upstream_live_feed_publish_tick_parallel<T, P, B>(
+    pool: &rayon::ThreadPool,
+    now: DateTime<Utc>,
+    tasks: &mut [T],
+    scratch_root: &Path,
+    publisher: &P,
+    broker: &B,
+) -> LiveFeedTickResult
+where
+    T: LiveFeedPollingTask + Send,
+    P: LiveFeedPublisher,
+    B: SseBroker,
+{
+    let unique_products = tasks
+        .iter()
+        .map(|task| task.product_id())
+        .collect::<BTreeSet<_>>();
+    if unique_products.len() != tasks.len() {
+        return run_upstream_live_feed_publish_tick(now, tasks, scratch_root, publisher, broker);
+    }
+
+    let mut pending = pool.install(|| {
+        tasks
+            .par_iter_mut()
+            .map(|task| {
+                let product_id = task.product_id().to_string();
+                match task.poll_due(now) {
+                    Ok(events) => PendingUpstreamLiveFeedTask {
+                        product_id,
+                        events: events.into(),
+                        failures: Vec::new(),
+                    },
+                    Err(error) => PendingUpstreamLiveFeedTask {
+                        product_id: product_id.clone(),
+                        events: VecDeque::new(),
+                        failures: vec![FailedLiveFeedTask {
+                            product: product_id,
+                            phase: LiveFeedTaskPhase::Poll,
+                            error: format!("{error:#}"),
+                        }],
+                    },
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut published = Vec::new();
+    let mut failures = Vec::new();
+    for task in &mut pending {
+        failures.append(&mut task.failures);
+    }
+
+    while pending.iter().any(|task| !task.events.is_empty()) {
+        let attempts = pool.install(|| {
+            tasks
+                .par_iter_mut()
+                .zip(pending.par_iter_mut())
+                .map(|(task, pending)| {
+                    pending.events.pop_front().map(|event| {
+                        prepare_upstream_live_feed_event(
+                            task,
+                            &pending.product_id,
+                            event,
+                            scratch_root,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        for attempt in attempts.into_iter().flatten() {
+            finish_upstream_live_feed_event(
+                attempt,
+                scratch_root,
+                publisher,
+                broker,
+                &mut published,
+                &mut failures,
+            );
+        }
+    }
+    LiveFeedTickResult {
+        published,
+        failures,
+    }
+}
+
+struct PendingUpstreamLiveFeedTask {
+    product_id: String,
+    events: VecDeque<UpstreamEvent>,
+    failures: Vec<FailedLiveFeedTask>,
+}
+
+struct PreparedUpstreamLiveFeedEvent {
+    product_id: String,
+    scratch_dir: PathBuf,
+    built: BuiltLiveFeedState,
+}
+
+struct UpstreamLiveFeedBuildAttempt {
+    prepared: Option<PreparedUpstreamLiveFeedEvent>,
+    failures: Vec<FailedLiveFeedTask>,
+}
+
+fn prepare_upstream_live_feed_event<T: LiveFeedPollingTask + ?Sized>(
+    task: &T,
+    product_id: &str,
+    event: UpstreamEvent,
+    scratch_root: &Path,
+) -> UpstreamLiveFeedBuildAttempt {
+    if event.product != product_id {
+        return UpstreamLiveFeedBuildAttempt {
+            prepared: None,
+            failures: vec![FailedLiveFeedTask {
+                product: product_id.to_string(),
+                phase: LiveFeedTaskPhase::Build,
+                error: format!("source emitted event for product {}", event.product),
+            }],
+        };
+    }
+    let scratch_dir = live_feed_event_scratch_dir(scratch_root, product_id, &event);
+    match task.build_state(&event, &scratch_dir) {
+        Ok(built) => UpstreamLiveFeedBuildAttempt {
+            prepared: Some(PreparedUpstreamLiveFeedEvent {
+                product_id: product_id.to_string(),
+                scratch_dir,
+                built,
+            }),
+            failures: Vec::new(),
+        },
+        Err(error) => {
+            let mut failures = vec![FailedLiveFeedTask {
+                product: product_id.to_string(),
+                phase: LiveFeedTaskPhase::Build,
+                error: format!("{error:#}"),
+            }];
+            retain_failed_live_feed_scratch(
+                scratch_root,
+                product_id,
+                Some(&scratch_dir),
+                &mut failures,
+            );
+            UpstreamLiveFeedBuildAttempt {
+                prepared: None,
+                failures,
+            }
+        }
+    }
+}
+
+fn finish_upstream_live_feed_event<P: LiveFeedPublisher, B: SseBroker>(
+    mut attempt: UpstreamLiveFeedBuildAttempt,
+    scratch_root: &Path,
+    publisher: &P,
+    broker: &B,
+    published: &mut Vec<PublishedLiveFeedUpdate>,
+    failures: &mut Vec<FailedLiveFeedTask>,
+) {
+    failures.append(&mut attempt.failures);
+    let Some(prepared) = attempt.prepared else {
+        return;
+    };
+    if let Some(update) = publish_and_announce(
+        prepared.product_id.clone(),
+        prepared.built,
+        publisher,
+        broker,
+        failures,
+    ) {
+        cleanup_successful_live_feed_scratch(&prepared.product_id, &prepared.scratch_dir, failures);
+        published.push(update);
+    } else {
+        retain_failed_live_feed_scratch(
+            scratch_root,
+            &prepared.product_id,
+            Some(&prepared.scratch_dir),
+            failures,
+        );
     }
 }
 
@@ -3117,7 +3267,10 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use std::io::{Cursor, Read, Write};
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
     use tempfile::tempdir;
     use zip::{
         write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
@@ -4170,6 +4323,74 @@ mod tests {
     }
 
     #[test]
+    fn parallel_upstream_tick_builds_concurrently_and_publishes_in_task_order() -> anyhow::Result<()>
+    {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let scratch_root = temp.path().join("scratch");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 4, 5, 6).unwrap()),
+        );
+        let broker = RecordingBroker::default();
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut tasks = ["metars", "tafs"]
+            .into_iter()
+            .map(|product| {
+                LiveFeedSourceAndBuilder::new(
+                    StaticSource {
+                        product: product.to_string(),
+                        events: vec![UpstreamEvent {
+                            product: product.to_string(),
+                            source_id: format!("{product}-v1"),
+                            previous_source_id: None,
+                            observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap(),
+                            payload_path: None,
+                        }],
+                    },
+                    ConcurrencyProbeBuilder {
+                        product: product.to_string(),
+                        active: Arc::clone(&active),
+                        peak: Arc::clone(&peak),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build()?;
+
+        let result = run_upstream_live_feed_publish_tick_parallel(
+            &pool,
+            Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap(),
+            &mut tasks,
+            &scratch_root,
+            &publisher,
+            &broker,
+        );
+
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert!(result.failures.is_empty(), "{:#?}", result.failures);
+        assert_eq!(
+            result
+                .published
+                .iter()
+                .map(|update| update.product.as_str())
+                .collect::<Vec<_>>(),
+            vec!["metars", "tafs"]
+        );
+        let current = read_live_feeds_current(&live_root)?.expect("current manifest");
+        assert_eq!(
+            current
+                .products
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["metars", "tafs"]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn upstream_publish_tick_keeps_only_recent_failed_scratch_dirs() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let live_root = temp.path().join("live-feeds");
@@ -4646,6 +4867,34 @@ mod tests {
                 "records",
                 &[("KSEA", 1)],
             )
+        }
+    }
+
+    struct ConcurrencyProbeBuilder {
+        product: String,
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl ProductBuilder for ConcurrencyProbeBuilder {
+        fn product_id(&self) -> &str {
+            &self.product
+        }
+
+        fn build_state(
+            &self,
+            event: &UpstreamEvent,
+            scratch_dir: &Path,
+        ) -> anyhow::Result<BuiltLiveFeedState> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(StdDuration::from_millis(50));
+            let result = EchoBuilder {
+                product: self.product.clone(),
+            }
+            .build_state(event, scratch_dir);
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            result
         }
     }
 

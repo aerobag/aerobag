@@ -34,7 +34,7 @@ use preprocessor_live_feeds::{
         ProductBuilder, PublishedLiveFeedUpdate, QueuedLiveFeedSource, SseBroker, SystemClock,
         UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
-    notam_store::NotamPersistentStore,
+    notam_store::{is_incompatible_notam_store_schema, NotamPersistentStore},
     products::{
         fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
         NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
@@ -1663,7 +1663,20 @@ fn queue_nms_notam_state_event(
     observed_at_utc: &str,
 ) -> anyhow::Result<()> {
     let records = store.current_records()?;
-    let synchronized = publication_store.synchronize_current_records(&records, observed_at_utc)?;
+    let synchronized = match publication_store
+        .synchronize_current_records(&records, observed_at_utc)
+    {
+        Ok(synchronized) => synchronized,
+        Err(error) if is_incompatible_notam_store_schema(&error) => {
+            eprintln!(
+                "NMS NOTAM derived publication cache is incompatible; rebuilding from canonical state: {error:#}"
+            );
+            publication_store
+                .rebuild_derived_projection(&records, observed_at_utc)
+                .context("failed to rebuild derived NMS NOTAM publication cache")?
+        }
+        Err(error) => return Err(error),
+    };
     sender
         .send(UpstreamEvent {
             product: "notams".to_string(),
@@ -3193,6 +3206,37 @@ mod tests {
         let event = receiver.recv_timeout(Duration::from_secs(1))?;
         assert_eq!(event.product, "notams");
         assert!(event.source_id.starts_with("notams:nms:"));
+        Ok(())
+    }
+
+    #[test]
+    fn nms_notam_state_rebuilds_an_incompatible_derived_projection() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
+        publication_store.initialize()?;
+        let connection = rusqlite::Connection::open(publication_store.sqlite_path())?;
+        connection.execute(
+            "UPDATE metadata SET value = '8' WHERE key = 'schema_version'",
+            [],
+        )?;
+        drop(connection);
+        let (sender, receiver) = mpsc::channel();
+
+        queue_nms_notam_state_event(&store, &publication_store, &sender, "2026-07-24T00:00:00Z")?;
+
+        let event = receiver.recv_timeout(Duration::from_secs(1))?;
+        assert_eq!(event.product, "notams");
+        let connection = rusqlite::Connection::open(publication_store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?,
+            "9"
+        );
         Ok(())
     }
 

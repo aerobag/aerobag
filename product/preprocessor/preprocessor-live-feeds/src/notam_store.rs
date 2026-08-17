@@ -4,6 +4,8 @@
 
 use std::{
     collections::BTreeMap,
+    error::Error,
+    fmt,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Write},
     os::fd::AsRawFd,
@@ -36,6 +38,32 @@ const AIRPORT_NOTAM_COUNT_METADATA_KEY: &str = "airport_notam_count";
 const MULTIPLE_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_multiple_effects";
 const OTHER_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_other_effect";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
+
+#[derive(Debug)]
+pub struct IncompatibleNotamStoreSchema {
+    found: String,
+    required: u32,
+}
+
+impl fmt::Display for IncompatibleNotamStoreSchema {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported NOTAM sqlite schema {}; required {}",
+            self.found, self.required
+        )
+    }
+}
+
+impl Error for IncompatibleNotamStoreSchema {}
+
+pub fn is_incompatible_notam_store_schema(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<IncompatibleNotamStoreSchema>()
+            .is_some()
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct NotamStateReader {
@@ -337,6 +365,56 @@ impl NotamPersistentStore {
             changed_count,
             removed_count,
         })
+    }
+
+    /// Rebuilds a disposable publication projection from a complete canonical state.
+    ///
+    /// Callers must not use this for a store whose raw ingest history is authoritative.
+    pub fn rebuild_derived_projection(
+        &self,
+        records: &[StructuredNotamRecord],
+        observed_at_utc: &str,
+    ) -> anyhow::Result<SynchronizedNotamSummary> {
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("failed to create {}", self.root.display()))?;
+        let rebuild_root = self.root.join(format!(
+            ".projection-rebuild-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_micros()
+        ));
+        let rebuild_store = Self::new(&rebuild_root);
+
+        let result = (|| {
+            rebuild_store.initialize()?;
+            let summary = rebuild_store.synchronize_current_records(records, observed_at_utc)?;
+            rebuild_store.prepare_for_atomic_replacement()?;
+
+            fs::create_dir_all(self.state_root())
+                .with_context(|| format!("failed to create {}", self.state_root().display()))?;
+            self.remove_sqlite_sidecar("-wal")?;
+            self.remove_sqlite_sidecar("-shm")?;
+            fs::rename(rebuild_store.sqlite_path(), self.sqlite_path()).with_context(|| {
+                format!(
+                    "failed to replace derived NOTAM projection {}",
+                    self.sqlite_path().display()
+                )
+            })?;
+            File::open(self.state_root())
+                .with_context(|| format!("failed to open {}", self.state_root().display()))?
+                .sync_all()
+                .with_context(|| format!("failed to sync {}", self.state_root().display()))?;
+            Ok(summary)
+        })();
+
+        let cleanup_result = fs::remove_dir_all(&rebuild_root);
+        match (result, cleanup_result) {
+            (Ok(summary), Ok(())) => Ok(summary),
+            (Ok(summary), Err(error)) if error.kind() == ErrorKind::NotFound => Ok(summary),
+            (Ok(_), Err(error)) => {
+                Err(error).with_context(|| format!("failed to clean up {}", rebuild_root.display()))
+            }
+            (Err(error), _) => Err(error),
+        }
     }
 
     pub fn apply_pending_raw_messages(
@@ -1112,9 +1190,52 @@ impl NotamPersistentStore {
                 self.reproject_schema_v2(connection)?;
                 self.migrate_incremental_schema(connection)
             }
-            Some(version) => bail!(
-                "unsupported NOTAM sqlite schema {version}; required {NOTAM_STORE_SCHEMA_VERSION}"
-            ),
+            Some(version) => Err(IncompatibleNotamStoreSchema {
+                found: version.to_string(),
+                required: NOTAM_STORE_SCHEMA_VERSION,
+            }
+            .into()),
+        }
+    }
+
+    fn prepare_for_atomic_replacement(&self) -> anyhow::Result<()> {
+        let connection = Connection::open(self.sqlite_path())
+            .with_context(|| format!("failed to open {}", self.sqlite_path().display()))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .context("failed to configure NOTAM sqlite replacement timeout")?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .context("failed to checkpoint rebuilt NOTAM projection")?;
+        let journal_mode = connection
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .context("failed to make rebuilt NOTAM projection self-contained")?;
+        if !journal_mode.eq_ignore_ascii_case("delete") {
+            bail!("rebuilt NOTAM projection retained journal mode {journal_mode}");
+        }
+        drop(connection);
+        for suffix in ["-wal", "-shm"] {
+            let path = PathBuf::from(format!("{}{}", self.sqlite_path().display(), suffix));
+            if path.exists() {
+                bail!(
+                    "rebuilt NOTAM projection retained sqlite sidecar {}",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_sqlite_sidecar(&self, suffix: &str) -> anyhow::Result<()> {
+        let path = PathBuf::from(format!("{}{}", self.sqlite_path().display(), suffix));
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| {
+                format!("failed to remove stale sqlite sidecar {}", path.display())
+            }),
         }
     }
 
@@ -2721,8 +2842,61 @@ mod tests {
         )?;
         drop(connection);
 
-        let error = store.initialize().unwrap_err().to_string();
-        assert!(error.contains("unsupported NOTAM sqlite schema 8; required 9"));
+        let error = store.initialize().unwrap_err();
+        assert!(is_incompatible_notam_store_schema(&error));
+        assert!(error
+            .to_string()
+            .contains("unsupported NOTAM sqlite schema 8; required 9"));
+        Ok(())
+    }
+
+    #[test]
+    fn incompatible_derived_projection_is_atomically_rebuilt_from_canonical_state(
+    ) -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        let record = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("SID"),
+            "1",
+            Some("N"),
+            "SID TEST ONE DEPARTURE NOT AVBL.",
+        ))?
+        .context("missing canonical NOTAM")?;
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:00:00Z")?;
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute(
+            "UPDATE metadata SET value = '8' WHERE key = 'schema_version'",
+            [],
+        )?;
+        drop(connection);
+
+        let error = store
+            .synchronize_current_records(std::slice::from_ref(&record), "2026-07-24T12:03:00Z")
+            .unwrap_err();
+        assert!(is_incompatible_notam_store_schema(&error));
+
+        let summary = store
+            .rebuild_derived_projection(std::slice::from_ref(&record), "2026-07-24T12:03:00Z")?;
+        assert_eq!(summary.changed_count, 1);
+        assert_eq!(summary.removed_count, 0);
+        assert_eq!(store.current_records()?, vec![record]);
+        let connection = Connection::open(store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?,
+            NOTAM_STORE_SCHEMA_VERSION.to_string()
+        );
+        assert_eq!(
+            connection.query_row("SELECT COUNT(*) FROM raw_notam_messages", [], |row| {
+                row.get::<_, i64>(0)
+            })?,
+            0
+        );
         Ok(())
     }
 

@@ -966,6 +966,7 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-live-feeds",
  "product-contracts",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

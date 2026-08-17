@@ -99,6 +99,7 @@ pub enum ProcedureRendezvousKind {
 pub enum ProcedureRendezvousIdentity {
     CifpId(String),
     PublishedName(ProcedurePublishedName),
+    TakeoffMinimums,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -244,6 +245,16 @@ impl ProcedureRendezvousKey {
         Ok(key)
     }
 
+    pub fn airport_scoped_takeoff_minimums(airport_id: &str) -> Result<Self, String> {
+        let key = Self {
+            kind: ProcedureRendezvousKind::Departure,
+            identity: ProcedureRendezvousIdentity::TakeoffMinimums,
+            airport_id: Some(canonical_procedure_component(airport_id, "airport ID")?),
+        };
+        key.validate()?;
+        Ok(key)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         match &self.identity {
             ProcedureRendezvousIdentity::CifpId(procedure_id) => {
@@ -261,6 +272,11 @@ impl ProcedureRendezvousKey {
                     );
                 }
                 published_name.validate()?;
+            }
+            ProcedureRendezvousIdentity::TakeoffMinimums => {
+                if self.kind != ProcedureRendezvousKind::Departure {
+                    return Err("takeoff-minimums rendezvous keys must be departures".to_string());
+                }
             }
         }
         match (self.kind, self.airport_id.as_deref()) {
@@ -335,7 +351,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV22";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV23";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -349,7 +365,7 @@ pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
-pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 5;
+pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 6;
 
 /// Transport timing shared by every Aerobag SSE producer and consumer.
 ///
@@ -486,6 +502,14 @@ mod tests {
                 airport_id: None,
             }
         );
+        assert_eq!(
+            ProcedureRendezvousKey::airport_scoped_takeoff_minimums(" krnt ").unwrap(),
+            ProcedureRendezvousKey {
+                kind: ProcedureRendezvousKind::Departure,
+                identity: ProcedureRendezvousIdentity::TakeoffMinimums,
+                airport_id: Some("KRNT".to_string()),
+            }
+        );
         assert!(ProcedureRendezvousKey::airport_scoped(
             ProcedureRendezvousKind::Arrival,
             "KSEA",
@@ -496,6 +520,13 @@ mod tests {
             kind: ProcedureRendezvousKind::Approach,
             identity: ProcedureRendezvousIdentity::CifpId("I16R".to_string()),
             airport_id: None,
+        }
+        .validate()
+        .is_err());
+        assert!(ProcedureRendezvousKey {
+            kind: ProcedureRendezvousKind::Approach,
+            identity: ProcedureRendezvousIdentity::TakeoffMinimums,
+            airport_id: Some("KRNT".to_string()),
         }
         .validate()
         .is_err());

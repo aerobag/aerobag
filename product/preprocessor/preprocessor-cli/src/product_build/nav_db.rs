@@ -2686,6 +2686,22 @@ pub(super) fn build_nav_kv_plate_pairs(
     resource_index: &ResourceIndex,
 ) -> anyhow::Result<Vec<NavKvPair>> {
     let airports = build_nav_kv_plate_airports(resource_index);
+    let takeoff_minimums_keys_by_plate = resource_index
+        .plates
+        .iter()
+        .filter(|plate| plate.document_type == "takeoff_minimums")
+        .map(|plate| {
+            let key = ProcedureRendezvousKey::airport_scoped_takeoff_minimums(&plate.airport_id)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| {
+                    format!("invalid Takeoff Minimums rendezvous key for {}", plate.id)
+                })?;
+            Ok((
+                nav_kv_plate_id(&plate.airport_id, plate),
+                BTreeSet::from([key]),
+            ))
+        })
+        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let airport_index = airports
         .iter()
         .map(|airport| {
@@ -2700,6 +2716,8 @@ pub(super) fn build_nav_kv_plate_pairs(
         value: serde_json::to_vec(&airport_index)
             .context("failed to encode nav_kv plate/airport-index value")?,
     }];
+    let mut matches_by_rendezvous =
+        BTreeMap::<ProcedureRendezvousKey, Vec<serde_json::Value>>::new();
     for airport in airports {
         let Some(airport_id) = airport.record.get("id").and_then(|value| value.as_str()) else {
             continue;
@@ -2720,7 +2738,37 @@ pub(super) fn build_nav_kv_plate_pairs(
                     format!("failed to encode nav_kv plate/by-id/{plate_id} value")
                 })?,
             });
+            if let Some(keys) = takeoff_minimums_keys_by_plate.get(plate_id) {
+                let encoded_keys = serde_json::to_value(keys)
+                    .context("failed to encode plate procedure rendezvous keys")?;
+                pairs.push(json_pair(
+                    format!(
+                        "plate/procedure-rendezvous/by-plate/{}",
+                        had_key_component(plate_id)
+                    ),
+                    &encoded_keys,
+                    "plate procedure rendezvous keys",
+                )?);
+                let mut rendezvous_row = chart.clone();
+                rendezvous_row
+                    .as_object_mut()
+                    .context("plate rendezvous row is not an object")?
+                    .insert("procedure_rendezvous_keys".to_string(), encoded_keys);
+                for key in keys {
+                    matches_by_rendezvous
+                        .entry(key.clone())
+                        .or_default()
+                        .push(rendezvous_row.clone());
+                }
+            }
         }
+    }
+    for (key, rows) in matches_by_rendezvous {
+        pairs.push(json_pair(
+            procedure_rendezvous_nav_key(&key),
+            &serde_json::Value::Array(rows),
+            "procedure rendezvous matches",
+        )?);
     }
     Ok(pairs)
 }
@@ -4644,6 +4692,7 @@ fn procedure_rendezvous_nav_key(key: &ProcedureRendezvousKey) -> String {
             had_upper_key_component(&published.name),
             published.revision,
         ),
+        ProcedureRendezvousIdentity::TakeoffMinimums => "TAKEOFF-MINIMUMS".to_string(),
     };
     format!(
         "plate/procedure-rendezvous/by-key/{}/{}/{}",
@@ -6121,13 +6170,9 @@ pub(super) fn nav_kv_plate_asset(
     airport_id: &str,
     plate: &preprocessor_resource_index::PlateRecord,
 ) -> serde_json::Value {
-    let filename = plate
-        .asset_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(&plate.asset_path);
+    let plate_id = nav_kv_plate_id(airport_id, plate);
     let mut value = serde_json::json!({
-        "id": format!("plate:{airport_id}:{filename}"),
+        "id": plate_id,
         "airport_id": airport_id,
         "collection_id": format!("airport:{airport_id}"),
         "package_id": plate.package_id,
@@ -6143,6 +6188,15 @@ pub(super) fn nav_kv_plate_asset(
         value["georef"] = serde_json::json!(georef);
     }
     value
+}
+
+fn nav_kv_plate_id(airport_id: &str, plate: &preprocessor_resource_index::PlateRecord) -> String {
+    let filename = plate
+        .asset_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&plate.asset_path);
+    format!("plate:{airport_id}:{filename}")
 }
 
 pub(super) fn nav_kv_csup_asset(

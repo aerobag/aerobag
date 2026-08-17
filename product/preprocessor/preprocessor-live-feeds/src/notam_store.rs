@@ -29,7 +29,7 @@ use crate::{
     validate_canonical_structured_notam_record, NotamProjectionAction, StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 9;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 10;
 const LEGACY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const STATE_ID_METADATA_KEY: &str = "notam_state_id";
@@ -1166,7 +1166,7 @@ impl NotamPersistentStore {
             .context("failed to query NOTAM sqlite schema version")?;
         match schema_version.as_deref() {
             None => self.migrate_incremental_schema(connection),
-            Some("9") => Ok(()),
+            Some("10") => Ok(()),
             Some("7") => self.migrate_incremental_schema(connection),
             Some("6") => {
                 self.migrate_schema_v6_to_v7(connection)?;
@@ -2831,13 +2831,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_v8_is_rejected_after_procedure_identity_contract_roll() -> anyhow::Result<()> {
+    fn schema_v9_is_rejected_after_procedure_identity_contract_roll() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         store.initialize()?;
         let connection = Connection::open(store.sqlite_path())?;
         connection.execute(
-            "UPDATE metadata SET value = '8' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )?;
         drop(connection);
@@ -2846,7 +2846,7 @@ mod tests {
         assert!(is_incompatible_notam_store_schema(&error));
         assert!(error
             .to_string()
-            .contains("unsupported NOTAM sqlite schema 8; required 9"));
+            .contains("unsupported NOTAM sqlite schema 9; required 10"));
         Ok(())
     }
 

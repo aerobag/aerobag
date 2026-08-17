@@ -2188,6 +2188,12 @@ fn procedure_rendezvous_keys_for_notam(
             let Some(airport_id) = airport_id else {
                 return Ok(keys);
             };
+            if keyword == Some("ODP") && text.is_some_and(explicitly_names_takeoff_minimums) {
+                keys.insert(
+                    ProcedureRendezvousKey::airport_scoped_takeoff_minimums(airport_id)
+                        .map_err(anyhow::Error::msg)?,
+                );
+            }
             for time_slice in document.descendants().filter(|node| {
                 node.is_element()
                     && node.tag_name().name() == "StandardInstrumentDepartureTimeSlice"
@@ -2265,6 +2271,15 @@ fn procedure_rendezvous_keys_for_notam(
         _ => {}
     }
     Ok(keys)
+}
+
+fn explicitly_names_takeoff_minimums(text: &str) -> bool {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|words| words == ["TAKEOFF", "MINIMUMS"])
 }
 
 fn descendant_text(node: &roxmltree::Node<'_, '_>, local_name: &str) -> Option<String> {
@@ -3708,6 +3723,36 @@ mod tests {
                 .unwrap(),
             ]),
         );
+        Ok(())
+    }
+
+    #[test]
+    fn nms_odp_takeoff_minimums_emits_typed_airport_key() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse("<root/>")?;
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("ODP"),
+                Some("KDAN"),
+                Some(
+                    "ODP DANVILLE RGNL, DANVILLE, VA.\n\
+                     TAKEOFF MINIMUMS AND (OBSTACLE) DEPARTURE PROCEDURES AMDT 2A...",
+                ),
+            )?,
+            BTreeSet::from([
+                ProcedureRendezvousKey::airport_scoped_takeoff_minimums("KDAN").unwrap(),
+            ]),
+        );
+        assert!(procedure_rendezvous_keys_for_notam(
+            &xml,
+            Some("ODP"),
+            Some("KDAN"),
+            Some("ODP DANVILLE ONE DEPARTURE PROCEDURE NA"),
+        )?
+        .iter()
+        .all(|key| {
+            key.identity != product_contracts::ProcedureRendezvousIdentity::TakeoffMinimums
+        }));
         Ok(())
     }
 

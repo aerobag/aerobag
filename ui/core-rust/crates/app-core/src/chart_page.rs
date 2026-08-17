@@ -1359,4 +1359,35 @@ mod tests {
             crate::procedure_notam_views(&BTreeSet::from([taytr_four]), Some(&index),).is_empty()
         );
     }
+
+    #[test]
+    fn takeoff_minimums_notam_badge_uses_typed_airport_key() {
+        let krnt = ProcedureRendezvousKey::airport_scoped_takeoff_minimums("KRNT").unwrap();
+        let kpae = ProcedureRendezvousKey::airport_scoped_takeoff_minimums("KPAE").unwrap();
+        let index =
+            crate::NotamDisplayIndex::from_projection_checkpoint(crate::NotamDisplayCheckpoint {
+                schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
+                state_id: "takeoff-minimums-state".to_string(),
+                records: vec![crate::NotamDisplayRecord {
+                    id: "KRNT-ODP".to_string(),
+                    airport_id: Some("KRNT".to_string()),
+                    procedure_rendezvous_keys: BTreeSet::from([
+                        crate::map_overlay::NotamDisplayProcedureKey::from(&krnt),
+                    ]),
+                    label: "ODP".to_string(),
+                    text: "TAKEOFF MINIMUMS CHANGED".to_string(),
+                    priority: 2,
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(
+            crate::procedure_notam_views(&BTreeSet::from([krnt]), Some(&index)).len(),
+            1
+        );
+        assert!(
+            crate::procedure_notam_views(&BTreeSet::from([kpae]), Some(&index)).is_empty(),
+            "the typed identity must retain airport scope",
+        );
+    }
 }

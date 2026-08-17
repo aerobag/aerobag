@@ -3457,6 +3457,49 @@ mod tests {
     }
 
     #[test]
+    fn nav_kv_takeoff_minimums_plate_emits_typed_rendezvous_identity() {
+        let mut index = minimal_resource_index();
+        index.airports.push(AirportRecord {
+            id: "KRNT".to_string(),
+            facility_name: "Renton Municipal".to_string(),
+            lat: 47.49,
+            lon: -122.22,
+            airport_type: "AIRPORT".to_string(),
+        });
+        let mut plate = test_plate_record("plate:KRNT:MIN-WA-TAKEOFF MINIMUMS.png", "KRNT");
+        plate.label = "Takeoff Minimums".to_string();
+        plate.document_type = "takeoff_minimums".to_string();
+        index.plates.push(plate);
+        index.airport_resources.push(AirportResourcesRecord {
+            airport_id: "KRNT".to_string(),
+            plate_ids: vec!["plate:KRNT:MIN-WA-TAKEOFF MINIMUMS.png".to_string()],
+            csup_ids: Vec::new(),
+            package_ids: vec!["NW_TPP".to_string()],
+        });
+
+        let mut pairs = build_nav_kv_plate_pairs(&index).expect("plate pairs");
+        nav_db::attach_procedure_metadata_to_plate_pairs(&mut pairs)
+            .expect("attach procedure metadata");
+
+        let plate = pairs
+            .iter()
+            .find(|pair| pair.key.starts_with("plate/by-id/"))
+            .map(|pair| serde_json::from_slice::<serde_json::Value>(&pair.value).unwrap())
+            .expect("Takeoff Minimums plate");
+        assert_eq!(
+            plate["procedure_rendezvous_keys"],
+            serde_json::json!([{
+                "kind": "departure",
+                "identity": "takeoff_minimums",
+                "airport_id": "KRNT"
+            }])
+        );
+        assert!(pairs.iter().any(|pair| {
+            pair.key == "plate/procedure-rendezvous/by-key/DEPARTURE/KRNT/TAKEOFF-MINIMUMS"
+        }));
+    }
+
+    #[test]
     fn nav_kv_chart_catalog_includes_shaded_relief_static_products() {
         let static_raster_entries = vec![
             StaticRasterCatalogEntry {

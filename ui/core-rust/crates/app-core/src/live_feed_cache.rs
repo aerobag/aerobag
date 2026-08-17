@@ -11,7 +11,10 @@ use had_nav_kv::{
 #[cfg(test)]
 use notam_state::NotamState;
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta};
-use product_contracts::{live_feeds::v3 as live_feeds_v3, versioned_json};
+use product_contracts::{
+    live_feeds::v3 as live_feeds_v3, versioned_json, LiveFeedCachePolicy,
+    LIVE_FEED_PRODUCT_POLICIES,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -498,7 +501,14 @@ impl LiveFeedCache {
     }
 
     pub fn runtime_decision(&mut self, input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
-        live_feed_runtime_decision(&mut self.runtime, input)
+        let now_ms = input.now_ms;
+        let mut decision = live_feed_runtime_decision(&mut self.runtime, input);
+        if let Some(delay_ms) = self.live_feeds.next_resource_retry_delay_ms(now_ms) {
+            decision
+                .commands
+                .push(crate::LiveFeedRuntimeCommand::RetryResources { delay_ms });
+        }
+        decision
     }
 
     pub fn install_fetched_payload(
@@ -967,38 +977,23 @@ impl LiveFeedProductRegistry {
 }
 
 pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
-    LiveFeedProductRegistry::new([
-        LiveFeedProductDriver::RecordJson {
-            product: "metars".to_string(),
-            records_key: "metars_by_station".to_string(),
-            count_key: Some("metar_count".to_string()),
-        },
-        LiveFeedProductDriver::RecordJson {
-            product: "tafs".to_string(),
-            records_key: "tafs_by_station".to_string(),
-            count_key: Some("taf_count".to_string()),
-        },
-        LiveFeedProductDriver::RecordJson {
-            product: "pireps".to_string(),
-            records_key: "pireps_by_id".to_string(),
-            count_key: Some("pirep_count".to_string()),
-        },
-        LiveFeedProductDriver::Notam {
-            product: "notams".to_string(),
-        },
-        LiveFeedProductDriver::FullJson {
-            product: "tfrs".to_string(),
-        },
-        LiveFeedProductDriver::NavKv {
-            product: "winds-aloft".to_string(),
-        },
-        LiveFeedProductDriver::NavKv {
-            product: "obstacles".to_string(),
-        },
-        LiveFeedProductDriver::NexradPackage {
-            product: "nexrad".to_string(),
-        },
-    ])
+    LiveFeedProductRegistry::new(LIVE_FEED_PRODUCT_POLICIES.iter().map(|policy| {
+        let product = policy.product_id.to_string();
+        match policy.cache {
+            LiveFeedCachePolicy::RecordJson {
+                records_key,
+                count_key,
+            } => LiveFeedProductDriver::RecordJson {
+                product,
+                records_key: records_key.to_string(),
+                count_key: count_key.map(str::to_string),
+            },
+            LiveFeedCachePolicy::FullJson => LiveFeedProductDriver::FullJson { product },
+            LiveFeedCachePolicy::NavKv => LiveFeedProductDriver::NavKv { product },
+            LiveFeedCachePolicy::NexradPackage => LiveFeedProductDriver::NexradPackage { product },
+            LiveFeedCachePolicy::Notam => LiveFeedProductDriver::Notam { product },
+        }
+    }))
 }
 
 impl LiveFeedProductDriver {
@@ -2392,6 +2387,21 @@ mod tests {
         let mut cache = live_feed_cache();
         cache.record_request_failure("live_feeds/current", 1_000);
 
+        let decision = cache.runtime_decision(crate::LiveFeedRuntimeInput {
+            kind: crate::LiveFeedRuntimeEventKind::Start,
+            now_ms: 1_000,
+            message: None,
+            source_url: None,
+            status_url: None,
+            network_status: None,
+        });
+        assert_eq!(
+            decision.commands,
+            vec![crate::LiveFeedRuntimeCommand::RetryResources {
+                delay_ms: product_contracts::LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS,
+            }]
+        );
+
         assert!(cache.current_refresh_requests_at_epoch_ms(1_001).is_empty());
         assert_eq!(
             cache.current_refresh_requests_at_epoch_ms(301_000)[0].id,
@@ -2400,10 +2410,27 @@ mod tests {
     }
 
     #[test]
+    fn cache_registry_covers_exactly_the_shared_product_roster() {
+        let registry = live_feed_product_registry();
+        let expected = product_contracts::LIVE_FEED_PRODUCT_POLICIES
+            .iter()
+            .map(|policy| policy.product_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual = registry
+            .drivers
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn runtime_backoff_is_cache_owned() {
         let mut cache = live_feed_cache();
         let first = cache.runtime_decision(crate::LiveFeedRuntimeInput {
             kind: crate::LiveFeedRuntimeEventKind::Error,
+            now_ms: 0,
             message: Some("boom".to_string()),
             source_url: None,
             status_url: None,
@@ -2411,14 +2438,21 @@ mod tests {
         });
         let second = cache.runtime_decision(crate::LiveFeedRuntimeInput {
             kind: crate::LiveFeedRuntimeEventKind::Error,
+            now_ms: 0,
             message: Some("boom".to_string()),
             source_url: None,
             status_url: None,
             network_status: None,
         });
 
-        assert_eq!(first.reconnect_delay_ms, Some(5_000));
-        assert_eq!(second.reconnect_delay_ms, Some(10_000));
+        assert_eq!(
+            first.commands,
+            vec![crate::LiveFeedRuntimeCommand::Reconnect { delay_ms: 5_000 }]
+        );
+        assert_eq!(
+            second.commands,
+            vec![crate::LiveFeedRuntimeCommand::Reconnect { delay_ms: 10_000 }]
+        );
     }
 
     #[test]

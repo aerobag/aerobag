@@ -215,7 +215,15 @@ impl WeatherController {
 
     pub fn runtime_decision(&mut self, input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
         self.note_change();
-        crate::live_feed_runtime_decision(&mut self.model.connection.runtime, input)
+        let now_ms = input.now_ms;
+        let mut decision =
+            crate::live_feed_runtime_decision(&mut self.model.connection.runtime, input);
+        if let Some(delay_ms) = self.model.live_feeds.next_resource_retry_delay_ms(now_ms) {
+            decision
+                .commands
+                .push(crate::LiveFeedRuntimeCommand::RetryResources { delay_ms });
+        }
+        decision
     }
 
     pub fn record_resource_error(&mut self, epoch_ms: i64, message: String) {

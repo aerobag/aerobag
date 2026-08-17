@@ -55,6 +55,7 @@ pub enum LiveFeedRuntimeEventKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveFeedRuntimeInput {
     pub kind: LiveFeedRuntimeEventKind,
+    pub now_ms: i64,
     #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]
@@ -70,10 +71,15 @@ pub struct LiveFeedRuntimeDecision {
     pub transport_policy: SseTransportPolicy,
     #[serde(default)]
     pub connection_event: Option<LiveFeedConnectionEvent>,
-    #[serde(default)]
-    pub refresh_current: bool,
-    #[serde(default)]
-    pub reconnect_delay_ms: Option<i64>,
+    pub commands: Vec<LiveFeedRuntimeCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiveFeedRuntimeCommand {
+    RefreshCurrent,
+    Reconnect { delay_ms: i64 },
+    RetryResources { delay_ms: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -122,11 +128,14 @@ pub fn live_feed_runtime_decision(
     LiveFeedRuntimeDecision {
         transport_policy: AEROBAG_SSE_TRANSPORT_POLICY,
         connection_event,
-        refresh_current: matches!(
+        commands: matches!(
             input.kind,
             RuntimeKind::Connected | RuntimeKind::NetworkStatus | RuntimeKind::Online
-        ),
-        reconnect_delay_ms,
+        )
+        .then_some(LiveFeedRuntimeCommand::RefreshCurrent)
+        .into_iter()
+        .chain(reconnect_delay_ms.map(|delay_ms| LiveFeedRuntimeCommand::Reconnect { delay_ms }))
+        .collect(),
     }
 }
 
@@ -145,6 +154,7 @@ mod tests {
             &mut state,
             LiveFeedRuntimeInput {
                 kind: LiveFeedRuntimeEventKind::Connected,
+                now_ms: 0,
                 message: None,
                 source_url: Some("http://example.test".to_string()),
                 status_url: Some("http://example.test/live-feeds/status.html".to_string()),
@@ -152,8 +162,10 @@ mod tests {
             },
         );
 
-        assert!(decision.refresh_current);
-        assert_eq!(decision.reconnect_delay_ms, None);
+        assert_eq!(
+            decision.commands,
+            vec![LiveFeedRuntimeCommand::RefreshCurrent]
+        );
         let event = decision.connection_event.unwrap();
         assert_eq!(event.kind, LiveFeedConnectionEventKind::Connected);
         assert_eq!(event.source_url.as_deref(), Some("http://example.test"));
@@ -166,6 +178,7 @@ mod tests {
             &mut state,
             LiveFeedRuntimeInput {
                 kind: LiveFeedRuntimeEventKind::Start,
+                now_ms: 0,
                 message: None,
                 source_url: Some("http://example.test".to_string()),
                 status_url: Some("http://example.test/live-feeds/status.html".to_string()),
@@ -173,8 +186,7 @@ mod tests {
             },
         );
 
-        assert!(!decision.refresh_current);
-        assert_eq!(decision.reconnect_delay_ms, None);
+        assert!(decision.commands.is_empty());
         assert!(decision.connection_event.is_none());
     }
 
@@ -187,13 +199,17 @@ mod tests {
                 &mut state,
                 LiveFeedRuntimeInput {
                     kind: LiveFeedRuntimeEventKind::Error,
+                    now_ms: 0,
                     message: Some("boom".to_string()),
                     source_url: None,
                     status_url: None,
                     network_status: None,
                 },
             );
-            delays.push(decision.reconnect_delay_ms.unwrap());
+            let LiveFeedRuntimeCommand::Reconnect { delay_ms } = decision.commands[0] else {
+                panic!("expected reconnect command");
+            };
+            delays.push(delay_ms);
         }
 
         assert_eq!(delays, vec![5_000, 10_000, 20_000, 40_000, 65_000, 65_000]);
@@ -206,6 +222,7 @@ mod tests {
             &mut state,
             LiveFeedRuntimeInput {
                 kind: LiveFeedRuntimeEventKind::Error,
+                now_ms: 0,
                 message: Some("boom".to_string()),
                 source_url: None,
                 status_url: None,
@@ -213,10 +230,11 @@ mod tests {
             },
         );
 
-        assert!(!decision.refresh_current);
         assert_eq!(
-            decision.reconnect_delay_ms,
-            Some(AEROBAG_SSE_TRANSPORT_POLICY.reconnect_initial_delay_ms)
+            decision.commands,
+            vec![LiveFeedRuntimeCommand::Reconnect {
+                delay_ms: AEROBAG_SSE_TRANSPORT_POLICY.reconnect_initial_delay_ms,
+            }]
         );
         let event = decision.connection_event.unwrap();
         assert_eq!(event.kind, LiveFeedConnectionEventKind::Error);
@@ -231,6 +249,7 @@ mod tests {
                 &mut state,
                 LiveFeedRuntimeInput {
                     kind: LiveFeedRuntimeEventKind::Error,
+                    now_ms: 0,
                     message: Some("boom".to_string()),
                     source_url: None,
                     status_url: None,
@@ -242,6 +261,7 @@ mod tests {
             &mut state,
             LiveFeedRuntimeInput {
                 kind: LiveFeedRuntimeEventKind::Message,
+                now_ms: 0,
                 message: None,
                 source_url: None,
                 status_url: None,
@@ -252,6 +272,7 @@ mod tests {
             &mut state,
             LiveFeedRuntimeInput {
                 kind: LiveFeedRuntimeEventKind::Error,
+                now_ms: 0,
                 message: Some("boom".to_string()),
                 source_url: None,
                 status_url: None,
@@ -260,8 +281,10 @@ mod tests {
         );
 
         assert_eq!(
-            decision.reconnect_delay_ms,
-            Some(AEROBAG_SSE_TRANSPORT_POLICY.reconnect_initial_delay_ms)
+            decision.commands,
+            vec![LiveFeedRuntimeCommand::Reconnect {
+                delay_ms: AEROBAG_SSE_TRANSPORT_POLICY.reconnect_initial_delay_ms,
+            }]
         );
     }
 }

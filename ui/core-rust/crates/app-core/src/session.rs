@@ -71,8 +71,8 @@ use crate::{
         FlightPlanController, FlightPlanModelCheckpoint, FlightPlanProjectionInputs,
     },
     freshness::{
-        cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant, FreshnessSeverity,
-        FreshnessViolation, DATA_FRESHNESS_POLICIES,
+        cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant,
+        required_live_feed_age_policy, FreshnessSeverity, FreshnessViolation,
     },
     had_ops::{
         chart_page_state, describe_plate_loads, insert_waypoint_best_position,
@@ -1158,7 +1158,7 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         "metars",
         "METAR live feed unavailable: no current METAR product is loaded",
         metars_status.collected_utc,
-        DATA_FRESHNESS_POLICIES.live_feeds.metars,
+        required_live_feed_age_policy("metars"),
     ));
 
     let pireps_status = pirep_live_feed_status_source(session);
@@ -1169,7 +1169,7 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         "pireps",
         "PIREP live feed unavailable: no current PIREP product is loaded",
         pireps_status.collected_utc,
-        DATA_FRESHNESS_POLICIES.live_feeds.pireps,
+        required_live_feed_age_policy("pireps"),
     ));
 
     let tfrs_visible = session.map.layer_state().vectors.visible;
@@ -1189,7 +1189,7 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         "tfrs",
         "TFR live feed unavailable: no current TFR product is loaded",
         tfrs_collected_utc,
-        DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
+        required_live_feed_age_policy("tfrs"),
     ));
 
     let obstacles_visible = session.map.layer_state().vectors.visible;
@@ -1208,7 +1208,7 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         "obstacles",
         "Obstacle live feed unavailable: no current obstacle product is loaded",
         obstacles_collected_utc,
-        DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
+        required_live_feed_age_policy("obstacles"),
     ));
 
     dedupe_invalidations(&mut invalidations);
@@ -1614,7 +1614,7 @@ fn sync_nexrad_status_record(
             "NEXRAD",
             "NEXRAD",
             nexrad_freshest_frame_observed_at_utc(session),
-            DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
+            required_live_feed_age_policy("nexrad"),
         ),
         NexradOverlayStatus::Loading => false,
         NexradOverlayStatus::Unavailable { reason } => upsert_data_status_record(
@@ -22147,6 +22147,7 @@ mod tests {
             init.handle,
             LiveFeedRuntimeInput {
                 kind: crate::LiveFeedRuntimeEventKind::Error,
+                now_ms: 0,
                 message: Some("boom".to_string()),
                 source_url: None,
                 status_url: None,
@@ -22158,6 +22159,7 @@ mod tests {
             init.handle,
             LiveFeedRuntimeInput {
                 kind: crate::LiveFeedRuntimeEventKind::Error,
+                now_ms: 0,
                 message: Some("boom".to_string()),
                 source_url: None,
                 status_url: None,
@@ -22166,8 +22168,14 @@ mod tests {
         )
         .expect("second decision");
 
-        assert_eq!(first.reconnect_delay_ms, Some(5_000));
-        assert_eq!(second.reconnect_delay_ms, Some(10_000));
+        assert_eq!(
+            first.commands,
+            vec![crate::LiveFeedRuntimeCommand::Reconnect { delay_ms: 5_000 }]
+        );
+        assert_eq!(
+            second.commands,
+            vec![crate::LiveFeedRuntimeCommand::Reconnect { delay_ms: 10_000 }]
+        );
     }
 
     #[test]

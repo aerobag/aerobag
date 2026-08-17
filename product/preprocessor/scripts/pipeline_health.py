@@ -43,24 +43,6 @@ ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
 _history_maintenance_dates: dict[Path, date] = {}
 _history_maintenance_lock = threading.Lock()
 
-LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
-    "tafs": (60 * 60, 3 * 60 * 60),
-    "metars": (7 * 60, 30 * 60),
-    "obstacles": (2 * 24 * 60 * 60, 7 * 24 * 60 * 60),
-    "tfrs": (3 * 60 * 60, 6 * 60 * 60),
-    "nexrad": (700, 15 * 60),
-    "notams": (5 * 60, 15 * 60),
-}
-
-LIVE_FEED_DISPLAY_NAMES = {
-    "tafs": "TAFs",
-    "metars": "METARs",
-    "obstacles": "Obstacles",
-    "tfrs": "TFRs",
-    "nexrad": "NEXRAD",
-    "notams": "NOTAMs",
-}
-
 SECONDS_PER_DAY = 24 * 60 * 60
 CYCLE_PUBLICATION_WARNING_SECONDS = 20 * SECONDS_PER_DAY
 CYCLE_PUBLICATION_CRITICAL_SECONDS = 15 * SECONDS_PER_DAY
@@ -582,9 +564,51 @@ def add_live_feed_metrics(
     products = payload.get("products") if isinstance(payload, dict) else None
     if not isinstance(products, dict):
         return
-    for product, (warning_seconds, critical_seconds) in LIVE_FEED_STALE_THRESHOLDS.items():
+    policies = payload.get("product_policies") if isinstance(payload, dict) else None
+    if not isinstance(policies, list):
+        add_metric(
+            metrics,
+            metric_id="live_feed.product_policy.present",
+            label="Live-feed product policy present",
+            value=False,
+            severity="critical",
+            message="Live-feed status omitted its authoritative product policy",
+        )
+        return
+    add_metric(
+        metrics,
+        metric_id="live_feed.product_policy.present",
+        label="Live-feed product policy present",
+        value=True,
+        severity="ok",
+        message="Live-feed product policy is present",
+    )
+    for policy in policies:
+        if not isinstance(policy, dict):
+            continue
+        product = policy.get("product_id")
+        display = policy.get("display_name")
+        health = policy.get("operator_health")
+        if (
+            not isinstance(product, str)
+            or not product
+            or not isinstance(display, str)
+            or not isinstance(health, dict)
+            or not isinstance(health.get("warning_after_seconds"), int)
+            or not isinstance(health.get("critical_after_seconds"), int)
+        ):
+            add_metric(
+                metrics,
+                metric_id="live_feed.product_policy.valid",
+                label="Live-feed product policy valid",
+                value=False,
+                severity="critical",
+                message="Live-feed status contains a malformed product policy",
+            )
+            continue
+        warning_seconds = health["warning_after_seconds"]
+        critical_seconds = health["critical_after_seconds"]
         status = products.get(product)
-        display = LIVE_FEED_DISPLAY_NAMES.get(product, product)
         if not isinstance(status, dict):
             add_metric(
                 metrics,

@@ -20,6 +20,24 @@ import org.junit.Test
 
 class LiveFeedCacheTest {
     @Test
+    fun cleanSseCloseUsesCoreReconnectCommand() {
+        val decision = runtimeDecision(
+            LiveFeedRuntimeCommand(kind = "reconnect", delayMs = 5_000),
+        )
+
+        assertEquals(5_000L, reconnectDelayMs(decision))
+    }
+
+    @Test
+    fun failedResourceUsesCoreRetryWakeupCommand() {
+        val decision = runtimeDecision(
+            LiveFeedRuntimeCommand(kind = "retry_resources", delayMs = 300_000),
+        )
+
+        assertEquals(300_000L, retryResourcesDelayMs(decision))
+    }
+
+    @Test
     fun boundedLiveFeedReadAcceptsPayloadAtLimit() {
         val bytes = byteArrayOf(1, 2, 3, 4)
 
@@ -168,4 +186,15 @@ class LiveFeedCacheTest {
                 else -> error("unexpected NativeBridge call in LiveFeedCacheTest: ${method.name}")
             }
         } as NativeBridge
+
+    private fun runtimeDecision(command: LiveFeedRuntimeCommand) = LiveFeedRuntimeDecision(
+        transportPolicy = SseTransportPolicy(
+            heartbeatIntervalMs = 30_000,
+            connectTimeoutMs = 5_000,
+            idleTimeoutMs = 65_000,
+            reconnectInitialDelayMs = 5_000,
+            reconnectMaxDelayMs = 65_000,
+        ),
+        commands = listOf(command),
+    )
 }

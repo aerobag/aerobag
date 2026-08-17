@@ -9,13 +9,14 @@ use std::{
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
+use product_contracts::{LiveFeedProductPolicy, LIVE_FEED_PRODUCT_POLICIES};
 use serde::Deserialize;
 
 use crate::{
     data_status::{parse_status_action_id, project_data_status_state, UiStatusActionCommand},
     freshness::{
-        cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant, FreshnessSeverity,
-        DATA_FRESHNESS_POLICIES,
+        cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant,
+        required_live_feed_age_policy, FreshnessSeverity,
     },
     BundlePackageArtifact, ClientBuildInfo, CloudStatusSummary, DataStatusRecord,
     UiDataStatusPageFact, UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay,
@@ -451,17 +452,21 @@ fn project_data_status_page_state(
             ],
         ),
         live_feed_connection_status_page_row(input),
-        live_feed_product_status_page_row(input, LiveFeedProduct::Tfrs),
-        live_feed_product_status_page_row(input, LiveFeedProduct::Notams),
-        live_feed_product_status_page_row(input, LiveFeedProduct::Metars),
-        live_feed_product_status_page_row(input, LiveFeedProduct::Tafs),
-        nexrad_live_feed_status_page_row(input),
-        live_feed_product_status_page_row(input, LiveFeedProduct::Obstacles),
-        winds_aloft_status_page_row(
-            &input.forecast,
-            records.get(WINDS_ALOFT_UNAVAILABLE_STATUS_ID),
-        ),
     ];
+    let mut live_feed_policies = LIVE_FEED_PRODUCT_POLICIES.iter().collect::<Vec<_>>();
+    live_feed_policies.sort_by_key(|policy| policy.status_order);
+    rows.extend(
+        live_feed_policies
+            .into_iter()
+            .map(|policy| match policy.product_id {
+                "nexrad" => nexrad_live_feed_status_page_row(input, policy),
+                "winds-aloft" => winds_aloft_status_page_row(
+                    &input.forecast,
+                    records.get(WINDS_ALOFT_UNAVAILABLE_STATUS_ID),
+                ),
+                _ => live_feed_product_status_page_row(input, policy),
+            }),
+    );
     if let Some(cloud) = input.cloud.as_ref() {
         rows.insert(3, cloud_status_page_row(cloud));
     }
@@ -886,57 +891,12 @@ fn live_feed_network_status_issue(
     }
 }
 
-#[derive(Clone, Copy)]
-enum LiveFeedProduct {
-    Tfrs,
-    Notams,
-    Metars,
-    Tafs,
-    Nexrad,
-    Obstacles,
-}
-
-impl LiveFeedProduct {
-    fn key(self) -> &'static str {
-        match self {
-            Self::Tfrs => "tfrs",
-            Self::Notams => "notams",
-            Self::Metars => "metars",
-            Self::Tafs => "tafs",
-            Self::Nexrad => "nexrad",
-            Self::Obstacles => "obstacles",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Tfrs => "TFRs",
-            Self::Notams => "NOTAMs",
-            Self::Metars => "METARs",
-            Self::Tafs => "TAFs",
-            Self::Nexrad => "NEXRAD",
-            Self::Obstacles => "Obstacles",
-        }
-    }
-
-    fn freshness_policy(self) -> crate::freshness::AgeFreshnessPolicy {
-        match self {
-            Self::Tfrs => DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
-            Self::Notams => DATA_FRESHNESS_POLICIES.live_feeds.notams,
-            Self::Metars => DATA_FRESHNESS_POLICIES.live_feeds.metars,
-            Self::Tafs => DATA_FRESHNESS_POLICIES.live_feeds.tafs,
-            Self::Nexrad => DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
-            Self::Obstacles => DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
-        }
-    }
-}
-
 fn live_feed_product_status_page_row(
     input: &DataStatusPageInput,
-    product: LiveFeedProduct,
+    product: &LiveFeedProductPolicy,
 ) -> UiDataStatusPageRow {
-    let product_key = product.key();
-    let label = product.label();
+    let product_key = product.product_id;
+    let label = product.display_name;
     let source = input
         .live_feed_products
         .get(product_key)
@@ -983,7 +943,7 @@ fn live_feed_product_status_page_row(
         );
     };
     if let Some(violation) = evaluate_age(
-        product.freshness_policy(),
+        required_live_feed_age_policy(product_key),
         collected_utc,
         utc_from_epoch_ms(input.now_epoch_ms),
     ) {
@@ -1082,8 +1042,11 @@ fn winds_aloft_status_page_row(
     )
 }
 
-fn nexrad_live_feed_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
-    let mut row = live_feed_product_status_page_row(input, LiveFeedProduct::Nexrad);
+fn nexrad_live_feed_status_page_row(
+    input: &DataStatusPageInput,
+    policy: &LiveFeedProductPolicy,
+) -> UiDataStatusPageRow {
+    let mut row = live_feed_product_status_page_row(input, policy);
     row.facts.push(status_fact(
         "Frames",
         input.nexrad_frame_age_summary.clone(),
@@ -2010,6 +1973,22 @@ mod tests {
         controller.upsert(record(&format!("{PACKAGE_WARNING_STATUS_PREFIX}warning")));
         assert!(controller.project_page(page_input()).rebuilt);
         assert!(controller.page_projection_revision() > initial_projection_revision);
+    }
+
+    #[test]
+    fn status_page_has_a_row_for_every_public_live_feed_product() {
+        let mut controller = DataStatusController::default();
+        let page = controller.project_page(page_input()).state;
+
+        for policy in LIVE_FEED_PRODUCT_POLICIES {
+            assert!(
+                page.rows
+                    .iter()
+                    .any(|row| row.id == format!("live_feed:{}", policy.product_id)),
+                "missing Status row for {}",
+                policy.product_id
+            );
+        }
     }
 
     #[test]

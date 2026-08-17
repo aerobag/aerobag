@@ -118,6 +118,8 @@ enum class LiveFeedNetworkStatus {
 @Serializable
 data class LiveFeedRuntimeInput(
     val kind: String,
+    @SerialName("now_ms")
+    val nowMs: Long,
     val message: String? = null,
     @SerialName("source_url")
     val sourceUrl: String? = null,
@@ -133,10 +135,14 @@ data class LiveFeedRuntimeDecision(
     val transportPolicy: SseTransportPolicy,
     @SerialName("connection_event")
     val connectionEvent: LiveFeedConnectionEvent? = null,
-    @SerialName("refresh_current")
-    val refreshCurrent: Boolean = false,
-    @SerialName("reconnect_delay_ms")
-    val reconnectDelayMs: Long? = null,
+    val commands: List<LiveFeedRuntimeCommand>,
+)
+
+@Serializable
+data class LiveFeedRuntimeCommand(
+    val kind: String,
+    @SerialName("delay_ms")
+    val delayMs: Long? = null,
 )
 
 @Serializable
@@ -379,6 +385,7 @@ class AndroidLiveFeedClient(
     },
 ) {
     private val pumpMutex = Mutex()
+    private val resourceRetryWakeups = Channel<Long>(Channel.CONFLATED)
     private val eventsUrl = cache.liveFeedEventsUrl()
     private val statusUrl = cache.liveFeedStatusUrl()
 
@@ -415,14 +422,20 @@ class AndroidLiveFeedClient(
                 )
             }
         }
+        val resourceRetryPump = launch {
+            for (delayMs in resourceRetryWakeups) {
+                delay(delayMs)
+                refreshCurrentAndPump(promote, onChanged)
+            }
+        }
         try {
             networkChanges.trySend(detectLiveFeedNetworkStatus(context, eventsUrl))
             while (kotlin.coroutines.coroutineContext.isActive) {
-                runCatching {
+                val decision = try {
                     readSseLoop(sseHttpClient, promote, onChanged, onConnectionEvent)
-                }.onFailure { error ->
+                } catch (error: Exception) {
                     if (error is CancellationException) throw error
-                    val decision = if (error is LiveFeedSseIdleTimeoutException) {
+                    if (error is LiveFeedSseIdleTimeoutException) {
                         diagnosticLogInfo(TAG) {
                             "live-feed SSE idle for ${transportPolicy.idleTimeoutMs}ms; reconnecting"
                         }
@@ -444,13 +457,14 @@ class AndroidLiveFeedClient(
                             onConnectionEvent = onConnectionEvent,
                         )
                     }
-                    decision.reconnectDelayMs?.takeIf { it > 0 }?.let { delay(it) }
                 }
+                reconnectDelayMs(decision)?.takeIf { it > 0 }?.let { delay(it) }
             }
         } finally {
             networkCallback.close()
             networkChanges.close()
             networkPump.cancel()
+            resourceRetryPump.cancel()
         }
     }
 
@@ -465,17 +479,30 @@ class AndroidLiveFeedClient(
         val decision = cache.runtimeDecision(
             LiveFeedRuntimeInput(
                 kind = kind,
+                nowMs = SystemClock.elapsedRealtime(),
                 message = message,
                 sourceUrl = sourceRootUrl,
                 statusUrl = statusUrl,
                 networkStatus = networkStatus,
             ),
         )
-        decision.connectionEvent?.let { onConnectionEvent(it) }
-        if (decision.refreshCurrent) {
-            refreshCurrentAndPump(promote, onChanged)
-        }
+        executeRuntimeDecision(decision, promote, onChanged, onConnectionEvent)
         return decision
+    }
+
+    private suspend fun executeRuntimeDecision(
+        decision: LiveFeedRuntimeDecision,
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+        onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
+    ) {
+        decision.connectionEvent?.let { onConnectionEvent(it) }
+        val refreshCurrent = decision.commands.any { it.kind == "refresh_current" }
+        if (refreshCurrent) {
+            refreshCurrentAndPump(promote, onChanged)
+        } else {
+            retryResourcesDelayMs(decision)?.let(resourceRetryWakeups::trySend)
+        }
     }
 
     suspend fun pumpUntilSettled(
@@ -561,6 +588,13 @@ class AndroidLiveFeedClient(
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 cache.recordRequestFailure(request.id, SystemClock.elapsedRealtime())
+                val retryDecision = cache.runtimeDecision(
+                    LiveFeedRuntimeInput(
+                        kind = "start",
+                        nowMs = SystemClock.elapsedRealtime(),
+                    ),
+                )
+                executeRuntimeDecision(retryDecision, promote, onChanged) {}
                 Log.w(
                     TAG,
                     "failed to install live-feed request id=${request.id} url=${request.url}; " +
@@ -724,6 +758,12 @@ private data class LiveFeedPumpResult(
     val installs: Int,
     val madeProgress: Boolean,
 )
+
+internal fun reconnectDelayMs(decision: LiveFeedRuntimeDecision): Long? =
+    decision.commands.firstOrNull { it.kind == "reconnect" }?.delayMs
+
+internal fun retryResourcesDelayMs(decision: LiveFeedRuntimeDecision): Long? =
+    decision.commands.firstOrNull { it.kind == "retry_resources" }?.delayMs
 
 internal fun readLiveFeedBytesBounded(
     input: InputStream,

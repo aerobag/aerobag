@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
-use product_contracts::{live_feeds::v3 as live_feeds_v3, versioned_json};
+use product_contracts::{
+    live_feeds::v3 as live_feeds_v3, versioned_json, LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -26,7 +28,6 @@ pub const LIVE_FEEDS_EVENTS_PATH: &str = "/live-feeds/v3/events";
 const CURRENT_ADDRESS: &str = "/live-feeds/v3/current.json";
 const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v3/";
 const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
-const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 pub const LIVE_FEED_HISTORY_MAX_ENTRIES: usize = 12;
 pub const NEXRAD_FRAME_WINDOW_SIZE: usize = 7;
 
@@ -714,9 +715,17 @@ impl LiveFeedsState {
         if Self::handles_resource(resource_id) {
             self.resource_failure_retry_after_epoch_ms.insert(
                 resource_id.to_string(),
-                epoch_ms + FAILED_RESOURCE_RETRY_DELAY_MS,
+                epoch_ms + LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS,
             );
         }
+    }
+
+    pub fn next_resource_retry_delay_ms(&self, now_ms: i64) -> Option<i64> {
+        self.resource_failure_retry_after_epoch_ms
+            .values()
+            .copied()
+            .min()
+            .map(|retry_after_ms| retry_after_ms.saturating_sub(now_ms).max(0))
     }
 
     pub fn ingest_prepared_live_feed(
@@ -1641,16 +1650,18 @@ impl LiveFeedsState {
                 continue;
             }
             invalidations.push(UiInvalidation::SessionSnapshot);
-            match product.as_str() {
-                "nexrad" => {
+            match product_contracts::live_feed_product_policy(product)
+                .map(|policy| policy.ui_invalidation)
+            {
+                Some(product_contracts::LiveFeedUiInvalidationPolicy::NexradOverlay) => {
                     invalidations.push(UiInvalidation::NexradOverlay);
                     invalidations.push(UiInvalidation::DebugPanel);
                 }
-                "metars" | "tafs" | "tfrs" | "pireps" | "obstacles" => {
+                Some(product_contracts::LiveFeedUiInvalidationPolicy::MapOverlay) => {
                     invalidations.push(UiInvalidation::MapOverlay);
                     invalidations.push(UiInvalidation::DebugPanel);
                 }
-                _ => {
+                Some(product_contracts::LiveFeedUiInvalidationPolicy::None) | None => {
                     invalidations.push(UiInvalidation::DebugPanel);
                 }
             }
@@ -1858,14 +1869,20 @@ fn durable_delta_is_preferred(
 }
 
 fn supports_durable_delta(product: &str) -> bool {
-    supports_record_delta(product) || product == "obstacles"
+    product_contracts::live_feed_product_policy(product).is_some_and(|policy| {
+        matches!(
+            policy.delta,
+            product_contracts::LiveFeedDeltaPolicy::RecordJson
+                | product_contracts::LiveFeedDeltaPolicy::NavKv
+        )
+    })
 }
 
 fn durable_delta_payload_kind(product: &str) -> &'static str {
-    if product == "obstacles" {
-        "nav_kv_delta_xz"
-    } else {
-        "record_json_delta_xz"
+    match product_contracts::live_feed_product_policy(product).map(|policy| policy.delta) {
+        Some(product_contracts::LiveFeedDeltaPolicy::NavKv) => "nav_kv_delta_xz",
+        Some(product_contracts::LiveFeedDeltaPolicy::RecordJson) => "record_json_delta_xz",
+        _ => panic!("live-feed product {product} does not support a durable delta"),
     }
 }
 
@@ -2348,7 +2365,8 @@ pub fn decode_prepared_live_feed(bytes: &[u8]) -> AppResult<PreparedLiveFeedEnve
 }
 
 pub fn supports_prepared_live_feed(product: &str) -> bool {
-    matches!(product, "metars" | "tafs" | "pireps" | "tfrs" | "notams")
+    product_contracts::live_feed_product_policy(product)
+        .is_some_and(|policy| policy.preparation.is_prepared())
 }
 
 pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
@@ -2362,31 +2380,36 @@ pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
 }
 
 fn prepare_live_feed_payload(product: &str, state: Value) -> AppResult<PreparedLiveFeedPayload> {
-    match product {
-        "metars" => {
+    use product_contracts::LiveFeedPreparationPolicy as Preparation;
+
+    let preparation = product_contracts::live_feed_product_policy(product)
+        .map(|policy| policy.preparation)
+        .unwrap_or(Preparation::None);
+    match preparation {
+        Preparation::Metars => {
             let payload: MetarProductPayload =
                 serde_json::from_value(state).map_err(invalid_live_feed_json)?;
             Ok(PreparedLiveFeedPayload::Metars(prepare_metar_live_feed(
                 payload,
             )))
         }
-        "tafs" => serde_json::from_value(state)
+        Preparation::Tafs => serde_json::from_value(state)
             .map(PreparedLiveFeedPayload::Tafs)
             .map_err(invalid_live_feed_json),
-        "pireps" => {
+        Preparation::Pireps => {
             let payload: PirepProductPayload =
                 serde_json::from_value(state).map_err(invalid_live_feed_json)?;
             Ok(PreparedLiveFeedPayload::Pireps(prepare_pirep_live_feed(
                 payload,
             )))
         }
-        "tfrs" => serde_json::from_value(state)
+        Preparation::Tfrs => serde_json::from_value(state)
             .map(PreparedLiveFeedPayload::Tfrs)
             .map_err(invalid_live_feed_json),
-        "notams" => Err(invalid_live_feed(
+        Preparation::Notams => Err(invalid_live_feed(
             "NOTAMs require checkpoint or ordered-delta preparation".to_string(),
         )),
-        _ => Err(invalid_live_feed(format!(
+        Preparation::None => Err(invalid_live_feed(format!(
             "unsupported prepared live-feed product: {product}"
         ))),
     }
@@ -2450,11 +2473,18 @@ fn prepare_pirep_live_feed(payload: PirepProductPayload) -> PreparedPirepLiveFee
 }
 
 fn supports_record_delta(product: &str) -> bool {
-    record_delta_schema(product).is_some()
+    product_contracts::live_feed_product_policy(product)
+        .is_some_and(|policy| policy.delta == product_contracts::LiveFeedDeltaPolicy::RecordJson)
 }
 
 fn supports_live_feed_delta(product: &str) -> bool {
-    product == "notams" || supports_record_delta(product)
+    product_contracts::live_feed_product_policy(product).is_some_and(|policy| {
+        matches!(
+            policy.delta,
+            product_contracts::LiveFeedDeltaPolicy::RecordJson
+                | product_contracts::LiveFeedDeltaPolicy::Notam
+        )
+    })
 }
 
 fn product_supports_prepared_record_delta_without_raw_state(product: &str) -> bool {
@@ -2687,10 +2717,16 @@ mod tests {
 
     #[test]
     fn shared_core_owns_background_preparation_routing() {
-        for product in ["metars", "tafs", "tfrs", "notams"] {
-            assert!(should_prepare_live_feed_resource(&format!(
-                "live_feeds/state/{product}/v1"
-            )));
+        for policy in product_contracts::LIVE_FEED_PRODUCT_POLICIES {
+            assert_eq!(
+                should_prepare_live_feed_resource(&format!(
+                    "live_feeds/state/{}/v1",
+                    policy.product_id
+                )),
+                policy.preparation.is_prepared(),
+                "preparation routing for {}",
+                policy.product_id
+            );
         }
         assert!(should_prepare_live_feed_resource(
             "live_feeds/delta/notams/v1/v2"
@@ -3279,7 +3315,7 @@ mod tests {
         };
 
         let HadOperationOutcome::NeedResources { resources } =
-            state.sync_outcome_at_epoch_ms(1_000 + FAILED_RESOURCE_RETRY_DELAY_MS)
+            state.sync_outcome_at_epoch_ms(1_000 + LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS)
         else {
             panic!("current manifest retry should resume at retry deadline");
         };

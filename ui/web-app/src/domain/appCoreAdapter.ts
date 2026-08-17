@@ -1339,7 +1339,32 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
       JSON.parse(await json) as SessionSnapshotRefreshDecision;
     let liveFeedSubscription: LiveFeedSubscription | null = null;
+    let liveFeedResourceRetryTimer: number | null = null;
+    let liveFeedResourceRetryDueMs: number | null = null;
     let configuredLiveFeedSourceUrl: string | null = null;
+    const scheduleLiveFeedResourceRetry = (decision: LiveFeedRuntimeDecision) => {
+      const retry = decision.commands.find((command) => command.kind === "retry_resources");
+      if (!retry) {
+        return;
+      }
+      const dueMs = Date.now() + retry.delay_ms;
+      if (liveFeedResourceRetryDueMs !== null && liveFeedResourceRetryDueMs <= dueMs) {
+        return;
+      }
+      if (liveFeedResourceRetryTimer !== null) {
+        globalThis.clearTimeout(liveFeedResourceRetryTimer);
+      }
+      liveFeedResourceRetryDueMs = dueMs;
+      liveFeedResourceRetryTimer = globalThis.setTimeout(() => {
+        liveFeedResourceRetryTimer = null;
+        liveFeedResourceRetryDueMs = null;
+        void refreshLiveFeedCurrentAndSync().catch((error: unknown) => {
+          debugLog("live_feeds.resource_retry.failed", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, retry.delay_ms) as unknown as number;
+    };
     reportSessionResourceFailure = async (resourceId, message) => {
       snapshot = await runSessionMutation(
         () => this.module.report_session_resource_failure_in_session_at_epoch_ms(
@@ -1356,6 +1381,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         invalidations: ["session_snapshot"],
       });
       publishInvalidations(["session_snapshot"]);
+      if (resourceId.startsWith("live_feeds/")) {
+        await handleLiveFeedRuntimeEvent({ kind: "start" });
+      }
     };
     const configureLiveFeedSource = async () => {
       const sourceUrl = liveFeedSourceUrl();
@@ -1389,6 +1417,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const decision = JSON.parse(await this.module.live_feed_runtime_decision_in_session(handle, JSON.stringify({
         source_url: sourceUrl,
         status_url: statusUrl,
+        now_ms: Date.now(),
         ...input,
       }))) as LiveFeedRuntimeDecision;
       if (decision.connection_event) {
@@ -1400,8 +1429,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         publishInvalidations(["session_snapshot"]);
       }
-      if (decision.refresh_current) {
+      const refreshCurrent = decision.commands.some((command) => command.kind === "refresh_current");
+      if (refreshCurrent) {
         await refreshLiveFeedCurrentAndSync();
+      } else {
+        scheduleLiveFeedResourceRetry(decision);
       }
       return decision;
     };
@@ -2159,6 +2191,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         destroyPromise = (async () => {
           liveFeedSubscription?.close();
           liveFeedSubscription = null;
+          if (liveFeedResourceRetryTimer !== null) {
+            globalThis.clearTimeout(liveFeedResourceRetryTimer);
+            liveFeedResourceRetryTimer = null;
+          }
           await uiSessionWorkRunner.close();
           await this.module.destroy_session_snapshot_refresh_scheduler(snapshotRefreshSchedulerHandle);
           this.module.destroy_session(handle);
@@ -2421,6 +2457,11 @@ type LiveFeedRuntimeInput = {
   network_status?: "unmetered" | "metered" | "no_active_network" | "unknown" | null;
 };
 
+type LiveFeedRuntimeCommand =
+  | { kind: "refresh_current" }
+  | { kind: "reconnect"; delay_ms: number }
+  | { kind: "retry_resources"; delay_ms: number };
+
 type LiveFeedRuntimeDecision = {
   transport_policy: {
     heartbeat_interval_ms: number;
@@ -2436,8 +2477,7 @@ type LiveFeedRuntimeDecision = {
     status_url?: string | null;
     network_status?: "unmetered" | "metered" | "no_active_network" | "unknown" | null;
   } | null;
-  refresh_current?: boolean;
-  reconnect_delay_ms?: number | null;
+  commands: LiveFeedRuntimeCommand[];
 };
 
 export function createLiveFeedSubscription(
@@ -2456,6 +2496,8 @@ export function createLiveFeedSubscription(
   let flushInFlight = false;
   let flushAgain = false;
   let reconnectTimer: number | null = null;
+  let connectTimer: number | null = null;
+  let idleTimer: number | null = null;
   const probeState = liveFeedE2eProbeState();
   const trackedEventSources = new WeakSet<EventSource>();
   const trackEventSource = (source: EventSource) => {
@@ -2488,6 +2530,18 @@ export function createLiveFeedSubscription(
     globalThis.clearTimeout(reconnectTimer);
     reconnectTimer = null;
   };
+  const clearConnectionTimers = () => {
+    if (connectTimer !== null) {
+      globalThis.clearTimeout(connectTimer);
+      connectTimer = null;
+    }
+    if (idleTimer !== null) {
+      globalThis.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  const reconnectDelay = (decision: LiveFeedRuntimeDecision): number | null =>
+    decision.commands.find((command) => command.kind === "reconnect")?.delay_ms ?? null;
   const scheduleFlush = () => {
     if (flushTimer !== null || closed) {
       return;
@@ -2523,8 +2577,10 @@ export function createLiveFeedSubscription(
       return;
     }
     clearReconnectTimer();
-    reportEvent({ kind: "connecting" });
-    void Promise.resolve(liveFeedEventsUrl()).then((eventsUrl) => {
+    clearConnectionTimers();
+    void runtimeEvent({ kind: "connecting" }).then(async (decision) => {
+      const transportPolicy = decision.transport_policy;
+      const eventsUrl = await liveFeedEventsUrl();
       if (closed) {
         return;
       }
@@ -2535,11 +2591,36 @@ export function createLiveFeedSubscription(
       trackEventSource(nextEvents);
       events = nextEvents;
       const isCurrent = () => !closed && events === nextEvents;
+      const handleTimeout = (kind: "error" | "idle_timeout", message: string) => {
+        if (!isCurrent()) {
+          return;
+        }
+        events = null;
+        closeEventSource(nextEvents);
+        clearConnectionTimers();
+        void runtimeEvent({ kind, message })
+          .then((timeoutDecision) => scheduleReconnect(reconnectDelay(timeoutDecision) ?? 0))
+          .catch(() => scheduleReconnect(0));
+      };
+      const armIdleTimer = () => {
+        if (idleTimer !== null) {
+          globalThis.clearTimeout(idleTimer);
+        }
+        idleTimer = globalThis.setTimeout(
+          () => handleTimeout("idle_timeout", "EventSource idle timeout"),
+          transportPolicy.idle_timeout_ms,
+        ) as unknown as number;
+      };
+      connectTimer = globalThis.setTimeout(
+        () => handleTimeout("error", "EventSource connect timeout"),
+        transportPolicy.connect_timeout_ms,
+      ) as unknown as number;
       nextEvents.addEventListener("live-feed-current", (event) => {
         if (!isCurrent()) {
           return;
         }
         clearReconnectTimer();
+        armIdleTimer();
         const message = event as MessageEvent<string>;
         probeState.messages += 1;
         probeState.last_ready_state = nextEvents.readyState;
@@ -2556,6 +2637,11 @@ export function createLiveFeedSubscription(
           return;
         }
         clearReconnectTimer();
+        if (connectTimer !== null) {
+          globalThis.clearTimeout(connectTimer);
+          connectTimer = null;
+        }
+        armIdleTimer();
         log("live_feeds.sse.open", { events_url: eventsUrl });
         probeState.last_ready_state = nextEvents.readyState;
         reportEvent({ kind: "connected" });
@@ -2565,16 +2651,17 @@ export function createLiveFeedSubscription(
           return;
         }
         log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
+        clearConnectionTimers();
         probeState.errors += 1;
         probeState.last_ready_state = nextEvents.readyState;
         void runtimeEvent({ kind: "error", message: "EventSource error" })
-          .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
+          .then((errorDecision) => scheduleReconnect(reconnectDelay(errorDecision) ?? 0))
           .catch(() => scheduleReconnect(0));
       };
     }).catch((error: unknown) => {
       log("live_feeds.sse.url.failed", { message: error instanceof Error ? error.message : String(error) });
       void runtimeEvent({ kind: "error", message: error instanceof Error ? error.message : String(error) })
-        .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
+        .then((errorDecision) => scheduleReconnect(reconnectDelay(errorDecision) ?? 0))
         .catch(() => scheduleReconnect(0));
     });
   };
@@ -2605,7 +2692,7 @@ export function createLiveFeedSubscription(
     probeState.online_events += 1;
     clearReconnectTimer();
     void runtimeEvent({ kind: "online" })
-      .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
+      .then((decision) => scheduleReconnect(reconnectDelay(decision) ?? 0))
       .catch(() => scheduleReconnect(0));
   };
   if (typeof window !== "undefined") {
@@ -2617,6 +2704,7 @@ export function createLiveFeedSubscription(
     close: () => {
       closed = true;
       clearReconnectTimer();
+      clearConnectionTimers();
       if (flushTimer !== null) {
         globalThis.clearTimeout(flushTimer);
         flushTimer = null;

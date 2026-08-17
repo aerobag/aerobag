@@ -3,33 +3,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use chrono::{DateTime, NaiveDate, Utc};
+pub use product_contracts::LiveFeedAgePolicy as AgeFreshnessPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DataFreshnessPolicies {
     pub cycle_product: CycleProductFreshnessPolicy,
-    pub live_feeds: LiveFeedFreshnessPolicies,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CycleProductFreshnessPolicy {
     pub warning_after_expiration: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiveFeedFreshnessPolicies {
-    pub notams: AgeFreshnessPolicy,
-    pub metars: AgeFreshnessPolicy,
-    pub pireps: AgeFreshnessPolicy,
-    pub tafs: AgeFreshnessPolicy,
-    pub nexrad: AgeFreshnessPolicy,
-    pub obstacles: AgeFreshnessPolicy,
-    pub tfrs: AgeFreshnessPolicy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AgeFreshnessPolicy {
-    pub info_after_ms: Option<i64>,
-    pub warning_after_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,45 +27,22 @@ pub struct FreshnessViolation {
     pub age_ms: i64,
 }
 
-pub const MINUTE_MS: i64 = 60 * 1000;
-pub const HOUR_MS: i64 = 60 * MINUTE_MS;
-pub const DAY_MS: i64 = 24 * HOUR_MS;
+pub use product_contracts::{DAY_MS, HOUR_MS, MINUTE_MS};
 
 pub const DATA_FRESHNESS_POLICIES: DataFreshnessPolicies = DataFreshnessPolicies {
     cycle_product: CycleProductFreshnessPolicy {
         warning_after_expiration: true,
     },
-    live_feeds: LiveFeedFreshnessPolicies {
-        notams: AgeFreshnessPolicy {
-            info_after_ms: Some(HOUR_MS),
-            warning_after_ms: Some(DAY_MS),
-        },
-        metars: AgeFreshnessPolicy {
-            info_after_ms: None,
-            warning_after_ms: Some(30 * MINUTE_MS),
-        },
-        pireps: AgeFreshnessPolicy {
-            info_after_ms: None,
-            warning_after_ms: Some(30 * MINUTE_MS),
-        },
-        tafs: AgeFreshnessPolicy {
-            info_after_ms: None,
-            warning_after_ms: Some(8 * HOUR_MS),
-        },
-        nexrad: AgeFreshnessPolicy {
-            info_after_ms: None,
-            warning_after_ms: Some(10 * MINUTE_MS),
-        },
-        obstacles: AgeFreshnessPolicy {
-            info_after_ms: Some(DAY_MS),
-            warning_after_ms: Some(7 * DAY_MS),
-        },
-        tfrs: AgeFreshnessPolicy {
-            info_after_ms: Some(HOUR_MS),
-            warning_after_ms: Some(DAY_MS),
-        },
-    },
 };
+
+pub fn live_feed_age_policy(product: &str) -> Option<AgeFreshnessPolicy> {
+    product_contracts::live_feed_product_policy(product).and_then(|policy| policy.user_freshness)
+}
+
+pub fn required_live_feed_age_policy(product: &str) -> AgeFreshnessPolicy {
+    live_feed_age_policy(product)
+        .unwrap_or_else(|| panic!("live-feed product {product} has no age freshness policy"))
+}
 
 pub fn cycle_product_is_expired(expiration_utc: DateTime<Utc>, now_utc: DateTime<Utc>) -> bool {
     DATA_FRESHNESS_POLICIES
@@ -160,34 +120,31 @@ mod tests {
     #[test]
     fn policies_are_visible_in_one_place() {
         assert_eq!(
-            DATA_FRESHNESS_POLICIES.live_feeds.metars.warning_after_ms,
+            live_feed_age_policy("metars").unwrap().warning_after_ms,
             Some(30 * MINUTE_MS)
         );
         assert_eq!(
-            DATA_FRESHNESS_POLICIES.live_feeds.tafs.warning_after_ms,
+            live_feed_age_policy("tafs").unwrap().warning_after_ms,
             Some(8 * HOUR_MS)
         );
         assert_eq!(
-            DATA_FRESHNESS_POLICIES.live_feeds.nexrad.warning_after_ms,
+            live_feed_age_policy("nexrad").unwrap().warning_after_ms,
             Some(10 * MINUTE_MS)
         );
         assert_eq!(
-            DATA_FRESHNESS_POLICIES.live_feeds.obstacles.info_after_ms,
+            live_feed_age_policy("obstacles").unwrap().info_after_ms,
             Some(DAY_MS)
         );
         assert_eq!(
-            DATA_FRESHNESS_POLICIES
-                .live_feeds
-                .obstacles
-                .warning_after_ms,
+            live_feed_age_policy("obstacles").unwrap().warning_after_ms,
             Some(7 * DAY_MS)
         );
         assert_eq!(
-            DATA_FRESHNESS_POLICIES.live_feeds.tfrs.info_after_ms,
+            live_feed_age_policy("tfrs").unwrap().info_after_ms,
             Some(HOUR_MS)
         );
         assert_eq!(
-            DATA_FRESHNESS_POLICIES.live_feeds.tfrs.warning_after_ms,
+            live_feed_age_policy("tfrs").unwrap().warning_after_ms,
             Some(DAY_MS)
         );
     }
@@ -196,7 +153,7 @@ mod tests {
     fn evaluates_live_feed_age_thresholds() {
         let now = parse_utc_instant("2026-05-20T12:31:00Z").expect("now");
         let violation = evaluate_age(
-            DATA_FRESHNESS_POLICIES.live_feeds.metars,
+            live_feed_age_policy("metars").unwrap(),
             parse_utc_instant("2026-05-20T12:00:00Z").expect("observed"),
             now,
         )
@@ -207,7 +164,7 @@ mod tests {
 
         let now = parse_utc_instant("2026-05-20T12:00:00Z").expect("now");
         let tfr_info = evaluate_age(
-            DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
+            live_feed_age_policy("tfrs").unwrap(),
             parse_utc_instant("2026-05-20T10:00:00Z").expect("observed"),
             now,
         )
@@ -215,7 +172,7 @@ mod tests {
         assert_eq!(tfr_info.severity, FreshnessSeverity::Info);
 
         let obstacle_info = evaluate_age(
-            DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
+            live_feed_age_policy("obstacles").unwrap(),
             parse_utc_instant("2026-05-18T11:00:00Z").expect("observed"),
             now,
         )
@@ -223,7 +180,7 @@ mod tests {
         assert_eq!(obstacle_info.severity, FreshnessSeverity::Info);
 
         let obstacle_warning = evaluate_age(
-            DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
+            live_feed_age_policy("obstacles").unwrap(),
             parse_utc_instant("2026-05-12T12:00:00Z").expect("observed"),
             now,
         )

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 mod aerobag_cloud;
 mod aircraft;
 mod atmosphere;
+mod live_feed_policy;
 pub mod live_feeds;
 pub mod publication;
 pub mod versioned_json;
@@ -14,6 +15,7 @@ pub mod versioned_json;
 pub use aerobag_cloud::*;
 pub use aircraft::*;
 pub use atmosphere::*;
+pub use live_feed_policy::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductContract {

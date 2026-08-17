@@ -266,8 +266,12 @@ describe("loadBestAvailableAdapter", () => {
         return JSON.stringify({
           transport_policy: TEST_SSE_TRANSPORT_POLICY,
           connection_event: input.kind === "start" || input.kind === "online" ? null : input,
-          refresh_current: input.kind === "connected" || input.kind === "network_status" || input.kind === "online",
-          reconnect_delay_ms: input.kind === "error" ? 5000 : null,
+          commands: [
+            ...(input.kind === "connected" || input.kind === "network_status" || input.kind === "online"
+              ? [{ kind: "refresh_current" as const }]
+              : []),
+            ...(input.kind === "error" ? [{ kind: "reconnect" as const, delay_ms: 5000 }] : []),
+          ],
         });
       },
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
@@ -380,6 +384,7 @@ describe("createLiveFeedSubscription", () => {
 
     markOpen(): void {
       this.readyState = FakeEventSource.OPEN;
+      this.onopen?.();
     }
   }
 
@@ -424,30 +429,27 @@ describe("createLiveFeedSubscription", () => {
         runtimeEvents.push(input.kind);
         return {
           transport_policy: TEST_SSE_TRANSPORT_POLICY,
-          reconnect_delay_ms: input.kind === "error" ? 5000 : 0,
-          refresh_current: input.kind === "online",
+          commands: input.kind === "error"
+            ? [{ kind: "reconnect", delay_ms: 5000 }]
+            : input.kind === "online"
+              ? [{ kind: "refresh_current" }, { kind: "reconnect", delay_ms: 0 }]
+              : [],
         };
       },
       async () => {},
       () => {},
     );
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(FakeEventSource.instances).toHaveLength(1);
 
     FakeEventSource.instances[0].emitError();
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(runtimeEvents).toContain("error");
 
     vi.advanceTimersByTime(1000);
     testWindow.dispatchEvent(new Event("online"));
-    await Promise.resolve();
-    await Promise.resolve();
-    vi.advanceTimersByTime(0);
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(runtimeEvents).toContain("online");
     expect(FakeEventSource.instances).toHaveLength(2);
@@ -467,26 +469,88 @@ describe("createLiveFeedSubscription", () => {
       () => "https://feeds.example.test/live-feeds/v3/events",
       async (input) => ({
         transport_policy: TEST_SSE_TRANSPORT_POLICY,
-        reconnect_delay_ms: input.kind === "online" ? 0 : null,
-        refresh_current: input.kind === "online",
+        commands: input.kind === "online"
+          ? [{ kind: "refresh_current" }, { kind: "reconnect", delay_ms: 0 }]
+          : [],
       }),
       async () => {},
       () => {},
     );
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(FakeEventSource.instances).toHaveLength(1);
     FakeEventSource.instances[0].markOpen();
 
     testWindow.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[0].closed).toBe(true);
+    subscription.close();
+  });
+
+  it("enforces core's EventSource connect timeout", async () => {
+    vi.useFakeTimers();
+    const global = globalThis as unknown as TestGlobal;
+    global.EventSource = FakeEventSource;
+    const runtimeEvents: string[] = [];
+    const subscription = createLiveFeedSubscription(
+      () => "https://feeds.example.test/live-feeds/v3/events",
+      async (input) => {
+        runtimeEvents.push(input.kind);
+        return {
+          transport_policy: TEST_SSE_TRANSPORT_POLICY,
+          commands: input.kind === "error" ? [{ kind: "reconnect", delay_ms: 0 }] : [],
+        };
+      },
+      async () => {},
+      () => {},
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    vi.advanceTimersByTime(TEST_SSE_TRANSPORT_POLICY.connect_timeout_ms);
     await Promise.resolve();
     await Promise.resolve();
     vi.advanceTimersByTime(0);
     await Promise.resolve();
     await Promise.resolve();
+    await Promise.resolve();
 
+    expect(runtimeEvents).toContain("error");
+    expect(FakeEventSource.instances[0].closed).toBe(true);
     expect(FakeEventSource.instances).toHaveLength(2);
+    subscription.close();
+  });
+
+  it("enforces core's EventSource idle timeout after connecting", async () => {
+    vi.useFakeTimers();
+    const global = globalThis as unknown as TestGlobal;
+    global.EventSource = FakeEventSource;
+    const runtimeEvents: string[] = [];
+    const subscription = createLiveFeedSubscription(
+      () => "https://feeds.example.test/live-feeds/v3/events",
+      async (input) => {
+        runtimeEvents.push(input.kind);
+        return {
+          transport_policy: TEST_SSE_TRANSPORT_POLICY,
+          commands: input.kind === "idle_timeout" ? [{ kind: "reconnect", delay_ms: 0 }] : [],
+        };
+      },
+      async () => {},
+      () => {},
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    FakeEventSource.instances[0].markOpen();
+
+    vi.advanceTimersByTime(TEST_SSE_TRANSPORT_POLICY.idle_timeout_ms);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(runtimeEvents).toContain("idle_timeout");
     expect(FakeEventSource.instances[0].closed).toBe(true);
     subscription.close();
   });

@@ -134,8 +134,8 @@ pub use live_feed_cache::{
 };
 pub use live_feed_runtime::{
     live_feed_runtime_decision, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
-    LiveFeedNetworkStatus, LiveFeedRuntimeDecision, LiveFeedRuntimeEventKind, LiveFeedRuntimeInput,
-    LiveFeedRuntimeState,
+    LiveFeedNetworkStatus, LiveFeedRuntimeCommand, LiveFeedRuntimeDecision,
+    LiveFeedRuntimeEventKind, LiveFeedRuntimeInput, LiveFeedRuntimeState,
 };
 pub use live_feeds::{
     decode_prepared_live_feed, live_feed_events_url, live_feed_status_url,

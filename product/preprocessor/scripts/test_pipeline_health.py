@@ -18,7 +18,101 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pipeline_health
 
 
+TEST_LIVE_FEED_HEALTH_POLICIES = {
+    "tafs": ("TAFs", 60 * 60, 3 * 60 * 60),
+    "metars": ("METARs", 7 * 60, 30 * 60),
+    "pireps": ("PIREPs", 15 * 60, 30 * 60),
+    "obstacles": ("Obstacles", 2 * 24 * 60 * 60, 7 * 24 * 60 * 60),
+    "tfrs": ("TFRs", 3 * 60 * 60, 6 * 60 * 60),
+    "nexrad": ("NEXRAD", 700, 15 * 60),
+    "notams": ("NOTAMs", 5 * 60, 15 * 60),
+    "winds-aloft": ("Winds aloft", 12 * 60 * 60, 18 * 60 * 60),
+}
+
+
+def evaluate_health(
+    facts: dict, history: list, now: datetime
+) -> dict:
+    payload = facts.get("inputs", {}).get("live_feeds_status", {}).get("payload")
+    if isinstance(payload, dict) and "product_policies" not in payload:
+        products = payload.get("products")
+        product_ids = products.keys() if isinstance(products, dict) else []
+        payload["product_policies"] = [
+            {
+                "product_id": product_id,
+                "display_name": TEST_LIVE_FEED_HEALTH_POLICIES[product_id][0],
+                "operator_health": {
+                    "warning_after_seconds": TEST_LIVE_FEED_HEALTH_POLICIES[product_id][1],
+                    "critical_after_seconds": TEST_LIVE_FEED_HEALTH_POLICIES[product_id][2],
+                },
+            }
+            for product_id in product_ids
+            if product_id in TEST_LIVE_FEED_HEALTH_POLICIES
+        ]
+    return pipeline_health.evaluate_health(facts, history, now)
+
+
 class PipelineHealthTests(unittest.TestCase):
+    def test_live_feed_health_requires_daemon_product_policy(self) -> None:
+        now = datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {
+                    "error": None,
+                    "payload": {"products": {}, "product_policies": None},
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        policy = metric(evaluation, "live_feed.product_policy.present")
+        self.assertEqual(policy["severity"], "critical")
+        self.assertFalse(policy["value"])
+
+    def test_live_feed_health_covers_pireps_and_winds_from_daemon_policy(self) -> None:
+        now = datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {
+                    "error": None,
+                    "payload": {
+                        "products": {
+                            "pireps": {
+                                "last_source_timestamp_utc": "2026-08-17T11:40:00Z",
+                                "consecutive_failure_count": 0,
+                            },
+                            "winds-aloft": {
+                                "last_source_timestamp_utc": "2026-08-16T23:00:00Z",
+                                "consecutive_failure_count": 0,
+                            },
+                        }
+                    },
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = evaluate_health(facts, [], now)
+
+        self.assertEqual(
+            metric(evaluation, "live_feed.pireps.stale_seconds")["severity"],
+            "warning",
+        )
+        self.assertEqual(
+            metric(evaluation, "live_feed.winds-aloft.stale_seconds")["severity"],
+            "warning",
+        )
+
     def test_cloud_operator_authorization_is_derived_without_sending_master_secret(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             secret = Path(temp_dir) / "cloud.bin"
@@ -119,7 +213,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         }
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         self.assertEqual(metric(evaluation, "aerobag_cloud.mode")["severity"], "warning")
         stored = metric(evaluation, "aerobag_cloud.stored_bytes")
@@ -181,7 +275,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         }
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         stale = metric(evaluation, "live_feed.metars.stale_seconds")
         self.assertEqual(stale["value"], 600)
@@ -215,7 +309,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         }
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         stale = metric(evaluation, "live_feed.nexrad.stale_seconds")
         self.assertEqual(stale["value"], 600)
@@ -266,7 +360,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         }
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
         self.assertEqual(failure_rate["value"], 0.333333)
@@ -319,7 +413,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         }
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
         self.assertEqual(failure_rate["value"], 0.0)
@@ -391,7 +485,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         }
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         stale = metric(evaluation, "live_feed.notams.stale_seconds")
         self.assertEqual(stale["severity"], "critical")
@@ -475,7 +569,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         ]
 
-        evaluation = pipeline_health.evaluate_health(
+        evaluation = evaluate_health(
             current_facts,
             previous,
             datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc),
@@ -539,7 +633,7 @@ class PipelineHealthTests(unittest.TestCase):
             {"facts": current_facts},
         ]
 
-        evaluation = pipeline_health.evaluate_health(
+        evaluation = evaluate_health(
             current_facts,
             previous,
             datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc),
@@ -607,7 +701,7 @@ class PipelineHealthTests(unittest.TestCase):
             }
         ]
 
-        evaluation = pipeline_health.evaluate_health(
+        evaluation = evaluate_health(
             current_facts,
             previous,
             datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc),
@@ -649,7 +743,7 @@ class PipelineHealthTests(unittest.TestCase):
         }
         now = datetime(2026, 6, 20, 0, 0, 0, tzinfo=timezone.utc)
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
         self.assertEqual(countdown["value"], 19 * 24 * 60 * 60)
@@ -660,7 +754,7 @@ class PipelineHealthTests(unittest.TestCase):
         facts = calendar_facts([{"cycle": "2607", "effective_date": "2026-07-09"}])
         now = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone.utc)
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         self.assertFalse(
             has_metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
@@ -670,7 +764,7 @@ class PipelineHealthTests(unittest.TestCase):
         facts = calendar_facts([{"cycle": "2607", "effective_date": "2026-07-09"}])
         now = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
         self.assertEqual(countdown["value"], 15 * 24 * 60 * 60)
@@ -695,7 +789,7 @@ class PipelineHealthTests(unittest.TestCase):
         )
         now = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
         self.assertEqual(countdown["value"], 0)
@@ -722,7 +816,7 @@ class PipelineHealthTests(unittest.TestCase):
         )
         now = datetime(2026, 7, 11, 0, 0, 0, tzinfo=timezone.utc)
 
-        evaluation = pipeline_health.evaluate_health(facts, [], now)
+        evaluation = evaluate_health(facts, [], now)
 
         self.assertFalse(
             has_metric(evaluation, "cycle_calendar.2606.seconds_until_effective")

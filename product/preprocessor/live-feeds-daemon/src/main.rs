@@ -48,8 +48,8 @@ use preprocessor_live_feeds::{
     tfr_detail_backfill::TfrDetailBackfillStore,
 };
 use product_contracts::{
-    live_feeds::v3::CurrentEvent as LiveFeedCurrentEvent, versioned_json,
-    AEROBAG_SSE_TRANSPORT_POLICY,
+    live_feed_product_policy, live_feeds::v3::CurrentEvent as LiveFeedCurrentEvent, versioned_json,
+    LiveFeedProductPolicy, AEROBAG_SSE_TRANSPORT_POLICY, LIVE_FEED_PRODUCT_POLICIES,
 };
 use serde::Serialize;
 
@@ -168,6 +168,7 @@ struct DaemonStatusSnapshot {
     active_sse_clients: usize,
     client_connection_age_cdf: CdfSummary,
     client_update_latency_cdf: CdfSummary,
+    product_policies: &'static [LiveFeedProductPolicy],
     products: BTreeMap<String, ProductStatusSnapshot>,
 }
 
@@ -512,7 +513,7 @@ impl DaemonStatus {
             })
             .collect();
         DaemonStatusSnapshot {
-            schema_version: 1,
+            schema_version: 2,
             generated_at_utc: now,
             started_at_utc: state.started_at_utc,
             active_sse_clients: state.active_clients.len(),
@@ -520,6 +521,7 @@ impl DaemonStatus {
             client_update_latency_cdf: cdf_summary(
                 state.client_update_latency_ms.iter().copied().collect(),
             ),
+            product_policies: LIVE_FEED_PRODUCT_POLICIES,
             products,
         }
     }
@@ -670,7 +672,10 @@ impl DaemonConfig {
         let mut nms_notams_config = None;
         let mut nms_notams_state_root = None;
         let mut nms_notams_retry_interval_ms = 60_000_u64;
-        let mut nms_notams_poll_interval_seconds = 180_u64;
+        let mut nms_notams_poll_interval_seconds = live_feed_product_policy("notams")
+            .expect("NOTAM product policy")
+            .producer
+            .nominal_interval_seconds;
         let mut nms_notams_overlap_seconds = 600_u64;
         let mut tfr_detail_backfill_state_root = None;
         let mut event_interval_ms = 5_000_u64;
@@ -2610,18 +2615,16 @@ mod tests {
             .map(|task| task.product_id().to_string())
             .collect::<Vec<_>>();
         products.sort();
-        assert_eq!(
-            products,
-            [
-                "metars",
-                "nexrad",
-                "obstacles",
-                "pireps",
-                "tafs",
-                "tfrs",
-                "winds-aloft",
-            ]
-        );
+        let mut expected = LIVE_FEED_PRODUCT_POLICIES
+            .iter()
+            .filter(|policy| policy.is_polling_task())
+            .map(|policy| policy.product_id.to_string())
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(products, expected);
+        assert!(LIVE_FEED_PRODUCT_POLICIES
+            .iter()
+            .any(|policy| policy.product_id == "notams" && !policy.is_polling_task()));
     }
 
     #[test]
@@ -2932,6 +2935,9 @@ mod tests {
             "{response}"
         );
         assert!(response.contains("\"active_sse_clients\""), "{response}");
+        assert!(response.contains("\"product_policies\""), "{response}");
+        assert!(response.contains("\"winds-aloft\""), "{response}");
+        assert!(response.contains("\"pireps\""), "{response}");
 
         let response = request_once(
             temp.path(),

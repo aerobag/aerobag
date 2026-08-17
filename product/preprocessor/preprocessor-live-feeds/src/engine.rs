@@ -32,7 +32,7 @@ pub use product_contracts::live_feeds::v3::{
     NavKvDeltaEntry as LiveFeedNavKvDeltaEntry, PayloadRef as LivePayloadRef,
     RecordDelta as LiveFeedRecordDelta, VersionManifest as LiveFeedVersionManifest,
 };
-use product_contracts::versioned_json;
+use product_contracts::{live_feed_product_policy, versioned_json, LIVE_FEED_PRODUCT_POLICIES};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -45,8 +45,6 @@ use crate::notam_store::{
 pub use product_contracts::LIVE_FEEDS_SCHEMA_VERSION;
 pub const LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES: usize = 12;
 pub const LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT: usize = 5;
-const NEXRAD_POLL_INTERVAL_SECS: u64 = 5 * 60;
-const NEXRAD_CURRENT_HISTORY_TAIL_SECS: u64 = 34 * 60;
 const LIVE_FEED_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 const NOTAM_MAX_RETAINED_MUTATIONS: u64 = 100;
 
@@ -630,13 +628,9 @@ pub fn live_feed_event_scratch_dir(
 }
 
 pub fn default_poll_interval(product_id: &str) -> Option<StdDuration> {
-    match product_id {
-        "nexrad" => Some(StdDuration::from_secs(NEXRAD_POLL_INTERVAL_SECS)),
-        "metars" | "tafs" | "pireps" | "tfrs" => Some(StdDuration::from_secs(5 * 60)),
-        "winds-aloft" => Some(StdDuration::from_secs(60 * 60)),
-        "obstacles" => Some(StdDuration::from_secs(6 * 60 * 60)),
-        _ => None,
-    }
+    live_feed_product_policy(product_id)
+        .filter(|policy| policy.is_polling_task())
+        .map(|policy| StdDuration::from_secs(policy.producer.nominal_interval_seconds))
 }
 
 pub fn prune_live_feed_scratch_root(
@@ -759,16 +753,15 @@ impl LiveFeedRetentionPolicy {
 
 impl Default for LiveFeedRetentionPolicy {
     fn default() -> Self {
-        Self::new(StdDuration::from_secs(3 * 60 * 60))
-            .with_product_recent_tail(
-                "nexrad",
-                StdDuration::from_secs(NEXRAD_CURRENT_HISTORY_TAIL_SECS),
-            )
-            .with_product_recent_tail("metars", StdDuration::from_secs(3 * 60 * 60))
-            .with_product_recent_tail("tafs", StdDuration::from_secs(3 * 60 * 60))
-            .with_product_recent_tail("tfrs", StdDuration::from_secs(3 * 60 * 60))
-            .with_product_recent_tail("winds-aloft", StdDuration::from_secs(7 * 24 * 60 * 60))
-            .with_product_recent_tail("obstacles", StdDuration::from_secs(7 * 24 * 60 * 60))
+        LIVE_FEED_PRODUCT_POLICIES.iter().fold(
+            Self::new(StdDuration::from_secs(3 * 60 * 60)),
+            |policy, product| {
+                policy.with_product_recent_tail(
+                    product.product_id,
+                    StdDuration::from_secs(product.retention_seconds),
+                )
+            },
+        )
     }
 }
 
@@ -4432,7 +4425,7 @@ mod tests {
     fn default_poll_intervals_match_measured_product_cadence() {
         assert_eq!(
             default_poll_interval("nexrad"),
-            Some(StdDuration::from_secs(NEXRAD_POLL_INTERVAL_SECS))
+            Some(StdDuration::from_secs(5 * 60))
         );
         assert_eq!(
             default_poll_interval("metars"),
@@ -4466,7 +4459,7 @@ mod tests {
         let policy = LiveFeedRetentionPolicy::default();
         assert_eq!(
             policy.recent_tail_for("nexrad"),
-            StdDuration::from_secs(NEXRAD_CURRENT_HISTORY_TAIL_SECS)
+            StdDuration::from_secs(34 * 60)
         );
         assert_eq!(
             policy.recent_tail_for("metars"),

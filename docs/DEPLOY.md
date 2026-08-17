@@ -274,10 +274,15 @@ http://aerobag-prod.iac.jonh.net/build-watch/api/state
 
 The default timer command uses:
 
+`checkout_ref` is the primary publication revision. It is built first, and its
+preserved `preprocessor-cli` performs the final manifest merge and publication
+GC. `additional_publication_refs` are older compatibility revisions and cannot
+change those coordinator semantics.
+
 ```bash
 /opt/aerobag/product/preprocessor/scripts/build_multi_version_publication.py \
   --release \
-  --profile production \
+  --primary-ref main \
   --build-root /mnt/aerobag-data/artifacts \
   --target-dir /var/cache/aerobag-build/target \
   <additional refs...> main

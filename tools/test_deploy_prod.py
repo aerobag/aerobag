@@ -19,6 +19,19 @@ sys.path.insert(0, str(TOOLS_DIR))
 import deploy_prod  # noqa: E402
 
 
+class ProductPublicationTests(unittest.TestCase):
+    def test_deployment_names_checkout_revision_as_primary(self) -> None:
+        script = deploy_prod.build_product_script(
+            {
+                "checkout_ref": "main",
+                "additional_publication_refs": ["legacy-nav15"],
+            }
+        )
+
+        self.assertIn("--primary-ref main", script)
+        self.assertIn("legacy-nav15 main", script)
+
+
 class AndroidSigningKeyTests(unittest.TestCase):
     def test_default_key_lives_in_the_credentials_tree(self) -> None:
         self.assertEqual(

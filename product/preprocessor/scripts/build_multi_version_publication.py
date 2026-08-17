@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import dataclass
 import fcntl
 import os
 import re
@@ -23,6 +24,15 @@ SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[3]
 PREPROCESSOR_DIR = Path("product/preprocessor")
 PRODUCT_ARTIFACTS_RE = re.compile(r"^product_artifacts\s+(.+)$")
+
+
+@dataclass(frozen=True)
+class BuiltRevision:
+    ref: str
+    sha: str
+    worktree: Path
+    binary: Path
+    manifest: Path
 
 
 def format_elapsed(seconds: int) -> str:
@@ -100,14 +110,31 @@ def publication_log_path(build_root: Path) -> Path:
     return build_root / "logs" / "orchestrator" / "publication" / "master.log"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if "--" in raw_args:
+        separator = raw_args.index("--")
+        parser_args = raw_args[:separator]
+        build_args = raw_args[separator + 1 :]
+    else:
+        parser_args = raw_args
+        build_args = []
     parser = argparse.ArgumentParser(
         description=(
             "Build one product publication per git ref, then merge their "
             "product_artifacts manifests into published/current_artifacts.json."
-        )
+        ),
+        epilog="Arguments after -- are passed through to each build-product command.",
     )
     parser.add_argument("refs", nargs="+", help="git commits, tags, or branch names to build")
+    parser.add_argument(
+        "--primary-ref",
+        required=True,
+        help=(
+            "member of refs whose preprocessor defines merge and GC semantics; "
+            "the primary is always built first"
+        ),
+    )
     parser.add_argument(
         "--repo-root",
         type=Path,
@@ -145,12 +172,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="RFC3339 UTC timestamp recorded in the merged current_artifacts file",
     )
-    parser.add_argument(
-        "build_args",
-        nargs=argparse.REMAINDER,
-        help="extra arguments after -- are passed to build-product",
-    )
-    return parser.parse_args()
+    args = parser.parse_args(parser_args)
+    args.build_args = build_args
+    return args
 
 
 def run(
@@ -202,6 +226,14 @@ def resolve_commit(repo_root: Path, ref: str) -> str:
         capture=True,
     )
     return result.stdout.strip()
+
+
+def primary_first_refs(primary_ref: str, refs: list[str]) -> list[str]:
+    if len(refs) != len(set(refs)):
+        raise ValueError("publication refs must not contain duplicates")
+    if primary_ref not in refs:
+        raise ValueError(f"primary ref {primary_ref!r} is not present in publication refs")
+    return [primary_ref, *sorted(ref for ref in refs if ref != primary_ref)]
 
 
 def remove_worktree(repo_root: Path, path: Path) -> None:
@@ -263,7 +295,8 @@ def build_ref(
     publish_timestamp: str,
     release: bool,
     build_args: list[str],
-) -> Path:
+    preserved_binary: Path,
+) -> BuiltRevision:
     create_worktree(repo_root, worktree, sha)
     cargo_command = ["cargo", "build"]
     if release:
@@ -273,8 +306,10 @@ def build_ref(
 
     target_profile = "release" if release else "debug"
     binary = Path(env["CARGO_TARGET_DIR"]) / target_profile / "preprocessor-cli"
+    preserved_binary.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(binary, preserved_binary)
     command = [
-        str(binary),
+        str(preserved_binary),
         "build-product",
         "--build-root",
         str(build_root),
@@ -296,11 +331,41 @@ def build_ref(
         raise RuntimeError(f"{ref} build did not report a product_artifacts path")
     if not product_artifacts.is_file():
         raise RuntimeError(f"{ref} reported missing manifest {product_artifacts}")
-    return product_artifacts
+    return BuiltRevision(
+        ref=ref,
+        sha=sha,
+        worktree=worktree,
+        binary=preserved_binary,
+        manifest=product_artifacts,
+    )
+
+
+def merge_command(
+    primary_binary: Path,
+    build_root: Path,
+    manifests: list[Path],
+    as_of_utc: str | None,
+) -> list[str]:
+    command = [
+        str(primary_binary),
+        "merge-current-artifacts",
+        "--build-root",
+        str(build_root),
+    ]
+    if as_of_utc:
+        command.extend(["--as-of-utc", as_of_utc])
+    for manifest in manifests:
+        command.extend(["--manifest", str(manifest)])
+    return command
+
+
+def gc_command(primary_binary: Path, build_root: Path) -> list[str]:
+    return [str(primary_binary), "gc", "--build-root", str(build_root)]
 
 
 def main() -> int:
     args = parse_args()
+    ordered_refs = primary_first_refs(args.primary_ref, args.refs)
     repo_root = args.repo_root.resolve()
     root = artifact_root(repo_root)
     build_root = (args.build_root or root).resolve()
@@ -317,30 +382,27 @@ def main() -> int:
     publication_log.log(
         "begin "
         f"pid={os.getpid()} build_root={build_root} "
-        f"publish_label={','.join(args.refs)} scheduler=multi_version_publication "
-        f"refs={','.join(args.refs)}"
+        f"publish_label={','.join(ordered_refs)} scheduler=multi_version_publication "
+        f"primary_ref={args.primary_ref} refs={','.join(ordered_refs)}"
     )
     worktrees: list[Path] = []
-    manifests: list[Path] = []
+    builds: list[BuiltRevision] = []
     current_artifacts_path: Path | None = None
     try:
         try:
             with publication_log.task("publication-prepare"):
                 remove_abandoned_worktrees(repo_root, worktree_root)
-                run_worktree_root = (
-                    worktree_root / f"run-{build_timestamp()}-{os.getpid()}"
-                )
+                run_label = f"run-{build_timestamp()}-{os.getpid()}"
+                run_worktree_root = worktree_root / run_label
                 run_worktree_root.mkdir()
+                binary_root = target_dir / "multi-version-binaries" / run_label
+                binary_root.mkdir(parents=True)
 
             env = os.environ.copy()
             env["CARGO_TARGET_DIR"] = str(target_dir)
             env.setdefault("AEROBAG_ARTIFACT_WRITE_PATH", str(root))
 
-            build_args = args.build_args
-            if build_args and build_args[0] == "--":
-                build_args = build_args[1:]
-
-            for ref in args.refs:
+            for ref in ordered_refs:
                 sha = resolve_commit(repo_root, ref)
                 ref_name = safe_ref_name(ref, sha)
                 worktree = run_worktree_root / ref_name
@@ -354,7 +416,7 @@ def main() -> int:
                 with publication_log.task(
                     f"build-ref-{ref_name}", ref=ref, sha=sha
                 ):
-                    manifest = build_ref(
+                    build = build_ref(
                         repo_root=repo_root,
                         ref=ref,
                         sha=sha,
@@ -364,28 +426,25 @@ def main() -> int:
                         publish_label=ref_name,
                         publish_timestamp=timestamp,
                         release=args.release,
-                        build_args=build_args,
+                        build_args=args.build_args,
+                        preserved_binary=binary_root / ref_name / "preprocessor-cli",
                     )
-                manifests.append(manifest)
+                builds.append(build)
 
-            target_profile = "release" if args.release else "debug"
-            merge_binary = target_dir / target_profile / "preprocessor-cli"
-            merge_command = [
-                str(merge_binary),
-                "merge-current-artifacts",
-                "--build-root",
-                str(build_root),
-            ]
-            if args.as_of_utc:
-                merge_command.extend(["--as-of-utc", args.as_of_utc])
-            for manifest in manifests:
-                merge_command.extend(["--manifest", str(manifest)])
+            primary = builds[0]
+            if primary.ref != args.primary_ref:
+                raise RuntimeError("primary publication was not built first")
+            manifests = [build.manifest for build in builds]
+            merge = merge_command(primary.binary, build_root, manifests, args.as_of_utc)
             with publication_log.task(
-                "merge-current-artifacts", manifests=len(manifests)
+                "merge-current-artifacts",
+                manifests=len(manifests),
+                primary_ref=primary.ref,
+                primary_sha=primary.sha,
             ):
                 result = run(
-                    merge_command,
-                    cwd=repo_root / PREPROCESSOR_DIR,
+                    merge,
+                    cwd=primary.worktree / PREPROCESSOR_DIR,
                     env=env,
                     capture=True,
                 )
@@ -411,16 +470,13 @@ def main() -> int:
                         f"{current_artifacts_path}"
                     )
 
-            gc_command = [
-                str(merge_binary),
-                "gc",
-                "--build-root",
-                str(build_root),
-            ]
-            with publication_log.task("publication-gc"):
+            gc = gc_command(primary.binary, build_root)
+            with publication_log.task(
+                "publication-gc", primary_ref=primary.ref, primary_sha=primary.sha
+            ):
                 run(
-                    gc_command,
-                    cwd=repo_root / PREPROCESSOR_DIR,
+                    gc,
+                    cwd=primary.worktree / PREPROCESSOR_DIR,
                     env=env,
                     capture=True,
                 )
@@ -430,6 +486,8 @@ def main() -> int:
                     remove_worktree(repo_root, worktree)
                 if "run_worktree_root" in locals() and run_worktree_root.exists():
                     shutil.rmtree(run_worktree_root)
+                if "binary_root" in locals() and binary_root.exists():
+                    shutil.rmtree(binary_root)
                 prune_worktree_metadata(repo_root)
                 print(f"removed ephemeral worktrees under {worktree_root}", flush=True)
     except BaseException as error:

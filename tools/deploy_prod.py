@@ -776,6 +776,7 @@ test -x "$ANDROID_HOME/ndk/$REQUIRED_NDK/toolchains/llvm/prebuilt/linux-x86_64/b
 
 def build_product_script(config: dict[str, Any]) -> str:
     refs = " ".join(shell_quote(ref) for ref in publication_refs(config))
+    primary_ref = shell_quote(config["checkout_ref"])
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 source /etc/aerobag/env
@@ -788,6 +789,7 @@ mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$AR
 cd "$SOURCE_ROOT"
 "$SOURCE_ROOT/product/preprocessor/scripts/build_multi_version_publication.py" \\
   --release \\
+  --primary-ref {primary_ref} \\
   --build-root "$ARTIFACT_ROOT" \\
   --target-dir "$CARGO_TARGET_DIR" \\
   {refs}

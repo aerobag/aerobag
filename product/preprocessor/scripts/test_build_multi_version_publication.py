@@ -8,11 +8,112 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import build_multi_version_publication as publication
 
 
 class MultiVersionPublicationWorktreeTests(unittest.TestCase):
+    def test_build_product_arguments_are_not_misclassified_as_refs(self) -> None:
+        args = publication.parse_args(
+            [
+                "--primary-ref",
+                "main",
+                "--release",
+                "main",
+                "legacy-nav15",
+                "--",
+                "--profile",
+                "production",
+            ]
+        )
+
+        self.assertEqual(args.refs, ["main", "legacy-nav15"])
+        self.assertEqual(args.build_args, ["--profile", "production"])
+
+    def test_primary_is_first_and_compatibility_order_is_input_independent(self) -> None:
+        forward = publication.primary_first_refs(
+            "main", ["legacy-nav15", "main", "legacy-nav16"]
+        )
+        reverse = publication.primary_first_refs(
+            "main", ["legacy-nav16", "main", "legacy-nav15"]
+        )
+
+        self.assertEqual(forward, ["main", "legacy-nav15", "legacy-nav16"])
+        self.assertEqual(reverse, forward)
+
+    def test_primary_must_be_one_unique_publication_ref(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not present"):
+            publication.primary_first_refs("main", ["legacy"])
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            publication.primary_first_refs("main", ["main", "main"])
+
+    def test_merge_and_gc_commands_use_preserved_primary_binary(self) -> None:
+        primary_binary = Path("/run/binaries/main/preprocessor-cli")
+        build_root = Path("/artifacts")
+        manifests = [Path("/manifests/main.json"), Path("/manifests/legacy.json")]
+
+        merge = publication.merge_command(
+            primary_binary, build_root, manifests, "2026-08-17T00:00:00Z"
+        )
+        gc = publication.gc_command(primary_binary, build_root)
+
+        self.assertEqual(merge[0], str(primary_binary))
+        self.assertEqual(gc[0], str(primary_binary))
+        self.assertEqual(
+            merge[-4:],
+            [
+                "--manifest",
+                str(manifests[0]),
+                "--manifest",
+                str(manifests[1]),
+            ],
+        )
+
+    def test_build_ref_runs_the_preserved_revision_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "worktree"
+            preprocessor_dir = worktree / publication.PREPROCESSOR_DIR
+            preprocessor_dir.mkdir(parents=True)
+            target = root / "target"
+            source_binary = target / "debug" / "preprocessor-cli"
+            source_binary.parent.mkdir(parents=True)
+            source_binary.write_bytes(b"primary executable")
+            source_binary.chmod(0o755)
+            preserved_binary = root / "preserved" / "preprocessor-cli"
+            manifest = root / "product_artifacts.json"
+            manifest.write_text("{}", encoding="utf-8")
+            completed = [
+                subprocess.CompletedProcess(["cargo"], 0, ""),
+                subprocess.CompletedProcess(
+                    [str(preserved_binary)],
+                    0,
+                    f"product_artifacts {manifest}\n",
+                ),
+            ]
+
+            with mock.patch.object(publication, "create_worktree"), mock.patch.object(
+                publication, "run", side_effect=completed
+            ) as run:
+                built = publication.build_ref(
+                    repo_root=root,
+                    ref="main",
+                    sha="a" * 40,
+                    worktree=worktree,
+                    env={"CARGO_TARGET_DIR": str(target)},
+                    build_root=root / "artifacts",
+                    publish_label="main-aaaaaaaaaaaa",
+                    publish_timestamp="20260817T000000Z",
+                    release=False,
+                    build_args=[],
+                    preserved_binary=preserved_binary,
+                )
+
+            self.assertEqual(built.binary, preserved_binary)
+            self.assertEqual(preserved_binary.read_bytes(), b"primary executable")
+            self.assertEqual(run.call_args_list[1].args[0][0], str(preserved_binary))
+
     def test_publication_log_records_parseable_task_lifecycle_and_rotates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "publication" / "master.log"

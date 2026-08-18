@@ -162,9 +162,70 @@ class LiveFeedCacheTest {
         cache.close()
     }
 
+    @Test
+    fun failedResourceRestoreAbortsNativeTransactionAndAllowsRetry() {
+        val active = AtomicBoolean(false)
+        val beginCount = AtomicInteger(0)
+        val abortCount = AtomicInteger(0)
+        val finishCount = AtomicInteger(0)
+        val bridge = liveFeedBridge(
+            beginRestoringResources = {
+                check(active.compareAndSet(false, true)) { "restore already active" }
+                beginCount.incrementAndGet()
+            },
+            abortRestoringResources = {
+                active.set(false)
+                abortCount.incrementAndGet()
+            },
+            finishRestoringResources = {
+                active.set(false)
+                finishCount.incrementAndGet()
+            },
+        )
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
+        val manifest = resourceManifest()
+
+        val failed = runCatching {
+            cache.restoreInstalledResources(manifest) { error("missing persisted blob") }
+        }
+        assertTrue(failed.exceptionOrNull()?.message.orEmpty().contains("missing persisted blob"))
+
+        cache.restoreInstalledResources(manifest) { byteArrayOf(1, 2, 3) }
+
+        assertEquals(2, beginCount.get())
+        assertEquals(1, abortCount.get())
+        assertEquals(1, finishCount.get())
+        assertFalse(active.get())
+        cache.close()
+    }
+
+    @Test
+    fun failedResourceRestoreFinishIsAbortedWithoutReplacingOriginalError() {
+        val abortCount = AtomicInteger(0)
+        val bridge = liveFeedBridge(
+            beginRestoringResources = {},
+            restoreResourceBytes = {},
+            finishRestoringResources = { error("invalid restored product") },
+            abortRestoringResources = { abortCount.incrementAndGet() },
+        )
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
+
+        val failed = runCatching {
+            cache.restoreInstalledResources(resourceManifest()) { byteArrayOf(1, 2, 3) }
+        }
+
+        assertTrue(failed.exceptionOrNull()?.message.orEmpty().contains("invalid restored product"))
+        assertEquals(1, abortCount.get())
+        cache.close()
+    }
+
     private fun liveFeedBridge(
         missingRequestsJson: () -> String = { "[]" },
         destroyLiveFeedCache: () -> Unit = {},
+        beginRestoringResources: (String) -> Unit = {},
+        restoreResourceBytes: () -> Unit = {},
+        abortRestoringResources: () -> Unit = {},
+        finishRestoringResources: () -> Unit = {},
     ): NativeBridge =
         Proxy.newProxyInstance(
             NativeBridge::class.java.classLoader,
@@ -176,6 +237,10 @@ class LiveFeedCacheTest {
                 "liveFeedStatusUrl" -> "http://live.test/live-feeds/status.html"
                 "normalizeLiveFeedSourceRootUrl" -> args?.first() as String
                 "liveFeedCacheMissingRequestsJson" -> missingRequestsJson()
+                "liveFeedCacheBeginRestoringResources" -> beginRestoringResources(args?.get(1) as String)
+                "liveFeedCacheRestoreResourceBytes" -> restoreResourceBytes()
+                "liveFeedCacheAbortRestoringResources" -> abortRestoringResources()
+                "liveFeedCacheFinishRestoringResources" -> finishRestoringResources()
                 "destroyLiveFeedCache" -> {
                     destroyLiveFeedCache()
                     Unit
@@ -186,6 +251,22 @@ class LiveFeedCacheTest {
                 else -> error("unexpected NativeBridge call in LiveFeedCacheTest: ${method.name}")
             }
         } as NativeBridge
+
+    private fun resourceManifest() = LiveFeedResourceManifest(
+        summary = LiveFeedInstalledSummary(
+            product = "notams",
+            version = "version",
+            stateSha256 = "state",
+            payloadKind = "notam_resources",
+        ),
+        resources = listOf(
+            LiveFeedResourceRef(
+                kind = "notam_checkpoint_xz",
+                blobSha256 = "a".repeat(64),
+                bytes = 3,
+            ),
+        ),
+    )
 
     private fun runtimeDecision(command: LiveFeedRuntimeCommand) = LiveFeedRuntimeDecision(
         transportPolicy = SseTransportPolicy(

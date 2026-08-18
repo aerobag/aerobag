@@ -1720,6 +1720,17 @@ pub fn live_feed_cache_restore_resource_bytes(
         .map_err(|err| err.to_string())
 }
 
+pub fn live_feed_cache_abort_restoring_resources(handle: u64, product: &str) -> Result<(), String> {
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache.abort_restoring_resources(product);
+    Ok(())
+}
+
 pub fn live_feed_cache_finish_restoring_resources(
     handle: u64,
     product: &str,
@@ -3104,6 +3115,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheR
         let bytes = get_java_byte_array(&mut env, resource_bytes)?;
         live_feed_cache_restore_resource_bytes(handle as u64, &product, &blob_sha256, &bytes)
     })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheAbortRestoringResources(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+) {
+    let result = get_java_string(&mut env, product)
+        .and_then(|product| live_feed_cache_abort_restoring_resources(handle as u64, &product));
     if let Err(message) = result {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }

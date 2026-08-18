@@ -30,6 +30,46 @@ internal fun interface InitialLiveFeedPromotionGate {
     suspend fun awaitPromotion(installed: List<LiveFeedInstalledSummary>)
 }
 
+internal suspend fun runLiveFeedStartup(
+    restoreInstalled: suspend () -> List<LiveFeedInstalledSummary>,
+    awaitInitialPromotion: suspend (List<LiveFeedInstalledSummary>) -> Unit,
+    promote: suspend (LiveFeedInstalledSummary) -> Boolean,
+    onInitialPromotionComplete: (List<LiveFeedInstalledSummary>) -> Unit,
+    startNetwork: suspend () -> Unit,
+    reportFailure: (String, Throwable) -> Unit,
+) {
+    val installed = try {
+        restoreInstalled()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        reportFailure("persisted cache restore", error)
+        emptyList()
+    }
+
+    try {
+        awaitInitialPromotion(installed)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        reportFailure("initial promotion gate", error)
+    }
+
+    for (summary in installed) {
+        try {
+            check(promote(summary)) {
+                "failed to promote ${summary.product}/${summary.version}"
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            reportFailure("cached ${summary.product}/${summary.version} promotion", error)
+        }
+    }
+    onInitialPromotionComplete(installed)
+    startNetwork()
+}
+
 /** Owns the one live-feed restore and connection pipeline for a retained core session. */
 internal class RetainedLiveFeedRuntime(
     context: Context,
@@ -66,40 +106,52 @@ internal class RetainedLiveFeedRuntime(
         startupPerfTrace?.mark("live_feed_restore_started")
         scope.launch {
             try {
-                val restoreStartedAtMs = SystemClock.elapsedRealtime()
-                val installed = withContext(Dispatchers.IO) {
-                    LiveFeedCacheStore.restore(appContext, cache)
-                    LiveFeedCacheStore.listInstalledSummaries(appContext)
-                }
-                startupPerfTrace?.mark(
-                    "live_feed_cache_restored",
-                    restoreStartedAtMs,
-                    "products=${installed.size}",
-                )
-                val promotionStartedAtMs = SystemClock.elapsedRealtime()
-                initialPromotionGate.awaitPromotion(installed)
-                // TODO(live-feed-restore-transaction): Native restore has begin/finish but no
-                // abort/reconcile operation. Add that protocol before attempting to recover from
-                // a failed promotion here; otherwise partial restored state is ambiguous.
-                installed.forEach { summary -> promote(summary) }
-                startupPerfTrace?.mark(
-                    "live_feed_products_promoted",
-                    promotionStartedAtMs,
-                    "products=${installed.size}",
-                )
-                startupPerfTrace?.mark("live_feed_connection_started")
-                client.bootstrapAndRun(
-                    promote = { summary ->
-                        check(promote(summary)) {
-                            "failed to promote ${summary.product}/${summary.version}"
+                var promotionStartedAtMs = 0L
+                runLiveFeedStartup(
+                    restoreInstalled = {
+                        val restoreStartedAtMs = SystemClock.elapsedRealtime()
+                        val installed = withContext(Dispatchers.IO) {
+                            LiveFeedCacheStore.restore(appContext, cache)
+                            LiveFeedCacheStore.listInstalledSummaries(appContext)
                         }
+                        startupPerfTrace?.mark(
+                            "live_feed_cache_restored",
+                            restoreStartedAtMs,
+                            "products=${installed.size}",
+                        )
+                        installed
                     },
-                    onChanged = {
-                        runSessionCommand("syncLiveFeedCacheCatalog") {
-                            uiSession.syncLiveFeedCacheCatalog(cache)
-                        }
+                    awaitInitialPromotion = { installed ->
+                        promotionStartedAtMs = SystemClock.elapsedRealtime()
+                        initialPromotionGate.awaitPromotion(installed)
                     },
-                    onConnectionEvent = { event -> reportConnection(event) },
+                    promote = ::promote,
+                    onInitialPromotionComplete = { installed ->
+                        startupPerfTrace?.mark(
+                            "live_feed_products_promoted",
+                            promotionStartedAtMs,
+                            "products=${installed.size}",
+                        )
+                    },
+                    startNetwork = {
+                        startupPerfTrace?.mark("live_feed_connection_started")
+                        client.bootstrapAndRun(
+                            promote = { summary ->
+                                check(promote(summary)) {
+                                    "failed to promote ${summary.product}/${summary.version}"
+                                }
+                            },
+                            onChanged = {
+                                runSessionCommand("syncLiveFeedCacheCatalog") {
+                                    uiSession.syncLiveFeedCacheCatalog(cache)
+                                }
+                            },
+                            onConnectionEvent = { event -> reportConnection(event) },
+                        )
+                    },
+                    reportFailure = { phase, error ->
+                        Log.e(LogTag, "live-feed startup $phase failed", error)
+                    },
                 )
             } catch (error: CancellationException) {
                 throw error

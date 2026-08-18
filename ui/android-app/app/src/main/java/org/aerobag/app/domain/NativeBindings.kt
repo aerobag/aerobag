@@ -104,6 +104,8 @@ interface NativeBridge {
         resourceBytes: ByteArray,
     )
 
+    fun liveFeedCacheAbortRestoringResources(handle: Long, product: String)
+
     fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
 
     fun liveFeedCacheInstallProductInSessionJson(
@@ -719,6 +721,8 @@ object NativeBindings : NativeBridge {
         blobSha256: String,
         resourceBytes: ByteArray,
     )
+
+    external override fun liveFeedCacheAbortRestoringResources(handle: Long, product: String)
 
     external override fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
 

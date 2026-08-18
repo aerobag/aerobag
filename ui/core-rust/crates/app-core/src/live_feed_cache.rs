@@ -305,6 +305,12 @@ impl LiveFeedCache {
         Ok(())
     }
 
+    /// Discards a partial resource restore. This is intentionally idempotent so
+    /// cleanup cannot obscure the error that caused the restore to fail.
+    pub fn abort_restoring_resources(&mut self, product: &str) {
+        self.restoring_resources.remove(product);
+    }
+
     pub fn finish_restoring_resources(
         &mut self,
         registry: &LiveFeedProductRegistry,
@@ -1979,6 +1985,39 @@ mod tests {
             )
             .unwrap();
         (installed, checkpoint_bytes)
+    }
+
+    #[test]
+    fn aborted_or_failed_resource_restore_can_be_retried_cleanly() {
+        let registry = live_feed_product_registry();
+        let driver = registry.required_driver("notams").unwrap();
+        let (installed, checkpoint_bytes) =
+            installed_notam_checkpoint(driver, "N0001", "checkpoint");
+        let manifest = installed.resource_manifest().unwrap();
+        let resource_sha256 = manifest.resources[0].blob_sha256.clone();
+        let mut cache = live_feed_cache();
+
+        cache.begin_restoring_resources(manifest.clone()).unwrap();
+        cache
+            .restore_resource_bytes("notams", &resource_sha256, &checkpoint_bytes)
+            .unwrap();
+        cache.abort_restoring_resources("notams");
+        cache.abort_restoring_resources("notams");
+
+        cache.begin_restoring_resources(manifest.clone()).unwrap();
+        assert!(cache
+            .finish_restoring_resources(&registry, "notams")
+            .is_err());
+        cache.abort_restoring_resources("notams");
+
+        cache.begin_restoring_resources(manifest).unwrap();
+        cache
+            .restore_resource_bytes("notams", &resource_sha256, &checkpoint_bytes)
+            .unwrap();
+        cache
+            .finish_restoring_resources(&registry, "notams")
+            .unwrap();
+        assert!(cache.install_candidate("notams").is_some());
     }
 
     #[test]

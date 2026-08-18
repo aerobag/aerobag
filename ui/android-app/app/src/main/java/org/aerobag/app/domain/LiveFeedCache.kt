@@ -256,16 +256,24 @@ class LiveFeedCache(
         manifest: LiveFeedResourceManifest,
         readResource: (LiveFeedResourceRef) -> ByteArray,
     ) = withOpenHandle { handle ->
+        val product = manifest.summary.product
         bridge.liveFeedCacheBeginRestoringResources(handle, json.encodeToString(manifest))
-        for (resource in manifest.resources) {
-            bridge.liveFeedCacheRestoreResourceBytes(
-                handle,
-                manifest.summary.product,
-                resource.blobSha256,
-                readResource(resource),
-            )
+        try {
+            for (resource in manifest.resources) {
+                bridge.liveFeedCacheRestoreResourceBytes(
+                    handle,
+                    product,
+                    resource.blobSha256,
+                    readResource(resource),
+                )
+            }
+            bridge.liveFeedCacheFinishRestoringResources(handle, product)
+        } catch (error: Throwable) {
+            runCatching {
+                bridge.liveFeedCacheAbortRestoringResources(handle, product)
+            }.onFailure(error::addSuppressed)
+            throw error
         }
-        bridge.liveFeedCacheFinishRestoringResources(handle, manifest.summary.product)
     }
 
     fun installProductInSessionJson(
@@ -869,6 +877,12 @@ object LiveFeedCacheStore {
                     }
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
+                    Log.w(
+                        LiveFeedLogTag,
+                        "discarding failed persisted resource restore " +
+                            "${stored.manifest.summary.product}/${stored.manifest.summary.version}",
+                        error,
+                    )
                     stored.manifestFile.delete()
                 }
             }
@@ -881,6 +895,12 @@ object LiveFeedCacheStore {
                     )
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
+                    Log.w(
+                        LiveFeedLogTag,
+                        "discarding failed legacy payload restore " +
+                            "${entry.summary.product}/${entry.summary.version}",
+                        error,
+                    )
                     entry.payloadFile.parentFile?.deleteRecursively()
                 }
             }

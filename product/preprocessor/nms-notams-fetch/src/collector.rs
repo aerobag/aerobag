@@ -131,12 +131,14 @@ impl NmsApiCollectorStore {
                     .context("failed to start NMS procedure-key schema migration")?;
                 tx.execute("DELETE FROM raw_updates", [])
                     .context("failed to clear old NMS raw updates")?;
+                tx.execute("DELETE FROM rejected_updates", [])
+                    .context("failed to clear old NMS rejected updates")?;
+                tx.execute("DELETE FROM canonical_changes", [])
+                    .context("failed to clear old NMS canonical change journal")?;
                 tx.execute("DELETE FROM poll_runs", [])
                     .context("failed to clear old NMS poll history")?;
                 tx.execute("DELETE FROM current_notams", [])
                     .context("failed to clear old NMS current state")?;
-                tx.execute("DELETE FROM canonical_changes", [])
-                    .context("failed to clear old NMS canonical change journal")?;
                 for key in [
                     "baseline_capture_path",
                     "baseline_installed_at_utc",
@@ -1329,6 +1331,33 @@ mod tests {
                        '2026-07-24T15:30:04Z')",
             [],
         )?;
+        connection.execute_batch(
+            "INSERT INTO poll_runs(
+                poll_id, started_at_utc, query_since_utc, completed_at_utc,
+                domestic_received, fdc_received
+             ) VALUES (
+                1, '2026-07-24T15:30:04Z', '2026-07-24T15:20:04Z',
+                '2026-07-24T15:30:05Z', 1, 0
+             );
+             INSERT INTO raw_updates(
+                payload_sha256, poll_id, classification, nms_id,
+                last_updated_utc, action, referenced_human_identity, raw_aixm
+             ) VALUES (
+                'raw', 1, 'DOM', 'old', '2026-07-24T15:30:04Z',
+                'upsert', NULL, '<old/>'
+             );
+             INSERT INTO rejected_updates(
+                payload_sha256, first_poll_id, last_poll_id, classification,
+                reason, raw_aixm, first_rejected_at_utc, last_rejected_at_utc,
+                occurrence_count
+             ) VALUES (
+                'rejected', 1, 1, 'DOM', 'old rejection', '<rejected/>',
+                '2026-07-24T15:30:04Z', '2026-07-24T15:30:04Z', 1
+             );
+             INSERT INTO canonical_changes(
+                sequence, poll_id, operation, notam_id, record_json
+             ) VALUES (1, 1, 'remove', 'old', NULL);",
+        )?;
         drop(connection);
 
         store.initialize()?;
@@ -1340,6 +1369,18 @@ mod tests {
         );
         assert!(!store.is_baseline_installed()?);
         assert!(store.current_records()?.is_empty());
+        for table in [
+            "raw_updates",
+            "rejected_updates",
+            "canonical_changes",
+            "poll_runs",
+        ] {
+            let count =
+                connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+            assert_eq!(count, 0, "migration retained rows in {table}");
+        }
         Ok(())
     }
 

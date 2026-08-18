@@ -10,10 +10,9 @@ use crate::{
     AppResult,
 };
 use crate::{
-    CloudAuthorizationRequest, CloudAuthorizationResponse, CloudEventStreamEvent,
-    CloudEventStreamPlan, CloudHttpRequest, CloudHttpResponse, CloudPersistentState,
-    CloudStatusSummary, CloudUiActionId, CloudUiFieldValue, DataStatusRecord, DebugFlagId,
-    FlightPlan, InactivitySleepTimeout, OfflinePackagePreferences, UiCloudPageState,
+    CloudEventStreamEvent, CloudEventStreamPlan, CloudHttpRequest, CloudHttpResponse,
+    CloudPersistentState, CloudStatusSummary, CloudUiActionId, CloudUiFieldValue, DataStatusRecord,
+    DebugFlagId, FlightPlan, InactivitySleepTimeout, OfflinePackagePreferences, UiCloudPageState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,39 +162,6 @@ impl CloudController {
     ) -> AppResult<()> {
         self.engine_mut()
             .report_event_stream_event(event, now_epoch_ms)?;
-        self.note_change();
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn set_authorization_state(
-        &mut self,
-        provider: crate::CloudProviderKind,
-        state: crate::ProviderAuthorizationState,
-    ) {
-        self.engine_mut().set_authorization_state(provider, state);
-        self.note_change();
-    }
-
-    pub fn take_authorization_request(
-        &mut self,
-        now_epoch_ms: i64,
-    ) -> AppResult<Option<CloudAuthorizationRequest>> {
-        let request = self.engine_mut().take_authorization_request(now_epoch_ms)?;
-        if request.is_some() {
-            self.note_change();
-        }
-        Ok(request)
-    }
-
-    pub fn complete_authorization(
-        &mut self,
-        request_id: u64,
-        response: CloudAuthorizationResponse,
-        now_epoch_ms: i64,
-    ) -> AppResult<()> {
-        self.engine_mut()
-            .complete_authorization(request_id, response, now_epoch_ms)?;
         self.note_change();
         Ok(())
     }
@@ -375,8 +341,6 @@ impl CloudController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CloudProviderKind, ProviderAuthorizationState};
-
     #[test]
     fn projection_is_cached_by_revision_clock_and_capability() {
         let mut controller = CloudController::default();
@@ -416,12 +380,9 @@ mod tests {
         let checkpoint = controller.checkpoint_model();
         assert_eq!(Arc::as_ptr(&controller.model.engine), engine_address);
 
-        controller.set_authorization_state(
-            CloudProviderKind::GoogleDrive,
-            ProviderAuthorizationState::Failed {
-                detail: "test".to_string(),
-            },
-        );
+        controller
+            .set_acs_default_base_url(Some("https://cloud.example/cloud/".to_string()))
+            .unwrap();
         assert_ne!(Arc::as_ptr(&controller.model.engine), engine_address);
 
         controller.rollback_model(checkpoint);

@@ -446,7 +446,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview:1.7.3")
     implementation("androidx.compose.material3:material3:1.3.0")
     implementation("com.google.android.material:material:1.12.0")
-    implementation("com.google.android.gms:play-services-auth:21.6.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

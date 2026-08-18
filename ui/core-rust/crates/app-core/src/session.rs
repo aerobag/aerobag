@@ -45,9 +45,8 @@ use crate::{
     chart_ident_label_for_nav_ref_symbol,
     chart_page::{chart_page_airport_candidates, merge_recent_airport_ids, ChartAssetRecord},
     cloud::{
-        CloudAuthorizationRequest, CloudAuthorizationResponse, CloudHttpRequest, CloudHttpResponse,
-        CloudPersistentState, CloudUiActionId, CloudUiFieldValue, UiCloudPageState,
-        CLOUD_STATUS_ID,
+        CloudHttpRequest, CloudHttpResponse, CloudPersistentState, CloudUiActionId,
+        CloudUiFieldValue, UiCloudPageState, CLOUD_STATUS_ID,
     },
     cloud_controller::{
         CloudController, CloudModelCheckpoint, CloudProjection, CloudProjectionInput,
@@ -2456,44 +2455,6 @@ pub fn configure_platform_capabilities_in_session(
             .set_acs_default_base_url(acs_default_base_url)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
-}
-
-pub fn complete_cloud_authorization_in_session(
-    handle: u32,
-    request_id: u64,
-    response: CloudAuthorizationResponse,
-    now_epoch_ms: i64,
-) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
-    if session.coordinator.platform_capabilities.cloud.is_none() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidCatalog,
-            message: "this platform did not advertise cloud-provider support".to_string(),
-        });
-    }
-    run_session_model_transaction(session, |session| {
-        advance_session_wall_clock(session, now_epoch_ms);
-        session
-            .cloud
-            .complete_authorization(request_id, response, now_epoch_ms)?;
-        Ok(vec![UiInvalidation::SessionSnapshot])
-    })
-}
-
-pub fn take_cloud_authorization_request_in_session(
-    handle: u32,
-    now_epoch_ms: i64,
-) -> AppResult<Option<CloudAuthorizationRequest>> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
-    if session.coordinator.platform_capabilities.cloud.is_none() {
-        return Ok(None);
-    }
-    advance_session_wall_clock(session, now_epoch_ms);
-    session.cloud.take_authorization_request(now_epoch_ms)
 }
 
 pub fn perform_cloud_ui_action_in_session(
@@ -13307,13 +13268,13 @@ mod tests {
             nexrad_animation_cycle_ms, NEXRAD_ANIMATION_BLANK_DWELL_MS,
             NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS, NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS,
         },
-        AirportId, CloudProviderPrincipal, FlightPlan, FlightPlanDisplayRowKind, GuidanceState,
-        LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, LiveFeedNetworkStatus,
-        MapSelectionAction, MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, NavRef,
-        OwnshipSourceId, OwnshipSourceKind, PathTermination, PointVectorRecord,
-        ProcedureDiscontinuity, ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg,
-        ResolvedLegSource, RouteComponent, SequencingMode, Situation, SituationPosition,
-        SituationSample, UiCloudPanelControl, REQUIRED_NAV_DB_CONTRACT_ID,
+        AirportId, FlightPlan, FlightPlanDisplayRowKind, GuidanceState, LegDisplayElement,
+        LegDisplayPath, LegDisplayPathStyle, LiveFeedNetworkStatus, MapSelectionAction,
+        MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId,
+        OwnshipSourceKind, PathTermination, PointVectorRecord, ProcedureDiscontinuity,
+        ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
+        RouteComponent, SequencingMode, Situation, SituationPosition, SituationSample,
+        REQUIRED_NAV_DB_CONTRACT_ID,
     };
     use chrono::SecondsFormat;
     use std::io::Read;
@@ -15185,7 +15146,6 @@ mod tests {
     snapshot_wrapper!(tick_playback_in_session(handle: u32, now_epoch_ms: f64));
     snapshot_wrapper!(set_situation_in_session(handle: u32, situation: Situation));
     snapshot_wrapper!(tick_bad_autopilot_in_session(handle: u32, now_epoch_ms: f64));
-    snapshot_wrapper!(stop_navigation_in_session(handle: u32));
     snapshot_wrapper!(unsuspend_sequencing_in_session(handle: u32));
     snapshot_wrapper!(replace_flight_plan_in_session(
         handle: u32,
@@ -28916,304 +28876,5 @@ mod tests {
             Some("edited")
         );
         destroy_session(init.handle);
-    }
-
-    #[test]
-    fn cloud_crossfill_adopts_one_coherent_flight_plan_snapshot() {
-        use crate::CloudHttpMethod;
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-
-        #[derive(Default)]
-        struct Provider {
-            next_id: u64,
-            objects: BTreeMap<String, Vec<u8>>,
-        }
-
-        impl Provider {
-            fn execute(&mut self, request: &CloudHttpRequest) -> CloudHttpResponse {
-                if request.url.contains("/files/generateIds?") {
-                    let count = request
-                        .url
-                        .split("count=")
-                        .nth(1)
-                        .and_then(|tail| tail.split('&').next())
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .expect("generated-ID count");
-                    let ids = (0..count)
-                        .map(|_| {
-                            self.next_id += 1;
-                            format!("session-cloud-object-{}", self.next_id)
-                        })
-                        .collect::<Vec<_>>();
-                    return completed_http(
-                        200,
-                        serde_json::to_vec(&serde_json::json!({
-                            "ids": ids,
-                            "space": "appDataFolder",
-                        }))
-                        .unwrap(),
-                    );
-                }
-                if request.method == CloudHttpMethod::Get && request.url.contains("?alt=media") {
-                    let id = request
-                        .url
-                        .split("/files/")
-                        .nth(1)
-                        .unwrap()
-                        .split('?')
-                        .next()
-                        .unwrap();
-                    return self
-                        .objects
-                        .get(id)
-                        .cloned()
-                        .map(|bytes| completed_http(200, bytes))
-                        .unwrap_or_else(|| completed_http(404, Vec::new()));
-                }
-                if request.method == CloudHttpMethod::Post
-                    && request.url.contains("uploadType=multipart")
-                {
-                    let body = URL_SAFE_NO_PAD
-                        .decode(request.body_base64.as_deref().unwrap())
-                        .unwrap();
-                    let metadata_start = find_bytes(&body, b"\r\n\r\n").unwrap() + 4;
-                    let metadata_end =
-                        find_bytes(&body[metadata_start..], b"\r\n--").unwrap() + metadata_start;
-                    let metadata: serde_json::Value =
-                        serde_json::from_slice(&body[metadata_start..metadata_end]).unwrap();
-                    let id = metadata["id"].as_str().unwrap().to_string();
-                    if self.objects.contains_key(&id) {
-                        return completed_http(409, Vec::new());
-                    }
-                    let payload_marker = format!(
-                        "Content-Type: {}\r\n\r\n",
-                        "application/vnd.aerobag.cloud-object"
-                    );
-                    let payload_start = find_bytes(&body, payload_marker.as_bytes()).unwrap()
-                        + payload_marker.len();
-                    let payload_end =
-                        find_bytes(&body[payload_start..], b"\r\n--").unwrap() + payload_start;
-                    self.objects
-                        .insert(id.clone(), body[payload_start..payload_end].to_vec());
-                    return completed_http(
-                        200,
-                        serde_json::to_vec(&serde_json::json!({ "id": id })).unwrap(),
-                    );
-                }
-                panic!("unexpected Drive HTTP request: {request:?}")
-            }
-        }
-
-        fn completed_http(status_code: u16, body: Vec<u8>) -> CloudHttpResponse {
-            CloudHttpResponse::Completed {
-                status_code,
-                body_base64: URL_SAFE_NO_PAD.encode(body),
-            }
-        }
-
-        fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-            haystack
-                .windows(needle.len())
-                .position(|window| window == needle)
-        }
-
-        fn configure_cloud(handle: u32, storage: Option<SettingsStorageHandle>) {
-            configure_platform_capabilities_in_session(
-                handle,
-                PlatformCapabilities {
-                    cloud: Some(PlatformCloudCapability::default()),
-                    ..PlatformCapabilities::default()
-                },
-                storage,
-            )
-            .expect("configure cloud capability");
-        }
-
-        fn authorize_cloud(handle: u32, now_epoch_ms: i64) {
-            let request = take_cloud_authorization_request_in_session(handle, now_epoch_ms)
-                .expect("take cloud authorization")
-                .expect("cloud authorization request");
-            complete_cloud_authorization_in_session(
-                handle,
-                request.request_id,
-                CloudAuthorizationResponse::Authorized {
-                    expires_at_epoch_ms: None,
-                    principal: CloudProviderPrincipal {
-                        stable_id: "session-test-principal".to_string(),
-                        display_label: "pilot@example.com".to_string(),
-                    },
-                },
-                now_epoch_ms,
-            )
-            .expect("connect cloud provider");
-        }
-
-        fn pump_cloud(handle: u32, provider: &mut Provider, now_epoch_ms: i64) -> usize {
-            let mut route_invalidations = 0;
-            for _ in 0..64 {
-                let Some(request) = take_cloud_provider_request_in_session(handle, now_epoch_ms)
-                    .expect("take cloud effect")
-                else {
-                    return route_invalidations;
-                };
-                let response = provider.execute(&request);
-                let outcome = complete_cloud_provider_request_in_session(
-                    handle,
-                    request.request_id,
-                    response,
-                    now_epoch_ms,
-                )
-                .expect("complete cloud effect");
-                let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
-                    panic!("cloud effect unexpectedly faulted on a resource")
-                };
-                route_invalidations += invalidations
-                    .iter()
-                    .filter(|item| **item == UiInvalidation::FlightPlanRoute)
-                    .count();
-            }
-            panic!("cloud session pump did not quiesce")
-        }
-
-        let mut provider = Provider::default();
-        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
-        let mut original_plan = lat_lon_preview_plan();
-        original_plan.guidance = None;
-        let first =
-            create_ui_session(original_plan.clone(), &[], None, None).expect("first session");
-        configure_cloud(first.handle, Some(storage.clone()));
-        perform_cloud_ui_action_in_session(
-            first.handle,
-            CloudUiActionId::BeginCreate,
-            Vec::new(),
-            1,
-        )
-        .expect("begin cloud account creation");
-        perform_cloud_ui_action_in_session(
-            first.handle,
-            CloudUiActionId::SelectProviderGoogleDrive,
-            Vec::new(),
-            1,
-        )
-        .expect("select cloud provider");
-        authorize_cloud(first.handle, 1);
-        perform_cloud_ui_action_in_session(
-            first.handle,
-            CloudUiActionId::CreateAccount,
-            Vec::new(),
-            1,
-        )
-        .expect("create cloud account");
-        assert_eq!(pump_cloud(first.handle, &mut provider, 10_000), 0);
-        perform_cloud_ui_action_in_session(
-            first.handle,
-            CloudUiActionId::BackupSetupCode,
-            Vec::new(),
-            10_000,
-        )
-        .expect("reveal Device Setup Code");
-        let token = get_session_snapshot(first.handle)
-            .expect("first snapshot")
-            .cloud_page_state
-            .sync_account_panels
-            .into_iter()
-            .find_map(|panel| match panel.control {
-                Some(UiCloudPanelControl::DeviceSetupCodeOutput { setup_code, .. }) => {
-                    Some(setup_code)
-                }
-                _ => None,
-            })
-            .expect("Device Setup Code");
-        destroy_session(first.handle);
-
-        let restarted =
-            create_ui_session(FlightPlan::empty(), &[], None, None).expect("restarted session");
-        configure_platform_capabilities_in_session(
-            restarted.handle,
-            PlatformCapabilities {
-                cloud: Some(PlatformCloudCapability::default()),
-                ..PlatformCapabilities::default()
-            },
-            Some(storage),
-        )
-        .expect("restore persisted cloud account");
-        let restored = get_session_snapshot(restarted.handle).expect("restored snapshot");
-        let expected_plan = original_plan.clone().normalized();
-        assert_eq!(
-            restored.app_state.active_plan.as_ref(),
-            Some(&expected_plan)
-        );
-        assert!(restored
-            .cloud_page_state
-            .sync_account_panels
-            .iter()
-            .any(|panel| panel.id == "linked"));
-        assert!(restored.data_status_state.boxes.iter().any(|box_state| {
-            box_state.id == CLOUD_STATUS_ID
-                && box_state.drives_caution
-                && box_state.severity == UiStatusSeverity::Caution
-        }));
-        authorize_cloud(restarted.handle, 20_000);
-
-        let second =
-            create_ui_session(FlightPlan::empty(), &[], None, None).expect("second session");
-        configure_cloud(second.handle, None);
-        perform_cloud_ui_action_in_session(
-            second.handle,
-            CloudUiActionId::AcceptSetupCode,
-            vec![CloudUiFieldValue {
-                id: crate::cloud::CloudUiFieldId::DeviceSetupCode,
-                value: token,
-            }],
-            20_000,
-        )
-        .expect("link second session");
-        authorize_cloud(second.handle, 20_000);
-        assert_eq!(pump_cloud(second.handle, &mut provider, 20_000), 1);
-
-        let mut edited_plan = short_lat_lon_preview_plan();
-        edited_plan.guidance = None;
-        replace_flight_plan_in_session(restarted.handle, edited_plan.clone())
-            .expect("edit first flight plan");
-        assert_eq!(pump_cloud(restarted.handle, &mut provider, 30_000), 0);
-        let mut navigating_plan = original_plan.clone();
-        navigating_plan.guidance = lat_lon_preview_plan().guidance;
-        replace_flight_plan_in_session(second.handle, navigating_plan)
-            .expect("start navigation on second session");
-        perform_cloud_ui_action_in_session(
-            second.handle,
-            CloudUiActionId::SyncNow,
-            Vec::new(),
-            30_001,
-        )
-        .expect("poll from second session");
-        assert_eq!(pump_cloud(second.handle, &mut provider, 30_001), 0);
-
-        let navigating = get_session_snapshot(second.handle).expect("navigating snapshot");
-        assert_ne!(
-            navigating.app_state.active_plan.as_ref(),
-            Some(&edited_plan),
-            "remote plan must remain pending while navigation is active"
-        );
-        stop_navigation_in_session(second.handle).expect("stop navigation and adopt pending plan");
-
-        let adopted = get_session_snapshot(second.handle).expect("adopted snapshot");
-        let expected_edited_plan = edited_plan.clone().normalized();
-        assert_eq!(
-            adopted.app_state.active_plan.as_ref(),
-            Some(&expected_edited_plan)
-        );
-        assert_eq!(
-            adopted
-                .app_ui_state
-                .active_plan
-                .as_ref()
-                .map(|plan| plan.plan_id.as_str()),
-            Some(edited_plan.id.as_str())
-        );
-        assert_eq!(pump_cloud(second.handle, &mut provider, 30_002), 0);
-
-        destroy_session(restarted.handle);
-        destroy_session(second.handle);
     }
 }

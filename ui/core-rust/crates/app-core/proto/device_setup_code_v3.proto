@@ -11,16 +11,11 @@ message DeviceSetupCodeV3 {
 
   reserved 2 to 9;
 
+  reserved 10;
+
   oneof provider {
-    GoogleDriveSetup google_drive = 10;
     AerobagCloudSetup aerobag_cloud = 11;
   }
-}
-
-message GoogleDriveSetup {
-  bytes stable_principal_fingerprint = 1;
-  string display_hint = 2;
-  string genesis_id = 3;
 }
 
 message AerobagCloudSetup {

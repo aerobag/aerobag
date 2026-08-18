@@ -24,10 +24,6 @@ fn schema<T: JsonSchema>() -> Value {
 fn cloud_schema() -> Value {
     let mut root = schema::<cloud::UiCloudPageState>();
     add_definition::<cloud::CloudProviderKind>(&mut root, "CloudProviderKind");
-    add_definition::<cloud::CloudProviderPrincipal>(&mut root, "CloudProviderPrincipal");
-    add_definition::<cloud::CloudAuthorizationMode>(&mut root, "CloudAuthorizationMode");
-    add_definition::<cloud::CloudAuthorizationRequest>(&mut root, "CloudAuthorizationRequest");
-    add_definition::<cloud::CloudAuthorizationResponse>(&mut root, "CloudAuthorizationResponse");
     add_definition::<cloud::CloudUiFieldValue>(&mut root, "CloudUiFieldValue");
     add_definition::<cloud::CloudHttpMethod>(&mut root, "CloudHttpMethod");
     add_definition::<cloud::CloudHttpHeader>(&mut root, "CloudHttpHeader");
@@ -118,10 +114,6 @@ fn main() {
             description: "Core-owned Cloud UI and provider-effect wire contract.",
             export_order: &[
                 "CloudProviderKind",
-                "CloudProviderPrincipal",
-                "CloudAuthorizationMode",
-                "CloudAuthorizationRequest",
-                "CloudAuthorizationResponse",
                 "CloudUiActionId",
                 "CloudUiFieldId",
                 "CloudUiFieldValue",
@@ -142,7 +134,6 @@ fn main() {
                 "CloudEventStreamEvent",
             ],
             tagged_unions: &[
-                ("CloudAuthorizationResponse", "state"),
                 ("CloudPlatformEffect", "kind"),
                 ("UiCloudPanelControl", "kind"),
                 ("CloudHttpResponse", "result"),

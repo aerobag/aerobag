@@ -2,90 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type {
-  CloudAuthorizationRequest,
-  CloudAuthorizationResponse,
   CloudHttpRequest,
   CloudHttpResponse,
-  CloudProviderKind,
 } from "../generated/cloudWire";
-import {
-  authorizeGoogleDrive,
-  GoogleDriveAuthorizationError,
-} from "./googleDriveCloudProvider";
-
-export type CloudProviderAuthorization = {
-  provider: CloudProviderKind;
-  credential: string;
-  expiresAtEpochMs: number;
-};
-
-export type CloudAuthorizationExecution = {
-  authorization: CloudProviderAuthorization | null;
-  response: CloudAuthorizationResponse;
-};
-
-export function beginInteractiveCloudAuthorization(
-  provider: CloudProviderKind,
-  scopes: string[],
-): Promise<CloudAuthorizationExecution> {
-  return executeCloudAuthorization(provider, "interactive", scopes);
-}
-
-export async function executeCloudAuthorizationRequest(
-  request: CloudAuthorizationRequest,
-): Promise<CloudAuthorizationExecution> {
-  return executeCloudAuthorization(request.provider, request.mode, request.scopes);
-}
-
-async function executeCloudAuthorization(
-  provider: CloudProviderKind,
-  mode: CloudAuthorizationRequest["mode"],
-  scopes: string[],
-): Promise<CloudAuthorizationExecution> {
-  switch (provider) {
-    case "google_drive":
-      try {
-        const authorization = await authorizeGoogleDrive(mode, scopes);
-        return {
-          authorization: {
-            provider,
-            credential: authorization.accessToken,
-            expiresAtEpochMs: authorization.expiresAtEpochMs,
-          },
-          response: {
-            state: "authorized",
-            expires_at_epoch_ms: authorization.expiresAtEpochMs,
-            principal: authorization.principal,
-          },
-        };
-      } catch (error) {
-        return { authorization: null, response: authorizationFailure(error) };
-      }
-    case "aerobag_cloud":
-      return {
-        authorization: null,
-        response: {
-          state: "permanent_failure",
-          diagnostic: "Aerobag Cloud authorization is not available in this build.",
-        },
-      };
-  }
-}
 
 export async function executeCloudHttpRequest(
   request: CloudHttpRequest,
-  authorization: CloudProviderAuthorization | null,
 ): Promise<CloudHttpResponse> {
-  if (request.provider === "google_drive"
-      && (authorization?.provider !== request.provider || authorization.expiresAtEpochMs <= Date.now())) {
-    return { result: "transport_error", detail: "Cloud provider authorization is unavailable or expired." };
-  }
-
   try {
     const headers = new Headers(request.headers.map((header) => [header.name, header.value]));
-    if (request.provider === "google_drive") {
-      headers.set("Authorization", `Bearer ${authorization!.credential}`);
-    }
     const response = await fetch(request.url, {
       method: request.method.toUpperCase(),
       headers,
@@ -110,23 +35,6 @@ export async function executeCloudHttpRequest(
       result: "transport_error",
       detail: error instanceof Error ? error.message : String(error),
     };
-  }
-}
-
-function authorizationFailure(error: unknown): CloudAuthorizationResponse {
-  const diagnostic = error instanceof Error ? error.message : String(error);
-  if (!(error instanceof GoogleDriveAuthorizationError)) {
-    return { state: "permanent_failure", diagnostic };
-  }
-  switch (error.kind) {
-    case "interaction_required":
-      return { state: "interaction_required", diagnostic };
-    case "denied":
-      return { state: "denied", diagnostic };
-    case "transient":
-      return { state: "transient_failure", diagnostic };
-    case "permanent":
-      return { state: "permanent_failure", diagnostic };
   }
 }
 

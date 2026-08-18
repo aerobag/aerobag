@@ -1,149 +1,5 @@
 {
   "$defs": {
-    "CloudAuthorizationMode": {
-      "enum": [
-        "silent",
-        "interactive"
-      ],
-      "title": "CloudAuthorizationMode",
-      "type": "string"
-    },
-    "CloudAuthorizationRequest": {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "$ref": "#/$defs/CloudAuthorizationMode"
-        },
-        "provider": {
-          "$ref": "#/$defs/CloudProviderKind"
-        },
-        "request_id": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "scopes": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "request_id",
-        "provider",
-        "mode",
-        "scopes"
-      ],
-      "title": "CloudAuthorizationRequest",
-      "type": "object"
-    },
-    "CloudAuthorizationResponse": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "expires_at_epoch_ms": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "principal": {
-              "$ref": "#/$defs/CloudProviderPrincipal"
-            },
-            "state": {
-              "const": "authorized",
-              "type": "string"
-            }
-          },
-          "required": [
-            "state",
-            "principal"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "diagnostic": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "state": {
-              "const": "interaction_required",
-              "type": "string"
-            }
-          },
-          "required": [
-            "state"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "diagnostic": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "state": {
-              "const": "denied",
-              "type": "string"
-            }
-          },
-          "required": [
-            "state"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "diagnostic": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "state": {
-              "const": "transient_failure",
-              "type": "string"
-            }
-          },
-          "required": [
-            "state"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "diagnostic": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "state": {
-              "const": "permanent_failure",
-              "type": "string"
-            }
-          },
-          "required": [
-            "state"
-          ],
-          "type": "object"
-        }
-      ],
-      "title": "CloudAuthorizationResponse",
-      "x-discriminator": "state"
-    },
     "CloudEventStreamEvent": {
       "additionalProperties": false,
       "properties": {
@@ -360,30 +216,6 @@
         {
           "additionalProperties": false,
           "properties": {
-            "kind": {
-              "const": "begin_authorization",
-              "type": "string"
-            },
-            "provider": {
-              "$ref": "#/$defs/CloudProviderKind"
-            },
-            "scopes": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "kind",
-            "provider",
-            "scopes"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
             "completion_action": {
               "$ref": "#/$defs/CloudUiActionId"
             },
@@ -428,38 +260,18 @@
     },
     "CloudProviderKind": {
       "enum": [
-        "google_drive",
         "aerobag_cloud"
       ],
+      "title": "CloudProviderKind",
       "type": "string"
-    },
-    "CloudProviderPrincipal": {
-      "additionalProperties": false,
-      "properties": {
-        "display_label": {
-          "type": "string"
-        },
-        "stable_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "stable_id",
-        "display_label"
-      ],
-      "title": "CloudProviderPrincipal",
-      "type": "object"
     },
     "CloudUiActionId": {
       "enum": [
         "begin_setup",
         "begin_create",
         "back_setup",
-        "select_provider_google_drive",
-        "select_provider_aerobag_cloud",
         "scan_setup_code",
         "accept_setup_code",
-        "authorize_provider",
         "create_account",
         "backup_setup_code",
         "add_device",
@@ -759,13 +571,9 @@
   ],
   "title": "UiCloudPageState",
   "type": "object",
-  "x-contract-version": 4,
+  "x-contract-version": 5,
   "x-export-order": [
     "CloudProviderKind",
-    "CloudProviderPrincipal",
-    "CloudAuthorizationMode",
-    "CloudAuthorizationRequest",
-    "CloudAuthorizationResponse",
     "CloudUiActionId",
     "CloudUiFieldId",
     "CloudUiFieldValue",

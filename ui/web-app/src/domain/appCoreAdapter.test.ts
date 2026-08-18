@@ -188,8 +188,6 @@ describe("loadBestAvailableAdapter", () => {
       },
       configure_platform_capabilities_in_session: async () => mutationOutcomeJson(),
       configure_data_sources_in_session: async () => mutationOutcomeJson(),
-      take_cloud_authorization_request_in_session: async () => "null",
-      complete_cloud_authorization_in_session: async () => mutationOutcomeJson(),
       perform_cloud_ui_action_in_session: async () => mutationOutcomeJson(),
       record_offline_package_preferences_in_session: async () => mutationOutcomeJson(),
       take_cloud_provider_request_in_session: async () => "null",

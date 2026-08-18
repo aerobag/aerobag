@@ -17,11 +17,6 @@ pub(crate) struct DeviceSetupCode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeviceSetupProvider {
-    GoogleDrive {
-        stable_principal_fingerprint: [u8; 32],
-        display_hint: String,
-        genesis_id: String,
-    },
     AerobagCloud {
         base_url: String,
         account_locator: [u8; 32],
@@ -32,15 +27,6 @@ pub(crate) fn encode_device_setup_code(value: &DeviceSetupCode) -> String {
     let wire = WireDeviceSetupCodeV3 {
         root_secret: value.root_secret.to_vec(),
         provider: Some(match &value.provider {
-            DeviceSetupProvider::GoogleDrive {
-                stable_principal_fingerprint,
-                display_hint,
-                genesis_id,
-            } => wire_device_setup_code_v3::Provider::GoogleDrive(WireGoogleDriveSetup {
-                stable_principal_fingerprint: stable_principal_fingerprint.to_vec(),
-                display_hint: display_hint.clone(),
-                genesis_id: genesis_id.clone(),
-            }),
             DeviceSetupProvider::AerobagCloud {
                 base_url,
                 account_locator,
@@ -78,19 +64,6 @@ pub(crate) fn decode_device_setup_code(encoded: &str) -> Result<DeviceSetupCode,
         "Device Setup Code root secret must be 256 bits",
     )?;
     let provider = match wire.provider {
-        Some(wire_device_setup_code_v3::Provider::GoogleDrive(provider)) => {
-            if provider.display_hint.trim().is_empty() || provider.genesis_id.trim().is_empty() {
-                return Err("Google Drive setup metadata is incomplete".to_string());
-            }
-            DeviceSetupProvider::GoogleDrive {
-                stable_principal_fingerprint: fixed_32(
-                    provider.stable_principal_fingerprint,
-                    "Google Drive principal fingerprint must be 256 bits",
-                )?,
-                display_hint: provider.display_hint,
-                genesis_id: provider.genesis_id,
-            }
-        }
         Some(wire_device_setup_code_v3::Provider::AerobagCloud(provider)) => {
             if provider.base_url.trim().is_empty() {
                 return Err("Aerobag Cloud provider URL is missing".to_string());
@@ -129,28 +102,16 @@ fn encode_wire_bytes(payload: &[u8]) -> String {
 struct WireDeviceSetupCodeV3 {
     #[prost(bytes = "vec", tag = "1")]
     root_secret: Vec<u8>,
-    #[prost(oneof = "wire_device_setup_code_v3::Provider", tags = "10, 11")]
+    #[prost(oneof = "wire_device_setup_code_v3::Provider", tags = "11")]
     provider: Option<wire_device_setup_code_v3::Provider>,
 }
 
 mod wire_device_setup_code_v3 {
     #[derive(Clone, PartialEq, prost::Oneof)]
     pub(super) enum Provider {
-        #[prost(message, tag = "10")]
-        GoogleDrive(super::WireGoogleDriveSetup),
         #[prost(message, tag = "11")]
         AerobagCloud(super::WireAerobagCloudSetup),
     }
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct WireGoogleDriveSetup {
-    #[prost(bytes = "vec", tag = "1")]
-    stable_principal_fingerprint: Vec<u8>,
-    #[prost(string, tag = "2")]
-    display_hint: String,
-    #[prost(string, tag = "3")]
-    genesis_id: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -165,32 +126,19 @@ struct WireAerobagCloudSetup {
 mod tests {
     use super::*;
 
-    fn google() -> DeviceSetupCode {
+    fn acs() -> DeviceSetupCode {
         DeviceSetupCode {
-            root_secret: [0x42; 32],
-            provider: DeviceSetupProvider::GoogleDrive {
-                stable_principal_fingerprint: [0x57; 32],
-                display_hint: "jonhdotnet@gmail.com".to_string(),
-                genesis_id: "1MjK-seNff58_3rrWHfxjmubUKi4APg--XA-aeCWHm9x4e9Xj4A".to_string(),
-            },
-        }
-    }
-
-    #[test]
-    fn google_drive_and_aerobag_cloud_round_trip() {
-        let google = google();
-        assert_eq!(
-            decode_device_setup_code(&encode_device_setup_code(&google)).unwrap(),
-            google
-        );
-
-        let acs = DeviceSetupCode {
             root_secret: [0x42; 32],
             provider: DeviceSetupProvider::AerobagCloud {
                 base_url: "https://aerobag.org/cloud/".to_string(),
                 account_locator: [0xa3; 32],
             },
-        };
+        }
+    }
+
+    #[test]
+    fn aerobag_cloud_round_trip() {
+        let acs = acs();
         assert_eq!(
             decode_device_setup_code(&encode_device_setup_code(&acs)).unwrap(),
             acs
@@ -199,7 +147,7 @@ mod tests {
 
     #[test]
     fn checksum_and_format_reject_corruption_and_ab2() {
-        let mut corrupted = encode_device_setup_code(&google()).into_bytes();
+        let mut corrupted = encode_device_setup_code(&acs()).into_bytes();
         corrupted[12] = if corrupted[12] == b'A' { b'B' } else { b'A' };
         let corrupted = String::from_utf8(corrupted).unwrap();
         assert_eq!(
@@ -215,8 +163,8 @@ mod tests {
     #[test]
     fn protobuf_wire_fixture_is_stable() {
         assert_eq!(
-            encode_device_setup_code(&google()),
-            "AB3.CiBCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQlJtCiBXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXVxIUam9uaGRvdG5ldEBnbWFpbC5jb20aMzFNakstc2VOZmY1OF8zcnJXSGZ4am11YlVLaTRBUGctLVhBLWFlQ1dIbTl4NGU5WGo0QYMWfqi4jgyj"
+            encode_device_setup_code(&acs()),
+            "AB3.CiBCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQlo-ChpodHRwczovL2Flcm9iYWcub3JnL2Nsb3VkLxIgo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6PIpSJUl80gIQ"
         );
     }
 }

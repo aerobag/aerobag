@@ -28,9 +28,9 @@ fn home_page_wire_matches_golden() {
 #[test]
 fn cloud_effect_wire_matches_golden() {
     assert_golden(
-        &cloud::CloudPlatformEffect::BeginAuthorization {
-            provider: cloud::CloudProviderKind::GoogleDrive,
-            scopes: vec!["scope-a".to_string(), "scope-b".to_string()],
+        &cloud::CloudPlatformEffect::CopyText {
+            text: "setup-code".to_string(),
+            completion_label: "Copied".to_string(),
         },
         include_str!("goldens/cloud-effect.json"),
     );

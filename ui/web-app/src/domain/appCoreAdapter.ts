@@ -37,8 +37,6 @@ import {
   type UiSessionUpdateGroup,
 } from "../generated/sessionUpdateWire";
 import type {
-  CloudAuthorizationRequest,
-  CloudAuthorizationResponse,
   CloudEventStreamEvent,
   CloudEventStreamPlan,
   CloudHttpRequest,
@@ -65,9 +63,6 @@ import type {
 import { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
 export { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
 export type {
-  CloudAuthorizationMode,
-  CloudAuthorizationRequest,
-  CloudAuthorizationResponse,
   CloudHttpHeader,
   CloudHttpMethod,
   CloudHttpRequest,
@@ -833,8 +828,6 @@ export interface UiSession {
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
-  takeCloudAuthorizationRequest(nowEpochMs: number): Promise<CloudAuthorizationRequest | null>;
-  completeCloudAuthorization(requestId: number, response: CloudAuthorizationResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
   performCloudUiAction(actionId: CloudUiActionId, fields: CloudUiFieldValue[], nowEpochMs: number): Promise<UiSessionSnapshot>;
   recordOfflinePackagePreferences(preferencesJson: string, nowEpochMs: number): Promise<UiSessionSnapshot>;
   takeCloudProviderRequest(nowEpochMs: number): Promise<CloudHttpRequest | null>;
@@ -969,8 +962,6 @@ type WasmModule = {
   set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_settings_action_in_session(handle: number, actionJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
-  take_cloud_authorization_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
-  complete_cloud_authorization_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   record_offline_package_preferences_in_session(handle: number, preferencesJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
@@ -1840,25 +1831,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      takeCloudAuthorizationRequest: async (nowEpochMs) => {
-        return JSON.parse(
-          await this.module.take_cloud_authorization_request_in_session(
-            handle,
-            BigInt(Math.trunc(nowEpochMs)),
-          ),
-        ) as CloudAuthorizationRequest | null;
-      },
-      completeCloudAuthorization: async (requestId, response, nowEpochMs) => {
-        snapshot = await runSessionMutation(() =>
-          this.module.complete_cloud_authorization_in_session(
-            handle,
-            BigInt(requestId),
-            JSON.stringify(response),
-            BigInt(Math.trunc(nowEpochMs)),
-          ),
-        );
-        return snapshot;
-      },
       performCloudUiAction: async (actionId, fields, nowEpochMs) => {
         snapshot = await runSessionMutation(() =>
           this.module.perform_cloud_ui_action_in_session(
@@ -2388,8 +2360,6 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_visibility_in_session_paged",
     "set_map_layer_enabled_in_session_paged",
     "perform_settings_action_in_session",
-    "take_cloud_authorization_request_in_session",
-    "complete_cloud_authorization_in_session",
     "perform_cloud_ui_action_in_session",
     "record_offline_package_preferences_in_session",
     "take_cloud_provider_request_in_session",

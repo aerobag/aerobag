@@ -49,7 +49,7 @@ class CloudTransportTest {
             maxResponseBytes = 1024,
         )
 
-        val response = executeCloudHttpRequest(request, client, bearerToken = null)
+        val response = executeCloudHttpRequest(request, client)
 
         val sent = captured.get()
         assertEquals("PUT", sent.method)
@@ -74,31 +74,13 @@ class CloudTransportTest {
             maxResponseBytes = 1024,
         )
 
-        val response = executeCloudHttpRequest(request, recordingClient(captured), bearerToken = null)
+        val response = executeCloudHttpRequest(request, recordingClient(captured))
 
         val sent = captured.get()
         assertEquals("POST", sent.method)
         assertArrayEquals(ByteArray(0), sent.body?.let { bodyBytes(it) })
         assertNull(sent.header("Authorization"))
         assertEquals(200, (response as CloudHttpResponse.Completed).statusCode)
-    }
-
-    @Test
-    fun googleDriveTransportAddsOnlyItsOAuthCredential() = runBlocking {
-        val captured = AtomicReference<Request>()
-        val request = CloudHttpRequest(
-            requestId = 8,
-            provider = CloudProviderKind.GoogleDrive,
-            method = CloudHttpMethod.Get,
-            url = "https://drive.example.test/object",
-            headers = emptyList(),
-            bodyBase64 = null,
-            maxResponseBytes = 1024,
-        )
-
-        executeCloudHttpRequest(request, recordingClient(captured), bearerToken = "drive-token")
-
-        assertEquals("Bearer drive-token", captured.get().header("Authorization"))
     }
 
     @Test

@@ -136,12 +136,10 @@ derived signing public key. Subsequent requests are signed over method, path,
 body hash, timestamp, and nonce. The server enforces a bounded clock window and
 nonce replay protection.
 
-The provider-neutral Device Setup Code contains one tagged provider
-configuration. An ACS configuration includes its non-secret provider URL, so a
-paired device selects the same self-hosted or Aerobag-operated ACS
-automatically. A Google Drive configuration instead contains the Drive account
-binding and genesis object ID. The durable Sync Account secret must never
-appear in a URL, server log, or ordinary platform configuration.
+The Device Setup Code contains the non-secret ACS provider URL, so a paired
+device selects the same self-hosted or Aerobag-operated ACS automatically. The
+durable Sync Account secret must never appear in a URL, server log, or ordinary
+platform configuration.
 
 ### Phase-1 Contract Draft
 
@@ -195,34 +193,25 @@ account locator and key ID are derived and checked again when importing an ACS
 provider payload from the generic `AB3` Device Setup Code. The ASCII
 representation remains `AB3.<base64url payload and binary checksum>` so the
 decoder version is visible before decoding. Its logical payload contains a
-256-bit root secret and exactly one tagged provider configuration:
-
-- Google Drive: stable principal fingerprint, display hint, and genesis object
-  ID.
-- Aerobag Cloud: provider base URL and derived 256-bit account locator.
+256-bit root secret, the ACS provider base URL, and the derived 256-bit account
+locator.
 
 `AB3` is an application/core contract, not an ACS server contract; the blind
 server never reads it. AB3 replaces AB2 without a compatibility decoder or
-automatic migration. Google Drive continues using its immutable-successor
-publication protocol independently of the setup-code encoding.
+automatic migration.
 
 #### Device Setup Code Codec Experiment
 
 An isolated production WASM experiment compared generic JSON, postcard, and
-Protocol Buffers payloads. The representative Google payload used a 256-bit
-secret and principal fingerprint, a real-size Drive object ID, and a 20-byte
-display hint. The ACS payload used a 256-bit secret and locator plus
-`https://aerobag.org/cloud/`. Code lengths include the visible `AB3.` prefix,
-unpadded base64url, and an eight-byte binary checksum.
+Protocol Buffers payloads. The representative ACS payload used a 256-bit secret
+and locator plus `https://aerobag.org/cloud/`. Code lengths include the visible
+`AB3.` prefix, unpadded base64url, and an eight-byte binary checksum.
 
-| Codec | Google payload/code | ACS payload/code |
-| --- | ---: | ---: |
-| JSON with base64url binary fields | 298 B / 412 chars | 221 B / 310 chars |
-| postcard | 138 B / 199 chars | 92 B / 138 chars |
-| Protocol Buffers via `prost` | 145 B / 208 chars | 98 B / 146 chars |
-
-The existing Google Drive `AB2` JSON shape is about 338 payload bytes and 472
-characters for the same representative values.
+| Codec | ACS payload/code |
+| --- | ---: |
+| JSON with base64url binary fields | 221 B / 310 chars |
+| postcard | 92 B / 138 chars |
+| Protocol Buffers via `prost` | 98 B / 146 chars |
 
 Each codec's encode and decode paths were retained in the complete
 `app-wasm`, built with the `wasm-perf` profile and Binaryen 129 `wasm-opt -O2`.

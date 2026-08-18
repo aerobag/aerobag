@@ -290,37 +290,10 @@ function startAerobagApplication() {
   window.__aerobag_mark_startup_shell_managed?.();
 }
 
-async function startDriveCasExperiment() {
-  dismissStartupShell("drive_cas_experiment");
-  const rootNode = document.getElementById("root");
-  if (!rootNode) {
-    throw new Error("Missing #root element");
-  }
-  const { default: DriveCasExperiment } = await import("./experiments/DriveCasExperiment");
-  ReactDOM.createRoot(rootNode).render(
-    <React.StrictMode>
-      <DriveCasExperiment />
-    </React.StrictMode>,
-  );
-  window.__aerobag_mark_startup_shell_managed?.();
-}
-
-const driveCasExperimentPath = "/experiments/drive-cas";
-const isDriveCasExperiment = typeof window !== "undefined"
-  && window.location.pathname === driveCasExperimentPath;
-
-if (isDriveCasExperiment) {
-  void startDriveCasExperiment().catch((error) => {
-    const detail = error instanceof Error ? error.message : String(error);
-    window.__aerobag_show_startup_shell_error?.("Drive CAS lab failed", detail);
-    throw error;
-  });
-} else {
-  try {
-    startAerobagApplication();
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    window.__aerobag_show_startup_shell_error?.("Startup failed", detail);
-    throw error;
-  }
+try {
+  startAerobagApplication();
+} catch (error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  window.__aerobag_show_startup_shell_error?.("Startup failed", detail);
+  throw error;
 }

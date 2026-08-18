@@ -9,36 +9,21 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum CloudProviderKind {
     #[default]
-    GoogleDrive,
     AerobagCloud,
 }
 
 impl CloudProviderKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::GoogleDrive => "My Google Drive",
             Self::AerobagCloud => "Aerobag Cloud",
         }
     }
 
     pub fn recovery_label(self) -> &'static str {
         match self {
-            Self::GoogleDrive => "Google Drive",
             Self::AerobagCloud => "Aerobag Cloud",
         }
     }
-
-    pub fn uses_platform_authorization(self) -> bool {
-        matches!(self, Self::GoogleDrive)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct CloudProviderPrincipal {
-    pub stable_id: String,
-    pub display_label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,11 +33,8 @@ pub enum CloudUiActionId {
     BeginSetup,
     BeginCreate,
     BackSetup,
-    SelectProviderGoogleDrive,
-    SelectProviderAerobagCloud,
     ScanSetupCode,
     AcceptSetupCode,
-    AuthorizeProvider,
     CreateAccount,
     BackupSetupCode,
     AddDevice,
@@ -91,10 +73,6 @@ pub struct UiQrCode {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudPlatformEffect {
-    BeginAuthorization {
-        provider: CloudProviderKind,
-        scopes: Vec<String>,
-    },
     ScanQrCode {
         completion_action: CloudUiActionId,
         field_id: CloudUiFieldId,
@@ -102,46 +80,6 @@ pub enum CloudPlatformEffect {
     CopyText {
         text: String,
         completion_label: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum CloudAuthorizationMode {
-    Silent,
-    Interactive,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct CloudAuthorizationRequest {
-    pub request_id: u64,
-    pub provider: CloudProviderKind,
-    pub mode: CloudAuthorizationMode,
-    pub scopes: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CloudAuthorizationResponse {
-    Authorized {
-        expires_at_epoch_ms: Option<i64>,
-        principal: CloudProviderPrincipal,
-    },
-    InteractionRequired {
-        diagnostic: Option<String>,
-    },
-    Denied {
-        diagnostic: Option<String>,
-    },
-    TransientFailure {
-        diagnostic: Option<String>,
-    },
-    PermanentFailure {
-        diagnostic: Option<String>,
     },
 }
 

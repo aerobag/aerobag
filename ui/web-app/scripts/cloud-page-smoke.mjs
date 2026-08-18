@@ -76,32 +76,6 @@ try {
     throw new Error(`unexpected initial Cloud page state: ${JSON.stringify(state)}`);
   }
   await click(page, '[data-testid="cloud-action-begin_create"]');
-  const providerState = await waitFor(
-    async () => page.evaluate(`(() => {
-      const activePanel = document.querySelector('.pageLayer.isActive .cloudFlowPanel.is-active')
-        ?.getAttribute('data-testid');
-      const drive = document.querySelector('[data-testid="cloud-action-select_provider_google_drive"]');
-      const aerobag = document.querySelector('[data-testid="cloud-action-select_provider_aerobag_cloud"]');
-      if (activePanel !== 'cloud-panel-provider' || !(drive instanceof HTMLButtonElement) || !(aerobag instanceof HTMLButtonElement)) {
-        return null;
-      }
-      return {
-        activePanel,
-        driveEnabled: !drive.disabled,
-        aerobagEnabled: !aerobag.disabled,
-      };
-    })()`),
-    10_000,
-    "Cloud provider selection did not appear",
-  );
-  if (JSON.stringify(providerState) !== JSON.stringify({
-    activePanel: "cloud-panel-provider",
-    driveEnabled: true,
-    aerobagEnabled: true,
-  })) {
-    throw new Error(`unexpected provider selection state: ${JSON.stringify(providerState)}`);
-  }
-  await click(page, '[data-testid="cloud-action-select_provider_aerobag_cloud"]');
   const splitState = await waitFor(
     async () => page.evaluate(`(() => {
       const accountPanel = document.querySelector(

@@ -110,13 +110,7 @@ import {
   type UiInvalidation,
   type UiQrCode,
 } from "./domain/appCoreAdapter";
-import {
-  beginInteractiveCloudAuthorization,
-  executeCloudAuthorizationRequest,
-  executeCloudHttpRequest,
-  type CloudAuthorizationExecution,
-  type CloudProviderAuthorization,
-} from "./domain/cloudProviderRuntime";
+import { executeCloudHttpRequest } from "./domain/cloudProviderRuntime";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   flightPlanHistoryAriaKeyShortcuts,
@@ -2356,11 +2350,6 @@ function OperationalApp() {
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
-  const cloudProviderAuthorizationRef = useRef<CloudProviderAuthorization | null>(null);
-  const pendingInteractiveCloudAuthorizationRef = useRef<{
-    provider: CloudProviderAuthorization["provider"];
-    execution: Promise<CloudAuthorizationExecution>;
-  } | null>(null);
   const cloudPumpInFlightRef = useRef(false);
   const cloudEventStreamRef = useRef<{
     streamId: number;
@@ -2542,33 +2531,11 @@ function OperationalApp() {
     cloudPumpInFlightRef.current = true;
     try {
       for (let step = 0; step < 32; step += 1) {
-        const authorizationRequest = await uiSession.takeCloudAuthorizationRequest(Date.now());
-        if (authorizationRequest) {
-          const pendingInteractive = pendingInteractiveCloudAuthorizationRef.current;
-          const result = pendingInteractive?.provider === authorizationRequest.provider
-            && authorizationRequest.mode === "interactive"
-            ? await pendingInteractive.execution
-            : await executeCloudAuthorizationRequest(authorizationRequest);
-          if (pendingInteractive?.provider === authorizationRequest.provider) {
-            pendingInteractiveCloudAuthorizationRef.current = null;
-          }
-          cloudProviderAuthorizationRef.current = result.authorization;
-          const nextSnapshot = await uiSession.completeCloudAuthorization(
-            authorizationRequest.request_id,
-            result.response,
-            Date.now(),
-          );
-          applySessionSnapshot(nextSnapshot, "cloud_authorization_completion");
-          continue;
-        }
         const request = await uiSession.takeCloudProviderRequest(Date.now());
         if (!request) {
           return;
         }
-        const response = await executeCloudHttpRequest(
-          request,
-          cloudProviderAuthorizationRef.current,
-        );
+        const response = await executeCloudHttpRequest(request);
         const nextSnapshot = await uiSession.completeCloudProviderRequest(
           request.request_id,
           response,
@@ -2747,25 +2714,8 @@ function OperationalApp() {
     if (!uiSession) {
       return null;
     }
-    if (platformEffect?.kind === "begin_authorization") {
-      pendingInteractiveCloudAuthorizationRef.current = {
-        provider: platformEffect.provider,
-        execution: beginInteractiveCloudAuthorization(
-          platformEffect.provider,
-          platformEffect.scopes,
-        ),
-      };
-    }
     let nextSnapshot: UiSessionSnapshot;
-    try {
-      nextSnapshot = await uiSession.performCloudUiAction(actionId, fields, Date.now());
-    } catch (error) {
-      if (platformEffect?.kind === "begin_authorization"
-          && pendingInteractiveCloudAuthorizationRef.current?.provider === platformEffect.provider) {
-        pendingInteractiveCloudAuthorizationRef.current = null;
-      }
-      throw error;
-    }
+    nextSnapshot = await uiSession.performCloudUiAction(actionId, fields, Date.now());
     applySessionSnapshot(nextSnapshot, `cloud_action_${actionId}`);
     if (platformEffect?.kind === "copy_text") {
       await navigator.clipboard.writeText(platformEffect.text);

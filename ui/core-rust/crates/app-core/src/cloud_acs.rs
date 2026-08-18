@@ -135,7 +135,6 @@ pub(crate) fn plan_request(
             true,
             MAX_SMALL_RESPONSE_BYTES,
         ),
-        _ => return Err(protocol_error("non-ACS operation sent to the ACS adapter")),
     };
     let base_url = validate_base_url(base_url)?;
     let url = url_for_path(&base_url, &path)?;

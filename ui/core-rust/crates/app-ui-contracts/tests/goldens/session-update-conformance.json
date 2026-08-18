@@ -1,7 +1,7 @@
 {
-  "expected_contract_version": 4,
+  "expected_contract_version": 5,
   "initial_snapshot": {
-    "ui_contract_version": 4,
+    "ui_contract_version": 5,
     "session_revision": 7,
     "map_layer_state": { "nexrad": false },
     "app_ui_state": {
@@ -16,7 +16,7 @@
     {
       "name": "applies one replacement group",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map": {
           "version": 3,
@@ -27,7 +27,7 @@
       },
       "disposition": "applied",
       "expected_snapshot": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map_layer_state": { "nexrad": true },
         "app_ui_state": {
@@ -42,7 +42,7 @@
     {
       "name": "ignores a duplicate response",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map": {
           "version": 3,
@@ -53,7 +53,7 @@
       },
       "disposition": "stale",
       "expected_snapshot": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map_layer_state": { "nexrad": true },
         "app_ui_state": {
@@ -68,7 +68,7 @@
     {
       "name": "applies top-level and nested groups atomically",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 9,
         "map": {
           "version": 4,
@@ -94,7 +94,7 @@
       },
       "disposition": "applied",
       "expected_snapshot": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 9,
         "map_layer_state": { "nexrad": false },
         "app_ui_state": {
@@ -109,7 +109,7 @@
     {
       "name": "requires resynchronization across a revision gap",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 11,
         "status": {
           "version": 2,
@@ -120,7 +120,7 @@
       },
       "disposition": "resync_required",
       "expected_snapshot": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 9,
         "map_layer_state": { "nexrad": false },
         "app_ui_state": {
@@ -136,7 +136,7 @@
   "invalid_updates": [
     {
       "name": "rejects string revisions",
-      "update": { "ui_contract_version": 4, "session_revision": "8" }
+      "update": { "ui_contract_version": 5, "session_revision": "8" }
     },
     {
       "name": "rejects another contract",
@@ -145,7 +145,7 @@
     {
       "name": "rejects non-array assignments",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map": { "version": 3, "assignments": {} }
       }
@@ -153,7 +153,7 @@
     {
       "name": "rejects envelope replacement",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map": {
           "version": 3,
@@ -166,7 +166,7 @@
     {
       "name": "rejects overlapping paths across groups",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "ownship": {
           "version": 3,
@@ -185,7 +185,7 @@
     {
       "name": "rejects a missing path",
       "update": {
-        "ui_contract_version": 4,
+        "ui_contract_version": 5,
         "session_revision": 8,
         "map": {
           "version": 3,

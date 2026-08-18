@@ -7,12 +7,6 @@ import { executeCloudHttpRequest } from "./cloudProviderRuntime";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const authorization = {
-  provider: "google_drive" as const,
-  credential: "test-token",
-  expiresAtEpochMs: Date.now() + 60_000,
-};
-
 describe("cloud provider HTTP effect", () => {
   it("executes only the core-planned request and returns opaque bytes", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -21,13 +15,13 @@ describe("cloud provider HTTP effect", () => {
 
     await expect(executeCloudHttpRequest({
       request_id: 9,
-      provider: "google_drive",
+      provider: "aerobag_cloud",
       method: "post",
       url: "https://example.invalid/core-owned-path",
       headers: [{ name: "Content-Type", value: "application/octet-stream" }],
       body_base64: "BAU",
       max_response_bytes: 16,
-    }, authorization)).resolves.toEqual({
+    })).resolves.toEqual({
       result: "completed",
       status_code: 206,
       body_base64: "AQID",
@@ -35,7 +29,8 @@ describe("cloud provider HTTP effect", () => {
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("https://example.invalid/core-owned-path");
-    expect((init?.headers as Headers).get("Authorization")).toBe("Bearer test-token");
+    expect((init?.headers as Headers).get("Content-Type")).toBe("application/octet-stream");
+    expect((init?.headers as Headers).get("Authorization")).toBeNull();
     expect(Array.from(new Uint8Array(init?.body as ArrayBuffer))).toEqual([4, 5]);
   });
 
@@ -44,12 +39,12 @@ describe("cloud provider HTTP effect", () => {
 
     await expect(executeCloudHttpRequest({
       request_id: 10,
-      provider: "google_drive",
+      provider: "aerobag_cloud",
       method: "get",
       url: "https://example.invalid/large",
       headers: [],
       body_base64: null,
       max_response_bytes: 3,
-    }, authorization)).resolves.toEqual({ result: "response_too_large", limit_bytes: 3 });
+    })).resolves.toEqual({ result: "response_too_large", limit_bytes: 3 });
   });
 });

@@ -23,8 +23,6 @@ import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.perfLogInfo
 import org.aerobag.app.VerbosePerfLogs
 import org.aerobag.app.generated.NexradOverlayQueryResult
-import org.aerobag.app.generated.CloudAuthorizationRequest
-import org.aerobag.app.generated.CloudAuthorizationResponse
 import org.aerobag.app.generated.CloudHttpRequest
 import org.aerobag.app.generated.CloudHttpResponse
 import org.aerobag.app.generated.CloudEventStreamEvent
@@ -1722,24 +1720,6 @@ class NativeUiSession internal constructor(
                 System.currentTimeMillis(),
             )
         }
-    }
-
-    fun takeCloudAuthorizationRequest(nowEpochMs: Long): CloudAuthorizationRequest? =
-        json.decodeFromString(
-            bridge.takeCloudAuthorizationRequestInSessionJson(handle, nowEpochMs),
-        )
-
-    fun completeCloudAuthorization(
-        requestId: Long,
-        response: CloudAuthorizationResponse,
-        nowEpochMs: Long,
-    ): UiSessionSnapshot = runPagedSnapshot("completeCloudAuthorization") {
-        bridge.completeCloudAuthorizationInSessionJson(
-            handle,
-            requestId,
-            json.encodeToString(response),
-            nowEpochMs,
-        )
     }
 
     fun performCloudUiAction(

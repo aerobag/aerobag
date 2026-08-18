@@ -14,7 +14,6 @@ mod cloud_acs;
 #[cfg(test)]
 mod cloud_acs_memory;
 mod cloud_controller;
-mod cloud_google_drive;
 pub mod content;
 pub mod data_status;
 mod data_status_controller;
@@ -90,13 +89,11 @@ pub use chart_page::{
     PlateProcedureNotamDetail,
 };
 pub use cloud::{
-    CloudAuthorizationMode, CloudAuthorizationRequest, CloudAuthorizationResponse,
     CloudEventStreamEvent, CloudEventStreamEventKind, CloudEventStreamPlan, CloudHttpHeader,
     CloudHttpMethod, CloudHttpRequest, CloudHttpResponse, CloudPersistentState,
-    CloudPlatformEffect, CloudProviderKind, CloudProviderPrincipal, CloudStatusFact,
-    CloudStatusSummary, CloudUiActionId, CloudUiFieldId, CloudUiFieldValue,
-    ProviderAuthorizationState, UiCloudAction, UiCloudPageState, UiCloudPanel, UiCloudPanelControl,
-    UiCloudPanelState, UiCloudTimeFact, UiQrCode, CLOUD_STATUS_ID,
+    CloudPlatformEffect, CloudProviderKind, CloudStatusFact, CloudStatusSummary, CloudUiActionId,
+    CloudUiFieldId, CloudUiFieldValue, UiCloudAction, UiCloudPageState, UiCloudPanel,
+    UiCloudPanelControl, UiCloudPanelState, UiCloudTimeFact, UiQrCode, CLOUD_STATUS_ID,
 };
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
@@ -274,14 +271,13 @@ pub use session::{
     accept_disclaimer_in_session, advance_nav_kv_store_in_session_with_open_result,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
     attach_nav_kv_store_to_session_with_open_result, cloud_event_stream_plan_in_session,
-    complete_cloud_authorization_in_session, complete_cloud_provider_request_in_session,
-    configure_data_sources_in_session, configure_live_feed_source_in_session,
-    configure_platform_capabilities_in_session, create_ui_session, create_ui_session_at_epoch_ms,
-    create_ui_session_profiled, create_ui_session_profiled_at_epoch_ms,
-    debug_drop_nav_kv_pages_for_attached_sessions, destroy_session,
-    disengage_map_follow_in_session, drain_session_resource_effects, engage_map_follow_in_session,
-    get_map_overlay_in_session, get_map_overlay_in_session_at_epoch_ms,
-    get_map_overlay_in_session_with_point_display_scale,
+    complete_cloud_provider_request_in_session, configure_data_sources_in_session,
+    configure_live_feed_source_in_session, configure_platform_capabilities_in_session,
+    create_ui_session, create_ui_session_at_epoch_ms, create_ui_session_profiled,
+    create_ui_session_profiled_at_epoch_ms, debug_drop_nav_kv_pages_for_attached_sessions,
+    destroy_session, disengage_map_follow_in_session, drain_session_resource_effects,
+    engage_map_follow_in_session, get_map_overlay_in_session,
+    get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
     get_map_overlay_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_distance_in_session,
     get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms,
@@ -330,13 +326,12 @@ pub use session::{
     set_ownship_source_sleeping_in_session, set_playback_rate_in_session,
     set_resource_policy_in_session, set_situation_in_session, sync_guidance_geometry_in_session,
     sync_live_feed_catalog_in_session, sync_live_feeds_in_session, sync_map_follow_in_session,
-    take_cloud_authorization_request_in_session, take_cloud_provider_request_in_session,
-    tick_bad_autopilot_in_session, tick_playback_in_session,
-    update_ownship_source_status_in_session, ClientBuildInfo, DebugFlagId, DisplayDimTimeout,
-    FlightPlanSessionCommand, FlightPlanSessionQuery, InactivitySleepTimeout,
-    LiveFeedAcquisitionPolicy, MapLayerId, NavDbAdvanceDisposition, NavDbAdvanceResult,
-    NavDbMaintenanceAction, NavDbMaintenanceResult, PlatformCapabilities, PlatformCloudCapability,
-    PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
+    take_cloud_provider_request_in_session, tick_bad_autopilot_in_session,
+    tick_playback_in_session, update_ownship_source_status_in_session, ClientBuildInfo,
+    DebugFlagId, DisplayDimTimeout, FlightPlanSessionCommand, FlightPlanSessionQuery,
+    InactivitySleepTimeout, LiveFeedAcquisitionPolicy, MapLayerId, NavDbAdvanceDisposition,
+    NavDbAdvanceResult, NavDbMaintenanceAction, NavDbMaintenanceResult, PlatformCapabilities,
+    PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
     PlatformOfflinePackagesCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
     UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomeDestination,
     UiHomePageButton, UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,

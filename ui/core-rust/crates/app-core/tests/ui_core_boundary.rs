@@ -420,8 +420,6 @@ fn platform_live_feed_adapters_do_not_own_nexrad_policy() {
 
 #[test]
 fn cloud_provider_adapters_do_not_own_storage_or_application_policy() {
-    let web_provider =
-        read_repo_file("ui/web-app/src/domain/googleDriveCloudProvider.ts").to_ascii_lowercase();
     let web_runtime =
         read_repo_file("ui/web-app/src/domain/cloudProviderRuntime.ts").to_ascii_lowercase();
     let android_provider =
@@ -440,11 +438,7 @@ fn cloud_provider_adapters_do_not_own_storage_or_application_policy() {
     ];
     let violations = forbidden
         .into_iter()
-        .filter(|needle| {
-            web_provider.contains(needle)
-                || web_runtime.contains(needle)
-                || android_provider.contains(needle)
-        })
+        .filter(|needle| web_runtime.contains(needle) || android_provider.contains(needle))
         .collect::<Vec<_>>();
 
     assert!(

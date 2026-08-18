@@ -91,7 +91,6 @@ internal fun CloudPage(
         val values = fields.map { CloudUiFieldValue(it.key, it.value) }
         if (!onAction(action.id, values)) return
         when (val effect = action.platformEffect) {
-            is CloudPlatformEffect.BeginAuthorization -> Unit
             is CloudPlatformEffect.ScanQrCode -> {
                 qrScanner.startScan()
                     .addOnSuccessListener { barcode ->

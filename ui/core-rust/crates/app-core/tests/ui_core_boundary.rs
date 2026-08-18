@@ -1933,7 +1933,7 @@ fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
 
     assert!(
         core.contains("ui-geometry-conformance.json")
-            && web_tests.contains("ui-geometry-conformance.json")
+            && web_tests.contains("uiGeometryConformance.json")
             && android_tests.contains("ui-geometry-conformance.json"),
         "core, web, and Android geometry must execute the same conformance vectors"
     );

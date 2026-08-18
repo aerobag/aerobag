@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from "vitest";
-import conformance from "../../../core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json";
+import conformance from "../generated/uiGeometryConformance.json";
 import {
   clampImageViewport,
   createInitialImageViewport,

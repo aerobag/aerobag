@@ -1,0 +1,56 @@
+{
+  "map_antimeridian": {
+    "viewport": {
+      "center_world_x": 255.2888888888889,
+      "center_world_y": 128.0,
+      "zoom": 2.0,
+      "rotation_deg": 0.0
+    },
+    "world": { "x": 0.7111111111111111, "y": 128.0 },
+    "width": 1000.0,
+    "height": 800.0,
+    "expected_screen": { "x": 505.68888888888887, "y": 400.0 }
+  },
+  "map_frame_transform": {
+    "from_viewport": {
+      "center_world_x": 130.0,
+      "center_world_y": 90.0,
+      "zoom": 4.0,
+      "rotation_deg": 30.0
+    },
+    "from_width": 1000.0,
+    "from_height": 800.0,
+    "to_viewport": {
+      "center_world_x": 131.0,
+      "center_world_y": 89.5,
+      "zoom": 4.5,
+      "rotation_deg": -20.0
+    },
+    "to_width": 900.0,
+    "to_height": 700.0,
+    "point": { "x": 220.0, "y": 310.0 },
+    "expected_screen": { "x": 267.83829919639675, "y": -32.259253430517106 }
+  },
+  "image_clamp": {
+    "state": { "left": -99999.0, "top": -99999.0, "zoom": 20.0 },
+    "image_width": 1200.0,
+    "image_height": 800.0,
+    "viewport_width": 900.0,
+    "viewport_height": 700.0,
+    "overscroll": 64.0,
+    "expected": { "left": -6364.0, "top": -4164.0, "zoom": 8.0 }
+  },
+  "plate_affine": {
+    "position": { "lat": 47.5, "lon": -122.5 },
+    "georef": {
+      "kind": "airport_diagram_transform_v1",
+      "pixel_x_from_lon": -3.0,
+      "pixel_x_from_lat": 2.0,
+      "pixel_x_offset": 100.0,
+      "pixel_y_from_lon": 4.0,
+      "pixel_y_from_lat": -5.0,
+      "pixel_y_offset": 200.0
+    },
+    "expected_image": { "x": 562.5, "y": -527.5 }
+  }
+}

@@ -19,6 +19,10 @@ const sessionUpdateConformancePath = path.join(
   repoRoot,
   "ui/core-rust/crates/app-ui-contracts/tests/goldens/session-update-conformance.json",
 );
+const uiGeometryConformancePath = path.join(
+  repoRoot,
+  "ui/core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json",
+);
 
 const args = new Map();
 const flags = new Set();
@@ -54,6 +58,9 @@ const sessionWorkWebOut =
 const sessionUpdateConformanceWebOut =
   args.get("--session-update-conformance-web-out")
     ?? path.join(repoRoot, "ui/web-app/src/generated/sessionUpdateConformance.json");
+const uiGeometryConformanceWebOut =
+  args.get("--ui-geometry-conformance-web-out")
+    ?? path.join(repoRoot, "ui/web-app/src/generated/uiGeometryConformance.json");
 
 let schemaPath;
 let schema;
@@ -424,6 +431,10 @@ writeOrCheck(sessionUpdateWebOut, webSource());
 writeOrCheck(
   sessionUpdateConformanceWebOut,
   fs.readFileSync(sessionUpdateConformancePath, "utf8"),
+);
+writeOrCheck(
+  uiGeometryConformanceWebOut,
+  fs.readFileSync(uiGeometryConformancePath, "utf8"),
 );
 
 loadSchema(sessionWorkSchemaPath);

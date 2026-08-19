@@ -284,6 +284,7 @@ import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
+import org.aerobag.app.domain.WeatherDetailSectionKind
 import org.aerobag.app.domain.AirportNotamUiView
 import org.aerobag.app.domain.PlateProcedureNotamDetail
 import org.aerobag.app.domain.AirportInfoUiView
@@ -4633,7 +4634,7 @@ internal fun WeatherDetailModal(
             verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
         ) {
             Text(
-                text = "WX ${detail.stationId}".uppercase(),
+                text = detail.title.uppercase(),
                 style = MaterialTheme.typography.labelMedium.copy(
                     fontWeight = FontWeight.Black,
                     letterSpacing = 0.4.sp,
@@ -4655,21 +4656,24 @@ internal fun WeatherDetailModal(
                 ),
                 color = lerp(Color.Black, uiTheme.controls.dataStatusWarningStroke, 0.3f),
             )
-            WeatherDetailSection(
-                label = "METAR",
-                ageLabel = detail.metarAgeLabel,
-                ageWarning = detail.metarAgeWarning,
-                text = detail.metarText,
-                constrainHeight = false,
-            )
-            WeatherDetailSection(
-                label = "TAF",
-                ageLabel = detail.tafAgeLabel,
-                ageWarning = detail.tafAgeWarning,
-                text = detail.tafText,
-                constrainHeight = false,
-            )
-            AirportNotamSection(notams = detail.notams)
+            detail.sections.forEach { section ->
+                when (section.kind) {
+                    WeatherDetailSectionKind.Text -> WeatherDetailSection(
+                        label = section.label,
+                        ageLabel = section.trailingLabel,
+                        ageWarning = section.trailingWarning,
+                        text = section.text,
+                        emptyText = section.emptyText,
+                        constrainHeight = false,
+                    )
+                    WeatherDetailSectionKind.Notams -> AirportNotamSection(
+                        notams = section.notams,
+                        label = section.label,
+                        trailingLabel = section.trailingLabel.orEmpty(),
+                        emptyText = section.emptyText,
+                    )
+                }
+            }
         }
     }
 }
@@ -4716,56 +4720,35 @@ internal fun AirportInfoModal(
                     color = uiTheme.controls.panelMuted,
                 )
             }
-            AirportInfoFact("Airport elevation", detail.elevationLabel)
-            AirportInfoFact(
-                "Traffic pattern altitude",
-                "${detail.trafficPatternAltitudeLabel} ${detail.trafficPatternAltitudeSource}",
-            )
-            AirportInfoFact(
-                "Time at airport",
-                detail.timeLabel,
-                onClick = { onTimeDisplayAction(detail.timeDisplayActionId) },
-            )
-            AirportInfoFact("Time zone", detail.timeZoneLabel)
-            detail.sunrise?.let { event ->
-                AirportInfoFact(
-                    "Sunrise",
-                    event.timeLabel,
-                    event.nextInLabel,
-                    onClick = { onTimeDisplayAction(event.timeDisplayActionId) },
-                )
-            }
-            detail.sunset?.let { event ->
-                AirportInfoFact(
-                    "Sunset",
-                    event.timeLabel,
-                    event.nextInLabel,
-                    onClick = { onTimeDisplayAction(event.timeDisplayActionId) },
-                )
-            }
-            if (detail.communications.isNotEmpty()) {
-                AirportInfoSectionTitle("Communications")
-                detail.communications.forEach { communication ->
+            detail.factSections.forEach { section ->
+                section.title?.let { AirportInfoSectionTitle(it) }
+                section.facts.forEach { fact ->
                     AirportInfoFact(
-                        label = communication.label,
-                        value = communication.value,
-                        onClick = if (communication.kind == "phone") {
-                            {
+                        label = fact.label,
+                        value = fact.value,
+                        nextInLabel = fact.nextInLabel,
+                        onClick = when {
+                            fact.actionId != null -> {
+                                { onTimeDisplayAction(fact.actionId) }
+                            }
+                            fact.linkUrl != null -> {
+                                {
+                                    val uri = Uri.parse(fact.linkUrl)
                                 context.startActivity(
                                     Intent(
-                                        Intent.ACTION_DIAL,
-                                        Uri.parse("tel:${communication.value}"),
+                                            if (uri.scheme == "tel") Intent.ACTION_DIAL else Intent.ACTION_VIEW,
+                                            uri,
                                     ),
                                 )
                             }
-                        } else {
-                            null
+                            }
+                            else -> null
                         },
                     )
                 }
             }
             if (detail.runways.isNotEmpty()) {
-                AirportInfoSectionTitle("Runways")
+                AirportInfoSectionTitle(detail.runwaysSectionTitle)
                 detail.runways.forEachIndexed { index, runway ->
                     Row(
                         modifier = Modifier
@@ -4955,7 +4938,9 @@ private fun AirportRunwayDiagram(
 @Composable
 internal fun AirportNotamSection(
     notams: List<AirportNotamUiView>,
-    emptyText: String = "No airport NOTAMs available.",
+    label: String = "NOTAM",
+    trailingLabel: String = notams.size.toString(),
+    emptyText: String,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Column(
@@ -4979,7 +4964,7 @@ internal fun AirportNotamSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "NOTAM",
+                text = label,
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.Black,
                     letterSpacing = 0.6.sp,
@@ -4987,7 +4972,7 @@ internal fun AirportNotamSection(
                 color = uiTheme.controls.panelFg,
             )
             Text(
-                text = notams.size.toString(),
+                text = trailingLabel,
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
                 color = uiTheme.controls.panelFg,
             )
@@ -5089,7 +5074,7 @@ internal fun ProcedureNotamModal(
             )
             AirportNotamSection(
                 notams = detail.notams,
-                emptyText = "No procedure NOTAMs available.",
+                emptyText = detail.emptyText,
             )
         }
     }
@@ -5101,6 +5086,7 @@ private fun WeatherDetailSection(
     ageLabel: String?,
     ageWarning: Boolean,
     text: String?,
+    emptyText: String? = null,
     expanded: Boolean = false,
     constrainHeight: Boolean = true,
 ) {
@@ -5152,7 +5138,7 @@ private fun WeatherDetailSection(
             }
         }
         Text(
-            text = text ?: "No ${label ?: "text"} available.",
+            text = text ?: emptyText ?: "No ${label ?: "text"} available.",
             modifier = Modifier
                 .fillMaxWidth()
                 .then(

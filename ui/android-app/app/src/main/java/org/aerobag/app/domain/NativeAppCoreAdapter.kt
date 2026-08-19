@@ -2776,6 +2776,7 @@ internal data class WirePlateProcedureNotamBadge(
 internal data class WirePlateProcedureNotamDetail(
     val title: String,
     val advisory_text: String,
+    val empty_text: String,
     val notams: List<WireAirportNotamUiView> = emptyList(),
 )
 
@@ -3323,6 +3324,7 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
             detail = PlateProcedureNotamDetail(
                 title = badge.detail.title,
                 advisoryText = badge.detail.advisory_text,
+                emptyText = badge.detail.empty_text,
                 notams = badge.detail.notams.map { it.toUi() },
             ),
         )
@@ -3701,13 +3703,28 @@ private fun WireMapSelectionDetailStatus.toUi() = MapSelectionDetailStatus(
 
 private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(
     stationId = station_id,
+    title = title,
     advisoryText = advisory_text,
+    sections = sections.map { it.toUi() },
     metarText = metar_text,
     metarAgeLabel = metar_age_label,
     metarAgeWarning = metar_age_warning,
     tafText = taf_text,
     tafAgeLabel = taf_age_label,
     tafAgeWarning = taf_age_warning,
+    notams = notams.map { it.toUi() },
+)
+
+private fun WireWeatherDetailSectionUiView.toUi() = WeatherDetailSectionUiView(
+    kind = when (kind) {
+        WireWeatherDetailSectionKind.Text -> WeatherDetailSectionKind.Text
+        WireWeatherDetailSectionKind.Notams -> WeatherDetailSectionKind.Notams
+    },
+    label = label,
+    trailingLabel = trailing_label,
+    trailingWarning = trailing_warning,
+    text = text,
+    emptyText = empty_text,
     notams = notams.map { it.toUi() },
 )
 
@@ -3719,13 +3736,28 @@ private fun WireAirportNotamUiView.toUi() = AirportNotamUiView(
 
 private fun WeatherDetailUiView.toWire() = WireWeatherDetailUiView(
     station_id = stationId,
+    title = title,
     advisory_text = advisoryText,
+    sections = sections.map { it.toWire() },
     metar_text = metarText,
     metar_age_label = metarAgeLabel,
     metar_age_warning = metarAgeWarning,
     taf_text = tafText,
     taf_age_label = tafAgeLabel,
     taf_age_warning = tafAgeWarning,
+    notams = notams.map { it.toWire() },
+)
+
+private fun WeatherDetailSectionUiView.toWire() = WireWeatherDetailSectionUiView(
+    kind = when (kind) {
+        WeatherDetailSectionKind.Text -> WireWeatherDetailSectionKind.Text
+        WeatherDetailSectionKind.Notams -> WireWeatherDetailSectionKind.Notams
+    },
+    label = label,
+    trailing_label = trailingLabel,
+    trailing_warning = trailingWarning,
+    text = text,
+    empty_text = emptyText,
     notams = notams.map { it.toWire() },
 )
 
@@ -4278,8 +4310,23 @@ private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
     sunrise = sunrise?.toUi(),
     sunset = sunset?.toUi(),
     communications = communications.map { it.toUi() },
+    factSections = fact_sections.map { it.toUi() },
+    runwaysSectionTitle = runways_section_title,
     runwayDiagramComplex = runway_diagram_complex,
     runways = runways.map { it.toUi() },
+)
+
+private fun WireAirportInfoFactSectionUiView.toUi() = AirportInfoFactSectionUiView(
+    title = title,
+    facts = facts.map { it.toUi() },
+)
+
+private fun WireAirportInfoFactUiView.toUi() = AirportInfoFactUiView(
+    label = label,
+    value = value,
+    nextInLabel = next_in_label,
+    actionId = action_id,
+    linkUrl = link_url,
 )
 
 private fun WireAirportSolarEventUiView.toUi() = AirportSolarEventUiView(

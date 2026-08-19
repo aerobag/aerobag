@@ -618,8 +618,23 @@ export type AirportInfoUiView = {
   sunrise?: AirportSolarEventUiView | null;
   sunset?: AirportSolarEventUiView | null;
   communications: AirportCommunicationUiView[];
+  fact_sections: AirportInfoFactSectionUiView[];
+  runways_section_title: string;
   runway_diagram_complex: boolean;
   runways: AirportRunwayUiView[];
+};
+
+export type AirportInfoFactSectionUiView = {
+  title?: string | null;
+  facts: AirportInfoFactUiView[];
+};
+
+export type AirportInfoFactUiView = {
+  label: string;
+  value: string;
+  next_in_label?: string | null;
+  action_id?: string | null;
+  link_url?: string | null;
 };
 
 export type AirportSolarEventUiView = {

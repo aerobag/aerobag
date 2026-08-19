@@ -372,8 +372,23 @@ data class AirportInfoUiView(
     val sunrise: AirportSolarEventUiView?,
     val sunset: AirportSolarEventUiView?,
     val communications: List<AirportCommunicationUiView>,
+    val factSections: List<AirportInfoFactSectionUiView>,
+    val runwaysSectionTitle: String,
     val runwayDiagramComplex: Boolean,
     val runways: List<AirportRunwayUiView>,
+)
+
+data class AirportInfoFactSectionUiView(
+    val title: String?,
+    val facts: List<AirportInfoFactUiView>,
+)
+
+data class AirportInfoFactUiView(
+    val label: String,
+    val value: String,
+    val nextInLabel: String?,
+    val actionId: String?,
+    val linkUrl: String?,
 )
 
 data class AirportSolarEventUiView(
@@ -414,7 +429,9 @@ data class AirportRunwayPatternUiView(
 
 data class WeatherDetailUiView(
     val stationId: String,
+    val title: String,
     val advisoryText: String,
+    val sections: List<WeatherDetailSectionUiView>,
     val metarText: String?,
     val metarAgeLabel: String?,
     val metarAgeWarning: Boolean = false,
@@ -422,6 +439,21 @@ data class WeatherDetailUiView(
     val tafAgeLabel: String?,
     val tafAgeWarning: Boolean = false,
     val notams: List<AirportNotamUiView> = emptyList(),
+)
+
+enum class WeatherDetailSectionKind {
+    Text,
+    Notams,
+}
+
+data class WeatherDetailSectionUiView(
+    val kind: WeatherDetailSectionKind,
+    val label: String,
+    val trailingLabel: String?,
+    val trailingWarning: Boolean,
+    val text: String?,
+    val emptyText: String,
+    val notams: List<AirportNotamUiView>,
 )
 
 data class AirportNotamUiView(
@@ -558,6 +590,7 @@ data class PlateProcedureNotamBadge(
 data class PlateProcedureNotamDetail(
     val title: String,
     val advisoryText: String,
+    val emptyText: String,
     val notams: List<AirportNotamUiView>,
 )
 

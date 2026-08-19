@@ -143,6 +143,7 @@ pub struct PlateProcedureNotamBadge {
 pub struct PlateProcedureNotamDetail {
     pub title: String,
     pub advisory_text: String,
+    pub empty_text: String,
     pub notams: Vec<crate::AirportNotamUiView>,
 }
 
@@ -395,6 +396,7 @@ fn enrich_chart_notams(
                     title: format!("NOTAM — {}", chart.label),
                     advisory_text: "Procedure NOTAMs may be incomplete; check official sources."
                         .to_string(),
+                    empty_text: "No procedure NOTAMs available.".to_string(),
                     notams,
                 },
             }

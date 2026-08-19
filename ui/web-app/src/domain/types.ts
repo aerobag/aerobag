@@ -310,13 +310,25 @@ export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity" | 
 
 export type WeatherDetailUiView = {
   station_id: string;
+  title: string;
   advisory_text: string;
+  sections: WeatherDetailSectionUiView[];
   metar_text?: string | null;
   metar_age_label?: string | null;
   metar_age_warning?: boolean | null;
   taf_text?: string | null;
   taf_age_label?: string | null;
   taf_age_warning?: boolean | null;
+  notams?: AirportNotamUiView[];
+};
+
+export type WeatherDetailSectionUiView = {
+  kind: "text" | "notams";
+  label: string;
+  trailing_label?: string | null;
+  trailing_warning?: boolean;
+  text?: string | null;
+  empty_text: string;
   notams?: AirportNotamUiView[];
 };
 
@@ -825,6 +837,7 @@ export type ChartPageData = {
         detail: {
           title: string;
           advisory_text: string;
+          empty_text: string;
           notams: AirportNotamUiView[];
         };
       } | null;

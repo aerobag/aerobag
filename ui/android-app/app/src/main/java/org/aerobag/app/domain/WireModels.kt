@@ -804,13 +804,35 @@ data class WireMapSelectionDetailStatus(
 @Serializable
 data class WireWeatherDetailUiView(
     val station_id: String,
+    val title: String,
     val advisory_text: String,
+    val sections: List<WireWeatherDetailSectionUiView>,
     val metar_text: String? = null,
     val metar_age_label: String? = null,
     val metar_age_warning: Boolean = false,
     val taf_text: String? = null,
     val taf_age_label: String? = null,
     val taf_age_warning: Boolean = false,
+    val notams: List<WireAirportNotamUiView> = emptyList(),
+)
+
+@Serializable
+enum class WireWeatherDetailSectionKind {
+    @SerialName("text")
+    Text,
+
+    @SerialName("notams")
+    Notams,
+}
+
+@Serializable
+data class WireWeatherDetailSectionUiView(
+    val kind: WireWeatherDetailSectionKind,
+    val label: String,
+    val trailing_label: String? = null,
+    val trailing_warning: Boolean = false,
+    val text: String? = null,
+    val empty_text: String,
     val notams: List<WireAirportNotamUiView> = emptyList(),
 )
 
@@ -1273,8 +1295,25 @@ data class WireAirportInfoUiView(
     val sunrise: WireAirportSolarEventUiView? = null,
     val sunset: WireAirportSolarEventUiView? = null,
     val communications: List<WireAirportCommunicationUiView> = emptyList(),
+    val fact_sections: List<WireAirportInfoFactSectionUiView> = emptyList(),
+    val runways_section_title: String,
     val runway_diagram_complex: Boolean = false,
     val runways: List<WireAirportRunwayUiView> = emptyList(),
+)
+
+@Serializable
+data class WireAirportInfoFactSectionUiView(
+    val title: String? = null,
+    val facts: List<WireAirportInfoFactUiView>,
+)
+
+@Serializable
+data class WireAirportInfoFactUiView(
+    val label: String,
+    val value: String,
+    val next_in_label: String? = null,
+    val action_id: String? = null,
+    val link_url: String? = null,
 )
 
 @Serializable

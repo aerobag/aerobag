@@ -17,7 +17,9 @@ class FlightPlanOverlayStateTest {
     private val weather =
         WeatherDetailUiView(
             stationId = "KBOI",
+            title = "WX KBOI",
             advisoryText = "NOTAMs and weather may be incomplete; check official sources.",
+            sections = emptyList(),
             metarText = "KBOI METAR",
             metarAgeLabel = null,
             tafText = null,
@@ -36,6 +38,8 @@ class FlightPlanOverlayStateTest {
             sunrise = null,
             sunset = null,
             communications = emptyList(),
+            factSections = emptyList(),
+            runwaysSectionTitle = "Runways",
             runwayDiagramComplex = false,
             runways = emptyList(),
         )

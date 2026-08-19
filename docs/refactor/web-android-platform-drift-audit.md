@@ -194,6 +194,13 @@ UID. Loading state and Back navigation remain local.
 
 ### 6. Detail views stop short of semantic presentation
 
+Resolution: implemented. Weather details now carry an ordered title and
+semantic text/NOTAM sections, including age presentation and empty messages.
+Airport details carry ordered fact sections with headings plus typed action IDs
+or links, and a core-owned runway heading. Procedure-NOTAM empty text is also
+part of its core detail model. Platforms only choose layout, typography, and
+how to execute a typed link or action.
+
 Core supplies weather and airport values, but platforms independently
 construct section order, headings, fact labels, and empty-state messages:
 

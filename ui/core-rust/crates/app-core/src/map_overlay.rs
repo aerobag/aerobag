@@ -849,7 +849,9 @@ pub const WEATHER_DETAIL_ADVISORY_TEXT: &str =
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherDetailUiView {
     pub station_id: String,
+    pub title: String,
     pub advisory_text: String,
+    pub sections: Vec<WeatherDetailSectionUiView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metar_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -862,6 +864,28 @@ pub struct WeatherDetailUiView {
     pub taf_age_label: Option<String>,
     #[serde(default)]
     pub taf_age_warning: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notams: Vec<AirportNotamUiView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeatherDetailSectionKind {
+    Text,
+    Notams,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeatherDetailSectionUiView {
+    pub kind: WeatherDetailSectionKind,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trailing_label: Option<String>,
+    #[serde(default)]
+    pub trailing_warning: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub empty_text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notams: Vec<AirportNotamUiView>,
 }
@@ -4149,7 +4173,37 @@ fn weather_detail_from_records(
     }
     Some(WeatherDetailUiView {
         station_id: station_id.trim().to_ascii_uppercase(),
+        title: format!("WX {}", station_id.trim().to_ascii_uppercase()),
         advisory_text: WEATHER_DETAIL_ADVISORY_TEXT.to_string(),
+        sections: vec![
+            WeatherDetailSectionUiView {
+                kind: WeatherDetailSectionKind::Text,
+                label: "METAR".to_string(),
+                trailing_label: metar_age_label.clone(),
+                trailing_warning: metar_age_warning,
+                text: metar_text.clone(),
+                empty_text: "No METAR available.".to_string(),
+                notams: Vec::new(),
+            },
+            WeatherDetailSectionUiView {
+                kind: WeatherDetailSectionKind::Text,
+                label: "TAF".to_string(),
+                trailing_label: taf_age_label.clone(),
+                trailing_warning: taf_age_warning,
+                text: taf_text.clone(),
+                empty_text: "No TAF available.".to_string(),
+                notams: Vec::new(),
+            },
+            WeatherDetailSectionUiView {
+                kind: WeatherDetailSectionKind::Notams,
+                label: "NOTAM".to_string(),
+                trailing_label: Some(notams.len().to_string()),
+                trailing_warning: false,
+                text: None,
+                empty_text: "No airport NOTAMs available.".to_string(),
+                notams: notams.clone(),
+            },
+        ],
         metar_text,
         metar_age_label,
         metar_age_warning,
@@ -11183,7 +11237,9 @@ mod tests {
             },
             Some(WeatherDetailUiView {
                 station_id: "KSEA".to_string(),
+                title: "WX KSEA".to_string(),
                 advisory_text: WEATHER_DETAIL_ADVISORY_TEXT.to_string(),
+                sections: Vec::new(),
                 metar_text: None,
                 metar_age_label: None,
                 metar_age_warning: false,

@@ -25992,7 +25992,9 @@ mod tests {
     fn map_selection_actions_are_registered_projected_and_expire_together() {
         let weather = WeatherDetailUiView {
             station_id: "KPAE".to_string(),
+            title: "WX KPAE".to_string(),
             advisory_text: "Check official sources.".to_string(),
+            sections: Vec::new(),
             metar_text: Some("KPAE METAR".to_string()),
             metar_age_label: None,
             metar_age_warning: false,

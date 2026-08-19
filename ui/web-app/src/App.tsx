@@ -11122,22 +11122,27 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
       onClick={stopClick}
       onDoubleClick={stopDoubleClick}
     >
-      <div className="mapSelectionDetailTitle">WX {detail.station_id}</div>
+      <div className="mapSelectionDetailTitle">{detail.title}</div>
       <div className="weatherDetailAdvisory">{detail.advisory_text}</div>
       <div className="weatherDetailSections">
-        <WeatherDetailSection
-          label="METAR"
-          ageLabel={detail.metar_age_label ?? null}
-          ageWarning={detail.metar_age_warning ?? false}
-          text={detail.metar_text ?? null}
-        />
-        <WeatherDetailSection
-          label="TAF"
-          ageLabel={detail.taf_age_label ?? null}
-          ageWarning={detail.taf_age_warning ?? false}
-          text={detail.taf_text ?? null}
-        />
-        <NotamSection notams={detail.notams ?? []} emptyText="No airport NOTAMs available." />
+        {detail.sections.map((section, index) => section.kind === "notams" ? (
+          <NotamSection
+            key={`${section.kind}:${section.label}:${index}`}
+            label={section.label}
+            trailingLabel={section.trailing_label ?? ""}
+            notams={section.notams ?? []}
+            emptyText={section.empty_text}
+          />
+        ) : (
+          <WeatherDetailSection
+            key={`${section.kind}:${section.label}:${index}`}
+            label={section.label}
+            ageLabel={section.trailing_label ?? null}
+            ageWarning={section.trailing_warning ?? false}
+            text={section.text ?? null}
+            emptyText={section.empty_text}
+          />
+        ))}
       </div>
     </section>
   );
@@ -11167,56 +11172,27 @@ function AirportInfoModal(props: {
           <div className="airportInfoLocation">{detail.location_label}</div>
         ) : null}
       </header>
-      <section className="airportInfoSection">
-        <div className="airportInfoFacts">
-          <AirportInfoFact label="Airport elevation" value={detail.elevation_label} />
-          <AirportInfoFact
-            label="Traffic pattern altitude"
-            value={`${detail.traffic_pattern_altitude_label} ${detail.traffic_pattern_altitude_source}`}
-          />
-          <AirportInfoFact
-            label="Time at airport"
-            value={detail.time_label}
-            onClick={() => props.onTimeDisplayAction(detail.time_display_action_id)}
-          />
-          <AirportInfoFact label="Time zone" value={detail.time_zone_label} />
-          {detail.sunrise ? (
-            <AirportInfoFact
-              label="Sunrise"
-              value={detail.sunrise.time_label}
-              nextIn={detail.sunrise.next_in_label}
-              onClick={() => props.onTimeDisplayAction(detail.sunrise!.time_display_action_id)}
-            />
-          ) : null}
-          {detail.sunset ? (
-            <AirportInfoFact
-              label="Sunset"
-              value={detail.sunset.time_label}
-              nextIn={detail.sunset.next_in_label}
-              onClick={() => props.onTimeDisplayAction(detail.sunset!.time_display_action_id)}
-            />
-          ) : null}
-        </div>
-      </section>
-      {detail.communications.length > 0 ? (
-        <section className="airportInfoSection">
-          <h2>Communications</h2>
+      {detail.fact_sections.map((section, sectionIndex) => (
+        <section className="airportInfoSection" key={`${section.title ?? "facts"}:${sectionIndex}`}>
+          {section.title ? <h2>{section.title}</h2> : null}
           <div className="airportInfoFacts">
-            {detail.communications.map((communication, index) => (
+            {section.facts.map((fact, index) => (
               <AirportInfoFact
-                key={`${communication.kind}:${communication.label}:${communication.value}:${index}`}
-                label={communication.label}
-                value={communication.kind === "phone"
-                  ? <a href={`tel:${communication.value}`}>{communication.value}</a>
-                  : communication.value}
+                key={`${fact.label}:${fact.value}:${index}`}
+                label={fact.label}
+                value={fact.link_url ? <a href={fact.link_url}>{fact.value}</a> : fact.value}
+                nextIn={fact.next_in_label}
+                onClick={fact.action_id
+                  ? () => props.onTimeDisplayAction(fact.action_id!)
+                  : undefined}
               />
             ))}
           </div>
         </section>
-      ) : null}
+      ))}
       {detail.runways.length > 0 ? (
         <section className="airportInfoSection">
-          <h2>Runways</h2>
+          <h2>{detail.runways_section_title}</h2>
           <div className="airportRunwayList">
             {detail.runways.map((runway, index) => (
               <article className="airportRunwayRow" key={`${runway.end_a_label}:${runway.end_b_label}:${index}`}>
@@ -11347,13 +11323,15 @@ function RunwayDiagram(props: {
 
 function NotamSection(props: {
   notams: NonNullable<WeatherDetailUiView["notams"]>;
+  label: string;
+  trailingLabel: string;
   emptyText: string;
 }) {
   return (
     <section className="weatherDetailSection airportNotamSection">
       <div className="weatherDetailSectionTitle">
-        <span>NOTAM</span>
-        <span>{props.notams.length}</span>
+        <span>{props.label}</span>
+        <span>{props.trailingLabel}</span>
       </div>
       <div className="airportNotamList">
         {props.notams.length > 0 ? props.notams.map((notam) => (
@@ -11390,7 +11368,9 @@ function ProcedureNotamModal(props: {
       <div className="weatherDetailSections">
         <NotamSection
           notams={props.detail.notams}
-          emptyText="No procedure NOTAMs available."
+          label="NOTAM"
+          trailingLabel={String(props.detail.notams.length)}
+          emptyText={props.detail.empty_text}
         />
       </div>
     </section>
@@ -11423,7 +11403,7 @@ function PlateProcedureNotamBadgeButton(props: {
   );
 }
 
-function WeatherDetailSection(props: { label: string | null; ageLabel: string | null; ageWarning: boolean; text: string | null }) {
+function WeatherDetailSection(props: { label: string | null; ageLabel: string | null; ageWarning: boolean; text: string | null; emptyText?: string }) {
   return (
     <section className="weatherDetailSection">
       {props.label || props.ageLabel ? (
@@ -11437,7 +11417,7 @@ function WeatherDetailSection(props: { label: string | null; ageLabel: string | 
         </div>
       ) : null}
       <pre className={`weatherDetailText${props.text ? "" : " isMissing"}`}>
-        {props.text ?? `No ${props.label ?? "text"} available.`}
+        {props.text ?? props.emptyText ?? `No ${props.label ?? "text"} available.`}
       </pre>
     </section>
   );

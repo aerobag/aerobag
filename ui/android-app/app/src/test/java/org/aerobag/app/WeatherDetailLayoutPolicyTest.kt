@@ -21,8 +21,8 @@ class WeatherDetailLayoutPolicyTest {
             modalBody.contains(".verticalScroll(rememberScrollState())"),
         )
         assertTrue(
-            "METAR and TAF should expand naturally inside the modal scroll viewport.",
-            modalBody.split("constrainHeight = false").size - 1 == 2,
+            "Core-projected weather text sections should expand naturally inside the modal scroll viewport.",
+            modalBody.contains("constrainHeight = false"),
         )
         assertFalse(
             "NOTAMs must not introduce a nested lazy scroll viewport.",

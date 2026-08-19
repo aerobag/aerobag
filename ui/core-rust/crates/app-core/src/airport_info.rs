@@ -34,8 +34,29 @@ pub struct AirportInfoUiView {
     pub sunrise: Option<AirportSolarEventUiView>,
     pub sunset: Option<AirportSolarEventUiView>,
     pub communications: Vec<AirportCommunicationUiView>,
+    pub fact_sections: Vec<AirportInfoFactSectionUiView>,
+    pub runways_section_title: String,
     pub runway_diagram_complex: bool,
     pub runways: Vec<AirportRunwayUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirportInfoFactSectionUiView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub facts: Vec<AirportInfoFactUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirportInfoFactUiView {
+    pub label: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_in_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,7 +240,7 @@ fn project_airport_info(
     let complex_runway_geometry =
         runway_complex_geometry(&record.runways, record.latitude, record.longitude);
     let runway_diagram_complex = complex_runway_geometry.is_some();
-    let communications = record
+    let communications: Vec<AirportCommunicationUiView> = record
         .communications
         .into_iter()
         .filter_map(|entry| {
@@ -254,6 +275,78 @@ fn project_airport_info(
         })
         .collect();
 
+    let mut primary_facts = vec![
+        AirportInfoFactUiView {
+            label: "Airport elevation".to_string(),
+            value: elevation_label.clone(),
+            next_in_label: None,
+            action_id: None,
+            link_url: None,
+        },
+        AirportInfoFactUiView {
+            label: "Traffic pattern altitude".to_string(),
+            value: format!("{traffic_pattern_altitude_label} {traffic_pattern_altitude_source}"),
+            next_in_label: None,
+            action_id: None,
+            link_url: None,
+        },
+        AirportInfoFactUiView {
+            label: "Time at airport".to_string(),
+            value: crate::format_time_of_day(
+                now.timestamp_millis(),
+                time_display_mode,
+                time_zone,
+                airport_time_style(time_display_mode),
+            )
+            .with_basis(),
+            next_in_label: None,
+            action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
+            link_url: None,
+        },
+        AirportInfoFactUiView {
+            label: "Time zone".to_string(),
+            value: format!(
+                "{} (UTC {})",
+                local_now.format("%Z"),
+                local_now.format("%z")
+            ),
+            next_in_label: None,
+            action_id: None,
+            link_url: None,
+        },
+    ];
+    for (label, event) in [("Sunrise", sunrise.as_ref()), ("Sunset", sunset.as_ref())] {
+        if let Some(event) = event {
+            primary_facts.push(AirportInfoFactUiView {
+                label: label.to_string(),
+                value: event.time_label.clone(),
+                next_in_label: event.next_in_label.clone(),
+                action_id: Some(event.time_display_action_id.clone()),
+                link_url: None,
+            });
+        }
+    }
+    let mut fact_sections = vec![AirportInfoFactSectionUiView {
+        title: None,
+        facts: primary_facts,
+    }];
+    if !communications.is_empty() {
+        fact_sections.push(AirportInfoFactSectionUiView {
+            title: Some("Communications".to_string()),
+            facts: communications
+                .iter()
+                .map(|communication| AirportInfoFactUiView {
+                    label: communication.label.clone(),
+                    value: communication.value.clone(),
+                    next_in_label: None,
+                    action_id: None,
+                    link_url: (communication.kind == "phone")
+                        .then(|| format!("tel:{}", communication.value)),
+                })
+                .collect(),
+        });
+    }
+
     Ok(AirportInfoUiView {
         airport_id: record.airport_id,
         name: record.name,
@@ -277,6 +370,8 @@ fn project_airport_info(
         sunrise,
         sunset,
         communications,
+        fact_sections,
+        runways_section_title: "Runways".to_string(),
         runway_diagram_complex,
         runways,
     })

@@ -2353,6 +2353,16 @@ function OperationalApp() {
       selected_reference_family_id: null,
       selected_chart_id: persistedUiState.selectedChartId ?? "",
       suggested_chart_ids: [],
+      collection_control: { launcher_label: "", enabled: false },
+      chart_control: { launcher_label: "", enabled: false },
+      procedure_load_menu: {
+        procedure_kind: null,
+        launcher_label: "",
+        header: "",
+        header_tone: "normal",
+        enabled: false,
+        options: [],
+      },
       procedure_geometry_status: {
         boxes: [],
         launcher_count: null,
@@ -4176,6 +4186,9 @@ function OperationalApp() {
           selectedCollection={selectedChartCollection}
           selectedChart={selectedChart}
           suggestedChartIds={derivedChartPageState.suggested_chart_ids}
+          collectionControl={derivedChartPageState.collection_control}
+          chartControl={derivedChartPageState.chart_control}
+          projectedProcedureLoadMenu={derivedChartPageState.procedure_load_menu}
           statusControls={derivedChartPageState.status_controls}
           folderOpen={chartFolderOpen}
           viewport={chartViewport}
@@ -11530,6 +11543,9 @@ function ChartsPage(props: {
   selectedCollection: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
   suggestedChartIds: string[];
+  collectionControl: DerivedChartPageState["collection_control"];
+  chartControl: DerivedChartPageState["chart_control"];
+  projectedProcedureLoadMenu: ProcedureLoadMenu;
   statusControls: UiSurfaceStatusState;
   folderOpen: boolean;
   viewport: ImageViewportState | null;
@@ -11563,7 +11579,7 @@ function ChartsPage(props: {
   const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
   const playbackUiState = highRateSnapshot.playback_ui_state;
   const playbackPanelState = highRateSnapshot.playback_panel_state;
-  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, statusControls, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, onStatusAction, uiSession, onFirstVisualReady, navDataEpoch } = props;
+  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, collectionControl, chartControl, projectedProcedureLoadMenu, statusControls, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, onStatusAction, uiSession, onFirstVisualReady, navDataEpoch } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -11584,13 +11600,9 @@ function ChartsPage(props: {
   const [procedureNotamDetail, setProcedureNotamDetail] = useState<
     NonNullable<ChartAsset["procedure_notam_badge"]>["detail"] | null
   >(null);
-  const [plateProcedureLoadMenu, setPlateProcedureLoadMenu] = useState<ProcedureLoadMenu>({
-    procedure_kind: null,
-    launcher_label: "LOAD\nPROC",
-    header: "No loadable procedure",
-    header_tone: "normal",
-    options: [],
-  });
+  const [plateProcedureLoadMenu, setPlateProcedureLoadMenu] = useState<ProcedureLoadMenu>(
+    projectedProcedureLoadMenu,
+  );
   const [plateFlightPlanRouteProjection, setPlateFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
     flight_plan_route_revision: -1,
     segments: [],
@@ -11889,7 +11901,7 @@ function ChartsPage(props: {
       return;
     }
     if (!props.uiSession || !selectedChart || selectedChart.kind !== "plate") {
-      setPlateProcedureLoadMenu({ procedure_kind: null, launcher_label: "LOAD\nPROC", header: "No loadable procedure", header_tone: "normal", options: [] });
+      setPlateProcedureLoadMenu(projectedProcedureLoadMenu);
       return;
     }
     let cancelled = false;
@@ -11909,13 +11921,13 @@ function ChartsPage(props: {
         error: errorMessage(error),
       });
       if (!cancelled) {
-        setPlateProcedureLoadMenu({ procedure_kind: null, launcher_label: "LOAD\nPROC", header: "No loadable procedure", header_tone: "normal", options: [] });
+        setPlateProcedureLoadMenu(projectedProcedureLoadMenu);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter, page, planProcedureLoadKey, selectedChart?.id]);
+  }, [appCoreAdapter, page, planProcedureLoadKey, projectedProcedureLoadMenu, selectedChart?.id]);
 
   const loadProcedureOptions = useMemo(() => {
     return plateProcedureLoadMenu.options.map((load, index) => ({
@@ -11951,7 +11963,6 @@ function ChartsPage(props: {
         });
     },
   }));
-  const loadProcedureEnabled = loadProcedureOptions.length > 0;
   const folderDisabledReason = trayOpen ? "Close the open tray first." : null;
 
   function localPointFromPointerEvent(
@@ -12285,12 +12296,11 @@ function ChartsPage(props: {
 
         <div className="chartDock chartDockDouble plateDock">
           <TrayDock
-            launcherLabel={selectedCollection
-              ? selectedCollection.charts[0]?.airport_id == null
-                ? selectedCollection.id.toUpperCase()
-                : selectedCollection.id
-              : "---"}
+            launcherLabel={collectionControl.launcher_label}
             open={trayGroup.isOpen("airport")}
+            disabled={!collectionControl.enabled}
+            disabledReason={collectionControl.disabled_reason}
+            onDisabledAction={showDisabledAction}
             onToggle={() => trayGroup.toggle("airport")}
             ariaLabel="Airport"
             style="plate_narrow"
@@ -12340,8 +12350,11 @@ function ChartsPage(props: {
             })}
           />
           <TrayDock
-            launcherLabel={selectedChart?.label ?? "---"}
+            launcherLabel={chartControl.launcher_label}
             open={trayGroup.isOpen("chart")}
+            disabled={!chartControl.enabled}
+            disabledReason={chartControl.disabled_reason}
+            onDisabledAction={showDisabledAction}
             launcherClassName="plateChartSelector"
             launcherAccentColor={selectedChart ? plateFolderColor(selectedChart.folder_category) : undefined}
             onToggle={() => trayGroup.toggle("chart")}
@@ -12362,8 +12375,8 @@ function ChartsPage(props: {
           <TrayDock
             launcherLabel={plateProcedureLoadMenu.launcher_label}
             open={trayGroup.isOpen("load")}
-            disabled={!loadProcedureEnabled}
-            disabledReason="No loadable procedure is available for this plate."
+            disabled={!plateProcedureLoadMenu.enabled}
+            disabledReason={plateProcedureLoadMenu.disabled_reason}
             onToggle={() => trayGroup.toggle("load")}
             ariaLabel="Load procedure"
             testId="plate-load-button"

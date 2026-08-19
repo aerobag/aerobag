@@ -84,9 +84,9 @@ pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
     derive_chart_page_state_from_collections, route_airport_ids_from_plan, ChartAssetRecord,
     ChartPageCollectionsInput, ChartReferenceFamilyRecord, ChartReferenceFamilySummary,
-    DerivedChartAirport, DerivedChartAirportMenuEntry, DerivedChartAsset, DerivedChartCatalog,
-    DerivedChartPage, DerivedChartPageState, DerivedChartReferenceFamily, PlateProcedureNotamBadge,
-    PlateProcedureNotamDetail,
+    ChartSelectorControlUiView, DerivedChartAirport, DerivedChartAirportMenuEntry,
+    DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
+    DerivedChartReferenceFamily, PlateProcedureNotamBadge, PlateProcedureNotamDetail,
 };
 pub use cloud::{
     CloudEventStreamEvent, CloudEventStreamEventKind, CloudEventStreamPlan, CloudHttpHeader,
@@ -390,6 +390,9 @@ pub struct ProcedureLoadMenu {
     pub launcher_label: String,
     pub header: String,
     pub header_tone: ProcedureLoadHeaderTone,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
     pub options: Vec<ProcedureLoadOption>,
 }
 
@@ -1332,11 +1335,15 @@ pub fn describe_plate_procedure_load_menu(
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
+    let enabled = !options.is_empty();
     Ok(ProcedureLoadMenu {
         procedure_kind: Some(procedure_kind.clone()),
         launcher_label: procedure_load_launcher_label(&procedure_kind).to_string(),
         header,
         header_tone,
+        enabled,
+        disabled_reason: (!enabled)
+            .then(|| "No loadable procedure is available for this plate.".to_string()),
         options,
     })
 }
@@ -1451,12 +1458,14 @@ fn plate_departure_load_context(
     ))
 }
 
-fn empty_procedure_load_menu() -> ProcedureLoadMenu {
+pub(crate) fn empty_procedure_load_menu() -> ProcedureLoadMenu {
     ProcedureLoadMenu {
         procedure_kind: None,
         launcher_label: "LOAD\nPROC".to_string(),
         header: "No loadable procedure".to_string(),
         header_tone: ProcedureLoadHeaderTone::Normal,
+        enabled: false,
+        disabled_reason: Some("No loadable procedure is available for this plate.".to_string()),
         options: Vec::new(),
     }
 }

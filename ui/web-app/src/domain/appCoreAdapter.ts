@@ -214,8 +214,17 @@ export type DerivedChartPageState = {
   selected_reference_family_id?: string | null;
   selected_chart_id: string;
   suggested_chart_ids: string[];
+  collection_control: ChartSelectorControlUiView;
+  chart_control: ChartSelectorControlUiView;
+  procedure_load_menu: ProcedureLoadMenu;
   procedure_geometry_status: UiDataStatusState;
   status_controls: UiSurfaceStatusState;
+};
+
+export type ChartSelectorControlUiView = {
+  launcher_label: string;
+  enabled: boolean;
+  disabled_reason?: string | null;
 };
 
 export type RasterMapUiState = {

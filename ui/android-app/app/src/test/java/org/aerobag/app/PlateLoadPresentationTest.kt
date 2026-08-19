@@ -16,7 +16,8 @@ class PlateLoadPresentationTest {
         assertTrue(chartsSource.contains("headerLabel = plateProcedureLoadMenu.header"))
         assertTrue(chartsSource.contains("ProcedureLoadHeaderTone.Destructive"))
         assertTrue(chartsSource.contains("uiTheme.controls.situationStatusUnavailableFg"))
-        assertTrue(chartsSource.contains("initialValue = emptyProcedureLoadMenu,\n        flightPlanRouteRevision,"))
+        assertTrue(chartsSource.contains("initialValue = projectedProcedureLoadMenu,"))
+        assertTrue(chartsSource.contains("disabledReason = plateProcedureLoadMenu.disabledReason"))
     }
 
     private fun sourceFile(path: String): File {

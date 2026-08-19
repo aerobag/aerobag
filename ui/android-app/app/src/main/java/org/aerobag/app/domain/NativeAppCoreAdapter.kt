@@ -2590,8 +2590,18 @@ private data class WireDerivedChartPageState(
     val selected_reference_family_id: String? = null,
     val selected_chart_id: String,
     val suggested_chart_ids: List<String> = emptyList(),
+    val collection_control: WireChartSelectorControlUiView,
+    val chart_control: WireChartSelectorControlUiView,
+    val procedure_load_menu: WireProcedureLoadMenu,
     val procedure_geometry_status: WireUiDataStatusState,
     val status_controls: WireUiSurfaceStatusState,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireChartSelectorControlUiView(
+    val launcher_label: String,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -2693,6 +2703,8 @@ private data class WireProcedureLoadMenu(
     val launcher_label: String,
     val header: String,
     val header_tone: WireProcedureLoadHeaderTone,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
     val options: List<WireProcedureLoadOption>,
 )
 
@@ -2830,8 +2842,17 @@ data class DerivedChartPageState(
     val selectedReferenceFamilyId: String?,
     val selectedChartId: String,
     val suggestedChartIds: List<String>,
+    val collectionControl: ChartSelectorControlUiView,
+    val chartControl: ChartSelectorControlUiView,
+    val procedureLoadMenu: ProcedureLoadMenu,
     val procedureGeometryStatus: UiDataStatusState,
     val statusControls: UiSurfaceStatusState,
+)
+
+data class ChartSelectorControlUiView(
+    val launcherLabel: String,
+    val enabled: Boolean,
+    val disabledReason: String?,
 )
 
 data class UiSessionSnapshot(
@@ -3076,8 +3097,17 @@ private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     selectedReferenceFamilyId = selected_reference_family_id,
     selectedChartId = selected_chart_id,
     suggestedChartIds = suggested_chart_ids,
+    collectionControl = collection_control.toUi(),
+    chartControl = chart_control.toUi(),
+    procedureLoadMenu = procedure_load_menu.toUi(),
     procedureGeometryStatus = procedure_geometry_status.toUi(),
     statusControls = status_controls.toUi(),
+)
+
+private fun WireChartSelectorControlUiView.toUi() = ChartSelectorControlUiView(
+    launcherLabel = launcher_label,
+    enabled = enabled,
+    disabledReason = disabled_reason,
 )
 
 private fun WireUiChartPageState.toUi() = UiChartPageState(
@@ -3858,6 +3888,8 @@ private fun WireProcedureLoadMenu.toUi() = ProcedureLoadMenu(
         WireProcedureLoadHeaderTone.Normal -> ProcedureLoadHeaderTone.Normal
         WireProcedureLoadHeaderTone.Destructive -> ProcedureLoadHeaderTone.Destructive
     },
+    enabled = enabled,
+    disabledReason = disabled_reason,
     options = options.map { it.toUi() },
 )
 

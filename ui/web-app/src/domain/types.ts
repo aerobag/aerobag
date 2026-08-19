@@ -401,6 +401,8 @@ export type ProcedureLoadMenu = {
   launcher_label: string;
   header: string;
   header_tone: "normal" | "destructive";
+  enabled: boolean;
+  disabled_reason?: string | null;
   options: ProcedureLoadOption[];
 };
 

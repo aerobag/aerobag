@@ -35,9 +35,20 @@ pub struct DerivedChartPageState {
     pub selected_chart_id: String,
     #[serde(default)]
     pub suggested_chart_ids: Vec<String>,
+    pub collection_control: ChartSelectorControlUiView,
+    pub chart_control: ChartSelectorControlUiView,
+    pub procedure_load_menu: crate::ProcedureLoadMenu,
     pub procedure_geometry_status: UiDataStatusState,
     #[serde(default)]
     pub status_controls: app_ui_contracts::session::UiSurfaceStatusState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChartSelectorControlUiView {
+    pub launcher_label: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 pub type DerivedChartCatalog = DerivedChartPage;
@@ -351,6 +362,19 @@ pub fn derive_chart_page_state_from_collections(
         label: FAA_CHART_USERS_GUIDE_LABEL.to_string(),
         url: FAA_CHART_USERS_GUIDE_URL.to_string(),
     });
+    let collection_launcher_label = selected_reference_family_id
+        .as_deref()
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_else(|| {
+            (!selected_airport_id.is_empty())
+                .then(|| selected_airport_id.clone())
+                .unwrap_or_else(|| "---".to_string())
+        });
+    let chart_launcher_label = selected_chart
+        .map(|chart| chart.label.clone())
+        .unwrap_or_else(|| "---".to_string());
+    let chart_enabled = selected_chart.is_some();
+    let collection_enabled = !airport_menu_entries.is_empty();
     DerivedChartPageState {
         airports,
         reference_families,
@@ -360,6 +384,18 @@ pub fn derive_chart_page_state_from_collections(
         selected_reference_family_id,
         selected_chart_id,
         suggested_chart_ids: suggested_chart_ids.to_vec(),
+        collection_control: ChartSelectorControlUiView {
+            launcher_label: collection_launcher_label,
+            enabled: collection_enabled,
+            disabled_reason: (!collection_enabled)
+                .then(|| "No chart collections are available.".to_string()),
+        },
+        chart_control: ChartSelectorControlUiView {
+            launcher_label: chart_launcher_label,
+            enabled: chart_enabled,
+            disabled_reason: (!chart_enabled).then(|| "No charts are available.".to_string()),
+        },
+        procedure_load_menu: crate::empty_procedure_load_menu(),
         procedure_geometry_status,
         status_controls: Default::default(),
     }

@@ -4908,13 +4908,7 @@ pub(crate) fn describe_plate_loads(
         },
     )?
     else {
-        return Ok(ProcedureLoadMenu {
-            procedure_kind: None,
-            launcher_label: "LOAD\nPROC".to_string(),
-            header: "No loadable procedure".to_string(),
-            header_tone: crate::ProcedureLoadHeaderTone::Normal,
-            options: Vec::new(),
-        });
+        return Ok(crate::empty_procedure_load_menu());
     };
     let mut grouped = HashMap::<String, Vec<CifpTppMatchRow>>::new();
     for row in rows {

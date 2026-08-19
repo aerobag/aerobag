@@ -218,6 +218,12 @@ choose typography and layout.
 
 ### 7. Chart selector and procedure-load controls contain local inference
 
+Resolution: implemented. Core now projects complete collection and chart
+selector controls with launcher labels, availability, and disabled reasons.
+It also supplies the initial procedure-load menu and complete load-control
+availability/reason. Neither platform inspects the first chart to identify a
+collection or invents the disabled load state and copy.
+
 Both platforms derive the airport/reference launcher label by inspecting the
 first chart:
 

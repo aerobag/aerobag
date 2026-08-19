@@ -245,6 +245,7 @@ import org.aerobag.app.domain.PlaybackStatus
 import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadHeaderTone
 import org.aerobag.app.domain.ProcedureLoadMenu
+import org.aerobag.app.domain.ChartSelectorControlUiView
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
 import org.aerobag.app.domain.RenderTile
@@ -364,6 +365,9 @@ internal fun ChartsPage(
     selectedCollection: ChartAirport?,
     selectedChart: ChartAsset?,
     suggestedChartIds: List<String>,
+    collectionControl: ChartSelectorControlUiView,
+    chartControl: ChartSelectorControlUiView,
+    projectedProcedureLoadMenu: ProcedureLoadMenu,
     chartAssetDataRevision: Int,
     flightPlanRouteRevision: Long,
     debugState: UiDebugState,
@@ -471,26 +475,20 @@ internal fun ChartsPage(
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen ||
         openStatusControlId != null || situationTrayOpen
-    val emptyProcedureLoadMenu = ProcedureLoadMenu(
-        procedureKind = null,
-        launcherLabel = "LOAD\nPROC",
-        header = "No loadable procedure",
-        headerTone = ProcedureLoadHeaderTone.Normal,
-        options = emptyList(),
-    )
     val plateProcedureLoadMenu by produceState(
-        initialValue = emptyProcedureLoadMenu,
+        initialValue = projectedProcedureLoadMenu,
         flightPlanRouteRevision,
+        projectedProcedureLoadMenu,
         selectedChart?.id,
     ) {
         val chart = selectedChart
         value = if (chart == null || chart.kind != "plate") {
-            emptyProcedureLoadMenu
+            projectedProcedureLoadMenu
         } else {
             withContext(Dispatchers.IO) {
                 runCatching { uiSession.describePlateProcedureLoads(chart.id) }
                     .onFailure { Log.w("AerobagCharts", "plate procedure loads unavailable chart=${chart.id}", it) }
-                    .getOrDefault(emptyProcedureLoadMenu)
+                    .getOrDefault(projectedProcedureLoadMenu)
             }
         }
     }
@@ -867,6 +865,8 @@ internal fun ChartsPage(
             airportMenuEntries = airportMenuEntries,
             selectedCollection = selectedCollection,
             selectedChart = selectedChart,
+            collectionControl = collectionControl,
+            chartControl = chartControl,
             folderOpen = folderOpen,
             airportTrayOpen = airportTrayOpen,
             chartTrayOpen = chartTrayOpen,
@@ -1623,6 +1623,8 @@ internal fun ChartViewerSelectors(
     airportMenuEntries: List<ChartAirportMenuEntry>,
     selectedCollection: ChartAirport?,
     selectedChart: ChartAsset?,
+    collectionControl: ChartSelectorControlUiView,
+    chartControl: ChartSelectorControlUiView,
     folderOpen: Boolean,
     airportTrayOpen: Boolean,
     chartTrayOpen: Boolean,
@@ -1653,13 +1655,13 @@ internal fun ChartViewerSelectors(
             verticalAlignment = Alignment.Top,
         ) {
             MenuDock(
-                launcherLabel = selectedCollection?.let { collection ->
-                    if (collection.charts.firstOrNull()?.airportId == null) collection.id.uppercase() else collection.id
-                } ?: "---",
+                launcherLabel = collectionControl.launcherLabel,
                 launcherTestTag = "parity:plate-airport-button",
                 optionTestTagPrefix = "parity:tray-option",
                 open = airportTrayOpen,
                 onToggle = onToggleAirportTray,
+                disabled = !collectionControl.enabled,
+                disabledReason = collectionControl.disabledReason,
                 style = MenuDockStyle.PlateAirport,
                 options = airportMenuEntries.mapIndexed { index, entry ->
                     when (entry) {
@@ -1688,11 +1690,13 @@ internal fun ChartViewerSelectors(
             )
 
             MenuDock(
-                launcherLabel = selectedChart?.label ?: "---",
+                launcherLabel = chartControl.launcherLabel,
                 launcherTestTag = "parity:plate-chart-button",
                 optionTestTagPrefix = "parity:tray-option",
                 open = chartTrayOpen,
                 onToggle = onToggleChartTray,
+                disabled = !chartControl.enabled,
+                disabledReason = chartControl.disabledReason,
                 style = MenuDockStyle.PlateWide,
                 buttonWidthOverride = chartButtonWidth,
                 options = (selectedCollection?.charts ?: emptyList()).map { chart ->
@@ -1715,8 +1719,8 @@ internal fun ChartViewerSelectors(
                 trayWidthOverride = PlatePageTrayWidth,
                 headerLabel = plateProcedureLoadMenu.header,
                 headerDestructive = plateProcedureLoadMenu.headerTone == ProcedureLoadHeaderTone.Destructive,
-                disabled = plateProcedureLoadMenu.options.isEmpty(),
-                disabledReason = "No loadable procedure is available for this plate.",
+                disabled = !plateProcedureLoadMenu.enabled,
+                disabledReason = plateProcedureLoadMenu.disabledReason,
                 options = plateProcedureLoadMenu.options.map { load ->
                     MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
                 },

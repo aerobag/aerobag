@@ -261,6 +261,9 @@ import org.aerobag.app.domain.PlaybackStatus
 import org.aerobag.app.domain.PlaybackUiState
 import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
+import org.aerobag.app.domain.ProcedureLoadHeaderTone
+import org.aerobag.app.domain.ProcedureLoadMenu
+import org.aerobag.app.domain.ChartSelectorControlUiView
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
 import org.aerobag.app.domain.RenderTile
@@ -2895,6 +2898,17 @@ internal fun AerobagApp(
                 selectedReferenceFamilyId = sessionSnapshot.chartPageState.selectedReferenceFamilyId,
                 selectedChartId = sessionSnapshot.chartPageState.selectedChartId,
                 suggestedChartIds = sessionSnapshot.chartPageState.suggestedChartIds,
+                collectionControl = ChartSelectorControlUiView("", false, null),
+                chartControl = ChartSelectorControlUiView("", false, null),
+                procedureLoadMenu = ProcedureLoadMenu(
+                    procedureKind = null,
+                    launcherLabel = "",
+                    header = "",
+                    headerTone = ProcedureLoadHeaderTone.Normal,
+                    enabled = false,
+                    disabledReason = null,
+                    options = emptyList(),
+                ),
                 procedureGeometryStatus = UiDataStatusState(
                     boxes = emptyList(),
                     launcherCount = null,
@@ -3494,6 +3508,9 @@ internal fun AerobagApp(
                         selectedCollection = selectedChartCollection,
                         selectedChart = selectedChart,
                         suggestedChartIds = derivedChartPageState.suggestedChartIds,
+                        collectionControl = derivedChartPageState.collectionControl,
+                        chartControl = derivedChartPageState.chartControl,
+                        projectedProcedureLoadMenu = derivedChartPageState.procedureLoadMenu,
                         chartAssetDataRevision = chartAssetDataRevision,
                         flightPlanRouteRevision = sessionSnapshot.flightPlanRouteRevision,
                         debugState = sessionSnapshot.debugState,

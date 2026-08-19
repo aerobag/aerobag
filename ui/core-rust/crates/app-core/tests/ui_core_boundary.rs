@@ -1660,6 +1660,35 @@ fn weather_and_airport_detail_presentation_is_core_owned() {
 }
 
 #[test]
+fn chart_selector_and_procedure_load_controls_are_core_owned() {
+    let core = read_repo_file("ui/core-rust/crates/app-core/src/chart_page.rs");
+    let load = read_repo_file("ui/core-rust/crates/app-core/src/lib.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android = read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt");
+
+    assert!(
+        core.contains("pub collection_control: ChartSelectorControlUiView")
+            && core.contains("pub chart_control: ChartSelectorControlUiView")
+            && core.contains("pub procedure_load_menu: crate::ProcedureLoadMenu")
+            && load.contains("pub disabled_reason: Option<String>"),
+        "core must project complete chart selector and procedure-load controls"
+    );
+    for (platform, source) in [("web", web.as_str()), ("Android", android.as_str())] {
+        for duplicated_policy in [
+            "selectedCollection.charts[0]",
+            "collection.charts.firstOrNull()?.airportId",
+            "No loadable procedure is available for this plate.",
+            "No loadable procedure",
+        ] {
+            assert!(
+                !source.contains(duplicated_policy),
+                "{platform} reconstructs core chart control policy: {duplicated_policy}"
+            );
+        }
+    }
+}
+
+#[test]
 fn production_session_snapshot_wire_omits_authoritative_flight_plan_state() {
     let init = app_core::create_ui_session(app_core::FlightPlan::empty(), &[], None, None)
         .expect("create core session");

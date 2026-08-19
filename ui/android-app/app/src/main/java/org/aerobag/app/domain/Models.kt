@@ -119,6 +119,8 @@ data class ProcedureLoadMenu(
     val launcherLabel: String,
     val header: String,
     val headerTone: ProcedureLoadHeaderTone,
+    val enabled: Boolean,
+    val disabledReason: String?,
     val options: List<ProcedureLoadOption>,
 )
 

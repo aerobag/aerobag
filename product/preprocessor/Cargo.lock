@@ -1048,7 +1048,10 @@ dependencies = [
  "base64",
  "chrono",
  "flate2",
+ "had-key",
+ "had-nav-kv",
  "libc",
+ "nav-kv-package",
  "notam-state",
  "preprocessor-live-feeds",
  "product-contracts",
@@ -1436,6 +1439,7 @@ name = "product-contracts"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "had-key",
  "prost",
  "serde",
  "serde_json",

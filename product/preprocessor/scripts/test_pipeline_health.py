@@ -468,6 +468,7 @@ class PipelineHealthTests(unittest.TestCase):
                                     },
                                 ],
                                 "quality": {
+                                    "procedure_notams_without_ui_anchor": 1,
                                     "rejected_row_count": 1,
                                     "oldest_rejected_ingest_seq": 6922,
                                     "latest_rejected_ingest_seq": 6922,
@@ -530,6 +531,25 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(
             rejected_updates["details"]["samples"][0]["cursor_utc"],
             "2026-07-17T19:49:00Z",
+        )
+        unanchored = metric(
+            evaluation,
+            "live_feed.notams.procedure_notams_without_ui_anchor",
+        )
+        self.assertEqual(unanchored["value"], 1)
+        self.assertEqual(unanchored["severity"], "ok")
+        self.assertEqual(unanchored["warning_threshold"], 2)
+
+        facts["inputs"]["live_feeds_status"]["payload"]["products"]["notams"][
+            "quality"
+        ]["procedure_notams_without_ui_anchor"] = 2
+        increased = evaluate_health(facts, [], now)
+        self.assertEqual(
+            metric(
+                increased,
+                "live_feed.notams.procedure_notams_without_ui_anchor",
+            )["severity"],
+            "warning",
         )
         self.assertEqual(evaluation["top_line_status"], "critical")
 

@@ -23,7 +23,7 @@ use crate::{
     InitialLoadCaptureSource, NmsApiSource,
 };
 
-const NMS_API_STORE_SCHEMA_VERSION: u32 = 7;
+const NMS_API_STORE_SCHEMA_VERSION: u32 = 8;
 const SOURCE_EPOCH_METADATA_KEY: &str = "canonical_change_epoch";
 const SOURCE_SEQUENCE_METADATA_KEY: &str = "canonical_change_sequence";
 
@@ -121,8 +121,14 @@ impl NmsApiCollectorStore {
                 )?;
                 set_metadata(&connection, SOURCE_SEQUENCE_METADATA_KEY, "0")
             }
-            Some("1") | Some("2") | Some("3") | Some("4") | Some("5") => {
-                // Versions 1 through 5 used obsolete semantic procedure identities
+            Some("1")
+            | Some("2")
+            | Some("3")
+            | Some("4")
+            | Some("5")
+            | Some("6")
+            | Some("7") => {
+                // Versions 1 through 7 used obsolete semantic procedure identities
                 // derived from raw AIXM. Stored rows do not retain enough source
                 // data to recompute those changes, so require an authoritative
                 // Initial Load refresh.
@@ -158,32 +164,11 @@ impl NmsApiCollectorStore {
                 tx.commit()
                     .context("failed to commit NMS procedure-key schema migration")
             }
-            Some("6") => self.migrate_schema_v6_to_v7(&mut connection),
-            Some("7") => self.validate_change_journal_metadata(&connection),
+            Some("8") => self.validate_change_journal_metadata(&connection),
             Some(version) => bail!(
                 "unsupported NMS API collector schema {version}; required {NMS_API_STORE_SCHEMA_VERSION}"
             ),
         }
-    }
-
-    fn migrate_schema_v6_to_v7(&self, connection: &mut Connection) -> anyhow::Result<()> {
-        let records = current_records_from_connection(connection)?;
-        let baseline_installed = metadata(connection, "baseline_installed_at_utc")?.is_some();
-        let tx = connection
-            .transaction()
-            .context("failed to start NMS canonical journal migration")?;
-        if baseline_installed {
-            let epoch = source_epoch_for_records(&records)?;
-            set_metadata(&tx, SOURCE_EPOCH_METADATA_KEY, &epoch)?;
-        }
-        set_metadata(&tx, SOURCE_SEQUENCE_METADATA_KEY, "0")?;
-        set_metadata(
-            &tx,
-            "schema_version",
-            &NMS_API_STORE_SCHEMA_VERSION.to_string(),
-        )?;
-        tx.commit()
-            .context("failed to commit NMS canonical journal migration")
     }
 
     fn validate_change_journal_metadata(&self, connection: &Connection) -> anyhow::Result<()> {
@@ -1316,7 +1301,7 @@ mod tests {
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let connection = store.open_connection()?;
-        set_metadata(&connection, "schema_version", "5")?;
+        set_metadata(&connection, "schema_version", "7")?;
         set_metadata(
             &connection,
             "baseline_installed_at_utc",
@@ -1365,7 +1350,7 @@ mod tests {
         let connection = store.open_connection()?;
         assert_eq!(
             metadata(&connection, "schema_version")?.as_deref(),
-            Some("7")
+            Some("8")
         );
         assert!(!store.is_baseline_installed()?);
         assert!(store.current_records()?.is_empty());
@@ -1410,55 +1395,6 @@ mod tests {
         assert!(
             format!("{error:#}").contains("source mismatch"),
             "{error:#}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn schema_v6_migration_establishes_a_cursor_for_existing_state() -> anyhow::Result<()> {
-        let temp = tempdir()?;
-        let store = NmsApiCollectorStore::new(temp.path());
-        store.initialize()?;
-        let baseline = parse_nms_api_update(
-            &update_xml(
-                UpdateIdentity {
-                    nms_id: "1000000000000001",
-                    classification: "DOM",
-                    location: "MHK",
-                    number: "101",
-                },
-                Some("N"),
-                "!MHK 07/101 MHK TEST",
-                "TEST ONLY",
-                "2026-07-23T14:00:00Z",
-                None,
-                "209907241405",
-            ),
-            NmsNotamClassification::Domestic,
-        )?;
-        store.install_baseline(
-            "fixture",
-            None,
-            timestamp("2026-07-23T14:00:00Z"),
-            Path::new("/fixture/initial-load"),
-            &[baseline.record],
-        )?;
-        let expected_cursor = store.canonical_source_cursor()?;
-
-        let connection = store.open_connection()?;
-        set_metadata(&connection, "schema_version", "6")?;
-        connection.execute(
-            "DELETE FROM metadata WHERE key IN (?1, ?2)",
-            params![SOURCE_EPOCH_METADATA_KEY, SOURCE_SEQUENCE_METADATA_KEY],
-        )?;
-        drop(connection);
-
-        store.initialize()?;
-        assert_eq!(store.canonical_source_cursor()?, expected_cursor);
-        let connection = store.open_connection()?;
-        assert_eq!(
-            metadata(&connection, "schema_version")?.as_deref(),
-            Some("7")
         );
         Ok(())
     }

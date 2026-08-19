@@ -106,6 +106,28 @@ Production deployment expects an operator-owned production file at
 it as `/etc/aerobag/secrets/nms-notams.json`. Set
 `"nms_notams_enabled": true` only after production credentials are available.
 
+### Fast procedure-rendezvous iteration
+
+Use the targeted audit while changing IAP, SID, STAR, or ODP normalization:
+
+```sh
+tools/audit-procedure-rendezvous
+tools/audit-procedure-rendezvous --keyword SID
+tools/audit-procedure-rendezvous --all
+```
+
+The command freshly runs the current NOTAM parser over the collector's cached
+FDC Initial Load and retained raw updates. It uses the collector database only
+to select the authoritative active source versions, then exact-joins their
+newly generated rendezvous keys against the currently effective published NAV
+database. It does not rebuild charts, TPP renderings, vectors, packages, or NAV
+geometry. The concise summary is printed to the terminal and the full findings
+default to `/tmp/aerobag-procedure-rendezvous-audit.json`.
+
+This loop immediately exercises NOTAM-side parser changes. A change to the
+cycle-side rendezvous-key producer still requires one NAV product rebuild before
+the published NAV database can serve as the updated oracle.
+
 ## Retired Source
 
 The former FAA SWIM/SCDS collector was retired after NMS Initial Load plus

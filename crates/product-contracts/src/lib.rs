@@ -181,6 +181,8 @@ pub struct ProcedureRendezvousKey {
 }
 
 impl ProcedureRendezvousKey {
+    pub const NAV_KV_PREFIX: &'static str = "plate/procedure-rendezvous/by-key/";
+
     pub fn airport_scoped(
         kind: ProcedureRendezvousKind,
         airport_id: &str,
@@ -297,6 +299,34 @@ impl ProcedureRendezvousKey {
                 "approach and departure procedure rendezvous keys require an airport".to_string(),
             ),
         }
+    }
+
+    pub fn nav_kv_key(&self) -> Result<String, String> {
+        self.validate()?;
+        let kind = match self.kind {
+            ProcedureRendezvousKind::Departure => "DEPARTURE",
+            ProcedureRendezvousKind::Arrival => "ARRIVAL",
+            ProcedureRendezvousKind::Approach => "APPROACH",
+        };
+        let scope = self.airport_id.as_deref().unwrap_or("SHARED");
+        let identity = match &self.identity {
+            ProcedureRendezvousIdentity::CifpId(procedure_id) => {
+                format!("CIFP/{}", had_key::upper_component(procedure_id))
+            }
+            ProcedureRendezvousIdentity::PublishedName(published) => format!(
+                "PUBLISHED-NAME/{}/{}",
+                had_key::upper_component(&published.name),
+                published.revision,
+            ),
+            ProcedureRendezvousIdentity::TakeoffMinimums => "TAKEOFF-MINIMUMS".to_string(),
+        };
+        Ok(format!(
+            "{}{}/{}/{}",
+            Self::NAV_KV_PREFIX,
+            had_key::upper_component(kind),
+            had_key::upper_component(scope),
+            identity,
+        ))
     }
 }
 
@@ -568,6 +598,35 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn procedure_rendezvous_keys_own_the_nav_kv_storage_key() {
+        assert_eq!(
+            ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Approach,
+                "KPAE",
+                "I16R",
+            )
+            .unwrap()
+            .nav_kv_key()
+            .unwrap(),
+            "plate/procedure-rendezvous/by-key/APPROACH/KPAE/CIFP/I16R"
+        );
+        assert_eq!(
+            ProcedureRendezvousKey::shared_arrival_published_name("TAYTR THREE")
+                .unwrap()
+                .nav_kv_key()
+                .unwrap(),
+            "plate/procedure-rendezvous/by-key/ARRIVAL/SHARED/PUBLISHED-NAME/TAYTR/3"
+        );
+        assert_eq!(
+            ProcedureRendezvousKey::airport_scoped_takeoff_minimums("KRNT")
+                .unwrap()
+                .nav_kv_key()
+                .unwrap(),
+            "plate/procedure-rendezvous/by-key/DEPARTURE/KRNT/TAKEOFF-MINIMUMS"
+        );
     }
 
     #[test]

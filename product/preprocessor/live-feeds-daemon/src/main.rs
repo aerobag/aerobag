@@ -439,7 +439,10 @@ impl DaemonStatus {
         let observed_at_utc = Utc::now();
         let delta_bytes = delta_bytes_for_status(update);
         let state_bytes = state_bytes_for_status(&update.state_path).ok();
-        let quality = quality_facts_for_status(update).ok().flatten();
+        let quality = update
+            .status_quality
+            .clone()
+            .or_else(|| quality_facts_for_status(update).ok().flatten());
         let mut state = self.inner.lock().expect("live-feed status lock");
         let history = state.products.entry(update.product.clone()).or_default();
         let content_version_changed =
@@ -3474,6 +3477,7 @@ mod tests {
             delta_path: None,
             changed_count: 0,
             removed_count: 0,
+            status_quality: None,
             publication_ack: None,
             notam_compaction: None,
         };
@@ -3899,7 +3903,7 @@ mod tests {
     }
 
     #[test]
-    fn status_exposes_nexrad_quality_facts() -> anyhow::Result<()> {
+    fn status_exposes_product_quality_facts() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let manifest_path = temp.path().join("manifest.json");
         fs::write(
@@ -3930,6 +3934,7 @@ mod tests {
                 delta_path: None,
                 changed_count: 0,
                 removed_count: 0,
+                status_quality: None,
                 publication_ack: None,
                 notam_compaction: None,
             }],
@@ -3943,6 +3948,37 @@ mod tests {
         assert_eq!(quality["palette_error_max"], 4.2);
         assert_eq!(quality["palette_error_p95"], 1.7);
         assert_eq!(quality["poor_color_match_count"], 3);
+
+        status.record_tick_result(&LiveFeedTickResult {
+            published: vec![PublishedLiveFeedUpdate {
+                product: "notams".to_string(),
+                version: "notam-state".to_string(),
+                unchanged: false,
+                state_path: PathBuf::from("unused-notam-checkpoint.json.xz"),
+                version_manifest_path: PathBuf::from("versions/notams/notam-state.json"),
+                version_manifest_url: "versions/notams/notam-state.json".to_string(),
+                state_url: "states/notams/checkpoint.json.xz".to_string(),
+                state_sha256: "notam-state".to_string(),
+                published_at_utc: None,
+                collected_at_utc: Some("2026-08-19T00:00:00Z".to_string()),
+                history: Vec::new(),
+                delta_path: None,
+                changed_count: 1,
+                removed_count: 0,
+                status_quality: Some(serde_json::json!({
+                    "procedure_notams_without_ui_anchor": 1,
+                })),
+                publication_ack: None,
+                notam_compaction: None,
+            }],
+            failures: Vec::new(),
+        });
+        let snapshot = status.snapshot();
+        assert_eq!(
+            snapshot.products["notams"].quality.as_ref().unwrap()
+                ["procedure_notams_without_ui_anchor"],
+            1
+        );
         Ok(())
     }
 
@@ -4018,6 +4054,7 @@ mod tests {
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,
+                    status_quality: None,
                     publication_ack: None,
                     notam_compaction: None,
                 }],
@@ -4082,6 +4119,7 @@ mod tests {
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,
+                    status_quality: None,
                     publication_ack: None,
                     notam_compaction: None,
                 }],

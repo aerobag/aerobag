@@ -38,6 +38,7 @@ DASHBOARD_WINDOW_SECONDS = 24 * 60 * 60
 DASHBOARD_BUCKET_SECONDS = 5 * 60
 DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
+EXPECTED_NOTAM_PROCEDURE_WITHOUT_UI_ANCHOR = 1
 ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
 
 _history_maintenance_dates: dict[Path, date] = {}
@@ -791,6 +792,27 @@ def add_live_feed_metrics(
             )
             quality = status.get("quality")
             if isinstance(quality, dict):
+                unanchored_count = quality.get(
+                    "procedure_notams_without_ui_anchor"
+                )
+                if isinstance(unanchored_count, int):
+                    expected = EXPECTED_NOTAM_PROCEDURE_WITHOUT_UI_ANCHOR
+                    add_metric(
+                        metrics,
+                        metric_id=(
+                            "live_feed.notams."
+                            "procedure_notams_without_ui_anchor"
+                        ),
+                        label="Procedure NOTAMs without a UI anchor",
+                        value=unanchored_count,
+                        unit="records",
+                        severity="warning" if unanchored_count > expected else "ok",
+                        warning_threshold=expected + 1,
+                        message=(
+                            "Procedure NOTAMs without an airport or rendezvous key: "
+                            f"{unanchored_count}; expected at most {expected}"
+                        ),
+                    )
                 rejected_count = int(quality.get("rejected_row_count") or 0)
                 add_metric(
                     metrics,

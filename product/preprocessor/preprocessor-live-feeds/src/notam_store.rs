@@ -208,6 +208,7 @@ pub struct NotamPublicationCursor {
 pub struct NotamPublicationSnapshot {
     pub current_state_id: String,
     pub counters: NotamCounters,
+    pub procedure_notams_without_ui_anchor: u64,
     pub cursor: NotamPublicationCursor,
     pub transitions: Vec<NotamPublicationTransition>,
 }
@@ -948,6 +949,23 @@ impl NotamPersistentStore {
         let current_state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
             .context("NOTAM projection is missing its current state ID")?;
         let counters = read_projection_counters(&tx)?;
+        let procedure_notams_without_ui_anchor = tx
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM notam_client_records
+                 WHERE json_extract(record_json, '$.notam_keyword')
+                           IN ('IAP', 'ODP', 'SID', 'STAR')
+                   AND COALESCE(TRIM(json_extract(record_json, '$.airport_id')), '') = ''
+                   AND COALESCE(
+                           json_array_length(
+                               json_extract(record_json, '$.procedure_rendezvous_keys')
+                           ),
+                           0
+                       ) = 0",
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .context("failed to count procedure NOTAMs without a UI anchor")?;
         let cursor = tx
             .query_row(
                 "SELECT published_through_journal_seq, published_head_state_id
@@ -996,6 +1014,7 @@ impl NotamPersistentStore {
         Ok(NotamPublicationSnapshot {
             current_state_id,
             counters,
+            procedure_notams_without_ui_anchor,
             cursor,
             transitions,
         })
@@ -2641,6 +2660,31 @@ mod tests {
         assert!(format!("{error:#}").contains("starts at"));
         assert_eq!(store.current_checkpoint()?, checkpoint);
         assert_eq!(store.canonical_source_cursor()?, Some(cursor));
+        Ok(())
+    }
+
+    #[test]
+    fn publication_snapshot_counts_procedure_notams_without_ui_anchor() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        let unanchored = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("STAR"),
+            "1",
+            Some("N"),
+            "STAR SPECIAL IAP, USCG SAN DIEGO, COPTER RNAV (GPS) 007, ORIG",
+        ))?
+        .context("missing unanchored procedure NOTAM")?;
+
+        store.synchronize_current_records(&[unanchored], "2026-08-19T00:00:00Z")?;
+
+        assert_eq!(
+            store
+                .publication_snapshot()?
+                .procedure_notams_without_ui_anchor,
+            1
+        );
         Ok(())
     }
 

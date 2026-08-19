@@ -9,9 +9,7 @@ use preprocessor_core::runway::{
 };
 use preprocessor_core::{airport_location_label, is_enroute_navaid_type};
 use preprocessor_data::{cifp_procedure_kind_from_subsection, is_suppressed_cifp_procedure};
-use product_contracts::{
-    ProcedureRendezvousIdentity, ProcedureRendezvousKey, ProcedureRendezvousKind,
-};
+use product_contracts::{ProcedureRendezvousKey, ProcedureRendezvousKind};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -2765,7 +2763,7 @@ pub(super) fn build_nav_kv_plate_pairs(
     }
     for (key, rows) in matches_by_rendezvous {
         pairs.push(json_pair(
-            procedure_rendezvous_nav_key(&key),
+            key.nav_kv_key().map_err(anyhow::Error::msg)?,
             &serde_json::Value::Array(rows),
             "procedure rendezvous matches",
         )?);
@@ -4539,7 +4537,7 @@ pub(super) fn build_nav_kv_procedure_pairs(
     for (key, rows) in matches_by_rendezvous {
         let rows = serde_json::Value::Array(rows);
         pairs.push(json_pair(
-            procedure_rendezvous_nav_key(&key),
+            key.nav_kv_key().map_err(anyhow::Error::msg)?,
             &rows,
             "procedure rendezvous matches",
         )?);
@@ -4674,32 +4672,6 @@ fn procedure_rendezvous_keys(
     };
     keys.extend(published_name_key);
     Ok(keys)
-}
-
-fn procedure_rendezvous_nav_key(key: &ProcedureRendezvousKey) -> String {
-    let kind = match key.kind {
-        ProcedureRendezvousKind::Departure => "DEPARTURE",
-        ProcedureRendezvousKind::Arrival => "ARRIVAL",
-        ProcedureRendezvousKind::Approach => "APPROACH",
-    };
-    let scope = key.airport_id.as_deref().unwrap_or("SHARED");
-    let identity = match &key.identity {
-        ProcedureRendezvousIdentity::CifpId(procedure_id) => {
-            format!("CIFP/{}", had_upper_key_component(procedure_id),)
-        }
-        ProcedureRendezvousIdentity::PublishedName(published) => format!(
-            "PUBLISHED-NAME/{}/{}",
-            had_upper_key_component(&published.name),
-            published.revision,
-        ),
-        ProcedureRendezvousIdentity::TakeoffMinimums => "TAKEOFF-MINIMUMS".to_string(),
-    };
-    format!(
-        "plate/procedure-rendezvous/by-key/{}/{}/{}",
-        had_upper_key_component(kind),
-        had_upper_key_component(scope),
-        identity,
-    )
 }
 
 fn audit_transition_matches(
@@ -6387,6 +6359,7 @@ pub(super) fn max_zoom_for_levels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use product_contracts::ProcedureRendezvousIdentity;
 
     #[test]
     fn cycle_procedures_emit_the_shared_rendezvous_contract() {
@@ -6401,7 +6374,7 @@ mod tests {
             .unwrap()
         );
         assert_eq!(
-            procedure_rendezvous_nav_key(&approach),
+            approach.nav_kv_key().unwrap(),
             "plate/procedure-rendezvous/by-key/APPROACH/04W/CIFP/R06"
         );
 
@@ -6411,7 +6384,7 @@ mod tests {
             ProcedureRendezvousKey::shared_arrival("CHINS5").unwrap()
         );
         assert_eq!(
-            procedure_rendezvous_nav_key(&arrival),
+            arrival.nav_kv_key().unwrap(),
             "plate/procedure-rendezvous/by-key/ARRIVAL/SHARED/CIFP/CHINS5"
         );
 
@@ -6439,7 +6412,7 @@ mod tests {
             .find(|key| matches!(key.identity, ProcedureRendezvousIdentity::PublishedName(_)))
             .unwrap();
         assert_eq!(
-            procedure_rendezvous_nav_key(published_key),
+            published_key.nav_kv_key().unwrap(),
             "plate/procedure-rendezvous/by-key/DEPARTURE/KALN/PUBLISHED-NAME/LINDBERGH/9"
         );
     }

@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 pub mod collector;
 pub mod fixture;
+pub mod rendezvous_audit;
 
 #[cfg(test)]
 mod fixture_test;

@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use nms_notams_fetch::collector::{run_collector, CollectorOptions, NmsApiCollectorStore};
 use nms_notams_fetch::fixture::capture_nms_fixture;
+use nms_notams_fetch::rendezvous_audit::{audit_rendezvous, RendezvousAuditOptions};
 use nms_notams_fetch::{capture_initial_load, NmsClient, NmsConfig};
 use preprocessor_live_feeds::nms_initial_load::parse_nms_initial_load;
 use preprocessor_live_feeds::nms_initial_load::NmsNotamClassification;
@@ -83,6 +84,15 @@ fn main() -> anyhow::Result<()> {
             )?;
             println!("{}", manifest.display());
         }
+        Command::AuditRendezvous(arguments) => {
+            let report = audit_rendezvous(&RendezvousAuditOptions {
+                state_root: arguments.state_root,
+                nav_db_dir: arguments.nav_db_dir,
+                initial_load_path: arguments.initial_load_path,
+                keyword: arguments.keyword,
+            })?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
     }
     Ok(())
 }
@@ -92,6 +102,7 @@ enum Command {
     Collect(CollectArguments),
     Inspect(InspectArguments),
     CaptureFixture(CaptureFixtureArguments),
+    AuditRendezvous(AuditRendezvousArguments),
 }
 
 impl Command {
@@ -103,6 +114,9 @@ impl Command {
             Some("capture-fixture") => Ok(Self::CaptureFixture(CaptureFixtureArguments::parse(
                 arguments,
             )?)),
+            Some("audit-rendezvous") => Ok(Self::AuditRendezvous(AuditRendezvousArguments::parse(
+                arguments,
+            )?)),
             Some("--help" | "-h") => {
                 print_usage();
                 std::process::exit(0);
@@ -110,6 +124,52 @@ impl Command {
             Some(command) => bail!("unknown command {command}"),
             None => bail!("a command is required; use --help for usage"),
         }
+    }
+}
+
+struct AuditRendezvousArguments {
+    state_root: PathBuf,
+    nav_db_dir: PathBuf,
+    initial_load_path: Option<PathBuf>,
+    keyword: Option<String>,
+}
+
+impl AuditRendezvousArguments {
+    fn parse(arguments: impl Iterator<Item = String>) -> anyhow::Result<Self> {
+        let mut state_root = None;
+        let mut nav_db_dir = None;
+        let mut initial_load_path = None;
+        let mut keyword = None;
+        let mut arguments = arguments.peekable();
+        while let Some(argument) = arguments.next() {
+            match argument.as_str() {
+                "--state-root" => {
+                    state_root = Some(PathBuf::from(
+                        arguments.next().context("--state-root requires a path")?,
+                    ));
+                }
+                "--nav-db" => {
+                    nav_db_dir = Some(PathBuf::from(
+                        arguments.next().context("--nav-db requires a path")?,
+                    ));
+                }
+                "--initial-load" => {
+                    initial_load_path = Some(PathBuf::from(
+                        arguments.next().context("--initial-load requires a path")?,
+                    ));
+                }
+                "--keyword" => {
+                    keyword = Some(arguments.next().context("--keyword requires a value")?);
+                }
+                _ => bail!("unknown argument {argument}"),
+            }
+        }
+        Ok(Self {
+            state_root: state_root.context("--state-root is required")?,
+            nav_db_dir: nav_db_dir.context("--nav-db is required")?,
+            initial_load_path,
+            keyword,
+        })
     }
 }
 
@@ -326,7 +386,7 @@ impl FetchArguments {
 
 fn print_usage() {
     println!(
-        "Usage:\n  nms-notams-fetch fetch --config PATH --output DIR [--classification DOMESTIC|FDC]...\n  nms-notams-fetch collect --config PATH --state-root DIR [--poll-seconds N] [--overlap-seconds N] [--duration-seconds N] [--max-polls N]\n  nms-notams-fetch inspect --input XML --classification DOMESTIC|FDC\n  nms-notams-fetch capture-fixture --initial-load DIR --state-root DIR --output DIR --captured-by-commit HASH"
+        "Usage:\n  nms-notams-fetch fetch --config PATH --output DIR [--classification DOMESTIC|FDC]...\n  nms-notams-fetch collect --config PATH --state-root DIR [--poll-seconds N] [--overlap-seconds N] [--duration-seconds N] [--max-polls N]\n  nms-notams-fetch inspect --input XML --classification DOMESTIC|FDC\n  nms-notams-fetch capture-fixture --initial-load DIR --state-root DIR --output DIR --captured-by-commit HASH\n  nms-notams-fetch audit-rendezvous --state-root DIR --nav-db DIR [--initial-load XML] [--keyword IAP|ODP|SID|STAR]"
     );
 }
 

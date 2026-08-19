@@ -9,7 +9,10 @@ anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
 flate2.workspace = true
+had-nav-kv = { path = "../../../crates/had-nav-kv" }
+had-key = { path = "../../../crates/had-key" }
 libc = "0.2"
+nav-kv-package = { path = "../../../crates/nav-kv-package" }
 preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }
 product-contracts = { path = "../../../crates/product-contracts" }
 rusqlite.workspace = true

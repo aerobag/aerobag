@@ -345,6 +345,7 @@ name = "product-contracts"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "had-key",
  "prost",
  "serde",
  "serde_json",

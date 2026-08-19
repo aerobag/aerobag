@@ -285,6 +285,7 @@ pub struct PublishedLiveFeedUpdate {
     pub delta_path: Option<PathBuf>,
     pub changed_count: usize,
     pub removed_count: usize,
+    pub status_quality: Option<serde_json::Value>,
     #[doc(hidden)]
     pub publication_ack: Option<NotamPublicationAck>,
     #[doc(hidden)]
@@ -1188,6 +1189,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     delta_path: None,
                     changed_count: 0,
                     removed_count: 0,
+                    status_quality: None,
                     publication_ack: None,
                     notam_compaction: None,
                 });
@@ -1414,6 +1416,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             delta_path,
             changed_count,
             removed_count,
+            status_quality: None,
             publication_ack: None,
             notam_compaction: None,
         })
@@ -1543,6 +1546,10 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 delta_path,
                 changed_count: 0,
                 removed_count: 0,
+                status_quality: Some(serde_json::json!({
+                    "procedure_notams_without_ui_anchor": snapshot
+                        .procedure_notams_without_ui_anchor,
+                })),
                 publication_ack,
                 notam_compaction,
             });
@@ -1712,6 +1719,10 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             delta_path,
             changed_count,
             removed_count,
+            status_quality: Some(serde_json::json!({
+                "procedure_notams_without_ui_anchor": snapshot
+                    .procedure_notams_without_ui_anchor,
+            })),
             publication_ack: Some(NotamPublicationAck {
                 state_root: store.root().to_path_buf(),
                 journal_seq: final_journal_seq,
@@ -4792,6 +4803,7 @@ mod tests {
                 delta_path: None,
                 changed_count: 1,
                 removed_count: 0,
+                status_quality: None,
                 publication_ack: Some(NotamPublicationAck {
                     state_root: PathBuf::from("not-used-by-mock"),
                     journal_seq: 1,

@@ -222,12 +222,18 @@ regex!(
     RE_LOC_AND_DME_VARIANT_RUNWAY,
     r"^LOC AND DME ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
 );
-regex!(RE_ILS_RUNWAY, r"^ILS RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_ILS_RUNWAY,
+    r"^(?:CONVERGING )?ILS(?:/DME)?(?: RWY)? ([0-9]{1,2}[LRC]?)$"
+);
 regex!(
     RE_ILS_VARIANT_RUNWAY,
     r"^ILS ([UVWXYZ]) RWY ([0-9]{1,2}[LRC]?)$"
 );
-regex!(RE_RNAV_GPS_RUNWAY, r"^RNAV \(GPS\) RWY ([0-9]{1,2}[LRC]?)$");
+regex!(
+    RE_RNAV_GPS_RUNWAY,
+    r"^RNAV \(GPS\)(?: PRM)? RWY ([0-9]{1,2}[LRC]?)$"
+);
 regex!(RE_GPS_RUNWAY, r"^GPS RWY ([0-9]{1,2}[LRC]?)$");
 regex!(
     RE_RNAV_GPS_VARIANT_RUNWAY,
@@ -291,16 +297,19 @@ regex!(RE_VOR_CIRCLING, r"^VOR(?: OR DME|/DME)?-([A-Z])$");
 regex!(RE_VOR_OR_TACAN_CIRCLING, r"^VOR OR TACAN-([A-Z])$");
 regex!(RE_VOR_OR_GPS_CIRCLING, r"^VOR OR GPS-([A-Z])$");
 regex!(RE_VDM_CIRCLING, r"^VOR(?: AND DME|/DME)-([A-Z])$");
-regex!(RE_VDM_OR_GPS_CIRCLING, r"^VOR AND DME OR GPS-([A-Z])$");
+regex!(
+    RE_VDM_OR_GPS_CIRCLING,
+    r"^VOR(?: AND DME|/DME) OR GPS-([A-Z])$"
+);
 regex!(RE_NDB_CIRCLING, r"^NDB(?:/DME)?-([A-Z])$");
-regex!(RE_RNAV_CIRCLING, r"^RNAV \((?:GPS|RNP)\)-([A-Z])$");
-regex!(RE_LOC_CIRCLING, r"^LOC(?: AND DME)?-([A-Z])$");
-regex!(RE_LDA_CIRCLING, r"^LDA-([A-Z])$");
+regex!(RE_RNAV_CIRCLING, r"^RNAV(?: \((?:GPS|RNP)\))?-([A-Z])$");
+regex!(RE_LOC_CIRCLING, r"^LOC(?: AND DME|/DME)?-([A-Z])$");
+regex!(RE_LDA_CIRCLING, r"^LDA(?:/DME)?-([A-Z])$");
 regex!(
     RE_LDA_VARIANT_RUNWAY,
-    r"^LDA ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
+    r"^LDA(?:/DME)? ([XYZ]) RWY ([0-9]{1,2}[LRC]?)$"
 );
-regex!(RE_LDA_RUNWAY, r"^LDA RWY ([0-9]{1,2}[LRC]?)$");
+regex!(RE_LDA_RUNWAY, r"^LDA(?:/DME)? RWY ([0-9]{1,2}[LRC]?)$");
 regex!(RE_LOC_BC_RUNWAY, r"^LOC BC RWY ([0-9]{1,2}[LRC]?)$");
 
 fn strip_iap_prefix(label: &str) -> String {
@@ -311,6 +320,15 @@ fn strip_iap_prefix(label: &str) -> String {
 }
 
 fn runway_candidate(prefix: &str, runway: &str, variant: Option<&str>, style: &str) -> String {
+    let runway = if runway
+        .as_bytes()
+        .get(1)
+        .is_none_or(|second| !second.is_ascii_digit())
+    {
+        format!("0{runway}")
+    } else {
+        runway.to_string()
+    };
     let Some(variant) = variant else {
         return format!("{prefix}{runway}");
     };
@@ -400,7 +418,20 @@ pub fn faa_procedure_id_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
     }
     let mut body = strip_iap_prefix(&label.to_ascii_uppercase());
     body = CAT_SUFFIX_RE.replace(&body, "").to_string();
-    let body = body.trim().to_string();
+    body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(stripped) = body.strip_prefix("COPTER ") {
+        body = stripped.to_string();
+    }
+    if let Some(stripped) = body.strip_prefix("HI - ") {
+        body = stripped.to_string();
+    } else if let Some(stripped) = body.strip_prefix("HI-") {
+        // HI-TACAN has its own CIFP family; the other high-altitude titles
+        // rendezvous with their underlying approach identifiers.
+        if !stripped.starts_with("TACAN ") {
+            body = stripped.to_string();
+        }
+    }
+    body = body.replace(" -", "-").replace("- ", "-");
 
     if let Some(captures) = RE_VOR_DME_OR_TACAN_RUNWAY.captures(&body) {
         let runway = captures.get(1).unwrap().as_str();
@@ -766,14 +797,6 @@ pub fn faa_named_terminal_procedure_id(name: &str) -> Option<String> {
         .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
     (!name.is_empty()).then(|| format!("{name}{revision}"))
-}
-
-fn heuristic_candidate_groups_for_copter_plate(label: &str) -> Vec<BTreeSet<String>> {
-    let stripped = Regex::new(r"^(IAP-[A-Z]{2}-)COPTER ")
-        .expect("valid copter regex")
-        .replace(label, "$1")
-        .to_string();
-    faa_procedure_id_candidate_groups(&stripped)
 }
 
 fn is_visual_plate(label: &str) -> bool {
@@ -1197,7 +1220,7 @@ fn classify_relation(
 
         for plate in &airport_plates {
             if plate.label.to_ascii_uppercase().contains("COPTER") {
-                for group in heuristic_candidate_groups_for_copter_plate(&plate.label) {
+                for group in faa_procedure_id_candidate_groups(&plate.label) {
                     let matched = group
                         .intersection(&procedure_ids)
                         .cloned()
@@ -1587,6 +1610,59 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_internal_whitespace_in_faa_procedure_titles() {
+        assert_eq!(
+            faa_procedure_id_candidate_groups("RNAV (GPS)  RWY 25"),
+            vec![BTreeSet::from([String::from("R25")])]
+        );
+    }
+
+    #[test]
+    fn normalizes_nms_approach_title_qualifiers_and_spacing() {
+        assert_eq!(
+            faa_procedure_id_candidate_groups("COPTER ILS Y OR LOC Y RWY 05"),
+            vec![
+                BTreeSet::from([String::from("I05-Y")]),
+                BTreeSet::from([String::from("L05-Y")]),
+            ]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("HI - ILS OR LOC RWY 8"),
+            vec![
+                BTreeSet::from([String::from("I08")]),
+                BTreeSet::from([String::from("L08")]),
+            ]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("VOR -A"),
+            vec![BTreeSet::from([
+                String::from("VDM-A"),
+                String::from("VOR-A"),
+            ])]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("RNAV (GPS) PRM RWY 9R"),
+            vec![BTreeSet::from([String::from("R09R")])]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("ILS 12L (CAT II-III)"),
+            vec![BTreeSet::from([String::from("I12L")])]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("CONVERGING ILS RWY 17R"),
+            vec![BTreeSet::from([String::from("I17R")])]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("RNAV- A"),
+            vec![BTreeSet::from([String::from("RNV-A")])]
+        );
+        assert_eq!(
+            faa_procedure_id_candidate_groups("VOR/DME OR GPS-B"),
+            vec![BTreeSet::from([String::from("VDM-B")])]
+        );
+    }
+
+    #[test]
     fn recognizes_named_departure_revision_as_cifp_sid() {
         assert_eq!(
             faa_procedure_id_candidate_groups("DP-WA-BANGR NINE (RNAV)"),
@@ -1831,9 +1907,9 @@ mod tests {
     }
 
     #[test]
-    fn strips_copter_prefix_for_copter_matching() {
+    fn shared_parser_strips_copter_prefix_for_copter_matching() {
         assert_eq!(
-            heuristic_candidate_groups_for_copter_plate("IAP-OR-COPTER ILS Y OR LOC Y RWY 05"),
+            faa_procedure_id_candidate_groups("IAP-OR-COPTER ILS Y OR LOC Y RWY 05"),
             vec![
                 BTreeSet::from([String::from("I05-Y")]),
                 BTreeSet::from([String::from("L05-Y")]),

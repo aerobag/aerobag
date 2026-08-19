@@ -659,6 +659,7 @@ fn apply_transition_range(input: TransitionRangeInput<'_>) -> anyhow::Result<()>
             let snapshot = NotamPublicationSnapshot {
                 current_state_id: boundaries[next].state_id.clone(),
                 counters: boundaries[next].counters,
+                procedure_notams_without_ui_anchor: 0,
                 cursor: NotamPublicationCursor {
                     published_through_journal_seq: transitions[cursor].journal_seq - 1,
                     published_head_state_id: Some(boundaries[cursor].state_id.clone()),

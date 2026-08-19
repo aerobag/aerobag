@@ -2150,6 +2150,27 @@ fn notam_keyword_from_text(text: &str) -> Option<String> {
     KEYWORDS.contains(&candidate.as_str()).then_some(candidate)
 }
 
+fn textual_iap_candidate_groups(text: &str) -> Vec<BTreeSet<String>> {
+    let mut groups = BTreeSet::new();
+    for segment in text.split("...") {
+        let words = segment.split_whitespace().collect::<Vec<_>>();
+        let Some(revision_index) = words.iter().position(|word| {
+            let word = word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
+            word == "AMDT" || word == "AMT" || word.starts_with("ORIG")
+        }) else {
+            continue;
+        };
+
+        let title_with_heading = words[..revision_index].join(" ");
+        let title = title_with_heading
+            .rsplit_once(". ")
+            .map_or(title_with_heading.as_str(), |(_, title)| title)
+            .trim_end_matches([',', '.']);
+        groups.extend(faa_procedure_id_candidate_groups(title));
+    }
+    groups.into_iter().collect()
+}
+
 fn procedure_rendezvous_keys_for_notam(
     document: &roxmltree::Document<'_>,
     keyword: Option<&str>,
@@ -2182,6 +2203,20 @@ fn procedure_rendezvous_keys_for_notam(
                         .map_err(anyhow::Error::msg)?,
                     );
                 }
+            }
+            for procedure_id in text
+                .into_iter()
+                .flat_map(textual_iap_candidate_groups)
+                .flatten()
+            {
+                keys.insert(
+                    ProcedureRendezvousKey::airport_scoped(
+                        ProcedureRendezvousKind::Approach,
+                        airport_id,
+                        &procedure_id,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                );
             }
         }
         Some("SID") | Some("ODP") => {
@@ -2327,15 +2362,20 @@ fn textual_star_cifp_ids(text: &str) -> BTreeSet<String> {
         .skip(1)
         .filter_map(|tail| tail.split_once(')'))
     {
-        let Some((_, candidate)) = parenthesized.0.rsplit_once('.') else {
+        let candidate = parenthesized
+            .0
+            .rsplit_once('.')
+            .map_or(parenthesized.0, |(_, candidate)| candidate)
+            .trim();
+        let Some((revision, stem)) = candidate.chars().next_back().map(|revision| {
+            let stem = &candidate[..candidate.len() - revision.len_utf8()];
+            (revision, stem)
+        }) else {
             continue;
         };
-        let candidate = candidate.trim();
-        if candidate.len() >= 2
-            && candidate
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-            && candidate.chars().any(|ch| ch.is_ascii_digit())
+        if matches!(revision, '1'..='9')
+            && (2..=5).contains(&stem.len())
+            && stem.chars().all(|ch| ch.is_ascii_uppercase())
         {
             ids.insert(candidate.to_string());
         }
@@ -3639,6 +3679,73 @@ mod tests {
     }
 
     #[test]
+    fn nms_text_only_iap_notam_emits_every_revision_qualified_title() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse("<root />")?;
+
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("IAP"),
+                Some("KALB"),
+                Some(
+                    "IAP ALBANY INTL, ALBANY, NY. ILS OR LOC RWY 1, AMDT 11D... \
+                     ILS RWY 1 (SA CAT II), AMDT 11D... PROCEDURE NA.",
+                ),
+            )?,
+            BTreeSet::from([
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Approach,
+                    "KALB",
+                    "I01",
+                )
+                .unwrap(),
+                ProcedureRendezvousKey::airport_scoped(
+                    ProcedureRendezvousKind::Approach,
+                    "KALB",
+                    "L01",
+                )
+                .unwrap(),
+            ])
+        );
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("IAP"),
+                Some("KAPF"),
+                Some("IAP NAPLES, NAPLES, FL. RNAV (GPS) Y RWY 23\nORIG-A... LPV NA."),
+            )?,
+            BTreeSet::from([ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Approach,
+                "KAPF",
+                "R23-Y",
+            )
+            .unwrap()])
+        );
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("IAP"),
+                Some("KOMA"),
+                Some("IAP EPPLEY AIRFIELD, OMAHA, NE. ILS RWY 14R (CAT II-III), AMT 6"),
+            )?,
+            BTreeSet::from([ProcedureRendezvousKey::airport_scoped(
+                ProcedureRendezvousKind::Approach,
+                "KOMA",
+                "I14R",
+            )
+            .unwrap()])
+        );
+        assert!(procedure_rendezvous_keys_for_notam(
+            &xml,
+            Some("IAP"),
+            Some("KCNP"),
+            Some("IAP BILLY G RAY FLD, CHAPPELL, NE. NDB OR GPS RWY 30, AMDT 2C..."),
+        )?
+        .is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn nms_multi_sid_notam_emits_every_departure_rendezvous_key() -> anyhow::Result<()> {
         let xml = roxmltree::Document::parse(
             r#"<root>
@@ -3779,6 +3886,25 @@ mod tests {
             notam_keyword_from_text("STAR CHINS FIVE ARRIVAL PROCEDURE NA").as_deref(),
             Some("STAR")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn nms_star_text_accepts_direct_parenthesized_cifp_id() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse("<root/>")?;
+        let keys = procedure_rendezvous_keys_for_notam(
+            &xml,
+            Some("STAR"),
+            None,
+            Some(
+                "STAR HNL DANIEL K. INOUYE INTL AIRPORT, HONOLULU HI STAR KAENA FIVE \
+                 (KAENA5) STAR NOT AVAILABLE. TRANSIT CORRIDOR THROUGH WARNING AREAS \
+                 W-189A, W-189B, AND W-190 UNAVAILABLE DUE TO PARTICIPATING MILITARY \
+                 OPERATIONS.",
+            ),
+        )?;
+
+        assert!(keys.contains(&ProcedureRendezvousKey::shared_arrival("KAENA5").unwrap()));
         Ok(())
     }
 

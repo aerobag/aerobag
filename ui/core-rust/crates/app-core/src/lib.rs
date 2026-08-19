@@ -1030,6 +1030,17 @@ pub fn classify_procedure_identifier(
     None
 }
 
+pub(crate) fn nav_ref_picker_label(value: &NavRef) -> String {
+    match value {
+        NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => code.clone(),
+        NavRef::ArincNavaid { identifier, .. } | NavRef::TerminalNavaid { identifier, .. } => {
+            identifier.clone()
+        }
+        NavRef::LatLon(value) => format!("{:.3}, {:.3}", value.lat, value.lon),
+        NavRef::Spot(value) => format!("SPOT {:.3}, {:.3}", value.lat, value.lon),
+    }
+}
+
 pub(crate) fn prepare_airway_presentation(
     airway_name: &str,
     branches: Vec<navdb_types::AirwayBranch>,
@@ -1077,6 +1088,9 @@ pub(crate) fn prepare_airway_presentation(
                 ),
                 sequence: point.sequence,
                 nav_ref: point.nav_ref.clone(),
+                label: nav_ref_picker_label(&point.nav_ref),
+                same_point_exit_disabled_reason: "That fix is the airway entry; choose an exit."
+                    .to_string(),
             })
             .collect::<Vec<_>>();
 
@@ -1491,6 +1505,29 @@ fn procedure_load_entry_label(kind: &ProcedureKind, choice: &ProcedureSpecChoice
     }
 }
 
+pub(crate) fn procedure_picker_choice_label(
+    kind: &ProcedureKind,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+) -> String {
+    let runway = runway_transition.map(str::trim);
+    let enroute = enroute_transition.map(str::trim);
+    match (kind, runway, enroute) {
+        (ProcedureKind::Sid, Some(runway), Some(enroute)) => {
+            format!("via {runway} to {enroute}")
+        }
+        (ProcedureKind::Sid, Some(runway), None) => format!("via {runway}"),
+        (ProcedureKind::Sid, None, Some(enroute)) => format!("to {enroute}"),
+        (ProcedureKind::Star, Some(runway), Some(enroute)) => {
+            format!("from {enroute} to {runway}")
+        }
+        (ProcedureKind::Star, Some(runway), None) => format!("to {runway}"),
+        (_, _, Some(enroute)) => format!("from {enroute}"),
+        (_, Some(runway), None) => format!("from {runway}"),
+        _ => "Published route".to_string(),
+    }
+}
+
 pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {
     great_circle_distance_nm(first, second)
 }
@@ -1711,9 +1748,11 @@ mod tests {
                 runway_transitions: Vec::new(),
                 enroute_transitions: vec!["OVR".to_string()],
                 has_common_segment: true,
+                empty_message: "No published routes are available.".to_string(),
                 valid_choices: vec![ProcedureSpecChoice {
                     runway_transition: None,
                     enroute_transition: Some("OVR".to_string()),
+                    label: "from OVR".to_string(),
                 }],
             },
         }
@@ -1742,9 +1781,11 @@ mod tests {
                 runway_transitions: vec!["RW16L".to_string()],
                 enroute_transitions: vec!["BANGR".to_string()],
                 has_common_segment: true,
+                empty_message: "No published routes are available.".to_string(),
                 valid_choices: vec![ProcedureSpecChoice {
                     runway_transition: Some("RW16L".to_string()),
                     enroute_transition: Some("BANGR".to_string()),
+                    label: "via RW16L to BANGR".to_string(),
                 }],
             },
         }
@@ -1773,9 +1814,11 @@ mod tests {
                 runway_transitions: vec!["RW14R".to_string()],
                 enroute_transitions: vec!["SAYIN".to_string()],
                 has_common_segment: true,
+                empty_message: "No published routes are available.".to_string(),
                 valid_choices: vec![ProcedureSpecChoice {
                     runway_transition: Some("RW14R".to_string()),
                     enroute_transition: Some("SAYIN".to_string()),
+                    label: "from SAYIN to RW14R".to_string(),
                 }],
             },
         }

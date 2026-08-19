@@ -12375,6 +12375,15 @@ fn registered_flight_plan_row_action(
             })?;
             crate::FlightPlanRowActionEffect::OpenAirwayPicker {
                 row_uid: row.uid.clone(),
+                header: format!(
+                    "AIRWAY {}{}",
+                    crate::nav_ref_picker_label(&origin_anchor),
+                    row.destination_anchor
+                        .as_ref()
+                        .map_or_else(String::new, |anchor| {
+                            format!(" \u{2192} {}", crate::nav_ref_picker_label(anchor))
+                        })
+                ),
                 origin_anchor,
                 destination_anchor: row.destination_anchor.clone(),
             }
@@ -12392,6 +12401,21 @@ fn registered_flight_plan_row_action(
             })?;
             crate::FlightPlanRowActionEffect::OpenProcedurePicker {
                 row_uid: row.uid.clone(),
+                title: format!(
+                    "{} {}",
+                    match procedure_kind {
+                        ProcedureKind::Sid => "DEPARTURE",
+                        ProcedureKind::Star => "ARRIVAL",
+                        ProcedureKind::Approach => "APPROACH",
+                    },
+                    airport_id
+                ),
+                empty_message: match procedure_kind {
+                    ProcedureKind::Sid => "No published departures are available.",
+                    ProcedureKind::Star => "No published arrivals are available.",
+                    ProcedureKind::Approach => "No published approaches are available.",
+                }
+                .to_string(),
                 airport_id,
                 procedure_kind,
             }

@@ -71,6 +71,8 @@ pub struct AirwayPresentationPoint {
     pub uid: String,
     pub sequence: i32,
     pub nav_ref: NavRef,
+    pub label: String,
+    pub same_point_exit_disabled_reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,6 +134,7 @@ pub struct CifpTppMatch {
 pub struct ProcedureSpecChoice {
     pub runway_transition: Option<String>,
     pub enroute_transition: Option<String>,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +145,7 @@ pub struct ProcedureOptions {
     pub runway_transitions: Vec<String>,
     pub enroute_transitions: Vec<String>,
     pub has_common_segment: bool,
+    pub empty_message: String,
     pub valid_choices: Vec<ProcedureSpecChoice>,
 }
 

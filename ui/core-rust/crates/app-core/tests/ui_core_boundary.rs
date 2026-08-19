@@ -1591,6 +1591,43 @@ fn flight_plan_row_action_policy_is_core_owned() {
 }
 
 #[test]
+fn flight_plan_picker_presentation_is_core_owned() {
+    let core = read_repo_file("ui/core-rust/crates/app-core/src/lib.rs");
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let had = read_repo_file("ui/core-rust/crates/app-core/src/had_ops.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightPlanPage.kt");
+
+    assert!(
+        core.contains("fn procedure_picker_choice_label")
+            && core.contains("same_point_exit_disabled_reason")
+            && had.contains("empty_message: \"No published routes are available.\""),
+        "core must project procedure and airway option presentation"
+    );
+    assert!(
+        session.contains("empty_message: match procedure_kind")
+            && session.contains("crate::nav_ref_picker_label"),
+        "core row-action effects must project picker headings and empty states"
+    );
+    for (platform, source) in [("web", web.as_str()), ("Android", android.as_str())] {
+        for duplicated_policy in [
+            "procedureChoiceLabel",
+            "noPublishedProceduresLabel",
+            "No published routes are available.",
+            "That fix is the airway entry; choose an exit.",
+            "navRefLabel(point.nav_ref)",
+            "navRefLabel(point.navRef)",
+        ] {
+            assert!(
+                !source.contains(duplicated_policy),
+                "{platform} reconstructs core picker presentation: {duplicated_policy}"
+            );
+        }
+    }
+}
+
+#[test]
 fn production_session_snapshot_wire_omits_authoritative_flight_plan_state() {
     let init = app_core::create_ui_session(app_core::FlightPlan::empty(), &[], None, None)
         .expect("create core session");

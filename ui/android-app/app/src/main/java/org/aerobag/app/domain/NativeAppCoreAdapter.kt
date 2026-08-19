@@ -3775,12 +3775,16 @@ private fun WireAirwayPresentationPoint.toUi() = AirwayPresentationPoint(
     uid = uid,
     sequence = sequence,
     navRef = nav_ref.toUi(),
+    label = label,
+    samePointExitDisabledReason = same_point_exit_disabled_reason,
 )
 
 private fun AirwayPresentationPoint.toWire() = WireAirwayPresentationPoint(
     uid = uid,
     sequence = sequence,
     nav_ref = navRef.toWire(),
+    label = label,
+    same_point_exit_disabled_reason = samePointExitDisabledReason,
 )
 
 private fun LatLonPoint.toWire() = WireLatLon(lat = lat, lon = lon)
@@ -3828,6 +3832,7 @@ private fun WireProcedureLoadMenu.toUi() = ProcedureLoadMenu(
 private fun WireProcedureSpecChoice.toUi() = ProcedureSpecChoice(
     runwayTransition = runway_transition,
     enrouteTransition = enroute_transition,
+    label = label,
 )
 
 private fun WireProcedureOptions.toUi() = ProcedureOptions(
@@ -3837,6 +3842,7 @@ private fun WireProcedureOptions.toUi() = ProcedureOptions(
     runwayTransitions = runway_transitions,
     enrouteTransitions = enroute_transitions,
     hasCommonSegment = has_common_segment,
+    emptyMessage = empty_message,
     validChoices = valid_choices.map { it.toUi() },
 )
 
@@ -4245,6 +4251,7 @@ private fun WireFlightPlanRowActionEffect.toUi(): FlightPlanRowActionEffect = wh
     )
     "open_airway_picker" -> FlightPlanRowActionEffect.OpenAirwayPicker(
         rowUid = requireNotNull(row_uid),
+        header = requireNotNull(header),
         originAnchor = requireNotNull(origin_anchor).toUi(),
         destinationAnchor = destination_anchor?.toUi(),
     )
@@ -4252,6 +4259,8 @@ private fun WireFlightPlanRowActionEffect.toUi(): FlightPlanRowActionEffect = wh
         rowUid = requireNotNull(row_uid),
         airportId = requireNotNull(airport_id),
         procedureKind = requireNotNull(procedure_kind).toUi(),
+        title = requireNotNull(title),
+        emptyMessage = requireNotNull(empty_message),
     )
     else -> error("unknown flight-plan row action effect: $kind")
 }

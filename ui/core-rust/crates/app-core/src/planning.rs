@@ -1107,6 +1107,7 @@ pub enum FlightPlanRowActionEffect {
     },
     OpenAirwayPicker {
         row_uid: String,
+        header: String,
         origin_anchor: NavRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         destination_anchor: Option<NavRef>,
@@ -1115,6 +1116,8 @@ pub enum FlightPlanRowActionEffect {
         row_uid: String,
         airport_id: String,
         procedure_kind: ProcedureKind,
+        title: String,
+        empty_message: String,
     },
 }
 

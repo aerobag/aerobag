@@ -88,6 +88,8 @@ export type AirwayPresentationPoint = {
   uid: string;
   sequence: number;
   nav_ref: NavRef;
+  label: string;
+  same_point_exit_disabled_reason: string;
 };
 
 export type AirwayPresentationPlan = {
@@ -142,6 +144,7 @@ export type ProcedureDistinctRow = {
 export type ProcedureSpecChoice = {
   runway_transition: string | null;
   enroute_transition: string | null;
+  label: string;
 };
 
 export type ProcedureOptions = {
@@ -151,6 +154,7 @@ export type ProcedureOptions = {
   runway_transitions: string[];
   enroute_transitions: string[];
   has_common_segment: boolean;
+  empty_message: string;
   valid_choices: ProcedureSpecChoice[];
 };
 

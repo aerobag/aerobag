@@ -3977,6 +3977,7 @@ fn describe_procedure_options_from_geometry_keys(
             Some(crate::ProcedureSpecChoice {
                 runway_transition,
                 enroute_transition,
+                label: String::new(),
             })
         })
         .collect::<Vec<_>>();
@@ -4001,6 +4002,14 @@ fn describe_procedure_options_from_geometry_keys(
     enroute_transitions.sort();
     enroute_transitions.dedup();
 
+    for choice in &mut valid_choices {
+        choice.label = crate::procedure_picker_choice_label(
+            &kind,
+            choice.runway_transition.as_deref(),
+            choice.enroute_transition.as_deref(),
+        );
+    }
+
     Ok(ProcedureOptions {
         airport_id: airport_id.trim().to_string(),
         procedure_id: procedure_id.trim().to_string(),
@@ -4008,6 +4017,7 @@ fn describe_procedure_options_from_geometry_keys(
         runway_transitions,
         enroute_transitions,
         has_common_segment: valid_choices.len() > 1,
+        empty_message: "No published routes are available.".to_string(),
         valid_choices,
     })
 }
@@ -6716,7 +6726,8 @@ mod tests {
             options.valid_choices,
             vec![crate::ProcedureSpecChoice {
                 runway_transition: None,
-                enroute_transition: Some("TRANS".to_string())
+                enroute_transition: Some("TRANS".to_string()),
+                label: "from TRANS".to_string(),
             }]
         );
 
@@ -8388,7 +8399,8 @@ mod tests {
         assert!(
             options.valid_choices.contains(&crate::ProcedureSpecChoice {
                 runway_transition: None,
-                enroute_transition: Some("JIPOX".to_string())
+                enroute_transition: Some("JIPOX".to_string()),
+                label: "from JIPOX".to_string(),
             }),
             "KSEA I34R should offer JIPOX: {:?}",
             options.valid_choices

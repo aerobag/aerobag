@@ -945,6 +945,8 @@ data class WireAirwayPresentationPoint(
     val uid: String,
     val sequence: Int,
     val nav_ref: WireNavRef,
+    val label: String,
+    val same_point_exit_disabled_reason: String,
 )
 
 @Serializable
@@ -989,6 +991,7 @@ data class WireProcedureDistinctRow(
 data class WireProcedureSpecChoice(
     val runway_transition: String? = null,
     val enroute_transition: String? = null,
+    val label: String,
 )
 
 @Serializable
@@ -999,6 +1002,7 @@ data class WireProcedureOptions(
     val runway_transitions: List<String>,
     val enroute_transitions: List<String>,
     val has_common_segment: Boolean,
+    val empty_message: String,
     val valid_choices: List<WireProcedureSpecChoice>,
 )
 
@@ -1246,6 +1250,9 @@ data class WireFlightPlanRowActionEffect(
     val airport_id: String? = null,
     val target: String? = null,
     val row_uid: String? = null,
+    val header: String? = null,
+    val title: String? = null,
+    val empty_message: String? = null,
     val before: Boolean? = null,
     val origin_anchor: WireNavRef? = null,
     val destination_anchor: WireNavRef? = null,

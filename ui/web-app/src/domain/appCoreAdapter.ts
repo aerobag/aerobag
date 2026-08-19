@@ -586,6 +586,7 @@ export type FlightPlanRowActionEffect =
   | {
       kind: "open_airway_picker";
       row_uid: string;
+      header: string;
       origin_anchor: NavRef;
       destination_anchor?: NavRef | null;
     }
@@ -594,6 +595,8 @@ export type FlightPlanRowActionEffect =
       row_uid: string;
       airport_id: string;
       procedure_kind: ProcedureKind;
+      title: string;
+      empty_message: string;
     };
 
 export type MapSelectionActionEffect =

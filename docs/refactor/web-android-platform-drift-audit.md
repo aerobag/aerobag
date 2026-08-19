@@ -160,6 +160,12 @@ should find the displayed core control and invoke the same endpoint.
 
 ### 5. Procedure and airway picker presentation is reconstructed twice
 
+Resolution: implemented. Procedure-picker headings, empty states, and every
+transition label now come from core. Airway point labels (including coordinate
+spacing), suggested choices, and the same-point exit disabled explanation are
+also core-projected and keyed by opaque point UIDs. Platforms retain only
+loading state, the current picker stage, and Back navigation.
+
 The procedure titles, empty messages, and transition labels are duplicated
 verbatim:
 

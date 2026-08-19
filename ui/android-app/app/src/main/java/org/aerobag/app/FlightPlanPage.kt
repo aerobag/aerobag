@@ -1066,7 +1066,7 @@ internal fun FlightPlanPage(
                         .zIndex(5f),
                     width = if (picker.selectedProcedureId == null) procedureTrayWidth else waypointTrayWidth,
                 ) {
-                    MenuPanelRow(label = "${picker.kind.title().uppercase()} ${picker.airportId}", active = false, enabled = false, onSelect = {})
+                    MenuPanelRow(label = picker.title, active = false, enabled = false, onSelect = {})
                     if (picker.error != null) {
                         MenuPanelRow(label = picker.error, active = false, enabled = false, onSelect = {})
                     }
@@ -1074,7 +1074,7 @@ internal fun FlightPlanPage(
                         MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
                     } else if (picker.selectedProcedureId == null) {
                         if (picker.procedures.isEmpty()) {
-                            MenuPanelRow(label = picker.kind.noPublishedProceduresLabel(), active = false, enabled = false, onSelect = {})
+                            MenuPanelRow(label = picker.emptyMessage, active = false, enabled = false, onSelect = {})
                         } else {
                             picker.procedures.chunked(2).forEach { rowProcedures ->
                                 Row(horizontalArrangement = Arrangement.spacedBy(waypointActionGap)) {
@@ -1115,15 +1115,11 @@ internal fun FlightPlanPage(
                     } else {
                         val choices = picker.options?.validChoices.orEmpty()
                         if (choices.isEmpty()) {
-                            MenuPanelRow(label = "No published routes are available.", active = false, enabled = false, onSelect = {})
+                            MenuPanelRow(label = requireNotNull(picker.options).emptyMessage, active = false, enabled = false, onSelect = {})
                         }
                         choices.forEach { choice ->
                             MenuPanelRow(
-                                label = procedureChoiceLabel(
-                                    picker.kind,
-                                    choice.runwayTransition,
-                                    choice.enrouteTransition,
-                                ),
+                                label = choice.label,
                                 active = false,
                                 enabled = true,
                                 onSelect = {
@@ -1165,14 +1161,7 @@ internal fun FlightPlanPage(
                     width = waypointTrayWidth,
                 ) {
                     MenuPanelRow(
-                        label = buildString {
-                            append("AIRWAY ")
-                            append(navRefLabel(picker.originAnchor))
-                            picker.destinationAnchor?.let {
-                                append(" -> ")
-                                append(navRefLabel(it))
-                            }
-                        },
+                        label = picker.header,
                         active = false,
                         enabled = false,
                         onSelect = {},
@@ -1228,7 +1217,7 @@ internal fun FlightPlanPage(
                             items(presentation.points.size, key = { presentation.points[it].uid }) { index ->
                                 val point = presentation.points[index]
                                 MenuPanelRow(
-                                    label = navRefLabel(point.navRef),
+                                    label = point.label,
                                     active = point.uid == presentation.suggestedEntryUid,
                                     enabled = true,
                                     onSelect = {
@@ -1250,10 +1239,10 @@ internal fun FlightPlanPage(
                                 val point = presentation.points[exitIndex]
                                 val isEntry = point.uid == picker.selectedEntryUid
                                 MenuPanelRow(
-                                    label = navRefLabel(point.navRef),
+                                    label = point.label,
                                     active = point.uid == presentation.suggestedExitUid,
                                     enabled = !isEntry,
-                                    disabledReason = if (isEntry) "That fix is the airway entry; choose an exit." else null,
+                                    disabledReason = if (isEntry) point.samePointExitDisabledReason else null,
                                     onSelect = {
                                         if (isEntry) return@MenuPanelRow
                                         airwayPicker = picker.copy(loading = true, error = null)
@@ -1392,6 +1381,7 @@ internal fun FlightPlanPage(
                                                         loading = true,
                                                         error = null,
                                                         rowUid = effect.rowUid,
+                                                        header = effect.header,
                                                         originAnchor = effect.originAnchor,
                                                         destinationAnchor = effect.destinationAnchor,
                                                         suggestions = emptyList(),
@@ -1415,6 +1405,8 @@ internal fun FlightPlanPage(
                                                         rowUid = effect.rowUid,
                                                         airportId = effect.airportId,
                                                         kind = effect.procedureKind,
+                                                        title = effect.title,
+                                                        emptyMessage = effect.emptyMessage,
                                                         procedures = emptyList(),
                                                         selectedProcedureId = null,
                                                         options = null,
@@ -1453,44 +1445,6 @@ internal fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =
         tokens = emptyList(),
         issues = emptyList(),
     )
-
-private fun ProcedureKind.title() = when (this) {
-    ProcedureKind.Sid -> "Departure"
-    ProcedureKind.Star -> "Arrival"
-    ProcedureKind.Approach -> "Approach"
-}
-
-private fun ProcedureKind.noPublishedProceduresLabel() = when (this) {
-    ProcedureKind.Sid -> "No published departures are available."
-    ProcedureKind.Star -> "No published arrivals are available."
-    ProcedureKind.Approach -> "No published approaches are available."
-}
-
-private fun procedureChoiceLabel(
-    kind: ProcedureKind,
-    runwayTransition: String?,
-    enrouteTransition: String?,
-): String = when (kind) {
-    ProcedureKind.Sid -> when {
-        runwayTransition != null && enrouteTransition != null ->
-            "via $runwayTransition to $enrouteTransition"
-        runwayTransition != null -> "via $runwayTransition"
-        enrouteTransition != null -> "to $enrouteTransition"
-        else -> "Published route"
-    }
-    ProcedureKind.Star -> when {
-        runwayTransition != null && enrouteTransition != null ->
-            "from $enrouteTransition to $runwayTransition"
-        runwayTransition != null -> "to $runwayTransition"
-        enrouteTransition != null -> "from $enrouteTransition"
-        else -> "Published route"
-    }
-    ProcedureKind.Approach -> when {
-        enrouteTransition != null -> "from $enrouteTransition"
-        runwayTransition != null -> "from $runwayTransition"
-        else -> "Published route"
-    }
-}
 
 internal fun routeEntryVisualTransformation(
     preview: FlightPlanEntryPreview,

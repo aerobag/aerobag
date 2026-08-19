@@ -9091,6 +9091,7 @@ function FlightPlanPage(props: {
     error: string | null;
     mode: "insert";
     rowUid: string | null;
+    header: string;
     originAnchor: NavRef;
     destinationAnchor: NavRef | null;
     suggestions: AirwaySuggestion[];
@@ -9104,6 +9105,8 @@ function FlightPlanPage(props: {
     rowUid: string;
     airportId: string;
     kind: ProcedureKind;
+    title: string;
+    emptyMessage: string;
     procedures: ProcedureSummary[];
     selectedProcedureId: string | null;
     options: ProcedureOptions | null;
@@ -9363,6 +9366,7 @@ function FlightPlanPage(props: {
           error: null,
           mode: "insert",
           rowUid: effect.row_uid,
+          header: effect.header,
           originAnchor: effect.origin_anchor,
           destinationAnchor: effect.destination_anchor ?? null,
           suggestions: [],
@@ -9402,6 +9406,8 @@ function FlightPlanPage(props: {
           rowUid: effect.row_uid,
           airportId: effect.airport_id,
           kind: effect.procedure_kind,
+          title: effect.title,
+          emptyMessage: effect.empty_message,
           procedures: [],
           selectedProcedureId: null,
           options: null,
@@ -10069,7 +10075,7 @@ function FlightPlanPage(props: {
             ) : procedurePicker ? (
               <div className="waypointActionTray procedureChoiceTray">
                 <div className="trayHeader">
-                  {procedureKindTitle(procedurePicker.kind).toUpperCase()} {procedurePicker.airportId}
+                  {procedurePicker.title}
                 </div>
                 {procedurePicker.error ? <div className="trayHeader isDestructive">{procedurePicker.error}</div> : null}
                 {procedurePicker.loading ? (
@@ -10139,7 +10145,7 @@ function FlightPlanPage(props: {
                       ))}
                     </div>
                   ) : (
-                    <div className="trayHeader">{noPublishedProceduresLabel(procedurePicker.kind)}</div>
+                    <div className="trayHeader">{procedurePicker.emptyMessage}</div>
                   )
                 ) : procedurePicker.options ? (
                   <>
@@ -10189,9 +10195,9 @@ function FlightPlanPage(props: {
                           }
                         }}
                       >
-                        {procedureChoiceLabel(procedurePicker.kind, choice.runway_transition, choice.enroute_transition)}
+                        {choice.label}
                       </button>
-                    )) : <div className="trayHeader">No published routes are available.</div>}
+                    )) : <div className="trayHeader">{procedurePicker.options.empty_message}</div>}
                     <button
                       type="button"
                       className="trayButton airwayChoiceButton"
@@ -10211,8 +10217,7 @@ function FlightPlanPage(props: {
             ) : airwayPicker ? (
               <div className="waypointActionTray">
                 <div className="planGuidanceSummary">
-                  AIRWAY {navRefLabel(airwayPicker.originAnchor)}
-                  {airwayPicker.destinationAnchor ? ` → ${navRefLabel(airwayPicker.destinationAnchor)}` : ""}
+                  {airwayPicker.header}
                 </div>
                 {airwayPicker.error ? <div className="planGuidanceSummary">{airwayPicker.error}</div> : null}
                 {airwayPicker.loading ? (
@@ -10276,7 +10281,7 @@ function FlightPlanPage(props: {
                         }}
                       >
                         {point.uid === airwayPicker.presentation?.suggested_entry_uid ? "▸ " : ""}
-                        {navRefLabel(point.nav_ref)}
+                        {point.label}
                       </button>
                     ))}
                     <button
@@ -10303,12 +10308,12 @@ function FlightPlanPage(props: {
                         type="button"
                         className={`trayButton airwayChoiceButton${exit.uid === airwayPicker.presentation?.suggested_exit_uid && !isEntry ? " isSuggested" : ""}${isEntry ? " isDisabled" : ""}`}
                         aria-disabled={isEntry ? "true" : undefined}
-                        title={isEntry ? "That fix is the airway entry; choose an exit." : undefined}
+                        title={isEntry ? exit.same_point_exit_disabled_reason : undefined}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
                           if (isEntry) {
-                            showDisabledAction("That fix is the airway entry; choose an exit.");
+                            showDisabledAction(exit.same_point_exit_disabled_reason);
                             return;
                           }
                           const presentation = airwayPicker.presentation;
@@ -10340,7 +10345,7 @@ function FlightPlanPage(props: {
                         }}
                       >
                         {exit.uid === airwayPicker.presentation?.suggested_exit_uid ? "▸ " : ""}
-                        {navRefLabel(exit.nav_ref)}
+                        {exit.label}
                       </button>
                       );
                     }) ?? null}
@@ -13767,52 +13772,6 @@ function flightPlanEntryPreviewSegments(
     });
   }
   return segments;
-}
-
-function procedureKindTitle(kind: ProcedureKind): string {
-  switch (kind) {
-    case "sid": return "Departure";
-    case "star": return "Arrival";
-    case "approach": return "Approach";
-  }
-}
-
-function noPublishedProceduresLabel(kind: ProcedureKind): string {
-  switch (kind) {
-    case "sid": return "No published departures are available.";
-    case "star": return "No published arrivals are available.";
-    case "approach": return "No published approaches are available.";
-  }
-}
-
-function procedureChoiceLabel(
-  kind: ProcedureKind,
-  runwayTransition: string | null,
-  enrouteTransition: string | null,
-): string {
-  if (kind === "sid") {
-    if (runwayTransition && enrouteTransition) return `via ${runwayTransition} to ${enrouteTransition}`;
-    if (runwayTransition) return `via ${runwayTransition}`;
-    if (enrouteTransition) return `to ${enrouteTransition}`;
-  } else if (kind === "star") {
-    if (runwayTransition && enrouteTransition) return `from ${enrouteTransition} to ${runwayTransition}`;
-    if (runwayTransition) return `to ${runwayTransition}`;
-    if (enrouteTransition) return `from ${enrouteTransition}`;
-  } else {
-    if (enrouteTransition) return `from ${enrouteTransition}`;
-    if (runwayTransition) return `from ${runwayTransition}`;
-  }
-  return "Published route";
-}
-
-function navRefLabel(value: NavRef) {
-  if ("Airport" in value) return value.Airport;
-  if ("Navaid" in value) return value.Navaid;
-  if ("Fix" in value) return value.Fix;
-  if ("ArincNavaid" in value) return value.ArincNavaid.identifier;
-  if ("TerminalNavaid" in value) return value.TerminalNavaid.identifier;
-  if ("LatLon" in value) return `${value.LatLon.lat.toFixed(3)}, ${value.LatLon.lon.toFixed(3)}`;
-  return `SPOT ${value.Spot.lat.toFixed(3)}, ${value.Spot.lon.toFixed(3)}`;
 }
 
 function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {

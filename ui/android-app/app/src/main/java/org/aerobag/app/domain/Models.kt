@@ -76,6 +76,8 @@ data class AirwayPresentationPoint(
     val uid: String,
     val sequence: Int,
     val navRef: NavRef,
+    val label: String,
+    val samePointExitDisabledReason: String,
 )
 
 data class AirwayPresentationPlan(
@@ -128,6 +130,7 @@ data class ProcedureDistinctRow(
 data class ProcedureSpecChoice(
     val runwayTransition: String?,
     val enrouteTransition: String?,
+    val label: String,
 )
 
 data class ProcedureOptions(
@@ -137,6 +140,7 @@ data class ProcedureOptions(
     val runwayTransitions: List<String>,
     val enrouteTransitions: List<String>,
     val hasCommonSegment: Boolean,
+    val emptyMessage: String,
     val validChoices: List<ProcedureSpecChoice>,
 )
 
@@ -342,6 +346,7 @@ sealed interface FlightPlanRowActionEffect {
     ) : FlightPlanRowActionEffect
     data class OpenAirwayPicker(
         val rowUid: String,
+        val header: String,
         val originAnchor: NavRef,
         val destinationAnchor: NavRef?,
     ) : FlightPlanRowActionEffect
@@ -349,6 +354,8 @@ sealed interface FlightPlanRowActionEffect {
         val rowUid: String,
         val airportId: String,
         val procedureKind: ProcedureKind,
+        val title: String,
+        val emptyMessage: String,
     ) : FlightPlanRowActionEffect
 }
 

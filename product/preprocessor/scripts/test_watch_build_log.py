@@ -7,8 +7,9 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 import watch_build_log
 
@@ -399,6 +400,61 @@ class WatchBuildLogTests(unittest.TestCase):
             self.assertEqual(second["progress"]["completed"], 2)
             self.assertEqual(len(second["tasks"]["completed"]), 1)
             self.assertEqual(second["tasks"]["completed"][0]["task"], "b")
+
+    def test_combined_snapshot_does_not_copy_full_task_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child_log = root / "published.log"
+            coordinator_log = root / "publication.log"
+            child_log.write_text(
+                "2026-08-18T10:00:01Z +0:01 begin pid=2 build_root=/tmp/build "
+                "publish_label=main scheduler=product_weighted_dag\n",
+                encoding="utf-8",
+            )
+            coordinator_log.write_text(
+                "2026-08-18T10:00:00Z +0:00 begin pid=1 build_root=/tmp/build "
+                "publish_label=main scheduler=multi_version_publication\n",
+                encoding="utf-8",
+            )
+            snapshotter = watch_build_log.CombinedLogSnapshotter(
+                child_log, coordinator_log
+            )
+            snapshotter.snapshot(completed_limit=20)
+
+            with snapshotter.child.lock:
+                child = snapshotter.child.state
+                for index in range(10_000):
+                    task_name = f"task-{index:05d}"
+                    child.tasks[task_name] = watch_build_log.TaskState(
+                        task=task_name,
+                        launched_at=f"+1:{index % 60:02d}",
+                        launched_wall="2026-08-18T10:00:01+00:00",
+                        weight=1,
+                        status="done",
+                        completed_at=f"+2:{index % 60:02d}",
+                        completed_wall=(
+                            datetime(2026, 8, 18, 10, tzinfo=timezone.utc)
+                            + timedelta(seconds=index)
+                        ).isoformat(),
+                    )
+                    child.completion_order.append(task_name)
+                    child.completed_task_names.add(task_name)
+                child.total_tasks = 10_000
+                child.launched = 10_000
+                child.completed = 10_000
+
+            with mock.patch.object(
+                watch_build_log.copy,
+                "deepcopy",
+                side_effect=AssertionError("snapshot copied the full task history"),
+            ):
+                snapshot = snapshotter.snapshot(completed_limit=20)
+
+            self.assertEqual(snapshot["progress"]["completed"], 10_000)
+            self.assertEqual(len(snapshot["tasks"]["completed"]), 20)
+            self.assertEqual(
+                snapshot["tasks"]["completed"][0]["task"], "task-09999"
+            )
 
     def test_dashboard_uses_cross_platform_font_fallbacks(self) -> None:
         html = watch_build_log.build_dashboard_html(2)

@@ -117,6 +117,7 @@ class BuildState:
         self.final_details = ""
         self.final_at: str | None = None
         self.tasks: dict[str, TaskState] = {}
+        self.active_task_names: set[str] = set()
         self.completion_order: list[str] = []
         self.completed_task_names: set[str] = set()
         self.last_line = ""
@@ -203,6 +204,7 @@ class BuildState:
                 source=source,
                 details=details,
             )
+            self.active_task_names.add(task_name)
             return
         task = self.tasks.get(task_name)
         if event == "progress":
@@ -221,6 +223,7 @@ class BuildState:
             self.tasks[task_name] = task
         status = fields.get("status", "PASS")
         task.status = "failed" if status == "FAIL" else "done"
+        self.active_task_names.discard(task_name)
         task.completed_at = timestamp
         task.completed_wall = wall
         task.details = f"status=FAIL {details}".strip() if status == "FAIL" else details
@@ -259,6 +262,7 @@ class BuildState:
         self.final_details = ""
         self.final_at = None
         self.tasks = {}
+        self.active_task_names = set()
         self.completion_order = []
         self.completed_task_names = set()
         self.last_timestamp = ""
@@ -268,11 +272,17 @@ class BuildState:
 
     def active_tasks(self) -> list[TaskState]:
         return sorted(
-            (task for task in self.tasks.values() if task.status == "active"),
+            (
+                self.tasks[task_name]
+                for task_name in self.active_task_names
+                if task_name in self.tasks
+            ),
             key=lambda task: (task.launched_at, task.task),
         )
 
     def recent_completed(self, limit: int) -> list[TaskState]:
+        if limit <= 0:
+            return []
         keys = self.completion_order[-limit:]
         return [self.tasks[key] for key in reversed(keys)]
 
@@ -328,6 +338,25 @@ def combine_build_states(child: BuildState, coordinator: BuildState) -> BuildSta
         return copy.deepcopy(coordinator)
 
     combined = copy.deepcopy(child)
+    overlay_coordinator_metadata(combined, child, coordinator)
+
+    for task_name, task in coordinator.tasks.items():
+        combined.tasks[task_name] = copy.deepcopy(task)
+    reindex_combined_tasks(combined)
+    child_last = parse_wall_timestamp(child.last_wall)
+    coordinator_last = parse_wall_timestamp(coordinator.last_wall)
+    if coordinator_last is not None and (
+        child_last is None or coordinator_last >= child_last
+    ):
+        combined.last_line = coordinator.last_line
+        combined.last_timestamp = coordinator.last_timestamp
+        combined.last_wall = coordinator.last_wall
+    return combined
+
+
+def overlay_coordinator_metadata(
+    combined: BuildState, child: BuildState, coordinator: BuildState
+) -> None:
     combined.pid = coordinator.pid
     combined.build_root = coordinator.build_root or child.build_root
     combined.publish_label = coordinator.publish_label or child.publish_label
@@ -338,8 +367,13 @@ def combine_build_states(child: BuildState, coordinator: BuildState) -> BuildSta
     combined.final_wall = coordinator.final_wall
     combined.started_wall = coordinator.started_wall
 
-    for task_name, task in coordinator.tasks.items():
-        combined.tasks[task_name] = copy.deepcopy(task)
+
+def reindex_combined_tasks(combined: BuildState) -> None:
+    combined.active_task_names = {
+        task_name
+        for task_name, task in combined.tasks.items()
+        if task.status == "active"
+    }
     completed_names = {
         task_name
         for task_name, task in combined.tasks.items()
@@ -354,6 +388,47 @@ def combine_build_states(child: BuildState, coordinator: BuildState) -> BuildSta
         ),
     )
     combined.completed_task_names = completed_names
+
+
+def bounded_combined_build_state(
+    child: BuildState,
+    coordinator: BuildState,
+    completed_limit: int | None,
+) -> BuildState:
+    if not coordinator_is_authoritative(child, coordinator):
+        return child
+
+    coordinator_started = parse_wall_timestamp(coordinator.started_wall)
+    child_started = parse_wall_timestamp(child.started_wall)
+    child_belongs_to_publication = (
+        coordinator_started is not None
+        and child_started is not None
+        and child_started >= coordinator_started
+    )
+    if not child_belongs_to_publication:
+        return coordinator
+
+    combined = copy.copy(child)
+    overlay_coordinator_metadata(combined, child, coordinator)
+
+    if completed_limit is None:
+        completed_candidates = set(child.completion_order)
+        completed_candidates.update(coordinator.completion_order)
+    elif completed_limit <= 0:
+        completed_candidates = set()
+    else:
+        completed_candidates = set(child.completion_order[-completed_limit:])
+        completed_candidates.update(coordinator.completion_order[-completed_limit:])
+
+    candidate_names = set(child.active_task_names)
+    candidate_names.update(coordinator.active_task_names)
+    candidate_names.update(completed_candidates)
+    combined.tasks = {}
+    for task_name in candidate_names:
+        task = coordinator.tasks.get(task_name, child.tasks.get(task_name))
+        if task is not None:
+            combined.tasks[task_name] = task
+    reindex_combined_tasks(combined)
 
     child_last = parse_wall_timestamp(child.last_wall)
     coordinator_last = parse_wall_timestamp(coordinator.last_wall)
@@ -382,8 +457,9 @@ class IncrementalLogSnapshotter:
         self.lock = threading.Lock()
 
     def snapshot(self, completed_limit: int | None) -> dict:
-        state = self.current_state()
-        return state_snapshot(state, self.log_path, completed_limit)
+        with self.lock:
+            self._read_appended_lines()
+            return state_snapshot(self.state, self.log_path, completed_limit)
 
     def current_state(self) -> BuildState:
         with self.lock:
@@ -433,11 +509,25 @@ class CombinedLogSnapshotter:
         self.coordinator_log_path = coordinator_log_path
 
     def snapshot(self, completed_limit: int | None) -> dict:
-        state = self.current_state()
-        snapshot = state_snapshot(state, self.child_log_path, completed_limit)
-        snapshot["log"]["coordinator_path"] = str(self.coordinator_log_path)
-        snapshot["log"]["coordinator_exists"] = self.coordinator_log_path.exists()
-        return snapshot
+        with self.child.lock:
+            with self.coordinator.lock:
+                self.child._read_appended_lines()
+                self.coordinator._read_appended_lines()
+                state = bounded_combined_build_state(
+                    self.child.state,
+                    self.coordinator.state,
+                    completed_limit,
+                )
+                snapshot = state_snapshot(
+                    state, self.child_log_path, completed_limit
+                )
+                snapshot["log"]["coordinator_path"] = str(
+                    self.coordinator_log_path
+                )
+                snapshot["log"]["coordinator_exists"] = (
+                    self.coordinator_log_path.exists()
+                )
+                return snapshot
 
     def current_state(self) -> BuildState:
         return combine_build_states(

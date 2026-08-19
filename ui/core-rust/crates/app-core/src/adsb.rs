@@ -642,6 +642,8 @@ impl AdsbSessionState {
                         nav_ref: None,
                         symbol_feature: None,
                         metar_feature: None,
+                        weather_detail: None,
+                        automatic_action_uid: None,
                         pirep_feature: None,
                         airspace_icon: None,
                         actions: vec![MapSelectionAction {
@@ -649,6 +651,8 @@ impl AdsbSessionState {
                             label: "Follow".to_string(),
                             enabled: follow_action.is_some(),
                             display_only: false,
+                            action_uid: None,
+                            placeholder: false,
                             detail_text: None,
                             detail_title: None,
                             detail_status: None,

@@ -53,6 +53,12 @@ Proposed fix:
 
 ### 2. Map-selection and flight-plan-row actions are interpreted by duplicated dispatchers
 
+Progress: map selection is resolved. Core now registers opaque action UIDs,
+owns automatic METAR opening and action-slot limits, and returns a typed effect
+plus a generic session-mutation decision. The platform precedence ladders and
+web-only offline action-ID cases are gone. Flight-plan row actions remain for
+the next boundary.
+
 `MapSelectionAction` is a bag of mutually optional effects rather than one
 tagged effect: `ui/core-rust/crates/app-core/src/map_overlay.rs:1419`.
 

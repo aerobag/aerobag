@@ -346,6 +346,8 @@ data class MapSelectionItem(
     val navRef: NavRef?,
     val symbolFeature: NavSymbolFeature?,
     val metarFeature: VisibleMetarFeature?,
+    val weatherDetail: WeatherDetailUiView?,
+    val automaticActionUid: String?,
     val pirepFeature: VisiblePirepFeature?,
     val airspaceIcon: AirspaceDisplayPath?,
     val actions: List<MapSelectionAction>,
@@ -365,36 +367,42 @@ data class MapSelectionAction(
     val label: String,
     val enabled: Boolean,
     val displayOnly: Boolean,
-    val detailText: String?,
-    val detailTitle: String?,
-    val detailStatus: MapSelectionDetailStatus?,
+    val actionUid: String?,
+    val placeholder: Boolean,
     val disabledReason: String?,
-    val weatherDetail: WeatherDetailUiView?,
-    val airportInfoAirportId: String?,
     val airspaceLimit: AirspaceLimitGlyph?,
-    val sessionAction: String?,
-    val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
-    val navigation: MapSelectionNavigationAction?,
 )
+
+data class MapSelectionActionDecision(
+    val performSessionMutation: Boolean,
+    val dismissSelection: Boolean,
+    val effect: MapSelectionActionEffect?,
+)
+
+sealed interface MapSelectionActionEffect {
+    data class ShowWeather(val detail: WeatherDetailUiView) : MapSelectionActionEffect
+    data class LoadAirportInfo(
+        val airportId: String,
+        val loadingText: String,
+        val failurePrefix: String,
+    ) : MapSelectionActionEffect
+    data class ShowDetail(
+        val title: String,
+        val text: String,
+        val status: MapSelectionDetailStatus?,
+    ) : MapSelectionActionEffect
+    data class OpenPlateTarget(
+        val airportId: String,
+        val target: String,
+        val chartId: String,
+    ) : MapSelectionActionEffect
+}
 
 data class MapSelectionDetailStatus(
     val text: String,
     val colorKey: String,
     val actionId: String?,
 )
-
-data class MapSelectionFlightPlanRowAction(
-    val rowUid: String,
-    val actionUid: String,
-)
-
-sealed interface MapSelectionNavigationAction {
-    data class OpenPlateTarget(
-        val airportId: String,
-        val target: String,
-        val chartId: String,
-    ) : MapSelectionNavigationAction
-}
 
 sealed interface TerrainOverlayStatus {
     data object Hidden : TerrainOverlayStatus
@@ -1270,11 +1278,16 @@ class NativeUiSession internal constructor(
         return json.decodeFromJsonElement<WireFlightPlanRouteProjection>(outcome.result).toUi()
     }
 
-    fun performMapSelectionAction(action: String): UiSessionSnapshot {
-        return runPagedSnapshot("performMapSelectionAction") {
-            bridge.performMapSelectionActionInSessionJson(
+    fun mapSelectionActionDecision(actionUid: String): MapSelectionActionDecision =
+        json.decodeFromString<WireMapSelectionActionDecision>(
+            bridge.mapSelectionActionDecisionInSessionJson(handle, actionUid),
+        ).toUi()
+
+    fun performMapSelectionUiAction(actionUid: String): UiSessionSnapshot {
+        return runPagedSnapshot("performMapSelectionUiAction") {
+            bridge.performMapSelectionUiActionInSessionJson(
                 handle,
-                action,
+                actionUid,
                 System.currentTimeMillis(),
             )
         }
@@ -3673,6 +3686,8 @@ private fun WireMapSelectionItem.toUi() = MapSelectionItem(
     navRef = nav_ref?.toUi(),
     symbolFeature = symbol_feature?.toUi(),
     metarFeature = metar_feature?.toUi(),
+    weatherDetail = weather_detail?.toUi(),
+    automaticActionUid = automatic_action_uid,
     pirepFeature = pirep_feature?.toUi(),
     airspaceIcon = airspace_icon?.toUi(),
     actions = actions.map { it.toUi() },
@@ -3698,17 +3713,37 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     label = label,
     enabled = enabled,
     displayOnly = display_only,
-    detailText = detail_text,
-    detailTitle = detail_title,
-    detailStatus = detail_status?.toUi(),
+    actionUid = action_uid,
+    placeholder = placeholder,
     disabledReason = disabled_reason,
-    weatherDetail = weather_detail?.toUi(),
-    airportInfoAirportId = airport_info_airport_id,
     airspaceLimit = airspace_limit?.toUi(),
-    sessionAction = session_action,
-    flightPlanRowAction = flight_plan_row_action?.toUi(),
-    navigation = navigation?.toUi(),
 )
+
+private fun WireMapSelectionActionDecision.toUi() = MapSelectionActionDecision(
+    performSessionMutation = perform_session_mutation,
+    dismissSelection = dismiss_selection,
+    effect = effect?.toUi(),
+)
+
+private fun WireMapSelectionActionEffect.toUi(): MapSelectionActionEffect = when (kind) {
+    "show_weather" -> MapSelectionActionEffect.ShowWeather(requireNotNull(detail).toUi())
+    "load_airport_info" -> MapSelectionActionEffect.LoadAirportInfo(
+        airportId = requireNotNull(airport_id),
+        loadingText = requireNotNull(loading_text),
+        failurePrefix = requireNotNull(failure_prefix),
+    )
+    "show_detail" -> MapSelectionActionEffect.ShowDetail(
+        title = requireNotNull(title),
+        text = requireNotNull(text),
+        status = status?.toUi(),
+    )
+    "open_plate_target" -> MapSelectionActionEffect.OpenPlateTarget(
+        airportId = requireNotNull(airport_id),
+        target = requireNotNull(target),
+        chartId = requireNotNull(chart_id),
+    )
+    else -> error("unknown map-selection action effect: $kind")
+}
 
 private fun WireMapSelectionDetailStatus.toUi() = MapSelectionDetailStatus(
     text = text,
@@ -3751,26 +3786,6 @@ private fun AirportNotamUiView.toWire() = WireAirportNotamUiView(
     label = label,
     text = text,
 )
-
-private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanRowAction(
-    rowUid = row_uid,
-    actionUid = action_uid,
-)
-
-private fun WireMapSelectionNavigationAction.toUi(): MapSelectionNavigationAction? =
-    when (kind) {
-        "open_plate_target" -> {
-            val airportId = airport_id ?: return null
-            val target = target ?: return null
-            val chartId = chart_id ?: return null
-            MapSelectionNavigationAction.OpenPlateTarget(
-                airportId = airportId,
-                target = target,
-                chartId = chartId,
-            )
-        }
-        else -> null
-    }
 
 private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
     kind = kind,

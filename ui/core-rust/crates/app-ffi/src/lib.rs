@@ -402,14 +402,24 @@ pub fn project_flight_plan_route_in_session_json(handle: u64) -> Result<String, 
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn perform_map_selection_action_in_session_json(
+pub fn map_selection_action_decision_in_session_json(
     handle: u64,
-    action_json: &str,
+    action_uid: &str,
+) -> Result<String, String> {
+    let decision =
+        app_core::map_selection_action_decision_in_session(handle as u32, action_uid.to_string())
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&decision).map_err(|err| err.to_string())
+}
+
+pub fn perform_map_selection_ui_action_in_session_json(
+    handle: u64,
+    action_uid: &str,
     now_epoch_ms: i64,
 ) -> Result<String, String> {
-    let outcome = app_core::perform_map_selection_action_in_session(
+    let outcome = app_core::perform_map_selection_ui_action_in_session(
         handle as u32,
-        action_json.to_string(),
+        action_uid.to_string(),
         now_epoch_ms,
     )
     .map_err(|err| err.to_string())?;
@@ -3595,16 +3605,30 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_projectFlightP
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performMapSelectionActionInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_mapSelectionActionDecisionInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
-    action_json: JString,
+    action_uid: JString,
+) -> jstring {
+    let result = (|| {
+        let action_uid = get_java_string(&mut env, action_uid)?;
+        map_selection_action_decision_in_session_json(handle as u64, &action_uid)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performMapSelectionUiActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_uid: JString,
     now_epoch_ms: i64,
 ) -> jstring {
     let result = (|| {
-        let action = get_java_string(&mut env, action_json)?;
-        perform_map_selection_action_in_session_json(handle as u64, &action, now_epoch_ms)
+        let action_uid = get_java_string(&mut env, action_uid)?;
+        perform_map_selection_ui_action_in_session_json(handle as u64, &action_uid, now_epoch_ms)
     })();
     return_string(&mut env, result)
 }

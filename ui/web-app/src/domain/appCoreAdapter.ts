@@ -539,6 +539,8 @@ export type MapSelectionItem = {
   nav_ref?: NavRef | null;
   symbol_feature?: NavSymbolFeature | null;
   metar_feature?: VisibleMetarFeature | null;
+  weather_detail?: WeatherDetailUiView | null;
+  automatic_action_uid?: string | null;
   pirep_feature?: VisiblePirepFeature | null;
   airspace_icon?: AirspaceDisplayPath | null;
   actions: MapSelectionAction[];
@@ -557,20 +559,23 @@ export type MapSelectionAction = {
   label: string;
   enabled: boolean;
   display_only: boolean;
-  detail_text?: string | null;
-  detail_title?: string | null;
-  detail_status?: MapSelectionDetailStatus | null;
+  action_uid?: string | null;
+  placeholder: boolean;
   disabled_reason?: string | null;
-  weather_detail?: WeatherDetailUiView | null;
-  airport_info_airport_id?: string | null;
   airspace_limit?: AirspaceLimitGlyph | null;
-  session_action?: string | null;
-  flight_plan_row_action?: {
-    row_uid: string;
-    action_uid: string;
-  } | null;
-  navigation?: MapSelectionNavigationAction | null;
 };
+
+export type MapSelectionActionDecision = {
+  perform_session_mutation: boolean;
+  dismiss_selection: boolean;
+  effect?: MapSelectionActionEffect | null;
+};
+
+export type MapSelectionActionEffect =
+  | { kind: "show_weather"; detail: WeatherDetailUiView }
+  | { kind: "load_airport_info"; airport_id: string; loading_text: string; failure_prefix: string }
+  | { kind: "show_detail"; title: string; text: string; status?: MapSelectionDetailStatus | null }
+  | { kind: "open_plate_target"; airport_id: string; target: "Folder" | "CSup"; chart_id: string };
 
 export type AirportInfoUiView = {
   airport_id: string;
@@ -630,14 +635,6 @@ export type MapSelectionDetailStatus = {
   color_key: string;
   action_id?: string | null;
 };
-
-export type MapSelectionNavigationAction =
-  | {
-      kind: "open_plate_target";
-      airport_id: string;
-      target: "Folder" | "CSup";
-      chart_id: string;
-    };
 
 export type TerrainOverlayStatus =
   | { state: "hidden" }
@@ -810,7 +807,8 @@ export interface UiSession {
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
   statusActionDecision(actionId: string): Promise<UiStatusActionDecision>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
-  performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
+  mapSelectionActionDecision(actionUid: string): Promise<MapSelectionActionDecision>;
+  performMapSelectionUiAction(actionUid: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
   stopNavigation(): Promise<UiSessionSnapshot>;
   suspendSequencing(): Promise<UiSessionSnapshot>;
@@ -984,9 +982,13 @@ type WasmModule = {
   project_flight_plan_route_in_session(handle: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   select_map_family_in_session(handle: number, familyIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
-  perform_map_selection_action_in_session(
+  map_selection_action_decision_in_session(
     sessionHandle: number,
-    actionJson: string,
+    actionUid: string,
+  ): Promise<string> | string;
+  perform_map_selection_ui_action_in_session(
+    sessionHandle: number,
+    actionUid: string,
     nowEpochMs: bigint,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_flight_plan_command_in_session(
@@ -1625,14 +1627,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           now_epoch_ms: Math.trunc(nowEpochMs),
         });
       },
-      performMapSelectionAction: async (action) => {
+      mapSelectionActionDecision: async (actionUid) =>
+        JSON.parse(
+          await this.module.map_selection_action_decision_in_session(handle, actionUid),
+        ) as MapSelectionActionDecision,
+      performMapSelectionUiAction: async (actionUid) => {
         return runFlightPlanMutation(
-          () =>
-            this.module.perform_map_selection_action_in_session(
-              handle,
-              action,
-              BigInt(Date.now()),
-            ),
+          () => this.module.perform_map_selection_ui_action_in_session(
+            handle,
+            actionUid,
+            BigInt(Date.now()),
+          ),
         );
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
@@ -2387,7 +2392,8 @@ async function loadBestAvailableAdapterUncached(
     "project_flight_plan_route_in_session",
     "select_map_family_in_session",
     "select_raster_map_in_session",
-    "perform_map_selection_action_in_session",
+    "map_selection_action_decision_in_session",
+    "perform_map_selection_ui_action_in_session",
     "select_airport_in_session",
     "select_chart_in_session",
     "select_chart_reference_in_session",

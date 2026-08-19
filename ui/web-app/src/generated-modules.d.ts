@@ -22,7 +22,8 @@ declare module "@generated/app_wasm.js" {
   export const perform_status_action_in_session: (...args: unknown[]) => string;
   export const status_action_decision_in_session: (...args: unknown[]) => string;
   export const perform_ownship_text_action_in_session: (...args: unknown[]) => string;
-  export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
+  export const map_selection_action_decision_in_session: (...args: unknown[]) => string;
+  export const perform_map_selection_ui_action_in_session: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
   export const session_diagnostics: (...args: unknown[]) => string;
   export const sync_guidance_geometry_in_session: (...args: unknown[]) => string;

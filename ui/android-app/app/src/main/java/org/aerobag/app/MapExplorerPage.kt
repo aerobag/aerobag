@@ -237,7 +237,7 @@ import org.aerobag.app.domain.MapSelectionAction
 import org.aerobag.app.domain.MapSelectionDetailStatus
 import org.aerobag.app.domain.MapSelectionHighlight
 import org.aerobag.app.domain.MapSelectionItem
-import org.aerobag.app.domain.MapSelectionNavigationAction
+import org.aerobag.app.domain.MapSelectionActionEffect
 import org.aerobag.app.domain.MapSelectionQueryResult
 import org.aerobag.app.domain.MapFamilyOption
 import org.aerobag.app.domain.MapViewportState
@@ -2532,9 +2532,101 @@ internal fun MapExplorerPage(
             },
         )
     }
+    fun performSelectedMapAction(action: MapSelectionAction) {
+        val actionUid = action.actionUid ?: return
+        val decision = try {
+            uiSession.mapSelectionActionDecision(actionUid)
+        } catch (error: Throwable) {
+            onSessionCommandFailure(error)
+            return
+        }
+        if (decision.performSessionMutation &&
+            applySessionCommand("performMapSelectionUiAction") {
+                uiSession.performMapSelectionUiAction(actionUid)
+            } == null
+        ) {
+            return
+        }
+        when (val effect = decision.effect) {
+            is MapSelectionActionEffect.ShowWeather -> {
+                mapSelection = mapSelection?.copy(
+                    detailModal = MapSelectionDetailModalState(
+                        title = "WX ${effect.detail.stationId}",
+                        weatherDetail = effect.detail,
+                    ),
+                )
+            }
+            is MapSelectionActionEffect.LoadAirportInfo -> {
+                mapSelection = mapSelection?.copy(
+                    detailModal = MapSelectionDetailModalState(
+                        title = effect.airportId,
+                        text = effect.loadingText,
+                    ),
+                )
+                airportInfoScope.launch {
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            uiSession.airportInfo(effect.airportId)
+                        }
+                    }.onSuccess { detail ->
+                        mapSelection = mapSelection?.let { current ->
+                            if (
+                                current.detailModal?.title == effect.airportId &&
+                                current.detailModal.text == effect.loadingText
+                            ) {
+                                current.copy(
+                                    detailModal = MapSelectionDetailModalState(
+                                        title = effect.airportId,
+                                        airportInfo = detail,
+                                    ),
+                                )
+                            } else {
+                                current
+                            }
+                        }
+                    }.onFailure { error ->
+                        mapSelection = mapSelection?.let { current ->
+                            if (
+                                current.detailModal?.title == effect.airportId &&
+                                current.detailModal.text == effect.loadingText
+                            ) {
+                                current.copy(
+                                    detailModal = MapSelectionDetailModalState(
+                                        title = effect.airportId,
+                                        text = "${effect.failurePrefix} ${error.message ?: error}",
+                                    ),
+                                )
+                            } else {
+                                current
+                            }
+                        }
+                    }
+                }
+            }
+            is MapSelectionActionEffect.ShowDetail -> {
+                mapSelection = mapSelection?.copy(
+                    detailModal = MapSelectionDetailModalState(
+                        title = effect.title,
+                        sourceActionId = action.id,
+                        text = effect.text,
+                        status = effect.status,
+                    ),
+                )
+            }
+            is MapSelectionActionEffect.OpenPlateTarget -> {
+                onOpenPlateTarget(effect.airportId, effect.target, effect.chartId)
+            }
+            null -> Unit
+        }
+        if (decision.dismissSelection) {
+            mapSelection = null
+        }
+    }
+
     fun toggleOpenMapSelectionTimeDisplay(actionId: String) {
         val previous = mapSelection ?: return
         val selectedItemId = previous.selectedItem?.id
+        val sourceActionId = previous.detailModal?.sourceActionId
         if (applySessionCommand("performTimeDisplayAction") {
                 uiSession.performTimeDisplayAction(actionId)
             } == null
@@ -2563,17 +2655,19 @@ internal fun MapExplorerPage(
                     return@submitMapSelection
                 }
                 val selectedItem = mapSelectionItemById(result, selectedItemId)
-                val detailAction = selectedItem?.actions?.firstOrNull { action ->
-                    action.detailStatus?.actionId == actionId && action.detailText != null
+                val detailAction = selectedItem?.actions?.firstOrNull { action -> action.id == sourceActionId }
+                val detailEffect = detailAction?.actionUid?.let { actionUid ->
+                    uiSession.mapSelectionActionDecision(actionUid).effect as? MapSelectionActionEffect.ShowDetail
                 }
                 mapSelection = current.copy(
                     result = result,
                     selectedItem = selectedItem,
-                    detailModal = if (detailAction?.detailText != null) {
+                    detailModal = if (detailEffect != null) {
                         MapSelectionDetailModalState(
-                            title = detailAction.detailTitle ?: detailAction.label,
-                            text = detailAction.detailText,
-                            status = detailAction.detailStatus,
+                            title = detailEffect.title,
+                            sourceActionId = sourceActionId,
+                            text = detailEffect.text,
+                            status = detailEffect.status,
                         )
                     } else {
                         current.detailModal
@@ -3156,122 +3250,24 @@ internal fun MapExplorerPage(
                                 )
                                 .padding(ThumbGap),
                             onSelectItem = { item ->
-                                val weatherDetail = immediateWeatherDetailForMapSelectionItem(item)
                                 mapSelection = selection.copy(
                                     selectedItem = item,
-                                    detailModal = weatherDetail?.let { detail ->
-                                        MapSelectionDetailModalState(
-                                            title = "WX ${detail.stationId}",
-                                            weatherDetail = detail,
-                                        )
-                                    },
+                                    detailModal = null,
                                 )
+                                item.actions
+                                    .firstOrNull { it.actionUid == item.automaticActionUid }
+                                    ?.let(::performSelectedMapAction)
                             },
-                            onSelectAction = { item, action ->
+                            onSelectAction = { _, action ->
                                 if (!action.enabled) {
                                     action.disabledReason
                                         ?.takeIf { it.isNotBlank() }
                                         ?.let { reason ->
                                             Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
-                                        }
-                                    return@MapSelectionTray
-                                }
-                                action.weatherDetail?.let { detail ->
-                                    mapSelection = selection.copy(
-                                        selectedItem = item,
-                                        detailModal = MapSelectionDetailModalState(
-                                            title = "WX ${detail.stationId}",
-                                            weatherDetail = detail,
-                                        ),
-                                    )
-                                    return@MapSelectionTray
-                                }
-                                action.airportInfoAirportId?.let { airportId ->
-                                    mapSelection = selection.copy(
-                                        selectedItem = item,
-                                        detailModal = MapSelectionDetailModalState(
-                                            title = airportId,
-                                            text = "Loading airport info...",
-                                        ),
-                                    )
-                                    airportInfoScope.launch {
-                                        runCatching {
-                                            withContext(Dispatchers.IO) {
-                                                uiSession.airportInfo(airportId)
-                                            }
-                                        }.onSuccess { detail ->
-                                            mapSelection = mapSelection
-                                                ?.let { current ->
-                                                    if (
-                                                        current.detailModal?.title == airportId &&
-                                                        current.detailModal.text == "Loading airport info..."
-                                                    ) {
-                                                        current.copy(
-                                                            detailModal = MapSelectionDetailModalState(
-                                                                title = airportId,
-                                                                airportInfo = detail,
-                                                            ),
-                                                        )
-                                                    } else {
-                                                        current
-                                                    }
-                                                }
-                                        }.onFailure { error ->
-                                            mapSelection = mapSelection
-                                                ?.let { current ->
-                                                    if (
-                                                        current.detailModal?.title == airportId &&
-                                                        current.detailModal.text == "Loading airport info..."
-                                                    ) {
-                                                        current.copy(
-                                                            detailModal = MapSelectionDetailModalState(
-                                                                title = airportId,
-                                                                text = "Airport info unavailable: ${error.message ?: error}",
-                                                            ),
-                                                        )
-                                                    } else {
-                                                        current
-                                                    }
-                                                }
-                                        }
                                     }
                                     return@MapSelectionTray
                                 }
-                                action.detailText?.let { detail ->
-                                    mapSelection = selection.copy(
-                                        selectedItem = item,
-                                        detailModal = MapSelectionDetailModalState(
-                                            title = action.detailTitle ?: action.label,
-                                            text = detail,
-                                            status = action.detailStatus,
-                                        ),
-                                    )
-                                    return@MapSelectionTray
-                                }
-                                action.flightPlanRowAction?.let { rowAction ->
-                                    applySessionCommand("performFlightPlanRowAction") {
-                                        uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid)
-                                    }
-                                    mapSelection = null
-                                    return@MapSelectionTray
-                                }
-                                when (val navigation = action.navigation) {
-                                    is MapSelectionNavigationAction.OpenPlateTarget -> {
-                                        onOpenPlateTarget(navigation.airportId, navigation.target, navigation.chartId)
-                                        mapSelection = null
-                                        return@MapSelectionTray
-                                    }
-                                    null -> Unit
-                                }
-                                action.sessionAction?.let { sessionAction ->
-                                    if (applySessionCommand("performMapSelectionAction") {
-                                            uiSession.performMapSelectionAction(sessionAction)
-                                        } != null
-                                    ) {
-                                        mapSelection = null
-                                    }
-                                    return@MapSelectionTray
-                                }
+                                performSelectedMapAction(action)
                             },
                         )
                     }
@@ -4372,8 +4368,7 @@ internal fun MapSelectionTray(
     val uiTheme = LocalAerobagUiTheme.current
     val selectedItem = state.selectedItem
     val actionSlots = selectedItem?.actions.orEmpty()
-    val firstActionRow = actionSlots.take(3)
-    val secondActionRow = actionSlots.drop(3).take(3)
+    val actionRows = actionSlots.chunked(3)
     Surface(
         modifier = modifier
             .testTag("parity:map-selection-tray")
@@ -4423,19 +4418,23 @@ internal fun MapSelectionTray(
             ) {
                 Column(modifier = Modifier.padding(ThumbGap * 0.6f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
                     MapSelectionHeader(selectedItem)
-                    MapSelectionActionRow(
-                        actions = firstActionRow,
-                        selectedItem = selectedItem,
-                        onSelectAction = onSelectAction,
-                    )
-                    if (selectedItem?.detailText != null) {
-                        MapSelectionInlineDetailText(selectedItem.detailText)
-                    } else {
+                    actionRows.firstOrNull()?.let { actions ->
                         MapSelectionActionRow(
-                            actions = secondActionRow,
+                            actions = actions,
                             selectedItem = selectedItem,
                             onSelectAction = onSelectAction,
                         )
+                    }
+                    if (selectedItem?.detailText != null) {
+                        MapSelectionInlineDetailText(selectedItem.detailText)
+                    } else {
+                        actionRows.drop(1).forEach { actions ->
+                            MapSelectionActionRow(
+                                actions = actions,
+                                selectedItem = selectedItem,
+                                onSelectAction = onSelectAction,
+                            )
+                        }
                     }
                 }
             }
@@ -4498,7 +4497,7 @@ internal fun MapSelectionActionRow(
     ) {
         repeat(3) { index ->
             val action = actions.getOrNull(index)
-            if (action == null) {
+            if (action == null || action.placeholder) {
                 Spacer(modifier = Modifier.width(ThumbSize * 1.2f).height(ThumbSize))
             } else {
                 val actionEnabled = action.enabled && !action.displayOnly
@@ -5174,10 +5173,7 @@ private fun WeatherDetailSection(
 }
 
 private fun immediateWeatherDetailForMapSelectionItem(item: MapSelectionItem): WeatherDetailUiView? {
-    if (item.metarFeature == null) {
-        return null
-    }
-    return item.actions.firstOrNull { it.enabled && it.weatherDetail != null }?.weatherDetail
+    return item.weatherDetail.takeIf { item.metarFeature != null }
 }
 
 @Composable

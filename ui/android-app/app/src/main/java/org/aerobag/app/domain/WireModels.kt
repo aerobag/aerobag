@@ -702,6 +702,8 @@ data class WireMapSelectionItem(
     val nav_ref: WireNavRef? = null,
     val symbol_feature: WireNavSymbolFeature? = null,
     val metar_feature: WireVisibleMetarFeature? = null,
+    val weather_detail: WireWeatherDetailUiView? = null,
+    val automatic_action_uid: String? = null,
     val pirep_feature: WireVisiblePirepFeature? = null,
     val airspace_icon: WireAirspaceDisplayPath? = null,
     val actions: List<WireMapSelectionAction> = emptyList(),
@@ -780,16 +782,31 @@ data class WireMapSelectionAction(
     val label: String,
     val enabled: Boolean,
     val display_only: Boolean,
-    val detail_text: String? = null,
-    val detail_title: String? = null,
-    val detail_status: WireMapSelectionDetailStatus? = null,
+    val action_uid: String? = null,
+    val placeholder: Boolean = false,
     val disabled_reason: String? = null,
-    val weather_detail: WireWeatherDetailUiView? = null,
-    val airport_info_airport_id: String? = null,
     val airspace_limit: WireAirspaceLimitGlyph? = null,
-    val session_action: String? = null,
-    val flight_plan_row_action: WireMapSelectionFlightPlanRowAction? = null,
-    val navigation: WireMapSelectionNavigationAction? = null,
+)
+
+@Serializable
+data class WireMapSelectionActionDecision(
+    val perform_session_mutation: Boolean,
+    val dismiss_selection: Boolean,
+    val effect: WireMapSelectionActionEffect? = null,
+)
+
+@Serializable
+data class WireMapSelectionActionEffect(
+    val kind: String,
+    val detail: WireWeatherDetailUiView? = null,
+    val airport_id: String? = null,
+    val loading_text: String? = null,
+    val failure_prefix: String? = null,
+    val title: String? = null,
+    val text: String? = null,
+    val status: WireMapSelectionDetailStatus? = null,
+    val target: String? = null,
+    val chart_id: String? = null,
 )
 
 @Serializable
@@ -817,20 +834,6 @@ data class WireAirportNotamUiView(
     val id: String,
     val label: String,
     val text: String,
-)
-
-@Serializable
-data class WireMapSelectionFlightPlanRowAction(
-    val row_uid: String,
-    val action_uid: String,
-)
-
-@Serializable
-data class WireMapSelectionNavigationAction(
-    val kind: String,
-    val airport_id: String? = null,
-    val target: String? = null,
-    val chart_id: String? = null,
 )
 
 @Serializable

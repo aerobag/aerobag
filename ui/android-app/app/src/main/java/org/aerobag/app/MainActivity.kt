@@ -571,6 +571,7 @@ internal data class MapSelectionUiState(
 
 internal data class MapSelectionDetailModalState(
     val title: String,
+    val sourceActionId: String? = null,
     val text: String? = null,
     val status: MapSelectionDetailStatus? = null,
     val weatherDetail: WeatherDetailUiView? = null,

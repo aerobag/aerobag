@@ -132,15 +132,16 @@ use crate::{
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanRowActionId, FlightPlanUiState,
-    GuidanceLegGeometry, LatLon, MapOverlayQuery, MapOverlayQueryResult,
-    MapSelectionForNavRefResult, MapSelectionQuery, MapSelectionQueryResult,
+    GuidanceLegGeometry, LatLon, MapOverlayQuery, MapOverlayQueryResult, MapSelectionAction,
+    MapSelectionActionDecision, MapSelectionActionEffect, MapSelectionForNavRefResult,
+    MapSelectionNavigationAction, MapSelectionQuery, MapSelectionQueryResult,
     MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
     MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
     NavKvStore, NavRef, NotamDisplayIndex, OfflinePackagesLibraryCache, PlaybackUiState,
     PointTilePayload, ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget,
     RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
     SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    TfrProductPayload, VectorAggregateTilePayload, VectorIdentLabelStyle, WeatherDetailUiView,
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
@@ -427,6 +428,29 @@ struct SessionCoordinatorModel {
 struct SessionRuntime {
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     adsb: crate::adsb::AdsbSessionState,
+    map_selection_actions: BTreeMap<String, RegisteredMapSelectionAction>,
+    next_map_selection_action_uid: u64,
+}
+
+#[derive(Clone)]
+enum RegisteredMapSelectionAction {
+    ShowWeather(WeatherDetailUiView),
+    LoadAirportInfo(String),
+    ShowDetail {
+        title: String,
+        text: String,
+        status: Option<crate::MapSelectionDetailStatus>,
+    },
+    OpenPlateTarget {
+        airport_id: String,
+        target: String,
+        chart_id: String,
+    },
+    PerformFlightPlanRow {
+        row_uid: String,
+        action_uid: String,
+    },
+    PerformSession(MapSelectionSessionAction),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4435,9 +4459,102 @@ fn mutate_session_flight_plan_definition_controller(
     commit_session_flight_plan_edit_with_invalidations_outcome(session, next_plan)
 }
 
-pub fn perform_map_selection_action_in_session(
+pub fn map_selection_action_decision_in_session(
     handle: u32,
-    action_json: String,
+    action_uid: String,
+) -> AppResult<MapSelectionActionDecision> {
+    let action = registered_map_selection_action_for_session(handle, &action_uid)?;
+    Ok(match action {
+        RegisteredMapSelectionAction::ShowWeather(detail) => MapSelectionActionDecision {
+            perform_session_mutation: false,
+            dismiss_selection: false,
+            effect: Some(MapSelectionActionEffect::ShowWeather { detail }),
+        },
+        RegisteredMapSelectionAction::LoadAirportInfo(airport_id) => MapSelectionActionDecision {
+            perform_session_mutation: false,
+            dismiss_selection: false,
+            effect: Some(MapSelectionActionEffect::LoadAirportInfo {
+                airport_id,
+                loading_text: "Loading airport info...".to_string(),
+                failure_prefix: "Airport info unavailable:".to_string(),
+            }),
+        },
+        RegisteredMapSelectionAction::ShowDetail {
+            title,
+            text,
+            status,
+        } => MapSelectionActionDecision {
+            perform_session_mutation: false,
+            dismiss_selection: false,
+            effect: Some(MapSelectionActionEffect::ShowDetail {
+                title,
+                text,
+                status,
+            }),
+        },
+        RegisteredMapSelectionAction::OpenPlateTarget {
+            airport_id,
+            target,
+            chart_id,
+        } => MapSelectionActionDecision {
+            perform_session_mutation: false,
+            dismiss_selection: true,
+            effect: Some(MapSelectionActionEffect::OpenPlateTarget {
+                airport_id,
+                target,
+                chart_id,
+            }),
+        },
+        RegisteredMapSelectionAction::PerformFlightPlanRow { .. }
+        | RegisteredMapSelectionAction::PerformSession(_) => MapSelectionActionDecision {
+            perform_session_mutation: true,
+            dismiss_selection: true,
+            effect: None,
+        },
+    })
+}
+
+pub fn perform_map_selection_ui_action_in_session(
+    handle: u32,
+    action_uid: String,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let action = registered_map_selection_action_for_session(handle, &action_uid)?;
+    match action {
+        RegisteredMapSelectionAction::PerformFlightPlanRow {
+            row_uid,
+            action_uid,
+        } => perform_flight_plan_row_action_in_session(handle, row_uid, action_uid),
+        RegisteredMapSelectionAction::PerformSession(action) => {
+            perform_map_selection_session_action(handle, action, now_epoch_ms)
+        }
+        _ => Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("map-selection action does not mutate the session: {action_uid}"),
+        }),
+    }
+}
+
+fn registered_map_selection_action_for_session(
+    handle: u32,
+    action_uid: &str,
+) -> AppResult<RegisteredMapSelectionAction> {
+    let slot = session_slot(handle)?;
+    let session = slot.lock_running()?;
+    session
+        .runtime
+        .map_selection_actions
+        .get(action_uid)
+        .cloned()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unknown or stale map-selection action: {action_uid}"),
+        })
+}
+
+fn perform_map_selection_session_action(
+    handle: u32,
+    action: MapSelectionSessionAction,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     {
@@ -4445,11 +4562,6 @@ pub fn perform_map_selection_action_in_session(
         let mut session = slot.lock_running()?;
         advance_session_wall_clock(&mut session, now_epoch_ms);
     }
-    let action: MapSelectionSessionAction =
-        serde_json::from_str(&action_json).map_err(|err| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!("invalid map selection session action: {err}"),
-        })?;
     match action {
         MapSelectionSessionAction::InsertWaypointBestPosition { nav_ref } => {
             insert_waypoint_best_position_for_session(handle, nav_ref)
@@ -9458,7 +9570,130 @@ fn materialize_map_selection_in_session(
         }
         selection.categories.push(traffic);
     }
+    finalize_map_selection_actions(session, &mut selection)?;
     Ok(MapSelectionMaterialization::Complete(selection))
+}
+
+fn finalize_map_selection_actions(
+    session: &mut UiSession,
+    selection: &mut MapSelectionQueryResult,
+) -> AppResult<()> {
+    let mut registered = BTreeMap::new();
+    let mut next_uid = session.runtime.next_map_selection_action_uid;
+    for item in selection
+        .categories
+        .iter_mut()
+        .flat_map(|category| category.items.iter_mut())
+    {
+        let action_slot_count = if item.detail_text.is_some() { 3 } else { 6 };
+        item.actions.truncate(action_slot_count);
+        item.automatic_action_uid = None;
+        for action in &mut item.actions {
+            action.action_uid = None;
+            action.placeholder = false;
+            let Some(command) = registered_map_selection_action(action)? else {
+                continue;
+            };
+            next_uid = next_uid.wrapping_add(1);
+            let action_uid = format!("map-selection:{next_uid}");
+            if item.metar_feature.is_some()
+                && matches!(&command, RegisteredMapSelectionAction::ShowWeather(_))
+            {
+                item.automatic_action_uid = Some(action_uid.clone());
+            }
+            action.action_uid = Some(action_uid.clone());
+            registered.insert(action_uid, command);
+        }
+        while item.actions.len() < action_slot_count {
+            item.actions
+                .push(map_selection_placeholder_action(item.actions.len()));
+        }
+    }
+    session.runtime.map_selection_actions = registered;
+    session.runtime.next_map_selection_action_uid = next_uid;
+    Ok(())
+}
+
+fn registered_map_selection_action(
+    action: &MapSelectionAction,
+) -> AppResult<Option<RegisteredMapSelectionAction>> {
+    if !action.enabled || action.display_only {
+        return Ok(None);
+    }
+    if let Some(detail) = &action.weather_detail {
+        return Ok(Some(RegisteredMapSelectionAction::ShowWeather(
+            detail.clone(),
+        )));
+    }
+    if let Some(airport_id) = &action.airport_info_airport_id {
+        return Ok(Some(RegisteredMapSelectionAction::LoadAirportInfo(
+            airport_id.clone(),
+        )));
+    }
+    if let Some(text) = &action.detail_text {
+        return Ok(Some(RegisteredMapSelectionAction::ShowDetail {
+            title: action
+                .detail_title
+                .clone()
+                .unwrap_or_else(|| action.label.clone()),
+            text: text.clone(),
+            status: action.detail_status.clone(),
+        }));
+    }
+    if let Some(row_action) = &action.flight_plan_row_action {
+        return Ok(Some(RegisteredMapSelectionAction::PerformFlightPlanRow {
+            row_uid: row_action.row_uid.clone(),
+            action_uid: row_action.action_uid.clone(),
+        }));
+    }
+    if let Some(navigation) = &action.navigation {
+        return Ok(Some(match navigation {
+            MapSelectionNavigationAction::OpenPlateTarget {
+                airport_id,
+                target,
+                chart_id,
+            } => RegisteredMapSelectionAction::OpenPlateTarget {
+                airport_id: airport_id.clone(),
+                target: target.clone(),
+                chart_id: chart_id.clone(),
+            },
+        }));
+    }
+    if let Some(session_action) = &action.session_action {
+        let action = serde_json::from_str(session_action).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: format!("invalid registered map-selection action: {err}"),
+        })?;
+        return Ok(Some(RegisteredMapSelectionAction::PerformSession(action)));
+    }
+    Err(AppError {
+        kind: AppErrorKind::Internal,
+        message: format!(
+            "enabled map-selection action {} has no core execution",
+            action.id
+        ),
+    })
+}
+
+fn map_selection_placeholder_action(index: usize) -> MapSelectionAction {
+    MapSelectionAction {
+        id: format!("placeholder:{index}"),
+        label: String::new(),
+        enabled: false,
+        display_only: true,
+        action_uid: None,
+        placeholder: true,
+        detail_text: None,
+        detail_title: None,
+        detail_status: None,
+        weather_detail: None,
+        airport_info_airport_id: None,
+        disabled_reason: None,
+        airspace_limit: None,
+        session_action: None,
+        flight_plan_row_action: None,
+        navigation: None,
+    }
 }
 
 fn terrain_elevation_request_for_session(
@@ -14356,13 +14591,11 @@ mod tests {
             .expect("create session");
         set_debug_flag_in_session(init.handle, DebugFlagId::InternetAdsb, true)
             .expect("enable internet ADS-B");
-        let action = serde_json::to_string(&MapSelectionSessionAction::FollowAdsbRegistration {
+        let action = MapSelectionSessionAction::FollowAdsbRegistration {
             registration: "N9124Y".to_string(),
-        })
-        .expect("serialize action");
+        };
 
-        perform_map_selection_action_in_session(init.handle, action, 10_000)
-            .expect("follow traffic");
+        perform_map_selection_session_action(init.handle, action, 10_000).expect("follow traffic");
         let selected = get_session_snapshot(init.handle).expect("snapshot after following traffic");
         assert_eq!(
             selected
@@ -25323,6 +25556,8 @@ mod tests {
                     nav_ref: Some(NavRef::Airport("KPWT".to_string())),
                     symbol_feature: None,
                     metar_feature: None,
+                    weather_detail: None,
+                    automatic_action_uid: None,
                     pirep_feature: None,
                     airspace_icon: None,
                     actions: vec![MapSelectionAction {
@@ -25330,6 +25565,8 @@ mod tests {
                         label: "Direct".to_string(),
                         enabled: true,
                         display_only: false,
+                        action_uid: None,
+                        placeholder: false,
                         detail_text: None,
                         detail_title: None,
                         detail_status: None,
@@ -25454,6 +25691,8 @@ mod tests {
             nav_ref: None,
             symbol_feature: None,
             metar_feature: None,
+            weather_detail: None,
+            automatic_action_uid: None,
             pirep_feature: None,
             airspace_icon: None,
             actions: Vec::new(),
@@ -25471,6 +25710,126 @@ mod tests {
                 items,
             }],
         }
+    }
+
+    #[test]
+    fn map_selection_actions_are_registered_projected_and_expire_together() {
+        let weather = WeatherDetailUiView {
+            station_id: "KPAE".to_string(),
+            advisory_text: "Check official sources.".to_string(),
+            metar_text: Some("KPAE METAR".to_string()),
+            metar_age_label: None,
+            metar_age_warning: false,
+            taf_text: None,
+            taf_age_label: None,
+            taf_age_warning: false,
+            notams: Vec::new(),
+        };
+        let mut weather_item = test_map_selection_item("KPAE", None, None);
+        weather_item.metar_feature = Some(crate::VisibleMetarFeature {
+            station_id: "KPAE".to_string(),
+            screen_x: 0.0,
+            screen_y: 0.0,
+            flight_category: "vfr".to_string(),
+            ceiling_amount: "clear".to_string(),
+        });
+        weather_item.weather_detail = Some(weather.clone());
+        weather_item.actions.push(MapSelectionAction {
+            id: "wx".to_string(),
+            label: "WX".to_string(),
+            enabled: true,
+            display_only: false,
+            action_uid: None,
+            placeholder: false,
+            detail_text: None,
+            detail_title: None,
+            detail_status: None,
+            weather_detail: Some(weather.clone()),
+            airport_info_airport_id: None,
+            disabled_reason: None,
+            airspace_limit: None,
+            session_action: None,
+            flight_plan_row_action: None,
+            navigation: None,
+        });
+        let mut detail_item = test_map_selection_item("TFR", None, None);
+        detail_item.detail_text = Some("inline summary".to_string());
+        detail_item.actions.push(MapSelectionAction {
+            id: "text".to_string(),
+            label: "Text".to_string(),
+            enabled: true,
+            display_only: false,
+            action_uid: None,
+            placeholder: false,
+            detail_text: Some("full detail".to_string()),
+            detail_title: Some("TFR".to_string()),
+            detail_status: None,
+            weather_detail: None,
+            airport_info_airport_id: None,
+            disabled_reason: None,
+            airspace_limit: None,
+            session_action: None,
+            flight_plan_row_action: None,
+            navigation: None,
+        });
+        let mut selection = test_map_selection_with_items(vec![weather_item, detail_item]);
+        let init = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create map-selection action session");
+        {
+            let slot = session_slot(init.handle).expect("session slot");
+            let mut session = slot.lock_running().expect("session");
+            finalize_map_selection_actions(&mut session, &mut selection)
+                .expect("finalize selection actions");
+        }
+
+        let weather_item = &selection.categories[0].items[0];
+        let weather_uid = weather_item
+            .automatic_action_uid
+            .as_deref()
+            .expect("METAR selection should name its automatic action");
+        assert_eq!(weather_item.actions.len(), 6);
+        assert_eq!(
+            weather_item.actions[0].action_uid.as_deref(),
+            Some(weather_uid)
+        );
+        assert!(weather_item.actions[1..]
+            .iter()
+            .all(|action| action.placeholder));
+        let projected_action = serde_json::to_value(&weather_item.actions[0]).expect("action JSON");
+        assert!(projected_action.get("weather_detail").is_none());
+        assert!(projected_action.get("session_action").is_none());
+        assert_eq!(
+            map_selection_action_decision_in_session(init.handle, weather_uid.to_string())
+                .expect("weather decision")
+                .effect,
+            Some(MapSelectionActionEffect::ShowWeather { detail: weather })
+        );
+
+        let detail_item = &selection.categories[0].items[1];
+        assert_eq!(detail_item.actions.len(), 3);
+        let detail_uid = detail_item.actions[0]
+            .action_uid
+            .as_deref()
+            .expect("detail UID");
+        assert!(matches!(
+            map_selection_action_decision_in_session(init.handle, detail_uid.to_string())
+                .expect("detail decision")
+                .effect,
+            Some(MapSelectionActionEffect::ShowDetail { .. })
+        ));
+
+        {
+            let slot = session_slot(init.handle).expect("session slot");
+            let mut session = slot.lock_running().expect("session");
+            finalize_map_selection_actions(
+                &mut session,
+                &mut test_map_selection_with_items(Vec::new()),
+            )
+            .expect("replace selection actions");
+        }
+        assert!(
+            map_selection_action_decision_in_session(init.handle, weather_uid.to_string()).is_err()
+        );
     }
 
     #[test]

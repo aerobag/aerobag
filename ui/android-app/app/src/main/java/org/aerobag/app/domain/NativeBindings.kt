@@ -207,9 +207,14 @@ interface NativeBridge {
         libraryCacheJson: String,
     ): String
 
-    fun performMapSelectionActionInSessionJson(
+    fun mapSelectionActionDecisionInSessionJson(
         handle: Long,
-        actionJson: String,
+        actionUid: String,
+    ): String
+
+    fun performMapSelectionUiActionInSessionJson(
+        handle: Long,
+        actionUid: String,
         nowEpochMs: Long,
     ): String
 
@@ -830,9 +835,14 @@ object NativeBindings : NativeBridge {
         packageIdsJson: String,
     ): String
 
-    external override fun performMapSelectionActionInSessionJson(
+    external override fun mapSelectionActionDecisionInSessionJson(
         handle: Long,
-        actionJson: String,
+        actionUid: String,
+    ): String
+
+    external override fun performMapSelectionUiActionInSessionJson(
+        handle: Long,
+        actionUid: String,
         nowEpochMs: Long,
     ): String
 

@@ -4694,7 +4694,7 @@ function MapPage(props: {
     point: ScreenPoint;
     result: MapSelectionQueryResult;
     selectedItem: MapSelectionItem | null;
-    detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string; action_id?: string | null } | null } | { kind: "weather"; detail: WeatherDetailUiView } | { kind: "airport"; detail: AirportInfoUiView } | null;
+    detailModal: { kind: "text"; title: string; sourceActionId?: string | null; text: string; status?: { text: string; color_key: string; action_id?: string | null } | null } | { kind: "weather"; detail: WeatherDetailUiView } | { kind: "airport"; detail: AirportInfoUiView } | null;
   } | null>(null);
   const mapSelectionDistanceItemId = mapSelection?.detailModal === null
     ? mapSelection.selectedItem?.id ?? null
@@ -6914,6 +6914,9 @@ function MapPage(props: {
     if (!uiSession || !mapSelection) return;
     const previous = mapSelection;
     const selectedItemId = previous.selectedItem?.id ?? null;
+    const sourceActionId = previous.detailModal?.kind === "text"
+      ? previous.detailModal.sourceActionId
+      : null;
     props.onSessionSnapshot(
       await uiSession.performTimeDisplayAction(actionId),
       "time_display_mode",
@@ -6925,9 +6928,13 @@ function MapPage(props: {
       { lat: previous.result.click_lat, lon: previous.result.click_lon },
     );
     const selectedItem = mapSelectionItemById(result, selectedItemId);
-    const detailAction = selectedItem?.actions.find((action) =>
-      action.detail_status?.action_id === actionId && action.detail_text,
-    );
+    const detailAction = selectedItem?.actions.find((action) => action.id === sourceActionId);
+    const detailDecision = detailAction?.action_uid
+      ? await uiSession.mapSelectionActionDecision(detailAction.action_uid)
+      : null;
+    const detailEffect = detailDecision?.effect?.kind === "show_detail"
+      ? detailDecision.effect
+      : null;
     setMapSelection((current) => {
       if (!current || current.result.click_lat !== previous.result.click_lat || current.result.click_lon !== previous.result.click_lon) {
         return current;
@@ -6936,11 +6943,12 @@ function MapPage(props: {
         ...current,
         result,
         selectedItem,
-        detailModal: detailAction?.detail_text ? {
+        detailModal: detailEffect ? {
           kind: "text",
-          title: detailAction.detail_title ?? detailAction.label,
-          text: detailAction.detail_text,
-          status: detailAction.detail_status,
+          title: detailEffect.title,
+          sourceActionId,
+          text: detailEffect.text,
+          status: detailEffect.status,
         } : current.detailModal,
       };
     });
@@ -7138,6 +7146,94 @@ function MapPage(props: {
   const centerHereDisabled = !mapFollowUiState.can_center_here && !mapFollowUiState.following;
   const centerHereDisabledReason = disabledReasonText(mapFollowUiState.disabled_reason);
 
+  async function performSelectedMapAction(action: MapSelectionItem["actions"][number]) {
+    if (!uiSession || !action.action_uid) {
+      return;
+    }
+    try {
+      const decision = await uiSession.mapSelectionActionDecision(action.action_uid);
+      if (decision.perform_session_mutation) {
+        const nextSnapshot = await uiSession.performMapSelectionUiAction(action.action_uid);
+        props.onSessionSnapshot(nextSnapshot, "map_selection_action");
+      }
+      const effect = decision.effect;
+      switch (effect?.kind) {
+        case "show_weather":
+          setMapSelection((current) => current ? {
+            ...current,
+            detailModal: { kind: "weather", detail: effect.detail },
+          } : current);
+          break;
+        case "load_airport_info": {
+          const { airport_id: airportId, loading_text: loadingText, failure_prefix: failurePrefix } = effect;
+          const requestSerial = ++airportInfoRequestSerialRef.current;
+          setMapSelection((current) => current ? {
+            ...current,
+            detailModal: { kind: "text", title: airportId, text: loadingText },
+          } : current);
+          try {
+            const detail = await uiSession.airportInfo(airportId);
+            setMapSelection((current) =>
+              airportInfoRequestSerialRef.current === requestSerial
+                && current?.detailModal?.kind === "text"
+                && current.detailModal.title === airportId
+                ? { ...current, detailModal: { kind: "airport", detail } }
+                : current);
+          } catch (error) {
+            setMapSelection((current) =>
+              airportInfoRequestSerialRef.current === requestSerial
+                && current?.detailModal?.kind === "text"
+                && current.detailModal.title === airportId
+                ? {
+                    ...current,
+                    detailModal: {
+                      kind: "text",
+                      title: airportId,
+                      text: `${failurePrefix} ${errorMessage(error)}`,
+                    },
+                  }
+                : current);
+          }
+          break;
+        }
+        case "show_detail":
+          setMapSelection((current) => current ? {
+            ...current,
+            detailModal: {
+              kind: "text",
+              title: effect.title,
+              sourceActionId: action.id,
+              text: effect.text,
+              status: effect.status,
+            },
+          } : current);
+          break;
+        case "open_plate_target":
+          onOpenPlateTarget(effect.airport_id, effect.target);
+          break;
+        case undefined:
+          break;
+      }
+      if (decision.dismiss_selection) {
+        setMapSelection(null);
+      }
+    } catch (error) {
+      debugLog("map.selection.action.failed", {
+        action_uid: action.action_uid,
+        action_id: action.id,
+        error: errorMessage(error),
+      });
+      setMapSelection((current) => current ? {
+        ...current,
+        detailModal: {
+          kind: "text",
+          title: action.label,
+          text: errorMessage(error),
+        },
+      } : current);
+    }
+  }
+
   useMapCommitProbe({
     high_rate_snapshot: highRateSnapshot,
     viewport,
@@ -7238,145 +7334,21 @@ function MapPage(props: {
                 point={mapSelection.point}
                 result={mapSelection.result}
                 selectedItem={mapSelection.selectedItem}
-                onSelectItem={(item) => setMapSelection((current) => {
-                  if (!current) {
-                    return current;
-                  }
-                  const weatherDetail = immediateWeatherDetailForMapSelectionItem(item);
-                  return {
+                onSelectItem={(item) => {
+                  setMapSelection((current) => current ? {
                     ...current,
                     selectedItem: item,
-                    detailModal: weatherDetail ? { kind: "weather", detail: weatherDetail } : null,
-                  };
-                })}
-                onSelectDetail={(title, text, status) => setMapSelection((current) => current ? {
-                  ...current,
-                  detailModal: { kind: "text", title, text, status },
-                } : current)}
-                onSelectWeather={(detail) => setMapSelection((current) => current ? { ...current, detailModal: { kind: "weather", detail } } : current)}
-                onDisabledAction={showDisabledAction}
-                onSelectAction={async (item, action) => {
-                  if (!appCoreAdapter) {
-                    return;
+                    detailModal: null,
+                  } : current);
+                  const automaticAction = item.actions.find(
+                    (action) => action.action_uid === item.automatic_action_uid,
+                  );
+                  if (automaticAction) {
+                    void performSelectedMapAction(automaticAction);
                   }
-                  if (action.airport_info_airport_id) {
-                    if (!uiSession) {
-                      return;
-                    }
-                    const airportId = action.airport_info_airport_id;
-                    const requestSerial = ++airportInfoRequestSerialRef.current;
-                    setMapSelection((current) => current ? {
-                      ...current,
-                      detailModal: {
-                        kind: "text",
-                        title: airportId,
-                        text: "Loading airport info...",
-                      },
-                    } : current);
-                    try {
-                      const detail = await uiSession.airportInfo(airportId);
-                      setMapSelection((current) =>
-                        airportInfoRequestSerialRef.current === requestSerial
-                          && current?.detailModal?.kind === "text"
-                          && current.detailModal.title === airportId
-                          ? {
-                              ...current,
-                              detailModal: { kind: "airport", detail },
-                            }
-                          : current);
-                    } catch (error) {
-                      setMapSelection((current) =>
-                        airportInfoRequestSerialRef.current === requestSerial
-                          && current?.detailModal?.kind === "text"
-                          && current.detailModal.title === airportId
-                          ? {
-                              ...current,
-                              detailModal: {
-                                kind: "text",
-                                title: airportId,
-                                text: `Airport info unavailable: ${errorMessage(error)}`,
-                              },
-                            }
-                          : current);
-                    }
-                    return;
-                  }
-                  if (action.navigation?.kind === "open_plate_target") {
-                    onOpenPlateTarget(action.navigation.airport_id, action.navigation.target);
-                    setMapSelection(null);
-                    return;
-                  }
-                  if (action.id === "offline_region_mode") {
-                    setMapSelection((current) => current ? {
-                      ...current,
-                      detailModal: {
-                        kind: "text",
-                        title: action.label,
-                        text: item.detail_text ?? "Offline package region controls are not connected in this web build yet.",
-                      },
-                    } : current);
-                    return;
-                  }
-                  if (action.id === "offline_packages") {
-                    setMapSelection((current) => current ? {
-                      ...current,
-                      detailModal: {
-                        kind: "text",
-                        title: "Offline Packages",
-                        text: "Offline Packages settings are not available in this web build yet.",
-                      },
-                    } : current);
-                    return;
-                  }
-                  if (action.flight_plan_row_action) {
-                    try {
-                      if (!uiSession) {
-                        throw new Error("map selection row action requires live core session");
-                      }
-                      const nextSnapshot = await uiSession.performFlightPlanRowAction(
-                        action.flight_plan_row_action.row_uid,
-                        action.flight_plan_row_action.action_uid,
-                      );
-                      props.onSessionSnapshot(nextSnapshot, "map_selection_row_action");
-                      setMapSelection(null);
-                    } catch (error) {
-                      debugLog("map.selection.row_action.failed", {
-                        action_id: action.id,
-                        row_action: action.flight_plan_row_action,
-                        error: errorMessage(error),
-                      });
-                    }
-                    return;
-                  }
-                  if (action.session_action) {
-                    try {
-                      if (!uiSession) {
-                        throw new Error("map selection session action requires live core session");
-                      }
-                      const nextSnapshot = await uiSession.performMapSelectionAction(action.session_action);
-                      props.onSessionSnapshot(nextSnapshot, "map_selection_session_action");
-                      setMapSelection(null);
-                    } catch (error) {
-                      debugLog("map.selection.session_action.failed", {
-                        action_id: action.id,
-                        error: errorMessage(error),
-                      });
-                      setMapSelection((current) => current ? {
-                        ...current,
-                        detailModal: {
-                          kind: "text",
-                          title: action.label,
-                          text: errorMessage(error),
-                        },
-                      } : current);
-                    }
-                    return;
-                  }
-                  debugLog("map.selection.action.unhandled", {
-                    action_id: action.id,
-                    item_id: item.id,
-                  });
                 }}
+                onDisabledAction={showDisabledAction}
+                onSelectAction={(action) => void performSelectedMapAction(action)}
               />
             )}
           </>
@@ -10926,36 +10898,21 @@ function MapSelectionTray(props: {
   result: MapSelectionQueryResult;
   selectedItem: MapSelectionItem | null;
   onSelectItem: (item: MapSelectionItem) => void;
-  onSelectDetail: (
-    title: string,
-    text: string,
-    status?: { text: string; color_key: string } | null,
-  ) => void;
   onDisabledAction: (message: string) => void;
-  onSelectWeather: (detail: WeatherDetailUiView) => void;
-  onSelectAction: (item: MapSelectionItem, action: MapSelectionItem["actions"][number]) => void | Promise<void>;
+  onSelectAction: (action: MapSelectionItem["actions"][number]) => void | Promise<void>;
 }) {
-  const { point, result, selectedItem, onSelectItem, onSelectDetail, onDisabledAction, onSelectWeather, onSelectAction } = props;
+  const { point, result, selectedItem, onSelectItem, onDisabledAction, onSelectAction } = props;
   const edgePad = thumbPixels(0.1);
-  type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
-  const actionSlots: MapSelectionActionSlot[] = selectedItem
-    ? [...selectedItem.actions, ...Array.from({ length: Math.max(0, 6 - selectedItem.actions.length) }, (_, index) => ({
-      id: `placeholder-${index}`,
-      label: "",
-      enabled: false,
-      display_only: true,
-      placeholder: true,
-    }))]
+  const actionSlots: MapSelectionItem["actions"] = selectedItem
+    ? selectedItem.actions
     : Array.from({ length: 6 }, (_, index) => ({
       id: `placeholder-${index}`,
       label: "",
       enabled: false,
       display_only: true,
+      action_uid: null,
       placeholder: true,
-	    }));
-  const visibleActionSlots = selectedItem?.detail_text
-    ? actionSlots.slice(0, 3)
-    : actionSlots.slice(0, 6);
+    }));
   const horizontalStyle = point.x < window.innerWidth / 2
     ? { right: `${edgePad}px` }
     : { left: `${edgePad}px` };
@@ -11022,7 +10979,7 @@ function MapSelectionTray(props: {
           </div>
         </div>
         <div className="mapSelectionActionGrid">
-          {visibleActionSlots.map((action) => {
+          {actionSlots.map((action) => {
             const disabledReason = action.disabled_reason?.trim() || null;
             const symbol = actionSymbol(action.id);
             const inert = Boolean(
@@ -11041,7 +10998,7 @@ function MapSelectionTray(props: {
                 onPointerUp={stopPointer}
                 onDoubleClick={stopDoubleClick}
                 onClick={() => {
-                  if (!selectedItem || action.placeholder || action.display_only) {
+                  if (!selectedItem || action.placeholder || action.display_only || !action.action_uid) {
                     return;
                   }
                   if (!action.enabled) {
@@ -11050,19 +11007,7 @@ function MapSelectionTray(props: {
                     }
                     return;
                   }
-                  if (action.weather_detail) {
-                    onSelectWeather(action.weather_detail);
-                    return;
-                  }
-                  if (action.detail_text) {
-                    onSelectDetail(
-                      action.detail_title ?? action.label,
-                      action.detail_text,
-                      action.detail_status,
-                    );
-                    return;
-                  }
-                  void onSelectAction(selectedItem, action);
+                  void onSelectAction(action);
                 }}
                 aria-disabled={styledDisabled ? "true" : undefined}
                 aria-hidden={action.placeholder ? "true" : undefined}
@@ -11157,10 +11102,7 @@ function weatherDetailForMetarSelection(result: MapSelectionQueryResult, station
 }
 
 function immediateWeatherDetailForMapSelectionItem(item: MapSelectionItem): WeatherDetailUiView | null {
-  if (!item.metar_feature) {
-    return null;
-  }
-  return item.actions.find((action) => action.enabled && action.weather_detail)?.weather_detail ?? null;
+  return item.metar_feature ? item.weather_detail ?? null : null;
 }
 
 function hoverWeatherPanelStyle(point: ScreenPoint): CSSProperties {

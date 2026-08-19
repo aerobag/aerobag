@@ -1213,7 +1213,7 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let mut violations = Vec::new();
 
     for method in [
-        "performMapSelectionAction",
+        "performMapSelectionUiAction",
         "insertWaypointAtFlightPlanRow",
         "appendFlightPlanEntry",
         "insertAirwayAtFlightPlanRow",
@@ -1235,7 +1235,7 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     }
 
     for method in [
-        "performMapSelectionAction",
+        "performMapSelectionUiAction",
         "insertWaypointAtFlightPlanRow",
         "appendFlightPlanEntry",
         "insertAirwayAtFlightPlanRow",
@@ -1272,7 +1272,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
     let paged_web_exports = [
         "load_raster_map_catalog_in_session",
         "select_map_family_in_session",
-        "perform_map_selection_action_in_session",
+        "perform_map_selection_ui_action_in_session",
         "perform_flight_plan_command_in_session",
         "perform_flight_plan_column_action_in_session",
         "perform_time_display_action_in_session",
@@ -1318,7 +1318,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
     let paged_android_exports = [
         "loadRasterMapCatalogInSessionJson",
         "selectMapFamilyInSessionJson",
-        "performMapSelectionActionInSessionJson",
+        "performMapSelectionUiActionInSessionJson",
         "performFlightPlanCommandInSessionJson",
         "performFlightPlanColumnActionInSessionJson",
         "performTimeDisplayActionInSessionJson",
@@ -1954,6 +1954,58 @@ fn status_surface_composition_and_effects_are_core_owned() {
                 && !source.contains("actionId === \"app:reload\""),
             "{platform} must execute core's typed reload effect, not interpret its action ID"
         );
+    }
+}
+
+#[test]
+fn map_selection_action_policy_is_core_owned() {
+    let core = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let model = read_repo_file("ui/core-rust/crates/app-core/src/map_overlay.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+    let web_map = web
+        .split("function MapPage(")
+        .nth(1)
+        .and_then(|source| source.split("function MapOrientationButton(").next())
+        .expect("web MapPage source");
+    let android_map = android
+        .split("internal fun MapExplorerPage(")
+        .nth(1)
+        .and_then(|source| source.split("private fun RasterImageLayers(").next())
+        .expect("Android MapExplorerPage source");
+
+    assert!(
+        model.contains("pub action_uid: Option<String>")
+            && model.contains("pub enum MapSelectionActionEffect")
+            && core.contains("fn finalize_map_selection_actions")
+            && core.contains("map_selection_action_decision_in_session")
+            && core.contains("perform_map_selection_ui_action_in_session"),
+        "core must register opaque map-selection actions and return typed decisions"
+    );
+    assert!(
+        web_map.contains("uiSession.mapSelectionActionDecision(action.action_uid)")
+            && web_map.contains("uiSession.performMapSelectionUiAction(action.action_uid)")
+            && android_map.contains("uiSession.mapSelectionActionDecision(actionUid)")
+            && android_map.contains("uiSession.performMapSelectionUiAction(actionUid)"),
+        "both renderers must use the generic map-selection action boundary"
+    );
+    for (platform, source) in [("web", web_map), ("Android", android_map)] {
+        for forbidden in [
+            "action.weather_detail",
+            "action.airport_info_airport_id",
+            "action.flight_plan_row_action",
+            "action.session_action",
+            "action.weatherDetail",
+            "action.airportInfoAirportId",
+            "action.flightPlanRowAction",
+            "action.sessionAction",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{platform} must not dispatch map-selection action payload field {forbidden}"
+            );
+        }
     }
 }
 

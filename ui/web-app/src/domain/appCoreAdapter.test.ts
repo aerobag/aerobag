@@ -158,7 +158,12 @@ describe("loadBestAvailableAdapter", () => {
           snapshot: JSON.parse(snapshotJson),
         },
       }),
-      perform_map_selection_action_in_session: async () => mutationOutcomeJson(),
+      map_selection_action_decision_in_session: async () => JSON.stringify({
+        perform_session_mutation: false,
+        dismiss_selection: false,
+        effect: null,
+      }),
+      perform_map_selection_ui_action_in_session: async () => mutationOutcomeJson(),
       set_situation_in_session_paged: async () => mutationOutcomeJson(),
       tick_bad_autopilot_in_session_paged: async () => mutationOutcomeJson(),
       engage_map_follow_in_session: async () => mutationOutcomeJson(),

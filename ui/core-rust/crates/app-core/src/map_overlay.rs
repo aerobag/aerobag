@@ -1397,6 +1397,10 @@ pub struct MapSelectionItem {
     pub symbol_feature: Option<NavSymbolFeature>,
     #[serde(default)]
     pub metar_feature: Option<VisibleMetarFeature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather_detail: Option<WeatherDetailUiView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_action_uid: Option<String>,
     #[serde(default)]
     pub pirep_feature: Option<VisiblePirepFeature>,
     #[serde(default)]
@@ -1421,26 +1425,62 @@ pub struct MapSelectionAction {
     pub label: String,
     pub enabled: bool,
     pub display_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_uid: Option<String>,
     #[serde(default)]
+    pub placeholder: bool,
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub detail_text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub detail_title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub detail_status: Option<MapSelectionDetailStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub weather_detail: Option<WeatherDetailUiView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub airport_info_airport_id: Option<String>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
     #[serde(default)]
     pub airspace_limit: Option<AirspaceLimitGlyph>,
-    #[serde(default)]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub session_action: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
-    #[serde(default)]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub navigation: Option<MapSelectionNavigationAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapSelectionActionDecision {
+    pub perform_session_mutation: bool,
+    pub dismiss_selection: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<MapSelectionActionEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MapSelectionActionEffect {
+    ShowWeather {
+        detail: WeatherDetailUiView,
+    },
+    LoadAirportInfo {
+        airport_id: String,
+        loading_text: String,
+        failure_prefix: String,
+    },
+    ShowDetail {
+        title: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<MapSelectionDetailStatus>,
+    },
+    OpenPlateTarget {
+        airport_id: String,
+        target: String,
+        chart_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3642,6 +3682,8 @@ fn selection_item_for_point(
         nav_ref,
         symbol_feature: Some(symbol_feature),
         metar_feature: None,
+        weather_detail,
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: None,
         actions: {
@@ -3797,6 +3839,8 @@ fn selection_item_for_nav_ref_point(
         nav_ref: Some(nav_ref.clone()),
         symbol_feature: Some(symbol_feature),
         metar_feature: None,
+        weather_detail,
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: None,
         actions: {
@@ -3866,6 +3910,8 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
         nav_ref: Some(nav_ref.clone()),
         symbol_feature: None,
         metar_feature: None,
+        weather_detail: None,
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: None,
         actions: vec![
@@ -3919,6 +3965,8 @@ fn selection_item_for_metar(
         nav_ref: airport_id.map(|airport_id| NavRef::Airport(airport_id.to_string())),
         symbol_feature: None,
         metar_feature: Some(feature),
+        weather_detail: weather_detail.clone(),
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: None,
         actions: vec![weather_action(weather_detail)],
@@ -3955,6 +4003,8 @@ fn selection_item_for_pirep(
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        weather_detail: None,
+        automatic_action_uid: None,
         pirep_feature: Some(feature),
         airspace_icon: None,
         actions: vec![display_action("pirep", "PIREP")],
@@ -4304,6 +4354,8 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        weather_detail: None,
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: airspace_selection_icon(feature),
         actions: vec![airspace_limit_action_from_parts(
@@ -4355,6 +4407,8 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
     labels.sort();
     labels.dedup();
     let description = labels.join(", ");
+    let region_detail = offline_region_group_detail_text(regions);
+    let mode_label = offline_region_mode_action_label(first);
     MapSelectionItem {
         id: format!("offline-region:{}", first.region_id.to_ascii_lowercase()),
         label: first.region_id.to_ascii_uppercase(),
@@ -4364,21 +4418,32 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
         secondary_description: None,
         position: None,
         elevation_msl_ft: None,
-        detail_text: Some(offline_region_group_detail_text(regions)),
+        detail_text: Some(region_detail.clone()),
         highlight: MapSelectionHighlight::OfflineRegion {
             id: first.id.clone(),
         },
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        weather_detail: None,
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: None,
         actions: vec![
-            enabled_action(
+            text_detail_action(
                 "offline_region_mode",
-                &offline_region_mode_action_label(first),
+                &mode_label,
+                Some(&mode_label),
+                Some(region_detail),
+                "Offline region details are unavailable.",
             ),
-            enabled_action("offline_packages", "Offline\nPkgs"),
+            text_detail_action(
+                "offline_packages",
+                "Offline\nPkgs",
+                Some("Offline Packages"),
+                Some("Offline Packages settings are not available on this platform.".to_string()),
+                "Offline Packages settings are unavailable.",
+            ),
         ],
     }
 }
@@ -4627,6 +4692,8 @@ fn selection_item_for_tfr(
         nav_ref: None,
         symbol_feature: None,
         metar_feature: None,
+        weather_detail: None,
+        automatic_action_uid: None,
         pirep_feature: None,
         airspace_icon: tfr_selection_icon(area, reference_utc),
         actions,
@@ -4793,6 +4860,8 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         label: label.to_string(),
         enabled: false,
         display_only: true,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -4812,6 +4881,8 @@ fn weather_action(weather_detail: Option<WeatherDetailUiView>) -> MapSelectionAc
         label: "WX".to_string(),
         enabled: weather_detail.is_some(),
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -4833,6 +4904,8 @@ fn airport_info_action(airport_id: &str) -> MapSelectionAction {
         label: "Info".to_string(),
         enabled: true,
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -4859,29 +4932,12 @@ fn text_detail_action(
         label: label.to_string(),
         enabled,
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text,
         detail_title: detail_title.map(str::to_string),
         detail_status: None,
         disabled_reason: (!enabled).then(|| missing_reason.to_string()),
-        weather_detail: None,
-        airport_info_airport_id: None,
-        airspace_limit: None,
-        session_action: None,
-        flight_plan_row_action: None,
-        navigation: None,
-    }
-}
-
-fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
-    MapSelectionAction {
-        id: id.to_string(),
-        label: label.to_string(),
-        enabled: true,
-        display_only: false,
-        detail_text: None,
-        detail_title: None,
-        detail_status: None,
-        disabled_reason: None,
         weather_detail: None,
         airport_info_airport_id: None,
         airspace_limit: None,
@@ -4903,6 +4959,8 @@ fn plate_target_action(
         label: label.to_string(),
         enabled: available,
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -4942,6 +5000,8 @@ fn disabled_action_inner(
         label: label.to_string(),
         enabled: false,
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -4965,6 +5025,8 @@ fn row_action(
         label: label.to_string(),
         enabled: flight_plan_row_action.is_some(),
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -4985,6 +5047,8 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         label: label.to_string(),
         enabled: session_action.is_some(),
         display_only: false,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -5033,6 +5097,8 @@ fn airspace_limit_action_from_parts(
         label: format!("{upper}/{lower}"),
         enabled: false,
         display_only: true,
+        action_uid: None,
+        placeholder: false,
         detail_text: None,
         detail_title: None,
         detail_status: None,
@@ -7147,6 +7213,8 @@ mod tests {
             nav_ref,
             symbol_feature: None,
             metar_feature: None,
+            weather_detail: None,
+            automatic_action_uid: None,
             pirep_feature: None,
             airspace_icon: None,
             actions: Vec::new(),

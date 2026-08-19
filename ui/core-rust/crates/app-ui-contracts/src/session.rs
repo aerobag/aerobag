@@ -38,6 +38,31 @@ pub struct UiNavigationPageState {
     pub default_chart_or_plate_return_target: UiNavigationPageId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanControlId {
+    ActivateNextLeg,
+    Redo,
+    RestoreDirectTo,
+    SequenceActiveLeg,
+    StopNavigation,
+    SuspendSequencing,
+    Undo,
+    UnsuspendSequencing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FlightPlanControlUiView {
+    pub id: FlightPlanControlId,
+    pub label: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]

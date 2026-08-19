@@ -138,6 +138,47 @@
       ],
       "type": "string"
     },
+    "FlightPlanControlId": {
+      "enum": [
+        "activate_next_leg",
+        "redo",
+        "restore_direct_to",
+        "sequence_active_leg",
+        "stop_navigation",
+        "suspend_sequencing",
+        "undo",
+        "unsuspend_sequencing"
+      ],
+      "title": "FlightPlanControlId",
+      "type": "string"
+    },
+    "FlightPlanControlUiView": {
+      "additionalProperties": false,
+      "properties": {
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/FlightPlanControlId"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "enabled"
+      ],
+      "title": "FlightPlanControlUiView",
+      "type": "object"
+    },
     "LiveFeedAcquisitionPolicy": {
       "enum": [
         "jit_public_resources",
@@ -1115,6 +1156,8 @@
     "UiNavigationPageId",
     "UiNavigationPageOption",
     "UiNavigationPageState",
+    "FlightPlanControlId",
+    "FlightPlanControlUiView",
     "FlightDataCellTone",
     "FlightEstimateKind",
     "FlightDataCell",

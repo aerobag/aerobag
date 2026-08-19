@@ -218,23 +218,8 @@ data class GuidanceUiView(
     val suspendBoundaryAfterActiveLeg: Boolean,
 )
 
-enum class FlightPlanControlId {
-    ActivateNextLeg,
-    Redo,
-    RestoreDirectTo,
-    SequenceActiveLeg,
-    StopNavigation,
-    SuspendSequencing,
-    Undo,
-    UnsuspendSequencing,
-}
-
-data class FlightPlanControlUiView(
-    val id: FlightPlanControlId,
-    val label: String,
-    val enabled: Boolean,
-    val disabledReason: String? = null,
-)
+typealias FlightPlanControlId = org.aerobag.app.generated.FlightPlanControlId
+typealias FlightPlanControlUiView = org.aerobag.app.generated.FlightPlanControlUiView
 
 data class NavElementUiView(
     val activeLegSummary: String,

@@ -4079,36 +4079,10 @@ function OperationalApp() {
           }}
           onPerformFlightPlanControl={async (controlId) => {
             if (!uiSession) return;
-            switch (controlId) {
-              case "activate_next_leg":
-                applySessionSnapshot(await uiSession.activateNextLeg(), "activate_next_leg");
-                return;
-              case "redo":
-                applySessionSnapshot(await uiSession.redoFlightPlanEdit(), "redo_flight_plan_edit");
-                return;
-              case "restore_direct_to":
-                applySessionSnapshot(await uiSession.restoreDirectTo(), "restore_direct_to");
-                return;
-              case "sequence_active_leg":
-                applySessionSnapshot(await uiSession.sequenceActiveLeg(), "sequence_active_leg");
-                return;
-              case "stop_navigation":
-                applySessionSnapshot(await uiSession.stopNavigation(), "stop_navigation");
-                return;
-              case "suspend_sequencing":
-                applySessionSnapshot(await uiSession.suspendSequencing(), "suspend_sequencing");
-                return;
-              case "undo":
-                applySessionSnapshot(await uiSession.undoFlightPlanEdit(), "undo_flight_plan_edit");
-                return;
-              case "unsuspend_sequencing":
-                applySessionSnapshot(await uiSession.unsuspendSequencing(), "unsuspend_sequencing");
-                return;
-              default: {
-                const exhaustive: never = controlId;
-                throw new Error(`Unsupported flight plan control: ${exhaustive}`);
-              }
-            }
+            applySessionSnapshot(
+              await uiSession.performFlightPlanControl(controlId),
+              "flight_plan_control",
+            );
           }}
           onPerformFlightPlanRowAction={async (rowUid, actionUid) => {
             if (!uiSession) return;

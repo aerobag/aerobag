@@ -11,6 +11,11 @@ export type {
   WaypointIdentifierSuggestion,
   WaypointSuggestionNavRef,
 } from "../generated/navQueryWire";
+import type { FlightPlanControlUiView } from "../generated/sessionPageWire";
+export type {
+  FlightPlanControlId,
+  FlightPlanControlUiView,
+} from "../generated/sessionPageWire";
 
 export type ChartFamilyId =
   | "none"
@@ -209,23 +214,6 @@ export type GuidanceUiView = {
   nav_element: NavElementUiView;
   direct_to: DirectToUiView | null;
   suspend_boundary_after_active_leg: boolean;
-};
-
-export type FlightPlanControlId =
-  | "activate_next_leg"
-  | "redo"
-  | "restore_direct_to"
-  | "sequence_active_leg"
-  | "stop_navigation"
-  | "suspend_sequencing"
-  | "undo"
-  | "unsuspend_sequencing";
-
-export type FlightPlanControlUiView = {
-  id: FlightPlanControlId;
-  label: string;
-  enabled: boolean;
-  disabled_reason?: string | null;
 };
 
 export type NavElementUiView = {

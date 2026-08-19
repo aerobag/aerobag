@@ -38,6 +38,8 @@ fn cloud_schema() -> Value {
 fn session_schema() -> Value {
     let mut root = schema::<session::UiSessionPageContracts>();
     add_definition::<session::FlightEstimateKind>(&mut root, "FlightEstimateKind");
+    add_definition::<session::FlightPlanControlId>(&mut root, "FlightPlanControlId");
+    add_definition::<session::FlightPlanControlUiView>(&mut root, "FlightPlanControlUiView");
     add_definition::<session::FlightDataColumn>(&mut root, "FlightDataColumn");
     add_definition::<session::FlightDataBannerModel>(&mut root, "FlightDataBannerModel");
     add_definition::<session::MapLayerId>(&mut root, "MapLayerId");
@@ -162,6 +164,8 @@ fn main() {
                 "UiNavigationPageId",
                 "UiNavigationPageOption",
                 "UiNavigationPageState",
+                "FlightPlanControlId",
+                "FlightPlanControlUiView",
                 "FlightDataCellTone",
                 "FlightEstimateKind",
                 "FlightDataCell",

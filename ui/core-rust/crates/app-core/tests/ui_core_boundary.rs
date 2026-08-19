@@ -1220,11 +1220,7 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
         "selectProcedureAtFlightPlanRow",
         "loadPlateProcedure",
         "performFlightPlanRowAction",
-        "activateNextLeg",
-        "stopNavigation",
-        "suspendSequencing",
-        "unsuspendSequencing",
-        "sequenceActiveLeg",
+        "performFlightPlanControl",
     ] {
         let body = balanced_block_after_marker(&web, &format!("{method}: async"));
         if body.contains("syncGuidanceGeometry") {
@@ -1242,11 +1238,7 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
         "selectProcedureAtFlightPlanRow",
         "loadPlateProcedure",
         "performFlightPlanRowAction",
-        "activateNextLeg",
-        "stopNavigation",
-        "suspendSequencing",
-        "unsuspendSequencing",
-        "sequenceActiveLeg",
+        "performFlightPlanControl",
     ] {
         let body = balanced_block_after_marker(&android, &format!("fun {method}"));
         if body.contains("syncGuidanceGeometry") {
@@ -1438,6 +1430,33 @@ fn flight_plan_platform_boundary_is_uid_based_and_singular() {
             !source.contains("\"component_index\"") && !source.contains("\"leg_index\""),
             "{platform} must not construct index-addressed flight-plan commands"
         );
+        assert!(
+            source.contains("performFlightPlanControl") && source.contains("perform_control"),
+            "{platform} must send core-owned flight-plan controls through one generic command"
+        );
+        for legacy in [
+            "fun activateNextLeg",
+            "fun redoFlightPlanEdit",
+            "fun restoreDirectTo",
+            "fun sequenceActiveLeg",
+            "fun stopNavigation",
+            "fun suspendSequencing",
+            "fun undoFlightPlanEdit",
+            "fun unsuspendSequencing",
+            "activateNextLeg: async",
+            "redoFlightPlanEdit: async",
+            "restoreDirectTo: async",
+            "sequenceActiveLeg: async",
+            "stopNavigation: async",
+            "suspendSequencing: async",
+            "undoFlightPlanEdit: async",
+            "unsuspendSequencing: async",
+        ] {
+            assert!(
+                !source.contains(legacy),
+                "{platform} retains platform-specific flight-plan control method {legacy}"
+            );
+        }
     }
 
     for kind in [
@@ -1446,13 +1465,8 @@ fn flight_plan_platform_boundary_is_uid_based_and_singular() {
         "insert_airway_at_row",
         "select_procedure_at_row",
         "load_plate_procedure",
-        "restore_direct_to",
+        "perform_control",
         "perform_row_action",
-        "activate_next_leg",
-        "stop_navigation",
-        "suspend_sequencing",
-        "unsuspend_sequencing",
-        "sequence_active_leg",
         "chart_page_state",
         "suggest_waypoint_identifiers_at_row",
         "preview_entry",
@@ -1483,6 +1497,21 @@ fn flight_plan_platform_boundary_is_uid_based_and_singular() {
             && !android_models.contains("data class FlightPlan(")
             && !android_wire.contains("data class WireFlightPlan("),
         "platform models must not mirror core's authoritative FlightPlan"
+    );
+    assert!(
+        session.contains("fn perform_flight_plan_control_in_session")
+            && session.contains("FlightPlanSessionCommand::PerformControl"),
+        "core must own flight-plan control dispatch"
+    );
+    assert!(
+        !web_types.contains("export type FlightPlanControlId =")
+            && !android_models.contains("enum class FlightPlanControlId")
+            && !android_wire.contains("enum class WireFlightPlanControlId"),
+        "platforms must consume the generated flight-plan control contract"
+    );
+    assert!(
+        !android_plan.contains("when (controlId)") && !android_plan.contains(".coreId()"),
+        "Android must not reconstruct flight-plan control dispatch or wire IDs"
     );
     assert!(
         session.contains("#[cfg_attr(not(test), serde(skip))]\n    pub app_state: AppState"),
@@ -1587,6 +1616,7 @@ fn production_session_snapshot_wire_omits_authoritative_flight_plan_state() {
 
 #[test]
 fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
+    let planning = read_repo_file("ui/core-rust/crates/app-core/src/planning.rs");
     let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let cloud = read_repo_file("ui/core-rust/crates/app-core/src/cloud.rs");
     let data_status = read_repo_file("ui/core-rust/crates/app-core/src/data_status.rs");
@@ -1652,6 +1682,14 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
             ],
         ),
         (
+            "app-core planning",
+            planning.as_str(),
+            vec![
+                "pub enum FlightPlanControlId",
+                "pub struct FlightPlanControlUiView",
+            ],
+        ),
+        (
             "app-core nav query",
             navdb_types.as_str(),
             vec!["pub struct WaypointIdentifierSuggestion"],
@@ -1677,12 +1715,18 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
                 "data class WireFlightDataColumn",
                 "data class WireWaypointIdentifierSuggestion",
                 "data class WireNavSymbolFeature",
+                "enum class WireFlightPlanControlId",
+                "data class WireFlightPlanControlUiView",
             ],
         ),
         (
             "Android domain models",
             android_models.as_str(),
-            vec!["data class WaypointIdentifierSuggestion"],
+            vec![
+                "data class WaypointIdentifierSuggestion",
+                "enum class FlightPlanControlId",
+                "data class FlightPlanControlUiView",
+            ],
         ),
         (
             "web adapter",
@@ -1705,6 +1749,8 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
                 "export type FlightEstimateKind =",
                 "export type WaypointIdentifierSuggestion =",
                 "export type NavSymbolFeature =",
+                "export type FlightPlanControlId =",
+                "export type FlightPlanControlUiView =",
             ],
         ),
         (

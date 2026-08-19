@@ -20,6 +20,15 @@ export type UiNavigationPageState = {
   options: UiNavigationPageOption[];
 };
 
+export type FlightPlanControlId = "activate_next_leg" | "redo" | "restore_direct_to" | "sequence_active_leg" | "stop_navigation" | "suspend_sequencing" | "undo" | "unsuspend_sequencing";
+
+export type FlightPlanControlUiView = {
+  disabled_reason?: string | null;
+  enabled: boolean;
+  id: FlightPlanControlId;
+  label: string;
+};
+
 export type FlightDataCellTone = "planned" | "passed" | "active";
 
 export type FlightEstimateKind = "basic" | "modeled";

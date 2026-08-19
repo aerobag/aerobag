@@ -393,23 +393,8 @@ internal fun FlightPlanPage(
     val planControls = projectedPlanUiState.controls
     val altitudePlanner = projectedPlanUiState.altitudePlanner
     fun performFlightPlanControl(controlId: FlightPlanControlId) {
-        when (controlId) {
-            FlightPlanControlId.ActivateNextLeg ->
-                applySessionCommand("activateNextLeg") { uiSession.activateNextLeg() }
-            FlightPlanControlId.Redo ->
-                applySessionCommand("redoFlightPlanEdit") { uiSession.redoFlightPlanEdit() }
-            FlightPlanControlId.RestoreDirectTo ->
-                applySessionCommand("restoreDirectTo") { uiSession.restoreDirectTo() }
-            FlightPlanControlId.SequenceActiveLeg ->
-                applySessionCommand("sequenceActiveLeg") { uiSession.sequenceActiveLeg() }
-            FlightPlanControlId.StopNavigation ->
-                applySessionCommand("stopNavigation") { uiSession.stopNavigation() }
-            FlightPlanControlId.SuspendSequencing ->
-                applySessionCommand("suspendSequencing") { uiSession.suspendSequencing() }
-            FlightPlanControlId.Undo ->
-                applySessionCommand("undoFlightPlanEdit") { uiSession.undoFlightPlanEdit() }
-            FlightPlanControlId.UnsuspendSequencing ->
-                applySessionCommand("unsuspendSequencing") { uiSession.unsuspendSequencing() }
+        applySessionCommand("performFlightPlanControl") {
+            uiSession.performFlightPlanControl(controlId)
         }
     }
     val rows = remember(projectedPlanUiState.displayRows) {
@@ -956,7 +941,7 @@ internal fun FlightPlanPage(
                         modifier = Modifier.size(ThumbSize),
                         maxLines = 2,
                         enabled = control.enabled,
-                        testTag = "parity:plan-control:${control.id.coreId()}",
+                        testTag = "parity:plan-control:${control.id.name}",
                         onDisabledClick = control.disabledReason?.let { reason ->
                             { showDisabledActionToast(context, reason) }
                         },
@@ -1505,17 +1490,6 @@ private fun procedureChoiceLabel(
         runwayTransition != null -> "from $runwayTransition"
         else -> "Published route"
     }
-}
-
-private fun FlightPlanControlId.coreId() = when (this) {
-    FlightPlanControlId.ActivateNextLeg -> "activate_next_leg"
-    FlightPlanControlId.Redo -> "redo"
-    FlightPlanControlId.RestoreDirectTo -> "restore_direct_to"
-    FlightPlanControlId.SequenceActiveLeg -> "sequence_active_leg"
-    FlightPlanControlId.StopNavigation -> "stop_navigation"
-    FlightPlanControlId.SuspendSequencing -> "suspend_sequencing"
-    FlightPlanControlId.Undo -> "undo"
-    FlightPlanControlId.UnsuspendSequencing -> "unsuspend_sequencing"
 }
 
 internal fun routeEntryVisualTransformation(

@@ -822,8 +822,7 @@ export interface UiSession {
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   describePlateProcedureLoads(plateId: string): Promise<ProcedureLoadMenu>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
-  redoFlightPlanEdit(): Promise<UiSessionSnapshot>;
-  restoreDirectTo(): Promise<UiSessionSnapshot>;
+  performFlightPlanControl(controlId: import("./types").FlightPlanControlId): Promise<UiSessionSnapshot>;
   flightPlanRowActionDecision(rowUid: string, actionUid: string): Promise<FlightPlanRowActionDecision>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
   altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
@@ -835,12 +834,6 @@ export interface UiSession {
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   mapSelectionActionDecision(actionUid: string): Promise<MapSelectionActionDecision>;
   performMapSelectionUiAction(actionUid: string): Promise<UiSessionSnapshot>;
-  activateNextLeg(): Promise<UiSessionSnapshot>;
-  stopNavigation(): Promise<UiSessionSnapshot>;
-  suspendSequencing(): Promise<UiSessionSnapshot>;
-  undoFlightPlanEdit(): Promise<UiSessionSnapshot>;
-  unsuspendSequencing(): Promise<UiSessionSnapshot>;
-  sequenceActiveLeg(): Promise<UiSessionSnapshot>;
   setSituation(situation: Situation): Promise<UiSessionSnapshot>;
   tickBadAutopilot(nowEpochMs: number): Promise<UiSessionSnapshot>;
   loadPlaybackTrace(sourcePath: string, traceJson: string): Promise<UiSessionSnapshot>;
@@ -1736,11 +1729,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       loadPlateProcedure: async (loadId) => {
         return performFlightPlanCommand({ kind: "load_plate_procedure", load_id: loadId });
       },
-      redoFlightPlanEdit: async () => {
-        return performFlightPlanCommand({ kind: "redo" });
-      },
-      restoreDirectTo: async () => {
-        return performFlightPlanCommand({ kind: "restore_direct_to" });
+      performFlightPlanControl: async (controlId) => {
+        return performFlightPlanCommand({
+          kind: "perform_control",
+          control_id: controlId,
+        });
       },
       flightPlanRowActionDecision: async (rowUid, actionUid) =>
         JSON.parse(
@@ -1790,24 +1783,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_status_action_in_session(handle, actionId),
         );
         return snapshot;
-      },
-      activateNextLeg: async () => {
-        return performFlightPlanCommand({ kind: "activate_next_leg" });
-      },
-      stopNavigation: async () => {
-        return performFlightPlanCommand({ kind: "stop_navigation" });
-      },
-      suspendSequencing: async () => {
-        return performFlightPlanCommand({ kind: "suspend_sequencing" });
-      },
-      undoFlightPlanEdit: async () => {
-        return performFlightPlanCommand({ kind: "undo" });
-      },
-      unsuspendSequencing: async () => {
-        return performFlightPlanCommand({ kind: "unsuspend_sequencing" });
-      },
-      sequenceActiveLeg: async () => {
-        return performFlightPlanCommand({ kind: "sequence_active_leg" });
       },
       setSituation: async (situation) => {
         snapshot = await runSessionMutation(() =>

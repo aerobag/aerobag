@@ -1108,40 +1108,8 @@ data class WireGuidanceUiView(
     val suspend_boundary_after_active_leg: Boolean = false,
 )
 
-@Serializable
-enum class WireFlightPlanControlId {
-    @SerialName("activate_next_leg")
-    ActivateNextLeg,
-
-    @SerialName("redo")
-    Redo,
-
-    @SerialName("restore_direct_to")
-    RestoreDirectTo,
-
-    @SerialName("sequence_active_leg")
-    SequenceActiveLeg,
-
-    @SerialName("stop_navigation")
-    StopNavigation,
-
-    @SerialName("suspend_sequencing")
-    SuspendSequencing,
-
-    @SerialName("undo")
-    Undo,
-
-    @SerialName("unsuspend_sequencing")
-    UnsuspendSequencing,
-}
-
-@Serializable
-data class WireFlightPlanControlUiView(
-    val id: WireFlightPlanControlId,
-    val label: String,
-    val enabled: Boolean,
-    val disabled_reason: String? = null,
-)
+typealias WireFlightPlanControlId = org.aerobag.app.generated.FlightPlanControlId
+typealias WireFlightPlanControlUiView = org.aerobag.app.generated.FlightPlanControlUiView
 
 @Serializable
 data class WireNavElementUiView(

@@ -3886,8 +3886,9 @@ pub enum FlightPlanSessionCommand {
     LoadPlateProcedure {
         load_id: String,
     },
-    Redo,
-    RestoreDirectTo,
+    PerformControl {
+        control_id: crate::FlightPlanControlId,
+    },
     PerformRowAction {
         row_uid: String,
         action_uid: String,
@@ -3899,12 +3900,6 @@ pub enum FlightPlanSessionCommand {
         field: crate::AltitudePlannerDepartureInputField,
         input: String,
     },
-    ActivateNextLeg,
-    StopNavigation,
-    SuspendSequencing,
-    Undo,
-    UnsuspendSequencing,
-    SequenceActiveLeg,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3975,8 +3970,9 @@ pub fn perform_flight_plan_command_in_session(
         FlightPlanSessionCommand::LoadPlateProcedure { load_id } => {
             load_plate_procedure_in_session(handle, load_id)
         }
-        FlightPlanSessionCommand::Redo => redo_flight_plan_edit_in_session(handle),
-        FlightPlanSessionCommand::RestoreDirectTo => restore_direct_to_in_session(handle),
+        FlightPlanSessionCommand::PerformControl { control_id } => {
+            perform_flight_plan_control_in_session(handle, control_id)
+        }
         FlightPlanSessionCommand::PerformRowAction {
             row_uid,
             action_uid,
@@ -3987,12 +3983,22 @@ pub fn perform_flight_plan_command_in_session(
         FlightPlanSessionCommand::SetAltitudePlannerDepartureInput { field, input } => {
             set_altitude_planner_departure_input_in_session(handle, field, input)
         }
-        FlightPlanSessionCommand::ActivateNextLeg => activate_next_leg_in_session(handle),
-        FlightPlanSessionCommand::StopNavigation => stop_navigation_in_session(handle),
-        FlightPlanSessionCommand::SuspendSequencing => suspend_sequencing_in_session(handle),
-        FlightPlanSessionCommand::Undo => undo_flight_plan_edit_in_session(handle),
-        FlightPlanSessionCommand::UnsuspendSequencing => unsuspend_sequencing_in_session(handle),
-        FlightPlanSessionCommand::SequenceActiveLeg => sequence_active_leg_in_session(handle),
+    }
+}
+
+fn perform_flight_plan_control_in_session(
+    handle: u32,
+    control_id: crate::FlightPlanControlId,
+) -> AppResult<HadOperationOutcome> {
+    match control_id {
+        crate::FlightPlanControlId::ActivateNextLeg => activate_next_leg_in_session(handle),
+        crate::FlightPlanControlId::Redo => redo_flight_plan_edit_in_session(handle),
+        crate::FlightPlanControlId::RestoreDirectTo => restore_direct_to_in_session(handle),
+        crate::FlightPlanControlId::SequenceActiveLeg => sequence_active_leg_in_session(handle),
+        crate::FlightPlanControlId::StopNavigation => stop_navigation_in_session(handle),
+        crate::FlightPlanControlId::SuspendSequencing => suspend_sequencing_in_session(handle),
+        crate::FlightPlanControlId::Undo => undo_flight_plan_edit_in_session(handle),
+        crate::FlightPlanControlId::UnsuspendSequencing => unsuspend_sequencing_in_session(handle),
     }
 }
 
@@ -29474,8 +29480,14 @@ mod tests {
         edited.name = "edited".to_string();
         replace_flight_plan_in_session(init.handle, edited).expect("definition edit");
 
-        perform_flight_plan_command_in_session(init.handle, FlightPlanSessionCommand::Undo, 1_000)
-            .expect("undo command");
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformControl {
+                control_id: crate::FlightPlanControlId::Undo,
+            },
+            1_000,
+        )
+        .expect("undo command");
         let undone = get_session_snapshot(init.handle).expect("undone snapshot");
         assert_eq!(
             undone
@@ -29495,8 +29507,14 @@ mod tests {
             .iter()
             .any(|control| control.id == crate::FlightPlanControlId::Redo && control.enabled));
 
-        perform_flight_plan_command_in_session(init.handle, FlightPlanSessionCommand::Redo, 2_000)
-            .expect("redo command");
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformControl {
+                control_id: crate::FlightPlanControlId::Redo,
+            },
+            2_000,
+        )
+        .expect("redo command");
         let redone = get_session_snapshot(init.handle).expect("redone snapshot");
         assert_eq!(
             redone

@@ -138,6 +138,13 @@ contracts, leaving a large manually mirrored remainder.
 
 ### 4. Flight-plan global controls require platform switches
 
+Resolution: implemented. The control ID and view are generated UI-contract
+types. Both platforms now submit the selected core-projected control through a
+single `perform_control` command, and core owns the dispatch to the matching
+mutation. The Android wire-ID mapper and both platform control switches are
+gone; web undo/redo shortcuts resolve the displayed enabled control and use the
+same endpoint as the buttons.
+
 Core projects control IDs, labels, availability, and disabled reasons, but each
 platform maps every ID to a particular core method:
 

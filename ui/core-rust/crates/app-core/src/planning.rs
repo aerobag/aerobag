@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use serde::{Deserialize, Serialize};
+
+pub use app_ui_contracts::session::{FlightPlanControlId, FlightPlanControlUiView};
 use std::collections::BTreeMap;
 
 use crate::errors::{AppError, AppErrorKind, AppResult};
@@ -987,28 +989,6 @@ pub struct FlightPlanUiState {
     #[serde(default)]
     pub altitude_planner: AltitudePlannerUiView,
     pub guidance: Option<GuidanceUiView>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FlightPlanControlId {
-    ActivateNextLeg,
-    Redo,
-    RestoreDirectTo,
-    SequenceActiveLeg,
-    StopNavigation,
-    SuspendSequencing,
-    Undo,
-    UnsuspendSequencing,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightPlanControlUiView {
-    pub id: FlightPlanControlId,
-    pub label: String,
-    pub enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

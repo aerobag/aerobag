@@ -1331,17 +1331,13 @@ class NativeUiSession internal constructor(
         return json.decodeFromJsonElement<WireAirwayPresentationPlan>(result).toUi()
     }
 
-    fun restoreDirectTo(): UiSessionSnapshot {
+    fun performFlightPlanControl(controlId: FlightPlanControlId): UiSessionSnapshot {
         return performFlightPlanCommand(
-            "restoreDirectTo",
-            buildJsonObject { put("kind", "restore_direct_to") },
-        )
-    }
-
-    fun redoFlightPlanEdit(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "redoFlightPlanEdit",
-            buildJsonObject { put("kind", "redo") },
+            "performFlightPlanControl",
+            buildJsonObject {
+                put("kind", "perform_control")
+                put("control_id", json.encodeToJsonElement(controlId))
+            },
         )
     }
 
@@ -1804,48 +1800,6 @@ class NativeUiSession internal constructor(
             handle,
             json.encodeToString(event),
             nowEpochMs,
-        )
-    }
-
-    fun activateNextLeg(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "activateNextLeg",
-            buildJsonObject { put("kind", "activate_next_leg") },
-        )
-    }
-
-    fun stopNavigation(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "stopNavigation",
-            buildJsonObject { put("kind", "stop_navigation") },
-        )
-    }
-
-    fun suspendSequencing(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "suspendSequencing",
-            buildJsonObject { put("kind", "suspend_sequencing") },
-        )
-    }
-
-    fun undoFlightPlanEdit(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "undoFlightPlanEdit",
-            buildJsonObject { put("kind", "undo") },
-        )
-    }
-
-    fun unsuspendSequencing(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "unsuspendSequencing",
-            buildJsonObject { put("kind", "unsuspend_sequencing") },
-        )
-    }
-
-    fun sequenceActiveLeg(): UiSessionSnapshot {
-        return performFlightPlanCommand(
-            "sequenceActiveLeg",
-            buildJsonObject { put("kind", "sequence_active_leg") },
         )
     }
 
@@ -3918,41 +3872,9 @@ private fun DirectToUiView.toWire() = WireDirectToUiView(
     on_plan_target = onPlanTarget,
 )
 
-private fun WireFlightPlanControlId.toUi() = when (this) {
-    WireFlightPlanControlId.ActivateNextLeg -> FlightPlanControlId.ActivateNextLeg
-    WireFlightPlanControlId.Redo -> FlightPlanControlId.Redo
-    WireFlightPlanControlId.RestoreDirectTo -> FlightPlanControlId.RestoreDirectTo
-    WireFlightPlanControlId.SequenceActiveLeg -> FlightPlanControlId.SequenceActiveLeg
-    WireFlightPlanControlId.StopNavigation -> FlightPlanControlId.StopNavigation
-    WireFlightPlanControlId.SuspendSequencing -> FlightPlanControlId.SuspendSequencing
-    WireFlightPlanControlId.Undo -> FlightPlanControlId.Undo
-    WireFlightPlanControlId.UnsuspendSequencing -> FlightPlanControlId.UnsuspendSequencing
-}
+private fun WireFlightPlanControlUiView.toUi(): FlightPlanControlUiView = this
 
-private fun FlightPlanControlId.toWire() = when (this) {
-    FlightPlanControlId.ActivateNextLeg -> WireFlightPlanControlId.ActivateNextLeg
-    FlightPlanControlId.Redo -> WireFlightPlanControlId.Redo
-    FlightPlanControlId.RestoreDirectTo -> WireFlightPlanControlId.RestoreDirectTo
-    FlightPlanControlId.SequenceActiveLeg -> WireFlightPlanControlId.SequenceActiveLeg
-    FlightPlanControlId.StopNavigation -> WireFlightPlanControlId.StopNavigation
-    FlightPlanControlId.SuspendSequencing -> WireFlightPlanControlId.SuspendSequencing
-    FlightPlanControlId.Undo -> WireFlightPlanControlId.Undo
-    FlightPlanControlId.UnsuspendSequencing -> WireFlightPlanControlId.UnsuspendSequencing
-}
-
-private fun WireFlightPlanControlUiView.toUi() = FlightPlanControlUiView(
-    id = id.toUi(),
-    label = label,
-    enabled = enabled,
-    disabledReason = disabled_reason,
-)
-
-private fun FlightPlanControlUiView.toWire() = WireFlightPlanControlUiView(
-    id = id.toWire(),
-    label = label,
-    enabled = enabled,
-    disabled_reason = disabledReason,
-)
+private fun FlightPlanControlUiView.toWire(): WireFlightPlanControlUiView = this
 
 private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     sequencingMode = sequencing_mode.toUi(),

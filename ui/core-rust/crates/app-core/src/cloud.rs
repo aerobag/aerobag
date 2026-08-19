@@ -508,6 +508,12 @@ impl CloudEngine {
             persistent.records.deferred_adoption.clear();
             persistent.force_poll = persistent.account.is_some();
         }
+        if let Some(CloudWorkflow::AcsReadPage { purpose, .. }) = persistent.workflow.as_ref() {
+            // A page is valid only for the root snapshot that named it. An app
+            // restart may outlive the server's retention of that old page, so
+            // resume read-only synchronization from the current root.
+            persistent.workflow = Some(CloudWorkflow::AcsReadRoot { purpose: *purpose });
+        }
         Self {
             persistent,
             provider_request_in_flight: None,
@@ -1160,7 +1166,11 @@ impl CloudEngine {
                 self.provider_request_in_flight = None;
                 self.linked_account_detail = None;
             }
-            CloudAction::SyncNow => self.persistent.force_poll = true,
+            CloudAction::SyncNow => {
+                self.persistent.force_poll = true;
+                self.persistent.next_retry_epoch_ms = None;
+                self.persistent.last_provider_failure = None;
+            }
         }
         Ok(())
     }
@@ -1221,6 +1231,11 @@ impl CloudEngine {
             || !self.provider_ready()
             || self
                 .persistent
+                .last_provider_failure
+                .as_ref()
+                .is_some_and(|failure| failure.kind != CloudProviderErrorKind::Transient)
+            || self
+                .persistent
                 .next_retry_epoch_ms
                 .is_some_and(|retry| retry > now_epoch_ms)
         {
@@ -1276,7 +1291,7 @@ impl CloudEngine {
             .take()
             .expect("provider request checked above");
         let response = crate::cloud_acs::parse_response(&request, response);
-        let provider = self.current_provider()?;
+        let provider = request.provider;
         if let CloudProviderResponse::Error {
             kind,
             detail,
@@ -1317,6 +1332,9 @@ impl CloudEngine {
             match kind {
                 CloudProviderErrorKind::Unauthorized | CloudProviderErrorKind::Permanent => {
                     self.persistent.next_retry_epoch_ms = None;
+                    self.acs_event_stream_plan = None;
+                    self.acs_event_stream_connected = false;
+                    self.acs_event_stream_next_retry_epoch_ms = None;
                 }
                 CloudProviderErrorKind::Transient => {
                     self.persistent.next_retry_epoch_ms =
@@ -1328,14 +1346,31 @@ impl CloudEngine {
 
         self.persistent.last_provider_failure = None;
         self.persistent.next_retry_epoch_ms = None;
-        let workflow = self
-            .persistent
-            .workflow
-            .clone()
-            .ok_or_else(|| cloud_error("cloud provider completed with no active workflow"))?;
-        let completion = self.advance_workflow(workflow, response, now_epoch_ms)?;
-        self.persistent.last_success_epoch_ms = Some(now_epoch_ms);
-        Ok(completion)
+        let Some(workflow) = self.persistent.workflow.clone() else {
+            return Ok(self.commit_provider_completion_failure(cloud_error(
+                "cloud provider completed with no active workflow",
+            )));
+        };
+        match self.advance_workflow(workflow, response, now_epoch_ms) {
+            Ok(completion) => {
+                self.persistent.last_success_epoch_ms = Some(now_epoch_ms);
+                Ok(completion)
+            }
+            Err(error) => Ok(self.commit_provider_completion_failure(error)),
+        }
+    }
+
+    fn commit_provider_completion_failure(&mut self, error: AppError) -> CloudCompletion {
+        self.persistent.workflow = None;
+        self.persistent.next_retry_epoch_ms = None;
+        self.persistent.last_provider_failure = Some(CloudProviderFailure {
+            kind: CloudProviderErrorKind::Permanent,
+            detail: error.message,
+        });
+        self.acs_event_stream_plan = None;
+        self.acs_event_stream_connected = false;
+        self.acs_event_stream_next_retry_epoch_ms = None;
+        CloudCompletion::default()
     }
 
     fn ensure_workflow(&mut self, now_epoch_ms: i64) -> AppResult<()> {
@@ -2251,7 +2286,7 @@ impl CloudEngine {
             "provider",
             CloudProviderKind::AerobagCloud.label(),
             UiCloudPanelState::Complete,
-            Some(&format!("Connected to {server}")),
+            Some(&format!("Configured for {server}")),
             Vec::new(),
             None,
         )
@@ -3074,6 +3109,32 @@ mod tests {
         engine
     }
 
+    fn read_page_workflow(purpose: ReadPurpose) -> CloudWorkflow {
+        let stale_page_id = "stale-page".to_string();
+        CloudWorkflow::AcsReadPage {
+            root: AcsRootSnapshot {
+                revision: 7,
+                root_hash: "stale-root-hash".to_string(),
+                value: AcsEncryptedValue::from_ciphertext(
+                    b"stale root",
+                    vec![stale_page_id.clone()],
+                ),
+                updated_at_epoch_ms: 1,
+            },
+            node: CloudNode {
+                version: CLOUD_NODE_VERSION,
+                generation: 7,
+                published_at_epoch_ms: Some(1),
+                parent_node_id: None,
+                parent_node_hash: None,
+                merkle_root_id: stale_page_id,
+                merkle_root_hash: "stale-page-hash".to_string(),
+                next_slot_id: "next-slot".to_string(),
+            },
+            purpose,
+        }
+    }
+
     fn create_account(
         engine: &mut CloudEngine,
         provider: &mut crate::cloud_acs_memory::InMemoryAcsProvider,
@@ -3165,7 +3226,13 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == CloudUiActionId::CreateAccount && action.enabled));
-        assert!(engine.page_state(1).provider_card.is_some());
+        assert_eq!(
+            engine
+                .page_state(1)
+                .provider_card
+                .and_then(|card| card.summary),
+            Some("Configured for https://cloud.example/cloud/".to_string())
+        );
 
         engine
             .perform_ui_action(CloudUiActionId::CreateAccount, &[], &initial, 1)
@@ -3393,5 +3460,95 @@ mod tests {
     fn unconfigured_engine_has_no_provider_work() {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
         assert!(engine.take_provider_request(0).unwrap().is_none());
+    }
+
+    #[test]
+    fn persisted_page_read_restarts_from_current_root() {
+        let mut persistent = CloudPersistentState {
+            workflow: Some(read_page_workflow(ReadPurpose::Poll)),
+            ..CloudPersistentState::default()
+        };
+
+        let engine = CloudEngine::new(persistent.clone());
+        assert_eq!(
+            engine.persistent.workflow,
+            Some(CloudWorkflow::AcsReadRoot {
+                purpose: ReadPurpose::Poll
+            })
+        );
+
+        persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
+            purpose: ReadPurpose::Link,
+        });
+        let engine = CloudEngine::new(persistent);
+        assert_eq!(
+            engine.persistent.workflow,
+            Some(CloudWorkflow::AcsReadRoot {
+                purpose: ReadPurpose::Link
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_provider_completion_commits_failed_status_and_stops_retrying() {
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut engine = configured_engine();
+        create_account(&mut engine, &mut provider, &plan(&["KRNT", "KPAE"]), 1_000);
+        engine.persistent.workflow = Some(read_page_workflow(ReadPurpose::Poll));
+
+        let request = engine.take_provider_request(2_000).unwrap().unwrap();
+        assert!(matches!(
+            engine
+                .provider_request_in_flight
+                .as_ref()
+                .map(|request| &request.operation),
+            Some(CloudProviderOperation::AcsReadObject { id }) if id == "stale-page"
+        ));
+        let completion = engine
+            .complete_provider_request(
+                request.request_id,
+                CloudHttpResponse::Completed {
+                    status_code: 404,
+                    body_base64: String::new(),
+                },
+                2_001,
+            )
+            .expect("invalid provider data must commit a cloud failure");
+
+        assert!(completion.changed_records.is_empty());
+        assert!(engine.provider_request_in_flight.is_none());
+        assert!(engine.persistent.workflow.is_none());
+        assert!(engine.acs_event_stream_plan.is_none());
+        assert_eq!(
+            engine.persistent.last_provider_failure,
+            Some(CloudProviderFailure {
+                kind: CloudProviderErrorKind::Permanent,
+                detail: "Aerobag Cloud state page stale-page is missing".to_string(),
+            })
+        );
+        let summary = engine.status_summary(2_001);
+        assert_eq!(summary.label, "FAILED");
+        assert_eq!(summary.severity, UiStatusSeverity::Caution);
+        assert_eq!(
+            summary.detail,
+            "Aerobag Cloud state page stale-page is missing"
+        );
+        let record = engine.status_record(2_001).expect("visible failure");
+        assert_eq!(record.value.as_deref(), Some("FAILED"));
+        assert_eq!(record.severity, UiStatusSeverity::Caution);
+        assert!(record.drives_caution);
+        assert!(engine.take_provider_request(3_000).unwrap().is_none());
+
+        engine
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        engine.take_provider_request(3_001).unwrap().unwrap();
+        assert!(matches!(
+            engine
+                .provider_request_in_flight
+                .as_ref()
+                .map(|request| &request.operation),
+            Some(CloudProviderOperation::AcsReadRoot)
+        ));
     }
 }

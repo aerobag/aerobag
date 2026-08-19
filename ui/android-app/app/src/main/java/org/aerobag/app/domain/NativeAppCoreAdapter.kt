@@ -220,21 +220,7 @@ data class AirspaceLimitGlyph(
     val colorKey: String,
 )
 
-data class NavSymbolFeature(
-    val kind: String,
-    val label: String,
-    val symbolKind: String,
-    val styleClass: String,
-    val obstacleVariant: String?,
-    val obstacleTone: String?,
-    val towered: Boolean,
-    val fuelAvailable: Boolean,
-    val hasPavedRunway: Boolean?,
-    val heliport: Boolean?,
-    val hasWaterRunway: Boolean?,
-    val runwayLengthRatio: Double,
-    val longestRunwayHeadingTrueDeg: Double?,
-)
+typealias NavSymbolFeature = org.aerobag.app.generated.NavSymbolFeature
 
 typealias MapLayerId = org.aerobag.app.generated.MapLayerId
 data class UiMapLayerToggleState(
@@ -459,7 +445,7 @@ data class ClientBuildInfo(
 
 private val NativeAppCoreJson = Json {
     encodeDefaults = true
-    ignoreUnknownKeys = true
+    ignoreUnknownKeys = false
 }
 
 private object NoopCoreSettingsStore : CoreSettingsStore {
@@ -628,7 +614,7 @@ class NativeAppCoreAdapter(
                 put("limit", limit)
             },
         )
-        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
+        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result)
     }
 
     fun listProcedures(airportId: String, kind: ProcedureKind): List<ProcedureSummary> {
@@ -1386,7 +1372,7 @@ class NativeUiSession internal constructor(
                 put("limit", limit)
             },
         )
-        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result).map { it.toUi() }
+        return json.decodeFromJsonElement<List<WireWaypointIdentifierSuggestion>>(result)
     }
 
     fun previewFlightPlanEntry(input: String): FlightPlanEntryPreview {
@@ -3795,51 +3781,15 @@ private fun AirportNotamUiView.toWire() = WireAirportNotamUiView(
     text = text,
 )
 
-private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
-    kind = kind,
-    label = label,
-    symbolKind = symbol_kind,
-    styleClass = style_class,
-    obstacleVariant = obstacle_variant,
-    obstacleTone = obstacle_tone,
-    towered = towered,
-    fuelAvailable = fuel_available,
-    hasPavedRunway = has_paved_runway,
-    heliport = heliport,
-    hasWaterRunway = has_water_runway,
-    runwayLengthRatio = runway_length_ratio,
-    longestRunwayHeadingTrueDeg = longest_runway_heading_true_deg,
-)
+private fun WireNavSymbolFeature.toUi(): NavSymbolFeature = this
 
-private fun NavSymbolFeature.toWire() = WireNavSymbolFeature(
-    kind = kind,
-    label = label,
-    symbol_kind = symbolKind,
-    style_class = styleClass,
-    obstacle_variant = obstacleVariant,
-    obstacle_tone = obstacleTone,
-    towered = towered,
-    fuel_available = fuelAvailable,
-    has_paved_runway = hasPavedRunway,
-    heliport = heliport,
-    has_water_runway = hasWaterRunway,
-    runway_length_ratio = runwayLengthRatio,
-    longest_runway_heading_true_deg = longestRunwayHeadingTrueDeg,
-)
+private fun NavSymbolFeature.toWire(): WireNavSymbolFeature = this
 
 private fun WireAirwaySuggestion.toUi() = AirwaySuggestion(
     airwayName = airway_name,
     nearestBranchKey = nearest_branch_key,
     nearestNavRef = nearest_nav_ref.toUi(),
     nearestSequence = nearest_sequence,
-    distanceFromAnchorNm = distance_from_anchor_nm,
-)
-
-private fun WireWaypointIdentifierSuggestion.toUi() = WaypointIdentifierSuggestion(
-    identifier = identifier,
-    navRef = nav_ref.toUi(),
-    kind = kind,
-    displayName = display_name,
     distanceFromAnchorNm = distance_from_anchor_nm,
 )
 

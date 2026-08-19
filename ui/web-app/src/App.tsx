@@ -34,6 +34,7 @@ import type {
   SituationSample,
   SituationRingCandidate,
   WaypointIdentifierSuggestion,
+  WaypointSuggestionNavRef,
   WeatherDetailUiView,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
@@ -1540,20 +1541,7 @@ const vorLabelY = -24;
 const fixLabelY = -15;
 const obstacleLabelY = -14;
 
-type VectorPointSymbolFeature = {
-  kind: string;
-  label: string;
-  symbol_kind: "airport" | "nav" | "obstacle" | "fix" | string;
-  style_class: string;
-  obstacle_variant?: "short" | "tall" | null;
-  obstacle_tone?: "danger" | "caution" | "muted" | null;
-  towered: boolean;
-  fuel_available: boolean;
-  has_paved_runway?: boolean | null;
-  heliport?: boolean | null;
-  has_water_runway?: boolean | null;
-  runway_length_ratio: number;
-  longest_runway_heading_true_deg: number | null;
+type VectorPointSymbolFeature = NavSymbolFeature & {
   label_style?: VectorIdentLabelStyle;
 };
 
@@ -2002,6 +1990,29 @@ function waypointSuggestionName(suggestion: WaypointIdentifierSuggestion): strin
 
 function waypointSuggestionDistance(suggestion: WaypointIdentifierSuggestion): string {
   return suggestion.distance_text;
+}
+
+function navRefFromWaypointSuggestion(navRef: WaypointSuggestionNavRef): NavRef {
+  switch (navRef.kind) {
+    case "airport": return { Airport: navRef.code };
+    case "navaid": return { Navaid: navRef.code };
+    case "arinc_navaid": return { ArincNavaid: {
+      identifier: navRef.identifier,
+      icao_code: navRef.icao_code,
+      section_code: navRef.section_code,
+      subsection_code: navRef.subsection_code,
+    } };
+    case "terminal_navaid": return { TerminalNavaid: {
+      airport_id: navRef.airport_id,
+      identifier: navRef.identifier,
+      icao_code: navRef.icao_code,
+      section_code: navRef.section_code,
+      subsection_code: navRef.subsection_code,
+    } };
+    case "fix": return { Fix: navRef.code };
+    case "lat_lon": return { LatLon: navRef.position };
+    case "spot": return { Spot: navRef.position };
+  }
 }
 
 function WaypointButtonContent(props: {
@@ -8101,7 +8112,7 @@ function MapPage(props: {
             onSubmit={submitChartSearch}
             onSelect={(suggestion) => {
               setChartSearch((current) => ({ ...current, loading: true, error: null }));
-              void inspectNavRef(suggestion.nav_ref)
+              void inspectNavRef(navRefFromWaypointSuggestion(suggestion.nav_ref))
                 .then(() => setChartSearch({ query: "", open: false, loading: false, error: null, suggestions: [] }))
                 .catch((error) => {
                   setChartSearch((current) => ({

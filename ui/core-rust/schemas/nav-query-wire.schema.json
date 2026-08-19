@@ -1,0 +1,293 @@
+{
+  "$defs": {
+    "NavSymbolFeature": {
+      "additionalProperties": false,
+      "properties": {
+        "fuel_available": {
+          "default": false,
+          "type": "boolean"
+        },
+        "has_paved_runway": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "has_water_runway": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "heliport": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "longest_runway_heading_true_deg": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "obstacle_tone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obstacle_variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runway_length_ratio": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        },
+        "style_class": {
+          "type": "string"
+        },
+        "symbol_kind": {
+          "type": "string"
+        },
+        "towered": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "label",
+        "symbol_kind",
+        "style_class"
+      ],
+      "type": "object"
+    },
+    "WaypointSuggestionNavRef": {
+      "oneOf": [
+        {
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "airport",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "navaid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "icao_code": {
+              "type": "string"
+            },
+            "identifier": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "arinc_navaid",
+              "type": "string"
+            },
+            "section_code": {
+              "type": "string"
+            },
+            "subsection_code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identifier",
+            "icao_code",
+            "section_code",
+            "subsection_code"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "airport_id": {
+              "type": "string"
+            },
+            "icao_code": {
+              "type": "string"
+            },
+            "identifier": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "terminal_navaid",
+              "type": "string"
+            },
+            "section_code": {
+              "type": "string"
+            },
+            "subsection_code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "airport_id",
+            "identifier",
+            "icao_code",
+            "section_code",
+            "subsection_code"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "fix",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "lat_lon",
+              "type": "string"
+            },
+            "position": {
+              "$ref": "#/$defs/WaypointSuggestionPosition"
+            }
+          },
+          "required": [
+            "kind",
+            "position"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "spot",
+              "type": "string"
+            },
+            "position": {
+              "$ref": "#/$defs/WaypointSuggestionPosition"
+            }
+          },
+          "required": [
+            "kind",
+            "position"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "kind"
+    },
+    "WaypointSuggestionPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "org.aerobag.ui-wire.nav-query",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Core-owned waypoint suggestion presentation contract.",
+  "properties": {
+    "display_name": {
+      "type": "string"
+    },
+    "distance_from_anchor_nm": {
+      "format": "double",
+      "type": "number"
+    },
+    "distance_text": {
+      "type": "string"
+    },
+    "identifier": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "nav_ref": {
+      "$ref": "#/$defs/WaypointSuggestionNavRef"
+    },
+    "symbol_feature": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NavSymbolFeature"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "identifier",
+    "nav_ref",
+    "kind",
+    "display_name",
+    "distance_from_anchor_nm",
+    "distance_text"
+  ],
+  "title": "WaypointIdentifierSuggestion",
+  "type": "object",
+  "x-contract-version": 7,
+  "x-export-order": [
+    "WaypointSuggestionPosition",
+    "WaypointSuggestionNavRef",
+    "NavSymbolFeature",
+    "WaypointIdentifierSuggestion"
+  ]
+}

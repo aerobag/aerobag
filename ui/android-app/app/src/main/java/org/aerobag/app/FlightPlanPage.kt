@@ -194,6 +194,7 @@ import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
+import org.aerobag.app.domain.toNavRef
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanControlId
@@ -1060,7 +1061,11 @@ internal fun FlightPlanPage(
                         },
                         onSuggestionClick = { suggestion ->
                             if (applySessionCommand("insertWaypointAtFlightPlanRow") {
-                                uiSession.insertWaypointAtFlightPlanRow(editor.rowUid, editor.before, suggestion.navRef)
+                                uiSession.insertWaypointAtFlightPlanRow(
+                                    editor.rowUid,
+                                    editor.before,
+                                    suggestion.navRef.toNavRef(),
+                                )
                             } != null) {
                                 closePanels()
                             }

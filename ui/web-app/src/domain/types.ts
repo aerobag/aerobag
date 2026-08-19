@@ -2,6 +2,16 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type {
+  NavSymbolFeature,
+} from "../generated/navQueryWire";
+
+export type {
+  NavSymbolFeature,
+  WaypointIdentifierSuggestion,
+  WaypointSuggestionNavRef,
+} from "../generated/navQueryWire";
+
 export type ChartFamilyId =
   | "none"
   | "sec"
@@ -67,16 +77,6 @@ export type AirwaySuggestion = {
   nearest_nav_ref: NavRef;
   nearest_sequence: number;
   distance_from_anchor_nm: number;
-};
-
-export type WaypointIdentifierSuggestion = {
-  identifier: string;
-  nav_ref: NavRef;
-  kind: string;
-  display_name: string;
-  distance_from_anchor_nm: number;
-  distance_text: string;
-  symbol_feature?: NavSymbolFeature | null;
 };
 
 export type AirwayPresentationPoint = {
@@ -378,22 +378,6 @@ export type FlightPlanDisplayRowUiView = {
 export type FlightPlanWeatherBadgeUiView = {
   flight_category: string;
   ceiling_amount: string;
-};
-
-export type NavSymbolFeature = {
-  kind: string;
-  label: string;
-  symbol_kind: "airport" | "nav" | "obstacle" | "fix" | string;
-  style_class: string;
-  obstacle_variant?: "short" | "tall" | null;
-  obstacle_tone?: "danger" | "caution" | "muted" | null;
-  towered: boolean;
-  fuel_available: boolean;
-  has_paved_runway?: boolean | null;
-  heliport?: boolean | null;
-  has_water_runway?: boolean | null;
-  runway_length_ratio: number;
-  longest_runway_heading_true_deg: number | null;
 };
 
 export type PlateProcedureLoadCandidateInput = {

@@ -106,6 +106,13 @@ This should also absorb two duplicated map-selection policies:
 
 ### 3. Android can silently discard new core UI fields
 
+Resolution: implemented for the identified drift and fenced against recurrence.
+Waypoint suggestions and navigation symbols now originate in a generated
+core-owned contract consumed by both platforms. Android now renders the shared
+symbol, core-formatted integer distance text, and the same friendly-name
+suppression as web; its permissive JSON decoder can no longer drop new fields
+from these DTOs silently.
+
 Core's waypoint suggestion includes `distance_text` and `symbol_feature`:
 `ui/core-rust/crates/app-core/src/navdb_types.rs:45`. Web carries both.
 Android's domain and wire copies contain neither:

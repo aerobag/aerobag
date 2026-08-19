@@ -3091,7 +3091,7 @@ fn suggest_waypoint_identifier_candidates(
         let distance_from_anchor_nm = flight_leg_distance_nm(anchor_position, position);
         return Ok(vec![WaypointIdentifierSuggestion {
             identifier: "SPOT".to_string(),
-            nav_ref: NavRef::Spot(position),
+            nav_ref: waypoint_suggestion_nav_ref(&NavRef::Spot(position)),
             kind: "spot".to_string(),
             display_name: crate::planning::format_spot_coordinates(position),
             distance_text: format!("{:.0}nm", distance_from_anchor_nm),
@@ -3239,7 +3239,7 @@ fn suggest_waypoint_identifier_candidates(
                 match_kind,
                 WaypointIdentifierSuggestion {
                     identifier: candidate.identifier,
-                    nav_ref,
+                    nav_ref: waypoint_suggestion_nav_ref(&nav_ref),
                     kind: candidate.kind,
                     display_name: candidate.display_name,
                     distance_text: format!("{:.0}nm", distance_from_anchor_nm),
@@ -3259,7 +3259,8 @@ fn suggest_waypoint_identifier_candidates(
             })
             .then_with(|| left.identifier.cmp(&right.identifier))
             .then_with(|| {
-                nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
+                waypoint_suggestion_nav_ref_kind_order(&left.nav_ref)
+                    .cmp(&waypoint_suggestion_nav_ref_kind_order(&right.nav_ref))
             })
     });
     suggestions.truncate(limit);
@@ -3267,6 +3268,69 @@ fn suggest_waypoint_identifier_candidates(
         .into_iter()
         .map(|(_, suggestion)| suggestion)
         .collect())
+}
+
+fn waypoint_suggestion_nav_ref(
+    nav_ref: &NavRef,
+) -> app_ui_contracts::nav_query::WaypointSuggestionNavRef {
+    use app_ui_contracts::nav_query::{
+        WaypointSuggestionNavRef as UiNavRef, WaypointSuggestionPosition,
+    };
+
+    let position = |position: &LatLon| WaypointSuggestionPosition {
+        lat: position.lat,
+        lon: position.lon,
+    };
+    match nav_ref {
+        NavRef::Airport(code) => UiNavRef::Airport { code: code.clone() },
+        NavRef::Navaid(code) => UiNavRef::Navaid { code: code.clone() },
+        NavRef::ArincNavaid {
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => UiNavRef::ArincNavaid {
+            identifier: identifier.clone(),
+            icao_code: icao_code.clone(),
+            section_code: section_code.clone(),
+            subsection_code: subsection_code.clone(),
+        },
+        NavRef::TerminalNavaid {
+            airport_id,
+            identifier,
+            icao_code,
+            section_code,
+            subsection_code,
+        } => UiNavRef::TerminalNavaid {
+            airport_id: airport_id.clone(),
+            identifier: identifier.clone(),
+            icao_code: icao_code.clone(),
+            section_code: section_code.clone(),
+            subsection_code: subsection_code.clone(),
+        },
+        NavRef::Fix(code) => UiNavRef::Fix { code: code.clone() },
+        NavRef::LatLon(value) => UiNavRef::LatLon {
+            position: position(value),
+        },
+        NavRef::Spot(value) => UiNavRef::Spot {
+            position: position(value),
+        },
+    }
+}
+
+fn waypoint_suggestion_nav_ref_kind_order(
+    nav_ref: &app_ui_contracts::nav_query::WaypointSuggestionNavRef,
+) -> usize {
+    use app_ui_contracts::nav_query::WaypointSuggestionNavRef;
+
+    match nav_ref {
+        WaypointSuggestionNavRef::Airport { .. } => 0,
+        WaypointSuggestionNavRef::Navaid { .. }
+        | WaypointSuggestionNavRef::ArincNavaid { .. }
+        | WaypointSuggestionNavRef::TerminalNavaid { .. } => 1,
+        WaypointSuggestionNavRef::Fix { .. } => 2,
+        WaypointSuggestionNavRef::LatLon { .. } | WaypointSuggestionNavRef::Spot { .. } => 3,
+    }
 }
 
 fn waypoint_search_record_nav_ref(record: &WaypointSearchRecord) -> Option<NavRef> {
@@ -3346,17 +3410,6 @@ fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -
         | NavRef::Fix(_)
         | NavRef::LatLon(_)
         | NavRef::Spot(_) => true,
-    }
-}
-
-fn nav_ref_kind_order(nav_ref: &NavRef) -> usize {
-    match nav_ref {
-        NavRef::Airport(_) => 0,
-        NavRef::Navaid(_) => 1,
-        NavRef::ArincNavaid { .. } => 1,
-        NavRef::TerminalNavaid { .. } => 1,
-        NavRef::Fix(_) => 2,
-        NavRef::LatLon(_) | NavRef::Spot(_) => 3,
     }
 }
 
@@ -8801,7 +8854,15 @@ mod tests {
         .expect("suggest decimal coordinates");
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].identifier, "SPOT");
-        assert_eq!(suggestions[0].nav_ref, NavRef::Spot(expected));
+        assert_eq!(
+            suggestions[0].nav_ref,
+            app_ui_contracts::nav_query::WaypointSuggestionNavRef::Spot {
+                position: app_ui_contracts::nav_query::WaypointSuggestionPosition {
+                    lat: expected.lat,
+                    lon: expected.lon,
+                },
+            }
+        );
         assert_eq!(suggestions[0].kind, "spot");
         assert_eq!(suggestions[0].display_name, "47.3000,-122.9000");
         assert!(suggestions[0].symbol_feature.is_none());

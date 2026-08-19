@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use app_ui_contracts::{cloud, home, nexrad, session, work};
+use app_ui_contracts::{cloud, home, nav_query, nexrad, session, work};
 
 fn assert_golden<T: serde::Serialize>(value: &T, golden: &str) {
     let actual = serde_json::to_value(value).expect("serialize wire value");
@@ -46,6 +46,38 @@ fn nexrad_query_wire_matches_golden() {
             animation: nexrad::NexradOverlayAnimation::idle(),
         },
         include_str!("goldens/nexrad-query.json"),
+    );
+}
+
+#[test]
+fn nav_query_suggestion_wire_matches_golden() {
+    assert_golden(
+        &nav_query::WaypointIdentifierSuggestion {
+            identifier: "KRNT".to_string(),
+            nav_ref: nav_query::WaypointSuggestionNavRef::Airport {
+                code: "KRNT".to_string(),
+            },
+            kind: "airport".to_string(),
+            display_name: "Renton Municipal Airport".to_string(),
+            distance_from_anchor_nm: 12.4,
+            distance_text: "12nm".to_string(),
+            symbol_feature: Some(nav_query::NavSymbolFeature {
+                kind: "airport".to_string(),
+                label: "KRNT".to_string(),
+                symbol_kind: "airport".to_string(),
+                style_class: "airport".to_string(),
+                obstacle_variant: None,
+                obstacle_tone: None,
+                towered: true,
+                fuel_available: true,
+                has_paved_runway: Some(true),
+                heliport: None,
+                has_water_runway: None,
+                runway_length_ratio: 0.8,
+                longest_runway_heading_true_deg: None,
+            }),
+        },
+        include_str!("goldens/nav-query-suggestion.json"),
     );
 }
 

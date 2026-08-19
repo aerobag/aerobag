@@ -25,6 +25,34 @@ sealed interface NavRef {
     data class Spot(val lat: Double, val lon: Double) : NavRef
 }
 
+typealias WaypointIdentifierSuggestion =
+    org.aerobag.app.generated.WaypointIdentifierSuggestion
+
+internal fun org.aerobag.app.generated.WaypointSuggestionNavRef.toNavRef(): NavRef =
+    when (this) {
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.Airport -> NavRef.Airport(code)
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.Navaid -> NavRef.Navaid(code)
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.ArincNavaid -> NavRef.ArincNavaid(
+            identifier = identifier,
+            icaoCode = icaoCode,
+            sectionCode = sectionCode,
+            subsectionCode = subsectionCode,
+        )
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.TerminalNavaid ->
+            NavRef.TerminalNavaid(
+                airportId = airportId,
+                identifier = identifier,
+                icaoCode = icaoCode,
+                sectionCode = sectionCode,
+                subsectionCode = subsectionCode,
+            )
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.Fix -> NavRef.Fix(code)
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.LatLon ->
+            NavRef.LatLon(position.lat, position.lon)
+        is org.aerobag.app.generated.WaypointSuggestionNavRef.Spot ->
+            NavRef.Spot(position.lat, position.lon)
+    }
+
 data class LatLonPoint(
     val lat: Double,
     val lon: Double,
@@ -41,14 +69,6 @@ data class AirwaySuggestion(
     val nearestBranchKey: String?,
     val nearestNavRef: NavRef,
     val nearestSequence: Int,
-    val distanceFromAnchorNm: Double,
-)
-
-data class WaypointIdentifierSuggestion(
-    val identifier: String,
-    val navRef: NavRef,
-    val kind: String,
-    val displayName: String,
     val distanceFromAnchorNm: Double,
 )
 

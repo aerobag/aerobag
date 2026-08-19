@@ -12,6 +12,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const nexradSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/nexrad-overlay-wire.schema.json");
 const cloudSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/cloud-wire.schema.json");
 const homePageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/home-page-wire.schema.json");
+const navQuerySchemaPath = path.join(repoRoot, "ui/core-rust/schemas/nav-query-wire.schema.json");
 const sessionPageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-page-wire.schema.json");
 const sessionUpdateSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-update-wire.schema.json");
 const sessionWorkSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-work-wire.schema.json");
@@ -49,6 +50,8 @@ const cloudWebOut =
   args.get("--cloud-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/cloudWire.ts");
 const homePageWebOut =
   args.get("--home-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/homePageWire.ts");
+const navQueryWebOut =
+  args.get("--nav-query-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/navQueryWire.ts");
 const sessionPageWebOut =
   args.get("--session-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionPageWire.ts");
 const sessionUpdateWebOut =
@@ -420,6 +423,10 @@ writeOrCheck(cloudWebOut, webSource());
 loadSchema(homePageSchemaPath);
 writeOrCheck(path.join(androidOut, "HomePageWire.kt"), androidSource());
 writeOrCheck(homePageWebOut, webSource());
+
+loadSchema(navQuerySchemaPath);
+writeOrCheck(path.join(androidOut, "NavQueryWire.kt"), androidSource());
+writeOrCheck(navQueryWebOut, webSource());
 
 loadSchema(sessionPageSchemaPath);
 writeOrCheck(path.join(androidOut, "SessionPageWire.kt"), androidSource());

@@ -4,7 +4,7 @@
 
 use std::{env, fs, path::PathBuf};
 
-use app_ui_contracts::{cloud, home, nexrad, session, work, UI_WIRE_CONTRACT_VERSION};
+use app_ui_contracts::{cloud, home, nav_query, nexrad, session, work, UI_WIRE_CONTRACT_VERSION};
 use schemars::{schema_for, JsonSchema};
 use serde_json::{json, Map, Value};
 
@@ -90,6 +90,19 @@ fn main() {
             export_order: &["UiHomeDestination", "UiHomePageButton", "UiHomePageState"],
             tagged_unions: &[],
             schema: schema::<home::UiHomePageState>,
+        },
+        ContractSchema {
+            filename: "nav-query-wire.schema.json",
+            id: "org.aerobag.ui-wire.nav-query",
+            description: "Core-owned waypoint suggestion presentation contract.",
+            export_order: &[
+                "WaypointSuggestionPosition",
+                "WaypointSuggestionNavRef",
+                "NavSymbolFeature",
+                "WaypointIdentifierSuggestion",
+            ],
+            tagged_unions: &[("WaypointSuggestionNavRef", "kind")],
+            schema: schema::<nav_query::WaypointIdentifierSuggestion>,
         },
         ContractSchema {
             filename: "nexrad-overlay-wire.schema.json",

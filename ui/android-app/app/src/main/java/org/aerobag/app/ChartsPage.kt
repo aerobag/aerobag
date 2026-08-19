@@ -1555,6 +1555,7 @@ internal fun AndroidChartSearchBox(
                         Text("No matches", style = MaterialTheme.typography.labelSmall, color = uiTheme.controls.panelMuted)
                     }
                     suggestions.forEach { suggestion ->
+                        val friendlyName = waypointSuggestionFriendlyName(suggestion)
                         Surface(
                             modifier =
                                 Modifier
@@ -1575,11 +1576,17 @@ internal fun AndroidChartSearchBox(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
+                                suggestion.symbolFeature?.let { feature ->
+                                    PlanWaypointSymbol(
+                                        feature = feature,
+                                        modifier = Modifier.size(ThumbSize * 0.62f),
+                                    )
+                                }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(suggestion.identifier, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.ExtraBold)
-                                    if (suggestion.displayName.isNotBlank()) {
+                                    if (friendlyName != null) {
                                         Text(
-                                            suggestion.displayName,
+                                            friendlyName,
                                             style = MaterialTheme.typography.labelSmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
@@ -1587,7 +1594,7 @@ internal fun AndroidChartSearchBox(
                                     }
                                 }
                                 Text(
-                                    "${suggestion.kind.uppercase()} ${"%.1f".format(suggestion.distanceFromAnchorNm)}nm",
+                                    suggestion.distanceText,
                                     style = MaterialTheme.typography.labelSmall,
                                 )
                             }
@@ -1596,6 +1603,17 @@ internal fun AndroidChartSearchBox(
                 }
             }
         }
+    }
+}
+
+internal fun waypointSuggestionFriendlyName(
+    suggestion: WaypointIdentifierSuggestion,
+): String? {
+    val displayName = suggestion.displayName.replace(Regex("\\s+"), " ").trim()
+    return displayName.takeUnless {
+        it.isEmpty() ||
+            it.equals(suggestion.kind, ignoreCase = true) ||
+            it.equals(suggestion.identifier, ignoreCase = true)
     }
 }
 

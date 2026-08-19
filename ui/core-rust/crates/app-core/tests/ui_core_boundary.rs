@@ -1591,6 +1591,7 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
     let cloud = read_repo_file("ui/core-rust/crates/app-core/src/cloud.rs");
     let data_status = read_repo_file("ui/core-rust/crates/app-core/src/data_status.rs");
     let flight_data = read_repo_file("ui/core-rust/crates/app-core/src/flight_data.rs");
+    let navdb_types = read_repo_file("ui/core-rust/crates/app-core/src/navdb_types.rs");
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let web_types = read_repo_file("ui/web-app/src/domain/types.ts");
     let web_work_runner = read_repo_file("ui/web-app/src/domain/uiSessionWorkRunner.ts");
@@ -1599,8 +1600,15 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
     );
     let android_wire =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
+    let android_models =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/Models.kt");
     let android_work_runner =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/UiSessionWorkRunner.kt");
+
+    assert!(
+        android.contains("ignoreUnknownKeys = false"),
+        "Android's core-session decoder must reject unmodeled fields instead of silently dropping them"
+    );
 
     for (source_name, source, declarations) in [
         (
@@ -1644,6 +1652,11 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
             ],
         ),
         (
+            "app-core nav query",
+            navdb_types.as_str(),
+            vec!["pub struct WaypointIdentifierSuggestion"],
+        ),
+        (
             "Android adapter",
             android.as_str(),
             vec![
@@ -1653,6 +1666,7 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
                 "private data class WireUiSettingsPageState",
                 "enum class MapLayerId",
                 "enum class DebugFlagId",
+                "data class NavSymbolFeature",
             ],
         ),
         (
@@ -1661,7 +1675,14 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
             vec![
                 "data class WireFlightDataCell",
                 "data class WireFlightDataColumn",
+                "data class WireWaypointIdentifierSuggestion",
+                "data class WireNavSymbolFeature",
             ],
+        ),
+        (
+            "Android domain models",
+            android_models.as_str(),
+            vec!["data class WaypointIdentifierSuggestion"],
         ),
         (
             "web adapter",
@@ -1682,6 +1703,8 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
                 "export type FlightDataCell =",
                 "export type FlightDataBannerModel =",
                 "export type FlightEstimateKind =",
+                "export type WaypointIdentifierSuggestion =",
+                "export type NavSymbolFeature =",
             ],
         ),
         (

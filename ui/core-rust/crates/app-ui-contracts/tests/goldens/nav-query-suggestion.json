@@ -1,0 +1,21 @@
+{
+  "display_name": "Renton Municipal Airport",
+  "distance_from_anchor_nm": 12.4,
+  "distance_text": "12nm",
+  "identifier": "KRNT",
+  "kind": "airport",
+  "nav_ref": {
+    "code": "KRNT",
+    "kind": "airport"
+  },
+  "symbol_feature": {
+    "fuel_available": true,
+    "has_paved_runway": true,
+    "kind": "airport",
+    "label": "KRNT",
+    "runway_length_ratio": 0.8,
+    "style_class": "airport",
+    "symbol_kind": "airport",
+    "towered": true
+  }
+}

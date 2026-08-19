@@ -15,6 +15,8 @@ use product_contracts::{
     ProcedureRendezvousKind,
 };
 use serde::{Deserialize, Serialize};
+
+pub use app_ui_contracts::nav_query::NavSymbolFeature;
 use serde_json::json;
 
 use crate::{
@@ -1280,32 +1282,6 @@ pub struct AirspaceLimitGlyph {
     pub lower: String,
     pub style_key: String,
     pub color_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NavSymbolFeature {
-    pub kind: String,
-    pub label: String,
-    pub symbol_kind: String,
-    pub style_class: String,
-    #[serde(default)]
-    pub obstacle_variant: Option<String>,
-    #[serde(default)]
-    pub obstacle_tone: Option<String>,
-    #[serde(default)]
-    pub towered: bool,
-    #[serde(default)]
-    pub fuel_available: bool,
-    #[serde(default)]
-    pub has_paved_runway: Option<bool>,
-    #[serde(default)]
-    pub heliport: Option<bool>,
-    #[serde(default)]
-    pub has_water_runway: Option<bool>,
-    #[serde(default)]
-    pub runway_length_ratio: f64,
-    #[serde(default)]
-    pub longest_runway_heading_true_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -5,8 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
-use crate::map_overlay::NavSymbolFeature;
 use crate::planning::{NavRef, ProcedureKind, ResolvedLeg};
+
+pub use app_ui_contracts::nav_query::WaypointIdentifierSuggestion;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AirwayFixPoint {
@@ -39,17 +40,6 @@ pub struct AirwaySuggestion {
     pub nearest_nav_ref: NavRef,
     pub nearest_sequence: i32,
     pub distance_from_anchor_nm: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WaypointIdentifierSuggestion {
-    pub identifier: String,
-    pub nav_ref: NavRef,
-    pub kind: String,
-    pub display_name: String,
-    pub distance_from_anchor_nm: f64,
-    pub distance_text: String,
-    pub symbol_feature: Option<NavSymbolFeature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -210,6 +210,7 @@ import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
+import org.aerobag.app.domain.toNavRef
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
@@ -3121,7 +3122,7 @@ internal fun MapExplorerPage(
             },
             onChartSearchFocus = { chartSearchOpen = true },
             onChartSearchSubmit = { submitChartSearch() },
-            onChartSearchSuggestionClick = { suggestion -> inspectNavRef(suggestion.navRef) },
+            onChartSearchSuggestionClick = { suggestion -> inspectNavRef(suggestion.navRef.toNavRef()) },
             centerHereEnabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
             centerHereSelected = mapFollowUiState.following,
             centerHereDisabledReason = mapFollowUiState.disabledReason,
@@ -5510,8 +5511,8 @@ internal fun AirportInsertPanel(
                 verticalArrangement = Arrangement.spacedBy(ThumbGap / 2f),
             ) {
                 state.suggestions.forEach { suggestion ->
-                    val detail = "${suggestion.kind.uppercase()} ${"%.1f".format(suggestion.distanceFromAnchorNm)}nm"
-                    val friendlyName = suggestion.displayName.takeIf { it.isNotBlank() }
+                    val detail = suggestion.distanceText
+                    val friendlyName = waypointSuggestionFriendlyName(suggestion)
                     MenuPanelRow(
                         label = if (friendlyName == null) {
                             "${suggestion.identifier}  $detail"

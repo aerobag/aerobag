@@ -4,6 +4,7 @@
 
 pub mod cloud;
 pub mod home;
+pub mod nav_query;
 pub mod nexrad;
 pub mod session;
 pub mod work;

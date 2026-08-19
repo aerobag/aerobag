@@ -531,22 +531,7 @@ data class WireVisibleMapFeature(
     val label_style: String = "default",
 )
 
-@Serializable
-data class WireNavSymbolFeature(
-    val kind: String,
-    val label: String,
-    val symbol_kind: String = "fix",
-    val style_class: String,
-    val obstacle_variant: String? = null,
-    val obstacle_tone: String? = null,
-    val towered: Boolean,
-    val fuel_available: Boolean,
-    val has_paved_runway: Boolean? = null,
-    val heliport: Boolean? = null,
-    val has_water_runway: Boolean? = null,
-    val runway_length_ratio: Double,
-    val longest_runway_heading_true_deg: Double? = null,
-)
+typealias WireNavSymbolFeature = org.aerobag.app.generated.NavSymbolFeature
 
 @Serializable
 data class WireMapOverlayQueryResult(
@@ -952,14 +937,8 @@ data class WireAirwaySuggestion(
     val distance_from_anchor_nm: Double,
 )
 
-@Serializable
-data class WireWaypointIdentifierSuggestion(
-    val identifier: String,
-    val nav_ref: WireNavRef,
-    val kind: String,
-    val display_name: String,
-    val distance_from_anchor_nm: Double,
-)
+typealias WireWaypointIdentifierSuggestion =
+    org.aerobag.app.generated.WaypointIdentifierSuggestion
 
 @Serializable
 data class WireAirwayPresentationPoint(

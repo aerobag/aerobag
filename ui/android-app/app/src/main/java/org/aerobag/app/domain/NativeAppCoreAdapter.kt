@@ -53,8 +53,11 @@ import org.aerobag.app.generated.UiSettingsPageState as WireUiSettingsPageState
 import org.aerobag.app.generated.UiSettingsSliderStop as WireUiSettingsSliderStop
 import org.aerobag.app.generated.UiSessionUpdateGroup
 import org.aerobag.app.generated.UiStatusAction as WireUiStatusAction
+import org.aerobag.app.generated.UiStatusActionDecision
 import org.aerobag.app.generated.UiStatusActionStyle as WireUiStatusActionStyle
 import org.aerobag.app.generated.UiStatusSeverity as WireUiStatusSeverity
+import org.aerobag.app.generated.UiSurfaceStatusControlId as WireUiSurfaceStatusControlId
+import org.aerobag.app.generated.UiSurfaceStatusState as WireUiSurfaceStatusState
 import org.aerobag.app.generated.UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION
 import java.time.ZoneId
 import java.util.concurrent.Executors
@@ -683,6 +686,9 @@ private fun landSessionUpdate(
             "flight_plan_route_revision" -> next.copy(
                 flightPlanRouteRevision = value.jsonPrimitive.content.toLong(),
             )
+            "notam_display_state_id" -> next.copy(
+                notamDisplayStateId = json.decodeFromJsonElement<String?>(value),
+            )
             "nav_data_epoch" -> next.copy(navDataEpoch = value.jsonPrimitive.content.toLong())
             "active_nav_db" -> next.copy(
                 activeNavDb = json.decodeFromJsonElement<WireUiNavDbIdentity?>(value)?.toUi(),
@@ -716,6 +722,9 @@ private fun landSessionUpdate(
             )
             "data_status_state" -> next.copy(
                 dataStatusState = json.decodeFromJsonElement<WireUiDataStatusState>(value).toUi(),
+            )
+            "map_status_controls" -> next.copy(
+                mapStatusControls = json.decodeFromJsonElement<WireUiSurfaceStatusState>(value).toUi(),
             )
             "data_status_page_state" -> next.copy(
                 dataStatusPageState = json.decodeFromJsonElement<WireUiDataStatusPageState>(value).toUi(),
@@ -1709,6 +1718,9 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun statusActionDecision(actionId: String): UiStatusActionDecision =
+        json.decodeFromString(bridge.statusActionDecisionInSessionJson(handle, actionId))
+
     fun performSettingsAction(actionId: String, valueId: String): UiSessionSnapshot {
         return runPagedSnapshot("performSettingsAction") {
             bridge.performSettingsActionInSessionJson(
@@ -2618,6 +2630,7 @@ private data class WireDerivedChartPageState(
     val selected_chart_id: String,
     val suggested_chart_ids: List<String> = emptyList(),
     val procedure_geometry_status: WireUiDataStatusState,
+    val status_controls: WireUiSurfaceStatusState,
 )
 
 @kotlinx.serialization.Serializable
@@ -2638,6 +2651,7 @@ private data class WireUiSessionSnapshot(
     val chart_page_state: WireUiChartPageState,
     val map_layer_state: WireUiMapLayerState,
     val data_status_state: WireUiDataStatusState,
+    val map_status_controls: WireUiSurfaceStatusState,
     val data_status_page_state: WireUiDataStatusPageState,
     val settings_page_state: WireUiSettingsPageState,
     val cloud_page_state: UiCloudPageState,
@@ -2855,6 +2869,7 @@ data class DerivedChartPageState(
     val selectedChartId: String,
     val suggestedChartIds: List<String>,
     val procedureGeometryStatus: UiDataStatusState,
+    val statusControls: UiSurfaceStatusState,
 )
 
 data class UiSessionSnapshot(
@@ -2873,6 +2888,7 @@ data class UiSessionSnapshot(
     val chartPageState: UiChartPageState,
     val mapLayerState: UiMapLayerState,
     val dataStatusState: UiDataStatusState,
+    val mapStatusControls: UiSurfaceStatusState,
     val dataStatusPageState: UiDataStatusPageState,
     val settingsPageState: UiSettingsPageState,
     val cloudPageState: UiCloudPageState,
@@ -2946,6 +2962,20 @@ data class UiDataStatusState(
     val boxes: List<UiDataStatusBox>,
     val launcherCount: String?,
     val launcherSeverity: UiStatusSeverity,
+)
+
+enum class UiSurfaceStatusControlId {
+    Global,
+    ProcedureGeometry,
+}
+
+data class UiSurfaceStatusControl(
+    val id: UiSurfaceStatusControlId,
+    val state: UiDataStatusState,
+)
+
+data class UiSurfaceStatusState(
+    val controls: List<UiSurfaceStatusControl>,
 )
 
 data class UiDataStatusPageFact(
@@ -3085,6 +3115,7 @@ private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     selectedChartId = selected_chart_id,
     suggestedChartIds = suggested_chart_ids,
     procedureGeometryStatus = procedure_geometry_status.toUi(),
+    statusControls = status_controls.toUi(),
 )
 
 private fun WireUiChartPageState.toUi() = UiChartPageState(
@@ -3154,6 +3185,18 @@ private fun WireUiDataStatusState.toUi() = UiDataStatusState(
     boxes = boxes.map { it.toUi() },
     launcherCount = launcherCount,
     launcherSeverity = launcherSeverity.toUi(),
+)
+
+private fun WireUiSurfaceStatusState.toUi() = UiSurfaceStatusState(
+    controls = controls.map { control ->
+        UiSurfaceStatusControl(
+            id = when (control.id) {
+                WireUiSurfaceStatusControlId.Global -> UiSurfaceStatusControlId.Global
+                WireUiSurfaceStatusControlId.ProcedureGeometry -> UiSurfaceStatusControlId.ProcedureGeometry
+            },
+            state = control.state.toUi(),
+        )
+    },
 )
 
 private fun WireUiDataStatusPageFact.toUi() = UiDataStatusPageFact(
@@ -3264,6 +3307,7 @@ private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
     chartPageState = chart_page_state.toUi(),
     mapLayerState = map_layer_state.toUi(),
     dataStatusState = data_status_state.toUi(),
+    mapStatusControls = map_status_controls.toUi(),
     dataStatusPageState = data_status_page_state.toUi(),
     settingsPageState = settings_page_state.toUi(),
     cloudPageState = cloud_page_state,

@@ -20,6 +20,7 @@ declare module "@generated/app_wasm.js" {
   export const perform_flight_plan_column_action_in_session: (...args: unknown[]) => string;
   export const query_flight_plan_in_session: (...args: unknown[]) => string;
   export const perform_status_action_in_session: (...args: unknown[]) => string;
+  export const status_action_decision_in_session: (...args: unknown[]) => string;
   export const perform_ownship_text_action_in_session: (...args: unknown[]) => string;
   export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;

@@ -36,6 +36,8 @@ pub struct DerivedChartPageState {
     #[serde(default)]
     pub suggested_chart_ids: Vec<String>,
     pub procedure_geometry_status: UiDataStatusState,
+    #[serde(default)]
+    pub status_controls: app_ui_contracts::session::UiSurfaceStatusState,
 }
 
 pub type DerivedChartCatalog = DerivedChartPage;
@@ -358,6 +360,7 @@ pub fn derive_chart_page_state_from_collections(
         selected_chart_id,
         suggested_chart_ids: suggested_chart_ids.to_vec(),
         procedure_geometry_status,
+        status_controls: Default::default(),
     }
 }
 

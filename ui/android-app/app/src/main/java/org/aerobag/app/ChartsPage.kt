@@ -256,7 +256,8 @@ import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
-import org.aerobag.app.domain.UiDataStatusState
+import org.aerobag.app.domain.UiSurfaceStatusControlId
+import org.aerobag.app.domain.UiSurfaceStatusState
 import org.aerobag.app.domain.UiStatusSeverity
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
@@ -369,8 +370,7 @@ internal fun ChartsPage(
     uiTheme: UiTheme,
     sessionRenderModel: SessionRenderModel,
     sessionRenderDiagnostics: SessionRenderDiagnostics,
-    dataStatusState: UiDataStatusState,
-    procedureGeometryStatus: UiDataStatusState,
+    statusControls: UiSurfaceStatusState,
     uiSession: NativeUiSession,
     sessionWorkRunner: UiSessionWorkRunner,
     navElement: NavElementUiView?,
@@ -403,8 +403,7 @@ internal fun ChartsPage(
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var loadTrayOpen by remember { mutableStateOf(false) }
-    var dataStatusTrayOpen by remember { mutableStateOf(false) }
-    var procedureWarningTrayOpen by remember { mutableStateOf(false) }
+    var openStatusControlId by remember { mutableStateOf<UiSurfaceStatusControlId?>(null) }
     var procedureNotamDetail by remember { mutableStateOf<PlateProcedureNotamDetail?>(null) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -470,8 +469,8 @@ internal fun ChartsPage(
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
-    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen ||
-        procedureWarningTrayOpen || situationTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen ||
+        openStatusControlId != null || situationTrayOpen
     val emptyProcedureLoadMenu = ProcedureLoadMenu(
         procedureKind = null,
         launcherLabel = "LOAD\nPROC",
@@ -816,38 +815,26 @@ internal fun ChartsPage(
                         airportTrayOpen = false
                         chartTrayOpen = false
                         loadTrayOpen = false
-                        dataStatusTrayOpen = false
-                        procedureWarningTrayOpen = false
+                        openStatusControlId = null
                         situationTrayOpen = false
                         procedureNotamDetail = badge.detail
                     },
                 )
             }
-            DataStatusBadge(
-                dataStatusState = procedureGeometryStatus,
-                open = procedureWarningTrayOpen,
-                onToggle = {
-                    procedureWarningTrayOpen = !procedureWarningTrayOpen
-                    airportTrayOpen = false
-                    chartTrayOpen = false
-                    loadTrayOpen = false
-                    dataStatusTrayOpen = false
-                    situationTrayOpen = false
-                },
-            )
-            DataStatusBadge(
-                dataStatusState = dataStatusState,
-                open = dataStatusTrayOpen,
-                onToggle = {
-                    dataStatusTrayOpen = !dataStatusTrayOpen
-                    airportTrayOpen = false
-                    chartTrayOpen = false
-                    loadTrayOpen = false
-                    procedureWarningTrayOpen = false
-                    situationTrayOpen = false
-                },
-                onAction = onStatusAction,
-            )
+            statusControls.controls.forEach { control ->
+                DataStatusBadge(
+                    dataStatusState = control.state,
+                    open = openStatusControlId == control.id,
+                    onToggle = {
+                        openStatusControlId = control.id.takeUnless { it == openStatusControlId }
+                        airportTrayOpen = false
+                        chartTrayOpen = false
+                        loadTrayOpen = false
+                        situationTrayOpen = false
+                    },
+                    onAction = onStatusAction,
+                )
+            }
             SituationStatusBadge(
                 controls = ownshipControls,
                 open = situationTrayOpen,
@@ -856,8 +843,7 @@ internal fun ChartsPage(
                     airportTrayOpen = false
                     chartTrayOpen = false
                     loadTrayOpen = false
-                    dataStatusTrayOpen = false
-                    procedureWarningTrayOpen = false
+                    openStatusControlId = null
                 },
                 onSelectSource = { source ->
                     if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
@@ -890,24 +876,21 @@ internal fun ChartsPage(
                 airportTrayOpen = !airportTrayOpen
                 chartTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onToggleChartTray = {
                 chartTrayOpen = !chartTrayOpen
                 airportTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onToggleLoadTray = {
                 loadTrayOpen = !loadTrayOpen
                 airportTrayOpen = false
                 chartTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onToggleFolder = {
@@ -915,32 +898,28 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onSelectAirport = {
                 onSelectAirport(it)
                 airportTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onSelectReference = {
                 onSelectReference(it)
                 airportTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onSelectChart = {
                 onSelectChart(it)
                 chartTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onSelectProcedureLoad = { loadId ->
@@ -954,8 +933,7 @@ internal fun ChartsPage(
                         }
                     }
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
             },
         )
 
@@ -964,8 +942,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
-                dataStatusTrayOpen = false
-                procedureWarningTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             }
         }

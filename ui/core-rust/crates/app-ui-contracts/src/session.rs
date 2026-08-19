@@ -153,6 +153,45 @@ pub struct UiDataStatusState {
     pub launcher_severity: UiStatusSeverity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiSurfaceStatusControlId {
+    Global,
+    ProcedureGeometry,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiSurfaceStatusControl {
+    pub id: UiSurfaceStatusControlId,
+    pub state: UiDataStatusState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiSurfaceStatusState {
+    pub controls: Vec<UiSurfaceStatusControl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UiStatusPlatformEffect {
+    ReloadApplication,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiStatusActionDecision {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_effect: Option<UiStatusPlatformEffect>,
+    pub perform_session_mutation: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -463,6 +502,8 @@ pub struct UiSessionPageContracts {
     pub chart: UiChartPageState,
     pub map_layers: UiMapLayerState,
     pub status: UiDataStatusState,
+    pub surface_status: UiSurfaceStatusState,
+    pub status_action_decision: UiStatusActionDecision,
     pub status_page: UiDataStatusPageState,
     pub settings: UiSettingsPageState,
     pub display_policy: UiDisplayPolicy,

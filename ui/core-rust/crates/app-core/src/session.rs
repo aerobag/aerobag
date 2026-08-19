@@ -36,7 +36,8 @@ pub use app_ui_contracts::{
         UiNavigationPageId, UiNavigationPageOption, UiNavigationPageState, UiPlaybackPanelState,
         UiSessionProjectionAssignment, UiSessionProjectionPatch, UiSessionUpdate,
         UiSessionUpdateGroup, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
-        UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop,
+        UiSettingsPageSection, UiSettingsPageState, UiSettingsSliderStop, UiStatusActionDecision,
+        UiSurfaceStatusState,
     },
 };
 
@@ -174,6 +175,7 @@ pub struct UiSessionSnapshot {
     pub chart_page_state: UiChartPageState,
     pub map_layer_state: UiMapLayerState,
     pub data_status_state: UiDataStatusState,
+    pub map_status_controls: UiSurfaceStatusState,
     pub data_status_page_state: UiDataStatusPageState,
     pub settings_page_state: UiSettingsPageState,
     pub cloud_page_state: UiCloudPageState,
@@ -4024,11 +4026,11 @@ fn airport_info_in_session(
 
 fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let slot = session_slot(handle)?;
-    let session_guard = slot.lock_running()?;
-    let session = &*session_guard;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let compact = &session.coordinator.chart_page_state;
-    let derived = match chart_page_state(
+    let mut derived = match chart_page_state(
         session_nav_kv_store(session)?,
         crate::had_ops::ChartPageQuery {
             plan: &plan,
@@ -4055,12 +4057,32 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
             })
         }
     };
+    let global_status = session.data_status.project_state().state;
+    derived.status_controls = crate::data_status::charts_surface_status_state(
+        derived.procedure_geometry_status.clone(),
+        global_status,
+    );
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(derived).map_err(|err| AppError {
             kind: AppErrorKind::Internal,
             message: err.to_string(),
         })?,
     ))
+}
+
+pub fn status_action_decision_in_session(
+    handle: u32,
+    action_id: String,
+) -> AppResult<UiStatusActionDecision> {
+    let slot = session_slot(handle)?;
+    let session_guard = slot.lock_running()?;
+    let session = &*session_guard;
+    let decision = crate::data_status::status_action_decision(&action_id)
+        .ok_or_else(|| invalid_status_action(&action_id))?;
+    if decision.platform_effect.is_some() && !session.data_status.action_is_enabled(&action_id) {
+        return Err(invalid_status_action(&action_id));
+    }
+    Ok(decision)
 }
 
 fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::FlightPlanLiveData {
@@ -11241,6 +11263,7 @@ fn assemble_session_update(
         status: changed_projection_patch(previous.status, current.status, || {
             projection_assignments! {
                 ["data_status_state"] => snapshot.data_status_state,
+                ["map_status_controls"] => snapshot.map_status_controls,
                 ["data_status_page_state"] => snapshot.data_status_page_state,
                 ["next_cycle_product_freshness_check_epoch_ms"] => snapshot
                     .next_cycle_product_freshness_check_epoch_ms,
@@ -11343,6 +11366,8 @@ fn try_snapshot_for_session(
             .fetch_add(1, Ordering::Relaxed);
     }
     let data_status_state = data_status_projection.state;
+    let map_status_controls =
+        crate::data_status::map_surface_status_state(data_status_state.clone());
     let data_status_page_input = data_status_page_input(session, &cloud_projection);
     let data_status_page_projection = session.data_status.project_page(data_status_page_input);
     if data_status_page_projection.rebuilt {
@@ -11444,6 +11469,7 @@ fn try_snapshot_for_session(
         chart_page_state,
         map_layer_state,
         data_status_state,
+        map_status_controls,
         data_status_page_state,
         settings_page_state,
         cloud_page_state,

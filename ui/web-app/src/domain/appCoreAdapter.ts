@@ -59,6 +59,8 @@ import type {
   UiNavigationPageState,
   UiPlaybackPanelState,
   UiSettingsPageState,
+  UiStatusActionDecision,
+  UiSurfaceStatusState,
 } from "../generated/sessionPageWire";
 import { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
 export { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
@@ -106,6 +108,11 @@ export type {
   UiStatusAction,
   UiStatusActionStyle,
   UiStatusSeverity,
+  UiStatusActionDecision,
+  UiStatusPlatformEffect,
+  UiSurfaceStatusControl,
+  UiSurfaceStatusControlId,
+  UiSurfaceStatusState,
 } from "../generated/sessionPageWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import {
@@ -208,6 +215,7 @@ export type DerivedChartPageState = {
   selected_chart_id: string;
   suggested_chart_ids: string[];
   procedure_geometry_status: UiDataStatusState;
+  status_controls: UiSurfaceStatusState;
 };
 
 export type RasterMapUiState = {
@@ -262,6 +270,7 @@ export type UiSessionSnapshot = {
   chart_page_state: UiChartPageState;
   map_layer_state: UiMapLayerState;
   data_status_state: UiDataStatusState;
+  map_status_controls: UiSurfaceStatusState;
   data_status_page_state: UiDataStatusPageState;
   settings_page_state: UiSettingsPageState;
   cloud_page_state: UiCloudPageState;
@@ -799,6 +808,7 @@ export interface UiSession {
   setAltitudePlannerDepartureInput(field: "time" | "when", input: string): Promise<UiSessionSnapshot>;
   performFlightPlanColumnAction(actionId: string): Promise<UiSessionSnapshot>;
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
+  statusActionDecision(actionId: string): Promise<UiStatusActionDecision>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
@@ -993,6 +1003,7 @@ type WasmModule = {
     actionId: string,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   query_flight_plan_in_session(sessionHandle: number, queryJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
+  status_action_decision_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
   perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   open_chart_airport_in_session(handle: number, airportIdJson: string, chartIdJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -1728,6 +1739,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_flight_plan_column_action_in_session(handle, actionId),
         );
       },
+      statusActionDecision: async (actionId) =>
+        JSON.parse(await this.module.status_action_decision_in_session(handle, actionId)) as UiStatusActionDecision,
       performStatusAction: async (actionId) => {
         snapshot = await runSessionMutation(() =>
           this.module.perform_status_action_in_session(handle, actionId),
@@ -2338,6 +2351,7 @@ async function loadBestAvailableAdapterUncached(
     "perform_flight_plan_column_action_in_session",
     "perform_time_display_action_in_session",
     "query_flight_plan_in_session",
+    "status_action_decision_in_session",
     "perform_status_action_in_session",
     "set_situation_in_session_paged",
     "tick_bad_autopilot_in_session_paged",

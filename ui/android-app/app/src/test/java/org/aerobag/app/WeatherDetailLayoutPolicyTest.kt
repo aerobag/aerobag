@@ -14,7 +14,7 @@ class WeatherDetailLayoutPolicyTest {
     fun weatherModalOwnsTheOnlyWeatherDetailScrollViewport() {
         val source = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
         val modalBody = balancedBlockAfterMarker(source, "internal fun WeatherDetailModal")
-        val notamBody = balancedBlockAfterMarker(source, "private fun AirportNotamSection")
+        val notamBody = balancedBlockAfterMarker(source, "internal fun AirportNotamSection")
 
         assertTrue(
             "The complete weather presentation should scroll as one modal.",

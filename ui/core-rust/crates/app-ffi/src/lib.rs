@@ -262,6 +262,16 @@ pub fn perform_status_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn status_action_decision_in_session_json(
+    handle: u64,
+    action_id: &str,
+) -> Result<String, String> {
+    let decision =
+        app_core::session::status_action_decision_in_session(handle as u32, action_id.to_string())
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&decision).map_err(|err| err.to_string())
+}
+
 pub fn perform_ownship_text_action_in_session_json(
     handle: u64,
     action_id: &str,
@@ -3384,6 +3394,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_queryFlightPla
     let result = (|| {
         let query_json = get_java_string(&mut env, query_json)?;
         query_flight_plan_in_session_json(handle as u64, &query_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_statusActionDecisionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_id: JString,
+) -> jstring {
+    let result = (|| {
+        let action_id = get_java_string(&mut env, action_id)?;
+        status_action_decision_in_session_json(handle as u64, &action_id)
     })();
     return_string(&mut env, result)
 }

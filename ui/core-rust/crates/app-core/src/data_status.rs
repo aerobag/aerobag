@@ -6,8 +6,52 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use app_ui_contracts::session::{
     UiDataStatusBox, UiDataStatusPageFact, UiDataStatusPageRow, UiDataStatusPageState,
-    UiDataStatusState, UiStatusAction, UiStatusActionStyle, UiStatusSeverity,
+    UiDataStatusState, UiStatusAction, UiStatusActionDecision, UiStatusActionStyle,
+    UiStatusPlatformEffect, UiStatusSeverity, UiSurfaceStatusControl, UiSurfaceStatusControlId,
+    UiSurfaceStatusState,
 };
+
+pub fn map_surface_status_state(global: UiDataStatusState) -> UiSurfaceStatusState {
+    UiSurfaceStatusState {
+        controls: vec![UiSurfaceStatusControl {
+            id: UiSurfaceStatusControlId::Global,
+            state: global,
+        }],
+    }
+}
+
+pub fn charts_surface_status_state(
+    procedure_geometry: UiDataStatusState,
+    global: UiDataStatusState,
+) -> UiSurfaceStatusState {
+    UiSurfaceStatusState {
+        controls: vec![
+            UiSurfaceStatusControl {
+                id: UiSurfaceStatusControlId::ProcedureGeometry,
+                state: procedure_geometry,
+            },
+            UiSurfaceStatusControl {
+                id: UiSurfaceStatusControlId::Global,
+                state: global,
+            },
+        ],
+    }
+}
+
+pub fn status_action_decision(action_id: &str) -> Option<UiStatusActionDecision> {
+    parse_status_action_id(action_id).map(|command| match command {
+        UiStatusActionCommand::Hush(_) | UiStatusActionCommand::Unhush(_) => {
+            UiStatusActionDecision {
+                platform_effect: None,
+                perform_session_mutation: true,
+            }
+        }
+        UiStatusActionCommand::ReloadApplication => UiStatusActionDecision {
+            platform_effect: Some(UiStatusPlatformEffect::ReloadApplication),
+            perform_session_mutation: false,
+        },
+    })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataStatusRecord {
@@ -292,5 +336,58 @@ mod tests {
             .launcher_severity,
             UiStatusSeverity::Info
         );
+    }
+
+    #[test]
+    fn surface_status_projection_owns_membership_and_order() {
+        let global = UiDataStatusState {
+            boxes: Vec::new(),
+            launcher_count: Some("global".to_string()),
+            launcher_severity: UiStatusSeverity::Info,
+        };
+        let procedure = UiDataStatusState {
+            boxes: Vec::new(),
+            launcher_count: Some("procedure".to_string()),
+            launcher_severity: UiStatusSeverity::Caution,
+        };
+
+        let map = map_surface_status_state(global.clone());
+        assert_eq!(map.controls.len(), 1);
+        assert_eq!(map.controls[0].id, UiSurfaceStatusControlId::Global);
+        assert_eq!(map.controls[0].state, global);
+
+        let charts = charts_surface_status_state(procedure.clone(), global.clone());
+        assert_eq!(
+            charts
+                .controls
+                .iter()
+                .map(|control| control.id)
+                .collect::<Vec<_>>(),
+            vec![
+                UiSurfaceStatusControlId::ProcedureGeometry,
+                UiSurfaceStatusControlId::Global,
+            ]
+        );
+        assert_eq!(charts.controls[0].state, procedure);
+        assert_eq!(charts.controls[1].state, global);
+    }
+
+    #[test]
+    fn status_action_decision_separates_mutation_from_platform_effect() {
+        assert_eq!(
+            status_action_decision("status:hush:metars"),
+            Some(UiStatusActionDecision {
+                platform_effect: None,
+                perform_session_mutation: true,
+            })
+        );
+        assert_eq!(
+            status_action_decision(RELOAD_APPLICATION_ACTION_ID),
+            Some(UiStatusActionDecision {
+                platform_effect: Some(UiStatusPlatformEffect::ReloadApplication),
+                perform_session_mutation: false,
+            })
+        );
+        assert_eq!(status_action_decision("unknown"), None);
     }
 }

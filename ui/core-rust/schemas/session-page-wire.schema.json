@@ -944,12 +944,52 @@
       ],
       "type": "object"
     },
+    "UiStatusActionDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "perform_session_mutation": {
+          "type": "boolean"
+        },
+        "platform_effect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiStatusPlatformEffect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "perform_session_mutation"
+      ],
+      "type": "object"
+    },
     "UiStatusActionStyle": {
       "enum": [
         "normal",
         "hush"
       ],
       "type": "string"
+    },
+    "UiStatusPlatformEffect": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "reload_application",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "kind"
     },
     "UiStatusSeverity": {
       "enum": [
@@ -960,6 +1000,44 @@
         "unavailable"
       ],
       "type": "string"
+    },
+    "UiSurfaceStatusControl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/UiSurfaceStatusControlId"
+        },
+        "state": {
+          "$ref": "#/$defs/UiDataStatusState"
+        }
+      },
+      "required": [
+        "id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "UiSurfaceStatusControlId": {
+      "enum": [
+        "global",
+        "procedure_geometry"
+      ],
+      "type": "string"
+    },
+    "UiSurfaceStatusState": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "items": {
+            "$ref": "#/$defs/UiSurfaceStatusControl"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "controls"
+      ],
+      "type": "object"
     }
   },
   "$id": "org.aerobag.ui-wire.session-page",
@@ -1003,8 +1081,14 @@
     "status": {
       "$ref": "#/$defs/UiDataStatusState"
     },
+    "status_action_decision": {
+      "$ref": "#/$defs/UiStatusActionDecision"
+    },
     "status_page": {
       "$ref": "#/$defs/UiDataStatusPageState"
+    },
+    "surface_status": {
+      "$ref": "#/$defs/UiSurfaceStatusState"
     }
   },
   "required": [
@@ -1012,6 +1096,8 @@
     "chart",
     "map_layers",
     "status",
+    "surface_status",
+    "status_action_decision",
     "status_page",
     "settings",
     "display_policy",
@@ -1024,7 +1110,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 5,
+  "x-contract-version": 6,
   "x-export-order": [
     "UiNavigationPageId",
     "UiNavigationPageOption",
@@ -1039,6 +1125,11 @@
     "UiStatusAction",
     "UiDataStatusBox",
     "UiDataStatusState",
+    "UiSurfaceStatusControlId",
+    "UiSurfaceStatusControl",
+    "UiSurfaceStatusState",
+    "UiStatusPlatformEffect",
+    "UiStatusActionDecision",
     "UiDataStatusPageFact",
     "UiDataStatusPageRow",
     "UiDataStatusPageState",

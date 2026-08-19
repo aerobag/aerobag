@@ -1,6 +1,6 @@
 # Web / Android Platform Drift Audit
 
-Status: discussion draft  
+Status: burn-down in progress
 Audited revision: `e0858ee5` (`Restore status parity on web charts`)  
 Date: 2026-08-19
 
@@ -16,6 +16,11 @@ short: platforms still decide which status controls belong on each surface.
 ## P0 — Burn Down First
 
 ### 1. Status surface composition and status effects are platform-owned
+
+Resolution: implemented. Core now projects ordered Map and Charts status
+controls independently of platform-local tray state, and status actions return
+a typed `ReloadApplication` platform effect. Both renderers consume those
+contracts; neither recognizes the reload action ID.
 
 Web and Android independently assemble the Map and Charts status docks:
 

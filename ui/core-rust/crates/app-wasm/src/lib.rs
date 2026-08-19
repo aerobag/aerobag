@@ -771,6 +771,17 @@ pub fn query_flight_plan_in_session(
 }
 
 #[wasm_bindgen]
+pub fn status_action_decision_in_session(
+    session_handle: u32,
+    action_id: &str,
+) -> Result<String, JsValue> {
+    let decision =
+        app_core::session::status_action_decision_in_session(session_handle, action_id.to_string())
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&decision).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_status_action_in_session(
     session_handle: u32,
     action_id: &str,

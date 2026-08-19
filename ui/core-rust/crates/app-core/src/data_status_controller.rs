@@ -362,6 +362,14 @@ impl DataStatusController {
         }
     }
 
+    pub(crate) fn action_is_enabled(&self, action_id: &str) -> bool {
+        self.model
+            .records
+            .values()
+            .flat_map(|record| &record.actions)
+            .any(|action| action.id == action_id && action.enabled)
+    }
+
     pub fn project_state(&mut self) -> DataStatusStateProjection {
         if let Some(cache) = self.state_cache.as_ref() {
             if cache.revision == self.model.revision {

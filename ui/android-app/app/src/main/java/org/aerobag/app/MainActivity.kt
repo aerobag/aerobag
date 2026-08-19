@@ -293,11 +293,13 @@ import org.aerobag.app.domain.UiStatusSeverity
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
 import org.aerobag.app.domain.UiSessionSnapshot
+import org.aerobag.app.domain.UiSurfaceStatusState
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.WorldPoint
+import org.aerobag.app.generated.UiStatusPlatformEffect
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -2894,6 +2896,7 @@ internal fun AerobagApp(
                     launcherCount = null,
                     launcherSeverity = UiStatusSeverity.Ok,
                 ),
+                statusControls = UiSurfaceStatusState(controls = emptyList()),
             ),
         )
     }
@@ -3493,8 +3496,7 @@ internal fun AerobagApp(
                         uiTheme = uiTheme,
                         sessionRenderModel = sessionRenderModel,
                         sessionRenderDiagnostics = sessionRenderDiagnostics,
-                        dataStatusState = sessionSnapshot.dataStatusState,
-                        procedureGeometryStatus = derivedChartPageState.procedureGeometryStatus,
+                        statusControls = derivedChartPageState.statusControls,
                         uiSession = uiSession,
                         sessionWorkRunner = uiSessionWorkRunner,
                         navElement = navElement,
@@ -3515,12 +3517,14 @@ internal fun AerobagApp(
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onStatusAction = { actionId ->
-                            if (actionId == "app:reload") {
-                                requestRuntimeReload(AppPage.Map)
-                            } else {
+                            val decision = uiSession.statusActionDecision(actionId)
+                            if (decision.performSessionMutation) {
                                 applySessionCommand("performStatusAction") {
                                     uiSession.performStatusAction(actionId)
                                 }
+                            }
+                            if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
+                                requestRuntimeReload(AppPage.Map)
                             }
                         },
                         onSelectAirport = { airportId ->

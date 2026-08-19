@@ -147,7 +147,7 @@
   ],
   "title": "UiSessionWorkCompletionDecision",
   "type": "object",
-  "x-contract-version": 5,
+  "x-contract-version": 6,
   "x-export-order": [
     "UiSessionWorkKind",
     "UiSessionWorkRequest",

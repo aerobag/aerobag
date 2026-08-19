@@ -430,6 +430,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setAltitudePlannerDepartureInput: (...args) => updateSnapshot(call("setAltitudePlannerDepartureInput", args)),
     performTimeDisplayAction: (...args) => updateSnapshot(call("performTimeDisplayAction", args)),
     performFlightPlanColumnAction: (...args) => updateSnapshot(call("performFlightPlanColumnAction", args)),
+    statusActionDecision: (...args) => call("statusActionDecision", args),
     performStatusAction: (...args) => updateSnapshot(call("performStatusAction", args)),
     performMapSelectionAction: (...args) => updateSnapshot(call("performMapSelectionAction", args)),
     activateNextLeg: () => updateSnapshot(call("activateNextLeg")),

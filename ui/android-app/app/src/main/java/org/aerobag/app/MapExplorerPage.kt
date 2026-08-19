@@ -278,6 +278,7 @@ import org.aerobag.app.domain.VisibleAdsbTraffic
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
 import org.aerobag.app.domain.UiSessionSnapshot
+import org.aerobag.app.domain.UiSurfaceStatusControlId
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
@@ -309,6 +310,7 @@ import org.aerobag.app.domain.zoomAroundPoint
 import org.aerobag.app.domain.zoomImageAroundPoint
 import org.aerobag.app.generated.NexradOverlayScreenPoint
 import org.aerobag.app.generated.NexradOverlayTile
+import org.aerobag.app.generated.UiStatusPlatformEffect
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.generated.airportCircleMarkerPath
@@ -695,7 +697,7 @@ internal fun MapExplorerPage(
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
-    var dataStatusTrayOpen by remember { mutableStateOf(false) }
+    var openStatusControlId by remember { mutableStateOf<UiSurfaceStatusControlId?>(null) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     var chartSearchText by remember { mutableStateOf("") }
     var chartSearchOpen by remember { mutableStateOf(false) }
@@ -1089,7 +1091,7 @@ internal fun MapExplorerPage(
             )
         }
     }
-    val menuTrayOpen = chartTrayOpen || layerTrayOpen || dataStatusTrayOpen || situationTrayOpen
+    val menuTrayOpen = chartTrayOpen || layerTrayOpen || openStatusControlId != null || situationTrayOpen
     val trayOptions = remember(mapFamilyOptions) {
         mapFamilyOptions.map { option ->
             ChartTrayOption(
@@ -1610,7 +1612,7 @@ internal fun MapExplorerPage(
                 updateViewport(nextViewport)
                 chartTrayOpen = false
                 layerTrayOpen = false
-                dataStatusTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
                 chartSearchText = ""
                 chartSearchOpen = false
@@ -2001,7 +2003,7 @@ internal fun MapExplorerPage(
     LaunchedEffect(selectedMapId) {
         chartTrayOpen = false
         layerTrayOpen = false
-        dataStatusTrayOpen = false
+        openStatusControlId = null
         situationTrayOpen = false
         mapSelection = null
     }
@@ -2522,7 +2524,7 @@ internal fun MapExplorerPage(
                 )
                 chartTrayOpen = false
                 layerTrayOpen = false
-                dataStatusTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             onError = { error ->
@@ -2927,31 +2929,40 @@ internal fun MapExplorerPage(
             },
             modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),
         )
-        DataStatusBadge(
-            dataStatusState = sessionSnapshot.dataStatusState,
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(
                     top = situationDockTopPadding,
                     end = ThumbGap + MenuDockStyle.Situation.buttonWidth + ThumbGap,
                 ),
-            open = dataStatusTrayOpen,
-            onToggle = {
-                dataStatusTrayOpen = !dataStatusTrayOpen
-                situationTrayOpen = false
-                chartTrayOpen = false
-                layerTrayOpen = false
-            },
-            onAction = { actionId ->
-                if (actionId == "app:reload") {
-                    onReloadApplication()
-                } else {
-                    applySessionCommand("performStatusAction") {
-                        uiSession.performStatusAction(actionId)
+            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+            verticalAlignment = Alignment.Top,
+        ) {
+            sessionSnapshot.mapStatusControls.controls.forEach { control ->
+                DataStatusBadge(
+                    dataStatusState = control.state,
+                    open = openStatusControlId == control.id,
+                    onToggle = {
+                        openStatusControlId = control.id.takeUnless { it == openStatusControlId }
+                        situationTrayOpen = false
+                        chartTrayOpen = false
+                        layerTrayOpen = false
+                    },
+                    onAction = { actionId ->
+                        val decision = uiSession.statusActionDecision(actionId)
+                        if (decision.performSessionMutation) {
+                            applySessionCommand("performStatusAction") {
+                                uiSession.performStatusAction(actionId)
+                            }
+                        }
+                        if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
+                            onReloadApplication()
+                        }
                     }
-                }
-            },
-        )
+                )
+            }
+        }
         SituationStatusBadge(
             controls = ownshipControls,
             modifier = Modifier
@@ -2960,7 +2971,7 @@ internal fun MapExplorerPage(
             open = situationTrayOpen,
             onToggle = {
                 situationTrayOpen = !situationTrayOpen
-                dataStatusTrayOpen = false
+                openStatusControlId = null
                 chartTrayOpen = false
                 layerTrayOpen = false
             },
@@ -2990,14 +3001,14 @@ internal fun MapExplorerPage(
             onToggle = {
                 chartTrayOpen = !chartTrayOpen
                 layerTrayOpen = false
-                dataStatusTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             layerTrayOpen = layerTrayOpen,
             onToggleLayerTray = {
                 layerTrayOpen = !layerTrayOpen
                 chartTrayOpen = false
-                dataStatusTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             },
             layerOptions = layerTrayOptions,
@@ -3072,7 +3083,7 @@ internal fun MapExplorerPage(
             Scrim {
                 chartTrayOpen = false
                 layerTrayOpen = false
-                dataStatusTrayOpen = false
+                openStatusControlId = null
                 situationTrayOpen = false
             }
         }

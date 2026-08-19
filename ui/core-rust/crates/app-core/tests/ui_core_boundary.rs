@@ -1921,6 +1921,43 @@ fn cross_platform_ui_policy_is_projected_by_core() {
 }
 
 #[test]
+fn status_surface_composition_and_effects_are_core_owned() {
+    let contracts = read_repo_file("ui/core-rust/crates/app-ui-contracts/src/session.rs");
+    let status = read_repo_file("ui/core-rust/crates/app-core/src/data_status.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android_map =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+    let android_activity =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt");
+
+    assert!(
+        contracts.contains("pub struct UiSurfaceStatusState")
+            && contracts.contains("pub enum UiStatusPlatformEffect")
+            && status.contains("pub fn map_surface_status_state")
+            && status.contains("pub fn charts_surface_status_state"),
+        "core must project ordered per-surface controls and typed status effects"
+    );
+    assert!(
+        web.contains("sessionSnapshot.map_status_controls")
+            && web.contains("derivedChartPageState.status_controls")
+            && android_map.contains("sessionSnapshot.mapStatusControls.controls")
+            && android_activity.contains("derivedChartPageState.statusControls"),
+        "both renderers must consume core's per-surface status composition"
+    );
+    for (platform, source) in [
+        ("web", web.as_str()),
+        ("Android map", android_map.as_str()),
+        ("Android shell", android_activity.as_str()),
+    ] {
+        assert!(
+            !source.contains("actionId == \"app:reload\"")
+                && !source.contains("actionId === \"app:reload\""),
+            "{platform} must execute core's typed reload effect, not interpret its action ID"
+        );
+    }
+}
+
+#[test]
 fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
     let core = read_repo_file("ui/core-rust/crates/app-core/src/ui_geometry.rs");
     let web_map = read_repo_file("ui/web-app/src/domain/mapViewport.ts");

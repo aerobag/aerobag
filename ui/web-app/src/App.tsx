@@ -1498,10 +1498,10 @@ function thumbPixels(multiplier = 1) {
   return parsed * multiplier;
 }
 
-function shouldLowerStatusControlDock(surfaceWidthPx: number, includesDataStatus: boolean) {
+function shouldLowerStatusControlDock(surfaceWidthPx: number, dataStatusCount: number) {
   const leftControlWidthThumbs = 6.4;
   const ownshipPillWidthThumbs = 2;
-  const dataStatusWidthThumbs = includesDataStatus ? 0.6 : 0;
+  const dataStatusWidthThumbs = Math.max(0, dataStatusCount) * 0.6;
   const outerGutterThumbs = 1;
   return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(leftControlWidthThumbs + ownshipPillWidthThumbs + dataStatusWidthThumbs + outerGutterThumbs);
 }
@@ -2510,6 +2510,18 @@ function OperationalApp() {
     }
     applySessionSnapshot(nextSnapshot, "session_callback");
   }, [applySessionSnapshot, sessionRenderStore]);
+  const performStatusAction = useCallback((actionId: string) => {
+    if (actionId === "app:reload") {
+      window.location.reload();
+      return;
+    }
+    if (!uiSession) {
+      return;
+    }
+    void uiSession.performStatusAction(actionId).then((nextSnapshot) => {
+      applySessionSnapshot(nextSnapshot, "status_action");
+    });
+  }, [applySessionSnapshot, uiSession]);
 
   useEffect(() => {
     const render = () => ({
@@ -3960,18 +3972,7 @@ function OperationalApp() {
               });
           }}
           dataStatusState={sessionSnapshot.data_status_state}
-          onStatusAction={(actionId) => {
-            if (actionId === "app:reload") {
-              window.location.reload();
-              return;
-            }
-            if (!uiSession) {
-              return;
-            }
-            void uiSession.performStatusAction(actionId).then((nextSnapshot) => {
-              applySessionSnapshot(nextSnapshot, "status_action");
-            });
-          }}
+          onStatusAction={performStatusAction}
           planUiState={planUiState}
           playbackSourcePath={playbackSourcePath}
           onPlaybackSourcePathChange={setPlaybackSourcePath}
@@ -4186,6 +4187,7 @@ function OperationalApp() {
           selectedCollection={selectedChartCollection}
           selectedChart={selectedChart}
           suggestedChartIds={derivedChartPageState.suggested_chart_ids}
+          dataStatusState={sessionSnapshot.data_status_state}
           procedureGeometryStatus={derivedChartPageState.procedure_geometry_status}
           folderOpen={chartFolderOpen}
           viewport={chartViewport}
@@ -4274,6 +4276,7 @@ function OperationalApp() {
           onPlaybackSourcePathChange={setPlaybackSourcePath}
           onPlaybackSnapshotChange={applySessionSnapshotDispatch}
           onSituationControlInput={applySituationControlInput}
+          onStatusAction={performStatusAction}
           debugState={sessionSnapshot.debug_state}
           uiSession={uiSession}
           onFirstVisualReady={reportStartupVisualReady}
@@ -4771,7 +4774,10 @@ function MapPage(props: {
   const airportInfoRequestSerialRef = useRef(0);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const firstVisualReadyRef = useRef(false);
-  const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, dataStatusState.boxes.length > 0);
+  const statusControlDockLowered = shouldLowerStatusControlDock(
+    surfaceSize.width,
+    dataStatusState.boxes.length > 0 ? 1 : 0,
+  );
   const bottomCornerControlsRaised = shouldRaiseBottomCornerControls(surfaceSize.width);
   const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
   const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
@@ -8040,13 +8046,16 @@ function MapPage(props: {
         <Profiler id="StatusControls" onRender={logReactProfilerRender}>
           <StatusControlDock
           controls={ownshipControls}
-          dataStatusState={dataStatusState}
+          dataStatuses={[{
+            id: "global",
+            state: dataStatusState,
+            open: trayGroup.isOpen("status"),
+            onToggle: () => trayGroup.toggle("status"),
+            onAction: onStatusAction,
+          }]}
           lowered={statusControlDockLowered}
           ownshipOpen={trayGroup.isOpen("ownship")}
-          statusOpen={trayGroup.isOpen("status")}
           onOwnshipToggle={() => trayGroup.toggle("ownship")}
-          onStatusToggle={() => trayGroup.toggle("status")}
-          onAction={onStatusAction}
           options={ownshipSourceOptions}
           onDisabledAction={showDisabledAction}
           transportControls={
@@ -11589,6 +11598,7 @@ function ChartsPage(props: {
   selectedCollection: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
   suggestedChartIds: string[];
+  dataStatusState: UiDataStatusState;
   procedureGeometryStatus: UiDataStatusState;
   folderOpen: boolean;
   viewport: ImageViewportState | null;
@@ -11603,6 +11613,7 @@ function ChartsPage(props: {
   onPlaybackSourcePathChange: Dispatch<SetStateAction<string>>;
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   onSituationControlInput: (input: SituationControlInput) => void;
+  onStatusAction: (actionId: string) => void | Promise<void>;
   debugState: UiDebugState;
   uiSession: UiSession | null;
   onFirstVisualReady: () => void;
@@ -11621,7 +11632,7 @@ function ChartsPage(props: {
   const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
   const playbackUiState = highRateSnapshot.playback_ui_state;
   const playbackPanelState = highRateSnapshot.playback_panel_state;
-  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, onFirstVisualReady, navDataEpoch } = props;
+  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, dataStatusState, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, onStatusAction, uiSession, onFirstVisualReady, navDataEpoch } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -11632,10 +11643,13 @@ function ChartsPage(props: {
   const activePointersRef = useRef<Map<number, ScreenPoint>>(new Map());
   const dragRef = useRef<{ id: number; last: ScreenPoint } | null>(null);
   const pinchRef = useRef<{ viewport: ImageViewportState; distance: number; midpoint: ScreenPoint } | null>(null);
-  const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, false);
+  const statusControlDockLowered = shouldLowerStatusControlDock(
+    surfaceSize.width,
+    Number(dataStatusState.boxes.length > 0) + Number(procedureGeometryStatus.boxes.length > 0),
+  );
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
-  const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "ownship"] as const);
+  const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "status", "ownship"] as const);
   const [procedureNotamDetail, setProcedureNotamDetail] = useState<
     NonNullable<ChartAsset["procedure_notam_badge"]>["detail"] | null
   >(null);
@@ -12187,7 +12201,23 @@ function ChartsPage(props: {
         <div className="mapBackdrop" />
         <StatusControlDock
           controls={ownshipControls}
-          dataStatusState={procedureGeometryStatus}
+          dataStatuses={[
+            {
+              id: "procedureGeometry",
+              state: procedureGeometryStatus,
+              open: trayGroup.isOpen("procedureWarning"),
+              onToggle: () => trayGroup.toggle("procedureWarning"),
+              onAction: onStatusAction,
+              testIdPrefix: "procedure-status",
+            },
+            {
+              id: "global",
+              state: dataStatusState,
+              open: trayGroup.isOpen("status"),
+              onToggle: () => trayGroup.toggle("status"),
+              onAction: onStatusAction,
+            },
+          ]}
           lowered={statusControlDockLowered}
           leadingControl={!folderOpen && selectedChart?.procedure_notam_badge ? (
             <PlateProcedureNotamBadgeButton
@@ -12200,10 +12230,7 @@ function ChartsPage(props: {
             />
           ) : null}
           ownshipOpen={trayGroup.isOpen("ownship")}
-          statusOpen={trayGroup.isOpen("procedureWarning")}
           onOwnshipToggle={() => trayGroup.toggle("ownship")}
-          onStatusToggle={() => trayGroup.toggle("procedureWarning")}
-          onAction={() => {}}
           options={ownshipSourceOptions}
           onDisabledAction={showDisabledAction}
           transportControls={
@@ -13210,14 +13237,18 @@ function SituationStatusBadge(props: {
 
 function StatusControlDock(props: {
   controls: OwnshipControlModel;
-  dataStatusState?: UiDataStatusState | null;
+  dataStatuses?: readonly {
+    id: string;
+    state: UiDataStatusState;
+    open: boolean;
+    onToggle: () => void;
+    onAction: (actionId: string) => void | Promise<void>;
+    testIdPrefix?: string;
+  }[];
   lowered?: boolean;
   leadingControl?: ReactNode;
   ownshipOpen: boolean;
-  statusOpen?: boolean;
   onOwnshipToggle: () => void;
-  onStatusToggle?: () => void;
-  onAction?: (actionId: string) => void | Promise<void>;
   options: TrayOption[];
   transportControls?: ReactNode;
   onDisabledAction?: (message: string) => void;
@@ -13225,14 +13256,16 @@ function StatusControlDock(props: {
   return (
     <div className={`statusControlDock${props.lowered ? " isLowered" : ""}`}>
       {props.leadingControl}
-      {props.dataStatusState && props.onStatusToggle && props.onAction ? (
+      {props.dataStatuses?.map((status) => (
         <DataStatusDock
-          dataStatusState={props.dataStatusState}
-          open={props.statusOpen ?? false}
-          onToggle={props.onStatusToggle}
-          onAction={props.onAction}
+          key={status.id}
+          dataStatusState={status.state}
+          open={status.open}
+          onToggle={status.onToggle}
+          onAction={status.onAction}
+          testIdPrefix={status.testIdPrefix}
         />
-      ) : null}
+      ))}
       <SituationStatusBadge
         controls={props.controls}
         open={props.ownshipOpen}
@@ -13251,6 +13284,7 @@ function DataStatusDock(props: {
   open: boolean;
   onToggle: () => void;
   onAction: (actionId: string) => void | Promise<void>;
+  testIdPrefix?: string;
 }) {
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
@@ -13258,6 +13292,7 @@ function DataStatusDock(props: {
   const launcherCount = props.dataStatusState.launcher_count;
   const hasLauncherCount = launcherCount != null;
   const hasStatus = props.dataStatusState.boxes.length > 0;
+  const testIdPrefix = props.testIdPrefix ?? "data-status";
   useEffect(() => {
     if (!props.open) {
       setPanelPosition(null);
@@ -13301,7 +13336,7 @@ function DataStatusDock(props: {
         ref={launcherRef}
         type="button"
         className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${hasLauncherCount ? "" : " isQuiet"}`}
-        data-testid="data-status-launcher"
+        data-testid={`${testIdPrefix}-launcher`}
         aria-expanded={props.open}
         aria-label="Status"
         onPointerDown={stopPointer}
@@ -13315,7 +13350,7 @@ function DataStatusDock(props: {
         <section
           ref={panelRef}
           className="dataStatusPanel"
-          data-testid="data-status-panel"
+          data-testid={`${testIdPrefix}-panel`}
           aria-label="Active data status"
           style={panelPosition ? {
             left: `${panelPosition.left}px`,

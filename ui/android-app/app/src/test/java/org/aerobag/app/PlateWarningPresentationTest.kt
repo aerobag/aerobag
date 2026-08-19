@@ -24,6 +24,9 @@ class PlateWarningPresentationTest {
 
         assertTrue(chartsPage.contains("dataStatusState = procedureGeometryStatus"))
         assertTrue(chartsPage.contains("open = procedureWarningTrayOpen"))
+        assertTrue(chartsPage.contains("dataStatusState = dataStatusState"))
+        assertTrue(chartsPage.contains("open = dataStatusTrayOpen"))
+        assertTrue(chartsPage.contains("onAction = onStatusAction"))
         assertTrue(folder.contains("DataStatusBadgeFace("))
         assertTrue(folder.contains("count = chart.procedureGeometryWarningCount.toString()"))
         assertTrue(folder.contains(".align(Alignment.TopEnd)"))

@@ -21,8 +21,13 @@ describe("plate procedure geometry warnings", () => {
     const chartsPage = sourceBetween("function ChartsPage(", "function HomePage(");
     const dataStatusDock = sourceBetween("function DataStatusDock(", "function SituationTransportRow(");
 
-    expect(chartsPage).toContain("dataStatusState={procedureGeometryStatus}");
-    expect(chartsPage).toContain("statusOpen={trayGroup.isOpen(\"procedureWarning\")}");
+    expect(chartsPage).toContain("state: procedureGeometryStatus");
+    expect(chartsPage).toContain("open: trayGroup.isOpen(\"procedureWarning\")");
+    expect(chartsPage).toContain("state: dataStatusState");
+    expect(chartsPage).toContain("open: trayGroup.isOpen(\"status\")");
+    expect(chartsPage.match(/onAction: onStatusAction/g)).toHaveLength(2);
+    expect(appSource.match(/onStatusAction={performStatusAction}/g)).toHaveLength(2);
+    expect(appSource).toContain("uiSession.performStatusAction(actionId)");
     expect(chartsPage).toContain("<DataStatusWarningFace");
     expect(chartsPage).toContain("count={chart.procedure_geometry_warning_count.toString()}");
     expect(dataStatusDock).toContain("<DataStatusWarningFace");

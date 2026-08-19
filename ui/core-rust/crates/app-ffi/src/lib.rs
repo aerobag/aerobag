@@ -412,6 +412,20 @@ pub fn map_selection_action_decision_in_session_json(
     serde_json::to_string(&decision).map_err(|err| err.to_string())
 }
 
+pub fn flight_plan_row_action_decision_in_session_json(
+    handle: u64,
+    row_uid: &str,
+    action_uid: &str,
+) -> Result<String, String> {
+    let decision = app_core::flight_plan_row_action_decision_in_session(
+        handle as u32,
+        row_uid.to_string(),
+        action_uid.to_string(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&decision).map_err(|err| err.to_string())
+}
+
 pub fn perform_map_selection_ui_action_in_session_json(
     handle: u64,
     action_uid: &str,
@@ -3614,6 +3628,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_mapSelectionAc
     let result = (|| {
         let action_uid = get_java_string(&mut env, action_uid)?;
         map_selection_action_decision_in_session_json(handle as u64, &action_uid)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_flightPlanRowActionDecisionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    row_uid: JString,
+    action_uid: JString,
+) -> jstring {
+    let result = (|| {
+        let row_uid = get_java_string(&mut env, row_uid)?;
+        let action_uid = get_java_string(&mut env, action_uid)?;
+        flight_plan_row_action_decision_in_session_json(handle as u64, &row_uid, &action_uid)
     })();
     return_string(&mut env, result)
 }

@@ -1110,7 +1110,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 6,
+  "x-contract-version": 7,
   "x-export-order": [
     "UiNavigationPageId",
     "UiNavigationPageOption",

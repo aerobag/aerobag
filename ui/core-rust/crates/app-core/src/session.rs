@@ -430,6 +430,7 @@ struct SessionRuntime {
     adsb: crate::adsb::AdsbSessionState,
     map_selection_actions: BTreeMap<String, RegisteredMapSelectionAction>,
     next_map_selection_action_uid: u64,
+    flight_plan_row_actions: BTreeMap<String, RegisteredFlightPlanRowAction>,
 }
 
 #[derive(Clone)]
@@ -451,6 +452,19 @@ enum RegisteredMapSelectionAction {
         action_uid: String,
     },
     PerformSession(MapSelectionSessionAction),
+}
+
+#[derive(Clone)]
+struct RegisteredFlightPlanRowAction {
+    row_uid: String,
+    dismiss_tray: bool,
+    command: RegisteredFlightPlanRowActionCommand,
+}
+
+#[derive(Clone)]
+enum RegisteredFlightPlanRowActionCommand {
+    PerformSessionMutation,
+    Effect(crate::FlightPlanRowActionEffect),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -5304,6 +5318,34 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
             commit_session_navigation_update_with_invalidations_outcome(session, next_plan)
         }
     }
+}
+
+pub fn flight_plan_row_action_decision_in_session(
+    handle: u32,
+    row_uid: String,
+    action_uid: String,
+) -> AppResult<crate::FlightPlanRowActionDecision> {
+    let slot = session_slot(handle)?;
+    let session = slot.lock_running()?;
+    let action = session
+        .runtime
+        .flight_plan_row_actions
+        .get(&action_uid)
+        .filter(|action| action.row_uid == row_uid)
+        .cloned()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unknown or stale flight-plan row action: {action_uid}"),
+        })?;
+    let (perform_session_mutation, effect) = match action.command {
+        RegisteredFlightPlanRowActionCommand::PerformSessionMutation => (true, None),
+        RegisteredFlightPlanRowActionCommand::Effect(effect) => (false, Some(effect)),
+    };
+    Ok(crate::FlightPlanRowActionDecision {
+        perform_session_mutation,
+        dismiss_tray: action.dismiss_tray,
+        effect,
+    })
 }
 
 pub(crate) fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -12172,6 +12214,8 @@ fn project_session_app_ui_state(
         enrich_flight_plan_weather(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
     }
+    refresh_registered_flight_plan_row_actions(session, app_ui_state.active_plan.as_ref())
+        .map_err(|error| HadReadError::Fatal(error.message))?;
     app_ui_state.flight_data_banner = project_flight_data_banner(
         session,
         &app_ui_state,
@@ -12229,6 +12273,138 @@ fn enrich_flight_plan_weather(session: &UiSession, active_plan: &mut FlightPlanU
             }
         }
     }
+}
+
+fn refresh_registered_flight_plan_row_actions(
+    session: &mut UiSession,
+    active_plan: Option<&FlightPlanUiState>,
+) -> AppResult<()> {
+    let mut registered = BTreeMap::new();
+    for row in active_plan
+        .into_iter()
+        .flat_map(|active_plan| active_plan.display_rows.iter())
+    {
+        for action in crate::planning::flight_plan_row_actions(row).filter(|action| action.enabled)
+        {
+            let registered_action = registered_flight_plan_row_action(row, action)?;
+            if registered
+                .insert(action.uid.clone(), registered_action)
+                .is_some()
+            {
+                return Err(AppError {
+                    kind: AppErrorKind::Internal,
+                    message: format!(
+                        "duplicate flight-plan row action UID in projection: {}",
+                        action.uid
+                    ),
+                });
+            }
+        }
+    }
+    session.runtime.flight_plan_row_actions = registered;
+    Ok(())
+}
+
+fn registered_flight_plan_row_action(
+    row: &crate::planning::FlightPlanDisplayRowUiView,
+    action: &crate::planning::FlightPlanRowActionUiView,
+) -> AppResult<RegisteredFlightPlanRowAction> {
+    let effect = if let Some(detail) = &action.weather_detail {
+        Some(crate::FlightPlanRowActionEffect::ShowWeather {
+            detail: detail.clone(),
+        })
+    } else if let Some(airport_id) = &action.airport_info_airport_id {
+        Some(crate::FlightPlanRowActionEffect::LoadAirportInfo {
+            airport_id: airport_id.clone(),
+        })
+    } else {
+        None
+    };
+    if let Some(effect) = effect {
+        return Ok(RegisteredFlightPlanRowAction {
+            row_uid: row.uid.clone(),
+            dismiss_tray: true,
+            command: RegisteredFlightPlanRowActionCommand::Effect(effect),
+        });
+    }
+    if action.execution == crate::planning::FlightPlanRowActionExecution::CoreSession {
+        return Ok(RegisteredFlightPlanRowAction {
+            row_uid: row.uid.clone(),
+            dismiss_tray: action.dismiss_tray_on_success,
+            command: RegisteredFlightPlanRowActionCommand::PerformSessionMutation,
+        });
+    }
+    if let Some(navigation) = &action.navigation {
+        let effect = match navigation {
+            crate::planning::FlightPlanRowNavigationAction::OpenAirportCharts { airport_id } => {
+                crate::FlightPlanRowActionEffect::OpenAirportCharts {
+                    airport_id: airport_id.clone(),
+                }
+            }
+            crate::planning::FlightPlanRowNavigationAction::OpenPlateTarget {
+                airport_id,
+                target,
+            } => crate::FlightPlanRowActionEffect::OpenPlateTarget {
+                airport_id: airport_id.clone(),
+                target: target.clone(),
+            },
+        };
+        return Ok(RegisteredFlightPlanRowAction {
+            row_uid: row.uid.clone(),
+            dismiss_tray: true,
+            command: RegisteredFlightPlanRowActionCommand::Effect(effect),
+        });
+    }
+    let effect = match action.id {
+        FlightPlanRowActionId::InsertBefore | FlightPlanRowActionId::InsertAfter => {
+            crate::FlightPlanRowActionEffect::OpenWaypointInsert {
+                row_uid: row.uid.clone(),
+                before: action.id == FlightPlanRowActionId::InsertBefore,
+            }
+        }
+        FlightPlanRowActionId::AddAirway => {
+            let origin_anchor = row.origin_anchor.clone().ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("enabled airway action on {} has no origin anchor", row.uid),
+            })?;
+            crate::FlightPlanRowActionEffect::OpenAirwayPicker {
+                row_uid: row.uid.clone(),
+                origin_anchor,
+                destination_anchor: row.destination_anchor.clone(),
+            }
+        }
+        FlightPlanRowActionId::SelectDeparture
+        | FlightPlanRowActionId::SelectArrival
+        | FlightPlanRowActionId::SelectApproach => {
+            let airport_id = row.chart_airport_id.clone().ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("enabled procedure action on {} has no airport", row.uid),
+            })?;
+            let procedure_kind = action.procedure_kind.clone().ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("enabled procedure action {} has no kind", action.uid),
+            })?;
+            crate::FlightPlanRowActionEffect::OpenProcedurePicker {
+                row_uid: row.uid.clone(),
+                airport_id,
+                procedure_kind,
+            }
+        }
+        _ => {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: format!(
+                    "enabled flight-plan row action {} has no core execution",
+                    action.uid
+                ),
+            });
+        }
+    };
+    Ok(RegisteredFlightPlanRowAction {
+        row_uid: row.uid.clone(),
+        dismiss_tray: false,
+        command: RegisteredFlightPlanRowActionCommand::Effect(effect),
+    })
 }
 
 fn project_flight_data_banner(
@@ -25528,6 +25704,76 @@ mod tests {
             set_debug_flag_in_session(init.handle, DebugFlagId::TileLabels, false)
                 .expect("clear debug flag");
         assert_eq!(second_mutation.session_revision, 2);
+    }
+
+    #[test]
+    fn flight_plan_row_actions_project_opaque_uids_and_core_owned_effects() {
+        let plan = FlightPlan {
+            id: "row-actions".to_string(),
+            name: "Row actions".to_string(),
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KRNT".to_string()),
+            }],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: None,
+            alternate: None,
+            aircraft: None,
+            cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
+        let active_plan = init.snapshot.app_ui_state.active_plan.expect("active plan");
+        let row = active_plan.display_rows.first().expect("airport row");
+        let action = crate::planning::flight_plan_row_actions(row)
+            .find(|action| action.id == FlightPlanRowActionId::InsertAfter)
+            .expect("insert-after action");
+        assert!(action.enabled);
+
+        let projected = serde_json::to_value(action).expect("serialize projected action");
+        for internal_field in [
+            "execution",
+            "dismiss_tray_on_success",
+            "navigation",
+            "weather_detail",
+            "airport_info_airport_id",
+            "procedure_kind",
+        ] {
+            assert!(
+                projected.get(internal_field).is_none(),
+                "platform action leaked core policy field {internal_field}"
+            );
+        }
+
+        let decision = flight_plan_row_action_decision_in_session(
+            init.handle,
+            row.uid.clone(),
+            action.uid.clone(),
+        )
+        .expect("row action decision");
+        assert!(!decision.perform_session_mutation);
+        assert!(!decision.dismiss_tray);
+        assert_eq!(
+            decision.effect,
+            Some(crate::FlightPlanRowActionEffect::OpenWaypointInsert {
+                row_uid: row.uid.clone(),
+                before: false,
+            })
+        );
+        assert!(flight_plan_row_action_decision_in_session(
+            init.handle,
+            "wrong-row".to_string(),
+            action.uid.clone(),
+        )
+        .is_err());
+
+        destroy_session(init.handle);
     }
 
     #[test]

@@ -164,6 +164,11 @@ describe("loadBestAvailableAdapter", () => {
         effect: null,
       }),
       perform_map_selection_ui_action_in_session: async () => mutationOutcomeJson(),
+      flight_plan_row_action_decision_in_session: async () => JSON.stringify({
+        perform_session_mutation: true,
+        dismiss_tray: true,
+        effect: null,
+      }),
       set_situation_in_session_paged: async () => mutationOutcomeJson(),
       tick_bad_autopilot_in_session_paged: async () => mutationOutcomeJson(),
       engage_map_follow_in_session: async () => mutationOutcomeJson(),

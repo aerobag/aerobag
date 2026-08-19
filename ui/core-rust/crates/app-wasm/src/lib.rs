@@ -717,6 +717,21 @@ pub fn map_selection_action_decision_in_session(
 }
 
 #[wasm_bindgen]
+pub fn flight_plan_row_action_decision_in_session(
+    session_handle: u32,
+    row_uid: &str,
+    action_uid: &str,
+) -> Result<String, JsValue> {
+    let decision = app_core::flight_plan_row_action_decision_in_session(
+        session_handle,
+        row_uid.to_string(),
+        action_uid.to_string(),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&decision).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_map_selection_ui_action_in_session(
     session_handle: u32,
     action_uid: &str,

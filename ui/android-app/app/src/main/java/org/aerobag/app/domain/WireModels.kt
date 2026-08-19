@@ -1283,11 +1283,25 @@ data class WireFlightPlanRowActionUiView(
     val label: String,
     val enabled: Boolean,
     val disabled_reason: String? = null,
-    val execution: String = "ui_controller",
-    val dismiss_tray_on_success: Boolean = true,
-    val navigation: WireFlightPlanRowNavigationAction? = null,
-    val weather_detail: WireWeatherDetailUiView? = null,
-    val airport_info_airport_id: String? = null,
+)
+
+@Serializable
+data class WireFlightPlanRowActionDecision(
+    val perform_session_mutation: Boolean,
+    val dismiss_tray: Boolean,
+    val effect: WireFlightPlanRowActionEffect? = null,
+)
+
+@Serializable
+data class WireFlightPlanRowActionEffect(
+    val kind: String,
+    val detail: WireWeatherDetailUiView? = null,
+    val airport_id: String? = null,
+    val target: String? = null,
+    val row_uid: String? = null,
+    val before: Boolean? = null,
+    val origin_anchor: WireNavRef? = null,
+    val destination_anchor: WireNavRef? = null,
     val procedure_kind: WireProcedureKind? = null,
 )
 
@@ -1347,13 +1361,6 @@ data class WireAirportRunwayPatternUiView(
     val corner_y: Double,
     val final_x: Double,
     val final_y: Double,
-)
-
-@Serializable
-data class WireFlightPlanRowNavigationAction(
-    val kind: String,
-    val airport_id: String? = null,
-    val target: String? = null,
 )
 
 typealias WireFlightDataCell = org.aerobag.app.generated.FlightDataCell

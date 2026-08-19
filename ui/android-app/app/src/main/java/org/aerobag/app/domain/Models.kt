@@ -315,13 +315,37 @@ data class FlightPlanRowActionUiView(
     val label: String,
     val enabled: Boolean,
     val disabledReason: String? = null,
-    val execution: String = "ui_controller",
-    val dismissTrayOnSuccess: Boolean = true,
-    val navigation: FlightPlanRowNavigationAction? = null,
-    val weatherDetail: WeatherDetailUiView? = null,
-    val airportInfoAirportId: String? = null,
-    val procedureKind: ProcedureKind? = null,
 )
+
+data class FlightPlanRowActionDecision(
+    val performSessionMutation: Boolean,
+    val dismissTray: Boolean,
+    val effect: FlightPlanRowActionEffect?,
+)
+
+sealed interface FlightPlanRowActionEffect {
+    data class ShowWeather(val detail: WeatherDetailUiView) : FlightPlanRowActionEffect
+    data class LoadAirportInfo(val airportId: String) : FlightPlanRowActionEffect
+    data class OpenAirportCharts(val airportId: String) : FlightPlanRowActionEffect
+    data class OpenPlateTarget(
+        val airportId: String,
+        val target: String,
+    ) : FlightPlanRowActionEffect
+    data class OpenWaypointInsert(
+        val rowUid: String,
+        val before: Boolean,
+    ) : FlightPlanRowActionEffect
+    data class OpenAirwayPicker(
+        val rowUid: String,
+        val originAnchor: NavRef,
+        val destinationAnchor: NavRef?,
+    ) : FlightPlanRowActionEffect
+    data class OpenProcedurePicker(
+        val rowUid: String,
+        val airportId: String,
+        val procedureKind: ProcedureKind,
+    ) : FlightPlanRowActionEffect
+}
 
 data class AirportInfoUiView(
     val airportId: String,
@@ -393,17 +417,6 @@ data class AirportNotamUiView(
     val label: String,
     val text: String,
 )
-
-sealed interface FlightPlanRowNavigationAction {
-    data class OpenAirportCharts(
-        val airportId: String,
-    ) : FlightPlanRowNavigationAction
-
-    data class OpenPlateTarget(
-        val airportId: String,
-        val target: String,
-    ) : FlightPlanRowNavigationAction
-}
 
 data class FlightDataCell(
     val id: String,

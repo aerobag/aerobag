@@ -1687,6 +1687,14 @@ class NativeUiSession internal constructor(
         )
     }
 
+    fun flightPlanRowActionDecision(
+        rowUid: String,
+        actionUid: String,
+    ): FlightPlanRowActionDecision =
+        json.decodeFromString<WireFlightPlanRowActionDecision>(
+            bridge.flightPlanRowActionDecisionInSessionJson(handle, rowUid, actionUid),
+        ).toUi()
+
     fun altitudeComparisons(): AltitudeComparisonPanelUiView {
         val result = queryFlightPlan(buildJsonObject { put("kind", "altitude_comparisons") })
         return json.decodeFromJsonElement<WireAltitudeComparisonPanelUiView>(result).toUi()
@@ -4334,12 +4342,6 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     label = label,
     enabled = enabled,
     disabledReason = disabled_reason,
-    execution = execution,
-    dismissTrayOnSuccess = dismiss_tray_on_success,
-    navigation = navigation?.toUi(),
-    weatherDetail = weather_detail?.toUi(),
-    airportInfoAirportId = airport_info_airport_id,
-    procedureKind = procedure_kind?.toUi(),
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
@@ -4349,13 +4351,38 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     label = label,
     enabled = enabled,
     disabled_reason = disabledReason,
-    execution = execution,
-    dismiss_tray_on_success = dismissTrayOnSuccess,
-    navigation = navigation?.toWire(),
-    weather_detail = weatherDetail?.toWire(),
-    airport_info_airport_id = airportInfoAirportId,
-    procedure_kind = procedureKind?.toWire(),
 )
+
+private fun WireFlightPlanRowActionDecision.toUi() = FlightPlanRowActionDecision(
+    performSessionMutation = perform_session_mutation,
+    dismissTray = dismiss_tray,
+    effect = effect?.toUi(),
+)
+
+private fun WireFlightPlanRowActionEffect.toUi(): FlightPlanRowActionEffect = when (kind) {
+    "show_weather" -> FlightPlanRowActionEffect.ShowWeather(requireNotNull(detail).toUi())
+    "load_airport_info" -> FlightPlanRowActionEffect.LoadAirportInfo(requireNotNull(airport_id))
+    "open_airport_charts" -> FlightPlanRowActionEffect.OpenAirportCharts(requireNotNull(airport_id))
+    "open_plate_target" -> FlightPlanRowActionEffect.OpenPlateTarget(
+        airportId = requireNotNull(airport_id),
+        target = requireNotNull(target),
+    )
+    "open_waypoint_insert" -> FlightPlanRowActionEffect.OpenWaypointInsert(
+        rowUid = requireNotNull(row_uid),
+        before = requireNotNull(before),
+    )
+    "open_airway_picker" -> FlightPlanRowActionEffect.OpenAirwayPicker(
+        rowUid = requireNotNull(row_uid),
+        originAnchor = requireNotNull(origin_anchor).toUi(),
+        destinationAnchor = destination_anchor?.toUi(),
+    )
+    "open_procedure_picker" -> FlightPlanRowActionEffect.OpenProcedurePicker(
+        rowUid = requireNotNull(row_uid),
+        airportId = requireNotNull(airport_id),
+        procedureKind = requireNotNull(procedure_kind).toUi(),
+    )
+    else -> error("unknown flight-plan row action effect: $kind")
+}
 
 private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
     airportId = airport_id,
@@ -4409,33 +4436,6 @@ private fun WireAirportRunwayPatternUiView.toUi() = AirportRunwayPatternUiView(
     finalX = final_x,
     finalY = final_y,
 )
-
-private fun WireFlightPlanRowNavigationAction.toUi(): FlightPlanRowNavigationAction? =
-    when (kind) {
-        "open_airport_charts" -> {
-            val airportId = airport_id ?: return null
-            FlightPlanRowNavigationAction.OpenAirportCharts(airportId)
-        }
-        "open_plate_target" -> {
-            val airportId = airport_id ?: return null
-            val target = target ?: return null
-            FlightPlanRowNavigationAction.OpenPlateTarget(airportId, target)
-        }
-        else -> null
-    }
-
-private fun FlightPlanRowNavigationAction.toWire(): WireFlightPlanRowNavigationAction =
-    when (this) {
-        is FlightPlanRowNavigationAction.OpenAirportCharts -> WireFlightPlanRowNavigationAction(
-            kind = "open_airport_charts",
-            airport_id = airportId,
-        )
-        is FlightPlanRowNavigationAction.OpenPlateTarget -> WireFlightPlanRowNavigationAction(
-            kind = "open_plate_target",
-            airport_id = airportId,
-            target = target,
-        )
-    }
 
 private fun WireFlightPlanEntryPreview.toUi() = FlightPlanEntryPreview(
     canCommit = can_commit,

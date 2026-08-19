@@ -13,7 +13,6 @@ import type {
   FlightPlanControlId,
   FlightPlanEntryPreview,
   FlightPlanRouteProjection,
-  FlightPlanRowNavigationAction,
   FlightPlanRouteSegment,
   FlightPlanUiState,
   FlightPlanWeatherBadgeUiView,
@@ -9319,7 +9318,7 @@ function FlightPlanPage(props: {
 
   const rowActionRows = useMemo(() => {
     if (!selectedRow) {
-    return [] as Array<Array<{ id: string; uid: string; menuColumn: number; label: string; enabled: boolean; disabledReason?: string | null; execution?: string; navigation?: FlightPlanRowNavigationAction | null; onSelect: () => void }>>;
+    return [] as Array<Array<{ id: string; uid: string; menuColumn: number; label: string; enabled: boolean; disabledReason?: string | null; onSelect: () => void }>>;
     }
 
     const closeTray = () => {
@@ -9329,7 +9328,127 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; menu_column?: number; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }) => {
+    const performSelectedRowAction = async (actionUid: string) => {
+      const uiSession = props.uiSession;
+      if (!uiSession) {
+        return;
+      }
+      const decision = await uiSession.flightPlanRowActionDecision(
+        selectedRow.rowUid,
+        actionUid,
+      );
+      if (decision.perform_session_mutation) {
+        await props.onPerformFlightPlanRowAction(selectedRow.rowUid, actionUid);
+      }
+      const effect = decision.effect;
+      if (effect?.kind === "show_weather") {
+        props.onOpenWeatherDetail(effect.detail);
+      } else if (effect?.kind === "load_airport_info") {
+        const airportId = effect.airport_id;
+        setFlightPlanAirportInfoModal({ airportId, detail: null, error: null });
+        void uiSession.airportInfo(airportId).then((detail) => {
+          setFlightPlanAirportInfoModal((current) =>
+            current?.airportId === airportId ? { ...current, detail } : current);
+        }).catch((error) => {
+          setFlightPlanAirportInfoModal((current) =>
+            current?.airportId === airportId
+              ? { ...current, error: errorMessage(error) }
+              : current);
+        });
+      } else if (effect?.kind === "open_airport_charts") {
+        props.onOpenCharts(effect.airport_id);
+      } else if (effect?.kind === "open_plate_target") {
+        props.onOpenCharts(effect.airport_id, effect.target);
+      } else if (effect?.kind === "open_waypoint_insert") {
+        setAirportInsert({
+          rowUid: effect.row_uid,
+          before: effect.before,
+          airportId: "",
+          error: null,
+          loading: false,
+          suggestions: [],
+        });
+      } else if (effect?.kind === "open_airway_picker") {
+        const adapter = props.appCoreAdapter;
+        if (!adapter) {
+          return;
+        }
+        setAirwayPicker({
+          loading: true,
+          error: null,
+          mode: "insert",
+          rowUid: effect.row_uid,
+          originAnchor: effect.origin_anchor,
+          destinationAnchor: effect.destination_anchor ?? null,
+          suggestions: [],
+          selectedAirwayName: null,
+          presentation: null,
+          selectedEntryUid: null,
+        });
+        window.requestAnimationFrame(() => {
+          void adapter.suggestAirwaysNearAnchor(effect.origin_anchor).then((suggestions) => {
+            setAirwayPicker((current) => current ? {
+              ...current,
+              loading: false,
+              suggestions,
+            } : current);
+          }).catch((error) => {
+            setAirwayPicker((current) => current ? {
+              ...current,
+              loading: false,
+              error: error instanceof Error ? error.message : String(error),
+            } : current);
+          });
+        });
+      } else if (effect?.kind === "open_procedure_picker") {
+        const adapter = props.appCoreAdapter;
+        if (!adapter) {
+          return;
+        }
+        const trace = {
+          row_uid: effect.row_uid,
+          airport_id: effect.airport_id,
+          procedure_kind: effect.procedure_kind,
+        };
+        debugLog("plan.procedure_picker.open.start", trace);
+        setProcedurePicker({
+          loading: true,
+          error: null,
+          rowUid: effect.row_uid,
+          airportId: effect.airport_id,
+          kind: effect.procedure_kind,
+          procedures: [],
+          selectedProcedureId: null,
+          options: null,
+        });
+        window.requestAnimationFrame(() => {
+          void debugTiming(
+            "plan.procedure_picker.list_procedures",
+            () => adapter.listProcedures(effect.airport_id, effect.procedure_kind),
+            trace,
+          ).then((procedures) => {
+            debugLog("plan.procedure_picker.open.done", { ...trace, procedure_count: procedures.length });
+            setProcedurePicker((current) => current ? {
+              ...current,
+              loading: false,
+              procedures,
+            } : current);
+          }).catch((error) => {
+            debugLog("plan.procedure_picker.open.error", { ...trace, message: errorMessage(error) });
+            setProcedurePicker((current) => current ? {
+              ...current,
+              loading: false,
+              error: error instanceof Error ? error.message : String(error),
+            } : current);
+          });
+        });
+      }
+      if (decision.dismiss_tray) {
+        closeTray();
+      }
+    };
+
+    const actionForUi = (action: { id: string; uid: string; menu_column?: number; label: string; enabled: boolean; disabled_reason?: string | null }) => {
       return {
         id: action.id,
         uid: action.uid,
@@ -9337,141 +9456,21 @@ function FlightPlanPage(props: {
         label: action.label,
         enabled: action.enabled,
         disabledReason: action.disabled_reason ?? null,
-        execution: action.execution,
-        navigation: action.navigation,
-        dismissTrayOnSuccess: action.dismiss_tray_on_success ?? true,
         onSelect: () => {
           if (!action.enabled) {
             return;
           }
-          if (action.weather_detail) {
-            props.onOpenWeatherDetail(action.weather_detail);
-            closeTray();
-            return;
-          }
-          if (action.airport_info_airport_id) {
-            const airportId = action.airport_info_airport_id;
-            closeTray();
-            setFlightPlanAirportInfoModal({ airportId, detail: null, error: null });
-            void props.uiSession?.airportInfo(airportId).then((detail) => {
-              setFlightPlanAirportInfoModal((current) =>
-                current?.airportId === airportId ? { ...current, detail } : current);
-            }).catch((error) => {
-              setFlightPlanAirportInfoModal((current) =>
-                current?.airportId === airportId
-                  ? { ...current, error: errorMessage(error) }
-                  : current);
-            });
-            return;
-          }
-          if (action.execution === "core_session") {
-            void props.onPerformFlightPlanRowAction(selectedRow.rowUid, action.uid);
-            if (action.dismiss_tray_on_success ?? true) {
-              closeTray();
-            }
-            return;
-          }
-          if (action.navigation) {
-            if (action.navigation.kind === "open_airport_charts") {
-              props.onOpenCharts(action.navigation.airport_id);
-            } else if (action.navigation.kind === "open_plate_target") {
-              props.onOpenCharts(action.navigation.airport_id, action.navigation.target);
-            }
-            closeTray();
-            return;
-          }
-          if (action.id === "insert_before" || action.id === "insert_after") {
-            setAirportInsert({
-              rowUid: selectedRow.rowUid,
-              before: action.id === "insert_before",
-              airportId: "",
-              error: null,
-              loading: false,
-              suggestions: [],
-            });
-            return;
-          }
-          if (action.id === "add_airway") {
-            const adapter = props.appCoreAdapter;
-            if (!adapter) {
-              return;
-            }
-            setAirwayPicker({
-              loading: true,
-              error: null,
-              mode: "insert",
-              rowUid: selectedRow.rowUid,
-              originAnchor: selectedRow.originAnchor!,
-              destinationAnchor: selectedRow.destinationAnchor!,
-              suggestions: [],
-              selectedAirwayName: null,
-              presentation: null,
-              selectedEntryUid: null,
-            });
-            window.requestAnimationFrame(() => {
-              void adapter.suggestAirwaysNearAnchor(selectedRow.originAnchor!).then((suggestions) => {
-                setAirwayPicker((current) => current ? {
-                  ...current,
-                  loading: false,
-                  suggestions,
-                } : current);
-              }).catch((error) => {
-                setAirwayPicker((current) => current ? {
-                  ...current,
-                  loading: false,
-                  error: error instanceof Error ? error.message : String(error),
-                } : current);
-              });
-            });
-            return;
-          }
-          if (action.procedure_kind) {
-            if (!selectedRow.chartAirportId) {
-              return;
-            }
-            const trace = {
+          void performSelectedRowAction(action.uid).catch((error) => {
+            debugLog("plan.row_action.failed", {
               row_uid: selectedRow.rowUid,
-              airport_id: selectedRow.chartAirportId,
-              procedure_kind: action.procedure_kind,
-            };
-            debugLog("plan.procedure_picker.open.start", trace);
-            setProcedurePicker({
-              loading: true,
-              error: null,
-              rowUid: selectedRow.rowUid,
-              airportId: selectedRow.chartAirportId,
-              kind: action.procedure_kind,
-              procedures: [],
-              selectedProcedureId: null,
-              options: null,
+              action_uid: action.uid,
+              message: errorMessage(error),
             });
-            window.requestAnimationFrame(() => {
-              void debugTiming(
-                "plan.procedure_picker.list_procedures",
-                () => props.appCoreAdapter!.listProcedures(selectedRow.chartAirportId!, action.procedure_kind!),
-                trace,
-              ).then((procedures) => {
-                debugLog("plan.procedure_picker.open.done", { ...trace, procedure_count: procedures.length });
-                setProcedurePicker((current) => current ? {
-                  ...current,
-                  loading: false,
-                  procedures,
-                } : current);
-              }).catch((error) => {
-                debugLog("plan.procedure_picker.open.error", { ...trace, message: errorMessage(error) });
-                setProcedurePicker((current) => current ? {
-                  ...current,
-                  loading: false,
-                  error: error instanceof Error ? error.message : String(error),
-                } : current);
-              });
-            });
-            return;
-          }
+          });
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; menu_column?: number; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }>>).map((row) => row.map(actionForUi));
+    return selectedRow.actionMatrix.map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 

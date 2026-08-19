@@ -1504,6 +1504,64 @@ fn flight_plan_platform_boundary_is_uid_based_and_singular() {
 }
 
 #[test]
+fn flight_plan_row_action_policy_is_core_owned() {
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let wasm = read_repo_file("ui/core-rust/crates/app-wasm/src/lib.rs");
+    let ffi = read_repo_file("ui/core-rust/crates/app-ffi/src/lib.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let web_types = read_repo_file("ui/web-app/src/domain/types.ts");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightPlanPage.kt");
+    let android_models =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/Models.kt");
+    let android_wire =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
+
+    assert!(
+        session.contains("fn registered_flight_plan_row_action")
+            && session.contains("pub fn flight_plan_row_action_decision_in_session"),
+        "core must register and interpret flight-plan row action UIDs"
+    );
+    assert!(
+        wasm.contains("flight_plan_row_action_decision_in_session")
+            && ffi.contains("flightPlanRowActionDecisionInSessionJson"),
+        "both bridges must expose the same row-action decision boundary"
+    );
+    for (platform, source) in [("web", web.as_str()), ("Android", android.as_str())] {
+        assert!(
+            source.contains("flightPlanRowActionDecision"),
+            "{platform} must ask core to interpret a selected row action"
+        );
+    }
+    assert!(
+        !web.contains("if (action.id === \"insert_before\"")
+            && !web.contains("action.execution === \"core_session\"")
+            && !android.contains("when (action.id)")
+            && !android.contains("action.execution == \"core_session\""),
+        "platform row-action dispatchers must not switch on core action IDs or execution kinds"
+    );
+    for (platform, source) in [
+        ("web", web_types.as_str()),
+        ("Android domain", android_models.as_str()),
+        ("Android wire", android_wire.as_str()),
+    ] {
+        for internal_field in [
+            "dismiss_tray_on_success",
+            "dismissTrayOnSuccess",
+            "airport_info_airport_id",
+            "airportInfoAirportId",
+            "FlightPlanRowNavigationAction",
+            "WireFlightPlanRowNavigationAction",
+        ] {
+            assert!(
+                !source.contains(internal_field),
+                "{platform} retains core-only row-action field {internal_field}"
+            );
+        }
+    }
+}
+
+#[test]
 fn production_session_snapshot_wire_omits_authoritative_flight_plan_state() {
     let init = app_core::create_ui_session(app_core::FlightPlan::empty(), &[], None, None)
         .expect("create core session");

@@ -1075,18 +1075,67 @@ pub struct FlightPlanRowActionUiView {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
-    #[serde(default = "default_row_action_execution")]
+    #[serde(
+        skip_serializing,
+        skip_deserializing,
+        default = "default_row_action_execution"
+    )]
     pub execution: FlightPlanRowActionExecution,
-    #[serde(default = "default_dismiss_tray_on_success")]
+    #[serde(
+        skip_serializing,
+        skip_deserializing,
+        default = "default_dismiss_tray_on_success"
+    )]
     pub dismiss_tray_on_success: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub navigation: Option<FlightPlanRowNavigationAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub weather_detail: Option<WeatherDetailUiView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub airport_info_airport_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub procedure_kind: Option<ProcedureKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanRowActionDecision {
+    pub perform_session_mutation: bool,
+    pub dismiss_tray: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<FlightPlanRowActionEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlightPlanRowActionEffect {
+    ShowWeather {
+        detail: WeatherDetailUiView,
+    },
+    LoadAirportInfo {
+        airport_id: String,
+    },
+    OpenAirportCharts {
+        airport_id: String,
+    },
+    OpenPlateTarget {
+        airport_id: String,
+        target: String,
+    },
+    OpenWaypointInsert {
+        row_uid: String,
+        before: bool,
+    },
+    OpenAirwayPicker {
+        row_uid: String,
+        origin_anchor: NavRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_anchor: Option<NavRef>,
+    },
+    OpenProcedurePicker {
+        row_uid: String,
+        airport_id: String,
+        procedure_kind: ProcedureKind,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

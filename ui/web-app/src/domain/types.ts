@@ -341,24 +341,7 @@ export type FlightPlanRowActionUiView = {
   label: string;
   enabled: boolean;
   disabled_reason?: string | null;
-  execution?: "ui_controller" | "core_session";
-  dismiss_tray_on_success?: boolean;
-  navigation?: FlightPlanRowNavigationAction | null;
-  weather_detail?: WeatherDetailUiView | null;
-  airport_info_airport_id?: string | null;
-  procedure_kind?: ProcedureKind | null;
 };
-
-export type FlightPlanRowNavigationAction =
-  | {
-      kind: "open_airport_charts";
-      airport_id: string;
-    }
-  | {
-      kind: "open_plate_target";
-      airport_id: string;
-      target: string;
-    };
 
 export type FlightPlanDisplayRowUiView = {
   uid: string;

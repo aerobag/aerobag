@@ -218,6 +218,12 @@ interface NativeBridge {
         nowEpochMs: Long,
     ): String
 
+    fun flightPlanRowActionDecisionInSessionJson(
+        handle: Long,
+        rowUid: String,
+        actionUid: String,
+    ): String
+
     fun performFlightPlanCommandInSessionJson(
         handle: Long,
         commandJson: String,
@@ -844,6 +850,12 @@ object NativeBindings : NativeBridge {
         handle: Long,
         actionUid: String,
         nowEpochMs: Long,
+    ): String
+
+    external override fun flightPlanRowActionDecisionInSessionJson(
+        handle: Long,
+        rowUid: String,
+        actionUid: String,
     ): String
 
     external override fun performFlightPlanCommandInSessionJson(

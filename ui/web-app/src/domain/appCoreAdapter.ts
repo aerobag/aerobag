@@ -571,6 +571,31 @@ export type MapSelectionActionDecision = {
   effect?: MapSelectionActionEffect | null;
 };
 
+export type FlightPlanRowActionDecision = {
+  perform_session_mutation: boolean;
+  dismiss_tray: boolean;
+  effect?: FlightPlanRowActionEffect | null;
+};
+
+export type FlightPlanRowActionEffect =
+  | { kind: "show_weather"; detail: WeatherDetailUiView }
+  | { kind: "load_airport_info"; airport_id: string }
+  | { kind: "open_airport_charts"; airport_id: string }
+  | { kind: "open_plate_target"; airport_id: string; target: string }
+  | { kind: "open_waypoint_insert"; row_uid: string; before: boolean }
+  | {
+      kind: "open_airway_picker";
+      row_uid: string;
+      origin_anchor: NavRef;
+      destination_anchor?: NavRef | null;
+    }
+  | {
+      kind: "open_procedure_picker";
+      row_uid: string;
+      airport_id: string;
+      procedure_kind: ProcedureKind;
+    };
+
 export type MapSelectionActionEffect =
   | { kind: "show_weather"; detail: WeatherDetailUiView }
   | { kind: "load_airport_info"; airport_id: string; loading_text: string; failure_prefix: string }
@@ -799,6 +824,7 @@ export interface UiSession {
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
   redoFlightPlanEdit(): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
+  flightPlanRowActionDecision(rowUid: string, actionUid: string): Promise<FlightPlanRowActionDecision>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
   altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
   performAltitudePlannerAction(actionUid: string): Promise<UiSessionSnapshot>;
@@ -991,6 +1017,11 @@ type WasmModule = {
     actionUid: string,
     nowEpochMs: bigint,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  flight_plan_row_action_decision_in_session(
+    sessionHandle: number,
+    rowUid: string,
+    actionUid: string,
+  ): Promise<string> | string;
   perform_flight_plan_command_in_session(
     sessionHandle: number,
     commandJson: string,
@@ -1711,6 +1742,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       restoreDirectTo: async () => {
         return performFlightPlanCommand({ kind: "restore_direct_to" });
       },
+      flightPlanRowActionDecision: async (rowUid, actionUid) =>
+        JSON.parse(
+          await this.module.flight_plan_row_action_decision_in_session(
+            handle,
+            rowUid,
+            actionUid,
+          ),
+        ) as FlightPlanRowActionDecision,
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         return performFlightPlanCommand({
           kind: "perform_row_action",
@@ -2353,6 +2392,7 @@ async function loadBestAvailableAdapterUncached(
     "configure_platform_capabilities_in_session",
     "should_prepare_live_feed_resource",
     "perform_flight_plan_command_in_session",
+    "flight_plan_row_action_decision_in_session",
     "perform_flight_plan_column_action_in_session",
     "perform_time_display_action_in_session",
     "query_flight_plan_in_session",

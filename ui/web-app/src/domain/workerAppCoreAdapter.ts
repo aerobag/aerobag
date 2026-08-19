@@ -424,6 +424,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     loadPlateProcedure: (...args) => updateSnapshot(call("loadPlateProcedure", args)),
     redoFlightPlanEdit: () => updateSnapshot(call("redoFlightPlanEdit")),
     restoreDirectTo: () => updateSnapshot(call("restoreDirectTo")),
+    flightPlanRowActionDecision: (...args) => call("flightPlanRowActionDecision", args),
     performFlightPlanRowAction: (...args) => updateSnapshot(call("performFlightPlanRowAction", args)),
     altitudeComparisons: () => call("altitudeComparisons"),
     performAltitudePlannerAction: (...args) => updateSnapshot(call("performAltitudePlannerAction", args)),

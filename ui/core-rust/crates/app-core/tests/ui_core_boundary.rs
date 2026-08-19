@@ -2237,10 +2237,24 @@ fn map_selection_action_policy_is_core_owned() {
 #[test]
 fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
     let core = read_repo_file("ui/core-rust/crates/app-core/src/ui_geometry.rs");
+    let golden = read_repo_file(
+        "ui/core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json",
+    );
     let web_map = read_repo_file("ui/web-app/src/domain/mapViewport.ts");
     let web_tests = read_repo_file("ui/web-app/src/domain/mapViewport.test.ts");
+    let web_situation = read_repo_file("ui/web-app/src/domain/situationGeometry.ts");
+    let web_route = read_repo_file("ui/web-app/src/domain/flightPlanRouteRender.ts");
+    let web_pointer_tests =
+        read_repo_file("ui/web-app/src/domain/pointerRateGeometryConformance.test.ts");
     let android_map =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/MapViewport.kt");
+    let android_situation =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt");
+    let android_route =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/RouteRendering.kt");
+    let android_pills = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/RouteDistancePillLayout.kt",
+    );
     let android_tests = read_repo_file(
         "ui/android-app/app/src/test/java/org/aerobag/app/UiGeometryConformanceTest.kt",
     );
@@ -2251,7 +2265,27 @@ fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
             && android_tests.contains("ui-geometry-conformance.json"),
         "core, web, and Android geometry must execute the same conformance vectors"
     );
-    for (platform, source) in [("web", web_map.as_str()), ("Android", android_map.as_str())] {
+    for vector in ["situation_overlay", "route_chevrons", "route_distance_pill"] {
+        assert!(
+            golden.contains(vector),
+            "shared geometry golden is missing {vector}"
+        );
+        assert!(
+            core.contains(vector)
+                && web_pointer_tests.contains(vector)
+                && android_tests.contains(vector),
+            "core, web, and Android must all execute {vector}"
+        );
+    }
+    for (platform, source) in [
+        ("web map", web_map.as_str()),
+        ("web situation", web_situation.as_str()),
+        ("web route", web_route.as_str()),
+        ("Android map", android_map.as_str()),
+        ("Android situation", android_situation.as_str()),
+        ("Android route", android_route.as_str()),
+        ("Android distance pill", android_pills.as_str()),
+    ] {
         assert!(
             source.contains("Pointer-rate mirror of app_core::ui_geometry"),
             "{platform} pointer-rate geometry must document its core authority and conformance fence"

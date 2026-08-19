@@ -360,8 +360,12 @@ pub use time_display::{
     TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
 };
 pub use ui_geometry::{
-    ui_clamp_image_viewport, ui_plate_image_point, ui_screen_to_world, ui_transform_screen_point,
-    ui_world_to_screen, UiGeometryPoint, UiImageViewportGeometry, UiMapViewportGeometry,
+    ui_clamp_image_viewport, ui_lat_lon_to_screen, ui_plate_image_point, ui_project_ahead,
+    ui_route_distance_pill_layout, ui_screen_to_world, ui_select_situation_ring,
+    ui_spaced_route_chevron_placements, ui_transform_screen_point, ui_world_to_screen,
+    UiGeometryPoint, UiImageViewportGeometry, UiMapViewportGeometry, UiRouteChevronPlacement,
+    UiRouteDistancePillLayout, UiSituationCardinalLabel, UiSituationRingLayout,
+    UiSituationTickMark,
 };
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,

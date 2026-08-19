@@ -4,6 +4,8 @@
 
 import type { FlightPlanRouteDistanceAnnotation, FlightPlanRouteSegment } from "./types";
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 type ScreenPoint = { x: number; y: number };
 
 export type FlightPlanRouteScreenSegment = Pick<FlightPlanRouteSegment, "status"> & {

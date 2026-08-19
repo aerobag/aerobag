@@ -1508,6 +1508,7 @@ internal fun SituationTransportButton(
     )
 }
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
 internal fun resolveSituationOverlay(
     ownship: OwnshipRenderState,
     viewport: MapViewportState,

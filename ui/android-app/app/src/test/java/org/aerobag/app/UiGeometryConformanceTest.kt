@@ -4,17 +4,23 @@
 
 package org.aerobag.app
 
+import androidx.compose.ui.geometry.Offset
 import java.io.File
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.aerobag.app.domain.FlightPlanRouteDistanceAnnotation
 import org.aerobag.app.domain.ImageViewportState
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.PlateGeoref
+import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.ScreenPoint
+import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.WorldPoint
 import org.aerobag.app.domain.clampImageViewport
 import org.aerobag.app.domain.worldToScreen
@@ -96,9 +102,113 @@ class UiGeometryConformanceTest {
         assertEquals(plate.objectAt("expected_image").doubleAt("y"), actualPlate.y, 1e-9)
     }
 
+    @Test
+    fun `situation geometry matches core conformance vectors`() {
+        val vector = vectors.objectAt("situation_overlay")
+        val position = LatLon(
+            vector.objectAt("position").doubleAt("lat"),
+            vector.objectAt("position").doubleAt("lon"),
+        )
+        val viewport = vector.objectAt("viewport").viewport()
+        val width = vector.floatAt("width")
+        val height = vector.floatAt("height")
+        assertOffset(
+            vector.objectAt("expected").objectAt("center"),
+            latLonToScreen(position.lat, position.lon, viewport, width, height),
+        )
+
+        val predictor = vector.objectAt("predictor")
+        val predictorPosition = projectAhead(
+            position.lat,
+            position.lon,
+            predictor.doubleAt("heading_deg"),
+            predictor.doubleAt("speed_kt") * predictor.doubleAt("minutes") / 60.0,
+        )
+        assertOffset(
+            vector.objectAt("expected").objectAt("predictor"),
+            latLonToScreen(predictorPosition.lat, predictorPosition.lon, viewport, width, height),
+        )
+
+        val ring = selectSituationRing(
+            position = position,
+            viewport = viewport,
+            widthUnits = width,
+            heightUnits = height,
+            ringCandidates = vector.arrayAt("ring_candidates").map { element ->
+                element.jsonObject.let { candidate ->
+                    SituationRingCandidate(
+                        radiusNm = candidate.doubleAt("radius_nm"),
+                        label = candidate.stringAt("label"),
+                    )
+                }
+            },
+            magneticVariationDeg = vector.floatAt("magnetic_variation_deg"),
+        )
+        val expected = vector.objectAt("expected").objectAt("ring")
+        assertEquals(expected.stringAt("label"), ring.labelText)
+        assertEquals(expected.floatAt("radius"), ring.radiusUnits, 1e-4f)
+        assertOffset(expected.objectAt("label_point"), ring.labelPointUnits)
+        assertEquals(expected.floatAt("label_rotation_degrees"), ring.labelRotationDeg, 1e-4f)
+        assertEquals(expected.arrayAt("ticks").size, ring.tickMarks.size)
+        ring.tickMarks.forEachIndexed { index, tick ->
+            val expectedTick = expected.arrayAt("ticks")[index].jsonObject
+            assertOffset(expectedTick.objectAt("inner"), tick.innerUnits)
+            assertOffset(expectedTick.objectAt("outer"), tick.outerUnits)
+        }
+        assertEquals(expected.arrayAt("cardinals").size, ring.cardinalLabels.size)
+        ring.cardinalLabels.forEachIndexed { index, cardinal ->
+            val expectedCardinal = expected.arrayAt("cardinals")[index].jsonObject
+            assertEquals(expectedCardinal.stringAt("text"), cardinal.text)
+            assertOffset(expectedCardinal.objectAt("point"), cardinal.pointUnits)
+            assertEquals(expectedCardinal.floatAt("rotation_degrees"), cardinal.rotationDeg, 1e-4f)
+        }
+    }
+
+    @Test
+    fun `route annotations match core conformance vectors`() {
+        val chevrons = vectors.objectAt("route_chevrons")
+        val placements = spacedRouteChevronPlacements(
+            chevrons.arrayAt("path").map { it.jsonObject.offset() },
+            chevrons.floatAt("spacing"),
+        )
+        val expectedChevrons = chevrons.arrayAt("expected")
+        assertEquals(expectedChevrons.size, placements.size)
+        placements.forEachIndexed { index, placement ->
+            val expected = expectedChevrons[index].jsonObject
+            assertOffset(expected, placement.center)
+            assertEquals(expected.floatAt("angle_degrees"), placement.angleDegrees, 1e-4f)
+        }
+
+        val pill = vectors.objectAt("route_distance_pill")
+        val annotation = FlightPlanRouteDistanceAnnotation(
+            id = "conformance-pill",
+            segmentIndexes = pill.arrayAt("segment_indexes").map { it.jsonPrimitive.content.toInt() },
+            text = pill.stringAt("text"),
+            distanceNm = 20.0,
+            status = RouteSegmentStatus.Active,
+            requiredFeatureIds = pill.arrayAt("required_feature_ids").map { it.jsonPrimitive.content },
+            minimumPathToPillWidthRatio = pill.doubleAt("minimum_path_to_pill_width_ratio"),
+        )
+        val layout = layoutRouteDistancePills(
+            annotations = listOf(annotation),
+            screenPaths = pill.arrayAt("screen_paths").map { path ->
+                path.jsonArray.map { it.jsonObject.offset() }
+            },
+            visibleFeatureIds = pill.arrayAt("visible_feature_ids").map { it.jsonPrimitive.content }.toSet(),
+            measurePillWidth = { pill.floatAt("measured_width") },
+        ).single()
+        val expectedPill = pill.objectAt("expected")
+        assertOffset(expectedPill.objectAt("center"), layout.center)
+        assertEquals(expectedPill.floatAt("width"), layout.widthPx, 1e-4f)
+        assertEquals(expectedPill.floatAt("rotation_degrees"), layout.rotationDegrees, 1e-4f)
+    }
+
     private fun JsonObject.objectAt(name: String) = getValue(name).jsonObject
+    private fun JsonObject.arrayAt(name: String): JsonArray = getValue(name).jsonArray
     private fun JsonObject.doubleAt(name: String) = getValue(name).jsonPrimitive.content.toDouble()
     private fun JsonObject.floatAt(name: String) = doubleAt(name).toFloat()
+    private fun JsonObject.stringAt(name: String) = getValue(name).jsonPrimitive.content
+    private fun JsonObject.offset() = Offset(floatAt("x"), floatAt("y"))
     private fun JsonObject.worldPoint() = WorldPoint(doubleAt("x"), doubleAt("y"))
     private fun JsonObject.screenPoint() = ScreenPoint(floatAt("x"), floatAt("y"))
     private fun JsonObject.viewport() = MapViewportState(
@@ -109,6 +219,11 @@ class UiGeometryConformanceTest {
     )
 
     private fun assertScreenPoint(expected: JsonObject, actual: ScreenPoint) {
+        assertEquals(expected.doubleAt("x"), actual.x.toDouble(), 1e-4)
+        assertEquals(expected.doubleAt("y"), actual.y.toDouble(), 1e-4)
+    }
+
+    private fun assertOffset(expected: JsonObject, actual: Offset) {
         assertEquals(expected.doubleAt("x"), actual.x.toDouble(), 1e-4)
         assertEquals(expected.doubleAt("y"), actual.y.toDouble(), 1e-4)
     }

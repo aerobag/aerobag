@@ -1,17 +1,15 @@
 # Web / Android Platform Drift Audit
 
-Status: burn-down in progress
+Status: complete
 Audited revision: `e0858ee5` (`Restore status parity on web charts`)  
 Date: 2026-08-19
 
 ## Summary
 
-This audit found eight meaningful drift seams. Three already produce visible
-platform differences; the others currently agree only because equivalent
-policy is duplicated.
-
-The recent status fix restored parity, but it stopped one architectural layer
-short: platforms still decide which status controls belong on each surface.
+This audit found eight meaningful drift seams. All eight are now resolved:
+shared product policy lives in core, UI-facing contracts are generated where
+appropriate, and the remaining pointer-rate mirrors execute common core-owned
+conformance vectors.
 
 ## P0 — Burn Down First
 
@@ -245,6 +243,14 @@ enabled, disabled reason, and ordered options.
 ## P2 — Drift Fences and Asymmetric Debt
 
 ### 8. Several pointer-rate geometry mirrors lack shared conformance vectors
+
+Resolution: implemented. Core now owns pure reference implementations for
+situation-ring selection, predictor projection, ticks/cardinals, route
+chevrons, and distance-pill layout. The shared geometry golden exercises all
+of them, and both web and Android execute those exact vectors. The web
+situation mirror was also extracted from `App.tsx`, and a boundary test now
+requires every pointer-rate mirror to document its core authority and retain
+the relevant conformance tests.
 
 The situation-ring selection, predictor projection, ticks, and cardinal
 placement are independently implemented:

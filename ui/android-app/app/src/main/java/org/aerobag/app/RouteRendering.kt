@@ -19,6 +19,8 @@ import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.hypot
 
+// Pointer-rate mirror of app_core::ui_geometry; shared conformance vectors prevent platform drift.
+
 internal data class RouteChevronPlacement(
     val center: Offset,
     val angleDegrees: Float,

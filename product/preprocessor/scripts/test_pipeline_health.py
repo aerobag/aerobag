@@ -469,6 +469,7 @@ class PipelineHealthTests(unittest.TestCase):
                                 ],
                                 "quality": {
                                     "procedure_notams_without_ui_anchor": 1,
+                                    "source_records_without_location": 1,
                                     "rejected_row_count": 1,
                                     "oldest_rejected_ingest_seq": 6922,
                                     "latest_rejected_ingest_seq": 6922,
@@ -539,6 +540,13 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(unanchored["value"], 1)
         self.assertEqual(unanchored["severity"], "ok")
         self.assertEqual(unanchored["warning_threshold"], 2)
+        missing_location = metric(
+            evaluation,
+            "live_feed.notams.source_records_without_location",
+        )
+        self.assertEqual(missing_location["value"], 1)
+        self.assertEqual(missing_location["severity"], "warning")
+        self.assertEqual(missing_location["warning_threshold"], 1)
 
         facts["inputs"]["live_feeds_status"]["payload"]["products"]["notams"][
             "quality"

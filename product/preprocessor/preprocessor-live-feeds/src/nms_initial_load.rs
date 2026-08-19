@@ -517,6 +517,8 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/nms_initial_load.xml");
+    const LOCATIONLESS_FDC_FIXTURE: &str =
+        include_str!("../tests/fixtures/nms_initial_load_fdc_without_location.xml");
 
     #[test]
     fn parses_initial_load_into_canonical_records() -> anyhow::Result<()> {
@@ -559,6 +561,25 @@ mod tests {
         assert!(parsed.rejections[0]
             .reason
             .contains("FDC endpoint returned DOM record"));
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_nms_fdc_without_a_location() -> anyhow::Result<()> {
+        let parsed = parse_nms_initial_load(
+            Cursor::new(LOCATIONLESS_FDC_FIXTURE.as_bytes()),
+            NmsNotamClassification::Fdc,
+        )?;
+
+        parsed.validate_complete()?;
+        assert_eq!(parsed.records.len(), 1);
+        let record = &parsed.records[0];
+        assert_eq!(record.id, "NMS:4415294478232247");
+        assert_eq!(record.nms_id.as_deref(), Some("4415294478232247"));
+        assert_eq!(record.notam_number.as_deref(), Some("6/5474"));
+        assert_eq!(record.location, None);
+        assert_eq!(record.location_designator, None);
+        assert_eq!(record.icao_id, None);
         Ok(())
     }
 

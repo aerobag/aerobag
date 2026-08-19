@@ -228,8 +228,8 @@ pub struct StructuredPoint {
     pub lon: f64,
 }
 
-pub fn published_notam_record(record: &StructuredNotamRecord) -> NotamRecord {
-    NotamRecord {
+pub fn published_notam_record(record: &StructuredNotamRecord) -> Option<NotamRecord> {
+    let published = NotamRecord {
         id: record.id.clone(),
         airport_id: record.airport_id.clone(),
         airport_effects: record.airport_effects.clone(),
@@ -240,13 +240,14 @@ pub fn published_notam_record(record: &StructuredNotamRecord) -> NotamRecord {
         text: record.text.clone(),
         local_text: record.local_text.clone(),
         icao_text: record.icao_text.clone(),
-    }
+    };
+    published.is_displayable().then_some(published)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CanonicalNotamIdentity {
     source_type: String,
-    location: String,
+    location: Option<String>,
     year: String,
     notam_type: String,
     number: String,
@@ -264,7 +265,10 @@ impl CanonicalNotamIdentity {
         if !matches!(source_type.as_str(), "D" | "F") {
             bail!("unsupported NOTAM source type {source_type}");
         }
-        let location = required_uppercase_notam_field(location, "location")?;
+        let location = location
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_uppercase);
         let year = required_uppercase_notam_field(year, "year")?;
         if year.len() != 4 || !year.chars().all(|ch| ch.is_ascii_digit()) {
             bail!("invalid NOTAM year {year}");
@@ -323,11 +327,15 @@ impl CanonicalNotamIdentity {
         })
     }
 
-    fn id(&self) -> String {
-        format!(
+    fn id(&self) -> anyhow::Result<String> {
+        let location = self
+            .location
+            .as_deref()
+            .context("NOTAM location is missing")?;
+        Ok(format!(
             "{}:{}:{}:{}:{}",
-            self.source_type, self.location, self.year, self.notam_type, self.number
-        )
+            self.source_type, location, self.year, self.notam_type, self.number
+        ))
     }
 }
 
@@ -1864,7 +1872,7 @@ fn normalize_notam_xml(
         notam_number.as_deref(),
     )?;
     let nms_id = normalize_nms_id(hints.nms_id.or_else(|| nms_id_from_xml(&xml)))?;
-    let record_id = canonical_notam_record_id(nms_id.as_deref(), &identity);
+    let record_id = canonical_notam_record_id(nms_id.as_deref(), &identity)?;
     let notam_status = canonical_notam_status(hints.notam_status)?;
     let notam_function =
         canonical_notam_function(hints.notam_function.or_else(|| notam_type.clone()))?;
@@ -1874,7 +1882,7 @@ fn normalize_notam_xml(
         notam_keyword.as_deref(),
         icao_id.as_deref(),
         location_designator.as_deref(),
-        Some(identity.location.as_str()),
+        identity.location.as_deref(),
     );
     let procedure_rendezvous_keys = procedure_rendezvous_keys_for_notam(
         &xml,
@@ -1914,7 +1922,7 @@ fn normalize_notam_xml(
         procedure_rendezvous_keys,
         airport_name: find_first_text(&xml, "airportname").or(find_first_text(&xml, "name")),
         airport_position,
-        location: Some(identity.location.clone()),
+        location: identity.location.clone(),
         classification: find_first_text(&xml, "classification"),
         account_id,
         xover_account_id: find_first_text(&xml, "xoveraccountID"),
@@ -1954,9 +1962,9 @@ pub(crate) fn canonicalize_structured_notam_record(
         record.notam_number.as_deref(),
     )?;
     record.nms_id = normalize_nms_id(record.nms_id)?;
-    record.id = canonical_notam_record_id(record.nms_id.as_deref(), &identity);
+    record.id = canonical_notam_record_id(record.nms_id.as_deref(), &identity)?;
     record.source_type = Some(identity.source_type.clone());
-    record.location = Some(identity.location);
+    record.location = identity.location;
     record.notam_year = Some(identity.year);
     record.notam_type = Some(identity.notam_type);
     record.notam_number = Some(identity.number);
@@ -2085,10 +2093,11 @@ fn normalize_nms_id(value: Option<String>) -> anyhow::Result<Option<String>> {
 fn canonical_notam_record_id(
     nms_id: Option<&str>,
     fallback_identity: &CanonicalNotamIdentity,
-) -> String {
-    nms_id
-        .map(|nms_id| format!("NMS:{nms_id}"))
-        .unwrap_or_else(|| fallback_identity.id())
+) -> anyhow::Result<String> {
+    match nms_id {
+        Some(nms_id) => Ok(format!("NMS:{nms_id}")),
+        None => fallback_identity.id(),
+    }
 }
 
 fn nms_id_from_xml(document: &roxmltree::Document<'_>) -> Option<String> {

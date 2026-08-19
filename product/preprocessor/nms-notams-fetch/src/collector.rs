@@ -1140,6 +1140,13 @@ fn prune_expired(tx: &Transaction<'_>, now: DateTime<Utc>) -> anyhow::Result<Vec
 }
 
 fn human_identity(record: &StructuredNotamRecord) -> anyhow::Result<String> {
+    if record.location.as_deref().is_none_or(str::is_empty) {
+        return record
+            .nms_id
+            .as_deref()
+            .map(|nms_id| format!("NMS:{nms_id}"))
+            .context("missing both location and NMS ID");
+    }
     Ok(format!(
         "{}:{}:{}:{}:{}",
         record
@@ -1637,12 +1644,12 @@ mod tests {
             },
             Some("N"),
             "!FDC 6/7894 MHK TEST",
-            "MISSING LOCATION",
+            "MISSING YEAR",
             "2026-07-23T14:03:30Z",
             None,
             "209907241405",
         )
-        .replace("<event:location>MHK</event:location>", "");
+        .replace("<event:year>2026</event:year>", "");
         let poll_started = timestamp("2026-07-23T14:04:00Z");
         let summary = store.apply_poll(
             poll_started,
@@ -1669,7 +1676,7 @@ mod tests {
                 ))
             },
         )?;
-        assert!(reason.contains("NOTAM location is missing"));
+        assert!(reason.contains("NOTAM year is missing"));
         assert_eq!(raw_aixm, malformed);
         assert_eq!(occurrences, 1);
 
@@ -1685,6 +1692,71 @@ mod tests {
             },)?,
             2
         );
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_accepts_nms_record_without_location() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let xml = update_xml(
+            UpdateIdentity {
+                nms_id: "4415294478232247",
+                classification: "FDC",
+                location: "FDC",
+                number: "5474",
+            },
+            Some("N"),
+            "!FDC 6/5474 CA..AIRSPACE IMPERIAL, CA..TEMPORARY FLIGHT RESTRICTIONS.",
+            "TEMPORARY FLIGHT RESTRICTIONS",
+            "2026-08-17T07:51:00Z",
+            None,
+            "202608220015",
+        )
+        .replace("<event:location>FDC</event:location>", "");
+        let record = parse_nms_api_update(&xml, NmsNotamClassification::Fdc)?.record;
+        assert_eq!(record.location, None);
+
+        store.install_baseline(
+            "fixture",
+            None,
+            timestamp("2026-08-19T01:36:00Z"),
+            Path::new("/fixture/initial-load"),
+            &[record],
+        )?;
+
+        let connection = store.open_connection()?;
+        let (id, human_identity) =
+            connection.query_row("SELECT id, human_identity FROM current_notams", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+        assert_eq!(id, "NMS:4415294478232247");
+        assert_eq!(human_identity, "NMS:4415294478232247");
+
+        let cancellation = update_xml(
+            UpdateIdentity {
+                nms_id: "4415294478232247",
+                classification: "FDC",
+                location: "FDC",
+                number: "5474",
+            },
+            Some("N"),
+            "!FDC 6/5474 CA..AIRSPACE IMPERIAL, CA..TEMPORARY FLIGHT RESTRICTIONS.",
+            "TEMPORARY FLIGHT RESTRICTIONS",
+            "2026-08-19T02:00:00Z",
+            Some("2026-08-19T02:00:00Z"),
+            "202608220015",
+        )
+        .replace("<event:location>FDC</event:location>", "");
+        let summary = store.apply_poll(
+            timestamp("2026-08-19T02:01:00Z"),
+            timestamp("2026-08-19T01:35:00Z"),
+            Vec::new(),
+            vec![cancellation],
+        )?;
+        assert_eq!(summary.removed, 1);
+        assert!(store.current_records()?.is_empty());
         Ok(())
     }
 

@@ -67,6 +67,14 @@ live-feed products.
 TFR enrichment reads the same current NOTAM state and falls back to the
 independent TFR detail cache for FDC IDs absent from that state.
 
+The canonical source store retains valid NMS records even when FAA omits
+structured location metadata. This preserves source completeness, same-ID
+cancellation, diagnostics, and TFR enrichment. Client NOTAM checkpoints include
+only records with an airport or procedure lookup anchor and display text; core
+uses the same shared displayability predicate. Live-feed status reports the
+absolute `source_records_without_location` count so Pipeline Health can warn
+without rejecting an otherwise complete Initial Load.
+
 ## External Test Fixture
 
 The external `aerobag-test-artifacts` repository contains a bounded raw NMS

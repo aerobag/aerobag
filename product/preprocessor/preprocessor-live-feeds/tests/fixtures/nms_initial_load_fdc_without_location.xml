@@ -1,0 +1,67 @@
+<wfs:FeatureCollection
+    xmlns:aixm="http://www.aixm.aero/schema/5.1"
+    xmlns:event="http://www.aixm.aero/schema/5.1/event"
+    xmlns:fnse="http://www.aixm.aero/schema/5.1/extensions/FAA/FNSE"
+    xmlns:gml="http://www.opengis.net/gml/3.2"
+    xmlns:wfs="http://www.opengis.net/wfs/2.0"
+    timeStamp="2026-08-19T01:36:00.000Z"
+    numberReturned="1">
+  <wfs:member>
+    <AIXMBasicMessage gml:id="NMS_ID_4415294478232247">
+      <hasMember>
+        <event:Event>
+          <event:timeSlice>
+            <event:EventTimeSlice>
+              <gml:validTime>
+                <gml:TimePeriod>
+                  <gml:beginPosition>2026-08-17T07:41:00.000Z</gml:beginPosition>
+                  <gml:endPosition>2026-08-22T00:15:00.000Z</gml:endPosition>
+                </gml:TimePeriod>
+              </gml:validTime>
+              <event:scenario>986</event:scenario>
+              <event:textNOTAM>
+                <event:NOTAM>
+                  <event:number>5474</event:number>
+                  <event:year>2026</event:year>
+                  <event:type>N</event:type>
+                  <event:issued>2026-08-17T07:51:00.000Z</event:issued>
+                  <event:effectiveStart>202608170741</event:effectiveStart>
+                  <event:effectiveEnd>202608220015EST</event:effectiveEnd>
+                  <event:translation>
+                    <event:NOTAMTranslation>
+                      <event:type>LOCAL_FORMAT</event:type>
+                      <event:simpleText>!FDC 6/5474 CA..AIRSPACE IMPERIAL, CA..TEMPORARY FLIGHT RESTRICTIONS. WI AN AREA DEFINED AS 3NM RADIUS OF 330138N1150323W SFC-5000FT AGL. ZLA IS THE FAA CDN FAC.</event:simpleText>
+                    </event:NOTAMTranslation>
+                  </event:translation>
+                </event:NOTAM>
+              </event:textNOTAM>
+              <event:extension>
+                <fnse:EventExtension>
+                  <fnse:classification>FDC</fnse:classification>
+                  <fnse:accountId>FDC</fnse:accountId>
+                  <fnse:lastUpdated>2026-08-17T07:51:00.000Z</fnse:lastUpdated>
+                </fnse:EventExtension>
+              </event:extension>
+            </event:EventTimeSlice>
+          </event:timeSlice>
+        </event:Event>
+      </hasMember>
+      <hasMember>
+        <aixm:Unit>
+          <aixm:timeSlice>
+            <aixm:UnitTimeSlice>
+              <aixm:name></aixm:name>
+              <aixm:type>ARTCC</aixm:type>
+              <aixm:designator></aixm:designator>
+              <aixm:position>
+                <aixm:ElevatedPoint>
+                  <gml:pos>0.000000 0.000000</gml:pos>
+                </aixm:ElevatedPoint>
+              </aixm:position>
+            </aixm:UnitTimeSlice>
+          </aixm:timeSlice>
+        </aixm:Unit>
+      </hasMember>
+    </AIXMBasicMessage>
+  </wfs:member>
+</wfs:FeatureCollection>

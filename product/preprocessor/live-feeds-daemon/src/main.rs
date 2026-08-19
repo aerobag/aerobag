@@ -3967,6 +3967,7 @@ mod tests {
                 removed_count: 0,
                 status_quality: Some(serde_json::json!({
                     "procedure_notams_without_ui_anchor": 1,
+                    "source_records_without_location": 1,
                 })),
                 publication_ack: None,
                 notam_compaction: None,
@@ -3977,6 +3978,11 @@ mod tests {
         assert_eq!(
             snapshot.products["notams"].quality.as_ref().unwrap()
                 ["procedure_notams_without_ui_anchor"],
+            1
+        );
+        assert_eq!(
+            snapshot.products["notams"].quality.as_ref().unwrap()
+                ["source_records_without_location"],
             1
         );
         Ok(())

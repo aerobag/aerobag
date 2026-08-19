@@ -721,22 +721,18 @@ pub fn notam_display_delta(
 }
 
 fn project_notam_display_record(record: &NotamRecord) -> Option<NotamDisplayRecord> {
+    if !record.is_displayable() {
+        return None;
+    }
     let airport_id = record
         .airport_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_uppercase);
-    if airport_id.is_none() && record.procedure_rendezvous_keys.is_empty() {
-        return None;
-    }
     let text = record
-        .text
-        .as_deref()
-        .or(record.local_text.as_deref())
-        .or(record.icao_text.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
+        .display_text()
+        .expect("displayable NOTAM has display text");
     Some(NotamDisplayRecord {
         id: record.id.clone(),
         airport_id,

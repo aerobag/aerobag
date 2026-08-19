@@ -1549,6 +1549,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 status_quality: Some(serde_json::json!({
                     "procedure_notams_without_ui_anchor": snapshot
                         .procedure_notams_without_ui_anchor,
+                    "source_records_without_location": snapshot
+                        .source_records_without_location,
                 })),
                 publication_ack,
                 notam_compaction,
@@ -1722,6 +1724,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             status_quality: Some(serde_json::json!({
                 "procedure_notams_without_ui_anchor": snapshot
                     .procedure_notams_without_ui_anchor,
+                "source_records_without_location": snapshot
+                    .source_records_without_location,
             })),
             publication_ack: Some(NotamPublicationAck {
                 state_root: store.root().to_path_buf(),

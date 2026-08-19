@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
@@ -209,6 +209,7 @@ pub struct NotamPublicationSnapshot {
     pub current_state_id: String,
     pub counters: NotamCounters,
     pub procedure_notams_without_ui_anchor: u64,
+    pub source_records_without_location: u64,
     pub cursor: NotamPublicationCursor,
     pub transitions: Vec<NotamPublicationTransition>,
 }
@@ -368,9 +369,28 @@ impl NotamPersistentStore {
             records
         };
 
-        for id in touched.keys().cloned().collect::<Vec<_>>() {
+        let existing_canonical_ids = {
+            let mut statement = tx
+                .prepare("SELECT id FROM current_notams ORDER BY id")
+                .context("failed to prepare canonical NOTAM identity query")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .context("failed to query canonical NOTAM identities")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read canonical NOTAM identities")?;
+            ids
+        };
+        let existing_ids = touched
+            .keys()
+            .cloned()
+            .chain(existing_canonical_ids)
+            .collect::<BTreeSet<_>>();
+        for id in existing_ids {
             if incoming.contains_key(&id) {
                 continue;
+            }
+            if !touched.contains_key(&id) {
+                touched.insert(id.clone(), read_client_record(&tx, &id)?);
             }
             tx.execute("DELETE FROM current_notams WHERE id = ?1", [&id])
                 .with_context(|| format!("failed to remove stale canonical NOTAM {id}"))?;
@@ -952,7 +972,7 @@ impl NotamPersistentStore {
         let procedure_notams_without_ui_anchor = tx
             .query_row(
                 "SELECT COUNT(*)
-                 FROM notam_client_records
+                 FROM current_notams
                  WHERE json_extract(record_json, '$.notam_keyword')
                            IN ('IAP', 'ODP', 'SID', 'STAR')
                    AND COALESCE(TRIM(json_extract(record_json, '$.airport_id')), '') = ''
@@ -966,6 +986,15 @@ impl NotamPersistentStore {
                 |row| row.get::<_, u64>(0),
             )
             .context("failed to count procedure NOTAMs without a UI anchor")?;
+        let source_records_without_location = tx
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM current_notams
+                 WHERE COALESCE(TRIM(json_extract(record_json, '$.location')), '') = ''",
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .context("failed to count canonical NOTAMs without a source location")?;
         let cursor = tx
             .query_row(
                 "SELECT published_through_journal_seq, published_head_state_id
@@ -1015,6 +1044,7 @@ impl NotamPersistentStore {
             current_state_id,
             counters,
             procedure_notams_without_ui_anchor,
+            source_records_without_location,
             cursor,
             transitions,
         })
@@ -1477,7 +1507,9 @@ impl NotamPersistentStore {
         for record_json in source_rows {
             let structured = serde_json::from_str::<StructuredNotamRecord>(&record_json)
                 .context("failed to decode NOTAM incremental migration record")?;
-            let record = published_notam_record(&structured);
+            let Some(record) = published_notam_record(&structured) else {
+                continue;
+            };
             let client_json = serde_json::to_string(&record)
                 .with_context(|| format!("failed to encode published NOTAM {}", record.id))?;
             let hash = record_leaf_hash(&record)
@@ -1870,27 +1902,34 @@ fn apply_record_to_projection(
     )
     .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
     if table == ProjectionTable::Current.name() {
-        let client_record = published_notam_record(record);
-        let client_json = serde_json::to_string(&client_record)
-            .with_context(|| format!("failed to encode published NOTAM {}", record.id))?;
-        let hash = record_leaf_hash(&client_record)
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("failed to hash published NOTAM {}", record.id))?;
-        tx.execute(
-            "INSERT INTO notam_client_records(id, record_json, record_hash, merkle_bucket)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-                record_json = excluded.record_json,
-                record_hash = excluded.record_hash,
-                merkle_bucket = excluded.merkle_bucket",
-            params![
-                client_record.id,
-                client_json,
-                hash.as_slice(),
-                bucket_for_id(&record.id) as i64
-            ],
-        )
-        .with_context(|| format!("failed to upsert published NOTAM {}", record.id))?;
+        if let Some(client_record) = published_notam_record(record) {
+            let client_json = serde_json::to_string(&client_record)
+                .with_context(|| format!("failed to encode published NOTAM {}", record.id))?;
+            let hash = record_leaf_hash(&client_record)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed to hash published NOTAM {}", record.id))?;
+            tx.execute(
+                "INSERT INTO notam_client_records(id, record_json, record_hash, merkle_bucket)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                    record_json = excluded.record_json,
+                    record_hash = excluded.record_hash,
+                    merkle_bucket = excluded.merkle_bucket",
+                params![
+                    client_record.id,
+                    client_json,
+                    hash.as_slice(),
+                    bucket_for_id(&record.id) as i64
+                ],
+            )
+            .with_context(|| format!("failed to upsert published NOTAM {}", record.id))?;
+        } else {
+            tx.execute(
+                "DELETE FROM notam_client_records WHERE id = ?1",
+                [&record.id],
+            )
+            .with_context(|| format!("failed to omit unanchored NOTAM {}", record.id))?;
+        }
     }
     Ok((
         (existing.as_deref() != Some(record_json.as_str())) as usize,
@@ -2551,7 +2590,7 @@ mod tests {
         assert_eq!(replayed.checkpoint(), store.current_checkpoint()?);
         assert_eq!(
             replayed.checkpoint().records,
-            vec![published_notam_record(&updated)]
+            vec![published_notam_record(&updated).expect("updated NOTAM is displayable")]
         );
         Ok(())
     }
@@ -2664,7 +2703,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_snapshot_counts_procedure_notams_without_ui_anchor() -> anyhow::Result<()> {
+    fn publication_omits_unanchored_records_but_reports_source_quality() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         let unanchored = structured_notam_record_from_json(&captured_notam_variant(
@@ -2676,15 +2715,68 @@ mod tests {
             "STAR SPECIAL IAP, USCG SAN DIEGO, COPTER RNAV (GPS) 007, ORIG",
         ))?
         .context("missing unanchored procedure NOTAM")?;
+        let mut locationless = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("AIRSPACE"),
+            "5474",
+            Some("N"),
+            "TEMPORARY FLIGHT RESTRICTIONS",
+        ))?
+        .context("missing locationless FDC NOTAM")?;
+        locationless.id = "NMS:4415294478232247".to_string();
+        locationless.nms_id = Some("4415294478232247".to_string());
+        locationless.source_type = Some("F".to_string());
+        locationless.location = None;
+        locationless.location_designator = None;
+        locationless.icao_id = None;
+        locationless.airport_id = None;
+        locationless = canonicalize_structured_notam_record(locationless)?;
 
-        store.synchronize_current_records(&[unanchored], "2026-08-19T00:00:00Z")?;
+        let synchronized = store
+            .synchronize_current_records(&[unanchored, locationless], "2026-08-19T00:00:00Z")?;
 
-        assert_eq!(
-            store
-                .publication_snapshot()?
-                .procedure_notams_without_ui_anchor,
-            1
-        );
+        assert_eq!(synchronized.changed_count, 0);
+        assert_eq!(store.current_records()?.len(), 2);
+        assert!(store.current_checkpoint()?.records.is_empty());
+        let snapshot = store.publication_snapshot()?;
+        assert_eq!(snapshot.procedure_notams_without_ui_anchor, 1);
+        assert_eq!(snapshot.source_records_without_location, 1);
+
+        store.synchronize_current_records(&[], "2026-08-19T00:03:00Z")?;
+        assert!(store.current_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn publication_removes_a_record_that_loses_its_display_anchor() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        let mut record = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("RWY"),
+            "1",
+            Some("N"),
+            "RWY 01 CLSD.",
+        ))?
+        .context("missing anchored NOTAM")?;
+
+        let initial = store
+            .synchronize_current_records(std::slice::from_ref(&record), "2026-08-19T00:00:00Z")?;
+        assert_eq!(initial.changed_count, 1);
+        assert_eq!(store.current_checkpoint()?.records.len(), 1);
+
+        record.notam_keyword = Some("AIRSPACE".to_string());
+        record.text = Some("AIRSPACE TEST".to_string());
+        record = canonicalize_structured_notam_record(record)?;
+        let updated = store
+            .synchronize_current_records(std::slice::from_ref(&record), "2026-08-19T00:03:00Z")?;
+
+        assert_eq!(updated.changed_count, 0);
+        assert_eq!(updated.removed_count, 1);
+        assert_eq!(store.current_records()?, vec![record]);
+        assert!(store.current_checkpoint()?.records.is_empty());
         Ok(())
     }
 

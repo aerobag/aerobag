@@ -47,6 +47,28 @@ pub struct NotamRecord {
     pub icao_text: Option<String>,
 }
 
+impl NotamRecord {
+    pub fn has_display_anchor(&self) -> bool {
+        self.airport_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || !self.procedure_rendezvous_keys.is_empty()
+    }
+
+    pub fn display_text(&self) -> Option<&str> {
+        self.text
+            .as_deref()
+            .or(self.local_text.as_deref())
+            .or(self.icao_text.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn is_displayable(&self) -> bool {
+        self.has_display_anchor() && self.display_text().is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotamCounters {
     pub notam_count: u64,

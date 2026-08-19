@@ -813,6 +813,28 @@ def add_live_feed_metrics(
                             f"{unanchored_count}; expected at most {expected}"
                         ),
                     )
+                missing_location_count = quality.get(
+                    "source_records_without_location"
+                )
+                if isinstance(missing_location_count, int):
+                    add_metric(
+                        metrics,
+                        metric_id=(
+                            "live_feed.notams."
+                            "source_records_without_location"
+                        ),
+                        label="FAA NOTAM source records without location",
+                        value=missing_location_count,
+                        unit="records",
+                        severity=(
+                            "warning" if missing_location_count > 0 else "ok"
+                        ),
+                        warning_threshold=1,
+                        message=(
+                            "Active FAA NOTAM source records without structured "
+                            f"location metadata: {missing_location_count}"
+                        ),
+                    )
                 rejected_count = int(quality.get("rejected_row_count") or 0)
                 add_metric(
                     metrics,

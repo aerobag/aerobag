@@ -3733,7 +3733,6 @@ pub(crate) fn refresh_flight_plan_row_action_navigation(row: &mut FlightPlanDisp
     let chart_airport_id = row.chart_airport_id.clone();
     let show_plate_target_id = row.show_plate_target_id.clone();
     for action in flight_plan_row_actions_mut(row) {
-        set_flight_plan_row_action_enabled(action, action.enabled);
         action.navigation = match action.id {
             FlightPlanRowActionId::Plates => chart_airport_id.as_ref().map(|airport_id| {
                 FlightPlanRowNavigationAction::OpenAirportCharts {
@@ -3753,6 +3752,9 @@ pub(crate) fn refresh_flight_plan_row_action_navigation(row: &mut FlightPlanDisp
             }
             _ => None,
         };
+        let enabled = action.enabled
+            && (action.id != FlightPlanRowActionId::ShowPlate || action.navigation.is_some());
+        set_flight_plan_row_action_enabled(action, enabled);
     }
 }
 
@@ -9861,16 +9863,7 @@ mod tests {
             .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
             .expect("Show Plate action");
         assert_eq!(show_plate.navigation, None);
-
-        let show_plate = flight_plan_row_actions_mut(&mut row)
-            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
-            .expect("Show Plate action");
-        show_plate.enabled = false;
-        show_plate.disabled_reason = None;
-        refresh_flight_plan_row_action_navigation(&mut row);
-        let show_plate = flight_plan_row_actions(&row)
-            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
-            .expect("Show Plate action");
+        assert!(!show_plate.enabled);
         assert_eq!(
             show_plate.disabled_reason.as_deref(),
             Some("This procedure has no plate to show.")

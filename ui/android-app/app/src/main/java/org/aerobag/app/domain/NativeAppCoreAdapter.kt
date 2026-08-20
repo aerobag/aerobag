@@ -2238,6 +2238,8 @@ private fun OwnshipRenderState.toWire() = WireOwnshipRenderState(
     orientation_deg = orientationDeg,
     magnetic_variation_deg = magneticVariationDeg,
     speed_kt = speedKt,
+    altitude_msl_ft = altitudeMslFt,
+    pressure_altitude_ft = pressureAltitudeFt,
     terrain_altitude_bucket_ft = terrainAltitudeBucketFt,
 )
 
@@ -2323,6 +2325,8 @@ private fun WireOwnshipRenderState.toUi() = OwnshipRenderState(
     orientationDeg = orientation_deg,
     magneticVariationDeg = magnetic_variation_deg,
     speedKt = speed_kt,
+    altitudeMslFt = altitude_msl_ft,
+    pressureAltitudeFt = pressure_altitude_ft,
     terrainAltitudeBucketFt = terrain_altitude_bucket_ft,
 )
 

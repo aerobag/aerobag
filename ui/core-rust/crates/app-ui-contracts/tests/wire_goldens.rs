@@ -75,6 +75,7 @@ fn nav_query_suggestion_wire_matches_golden() {
                 has_water_runway: None,
                 runway_length_ratio: 0.8,
                 longest_runway_heading_true_deg: None,
+                elevation_msl_ft: Some(32.0),
             }),
         },
         include_str!("goldens/nav-query-suggestion.json"),

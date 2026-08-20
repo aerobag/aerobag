@@ -143,6 +143,10 @@ adb -s "$ANDROID_SERIAL" wait-for-device
 adb -s "$ANDROID_SERIAL" reverse "tcp:${PACKAGE_SOURCE_PORT}" "tcp:${PACKAGE_SOURCE_PORT}" >/dev/null || true
 
 if [[ "$SKIP_INSTALL" -eq 0 ]]; then
+  if [[ "$CLEAR_APP_DATA" -eq 1 ]]; then
+    echo "remove installed app for clean E2E state"
+    adb -s "$ANDROID_SERIAL" uninstall org.aerobag.app >/dev/null 2>&1 || true
+  fi
   echo "[1/2] installDebug"
   (
     cd "$ROOT"
@@ -164,7 +168,7 @@ else
   echo "[1/2] skip installDebug"
 fi
 
-if [[ "$CLEAR_APP_DATA" -eq 1 ]]; then
+if [[ "$CLEAR_APP_DATA" -eq 1 && "$SKIP_INSTALL" -eq 1 ]]; then
   echo "clear app data for clean E2E state"
   adb -s "$ANDROID_SERIAL" shell pm clear org.aerobag.app >/dev/null
 fi

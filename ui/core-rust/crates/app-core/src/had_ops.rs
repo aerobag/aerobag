@@ -7427,14 +7427,13 @@ mod tests {
         let large_symbol = format!(
             r#"{{
                 "kind":"airport",
-                "label":"KAAA",
+                "label":"{}",
                 "symbol_kind":"airport",
                 "style_class":"airport",
                 "towered":false,
                 "fuel_available":false,
                 "runway_length_ratio":0.0,
-                "longest_runway_heading_true_deg":null,
-                "padding":"{}"
+                "longest_runway_heading_true_deg":null
             }}"#,
             "x".repeat(5000)
         )

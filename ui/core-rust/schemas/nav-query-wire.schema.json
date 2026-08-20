@@ -3,6 +3,13 @@
     "NavSymbolFeature": {
       "additionalProperties": false,
       "properties": {
+        "elevation_msl_ft": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "fuel_available": {
           "default": false,
           "type": "boolean"

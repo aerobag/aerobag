@@ -6910,6 +6910,7 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
         has_water_runway: record.has_water_runway,
         runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
         longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
+        elevation_msl_ft: record.elevation_msl_ft,
     })
 }
 
@@ -11511,6 +11512,7 @@ mod tests {
                 has_water_runway: None,
                 runway_length_ratio: 0.0,
                 longest_runway_heading_true_deg: None,
+                elevation_msl_ft: None,
             },
         }];
         let config = test_map_overlay_config();
@@ -11612,6 +11614,7 @@ mod tests {
             has_water_runway: None,
             runway_length_ratio: 0.0,
             longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
         };
 
         assert_eq!(
@@ -11633,6 +11636,7 @@ mod tests {
             has_water_runway: None,
             runway_length_ratio: 0.0,
             longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
         };
         assert_eq!(
             chart_ident_label_for_nav_ref_symbol(

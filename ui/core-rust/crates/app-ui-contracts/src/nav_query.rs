@@ -72,6 +72,8 @@ pub struct NavSymbolFeature {
     pub runway_length_ratio: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub longest_runway_heading_true_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_msl_ft: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

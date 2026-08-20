@@ -696,6 +696,8 @@ data class OwnshipRenderState(
     val orientationDeg: Double? = null,
     val magneticVariationDeg: Double? = null,
     val speedKt: Double? = null,
+    val altitudeMslFt: Double? = null,
+    val pressureAltitudeFt: Double? = null,
     val terrainAltitudeBucketFt: Double? = null,
 )
 

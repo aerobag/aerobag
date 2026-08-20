@@ -13,6 +13,7 @@ export type WaypointSuggestionPosition = {
 export type WaypointSuggestionNavRef = { code: string; kind: "airport" } | { code: string; kind: "navaid" } | { icao_code: string; identifier: string; kind: "arinc_navaid"; section_code: string; subsection_code: string } | { airport_id: string; icao_code: string; identifier: string; kind: "terminal_navaid"; section_code: string; subsection_code: string } | { code: string; kind: "fix" } | { kind: "lat_lon"; position: WaypointSuggestionPosition } | { kind: "spot"; position: WaypointSuggestionPosition };
 
 export type NavSymbolFeature = {
+  elevation_msl_ft?: number | null;
   fuel_available: boolean;
   has_paved_runway?: boolean | null;
   has_water_runway?: boolean | null;

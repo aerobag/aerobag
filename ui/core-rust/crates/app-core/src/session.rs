@@ -14163,6 +14163,7 @@ mod tests {
                 BTreeSet::from([
                     "data_status_page_state",
                     "data_status_state",
+                    "map_status_controls",
                     "next_cycle_product_freshness_check_epoch_ms",
                 ]),
             ),
@@ -19479,7 +19480,17 @@ mod tests {
         );
         assert!(wx.enabled);
         assert_eq!(wx.label, "WX");
-        let detail = wx.weather_detail.as_ref().expect("weather detail");
+        let weather_decision = flight_plan_row_action_decision_in_session(
+            init.handle,
+            row.uid.clone(),
+            wx.uid.clone(),
+        )
+        .expect("weather action decision");
+        let Some(crate::FlightPlanRowActionEffect::ShowWeather { detail }) =
+            weather_decision.effect.as_ref()
+        else {
+            panic!("weather action did not resolve to weather detail");
+        };
         assert_eq!(detail.station_id, "KAAA");
         assert_eq!(
             detail.metar_text.as_deref(),
@@ -19500,9 +19511,17 @@ mod tests {
             .expect("airport info action");
         assert!(airport_info.enabled);
         assert_eq!(airport_info.label, "Airport Info");
+        let airport_info_decision = flight_plan_row_action_decision_in_session(
+            init.handle,
+            row.uid.clone(),
+            airport_info.uid.clone(),
+        )
+        .expect("airport info action decision");
         assert_eq!(
-            airport_info.airport_info_airport_id.as_deref(),
-            Some("KAAA")
+            airport_info_decision.effect,
+            Some(crate::FlightPlanRowActionEffect::LoadAirportInfo {
+                airport_id: "KAAA".to_string(),
+            })
         );
     }
 
@@ -25900,6 +25919,7 @@ mod tests {
             has_water_runway: None,
             runway_length_ratio: 0.0,
             longest_runway_heading_true_deg: None,
+            elevation_msl_ft: None,
         })
         .expect("symbol json");
         let store = crate::navkv::nav_kv_store_for_test(

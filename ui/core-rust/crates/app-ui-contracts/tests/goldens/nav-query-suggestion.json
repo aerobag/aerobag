@@ -9,6 +9,7 @@
     "kind": "airport"
   },
   "symbol_feature": {
+    "elevation_msl_ft": 32.0,
     "fuel_available": true,
     "has_paved_runway": true,
     "kind": "airport",

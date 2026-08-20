@@ -337,14 +337,22 @@ val generateSharedWireTypes by tasks.registering(Exec::class) {
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/cloud-wire.schema.json"))
     inputs.file(repoRoot.resolve("tools/generate-ui-wire-types.mjs"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/home-page-wire.schema.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/schemas/nav-query-wire.schema.json"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/session-page-wire.schema.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/schemas/session-update-wire.schema.json"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/session-work-wire.schema.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/crates/app-ui-contracts/tests/goldens/session-update-conformance.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/crates/app-ui-contracts/tests/goldens/ui-geometry-conformance.json"))
     outputs.dir(generatedWireSourceDir)
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/nexradOverlayWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/cloudWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/homePageWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/navQueryWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionPageWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionUpdateWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionWorkWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionUpdateConformance.json"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/uiGeometryConformance.json"))
     commandLine(
         "node",
         repoRoot.resolve("tools/generate-ui-wire-types.mjs").absolutePath,

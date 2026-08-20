@@ -198,6 +198,8 @@ if [[ -n "$TEST_ID" ]]; then
   RUN_E2E_ARGS+=(--test "$TEST_ID")
 fi
 PACKAGE_SOURCE_PORT="$PACKAGE_SOURCE_PORT" \
+  ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/" \
+  ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/" \
   "$APP_DIR/scripts/run_e2e.sh" "${RUN_E2E_ARGS[@]}"
 
 echo "[4/4] Android E2E CI run passed"

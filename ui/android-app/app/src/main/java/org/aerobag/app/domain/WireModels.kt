@@ -5,6 +5,7 @@
 package org.aerobag.app.domain
 
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -29,6 +30,44 @@ data class WireAppUiState(
     val aircraft_plan_view_path: String = "",
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
     val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(),
+    val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
+    val last_content_report: WireContentReport? = null,
+)
+
+@Serializable
+enum class WireContentPolicy {
+    OfflineRequired,
+    PreferLocal,
+    StreamAllowed,
+}
+
+@Serializable
+enum class WireContentAvailability {
+    LocalOnly,
+    RemoteOnly,
+    LocalAndRemote,
+    Unavailable,
+}
+
+@Serializable
+data class WireAvailabilityDetail(
+    val availability: WireContentAvailability,
+    val cycle_current: Boolean,
+    val integrity_ok: Boolean,
+    val cached: Boolean,
+    val offline_usable: Boolean,
+)
+
+@Serializable
+data class WireContentReportItem(
+    val label: String,
+    val availability: WireAvailabilityDetail,
+)
+
+@Serializable
+data class WireContentReport(
+    val fully_satisfied: Boolean,
+    val items: List<WireContentReportItem>,
 )
 
 @Serializable
@@ -78,6 +117,8 @@ data class WireOwnshipRenderState(
     val orientation_deg: Double? = null,
     val magnetic_variation_deg: Double? = null,
     val speed_kt: Double? = null,
+    val altitude_msl_ft: Double? = null,
+    val pressure_altitude_ft: Double? = null,
     val terrain_altitude_bucket_ft: Double? = null,
 )
 
@@ -1068,10 +1109,49 @@ data class WireFlightPlanRouteSegment(
     val to: WireLatLon,
     val path: List<WireLatLon> = emptyList(),
     val style: String = "solid",
+    val geometry: @Serializable(with = WireGuidanceRouteGeometrySerializer::class) WireGuidanceRouteGeometry,
     val distance_nm: Double,
     val course_deg: Double,
     val status: WireRouteSegmentStatus,
+    val finish_lines: List<WireFlightPlanRouteFinishLine> = emptyList(),
 )
+
+@Serializable
+data class WireFlightPlanRouteFinishLine(
+    val start: WireLatLon,
+    val end: WireLatLon,
+)
+
+@Serializable(with = WireGuidanceRouteGeometrySerializer::class)
+sealed interface WireGuidanceRouteGeometry {
+    @Serializable
+    data class Segment(
+        val kind: String = "segment",
+        val start: WireLatLon,
+        val end: WireLatLon,
+    ) : WireGuidanceRouteGeometry
+
+    @Serializable
+    data class Arc(
+        val kind: String = "arc",
+        val center: WireLatLon,
+        val radius_nm: Double,
+        val start: WireLatLon,
+        val end: WireLatLon,
+        val clockwise: Boolean,
+        val sweep_degrees: Double,
+    ) : WireGuidanceRouteGeometry
+}
+
+object WireGuidanceRouteGeometrySerializer :
+    JsonContentPolymorphicSerializer<WireGuidanceRouteGeometry>(WireGuidanceRouteGeometry::class) {
+    override fun selectDeserializer(element: kotlinx.serialization.json.JsonElement) =
+        when (val kind = element.jsonObject["kind"]?.jsonPrimitive?.content) {
+            "segment" -> WireGuidanceRouteGeometry.Segment.serializer()
+            "arc" -> WireGuidanceRouteGeometry.Arc.serializer()
+            else -> throw SerializationException("Unknown guidance route geometry kind: $kind")
+        }
+}
 
 @Serializable
 data class WireFlightPlanRouteDistanceAnnotation(

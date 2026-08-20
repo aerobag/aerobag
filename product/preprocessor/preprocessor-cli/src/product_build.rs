@@ -5310,7 +5310,7 @@ mod tests {
             fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
             let bundle = BundleManifest {
                 schema_version: BUNDLE_SCHEMA_VERSION,
-                bundle_id: format!("cycle_2605_01_{label}"),
+                bundle_id: "cycle_2605_01".to_string(),
                 bundle_type: "cycle".to_string(),
                 cycle: "2605".to_string(),
                 cycle_version: "01".to_string(),

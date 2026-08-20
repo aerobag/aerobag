@@ -263,14 +263,14 @@ through the production NAVKV reader and pages them to completion; it does not
 depend on a publication server or wall clock.
 
 ```text
-nav-db/advance-2607-to-2608/
+nav-db/advance-2608-to-2609/
   README.md
   fixture.json
   source/current_artifacts.json
-  source/packaged/bundle_cycle_2607_01_....json
   source/packaged/bundle_cycle_2608_01_....json
-  source/packaged/nav_db_<contract>_2607_01_....zip
+  source/packaged/bundle_cycle_2609_01_....json
   source/packaged/nav_db_<contract>_2608_01_....zip
+  source/packaged/nav_db_<contract>_2609_01_....zip
 ```
 
 `fixture.json` records the exact source publication identity, filenames,
@@ -288,14 +288,14 @@ selected plate, and raster-family preservation.
 
 ## Regression Coverage
 
-`real_nav_db_2607_to_2608_advance_preserves_rich_session` drives the production
+`real_nav_db_2608_to_2609_advance_preserves_rich_session` drives the production
 session transaction and real paged NAVKV artifacts. Set
 `AEROBAG_TEST_ARTIFACTS_ROOT` (or `AEROBAG_TEST_ARTIFACTS`) when the sibling
 fixture repository is not discoverable automatically.
 
-The test constructs the rich plan on 2607, selects its VOR-A plate, activates
+The test constructs the rich plan on 2608, selects its VOR-A plate, activates
 the procedure hold, loads the raster catalog and guidance, then advances the
-same live session to 2608. It asserts exact flight-plan/guidance preservation,
+same live session to 2609. It asserts exact flight-plan/guidance preservation,
 fresh procedure arc geometry, active route projection, selected-family
 preservation, candidate identity, and a single epoch increment.
 
@@ -324,7 +324,7 @@ raster, route, and terrain results from landing after a commit.
    non-hushable reload warning and core-owned action described above.
 6. Synthetic tests cover commit, paging atomicity, missing required plan data,
    rejection/lease behavior, and concurrent old-generation reads during
-   candidate I/O. The production-byte test covers the rich 2607-to-2608 case.
+   candidate I/O. The production-byte test covers the rich 2608-to-2609 case.
 7. Core emits a NAVDB maintenance deadline. Android attempts an installed
    candidate at cycle turnover, and Web periodically refreshes publication
    metadata before running the same candidate transaction.
@@ -334,7 +334,7 @@ raster, route, and terrain results from landing after a commit.
 - Core owns candidate selection, validation, adoption, warning policy, and
   package leases.
 - Platforms contain no NAVDB-specific swap policy.
-- A rich active session advances from the real 2607 fixture to the real 2608
+- A rich active session advances from the real 2608 fixture to the real 2609
   fixture without losing or mixing state.
 - An incompatible live session rejects the candidate without changing visible
   or navigational state.

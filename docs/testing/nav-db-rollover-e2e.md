@@ -5,19 +5,19 @@ handles an effective-cycle transition without replacing the user session.
 
 The test uses immutable production NAVDB fixtures matching the current client
 contract from `aerobag-test-artifacts.git` under
-`nav-db/advance-2607-to-2608`. It does not mock NAVDB reads or invoke session
+`nav-db/advance-2608-to-2609`. It does not mock NAVDB reads or invoke session
 mutation APIs directly. CI verifies the fixture contract before installing
 toolchains or starting a browser.
 
 ## Scenarios
 
-- `success`: starts on 2607, constructs `KRNT SEA KPAE` plus
-  `KPAE VOR-A ECEPO` through the visible flight-plan controls, crosses the 2608
-  effective instant, and verifies that core adopts 2608 exactly once while
+- `success`: starts on 2608, constructs `KRNT SEA KPAE` plus
+  `KPAE VOR-A ECEPO` through the visible flight-plan controls, crosses the 2609
+  effective instant, and verifies that core adopts 2609 exactly once while
   preserving the plan.
-- `reject`: rebuilds a structurally valid 2608 HAD without
+- `reject`: rebuilds a structurally valid 2609 HAD without
   `navref/position/navaid/SEA`, constructs the same plan, crosses the effective
-  instant, and verifies that core keeps 2607, preserves the plan, raises
+  instant, and verifies that core keeps 2608, preserves the plan, raises
   `nav_db:advance` with the reload action, and blocks repeated adoption. It
   then returns to the chart page, clicks the real `/!\` launcher, and verifies
   that the visible warning tray presents the failure and enabled reload action.

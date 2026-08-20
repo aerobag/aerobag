@@ -58,6 +58,10 @@ async function runScenario(scenario) {
   fs.mkdirSync(frameRoot, { recursive: true });
   generatePublication(scenario, Date.now() + 3_600_000);
   const lab = JSON.parse(fs.readFileSync(path.join(publicationRoot, "lab.json"), "utf8"));
+  const initialCycle = lab.initial?.cycle;
+  const candidateCycle = lab.candidate?.cycle;
+  assert(typeof initialCycle === "string", "generated lab has no initial cycle");
+  assert(typeof candidateCycle === "string", "generated lab has no candidate cycle");
   const transitionEpochMs = Date.parse(lab.transition_at);
   assert(Number.isFinite(transitionEpochMs), `invalid generated transition_at ${lab.transition_at}`);
 
@@ -67,6 +71,7 @@ async function runScenario(scenario) {
   const browser = await connectToBrowser(chrome.wsUrl);
   let page;
   const consoleRows = [];
+  const requestUrls = new Map();
   try {
     page = await browser.createTarget();
     await page.send("Page.enable");
@@ -93,6 +98,30 @@ async function runScenario(scenario) {
         detail: event.exceptionDetails,
       });
     });
+    page.onEvent("Network.requestWillBeSent", (event) => {
+      requestUrls.set(event.requestId, event.request?.url ?? null);
+    });
+    page.onEvent("Network.loadingFailed", (event) => {
+      consoleRows.push({
+        type: "network-loading-failed",
+        timestamp: event.timestamp,
+        request_id: event.requestId,
+        url: requestUrls.get(event.requestId) ?? null,
+        error_text: event.errorText,
+        canceled: event.canceled ?? false,
+        blocked_reason: event.blockedReason ?? null,
+      });
+    });
+    page.onEvent("Network.responseReceived", (event) => {
+      if ((event.response?.status ?? 0) < 400) return;
+      consoleRows.push({
+        type: "network-error-response",
+        timestamp: event.timestamp,
+        request_id: event.requestId,
+        status: event.response.status,
+        url: event.response.url,
+      });
+    });
     await page.navigate(`${baseUrl}?navDbRolloverE2e=${scenario}&run=${encodeURIComponent(runId)}`);
     await waitFor(() => page.evalValue("document.readyState === 'complete'"), 30_000, "document ready");
     await waitFor(
@@ -100,7 +129,12 @@ async function runScenario(scenario) {
       90_000,
       "NAVDB E2E probe",
     );
-    await waitForProbe(page, (probe) => probe.active_nav_db?.cycle === "2607", 90_000, "cycle 2607 startup");
+    await waitForProbe(
+      page,
+      (probe) => probe.active_nav_db?.cycle === initialCycle,
+      90_000,
+      `cycle ${initialCycle} startup`,
+    );
     await acceptDisclaimer(page);
     await buildRichFlightPlan(page);
     assert(
@@ -108,7 +142,10 @@ async function runScenario(scenario) {
       "disclaimer returned after persisted acceptance",
     );
     const before = await navDbProbe(page);
-    assert(before.active_nav_db?.cycle === "2607", `expected 2607 before transition, got ${before.active_nav_db?.cycle}`);
+    assert(
+      before.active_nav_db?.cycle === initialCycle,
+      `expected ${initialCycle} before transition, got ${before.active_nav_db?.cycle}`,
+    );
     assertRichPlan(before);
     const planFingerprint = stablePlanFingerprint(before);
 
@@ -125,7 +162,7 @@ async function runScenario(scenario) {
       after = await navDbProbe(page);
       if (
         scenario === "success"
-          ? after.active_nav_db?.cycle === "2608"
+          ? after.active_nav_db?.cycle === candidateCycle
           : after.advance_warning !== null
       ) {
         break;
@@ -148,7 +185,15 @@ async function runScenario(scenario) {
     }
     await capturePng(page, path.join(scenarioRoot, "after.png"));
 
-    const assertions = assertScenario(scenario, before, after, planFingerprint, warningUi);
+    const assertions = assertScenario(
+      scenario,
+      before,
+      after,
+      planFingerprint,
+      warningUi,
+      initialCycle,
+      candidateCycle,
+    );
     writeJson(path.join(scenarioRoot, "assertions.json"), {
       scenario,
       transition_at: new Date(transitionEpochMs).toISOString(),
@@ -239,21 +284,35 @@ async function buildRichFlightPlan(page) {
   );
 }
 
-function assertScenario(scenario, before, after, expectedPlanFingerprint, warningUi) {
+function assertScenario(
+  scenario,
+  before,
+  after,
+  expectedPlanFingerprint,
+  warningUi,
+  initialCycle,
+  candidateCycle,
+) {
   assert(
     stablePlanFingerprint(after) === expectedPlanFingerprint,
     "flight plan changed across NAVDB adoption attempt",
   );
   assertRichPlan(after);
   if (scenario === "success") {
-    assert(after.active_nav_db?.cycle === "2608", `success scenario remained on ${after.active_nav_db?.cycle}`);
+    assert(
+      after.active_nav_db?.cycle === candidateCycle,
+      `success scenario remained on ${after.active_nav_db?.cycle}`,
+    );
     assert(
       after.nav_data_epoch === before.nav_data_epoch + 1,
       `success scenario epoch changed ${before.nav_data_epoch} -> ${after.nav_data_epoch}`,
     );
     assert(after.advance_warning === null, "success scenario raised NAVDB advance warning");
   } else {
-    assert(after.active_nav_db?.cycle === "2607", `reject scenario changed to ${after.active_nav_db?.cycle}`);
+    assert(
+      after.active_nav_db?.cycle === initialCycle,
+      `reject scenario changed to ${after.active_nav_db?.cycle}`,
+    );
     assert(
       after.nav_data_epoch === before.nav_data_epoch,
       `reject scenario epoch changed ${before.nav_data_epoch} -> ${after.nav_data_epoch}`,
@@ -468,7 +527,12 @@ function generatePublication(scenario, transitionEpochMs) {
 }
 
 function materializeFixture(destinationRoot) {
-  const relative = path.join("nav-db", "advance-2607-to-2608");
+  const fixtureLock = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "test-artifacts.lock.json"), "utf8"),
+  );
+  const configuredPath = fixtureLock.fixtures?.["nav-db-advance"]?.path;
+  assert(typeof configuredPath === "string", "fixture lock has no nav-db-advance path");
+  const relative = path.normalize(configuredPath);
   const configured = process.env.AEROBAG_TEST_ARTIFACTS_ROOT;
   const candidates = [
     configured ? path.join(configured, relative) : null,

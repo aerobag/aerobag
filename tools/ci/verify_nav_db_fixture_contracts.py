@@ -45,7 +45,7 @@ def required_client_contract(repo_root: Path) -> str:
 def fixture_contracts(fixture_root: Path, fixture: str) -> set[str]:
     manifest_path = fixture_root / {
         "android-smoke-publication": "e2e/android-smoke-publication/fixture.json",
-        "nav-db-advance": "nav-db/advance-2607-to-2608/fixture.json",
+        "nav-db-advance": "nav-db/advance-2608-to-2609/fixture.json",
     }[fixture]
     manifest = read_json(manifest_path)
     if fixture == "android-smoke-publication":

@@ -129,14 +129,22 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
     let cycles = fixture["cycles"]
         .as_array()
         .context("fixture.json cycles must be an array")?;
-    let cycle_2607 = fixture_cycle(cycles, "2607")?;
-    let cycle_2608 = fixture_cycle(cycles, "2608")?;
-    let nav_db_contract = required_str(cycle_2607, "contract_id")?;
-    let candidate_contract = required_str(cycle_2608, "contract_id")?;
+    if cycles.len() != 2 {
+        bail!(
+            "NAVDB rollover fixture must contain exactly two ordered cycles; found {}",
+            cycles.len()
+        );
+    }
+    let initial_cycle = &cycles[0];
+    let candidate_cycle = &cycles[1];
+    let initial_cycle_id = required_str(initial_cycle, "cycle")?;
+    let candidate_cycle_id = required_str(candidate_cycle, "cycle")?;
+    let nav_db_contract = required_str(initial_cycle, "contract_id")?;
+    let candidate_contract = required_str(candidate_cycle, "contract_id")?;
     if candidate_contract != nav_db_contract {
         bail!(
-            "NAVDB rollover fixture contracts differ: cycle 2607 is {nav_db_contract}, \
-             cycle 2608 is {candidate_contract}"
+            "NAVDB rollover fixture contracts differ: cycle {initial_cycle_id} is \
+             {nav_db_contract}, cycle {candidate_cycle_id} is {candidate_contract}"
         );
     }
     if nav_db_contract != product_contracts::NAV_DB_CONTRACT_ID {
@@ -145,32 +153,32 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
             product_contracts::NAV_DB_CONTRACT_ID
         );
     }
-    verify_fixture_artifact(&args.fixture_root, cycle_2607, "bundle")?;
-    verify_fixture_artifact(&args.fixture_root, cycle_2607, "nav_db")?;
-    verify_fixture_artifact(&args.fixture_root, cycle_2608, "bundle")?;
-    verify_fixture_artifact(&args.fixture_root, cycle_2608, "nav_db")?;
+    verify_fixture_artifact(&args.fixture_root, initial_cycle, "bundle")?;
+    verify_fixture_artifact(&args.fixture_root, initial_cycle, "nav_db")?;
+    verify_fixture_artifact(&args.fixture_root, candidate_cycle, "bundle")?;
+    verify_fixture_artifact(&args.fixture_root, candidate_cycle, "nav_db")?;
 
-    let materialized_2607 = materialize_cycle(args, cycle_2607, false, &unpacked_root)?;
-    let materialized_2608 = materialize_cycle(
+    let materialized_initial = materialize_cycle(args, initial_cycle, false, &unpacked_root)?;
+    let materialized_candidate = materialize_cycle(
         args,
-        cycle_2608,
+        candidate_cycle,
         args.scenario == Scenario::Reject,
         &unpacked_root,
     )?;
 
     let transition = args.transition.resolve();
-    let effective_2607 = transition - Duration::days(28);
-    let expiration_2608 = transition + Duration::days(28);
-    let prepared_2607 = prepare_cycle(
-        &materialized_2607,
-        effective_2607,
+    let initial_effective = transition - Duration::days(28);
+    let candidate_expiration = transition + Duration::days(28);
+    let prepared_initial = prepare_cycle(
+        &materialized_initial,
+        initial_effective,
         transition,
         &packaged_root,
     )?;
-    let prepared_2608 = prepare_cycle(
-        &materialized_2608,
+    let prepared_candidate = prepare_cycle(
+        &materialized_candidate,
         transition,
-        expiration_2608,
+        candidate_expiration,
         &packaged_root,
     )?;
 
@@ -184,7 +192,7 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
         },
         as_of_date: as_of.format("%Y-%m-%d").to_string(),
         as_of_utc: rfc3339(as_of),
-        bundles: vec![prepared_2607.bundle_ref, prepared_2608.bundle_ref],
+        bundles: vec![prepared_initial.bundle_ref, prepared_candidate.bundle_ref],
         startup_prefetch: None,
         diagnostics: None,
     }];
@@ -201,8 +209,8 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
                 Scenario::Reject => "reject",
             },
             "transition_at": rfc3339(transition),
-            "initial": prepared_2607.summary,
-            "candidate": prepared_2608.summary,
+            "initial": prepared_initial.summary,
+            "candidate": prepared_candidate.summary,
             "removed_nav_key": (args.scenario == Scenario::Reject).then_some(REJECTED_NAV_KEY),
         }),
     )?;
@@ -451,13 +459,6 @@ fn rebuild_without_key(
     manifest["value_bytes_len"] = json!(rebuilt.value_bytes_len);
     write_json(&output_dir.join("manifest.json"), &manifest)?;
     Ok(())
-}
-
-fn fixture_cycle<'a>(cycles: &'a [Value], cycle: &str) -> anyhow::Result<&'a Value> {
-    cycles
-        .iter()
-        .find(|entry| entry["cycle"].as_str() == Some(cycle))
-        .with_context(|| format!("fixture has no cycle {cycle}"))
 }
 
 fn verify_fixture_artifact(

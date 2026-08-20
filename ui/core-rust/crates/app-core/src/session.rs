@@ -11697,7 +11697,7 @@ fn try_snapshot_for_session(
     let offline_package_preferences_json = package_projection.offline_package_preferences_json;
     let home_page_state = project_home_page_state(&session.coordinator.platform_capabilities);
     let navigation_page_state =
-        project_navigation_page_state(&session.coordinator.platform_capabilities);
+        navigation_page_state_for_platform(&session.coordinator.platform_capabilities);
     let clone_ms = elapsed_ms(clone_started_at);
     let total_ms = elapsed_ms(total_started_at);
     crate::core_perf_debug_log("session.snapshot.core", || {
@@ -11946,7 +11946,9 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
     UiHomePageState { buttons }
 }
 
-fn project_navigation_page_state(capabilities: &PlatformCapabilities) -> UiNavigationPageState {
+pub fn navigation_page_state_for_platform(
+    capabilities: &PlatformCapabilities,
+) -> UiNavigationPageState {
     const MAX_HISTORY_DEPTH: usize = 64;
     let option = |id, label: &str, launcher_label: &str, chart_or_plate_return_target| {
         UiNavigationPageOption {
@@ -17767,7 +17769,7 @@ mod tests {
         root: &std::path::Path,
         cycle: &str,
     ) -> (std::path::PathBuf, String) {
-        let fixture_path = root.join("nav-db/advance-2607-to-2608/fixture.json");
+        let fixture_path = root.join("nav-db/advance-2608-to-2609/fixture.json");
         let fixture: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&fixture_path)
                 .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display())),
@@ -17787,12 +17789,12 @@ mod tests {
         let relative_path = cycle_record["nav_db"]["filename"]
             .as_str()
             .expect("fixture NAVDB filename");
-        let nav_path = root.join("nav-db/advance-2607-to-2608").join(relative_path);
+        let nav_path = root.join("nav-db/advance-2608-to-2609").join(relative_path);
         let bundle_relative_path = cycle_record["bundle"]["filename"]
             .as_str()
             .expect("fixture bundle filename");
         let bundle_path = root
-            .join("nav-db/advance-2607-to-2608")
+            .join("nav-db/advance-2608-to-2609")
             .join(bundle_relative_path);
         let bundle: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&bundle_path)
@@ -17819,10 +17821,10 @@ mod tests {
 
     #[test]
     #[ignore = "requires the external NAVDB transition fixture"]
-    fn real_nav_db_2607_to_2608_advance_preserves_rich_session() {
+    fn real_nav_db_2608_to_2609_advance_preserves_rich_session() {
         let root = nav_db_advance_fixture_root();
-        let (old_path, old_package_id) = nav_db_advance_fixture_artifact(&root, "2607");
-        let (next_path, next_package_id) = nav_db_advance_fixture_artifact(&root, "2608");
+        let (old_path, old_package_id) = nav_db_advance_fixture_artifact(&root, "2608");
+        let (next_path, next_package_id) = nav_db_advance_fixture_artifact(&root, "2609");
         assert!(old_path.is_file(), "missing {}", old_path.display());
         assert!(next_path.is_file(), "missing {}", next_path.display());
         let old_store = load_nav_db_fixture_zip(&old_path);
@@ -17864,7 +17866,7 @@ mod tests {
             Some("ECEPO"),
             2,
         )
-        .expect("materialize 2607 procedure");
+        .expect("materialize 2608 procedure");
         let mutation = crate::insert_procedure_materialized(&base_plan, 1, 2, materialized)
             .expect("insert KPAE VOR-A ECEPO");
         let plan = crate::activate_leg(&mutation, 5).expect("activate procedure hold inbound leg");
@@ -17877,7 +17879,7 @@ mod tests {
             .get_bytes(&airport_key)
             .expect("read KPAE plate folder")
         else {
-            panic!("KPAE plate folder missing from 2607 fixture");
+            panic!("KPAE plate folder missing from 2608 fixture");
         };
         let airport: crate::chart_page::PlateAirportRecord =
             serde_json::from_slice(&airport_bytes).expect("decode KPAE plate folder");
@@ -17895,43 +17897,43 @@ mod tests {
         let mut old_open = nav_db_open_result_for_test(&old_package_id, None);
         old_open.selected_filename = old_path
             .file_name()
-            .expect("2607 filename")
+            .expect("2608 filename")
             .to_string_lossy()
             .to_string();
-        old_open.selected_cycle = Some("2607".to_string());
+        old_open.selected_cycle = Some("2608".to_string());
         old_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
         attach_nav_kv_store_to_session_with_open_result(
             init.handle,
-            2607,
+            2608,
             &old_store,
             Some(&old_open),
         )
-        .expect("attach 2607 NAVDB");
-        super::load_raster_map_catalog_in_session(init.handle).expect("load 2607 catalog");
+        .expect("attach 2608 NAVDB");
+        super::load_raster_map_catalog_in_session(init.handle).expect("load 2608 catalog");
         let catalog_before = get_session_snapshot(init.handle)
-            .expect("snapshot after loading 2607 catalog")
+            .expect("snapshot after loading 2608 catalog")
             .raster_map
-            .expect("2607 raster map");
+            .expect("2608 raster map");
         sync_guidance_geometry_in_session(init.handle).expect("build 2607 guidance");
 
         let mut next_open = nav_db_open_result_for_test(&next_package_id, None);
         next_open.selected_filename = next_path
             .file_name()
-            .expect("2608 filename")
+            .expect("2609 filename")
             .to_string_lossy()
             .to_string();
-        next_open.selected_cycle = Some("2608".to_string());
+        next_open.selected_cycle = Some("2609".to_string());
         next_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
         let result = nav_db_advance_result(
             init.handle,
             advance_nav_kv_store_in_session_with_open_result(
                 init.handle,
-                2608,
+                2609,
                 &next_store,
                 &next_open,
                 vec![next_package_id],
             )
-            .expect("advance rich session to 2608"),
+            .expect("advance rich session to 2609"),
         );
 
         assert_eq!(result.disposition, NavDbAdvanceDisposition::Adopted);
@@ -17945,15 +17947,15 @@ mod tests {
             Some(catalog_before.selected_family_id.as_str())
         );
         let slot = session_slot(init.handle).expect("session slot");
-        let session = slot.lock_running().expect("committed 2608 session");
+        let session = slot.lock_running().expect("committed 2609 session");
         assert_eq!(session.flight_plan.active_plan(), Some(&expected_plan));
-        assert_eq!(session.nav_data.store_id(), Some(2608));
+        assert_eq!(session.nav_data.store_id(), Some(2609));
         assert!(!session.flight_plan.guidance_leg_geometry().is_empty());
         let route = crate::had_ops::project_flight_plan_route(
             session.nav_data.store().expect("committed NAVDB"),
             session.flight_plan.active_plan().expect("active plan"),
         )
-        .expect("project committed 2608 route");
+        .expect("project committed 2609 route");
         assert!(route
             .iter()
             .any(|segment| matches!(segment.geometry, crate::GuidanceRouteGeometry::Arc { .. })));

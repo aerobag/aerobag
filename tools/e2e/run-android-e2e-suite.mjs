@@ -54,6 +54,7 @@ import {
 } from "./android-harness.mjs";
 
 const DEFAULT_ROUTE = "KRNT KPWT";
+const CTR_STRESS_ROUTE = "KRNT KPDX";
 const ROTATION_ROUTE = "KRNT KPWT KPLU";
 const DEFAULT_PACKAGE_SOURCE_PORT = process.env.PACKAGE_SOURCE_PORT ?? "8083";
 const OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
@@ -843,7 +844,7 @@ async function openFirstPlateFromAirportInspector(serial, result, airportId) {
 async function ensureMapFollowEngaged(serial, result) {
   let probe = await waitForMapFollowProbe(serial, () => true, 10000, "map-follow probe visible");
   if (!probe.following) {
-    await tapTag(serial, "parity:button:CTR", 10000);
+    await tapTag(serial, "parity:center-here-button", 10000);
     probe = await waitForMapFollowProbe(serial, (nextProbe) => nextProbe.following, 10000, "CTR follow engaged");
   }
   await waitForMapFollowProbe(
@@ -858,7 +859,7 @@ async function ensureMapFollowEngaged(serial, result) {
 async function disengageMapFollowForRouteVisibility(serial, result) {
   const probe = await waitForMapFollowProbe(serial, () => true, 30000, "map-follow probe visible");
   if (!probe.following) return;
-  await tapTag(serial, "parity:button:CTR", 10000);
+  await tapTag(serial, "parity:center-here-button", 10000);
   await waitForMapFollowProbe(
     serial,
     (nextProbe) => !nextProbe.following,
@@ -1339,7 +1340,8 @@ async function runRotationSessionRetentionRegression(args) {
 }
 
 async function runMapFollowCtrGestureSmoke(args) {
-  const { serial, route } = args;
+  const { serial } = args;
+  const route = CTR_STRESS_ROUTE;
   const result = createTestResult("android.map-follow-ctr-gesture-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });

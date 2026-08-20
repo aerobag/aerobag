@@ -190,6 +190,8 @@ interface NativeBridge {
         settingsStore: CoreSettingsStore,
     ): String
 
+    fun navigationPageStateJson(capabilitiesJson: String): String
+
     fun configureDataSourcesInSessionJson(
         handle: Long,
         cycleDataBaseUrl: String,
@@ -828,6 +830,8 @@ object NativeBindings : NativeBridge {
         capabilitiesJson: String,
         settingsStore: CoreSettingsStore,
     ): String
+
+    external override fun navigationPageStateJson(capabilitiesJson: String): String
 
     external override fun configureDataSourcesInSessionJson(
         handle: Long,

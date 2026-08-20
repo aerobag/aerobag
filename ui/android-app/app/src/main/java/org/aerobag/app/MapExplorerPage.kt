@@ -616,6 +616,26 @@ private fun mapSelectionItemById(
         .firstOrNull { it.id == itemId }
 }
 
+internal data class MapExplorerActions(
+    val onPageTilePaintTimingComplete: (Long) -> Unit,
+    val onViewportChange: (MapViewportState) -> Unit,
+    val onViewportGestureActiveChange: (Boolean) -> Unit,
+    val onViewportGestureActivity: () -> Unit,
+    val onMapOrientationModeChange: (MapOrientationMode) -> Unit,
+    val onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
+    val onSessionCommandFailure: (Throwable) -> Unit,
+    val onBeforeMapLayerCommand: () -> Unit,
+    val onReloadApplication: () -> Unit,
+    val onSelectOwnshipSource: (String) -> Unit,
+    val onSituationControlInput: (SituationControlInput) -> Unit,
+    val onPlaybackSourcePathChange: (String) -> Unit,
+    val onSelectMapFamily: (String) -> Unit,
+    val onOpenChartReference: (familyId: String, suggestedChartIds: List<String>) -> Unit,
+    val onSelectPage: (AppPage) -> Unit,
+    val onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
+    val onOpenPlan: () -> Unit,
+)
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun MapExplorerPage(
@@ -642,23 +662,7 @@ internal fun MapExplorerPage(
     perfScenario: AndroidPerfScenario? = null,
     startupPerfTrace: AndroidStartupPerfTrace? = null,
     pageTilePaintTiming: PageTilePaintTiming?,
-    onPageTilePaintTimingComplete: (Long) -> Unit,
-    onViewportChange: (MapViewportState) -> Unit,
-    onViewportGestureActiveChange: (Boolean) -> Unit,
-    onViewportGestureActivity: () -> Unit,
-    onMapOrientationModeChange: (MapOrientationMode) -> Unit,
-    onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
-    onSessionCommandFailure: (Throwable) -> Unit,
-    onBeforeMapLayerCommand: () -> Unit,
-    onReloadApplication: () -> Unit,
-    onSelectOwnshipSource: (String) -> Unit,
-    onSituationControlInput: (SituationControlInput) -> Unit,
-    onPlaybackSourcePathChange: (String) -> Unit,
-    onSelectMapFamily: (String) -> Unit,
-    onOpenChartReference: (familyId: String, suggestedChartIds: List<String>) -> Unit,
-    onSelectPage: (AppPage) -> Unit,
-    onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
-    onOpenPlan: () -> Unit,
+    actions: MapExplorerActions,
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
 ) {
@@ -688,12 +692,12 @@ internal fun MapExplorerPage(
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {
-            operation().also(onSessionSnapshotChange)
+            operation().also(actions.onSessionSnapshotChange)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
             Log.w("AerobagSessionCommand", "map command failed command=$commandName", error)
-            onSessionCommandFailure(error)
+            actions.onSessionCommandFailure(error)
             null
         }
     val focusRequester = remember { FocusRequester() }
@@ -851,7 +855,7 @@ internal fun MapExplorerPage(
             // successful parent/local acknowledgement.
             viewportState.value = ownedViewport
             viewportSyncPending = true
-            onViewportChange(ownedViewport)
+            actions.onViewportChange(ownedViewport)
             return@LaunchedEffect
         }
         val parentMatchesLocal = sameMapViewport(viewport, viewportState.value)
@@ -1104,7 +1108,7 @@ internal fun MapExplorerPage(
                 disabledReason = option.disabledReason,
                 iconResId = chartFamilyIconResId(option.id),
             ) {
-                onSelectMapFamily(option.id)
+                actions.onSelectMapFamily(option.id)
             }
         }
     }
@@ -1121,7 +1125,7 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !toggleState.visible
                 val startMs = SystemClock.elapsedRealtime()
-                onBeforeMapLayerCommand()
+                actions.onBeforeMapLayerCommand()
                 if (applySessionCommand("setMapLayerVisibility") {
                         uiSession.setMapLayerVisibility(option.layerId, visible)
                     } != null) {
@@ -1221,7 +1225,7 @@ internal fun MapExplorerPage(
                 following = snapshot.mapFollowUiState.following,
                 targetRevision = snapshot.sessionRevision,
             )
-            onSessionSnapshotChange(snapshot)
+            actions.onSessionSnapshotChange(snapshot)
         }
             .onFailure {
                 followTargetGate.clear()
@@ -1249,7 +1253,7 @@ internal fun MapExplorerPage(
         }
         viewportState.value = northUpViewport
         viewportSyncPending = true
-        onViewportChange(northUpViewport)
+        actions.onViewportChange(northUpViewport)
         if (syncFollow) {
             syncFollowStateForViewport(northUpViewport)
         }
@@ -1475,7 +1479,7 @@ internal fun MapExplorerPage(
             }
             delay(250)
             val scenarioSnapshot = uiSession.refreshSnapshot()
-            onSessionSnapshotChange(scenarioSnapshot)
+            actions.onSessionSnapshotChange(scenarioSnapshot)
             Log.i(
                 AndroidPerfScenarioTag,
                 "start scenario=${scenario.id} surface=${surfaceSize.width}x${surfaceSize.height} density=${density.density} map=$selectedMapId terrainLayerEnabled=${mapLayerState.terrainWarning.enabled} nexradLayerEnabled=${mapLayerState.nexrad.enabled} snapshotOwnshipTerrainBucketFt=${scenarioSnapshot.appUiState.ownship.render.terrainAltitudeBucketFt} syntheticOwnship=${PerfScenarioKorsStressCenterLat},${PerfScenarioKorsStressCenterLon} altitudeMslFt=$PerfScenarioKorsStressAltitudeMslFt",
@@ -1777,7 +1781,7 @@ internal fun MapExplorerPage(
                 perfLogInfo(TileBudgetLogTag) {
                     "tile-paint-frame id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} cacheOnly=true"
                 }
-                onPageTilePaintTimingComplete(timing.id)
+                actions.onPageTilePaintTimingComplete(timing.id)
             }
             return@LaunchedEffect
         }
@@ -1881,7 +1885,7 @@ internal fun MapExplorerPage(
                     perfLogInfo(TileBudgetLogTag) {
                         "tile-paint-frame id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs}"
                     }
-                    onPageTilePaintTimingComplete(timing.id)
+                    actions.onPageTilePaintTimingComplete(timing.id)
                 }
                 if (VerbosePerfLogs) {
                     val tileResults = loadedTiles.map { it.result }
@@ -2539,7 +2543,7 @@ internal fun MapExplorerPage(
         val decision = try {
             uiSession.mapSelectionActionDecision(actionUid)
         } catch (error: Throwable) {
-            onSessionCommandFailure(error)
+            actions.onSessionCommandFailure(error)
             return
         }
         if (decision.performSessionMutation &&
@@ -2616,7 +2620,7 @@ internal fun MapExplorerPage(
                 )
             }
             is MapSelectionActionEffect.OpenPlateTarget -> {
-                onOpenPlateTarget(effect.airportId, effect.target, effect.chartId)
+                actions.onOpenPlateTarget(effect.airportId, effect.target, effect.chartId)
             }
             null -> Unit
         }
@@ -2799,7 +2803,7 @@ internal fun MapExplorerPage(
                                         )
                                         movedViewportDuringGesture = true
                                         updateViewport(gestureViewport, syncFollow = false)
-                                        onViewportGestureActivity()
+                                        actions.onViewportGestureActivity()
                                         endingDragChange.consume()
                                     }
                                 }
@@ -2810,7 +2814,7 @@ internal fun MapExplorerPage(
                             }
                             if (!mapGestureActive) {
                                 mapGestureActive = true
-                                onViewportGestureActiveChange(true)
+                                actions.onViewportGestureActiveChange(true)
                             }
                                 if (!loggedGestureSeed) {
                                     perfLogInfo(MapViewportLogTag) {
@@ -2836,7 +2840,7 @@ internal fun MapExplorerPage(
                                     )
                                     movedViewportDuringGesture = true
                                     updateViewport(gestureViewport, syncFollow = false)
-                                    onViewportGestureActivity()
+                                    actions.onViewportGestureActivity()
                                     dragLastPosition = change.position
                                 }
                                 change.consume()
@@ -2866,7 +2870,7 @@ internal fun MapExplorerPage(
                                     )
                                 movedViewportDuringGesture = true
                                 updateViewport(gestureViewport, syncFollow = false)
-                                onViewportGestureActivity()
+                                actions.onViewportGestureActivity()
                                 first.consume()
                                 second.consume()
                             }
@@ -2884,7 +2888,7 @@ internal fun MapExplorerPage(
                         }
                         if (mapGestureActive) {
                             mapGestureActive = false
-                            onViewportGestureActiveChange(false)
+                            actions.onViewportGestureActiveChange(false)
                         }
                     }
                 }
@@ -2909,7 +2913,7 @@ internal fun MapExplorerPage(
                         nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, interactiveMaxZoom),
                     )
                     updateViewport(nextViewport)
-                    onViewportGestureActivity()
+                    actions.onViewportGestureActivity()
                     true
                 } else {
                     false
@@ -3053,7 +3057,7 @@ internal fun MapExplorerPage(
                             }
                         }
                         if (decision.platformEffect is UiStatusPlatformEffect.ReloadApplication) {
-                            onReloadApplication()
+                            actions.onReloadApplication()
                         }
                     }
                 )
@@ -3073,9 +3077,9 @@ internal fun MapExplorerPage(
             },
             onSelectSource = { source ->
                 if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
-                onSelectOwnshipSource(source.sourceId)
+                actions.onSelectOwnshipSource(source.sourceId)
             },
-            onSituationControlInput = onSituationControlInput,
+            onSituationControlInput = actions.onSituationControlInput,
             onTextAction = { actionId, value ->
                 applySessionCommand("performOwnshipTextAction") {
                     uiSession.performOwnshipTextAction(actionId, value)
@@ -3089,7 +3093,7 @@ internal fun MapExplorerPage(
             chartReferenceFamilyId = chartReferenceAction?.family_id,
             onOpenChartReference = {
                 chartReferenceAction?.let { action ->
-                    onOpenChartReference(action.family_id, action.suggested_chart_ids)
+                    actions.onOpenChartReference(action.family_id, action.suggested_chart_ids)
                 }
             },
             trayOptions = trayOptions,
@@ -3143,7 +3147,7 @@ internal fun MapExplorerPage(
                 ownship.magneticVariationDeg,
             ),
             onMapOrientationToggle = {
-                onMapOrientationModeChange(
+                actions.onMapOrientationModeChange(
                     if (mapOrientationMode == MapOrientationMode.North) {
                         MapOrientationMode.Track
                     } else {
@@ -3166,9 +3170,9 @@ internal fun MapExplorerPage(
                 uiSession = uiSession,
                 playbackUiState = playbackUiState,
                 sourcePath = playbackSourcePath,
-                onSourcePathChange = onPlaybackSourcePathChange,
-                onSnapshotChange = onSessionSnapshotChange,
-                onSessionCommandFailure = onSessionCommandFailure,
+                onSourcePathChange = actions.onPlaybackSourcePathChange,
+                onSnapshotChange = actions.onSessionSnapshotChange,
+                onSessionCommandFailure = actions.onSessionCommandFailure,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = ThumbGap, bottom = playbackBottomPadding),
@@ -3280,10 +3284,10 @@ internal fun MapExplorerPage(
         PrimaryNavigationDock(
             currentPage = page,
             navElement = navElement,
-            onHomeClick = { onSelectPage(AppPage.Home) },
-            onOpenPlan = onOpenPlan,
-            onSelectPage = onSelectPage,
-            onOpenChartOrPlate = { onSelectPage(AppPage.Charts) },
+            onHomeClick = { actions.onSelectPage(AppPage.Home) },
+            onOpenPlan = actions.onOpenPlan,
+            onSelectPage = actions.onSelectPage,
+            onOpenChartOrPlate = { actions.onSelectPage(AppPage.Charts) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = ThumbGap),

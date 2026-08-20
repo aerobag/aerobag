@@ -65,7 +65,7 @@ jobs:
           --locked
           --package app-core
           --run-ignored ignored-only
-          -E 'test(/real_nav_db_2607_to_2608_advance_preserves_rich_session$/)'
+          -E 'test(/real_nav_db_2608_to_2609_advance_preserves_rich_session$/)'
       - name: Report individual tests
         if: ${{ always() }}
         run: >-

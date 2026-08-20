@@ -453,6 +453,56 @@ private object NoopCoreSettingsStore : CoreSettingsStore {
     override fun writeSettings(bytes: ByteArray) = Unit
 }
 
+internal fun androidPlatformCapabilitiesJson(
+    displayPolicySettingsAvailable: Boolean = false,
+    aerobagCloudBaseUrl: String? = null,
+    clientBuildInfo: ClientBuildInfo? = null,
+): String =
+    buildJsonObject {
+        put(
+            "display_policy",
+            if (displayPolicySettingsAvailable) {
+                buildJsonObject {}
+            } else {
+                JsonNull
+            },
+        )
+        put("offline_packages", buildJsonObject {})
+        put(
+            "cloud",
+            buildJsonObject {
+                put("qr_scan", true)
+                aerobagCloudBaseUrl?.let { put("aerobag_cloud_base_url", it) }
+            },
+        )
+        put(
+            "live_feeds",
+            buildJsonObject {
+                put("acquisition_policy", "durable_complete_states")
+            },
+        )
+        put(
+            "client_build",
+            clientBuildInfo?.let { buildInfo ->
+                buildJsonObject {
+                    put("platform", buildInfo.platform)
+                    put("version", buildInfo.version)
+                    buildInfo.builtAtUtc?.let { put("built_at_utc", it) }
+                    buildInfo.commit?.let { put("commit", it) }
+                    put("dirty", buildInfo.dirty)
+                }
+            } ?: JsonNull,
+        )
+        put("local_time_zone", ZoneId.systemDefault().id)
+    }.toString()
+
+internal fun androidNavigationPageState(
+    bridge: NativeBridge = NativeBindings,
+): UiNavigationPageState =
+    NativeAppCoreJson.decodeFromString(
+        bridge.navigationPageStateJson(androidPlatformCapabilitiesJson()),
+    )
+
 class NativeAppCoreAdapter(
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
@@ -504,43 +554,11 @@ class NativeAppCoreAdapter(
         markStage("session_nav_attached", stageStartedAtMs)
         stageStartedAtMs = SystemClock.elapsedRealtime()
         session.configurePlatformCapabilities(
-            capabilitiesJson = buildJsonObject {
-                put(
-                    "display_policy",
-                    if (displayPolicySettingsAvailable) {
-                        buildJsonObject {}
-                    } else {
-                        JsonNull
-                    },
-                )
-                put("offline_packages", buildJsonObject {})
-                put(
-                    "cloud",
-                    buildJsonObject {
-                        put("qr_scan", true)
-                        aerobagCloudBaseUrl?.let { put("aerobag_cloud_base_url", it) }
-                    },
-                )
-                put(
-                    "live_feeds",
-                    buildJsonObject {
-                        put("acquisition_policy", "durable_complete_states")
-                    },
-                )
-                put(
-                    "client_build",
-                    clientBuildInfo?.let { buildInfo ->
-                        buildJsonObject {
-                            put("platform", buildInfo.platform)
-                            put("version", buildInfo.version)
-                            buildInfo.builtAtUtc?.let { put("built_at_utc", it) }
-                            buildInfo.commit?.let { put("commit", it) }
-                            put("dirty", buildInfo.dirty)
-                        }
-                    } ?: JsonNull,
-                )
-                put("local_time_zone", ZoneId.systemDefault().id)
-            }.toString(),
+            capabilitiesJson = androidPlatformCapabilitiesJson(
+                displayPolicySettingsAvailable = displayPolicySettingsAvailable,
+                aerobagCloudBaseUrl = aerobagCloudBaseUrl,
+                clientBuildInfo = clientBuildInfo,
+            ),
             settingsStore = settingsStore ?: NoopCoreSettingsStore,
         )
         if (cycleDataBaseUrl != null && liveFeedsBaseUrl != null) {

@@ -191,6 +191,13 @@ pub fn configure_platform_capabilities_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn navigation_page_state_json(capabilities_json: &str) -> Result<String, String> {
+    let capabilities: app_core::PlatformCapabilities =
+        serde_json::from_str(capabilities_json).map_err(|err| err.to_string())?;
+    serde_json::to_string(&app_core::navigation_page_state_for_platform(&capabilities))
+        .map_err(|err| err.to_string())
+}
+
 pub fn set_installed_package_ids_in_session_json(
     handle: u64,
     package_ids_json: &str,
@@ -3352,6 +3359,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_configurePlatf
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navigationPageStateJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    capabilities_json: JString,
+) -> jstring {
+    let result = (|| {
+        let capabilities_json = get_java_string(&mut env, capabilities_json)?;
+        navigation_page_state_json(&capabilities_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setInstalledPackageIdsInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -4789,6 +4809,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_coreHadOperati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_policy_is_available_before_a_ui_session_exists() {
+        let state: app_core::UiNavigationPageState = serde_json::from_str(
+            &navigation_page_state_json(r#"{"offline_packages":{}}"#).unwrap(),
+        )
+        .unwrap();
+
+        assert!(state
+            .options
+            .iter()
+            .any(|option| option.id == app_core::UiNavigationPageId::OfflinePackages));
+    }
 
     #[test]
     fn malformed_offline_event_does_not_destroy_controller() {

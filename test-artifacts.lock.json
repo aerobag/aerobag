@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "https://github.com/aerobag/test-artifacts.git",
-  "commit": "d57294b6c65aaec20ebc620396f74e8acbba13af",
+  "commit": "0beca359cb77a3e74be23d7f4074bc7969b05523",
   "fixtures": {
     "android-smoke-publication": {
       "path": "e2e/android-smoke-publication",
@@ -27,7 +27,7 @@
       ]
     },
     "nav-db-advance": {
-      "path": "nav-db/advance-2607-to-2608",
+      "path": "nav-db/advance-2608-to-2609",
       "contract_version": 1,
       "manifest": {
         "path": "fixture.json",

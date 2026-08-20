@@ -71,7 +71,7 @@ that survives the other filters. One NAVDB job accidentally selected 27
 unrelated ignored tests until it added:
 
 ```sh
--E 'test(/real_nav_db_2607_to_2608_advance_preserves_rich_session$/)'
+-E 'test(/real_nav_db_2608_to_2609_advance_preserves_rich_session$/)'
 ```
 
 When a fixture's structure changes, update its contract version and the lock
@@ -84,11 +84,11 @@ fixtures from one publication and publish them together:
 python3 tools/ci/build_e2e_package_fixture.py \
   --source-publication /path/to/published \
   --output /path/to/test-artifacts/e2e/android-smoke-publication \
-  --cycle 2607
+  --cycle 2608
 python3 tools/ci/build_nav_db_advance_fixture.py \
   --source-publication /path/to/published \
-  --output /path/to/test-artifacts/nav-db/advance-2607-to-2608 \
-  --cycle 2607 --cycle 2608
+  --output /path/to/test-artifacts/nav-db/advance-2608-to-2609 \
+  --cycle 2608 --cycle 2609
 python3 tools/ci/verify_nav_db_fixture_contracts.py \
   --fixture-root /path/to/test-artifacts \
   --fixture android-smoke-publication \

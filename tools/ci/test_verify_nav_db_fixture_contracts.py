@@ -40,7 +40,7 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        advance = self.fixtures / "nav-db/advance-2607-to-2608/fixture.json"
+        advance = self.fixtures / "nav-db/advance-2608-to-2609/fixture.json"
         advance.parent.mkdir(parents=True)
         advance.write_text(
             json.dumps(
@@ -64,7 +64,7 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
         self.assertEqual("NAV15", result)
 
     def test_reports_fixture_and_required_contract(self) -> None:
-        advance = self.fixtures / "nav-db/advance-2607-to-2608/fixture.json"
+        advance = self.fixtures / "nav-db/advance-2608-to-2609/fixture.json"
         manifest = json.loads(advance.read_text())
         manifest["cycles"][1]["contract_id"] = "NAV14"
         advance.write_text(json.dumps(manifest), encoding="utf-8")

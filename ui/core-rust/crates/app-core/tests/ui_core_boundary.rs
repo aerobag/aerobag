@@ -2111,7 +2111,7 @@ fn cross_platform_ui_policy_is_projected_by_core() {
         contracts.contains("pub struct UiNavigationPageState")
             && contracts.contains("pub struct UiNavigationPageOption")
             && contracts.contains("default_chart_or_plate_return_target")
-            && session.contains("fn project_navigation_page_state"),
+            && session.contains("fn navigation_page_state_for_platform"),
         "page ordering, labels, semantic roles, and history bounds must be projected by core"
     );
     assert!(

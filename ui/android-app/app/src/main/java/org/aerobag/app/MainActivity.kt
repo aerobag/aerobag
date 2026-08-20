@@ -286,6 +286,7 @@ import org.aerobag.app.domain.UiDataStatusPageRow
 import org.aerobag.app.domain.UiDataStatusPageState
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
+import org.aerobag.app.domain.androidNavigationPageState
 import org.aerobag.app.domain.UiDisclaimerState
 import org.aerobag.app.domain.UiDisplayPolicy
 import org.aerobag.app.domain.UiMapLayerToggleState
@@ -2574,6 +2575,9 @@ internal fun AerobagApp(
         onDispose { NativeBindings.destroyOfflinePackagesController(offlinePackagesControllerHandle) }
     }
     val uiTheme = remember(context) { UiThemeLoader.load(context.applicationContext) }
+    val startupNavigationPageOptions = remember {
+        navigationPageOptionsFromCore(androidNavigationPageState())
+    }
     LaunchedEffect(context, runtimeReloadToken) {
         runtimeFixture = retainedModel.awaitStartupPreparation(
             context.applicationContext,
@@ -2583,17 +2587,21 @@ internal fun AerobagApp(
     var runtimeFailureMessage by remember { mutableStateOf<String?>(null) }
     @Composable
     fun RenderOfflinePackagesWithoutRuntime() {
-        HomePage(
-            page = AppPage.OfflinePackages,
-            pageHistory = emptyList(),
-            uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
-            debugState = defaultUiDebugState(),
-            navElement = null,
-            onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
-            onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
-            onOpenRecentChartOrPlate = { requestRuntimeReload(AppPage.Map) },
-            offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-        )
+        CompositionLocalProvider(
+            LocalNavigationPageOptions provides startupNavigationPageOptions,
+        ) {
+            HomePage(
+                page = AppPage.OfflinePackages,
+                pageHistory = emptyList(),
+                uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
+                debugState = defaultUiDebugState(),
+                navElement = null,
+                onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
+                onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
+                onOpenRecentChartOrPlate = { requestRuntimeReload(AppPage.Map) },
+                offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+            )
+        }
     }
     LaunchedEffect(runtimeFixture) {
         when {
@@ -3386,77 +3394,79 @@ internal fun AerobagApp(
                         perfScenario = perfScenario,
                         startupPerfTrace = startupPerfTrace,
                         pageTilePaintTiming = pageTilePaintTiming,
-                        onPageTilePaintTimingComplete = { completedId ->
-                            if (pageTilePaintTiming?.id == completedId) {
-                                pageTilePaintTiming = null
-                            }
-                        },
-                        onViewportChange = { mapViewport = it },
-                        onViewportGestureActiveChange = sessionSnapshotRefreshRunner::viewportGestureActiveChanged,
-                        onViewportGestureActivity = sessionSnapshotRefreshRunner::viewportActivity,
-                        onMapOrientationModeChange = { mode ->
-                            mapOrientationMode = mode
-                            writeStoredMapOrientationMode(prefs, mode)
-                        },
-                        onSessionSnapshotChange = { applySessionSnapshot(it) },
-                        onSessionCommandFailure = { recoverSessionCommandFailure(it) },
-                        onBeforeMapLayerCommand = {
-                            if (debugLayerNavKvFaultsRemaining > 0) {
-                                fixture.navKvStore.debugDropAttachedSessionPages()
-                                debugLayerNavKvFaultsRemaining -= 1
-                            }
-                        },
-                        onReloadApplication = { requestRuntimeReload(AppPage.Map) },
-                        onSelectOwnshipSource = ::selectOwnshipSource,
-                        onSituationControlInput = { input ->
-                            applySessionCommand("applySituationControlInput") {
-                                uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
-                            }
-                        },
-                        onPlaybackSourcePathChange = { playbackSourcePath = it },
-                        onSelectMapFamily = {
-                            val timingId = nextPageTilePaintTimingId++
-                            val clickStartMs = SystemClock.elapsedRealtime()
-                            pageTilePaintTiming = PageTilePaintTiming(
-                                id = timingId,
-                                fromPage = page,
-                                startedMs = SystemClock.elapsedRealtime(),
-                                trigger = "map-family:$it",
-                            )
-                            perfLogInfo(TileBudgetLogTag) { "map-family-click id=$timingId family=$it" }
-                            pageHistory = boundedHistory(pageHistory + currentSnapshot())
-                            page = AppPage.Map
-                            val selectStartMs = SystemClock.elapsedRealtime()
-                            val nextSnapshot = applySessionCommand("selectMapFamily") {
-                                uiSession.selectMapFamily(it)
-                            }
-                            if (nextSnapshot != null) {
-                                perfLogInfo(TileBudgetLogTag) {
-                                    "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}"
+                        actions = MapExplorerActions(
+                            onPageTilePaintTimingComplete = { completedId ->
+                                if (pageTilePaintTiming?.id == completedId) {
+                                    pageTilePaintTiming = null
                                 }
-                                val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
-                                    "core selectMapFamily returned no raster map state"
+                            },
+                            onViewportChange = { mapViewport = it },
+                            onViewportGestureActiveChange = sessionSnapshotRefreshRunner::viewportGestureActiveChanged,
+                            onViewportGestureActivity = sessionSnapshotRefreshRunner::viewportActivity,
+                            onMapOrientationModeChange = { mode ->
+                                mapOrientationMode = mode
+                                writeStoredMapOrientationMode(prefs, mode)
+                            },
+                            onSessionSnapshotChange = { applySessionSnapshot(it) },
+                            onSessionCommandFailure = { recoverSessionCommandFailure(it) },
+                            onBeforeMapLayerCommand = {
+                                if (debugLayerNavKvFaultsRemaining > 0) {
+                                    fixture.navKvStore.debugDropAttachedSessionPages()
+                                    debugLayerNavKvFaultsRemaining -= 1
                                 }
-                                rasterMapState = nextRasterMapState
-                                selectedMapId = nextRasterMapState.selectedMapId
-                                perfLogInfo(TileBudgetLogTag) {
-                                    "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}"
+                            },
+                            onReloadApplication = { requestRuntimeReload(AppPage.Map) },
+                            onSelectOwnshipSource = ::selectOwnshipSource,
+                            onSituationControlInput = { input ->
+                                applySessionCommand("applySituationControlInput") {
+                                    uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
                                 }
-                            }
-                        },
-                        onOpenChartReference = { familyId, suggestedChartIds ->
-                            if (applySessionCommand("selectChartReference") {
-                                    uiSession.selectChartReference(familyId, suggestedChartIds)
-                                } != null
-                            ) {
-                                chartViewport = null
-                                chartFolderOpen = true
-                                navigateToPage(AppPage.Charts)
-                            }
-                        },
-                        onSelectPage = ::navigateToPage,
-                        onOpenPlateTarget = ::openPlateTarget,
-                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                            },
+                            onPlaybackSourcePathChange = { playbackSourcePath = it },
+                            onSelectMapFamily = {
+                                val timingId = nextPageTilePaintTimingId++
+                                val clickStartMs = SystemClock.elapsedRealtime()
+                                pageTilePaintTiming = PageTilePaintTiming(
+                                    id = timingId,
+                                    fromPage = page,
+                                    startedMs = SystemClock.elapsedRealtime(),
+                                    trigger = "map-family:$it",
+                                )
+                                perfLogInfo(TileBudgetLogTag) { "map-family-click id=$timingId family=$it" }
+                                pageHistory = boundedHistory(pageHistory + currentSnapshot())
+                                page = AppPage.Map
+                                val selectStartMs = SystemClock.elapsedRealtime()
+                                val nextSnapshot = applySessionCommand("selectMapFamily") {
+                                    uiSession.selectMapFamily(it)
+                                }
+                                if (nextSnapshot != null) {
+                                    perfLogInfo(TileBudgetLogTag) {
+                                        "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}"
+                                    }
+                                    val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
+                                        "core selectMapFamily returned no raster map state"
+                                    }
+                                    rasterMapState = nextRasterMapState
+                                    selectedMapId = nextRasterMapState.selectedMapId
+                                    perfLogInfo(TileBudgetLogTag) {
+                                        "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}"
+                                    }
+                                }
+                            },
+                            onOpenChartReference = { familyId, suggestedChartIds ->
+                                if (applySessionCommand("selectChartReference") {
+                                        uiSession.selectChartReference(familyId, suggestedChartIds)
+                                    } != null
+                                ) {
+                                    chartViewport = null
+                                    chartFolderOpen = true
+                                    navigateToPage(AppPage.Charts)
+                                }
+                            },
+                            onSelectPage = ::navigateToPage,
+                            onOpenPlateTarget = ::openPlateTarget,
+                            onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        ),
                         navElement = navElement,
                         planUiState = sessionPlanUiState,
                         )

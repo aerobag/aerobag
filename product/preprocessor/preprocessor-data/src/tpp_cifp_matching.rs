@@ -11,7 +11,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use preprocessor_core::{PackageAssetManifest, PACKAGE_ASSET_MANIFEST_NAME};
+use preprocessor_core::{
+    PackageAssetManifest, ProcedureCifpIdCandidateGroup, PACKAGE_ASSET_MANIFEST_NAME,
+    TPP_PACKAGE_ASSET_SCHEMA_VERSION,
+};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use regex::Regex;
 use rusqlite::Connection;
@@ -27,6 +30,7 @@ pub struct PlateRecord {
     pub package_id: String,
     pub label: String,
     pub cifp_procedure_id: Option<String>,
+    pub procedure_cifp_id_candidate_groups: Vec<ProcedureCifpIdCandidateGroup>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -386,7 +390,13 @@ fn candidate_groups_for_plate(plate: &PlateRecord) -> Vec<BTreeSet<String>> {
         .cifp_procedure_id
         .as_ref()
         .map(|id| singleton_group(id.trim().to_ascii_uppercase()))
-        .unwrap_or_else(|| faa_procedure_id_candidate_groups(&plate.label))
+        .unwrap_or_else(|| {
+            plate
+                .procedure_cifp_id_candidate_groups
+                .iter()
+                .map(|group| group.0.clone())
+                .collect()
+        })
 }
 
 fn runway_pair_groups(
@@ -958,6 +968,21 @@ fn load_tpp_plates_matching(
         std::io::Read::read_to_end(&mut entry, &mut bytes)?;
         let manifest: PackageAssetManifest =
             serde_json::from_slice(&bytes).context("failed to parse package asset manifest")?;
+        if manifest.schema_version != TPP_PACKAGE_ASSET_SCHEMA_VERSION {
+            anyhow::bail!(
+                "unsupported TPP package asset schema {} in {}; expected {}",
+                manifest.schema_version,
+                zip_path.display(),
+                TPP_PACKAGE_ASSET_SCHEMA_VERSION
+            );
+        }
+        if manifest.family_id != "tpp" {
+            anyhow::bail!(
+                "unexpected package asset family {} in {}; expected tpp",
+                manifest.family_id,
+                zip_path.display()
+            );
+        }
         for asset in manifest.assets {
             if !include(&asset.document_type) {
                 continue;
@@ -972,6 +997,7 @@ fn load_tpp_plates_matching(
                 package_id: manifest.package_id.clone(),
                 label: asset.label.trim().to_string(),
                 cifp_procedure_id: asset.cifp_procedure_id,
+                procedure_cifp_id_candidate_groups: asset.procedure_cifp_id_candidate_groups,
             });
         }
     }
@@ -1671,6 +1697,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_tpp_packages_without_normalized_procedure_candidates() {
+        let dir = tempdir().unwrap();
+        let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&PackageAssetManifest {
+                schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION - 1,
+                family_id: "tpp".to_string(),
+                package_id: "stale-tpp".to_string(),
+                assets: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let zip_path = dir.path().join("stale-tpp.zip");
+        write_deterministic_zip(
+            &zip_path,
+            &[ZipSource::new(PACKAGE_ASSET_MANIFEST_NAME, &manifest_path)],
+        )
+        .unwrap();
+
+        let error = load_tpp_approach_plates(&[zip_path]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported TPP package asset schema 2"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn publishes_named_departure_plate_as_sid_match() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("cifp.db");
@@ -1692,7 +1750,7 @@ mod tests {
 
         let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
         let manifest = PackageAssetManifest {
-            schema_version: 1,
+            schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION,
             family_id: "tpp".to_string(),
             package_id: "tpp-nw".to_string(),
             assets: vec![PackageAssetRecord {
@@ -1706,6 +1764,9 @@ mod tests {
                 thumbnail_path: "thumbnails/KSEA/BANGR9.png".to_string(),
                 procedure_uid: None,
                 cifp_procedure_id: None,
+                procedure_cifp_id_candidate_groups: vec![ProcedureCifpIdCandidateGroup(
+                    BTreeSet::from(["BANGR9".to_string()]),
+                )],
                 georef: None,
             }],
         };
@@ -1768,7 +1829,7 @@ mod tests {
 
         let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
         let manifest = PackageAssetManifest {
-            schema_version: 1,
+            schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION,
             family_id: "tpp".to_string(),
             package_id: "tpp-nw".to_string(),
             assets: vec![PackageAssetRecord {
@@ -1782,6 +1843,7 @@ mod tests {
                 thumbnail_path: "thumbnails/PAE/STR-WA-CHINS FIVE.png".to_string(),
                 procedure_uid: None,
                 cifp_procedure_id: Some("CHINS5".to_string()),
+                procedure_cifp_id_candidate_groups: Vec::new(),
                 georef: None,
             }],
         };
@@ -1843,7 +1905,7 @@ mod tests {
 
         let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
         let manifest = PackageAssetManifest {
-            schema_version: 2,
+            schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION,
             family_id: "tpp".to_string(),
             package_id: "tpp-nw".to_string(),
             assets: vec![PackageAssetRecord {
@@ -1858,6 +1920,7 @@ mod tests {
                     .to_string(),
                 procedure_uid: Some("40571".to_string()),
                 cifp_procedure_id: Some("LGD1".to_string()),
+                procedure_cifp_id_candidate_groups: Vec::new(),
                 georef: None,
             }],
         };

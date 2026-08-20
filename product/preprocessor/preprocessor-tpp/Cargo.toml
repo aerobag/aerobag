@@ -12,6 +12,7 @@ roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 preprocessor-core = { path = "../preprocessor-core" }
+preprocessor-data = { path = "../preprocessor-data" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-tools = { path = "../preprocessor-tools" }
 

@@ -12,8 +12,10 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::{
-    PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
+    PackageAssetManifest, PackageAssetRecord, PlateGeoref, ProcedureCifpIdCandidateGroup, Region,
+    PACKAGE_ASSET_MANIFEST_NAME, TPP_PACKAGE_ASSET_SCHEMA_VERSION,
 };
+use preprocessor_data::faa_procedure_id_candidate_groups;
 use preprocessor_fetch::{hash_file, hash_text, write_package_outputs_jsonl, PackageOutputRecord};
 use preprocessor_tools::{command_output_diagnostic_summary, ToolInvocation};
 use serde::{Deserialize, Serialize};
@@ -408,7 +410,7 @@ fn write_package_asset_manifest(
         .flatten()
         .collect::<Vec<_>>();
     let manifest = PackageAssetManifest {
-        schema_version: 2,
+        schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION,
         family_id: "tpp".to_string(),
         package_id: package_id.to_string(),
         assets,
@@ -436,6 +438,7 @@ struct TppAssetMetadata {
     icao_airport_id: Option<String>,
     procedure_uid: Option<String>,
     cifp_procedure_id: Option<String>,
+    procedure_cifp_id_candidate_groups: Vec<ProcedureCifpIdCandidateGroup>,
 }
 
 fn cifp_procedure_id_from_faanfd18(chart_code: &str, faanfd18: &str) -> Option<String> {
@@ -535,6 +538,11 @@ fn load_tpp_asset_metadata(
                         .and_then(|node| node.text())
                         .unwrap_or_default();
                     let label = rendered_plate_label(&chart_code, &state_id, &chart_name);
+                    let procedure_cifp_id_candidate_groups =
+                        faa_procedure_id_candidate_groups(&label)
+                            .into_iter()
+                            .map(ProcedureCifpIdCandidateGroup)
+                            .collect();
                     metadata.insert(
                         (apt_id.clone(), label),
                         TppAssetMetadata {
@@ -545,6 +553,7 @@ fn load_tpp_asset_metadata(
                                 &chart_code,
                                 faanfd18,
                             ),
+                            procedure_cifp_id_candidate_groups,
                         },
                     );
                 }
@@ -628,6 +637,9 @@ fn build_package_asset_records_for_member(
                     thumbnail_path: thumbnail_path.clone(),
                     procedure_uid: metadata.procedure_uid.clone(),
                     cifp_procedure_id: metadata.cifp_procedure_id.clone(),
+                    procedure_cifp_id_candidate_groups: metadata
+                        .procedure_cifp_id_candidate_groups
+                        .clone(),
                     georef: georef.clone(),
                 }
             })
@@ -653,6 +665,9 @@ fn build_package_asset_records_for_member(
         thumbnail_path,
         procedure_uid: metadata.and_then(|value| value.procedure_uid.clone()),
         cifp_procedure_id: metadata.and_then(|value| value.cifp_procedure_id.clone()),
+        procedure_cifp_id_candidate_groups: metadata
+            .map(|value| value.procedure_cifp_id_candidate_groups.clone())
+            .unwrap_or_default(),
         georef,
     }])
 }
@@ -826,6 +841,27 @@ mod tests {
         let airport_dir = asset_root.join("plates/RNT");
         fs::create_dir_all(&airport_dir).unwrap();
         fs::write(airport_dir.join("STR-WA-GLASR THREE.png"), ONE_BY_ONE_PNG).unwrap();
+        fs::write(
+            asset_root.join("d-TPP_Metafile.xml"),
+            r#"<digital_tpp>
+                <state_code ID="WA">
+                  <city_name>
+                    <airport_name apt_ident="RNT" icao_ident="KRNT">
+                      <record>
+                        <chart_code>STR</chart_code>
+                        <chart_name>GLASR THREE</chart_name>
+                        <pdf_name>GLASR3.PDF</pdf_name>
+                        <useraction>C</useraction>
+                      </record>
+                    </airport_name>
+                  </city_name>
+                </state_code>
+              </digital_tpp>"#,
+        )
+        .unwrap();
+        assert!(load_tpp_asset_metadata(&asset_root)
+            .unwrap()
+            .contains_key(&("RNT".to_string(), "STR-WA-GLASR THREE".to_string())));
 
         package_region_versioned(
             &asset_root,
@@ -843,6 +879,7 @@ mod tests {
             serde_json::from_reader(archive.by_name(PACKAGE_ASSET_MANIFEST_NAME).unwrap()).unwrap();
 
         assert_eq!(manifest.family_id, "tpp");
+        assert_eq!(manifest.schema_version, TPP_PACKAGE_ASSET_SCHEMA_VERSION);
         assert_eq!(manifest.package_id, "NW_TPP_2604");
         assert_eq!(manifest.assets.len(), 1);
         assert_eq!(
@@ -854,6 +891,13 @@ mod tests {
             "thumbnails/plates/RNT/STR-WA-GLASR THREE.png"
         );
         assert_eq!(manifest.assets[0].document_type, "star");
+        assert_eq!(manifest.assets[0].cifp_procedure_id, None);
+        assert_eq!(
+            manifest.assets[0].procedure_cifp_id_candidate_groups,
+            vec![ProcedureCifpIdCandidateGroup(
+                std::collections::BTreeSet::from(["GLASR3".to_string()])
+            )]
+        );
         assert_eq!(manifest.assets[0].georef, None);
         assert_eq!(
             archive
@@ -1114,6 +1158,48 @@ mod tests {
             .expect("LGD1 plate metadata");
         assert_eq!(record.procedure_uid.as_deref(), Some("40571"));
         assert_eq!(record.cifp_procedure_id.as_deref(), Some("LGD1"));
+    }
+
+    #[test]
+    fn normalizes_combined_approach_title_without_faanfd18() {
+        let temp = tempdir().unwrap();
+        fs::write(
+            temp.path().join("d-TPP_Metafile.xml"),
+            r#"<digital_tpp>
+                <state_code ID="HI">
+                  <city_name>
+                    <airport_name apt_ident="HNL" icao_ident="PHNL">
+                      <record>
+                        <chart_code>IAP</chart_code>
+                        <chart_name>VOR OR TACAN RWY 04R</chart_name>
+                        <useraction>C</useraction>
+                        <procuid>3503</procuid>
+                        <faanfd18></faanfd18>
+                      </record>
+                    </airport_name>
+                  </city_name>
+                </state_code>
+              </digital_tpp>"#,
+        )
+        .unwrap();
+
+        let metadata = load_tpp_asset_metadata(temp.path()).unwrap();
+        let record = metadata
+            .get(&("HNL".to_string(), "IAP-HI-VOR OR TACAN RWY 04R".to_string()))
+            .expect("PHNL combined VOR/TACAN plate metadata");
+
+        assert_eq!(record.cifp_procedure_id, None);
+        assert_eq!(
+            record.procedure_cifp_id_candidate_groups,
+            ["V04R", "T04R", "S04R"]
+                .into_iter()
+                .map(|id| {
+                    ProcedureCifpIdCandidateGroup(std::collections::BTreeSet::from(
+                        [id.to_string()],
+                    ))
+                })
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -1371,6 +1371,7 @@ dependencies = [
  "chrono",
  "image",
  "preprocessor-core",
+ "preprocessor-data",
  "preprocessor-fetch",
  "preprocessor-tools",
  "roxmltree",

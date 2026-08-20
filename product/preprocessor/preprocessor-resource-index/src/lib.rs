@@ -7,7 +7,8 @@ use chrono::{Datelike, Duration, NaiveDate, Utc};
 use preprocessor_core::{
     ChartPackageCollection, ChartReferenceAssetRecord, ChartReferenceCoverage,
     ChartReferenceManifest, PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region,
-    CHART_REFERENCE_MANIFEST_DIR, PACKAGE_ASSET_MANIFEST_NAME,
+    CHART_REFERENCE_MANIFEST_DIR, CSUP_PACKAGE_ASSET_SCHEMA_VERSION, PACKAGE_ASSET_MANIFEST_NAME,
+    TPP_PACKAGE_ASSET_SCHEMA_VERSION,
 };
 use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_fetch::PackageOutputRecord;
@@ -321,6 +322,8 @@ pub struct PlateRecord {
     pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cifp_procedure_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procedure_cifp_id_candidate_groups: Vec<preprocessor_core::ProcedureCifpIdCandidateGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
 }
@@ -1688,6 +1691,10 @@ fn collect_plate_records(
                 document_type: packaged.asset.document_type.clone(),
                 procedure_uid: packaged.asset.procedure_uid.clone(),
                 cifp_procedure_id: packaged.asset.cifp_procedure_id.clone(),
+                procedure_cifp_id_candidate_groups: packaged
+                    .asset
+                    .procedure_cifp_id_candidate_groups
+                    .clone(),
                 georef: packaged.asset.georef.clone(),
                 asset_path: packaged.asset.asset_path.clone(),
                 thumbnail_path: packaged.asset.thumbnail_path.clone(),
@@ -1846,6 +1853,20 @@ fn read_asset_package_inventory(
             )
         })?
     };
+    let expected_schema_version = match descriptor.expected_family_id.as_str() {
+        "tpp" => TPP_PACKAGE_ASSET_SCHEMA_VERSION,
+        "csup" => CSUP_PACKAGE_ASSET_SCHEMA_VERSION,
+        family => bail!("unsupported asset package family {family}"),
+    };
+    if manifest.schema_version != expected_schema_version {
+        bail!(
+            "unsupported {} package asset schema {} in {}; expected {}",
+            descriptor.expected_family_id,
+            manifest.schema_version,
+            descriptor.package_zip_path.display(),
+            expected_schema_version
+        );
+    }
     if manifest.family_id != descriptor.expected_family_id {
         bail!(
             "unexpected package asset manifest family {} in {}",
@@ -2826,11 +2847,12 @@ mod tests {
                 thumbnail_path: format!("thumbnails/plates/KSEA/{name}.png"),
                 procedure_uid: None,
                 cifp_procedure_id: None,
+                procedure_cifp_id_candidate_groups: Vec::new(),
                 georef: None,
             })
             .collect::<Vec<_>>();
         let manifest = PackageAssetManifest {
-            schema_version: 2,
+            schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION,
             family_id: "tpp".to_string(),
             package_id: "NW_TPP".to_string(),
             assets: assets.clone(),
@@ -3114,7 +3136,7 @@ mod tests {
             let file = fs::File::create(tpp_root.join("NE_TPP.zip")).expect("tpp zip");
             let mut zip = ZipWriter::new(file);
             let tpp_manifest = PackageAssetManifest {
-                schema_version: 2,
+                schema_version: TPP_PACKAGE_ASSET_SCHEMA_VERSION,
                 family_id: "tpp".to_string(),
                 package_id: "NE_TPP".to_string(),
                 assets: vec![PackageAssetRecord {
@@ -3129,6 +3151,7 @@ mod tests {
                         .to_string(),
                     procedure_uid: None,
                     cifp_procedure_id: None,
+                    procedure_cifp_id_candidate_groups: Vec::new(),
                     georef: None,
                 }],
             };
@@ -3198,6 +3221,7 @@ mod tests {
                     thumbnail_path: "thumbnails/afd/BOS/CSUP-NE_0-0.png".to_string(),
                     procedure_uid: None,
                     cifp_procedure_id: None,
+                    procedure_cifp_id_candidate_groups: Vec::new(),
                     georef: None,
                 }],
             };

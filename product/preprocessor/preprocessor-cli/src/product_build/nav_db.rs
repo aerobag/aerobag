@@ -4722,10 +4722,21 @@ fn plate_procedure_rendezvous_keys(
     procedure_kind: &str,
     airport_id: &str,
     procedure_id: Option<&str>,
+    candidate_groups: &[preprocessor_core::ProcedureCifpIdCandidateGroup],
     plate_label: &str,
 ) -> anyhow::Result<BTreeSet<ProcedureRendezvousKey>> {
     let mut keys = BTreeSet::new();
     if let Some(procedure_id) = procedure_id {
+        keys.insert(procedure_rendezvous_key(
+            procedure_kind,
+            airport_id,
+            procedure_id,
+        )?);
+    }
+    for procedure_id in candidate_groups
+        .iter()
+        .filter_map(preprocessor_core::ProcedureCifpIdCandidateGroup::definitive_id)
+    {
         keys.insert(procedure_rendezvous_key(
             procedure_kind,
             airport_id,
@@ -6243,6 +6254,7 @@ pub(super) fn nav_kv_plate_asset(
             procedure_kind,
             airport_id,
             plate.cifp_procedure_id.as_deref(),
+            &plate.procedure_cifp_id_candidate_groups,
             &plate.label,
         )?;
         if !keys.is_empty() {
@@ -6935,6 +6947,7 @@ mod tests {
             document_type: "airport_diagram".to_string(),
             procedure_uid: None,
             cifp_procedure_id: None,
+            procedure_cifp_id_candidate_groups: Vec::new(),
             georef: None,
         };
         let value = nav_kv_plate_asset("KRNT", &plate).expect("plate asset");
@@ -6956,6 +6969,52 @@ mod tests {
         assert!(value.get("thumbnail_path").is_none());
         assert!(value.get("georef").is_none());
 
+        let combined_approach = preprocessor_resource_index::PlateRecord {
+            id: "plate:PHNL:IAP-HI-VOR OR TACAN RWY 04R.png".to_string(),
+            airport_id: "PHNL".to_string(),
+            icao_airport_id: Some("PHNL".to_string()),
+            region_id: "PAC".to_string(),
+            package_id: "PAC_TPP_TPP1_2608_01".to_string(),
+            asset_path: "plates/HNL/IAP-HI-VOR OR TACAN RWY 04R.png".to_string(),
+            thumbnail_path: "thumbnails/plates/HNL/IAP-HI-VOR OR TACAN RWY 04R.png".to_string(),
+            label: "VOR or TACAN 04R".to_string(),
+            asset_kind: "plate".to_string(),
+            document_type: "approach".to_string(),
+            procedure_uid: Some("3503".to_string()),
+            cifp_procedure_id: None,
+            procedure_cifp_id_candidate_groups: ["S04R", "T04R", "V04R"]
+                .into_iter()
+                .map(|id| {
+                    preprocessor_core::ProcedureCifpIdCandidateGroup(BTreeSet::from([
+                        id.to_string()
+                    ]))
+                })
+                .collect(),
+            georef: None,
+        };
+        let combined_approach =
+            nav_kv_plate_asset("PHNL", &combined_approach).expect("combined approach plate");
+        assert_eq!(
+            combined_approach["procedure_rendezvous_keys"],
+            serde_json::json!([
+                {
+                    "kind": "approach",
+                    "identity": {"cifp_id": "S04R"},
+                    "airport_id": "PHNL"
+                },
+                {
+                    "kind": "approach",
+                    "identity": {"cifp_id": "T04R"},
+                    "airport_id": "PHNL"
+                },
+                {
+                    "kind": "approach",
+                    "identity": {"cifp_id": "V04R"},
+                    "airport_id": "PHNL"
+                }
+            ])
+        );
+
         let sid_without_cifp_id = preprocessor_resource_index::PlateRecord {
             id: "sid-without-cifp-id".to_string(),
             airport_id: "PHNL".to_string(),
@@ -6969,6 +7028,7 @@ mod tests {
             document_type: "departure".to_string(),
             procedure_uid: Some("41523".to_string()),
             cifp_procedure_id: None,
+            procedure_cifp_id_candidate_groups: Vec::new(),
             georef: None,
         };
         let sid_without_cifp_id =
@@ -6997,6 +7057,7 @@ mod tests {
             document_type: "departure".to_string(),
             procedure_uid: None,
             cifp_procedure_id: Some("BIL5".to_string()),
+            procedure_cifp_id_candidate_groups: Vec::new(),
             georef: None,
         };
         let sid_value = nav_kv_plate_asset("KBIL", &sid_plate).expect("SID plate asset");

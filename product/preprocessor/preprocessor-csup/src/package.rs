@@ -7,7 +7,8 @@ use std::{collections::BTreeMap, fs, path::Path};
 use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::{
-    PackageAssetManifest, PackageAssetRecord, Region, PACKAGE_ASSET_MANIFEST_NAME,
+    PackageAssetManifest, PackageAssetRecord, Region, CSUP_PACKAGE_ASSET_SCHEMA_VERSION,
+    PACKAGE_ASSET_MANIFEST_NAME,
 };
 use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
@@ -243,12 +244,13 @@ fn write_package_asset_manifest(
                     .replace('\\', "/"),
                 procedure_uid: None,
                 cifp_procedure_id: None,
+                procedure_cifp_id_candidate_groups: Vec::new(),
                 georef: None,
             }
         })
         .collect::<Vec<_>>();
     let manifest = PackageAssetManifest {
-        schema_version: 2,
+        schema_version: CSUP_PACKAGE_ASSET_SCHEMA_VERSION,
         family_id: "csup".to_string(),
         package_id: package_id.to_string(),
         assets,

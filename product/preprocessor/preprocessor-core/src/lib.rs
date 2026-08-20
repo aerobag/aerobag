@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -13,6 +14,8 @@ use std::{
 use anyhow::{bail, Context};
 
 pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
+pub const TPP_PACKAGE_ASSET_SCHEMA_VERSION: u32 = 3;
+pub const CSUP_PACKAGE_ASSET_SCHEMA_VERSION: u32 = 2;
 pub const CHART_REFERENCE_MANIFEST_DIR: &str = "chart-references";
 
 pub fn is_enroute_navaid_type(kind: &str) -> bool {
@@ -147,8 +150,26 @@ pub struct PackageAssetRecord {
     pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cifp_procedure_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procedure_cifp_id_candidate_groups: Vec<ProcedureCifpIdCandidateGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
+}
+
+/// CIFP identities denoted by one semantic procedure on a published plate.
+///
+/// A singleton is definitive. Multiple alternatives mean the FAA title alone
+/// is ambiguous and must be resolved against the authoritative CIFP catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct ProcedureCifpIdCandidateGroup(pub BTreeSet<String>);
+
+impl ProcedureCifpIdCandidateGroup {
+    pub fn definitive_id(&self) -> Option<&str> {
+        (self.0.len() == 1)
+            .then(|| self.0.iter().next().map(String::as_str))
+            .flatten()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

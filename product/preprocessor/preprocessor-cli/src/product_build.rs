@@ -3396,6 +3396,7 @@ mod tests {
             document_type: "approach".to_string(),
             procedure_uid: None,
             cifp_procedure_id: None,
+            procedure_cifp_id_candidate_groups: Vec::new(),
             georef: None,
         }
     }

@@ -818,10 +818,24 @@ export type DevBootstrapJson = {
   selected_chart_id: string | null;
 };
 
+export type PlateProcedureNotamBadge = {
+  label: string;
+  count: number;
+  action_id: string;
+  accessibility_label: string;
+  detail: {
+    title: string;
+    advisory_text: string;
+    empty_text: string;
+    notams: AirportNotamUiView[];
+  };
+};
+
 export type ChartPageData = {
   airports: Array<{
     id: string;
     label: string;
+    unmatched_procedure_notam_badge?: PlateProcedureNotamBadge | null;
     charts: Array<{
       id: string;
       airport_id?: string | null;
@@ -831,18 +845,7 @@ export type ChartPageData = {
       folder_category: string;
       has_thumbnail: boolean;
       procedure_geometry_warning_count: number;
-      procedure_notam_badge?: {
-        label: string;
-        count: number;
-        action_id: string;
-        accessibility_label: string;
-        detail: {
-          title: string;
-          advisory_text: string;
-          empty_text: string;
-          notams: AirportNotamUiView[];
-        };
-      } | null;
+      procedure_notam_badge?: PlateProcedureNotamBadge | null;
       georef: PlateGeoref | null;
     }>;
   }>;

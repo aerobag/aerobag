@@ -682,20 +682,33 @@ internal fun ChartsPage(
             },
     ) {
         if (folderOpen) {
-            PlateFolderGrid(
-                modifier = Modifier.fillMaxSize(),
-                charts = sortedCharts,
-                selectedChartId = selectedChart?.id,
-                suggestedChartIds = suggestedChartIds,
-                chartAssetDataRevision = chartAssetDataRevision,
-                sessionWorkRunner = sessionWorkRunner,
-                uiTheme = uiTheme,
-                devServerBaseUrl = devServerBaseUrl,
-                onSelectChart = {
-                    onSelectChart(it)
-                },
-                onOpenProcedureNotams = { procedureNotamDetail = it },
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                PlateFolderGrid(
+                    modifier = Modifier.fillMaxSize(),
+                    charts = sortedCharts,
+                    selectedChartId = selectedChart?.id,
+                    suggestedChartIds = suggestedChartIds,
+                    chartAssetDataRevision = chartAssetDataRevision,
+                    sessionWorkRunner = sessionWorkRunner,
+                    uiTheme = uiTheme,
+                    devServerBaseUrl = devServerBaseUrl,
+                    onSelectChart = {
+                        onSelectChart(it)
+                    },
+                    onOpenProcedureNotams = { procedureNotamDetail = it },
+                )
+                selectedCollection?.unmatchedProcedureNotamBadge?.let { badge ->
+                    PlateProcedureNotamBadgeButton(
+                        badge = badge,
+                        badgeSize = ThumbSize * 0.5f,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = ThumbSize + ThumbGap, end = FolderThumbGutter)
+                            .zIndex(OverlayPlaneControls),
+                        onClick = { procedureNotamDetail = badge.detail },
+                    )
+                }
+            }
         } else {
             val currentViewport = viewport
             val currentBitmap = bitmap

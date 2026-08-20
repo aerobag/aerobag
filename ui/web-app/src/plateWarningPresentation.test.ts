@@ -46,10 +46,13 @@ describe("plate procedure geometry warnings", () => {
     expect(chartsPage).toContain('placement="dock"');
     expect(chartsPage).toContain("!folderOpen && selectedChart?.procedure_notam_badge");
     expect(chartsPage).toContain("setProcedureNotamDetail(chart.procedure_notam_badge!.detail)");
+    expect(chartsPage).toContain("selectedCollection?.unmatched_procedure_notam_badge");
+    expect(chartsPage).toContain('className="plateFolderUnmatchedNotamBadge"');
     expect(chartsPage).toContain("<ProcedureNotamModal detail={procedureNotamDetail} />");
     expect(appSource).toContain("props.badge.accessibility_label");
     expect(appSource).toContain("data-action-id={props.badge.action_id}");
     expect(styles).toContain(".plateThumbStickerRow");
+    expect(styles).toContain(".plateFolderUnmatchedNotamBadge");
     expect(styles).toContain(".plateProcedureNotamBadge-dock");
     expect(styles).toMatch(/\.plateProcedureNotamBadge\s*\{[^}]*border-radius:\s*0;/s);
     expect(styles).toContain("--theme-plate-notam-badge-bg");

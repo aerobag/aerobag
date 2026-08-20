@@ -2277,6 +2277,18 @@ fn procedure_rendezvous_keys_for_notam(
                     .map_err(anyhow::Error::msg)?,
                 );
             }
+            for published_name in
+                textual_grouped_published_procedure_names(text.unwrap_or_default(), "DEPARTURES")
+            {
+                keys.insert(
+                    ProcedureRendezvousKey::airport_scoped_published_name(
+                        ProcedureRendezvousKind::Departure,
+                        airport_id,
+                        &published_name,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                );
+            }
         }
         Some("STAR") => {
             for time_slice in document.descendants().filter(|node| {
@@ -2436,6 +2448,56 @@ fn textual_published_procedure_names(text: &str, markers: &[&str]) -> BTreeSet<S
         }
     }
     names
+}
+
+fn textual_grouped_published_procedure_names(text: &str, plural_marker: &str) -> BTreeSet<String> {
+    let uppercase = text.to_ascii_uppercase();
+    let segments = uppercase.split("...").collect::<Vec<_>>();
+    let mut names = BTreeSet::new();
+
+    for (end_index, segment) in segments.iter().enumerate() {
+        let words = text_words(segment);
+        let Some(marker_index) = words.iter().position(|word| *word == plural_marker) else {
+            continue;
+        };
+        let start_index = segments[..=end_index]
+            .iter()
+            .rposition(|candidate| {
+                text_words(candidate)
+                    .first()
+                    .is_some_and(|word| matches!(*word, "SID" | "STAR" | "ODP"))
+            })
+            .unwrap_or(end_index);
+
+        for (index, candidate_segment) in segments[start_index..=end_index].iter().enumerate() {
+            let candidate_words = text_words(candidate_segment);
+            let candidate_end = if start_index + index == end_index {
+                marker_index
+            } else {
+                candidate_words.len()
+            };
+            if let Some(name) = shortest_published_name_suffix(&candidate_words[..candidate_end]) {
+                names.insert(name);
+            }
+        }
+    }
+
+    names
+}
+
+fn text_words(text: &str) -> Vec<&str> {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn shortest_published_name_suffix(words: &[&str]) -> Option<String> {
+    (0..words.len()).rev().find_map(|start| {
+        let candidate = words[start..].join(" ");
+        ProcedurePublishedName::parse(&candidate)
+            .is_ok()
+            .then_some(candidate)
+    })
 }
 
 fn airport_id_for_notam(
@@ -3806,6 +3868,48 @@ mod tests {
                 )
                 .unwrap(),
             ]),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nms_grouped_sid_notam_emits_every_departure_published_name() -> anyhow::Result<()> {
+        let xml = roxmltree::Document::parse("<root/>")?;
+
+        assert_eq!(
+            procedure_rendezvous_keys_for_notam(
+                &xml,
+                Some("SID"),
+                Some("PHNL"),
+                Some(
+                    "SID DANIEL K INOUYE INTL, HONOLULU, HI.\n\
+                     OPIHI THREE ...\n\
+                     MOLOKAI FIVE ...\n\
+                     KEOLA FIVE ...\n\
+                     ALANA TWO ...\n\
+                     PALAY THREE ...\n\
+                     SAITO TWO DEPARTURES ...\n\
+                     TAKE-OFF MINIMUMS: RWY 8R, STD.",
+                ),
+            )?,
+            [
+                "OPIHI THREE",
+                "MOLOKAI FIVE",
+                "KEOLA FIVE",
+                "ALANA TWO",
+                "PALAY THREE",
+                "SAITO TWO",
+            ]
+            .into_iter()
+            .map(|name| {
+                ProcedureRendezvousKey::airport_scoped_published_name(
+                    ProcedureRendezvousKind::Departure,
+                    "PHNL",
+                    name,
+                )
+                .unwrap()
+            })
+            .collect(),
         );
         Ok(())
     }

@@ -12187,56 +12187,67 @@ function ChartsPage(props: {
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
         {folderOpen ? (
-          <div className="plateFolderGrid" onPointerDown={stopPointer} onPointerUp={stopPointer} onDoubleClick={stopDoubleClick}>
-            {sortedCharts.map((chart) => (
-              <div className="plateThumbShell" key={chart.id}>
-                <button
-                  type="button"
-                  className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}${suggestedChartIds.includes(chart.id) ? " isSuggested" : ""}`}
-                  onPointerDown={stopPointer}
-                  onPointerUp={stopPointer}
-                  onDoubleClick={stopDoubleClick}
-                  onClick={() => {
-                    onSelectChart(chart.id);
-                  }}
-                >
-                  <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
-                    {resolvedChartUrls[chart.id]?.thumbnailUrl ? (
-                      <img
-                        className="plateThumbImage"
-                        src={resolvedChartUrls[chart.id]?.thumbnailUrl ?? undefined}
-                        alt=""
-                        draggable={false}
-                      />
-                    ) : null}
-                    <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
-                      {chart.label}
+          <>
+            <div className="plateFolderGrid" onPointerDown={stopPointer} onPointerUp={stopPointer} onDoubleClick={stopDoubleClick}>
+              {sortedCharts.map((chart) => (
+                <div className="plateThumbShell" key={chart.id}>
+                  <button
+                    type="button"
+                    className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}${suggestedChartIds.includes(chart.id) ? " isSuggested" : ""}`}
+                    onPointerDown={stopPointer}
+                    onPointerUp={stopPointer}
+                    onDoubleClick={stopDoubleClick}
+                    onClick={() => {
+                      onSelectChart(chart.id);
+                    }}
+                  >
+                    <div className="plateThumbMedia" style={{ backgroundColor: plateFolderTheme.thumbnail_bg }}>
+                      {resolvedChartUrls[chart.id]?.thumbnailUrl ? (
+                        <img
+                          className="plateThumbImage"
+                          src={resolvedChartUrls[chart.id]?.thumbnailUrl ?? undefined}
+                          alt=""
+                          draggable={false}
+                        />
+                      ) : null}
+                      <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
+                        {chart.label}
+                      </div>
                     </div>
-                  </div>
-                </button>
-                {chart.procedure_notam_badge || chart.procedure_geometry_warning_count > 0 ? (
-                  <div className="plateThumbStickerRow">
-                    {chart.procedure_notam_badge ? (
-                      <PlateProcedureNotamBadgeButton
-                        badge={chart.procedure_notam_badge}
-                        placement="folder"
-                        onOpen={() => setProcedureNotamDetail(chart.procedure_notam_badge!.detail)}
-                      />
-                    ) : null}
-                    {chart.procedure_geometry_warning_count > 0 ? (
-                      <span
-                        className="plateProcedureWarningMini"
-                        aria-label={`${chart.procedure_geometry_warning_count} procedure geometry warning${chart.procedure_geometry_warning_count === 1 ? "" : "s"}; verify against the published plate`}
-                        title="Computed procedure geometry requires verification against the published plate"
-                      >
-                        <DataStatusWarningFace count={chart.procedure_geometry_warning_count.toString()} />
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
+                  </button>
+                  {chart.procedure_notam_badge || chart.procedure_geometry_warning_count > 0 ? (
+                    <div className="plateThumbStickerRow">
+                      {chart.procedure_notam_badge ? (
+                        <PlateProcedureNotamBadgeButton
+                          badge={chart.procedure_notam_badge}
+                          placement="folder"
+                          onOpen={() => setProcedureNotamDetail(chart.procedure_notam_badge!.detail)}
+                        />
+                      ) : null}
+                      {chart.procedure_geometry_warning_count > 0 ? (
+                        <span
+                          className="plateProcedureWarningMini"
+                          aria-label={`${chart.procedure_geometry_warning_count} procedure geometry warning${chart.procedure_geometry_warning_count === 1 ? "" : "s"}; verify against the published plate`}
+                          title="Computed procedure geometry requires verification against the published plate"
+                        >
+                          <DataStatusWarningFace count={chart.procedure_geometry_warning_count.toString()} />
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            {selectedCollection?.unmatched_procedure_notam_badge ? (
+              <div className="plateFolderUnmatchedNotamBadge">
+                <PlateProcedureNotamBadgeButton
+                  badge={selectedCollection.unmatched_procedure_notam_badge}
+                  placement="dock"
+                  onOpen={() => setProcedureNotamDetail(selectedCollection.unmatched_procedure_notam_badge!.detail)}
+                />
               </div>
-            ))}
-          </div>
+            ) : null}
+          </>
         ) : selectedChart && selectedChartAssetUrl ? (
           <>
             <img

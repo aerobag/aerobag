@@ -50,6 +50,7 @@ class PlateWarningPresentationTest {
         assertTrue(folder.contains("badgeSize = 22.dp"))
         assertTrue(chartsPage.contains("badgeSize = ThumbSize * 0.5f"))
         assertTrue(chartsPage.contains("procedureNotamBadge?.takeUnless { folderOpen }"))
+        assertTrue(chartsPage.contains("selectedCollection?.unmatchedProcedureNotamBadge?.let"))
         assertTrue(chartsPage.contains("procedureNotamDetail = badge.detail"))
         assertTrue(chartsPage.contains("Popup("))
         assertTrue(chartsPage.contains("ProcedureNotamModal("))

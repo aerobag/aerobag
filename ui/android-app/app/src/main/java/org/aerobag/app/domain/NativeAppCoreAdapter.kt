@@ -2713,6 +2713,7 @@ internal data class WireDerivedChartAirport(
     val id: String,
     val label: String,
     val charts: List<WireDerivedChartAsset>,
+    val unmatched_procedure_notam_badge: WirePlateProcedureNotamBadge? = null,
 )
 
 @kotlinx.serialization.Serializable(with = WireDerivedChartAirportMenuEntrySerializer::class)
@@ -3326,6 +3327,7 @@ internal fun WireDerivedChartAirport.toUi() = ChartAirport(
     id = id,
     label = label,
     charts = charts.map { it.toUi() },
+    unmatchedProcedureNotamBadge = unmatched_procedure_notam_badge?.toUi(),
 )
 
 private fun WireDerivedChartAirportMenuEntry.toUi(): ChartAirportMenuEntry =
@@ -3345,21 +3347,21 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     folderCategory = folder_category,
     hasThumbnail = has_thumbnail,
     procedureGeometryWarningCount = procedure_geometry_warning_count,
-    procedureNotamBadge = procedure_notam_badge?.let { badge ->
-        PlateProcedureNotamBadge(
-            label = badge.label,
-            count = badge.count,
-            actionId = badge.action_id,
-            accessibilityLabel = badge.accessibility_label,
-            detail = PlateProcedureNotamDetail(
-                title = badge.detail.title,
-                advisoryText = badge.detail.advisory_text,
-                emptyText = badge.detail.empty_text,
-                notams = badge.detail.notams.map { it.toUi() },
-            ),
-        )
-    },
+    procedureNotamBadge = procedure_notam_badge?.toUi(),
     georef = georef?.toUi(),
+)
+
+private fun WirePlateProcedureNotamBadge.toUi() = PlateProcedureNotamBadge(
+    label = label,
+    count = count,
+    actionId = action_id,
+    accessibilityLabel = accessibility_label,
+    detail = PlateProcedureNotamDetail(
+        title = detail.title,
+        advisoryText = detail.advisory_text,
+        emptyText = detail.empty_text,
+        notams = detail.notams.map { it.toUi() },
+    ),
 )
 
 private fun WirePlateGeoref.toUi(): PlateGeoref =

@@ -1411,7 +1411,7 @@ fn nav_db_build_diagnostics_from_pairs(
 }
 
 pub(super) fn attach_procedure_metadata_to_plate_pairs(
-    pairs: &mut [NavKvPair],
+    pairs: &mut Vec<NavKvPair>,
 ) -> anyhow::Result<()> {
     let mut plate_ids_by_match_key = BTreeMap::<String, BTreeSet<String>>::new();
     for pair in pairs
@@ -1514,6 +1514,7 @@ pub(super) fn attach_procedure_metadata_to_plate_pairs(
     }
 
     let mut plate_ids = BTreeSet::new();
+    let mut rendezvous_rows = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for pair in pairs
         .iter_mut()
         .filter(|pair| pair.key.starts_with("plate/by-id/"))
@@ -1535,6 +1536,19 @@ pub(super) fn attach_procedure_metadata_to_plate_pairs(
         if let Some(keys) = rendezvous_keys_by_plate.get(&plate_id) {
             value["procedure_rendezvous_keys"] = keys.clone();
         }
+        let keys = value
+            .get("procedure_rendezvous_keys")
+            .map(|keys| serde_json::from_value::<Vec<ProcedureRendezvousKey>>(keys.clone()))
+            .transpose()
+            .with_context(|| format!("failed to decode rendezvous keys for {plate_id}"))?
+            .unwrap_or_default();
+        for key in keys {
+            let nav_key = key.nav_kv_key().map_err(anyhow::Error::msg)?;
+            rendezvous_rows
+                .entry(nav_key)
+                .or_default()
+                .push(value.clone());
+        }
         pair.value =
             serde_json::to_vec(&value).with_context(|| format!("failed to encode {}", pair.key))?;
     }
@@ -1549,7 +1563,40 @@ pub(super) fn attach_procedure_metadata_to_plate_pairs(
             missing_plates.join(", ")
         );
     }
+    for (key, plate_rows) in rendezvous_rows {
+        if let Some(pair) = pairs.iter_mut().find(|pair| pair.key == key) {
+            let mut rows: Vec<serde_json::Value> = serde_json::from_slice(&pair.value)
+                .with_context(|| format!("failed to decode {}", pair.key))?;
+            let mut row_plate_ids = rows
+                .iter()
+                .filter_map(procedure_rendezvous_row_plate_id)
+                .collect::<BTreeSet<_>>();
+            for plate_row in plate_rows {
+                let Some(plate_id) = procedure_rendezvous_row_plate_id(&plate_row) else {
+                    continue;
+                };
+                if row_plate_ids.insert(plate_id) {
+                    rows.push(plate_row);
+                }
+            }
+            pair.value = serde_json::to_vec(&rows)
+                .with_context(|| format!("failed to encode {}", pair.key))?;
+        } else {
+            pairs.push(json_pair(
+                key,
+                &serde_json::Value::Array(plate_rows),
+                "plate procedure rendezvous matches",
+            )?);
+        }
+    }
     Ok(())
+}
+
+fn procedure_rendezvous_row_plate_id(row: &serde_json::Value) -> Option<String> {
+    row.get("plate_id")
+        .or_else(|| row.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 fn decode_optional_geometry_key_component(component: &str) -> anyhow::Result<Option<String>> {
@@ -2683,7 +2730,7 @@ pub(super) fn default_view_for_static_region(
 pub(super) fn build_nav_kv_plate_pairs(
     resource_index: &ResourceIndex,
 ) -> anyhow::Result<Vec<NavKvPair>> {
-    let airports = build_nav_kv_plate_airports(resource_index);
+    let airports = build_nav_kv_plate_airports(resource_index)?;
     let takeoff_minimums_keys_by_plate = resource_index
         .plates
         .iter()
@@ -2987,7 +3034,7 @@ pub(super) struct NavKvPlateAirport {
 
 pub(super) fn build_nav_kv_plate_airports(
     resource_index: &ResourceIndex,
-) -> Vec<NavKvPlateAirport> {
+) -> anyhow::Result<Vec<NavKvPlateAirport>> {
     let airport_by_id = resource_index
         .airports
         .iter()
@@ -3003,88 +3050,85 @@ pub(super) fn build_nav_kv_plate_airports(
         .iter()
         .map(|csup| (csup.id.as_str(), csup))
         .collect::<BTreeMap<_, _>>();
-    resource_index
-        .airport_resources
-        .iter()
-        .filter_map(|airport_resources| {
-            let airport_id = &airport_resources.airport_id;
-            let mut charts = Vec::new();
-            let mut charted_procedures = BTreeMap::new();
-            for plate_id in &airport_resources.plate_ids {
-                if let Some(plate) = plate_by_id.get(plate_id.as_str()) {
-                    charts.push(nav_kv_plate_asset(airport_id, plate));
-                    let kind = match plate.document_type.as_str() {
-                        "departure" => Some("sid"),
-                        "star" => Some("star"),
-                        "approach" => Some("approach"),
-                        _ => None,
-                    };
-                    if let (Some(kind), Some(procedure_id)) =
-                        (kind, plate.cifp_procedure_id.as_deref())
-                    {
-                        charted_procedures
-                            .entry((kind, procedure_id))
-                            .or_insert_with(|| {
-                                serde_json::json!({
-                                    "procedure_id": procedure_id,
-                                    "display_label": plate.label,
-                                    "kind": kind,
-                                    "plate_id": plate.id,
-                                })
-                            });
-                    }
+    let mut airports = Vec::new();
+    for airport_resources in &resource_index.airport_resources {
+        let airport_id = &airport_resources.airport_id;
+        let mut charts = Vec::new();
+        let mut charted_procedures = BTreeMap::new();
+        for plate_id in &airport_resources.plate_ids {
+            if let Some(plate) = plate_by_id.get(plate_id.as_str()) {
+                charts.push(nav_kv_plate_asset(airport_id, plate)?);
+                let kind = match plate.document_type.as_str() {
+                    "departure" => Some("sid"),
+                    "star" => Some("star"),
+                    "approach" => Some("approach"),
+                    _ => None,
+                };
+                if let (Some(kind), Some(procedure_id)) = (kind, plate.cifp_procedure_id.as_deref())
+                {
+                    charted_procedures
+                        .entry((kind, procedure_id))
+                        .or_insert_with(|| {
+                            serde_json::json!({
+                                "procedure_id": procedure_id,
+                                "display_label": plate.label,
+                                "kind": kind,
+                                "plate_id": plate.id,
+                            })
+                        });
                 }
             }
-            for csup_id in &airport_resources.csup_ids {
-                if let Some(csup) = csup_by_id.get(csup_id.as_str()) {
-                    charts.push(nav_kv_csup_asset(airport_id, csup));
-                }
+        }
+        for csup_id in &airport_resources.csup_ids {
+            if let Some(csup) = csup_by_id.get(csup_id.as_str()) {
+                charts.push(nav_kv_csup_asset(airport_id, csup));
             }
-            charts.sort_by(|left, right| {
-                let left_category = left
-                    .get("folder_category")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                let right_category = right
-                    .get("folder_category")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                let left_label = left
-                    .get("label")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                let right_label = right
-                    .get("label")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                folder_category_rank(left_category)
-                    .cmp(&folder_category_rank(right_category))
-                    .then_with(|| left_label.cmp(right_label))
-            });
-            if charts.is_empty() {
-                return None;
-            }
-            let airport = airport_by_id.get(airport_id.as_str());
-            let chart_ids = charts
-                .iter()
-                .filter_map(|chart| chart.get("id").and_then(|value| value.as_str()))
-                .collect::<Vec<_>>();
-            Some(NavKvPlateAirport {
-                record: serde_json::json!({
-                "id": airport_id,
-                "label": airport
-                    .map(|airport| airport.facility_name.as_str())
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(airport_id),
-                "airport_type": airport.map(|airport| airport.airport_type.as_str()),
-                "package_ids": airport_resources.package_ids.clone(),
-                "chart_ids": chart_ids,
-                "charted_procedures": charted_procedures.into_values().collect::<Vec<_>>(),
-                }),
-                charts,
-            })
-        })
-        .collect::<Vec<_>>()
+        }
+        charts.sort_by(|left, right| {
+            let left_category = left
+                .get("folder_category")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let right_category = right
+                .get("folder_category")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let left_label = left
+                .get("label")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let right_label = right
+                .get("label")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            folder_category_rank(left_category)
+                .cmp(&folder_category_rank(right_category))
+                .then_with(|| left_label.cmp(right_label))
+        });
+        if charts.is_empty() {
+            continue;
+        }
+        let airport = airport_by_id.get(airport_id.as_str());
+        let chart_ids = charts
+            .iter()
+            .filter_map(|chart| chart.get("id").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+        airports.push(NavKvPlateAirport {
+            record: serde_json::json!({
+            "id": airport_id,
+            "label": airport
+                .map(|airport| airport.facility_name.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(airport_id),
+            "airport_type": airport.map(|airport| airport.airport_type.as_str()),
+            "package_ids": airport_resources.package_ids.clone(),
+            "chart_ids": chart_ids,
+            "charted_procedures": charted_procedures.into_values().collect::<Vec<_>>(),
+            }),
+            charts,
+        });
+    }
+    Ok(airports)
 }
 
 pub(super) fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<Vec<NavKvPair>> {
@@ -4674,6 +4718,35 @@ fn procedure_rendezvous_keys(
     Ok(keys)
 }
 
+fn plate_procedure_rendezvous_keys(
+    procedure_kind: &str,
+    airport_id: &str,
+    procedure_id: Option<&str>,
+    plate_label: &str,
+) -> anyhow::Result<BTreeSet<ProcedureRendezvousKey>> {
+    let mut keys = BTreeSet::new();
+    if let Some(procedure_id) = procedure_id {
+        keys.insert(procedure_rendezvous_key(
+            procedure_kind,
+            airport_id,
+            procedure_id,
+        )?);
+    }
+    let published_name_key = match procedure_kind {
+        "sid" => ProcedureRendezvousKey::airport_scoped_published_name(
+            ProcedureRendezvousKind::Departure,
+            airport_id,
+            plate_label,
+        )
+        .ok(),
+        "star" => ProcedureRendezvousKey::shared_arrival_published_name(plate_label).ok(),
+        "approach" => None,
+        _ => anyhow::bail!("unsupported plate procedure kind {procedure_kind:?}"),
+    };
+    keys.extend(published_name_key);
+    Ok(keys)
+}
+
 fn audit_transition_matches(
     filter: Option<&ProcedureGeometryAuditFilter>,
     enroute_transition: Option<&str>,
@@ -6141,7 +6214,7 @@ pub(super) fn json_pair(
 pub(super) fn nav_kv_plate_asset(
     airport_id: &str,
     plate: &preprocessor_resource_index::PlateRecord,
-) -> serde_json::Value {
+) -> anyhow::Result<serde_json::Value> {
     let plate_id = nav_kv_plate_id(airport_id, plate);
     let mut value = serde_json::json!({
         "id": plate_id,
@@ -6159,7 +6232,25 @@ pub(super) fn nav_kv_plate_asset(
     if let Some(georef) = &plate.georef {
         value["georef"] = serde_json::json!(georef);
     }
-    value
+    let procedure_kind = match plate.document_type.as_str() {
+        "departure" => Some("sid"),
+        "star" => Some("star"),
+        "approach" => Some("approach"),
+        _ => None,
+    };
+    if let Some(procedure_kind) = procedure_kind {
+        let keys = plate_procedure_rendezvous_keys(
+            procedure_kind,
+            airport_id,
+            plate.cifp_procedure_id.as_deref(),
+            &plate.label,
+        )?;
+        if !keys.is_empty() {
+            value["procedure_rendezvous_keys"] = serde_json::to_value(keys)
+                .context("failed to encode plate procedure rendezvous keys")?;
+        }
+    }
+    Ok(value)
 }
 
 fn nav_kv_plate_id(airport_id: &str, plate: &preprocessor_resource_index::PlateRecord) -> String {
@@ -6846,7 +6937,7 @@ mod tests {
             cifp_procedure_id: None,
             georef: None,
         };
-        let value = nav_kv_plate_asset("KRNT", &plate);
+        let value = nav_kv_plate_asset("KRNT", &plate).expect("plate asset");
         assert_eq!(
             value,
             serde_json::json!({
@@ -6864,6 +6955,68 @@ mod tests {
         assert!(value.get("thumbnail_source_path").is_none());
         assert!(value.get("thumbnail_path").is_none());
         assert!(value.get("georef").is_none());
+
+        let sid_without_cifp_id = preprocessor_resource_index::PlateRecord {
+            id: "sid-without-cifp-id".to_string(),
+            airport_id: "PHNL".to_string(),
+            icao_airport_id: None,
+            region_id: "PAC".to_string(),
+            package_id: "PAC_TPP_TPP1_2608_01".to_string(),
+            asset_path: "plates/HNL/DP-HI-ALANA TWO.png".to_string(),
+            thumbnail_path: "thumbnails/plates/HNL/DP-HI-ALANA TWO.png".to_string(),
+            label: "ALANA TWO".to_string(),
+            asset_kind: "plate".to_string(),
+            document_type: "departure".to_string(),
+            procedure_uid: Some("41523".to_string()),
+            cifp_procedure_id: None,
+            georef: None,
+        };
+        let sid_without_cifp_id =
+            nav_kv_plate_asset("PHNL", &sid_without_cifp_id).expect("SID plate without CIFP ID");
+        assert_eq!(
+            sid_without_cifp_id["procedure_rendezvous_keys"],
+            serde_json::json!([{
+                "kind": "departure",
+                "identity": {
+                    "published_name": {"name": "ALANA", "revision": 2}
+                },
+                "airport_id": "PHNL"
+            }])
+        );
+
+        let sid_plate = preprocessor_resource_index::PlateRecord {
+            id: "sid-plate-id".to_string(),
+            airport_id: "KBIL".to_string(),
+            icao_airport_id: None,
+            region_id: "NW".to_string(),
+            package_id: "NW_TPP_TPP1_2608_01".to_string(),
+            asset_path: "plates/BIL/DP-MT-BILLINGS FIVE.png".to_string(),
+            thumbnail_path: "thumbnails/plates/BIL/DP-MT-BILLINGS FIVE.png".to_string(),
+            label: "BILLINGS FIVE".to_string(),
+            asset_kind: "plate".to_string(),
+            document_type: "departure".to_string(),
+            procedure_uid: None,
+            cifp_procedure_id: Some("BIL5".to_string()),
+            georef: None,
+        };
+        let sid_value = nav_kv_plate_asset("KBIL", &sid_plate).expect("SID plate asset");
+        assert_eq!(
+            sid_value["procedure_rendezvous_keys"],
+            serde_json::json!([
+                {
+                    "kind": "departure",
+                    "identity": {"cifp_id": "BIL5"},
+                    "airport_id": "KBIL"
+                },
+                {
+                    "kind": "departure",
+                    "identity": {
+                        "published_name": {"name": "BILLINGS", "revision": 5}
+                    },
+                    "airport_id": "KBIL"
+                }
+            ])
+        );
 
         let csup = preprocessor_resource_index::CsupRecord {
             id: "csup-id".to_string(),

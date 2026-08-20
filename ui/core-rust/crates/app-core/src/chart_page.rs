@@ -58,6 +58,8 @@ pub struct DerivedChartAirport {
     pub id: String,
     pub label: String,
     pub charts: Vec<DerivedChartAsset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unmatched_procedure_notam_badge: Option<PlateProcedureNotamBadge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,6 +409,36 @@ fn enrich_procedure_notams(
 ) {
     for airport in airports {
         enrich_chart_notams(&mut airport.charts, notam_display_index);
+        let attached_keys = airport
+            .charts
+            .iter()
+            .flat_map(|chart| chart.procedure_rendezvous_keys.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let unmatched_notams = crate::map_overlay::airport_unmatched_procedure_notam_views(
+            &airport.id,
+            &attached_keys,
+            notam_display_index,
+        );
+        airport.unmatched_procedure_notam_badge = (!unmatched_notams.is_empty()).then(|| {
+            let count = unmatched_notams.len();
+            PlateProcedureNotamBadge {
+                label: "N".to_string(),
+                count,
+                action_id: format!("plate_folder_notams:{}", airport.id),
+                accessibility_label: format!(
+                    "{count} procedure NOTAM{} not fully matched to published plates at {}",
+                    if count == 1 { "" } else { "s" },
+                    airport.id,
+                ),
+                detail: PlateProcedureNotamDetail {
+                    title: format!("Unmatched procedure references — {}", airport.id),
+                    advisory_text: "These procedure NOTAMs contain one or more references that could not be matched to a published plate. Some may also appear on plates that did match. Review them before selecting a procedure; check official sources for a complete briefing."
+                        .to_string(),
+                    empty_text: "No unmatched procedure NOTAMs available.".to_string(),
+                    notams: unmatched_notams,
+                },
+            }
+        });
     }
 }
 
@@ -985,6 +1017,7 @@ mod tests {
                 chart(id, &format!("plate:{id}:diagram.png"), "plate", "airport"),
                 chart(id, &format!("csup:{id}:csup.pdf"), "csup", "csup"),
             ],
+            unmatched_procedure_notam_badge: None,
         }
     }
 
@@ -1263,6 +1296,7 @@ mod tests {
                 id: "KSEA".to_string(),
                 label: "Seattle-Tacoma Intl".to_string(),
                 charts: vec![plate],
+                unmatched_procedure_notam_badge: None,
             }],
             reference_families: Vec::new(),
             stored_recent_airport_ids: &[],
@@ -1350,6 +1384,7 @@ mod tests {
                 id: "KHIO".to_string(),
                 label: "Portland-Hillsboro".to_string(),
                 charts: vec![farmington_plate, scapo_plate],
+                unmatched_procedure_notam_badge: None,
             }],
             reference_families: Vec::new(),
             stored_recent_airport_ids: &[],
@@ -1371,6 +1406,185 @@ mod tests {
             assert_eq!(badge.count, 1);
             assert_eq!(badge.detail.notams[0].id, "NMS:1772308003914016");
         }
+    }
+
+    #[test]
+    fn sid_badge_and_unmatched_airport_procedure_badge_share_one_core_join() {
+        let billings_five = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "KBIL",
+            "BIL5",
+        )
+        .unwrap();
+        let missing_approach = ProcedureRendezvousKey::airport_scoped(
+            product_contracts::ProcedureRendezvousKind::Approach,
+            "KBIL",
+            "R07",
+        )
+        .unwrap();
+        let index =
+            crate::NotamDisplayIndex::from_projection_checkpoint(crate::NotamDisplayCheckpoint {
+                schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
+                state_id: "kbil-notam-state".to_string(),
+                records: vec![
+                    crate::NotamDisplayRecord {
+                        id: "A-SID".to_string(),
+                        airport_id: Some("KBIL".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::from([
+                            crate::map_overlay::NotamDisplayProcedureKey::from(&billings_five),
+                        ]),
+                        label: "SID".to_string(),
+                        text: "BILLINGS FIVE DEPARTURE PROCEDURE NA".to_string(),
+                        priority: 2,
+                    },
+                    crate::NotamDisplayRecord {
+                        id: "B-UNKEYED-ODP".to_string(),
+                        airport_id: Some("KBIL".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::new(),
+                        label: "ODP".to_string(),
+                        text: "DIVERSE VECTOR AREA CHANGED".to_string(),
+                        priority: 2,
+                    },
+                    crate::NotamDisplayRecord {
+                        id: "C-NO-PLATE".to_string(),
+                        airport_id: Some("KBIL".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::from([
+                            crate::map_overlay::NotamDisplayProcedureKey::from(&missing_approach),
+                        ]),
+                        label: "IAP".to_string(),
+                        text: "RNAV RWY 7 PROCEDURE NA".to_string(),
+                        priority: 2,
+                    },
+                    crate::NotamDisplayRecord {
+                        id: "D-RUNWAY".to_string(),
+                        airport_id: Some("KBIL".to_string()),
+                        procedure_rendezvous_keys: BTreeSet::new(),
+                        label: "RWY".to_string(),
+                        text: "RUNWAY LIGHT OUT".to_string(),
+                        priority: 2,
+                    },
+                ],
+            })
+            .unwrap();
+        let mut sid_plate = chart("KBIL", "billings-five", "plate", "departure");
+        sid_plate.label = "BILLINGS FIVE".to_string();
+        sid_plate.procedure_rendezvous_keys = BTreeSet::from([billings_five]);
+
+        let state = derive_chart_page_state_from_collections(ChartPageCollectionsInput {
+            plan: &FlightPlan::default(),
+            airports: vec![DerivedChartAirport {
+                id: "KBIL".to_string(),
+                label: "Billings Logan Intl".to_string(),
+                charts: vec![sid_plate],
+                unmatched_procedure_notam_badge: None,
+            }],
+            reference_families: Vec::new(),
+            stored_recent_airport_ids: &[],
+            plate_target_airport_id: Some("KBIL"),
+            selected_airport_id: Some("KBIL"),
+            selected_reference_family_id: None,
+            candidate_chart_id: Some("billings-five"),
+            suggested_chart_ids: &[],
+            notam_display_index: Some(&index),
+        });
+
+        let airport = &state.airports[0];
+        let sid_badge = airport.charts[0]
+            .procedure_notam_badge
+            .as_ref()
+            .expect("BILLINGS FIVE exact SID badge");
+        assert_eq!(sid_badge.detail.notams[0].id, "A-SID");
+        let unmatched = airport
+            .unmatched_procedure_notam_badge
+            .as_ref()
+            .expect("airport unmatched procedure badge");
+        assert_eq!(unmatched.count, 2);
+        assert_eq!(unmatched.action_id, "plate_folder_notams:KBIL");
+        assert_eq!(
+            unmatched
+                .detail
+                .notams
+                .iter()
+                .map(|notam| notam.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C-NO-PLATE", "B-UNKEYED-ODP"],
+        );
+    }
+
+    #[test]
+    fn partially_attached_grouped_sid_remains_in_airport_badge() {
+        let alana_two = ProcedureRendezvousKey::airport_scoped_published_name(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "PHNL",
+            "ALANA TWO",
+        )
+        .unwrap();
+        let keola_five = ProcedureRendezvousKey::airport_scoped_published_name(
+            product_contracts::ProcedureRendezvousKind::Departure,
+            "PHNL",
+            "KEOLA FIVE",
+        )
+        .unwrap();
+        let index =
+            crate::NotamDisplayIndex::from_projection_checkpoint(crate::NotamDisplayCheckpoint {
+                schema_version: crate::map_overlay::NOTAM_DISPLAY_PROJECTION_SCHEMA_VERSION,
+                state_id: "phnl-notam-state".to_string(),
+                records: vec![crate::NotamDisplayRecord {
+                    id: "NMS:1787002690486600".to_string(),
+                    airport_id: Some("PHNL".to_string()),
+                    procedure_rendezvous_keys: BTreeSet::from([
+                        crate::map_overlay::NotamDisplayProcedureKey::from(&alana_two),
+                        crate::map_overlay::NotamDisplayProcedureKey::from(&keola_five),
+                    ]),
+                    label: "SID".to_string(),
+                    text: "ALANA TWO ... KEOLA FIVE ... DEPARTURES".to_string(),
+                    priority: 2,
+                }],
+            })
+            .unwrap();
+        let mut alana_plate = chart("PHNL", "alana-two", "plate", "departure");
+        alana_plate.label = "ALANA TWO".to_string();
+        alana_plate.procedure_rendezvous_keys = BTreeSet::from([alana_two]);
+
+        let state = derive_chart_page_state_from_collections(ChartPageCollectionsInput {
+            plan: &FlightPlan::default(),
+            airports: vec![DerivedChartAirport {
+                id: "PHNL".to_string(),
+                label: "Daniel K Inouye Intl".to_string(),
+                charts: vec![alana_plate],
+                unmatched_procedure_notam_badge: None,
+            }],
+            reference_families: Vec::new(),
+            stored_recent_airport_ids: &[],
+            plate_target_airport_id: Some("PHNL"),
+            selected_airport_id: Some("PHNL"),
+            selected_reference_family_id: None,
+            candidate_chart_id: Some("alana-two"),
+            suggested_chart_ids: &[],
+            notam_display_index: Some(&index),
+        });
+
+        let airport = &state.airports[0];
+        assert_eq!(
+            airport.charts[0]
+                .procedure_notam_badge
+                .as_ref()
+                .expect("ALANA TWO exact badge")
+                .detail
+                .notams[0]
+                .id,
+            "NMS:1787002690486600"
+        );
+        assert_eq!(
+            airport
+                .unmatched_procedure_notam_badge
+                .as_ref()
+                .expect("partially unmatched airport badge")
+                .detail
+                .notams[0]
+                .id,
+            "NMS:1787002690486600"
+        );
     }
 
     #[test]

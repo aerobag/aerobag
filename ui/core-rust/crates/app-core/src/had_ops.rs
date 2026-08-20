@@ -2529,6 +2529,7 @@ fn resolve_plate_airport(
         id: record.id,
         label: record.label,
         charts,
+        unmatched_procedure_notam_badge: None,
     }))
 }
 

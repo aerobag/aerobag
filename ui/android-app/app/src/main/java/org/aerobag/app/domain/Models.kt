@@ -600,6 +600,7 @@ data class ChartAirport(
     val id: String,
     val label: String,
     val charts: List<ChartAsset>,
+    val unmatchedProcedureNotamBadge: PlateProcedureNotamBadge? = null,
 )
 
 sealed interface ChartAirportMenuEntry {

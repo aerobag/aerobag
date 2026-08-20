@@ -4751,6 +4751,14 @@ button {
   pointer-events: none;
 }
 
+.plateFolderUnmatchedNotamBadge {
+  position: absolute;
+  top: calc(var(--thumb) + (var(--thumb-gap) * 1.7));
+  right: calc(var(--thumb) * 0.3);
+  z-index: 3;
+  transform: translateY(-50%);
+}
+
 .plateProcedureNotamBadge {
   display: flex;
   align-items: center;

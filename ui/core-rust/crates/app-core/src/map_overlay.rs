@@ -4233,6 +4233,38 @@ fn airport_notam_views(
     notams
 }
 
+pub(crate) fn airport_unmatched_procedure_notam_views(
+    airport_id: &str,
+    attached_keys: &BTreeSet<ProcedureRendezvousKey>,
+    index: Option<&NotamDisplayIndex>,
+) -> Vec<AirportNotamUiView> {
+    let Some(index) = index else {
+        return Vec::new();
+    };
+    let attached_keys = attached_keys
+        .iter()
+        .map(NotamDisplayProcedureKey::from)
+        .collect::<BTreeSet<_>>();
+    let lookup_ids = airport_notam_lookup_ids(airport_id);
+    let mut notams = lookup_ids
+        .into_iter()
+        .flat_map(|lookup_id| index.airport_records(&lookup_id))
+        .filter(|record| matches!(record.label.as_str(), "IAP" | "ODP" | "SID" | "STAR"))
+        .filter(|record| {
+            record.procedure_rendezvous_keys.is_empty()
+                || record
+                    .procedure_rendezvous_keys
+                    .iter()
+                    .any(|key| !attached_keys.contains(key))
+        })
+        .map(airport_notam_ui_view)
+        .collect::<Vec<_>>();
+    notams.sort_by(|left, right| left.id.cmp(&right.id));
+    notams.dedup_by(|left, right| left.id == right.id);
+    sort_airport_notam_views(&mut notams);
+    notams
+}
+
 pub fn procedure_notam_views(
     keys: &BTreeSet<ProcedureRendezvousKey>,
     index: Option<&NotamDisplayIndex>,

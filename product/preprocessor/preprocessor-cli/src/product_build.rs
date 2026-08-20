@@ -3436,7 +3436,9 @@ mod tests {
             package_ids: vec!["NW_TPP".to_string()],
         });
 
-        let pairs = build_nav_kv_plate_pairs(&index).expect("plate pairs");
+        let mut pairs = build_nav_kv_plate_pairs(&index).expect("plate pairs");
+        nav_db::attach_procedure_metadata_to_plate_pairs(&mut pairs)
+            .expect("attach procedure metadata");
         let airport = pairs
             .iter()
             .find(|pair| pair.key == "plate/airport/KSEA")
@@ -3454,6 +3456,29 @@ mod tests {
                 "plate_id": "plate:KSEA:STR-WA-GLASR THREE.png"
             }])
         );
+        let plate = pairs
+            .iter()
+            .find(|pair| pair.key.starts_with("plate/by-id/"))
+            .map(|pair| serde_json::from_slice::<serde_json::Value>(&pair.value).unwrap())
+            .expect("GLASR THREE plate");
+        assert_eq!(
+            plate["procedure_rendezvous_keys"],
+            serde_json::json!([
+                {
+                    "kind": "arrival",
+                    "identity": {"cifp_id": "GLASR3"}
+                },
+                {
+                    "kind": "arrival",
+                    "identity": {
+                        "published_name": {"name": "GLASR", "revision": 3}
+                    }
+                }
+            ])
+        );
+        assert!(pairs.iter().any(|pair| {
+            pair.key == "plate/procedure-rendezvous/by-key/ARRIVAL/SHARED/CIFP/GLASR3"
+        }));
     }
 
     #[test]

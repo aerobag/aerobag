@@ -26,6 +26,7 @@ Core owns:
 - The platform acquisition policy.
 - The retained NEXRAD frame count and version set.
 - Eager full-state request planning for durable clients.
+- The web tile-cache retain set and visible-viewport prefetch plan.
 - Frame manifests, ordering, animation phase, dwell timing, and blank timing.
 - Mapping a selected tile to a typed resource source.
 - GC decisions for obsolete durable live-feed versions.
@@ -37,6 +38,7 @@ Platforms provide effects only:
 - Read a member from a persisted package blob.
 - Delete durable versions core no longer retains.
 - Draw decoded image bytes at core-provided geometry.
+- Retain or release web image resources according to core's frame-version plan.
 - Wake core at the absolute animation deadline core supplied.
 
 ## Acquisition Policies
@@ -44,19 +46,62 @@ Platforms provide effects only:
 `JitPublicResources` is the web policy:
 
 - Load the retained version and state manifests.
-- Fetch only selected NEXRAD tiles.
+- While the layer is visible, prefetch the displayed viewport's tiles for every
+  retained animation frame.
+- While the layer is hidden, fetch no tile bodies but retain already-loaded
+  tiles whose frame versions remain in the animation window.
+- Release tiles after core removes their frame version from that window.
 - Never require a complete `install_state` package.
 
-`DurableCompleteStates` is the Android policy:
+`DurableCompleteStates` selects Android's configurable policy. Core, not
+Kotlin, applies the saved choices:
 
-- Load the retained version manifests.
-- Download each retained frame's complete immutable `install_state` package.
-- Persist the packages before advertising them as available to the session.
-- Resolve tile requests only from the matching persisted package.
-- Never issue per-tile HTTP requests.
+- Full-offline coverage loads retained version manifests, downloads each due
+  frame's selected immutable install profile, persists it, and resolves tiles
+  only from the matching package.
+- Visible-area-only coverage reuses the JIT public-resource planner used by web,
+  including its multi-frame viewport prefetch and retained-version GC plan.
+- Full-offline cadence is selected independently for shown, hidden, and asleep
+  conditions. Core enforces `shown >= hidden >= asleep` and chooses the current
+  condition from core-owned map visibility and ownship-source sleep state.
+- `Every update` fills the retained animation window. Decimated 10- and
+  30-minute cadences fetch only the current frame when due; they do not recover
+  intervening producer frames, because doing so would erase their bandwidth
+  savings.
+- Changes to visibility, sleep state, or settings wake the generic Android
+  acquisition executor; Android merely copies and executes the new core
+  directive.
 
 The policies change resource acquisition, not NEXRAD interpretation or
 animation.
+
+## Android Settings And Profiles
+
+The Android-only controls are projected as ordinary settings rows when the
+platform advertises `DurableCompleteStates`. Their values live in
+`SettingsPreferences` and in the cloud record `settings/nexrad_acquisition`.
+Web neither displays nor accepts those actions.
+
+The initial offline detail choices are named for extension rather than UI
+wording:
+
+| Profile        | Published base level |
+|----------------|----------------------|
+| `offline_0`    | `res0`               |
+| `offline_low1` | `res1`               |
+
+Version manifests advertise profile payload refs and byte counts. The
+publisher puts only that profile's base level plus the authoritative
+`manifest.json` in each package; it does not publish a second all-resolution
+NEXRAD install package. After verifying the downloaded blob and authoritative
+manifest hash, core deterministically derives all coarser overview levels,
+writes a local render manifest, and persists the augmented package. The
+authoritative manifest remains unchanged for state identity.
+
+Core uses advertised package bytes and the roughly five-minute producer cadence
+to project the selected full-offline rate in MiB/h. Viewport-only mode has no
+estimate because it deliberately does not measure recent viewport transfer
+behavior.
 
 ## Core Model
 
@@ -112,15 +157,21 @@ its bytes immediately, so core never retains the complete frame tail in memory.
 
 ## Verification
 
-- A durable cache with a seven-frame NEXRAD history requests all seven complete
-  `install_state` packages.
+- A full-offline durable cache in `Every update` mode requests exactly the
+  selected profile for the seven retained frames and excludes older history.
+- A decimated full-offline cache requests only the current selected-profile
+  package when due, never the intervening producer frames.
+- A viewport-only cache requests retained state metadata and only the tile
+  bodies at the core-selected resolution for the visible viewport.
 - Its retained set survives restart without loading package blobs into core.
 - A session installed from that retained set emits the same animation phases,
   frame order, age labels, and deadlines as the web/JIT catalog.
-- Android tile requests use `LiveFeedPackageMember` for the selected state and
-  never `PublicUrl`.
+- Full-offline Android tile requests use `LiveFeedPackageMember`; viewport-only
+  Android requests use the same `PublicUrl` plan as web.
 - A package for one state cannot satisfy a tile from another state.
 - Web NEXRAD tile requests remain `PublicUrl` and never require package members.
+- A hidden web layer emits no tile fetches; re-enabling it reuses retained frame
+  images and fetches only missing frame/viewport resources.
 - Android decodes the absolute epoch deadline as a 64-bit value and schedules
   against that deadline rather than extending dwell time by fetch/decode time.
 - Platform boundary tests reject NEXRAD-specific selection, retention, or

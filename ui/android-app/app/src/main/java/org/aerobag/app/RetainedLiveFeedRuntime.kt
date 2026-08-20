@@ -25,6 +25,7 @@ import org.aerobag.app.domain.LiveFeedConnectionEvent
 import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.aerobag.app.domain.NativeSessionCommandRejectedException
 import org.aerobag.app.domain.NativeUiSession
+import org.aerobag.app.generated.UiSessionUpdateGroup
 
 internal fun interface InitialLiveFeedPromotionGate {
     suspend fun awaitPromotion(installed: List<LiveFeedInstalledSummary>)
@@ -91,12 +92,33 @@ internal class RetainedLiveFeedRuntime(
         context = appContext,
         cache = cache,
         sourceRootUrl = sourceRootUrl,
+        beforePump = { uiSession.syncLiveFeedCacheAcquisitionPolicy(cache) },
     )
     private var started = false
     private var closed = false
     private var generation = 0
     private var generationListener: ((Int) -> Unit)? = null
-
+    private val policySubscription = uiSession.subscribeSnapshotGroups(
+        setOf(
+            UiSessionUpdateGroup.Settings,
+            UiSessionUpdateGroup.Map,
+            UiSessionUpdateGroup.Ownship,
+        ),
+    ) {
+        val shouldPump = synchronized(lock) { started && !closed }
+        if (shouldPump) {
+            scope.launch {
+                client.pumpUntilSettled(
+                    promote = { summary ->
+                        check(promote(summary)) {
+                            "failed to promote ${summary.product}/${summary.version}"
+                        }
+                    },
+                    onChanged = ::syncCatalog,
+                )
+            }
+        }
+    }
     fun start() {
         synchronized(lock) {
             check(!closed) { "cannot start a closed live-feed runtime" }
@@ -141,11 +163,7 @@ internal class RetainedLiveFeedRuntime(
                                     "failed to promote ${summary.product}/${summary.version}"
                                 }
                             },
-                            onChanged = {
-                                runSessionCommand("syncLiveFeedCacheCatalog") {
-                                    uiSession.syncLiveFeedCacheCatalog(cache)
-                                }
-                            },
+                            onChanged = ::syncCatalog,
                             onConnectionEvent = { event -> reportConnection(event) },
                         )
                     },
@@ -182,6 +200,7 @@ internal class RetainedLiveFeedRuntime(
             generationListener = null
         }
         scope.cancel()
+        policySubscription.close()
         workerDispatcher.close()
         cache.close()
     }
@@ -209,6 +228,12 @@ internal class RetainedLiveFeedRuntime(
     private suspend fun reportConnection(event: LiveFeedConnectionEvent) {
         runSessionCommand("reportLiveFeedConnectionEvent") {
             uiSession.reportLiveFeedConnectionEvent(event)
+        }
+    }
+
+    private suspend fun syncCatalog() {
+        runSessionCommand("syncLiveFeedCacheCatalog") {
+            uiSession.syncLiveFeedCacheCatalog(cache)
         }
     }
 

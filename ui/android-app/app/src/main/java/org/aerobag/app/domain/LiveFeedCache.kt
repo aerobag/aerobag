@@ -189,6 +189,10 @@ class LiveFeedCache(
         json.decodeFromString(bridge.liveFeedCacheMissingRequestsAtEpochMsJson(handle, epochMs))
     }
 
+    fun applySessionPolicy(sessionHandle: Long) = withOpenHandle { handle ->
+        bridge.liveFeedCacheApplySessionPolicy(handle, sessionHandle)
+    }
+
     fun currentRefreshRequestsAtEpochMs(epochMs: Long): List<LiveFeedCacheRequest> = withOpenHandle { handle ->
         json.decodeFromString(bridge.liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle, epochMs))
     }
@@ -387,6 +391,7 @@ class AndroidLiveFeedClient(
     private val context: Context,
     private val cache: LiveFeedCache,
     private val sourceRootUrl: String,
+    private val beforePump: () -> Unit = {},
     private val json: Json = Json {
         encodeDefaults = true
         ignoreUnknownKeys = true
@@ -517,6 +522,7 @@ class AndroidLiveFeedClient(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
     ): Int = pumpMutex.withLock {
+        beforePump()
         var installs = 0
         while (kotlin.coroutines.coroutineContext.isActive) {
             val nowMs = SystemClock.elapsedRealtime()

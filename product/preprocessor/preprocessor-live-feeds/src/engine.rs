@@ -32,7 +32,11 @@ pub use product_contracts::live_feeds::v3::{
     NavKvDeltaEntry as LiveFeedNavKvDeltaEntry, PayloadRef as LivePayloadRef,
     RecordDelta as LiveFeedRecordDelta, VersionManifest as LiveFeedVersionManifest,
 };
-use product_contracts::{live_feed_product_policy, versioned_json, LIVE_FEED_PRODUCT_POLICIES};
+use product_contracts::{
+    live_feed_product_policy,
+    live_feeds::v3::{NEXRAD_OFFLINE_PROFILE_0, NEXRAD_OFFLINE_PROFILE_LOW1},
+    versioned_json, LIVE_FEED_PRODUCT_POLICIES,
+};
 use rayon::prelude::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -1405,7 +1409,9 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             blob_sha256: state_blob_sha256,
             state_sha256: state_sha256.clone(),
         };
-        let install_state_ref = if let Some(state_root) = state_root.as_ref() {
+        let install_state_ref = if product == "nexrad" {
+            None
+        } else if let Some(state_root) = state_root.as_ref() {
             let install_kind = match state_ref.kind.as_deref() {
                 Some("nav_kv") => "nav_kv_package",
                 _ => "directory_package",
@@ -1419,6 +1425,22 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             )?)
         } else {
             None
+        };
+        let install_profiles = if product == "nexrad" {
+            state_root
+                .as_ref()
+                .map(|state_root| {
+                    self.write_nexrad_install_profiles(
+                        &product,
+                        &version,
+                        state_root,
+                        &state_sha256,
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
         };
         let version_dir = self.root.join("versions").join(&product);
         fs::create_dir_all(&version_dir)
@@ -1438,6 +1460,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 previous: previous_version,
                 state: state_ref,
                 install_state: install_state_ref,
+                install_profiles,
                 delta_from_previous: delta_ref,
                 recent_deltas: Vec::new(),
             },
@@ -1733,6 +1756,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             previous: previous_version,
             state: state_ref.clone(),
             install_state: None,
+            install_profiles: BTreeMap::new(),
             delta_from_previous: delta_ref,
             recent_deltas,
         };
@@ -1966,6 +1990,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             previous: previous_manifest.previous,
             state: state_ref.clone(),
             install_state: None,
+            install_profiles: BTreeMap::new(),
             delta_from_previous: previous_manifest.delta_from_previous,
             recent_deltas,
         };
@@ -2070,6 +2095,41 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             blob_sha256: sha256_hex(&bytes),
             state_sha256: state_sha256.to_string(),
         })
+    }
+
+    fn write_nexrad_install_profiles(
+        &self,
+        product: &str,
+        version: &str,
+        state_root: &Path,
+        state_sha256: &str,
+    ) -> anyhow::Result<BTreeMap<String, LivePayloadRef>> {
+        let mut profiles = BTreeMap::new();
+        for (profile, resolution) in [
+            (NEXRAD_OFFLINE_PROFILE_0, 0_u32),
+            (NEXRAD_OFFLINE_PROFILE_LOW1, 1_u32),
+        ] {
+            let package_dir = self.root.join("packages").join(product);
+            let package_path = package_dir.join(format!("{version}.{profile}.zip"));
+            if !package_path.is_file() {
+                let members = zip_members_for_nexrad_resolution(state_root, resolution)?;
+                write_deterministic_zip(&package_path, &members)
+                    .with_context(|| format!("failed to write {}", package_path.display()))?;
+            }
+            let bytes = fs::read(&package_path)
+                .with_context(|| format!("failed to read {}", package_path.display()))?;
+            profiles.insert(
+                profile.to_string(),
+                LivePayloadRef {
+                    kind: Some("directory_package".to_string()),
+                    url: live_feeds_relative_url(&self.root, &package_path)?,
+                    bytes: bytes.len() as u64,
+                    blob_sha256: sha256_hex(&bytes),
+                    state_sha256: state_sha256.to_string(),
+                },
+            );
+        }
+        Ok(profiles)
     }
 }
 
@@ -2970,6 +3030,9 @@ fn retain_version_manifest(
     if let Some(install_state) = manifest.install_state.as_ref() {
         retain_live_relative_path(live_root, retained, &install_state.url)?;
     }
+    for install_profile in manifest.install_profiles.values() {
+        retain_live_relative_path(live_root, retained, &install_profile.url)?;
+    }
     if let Some(delta) = manifest.delta_from_previous.as_ref() {
         retain_live_relative_path(live_root, retained, &delta.url)?;
     }
@@ -3382,6 +3445,28 @@ fn hardlink_or_copy_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyho
 fn zip_members_for_dir(source_dir: &Path) -> anyhow::Result<Vec<ZipSource>> {
     let mut members = Vec::new();
     collect_zip_members_for_dir(source_dir, source_dir, &mut members)?;
+    Ok(members)
+}
+
+fn zip_members_for_nexrad_resolution(
+    source_dir: &Path,
+    resolution: u32,
+) -> anyhow::Result<Vec<ZipSource>> {
+    let wanted_prefix = format!("tiles/res{resolution}/");
+    let members = zip_members_for_dir(source_dir)?
+        .into_iter()
+        .filter(|member| {
+            member.member_name == "manifest.json" || member.member_name.starts_with(&wanted_prefix)
+        })
+        .collect::<Vec<_>>();
+    if !members
+        .iter()
+        .any(|member| member.member_name.starts_with(&wanted_prefix))
+    {
+        anyhow::bail!(
+            "NEXRAD offline profile has no tiles at advertised resolution {resolution}"
+        );
+    }
     Ok(members)
 }
 
@@ -3991,7 +4076,8 @@ mod tests {
             FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
         );
         let source_root = temp.path().join("nexrad-state");
-        fs::create_dir_all(source_root.join("tiles/z00"))?;
+        fs::create_dir_all(source_root.join("tiles/res0/0"))?;
+        fs::create_dir_all(source_root.join("tiles/res1/0"))?;
         let manifest_path = source_root.join("manifest.json");
         let manifest_value = serde_json::json!({
             "schema_version": 1,
@@ -4001,8 +4087,12 @@ mod tests {
         });
         write_json_pretty_file(&manifest_path, &manifest_value)?;
         write_json_pretty_file(
-            &source_root.join("tiles/z00/tile.json"),
+            &source_root.join("tiles/res0/0/0.png"),
             &serde_json::json!({"tile": true}),
+        )?;
+        write_json_pretty_file(
+            &source_root.join("tiles/res1/0/0.png"),
+            &serde_json::json!({"tile": "reduced"}),
         )?;
 
         let result = publisher.publish(BuiltLiveFeedState {
@@ -4030,13 +4120,32 @@ mod tests {
         assert_eq!(version_manifest.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
         assert_eq!(version_manifest.state.kind.as_deref(), Some("json"));
         assert_eq!(version_manifest.state.url, "states/nexrad/v1/manifest.json");
+        assert!(version_manifest.install_state.is_none());
         assert_eq!(
             version_manifest
-                .install_state
-                .as_ref()
-                .and_then(|state| state.kind.as_deref()),
-            Some("directory_package")
+                .install_profiles
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![NEXRAD_OFFLINE_PROFILE_0, NEXRAD_OFFLINE_PROFILE_LOW1]
         );
+        for (profile, included_resolution, excluded_resolution) in [
+            (NEXRAD_OFFLINE_PROFILE_0, "res0", "res1"),
+            (NEXRAD_OFFLINE_PROFILE_LOW1, "res1", "res0"),
+        ] {
+            let package = root.join(&version_manifest.install_profiles[profile].url);
+            let mut archive = ZipArchive::new(fs::File::open(package)?)?;
+            let names = (0..archive.len())
+                .map(|index| {
+                    archive
+                        .by_index(index)
+                        .map(|member| member.name().to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            assert!(names.iter().any(|name| name == "manifest.json"));
+            assert!(names.iter().any(|name| name.contains(included_resolution)));
+            assert!(!names.iter().any(|name| name.contains(excluded_resolution)));
+        }
         assert!(version_manifest.delta_from_previous.is_none());
         Ok(())
     }

@@ -60,6 +60,44 @@
       ],
       "type": "string"
     },
+    "NexradOverlayCachePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "fetch_resources": {
+          "items": {
+            "$ref": "#/$defs/NexradOverlayCacheResource"
+          },
+          "type": "array"
+        },
+        "retained_frame_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "retained_frame_versions",
+        "fetch_resources"
+      ],
+      "type": "object"
+    },
+    "NexradOverlayCacheResource": {
+      "additionalProperties": false,
+      "properties": {
+        "frame_version": {
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "frame_version",
+        "src"
+      ],
+      "type": "object"
+    },
     "NexradOverlayScreenPoint": {
       "additionalProperties": false,
       "properties": {
@@ -314,6 +352,16 @@
     "animation": {
       "$ref": "#/$defs/NexradOverlayAnimation"
     },
+    "cache_plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NexradOverlayCachePlan"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "stats": {
       "$ref": "#/$defs/NexradOverlayStats"
     },
@@ -344,6 +392,8 @@
     "NexradOverlayTileCorners",
     "NexradOverlayTile",
     "NexradOverlayStats",
+    "NexradOverlayCacheResource",
+    "NexradOverlayCachePlan",
     "NexradOverlayQueryResult"
   ]
 }

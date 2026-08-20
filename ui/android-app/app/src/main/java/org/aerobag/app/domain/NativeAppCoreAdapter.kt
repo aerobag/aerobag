@@ -1264,6 +1264,10 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun syncLiveFeedCacheAcquisitionPolicy(cache: LiveFeedCache) {
+        cache.applySessionPolicy(handle)
+    }
+
     fun loadOfflinePackageLibraryCache(libraryCacheJson: String?): UiSessionSnapshot {
         val payload = libraryCacheJson?.takeIf { it.isNotBlank() } ?: return snapshot
         return runPagedSnapshot("loadOfflinePackageLibraryCache") {

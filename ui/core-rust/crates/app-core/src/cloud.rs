@@ -38,7 +38,7 @@ use crate::{
     },
     settings_controller::{all_debug_flags, debug_flag_from_id, debug_flag_id},
     AppError, AppErrorKind, AppResult, DebugFlagId, FlightPlan, InactivitySleepTimeout,
-    OfflinePackagePreferences, OfflinePackageSelection,
+    NexradAcquisitionPreferences, OfflinePackagePreferences, OfflinePackageSelection,
 };
 
 const CLOUD_PERSISTENCE_VERSION: u32 = 5;
@@ -52,6 +52,8 @@ const OFFLINE_PACKAGE_PRODUCT_RECORD_PREFIX: &str = "offline_packages/product/";
 const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
 const INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY: &str = "settings/inactivity_sleep_timeout";
 const INACTIVITY_SLEEP_TIMEOUT_SCHEMA_VERSION: u32 = 1;
+const NEXRAD_ACQUISITION_RECORD_KEY: &str = "settings/nexrad_acquisition";
+const NEXRAD_ACQUISITION_SCHEMA_VERSION: u32 = 1;
 const DEBUG_FLAG_RECORD_PREFIX: &str = "settings/debug/";
 const DEBUG_FLAG_SCHEMA_VERSION: u32 = 1;
 const AIRCRAFT_LIBRARY_RECORD_PREFIX: &str = "aircraft/library/";
@@ -454,6 +456,11 @@ impl CloudCompletion {
             .contains_key(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
     }
 
+    pub(crate) fn nexrad_acquisition_changed(&self) -> bool {
+        self.changed_records
+            .contains_key(NEXRAD_ACQUISITION_RECORD_KEY)
+    }
+
     pub(crate) fn debug_flags(&self) -> AppResult<Vec<(DebugFlagId, bool)>> {
         self.changed_records
             .iter()
@@ -808,6 +815,41 @@ impl CloudEngine {
             .cached
             .get(INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY)
             .map(inactivity_sleep_timeout_from_record)
+            .transpose()
+    }
+
+    pub fn record_local_nexrad_acquisition(
+        &mut self,
+        preferences: NexradAcquisitionPreferences,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        let existing = self
+            .persistent
+            .records
+            .cached
+            .get(NEXRAD_ACQUISITION_RECORD_KEY)
+            .map(nexrad_acquisition_from_record)
+            .transpose()?;
+        if existing == Some(preferences) {
+            return Ok(false);
+        }
+        let record = CloudRecord {
+            schema_version: NEXRAD_ACQUISITION_SCHEMA_VERSION,
+            modified_at_epoch_ms: Some(
+                self.next_record_mutation_epoch_ms(NEXRAD_ACQUISITION_RECORD_KEY, now_epoch_ms),
+            ),
+            value: serde_json::to_value(preferences).map_err(cloud_json_error)?,
+        };
+        self.record_local_cloud_record(NEXRAD_ACQUISITION_RECORD_KEY, record);
+        Ok(true)
+    }
+
+    pub fn nexrad_acquisition(&self) -> AppResult<Option<NexradAcquisitionPreferences>> {
+        self.persistent
+            .records
+            .cached
+            .get(NEXRAD_ACQUISITION_RECORD_KEY)
+            .map(nexrad_acquisition_from_record)
             .transpose()
     }
 
@@ -2741,6 +2783,21 @@ fn inactivity_sleep_timeout_from_record(record: &CloudRecord) -> AppResult<Inact
     serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
 }
 
+fn nexrad_acquisition_from_record(record: &CloudRecord) -> AppResult<NexradAcquisitionPreferences> {
+    if record.schema_version != NEXRAD_ACQUISITION_SCHEMA_VERSION {
+        return Err(cloud_error(format!(
+            "unsupported NEXRAD acquisition schema {}",
+            record.schema_version
+        )));
+    }
+    if record.modified_at_epoch_ms.is_none() {
+        return Err(cloud_error(
+            "NEXRAD acquisition setting has no user-mutation timestamp",
+        ));
+    }
+    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+}
+
 fn debug_flag_record_key(flag_id: DebugFlagId) -> String {
     format!("{DEBUG_FLAG_RECORD_PREFIX}{}", debug_flag_id(flag_id))
 }
@@ -2806,6 +2863,8 @@ fn validate_known_record(key: &str, record: &CloudRecord) -> AppResult<()> {
         flight_plan_from_record(record)?;
     } else if key == INACTIVITY_SLEEP_TIMEOUT_RECORD_KEY {
         inactivity_sleep_timeout_from_record(record)?;
+    } else if key == NEXRAD_ACQUISITION_RECORD_KEY {
+        nexrad_acquisition_from_record(record)?;
     } else if let Some(id) = key.strip_prefix(DEBUG_FLAG_RECORD_PREFIX) {
         // Older clients preserve unknown settings records for forward compatibility.
         if debug_flag_from_id(id).is_some() {
@@ -3311,8 +3370,15 @@ mod tests {
         first
             .record_local_inactivity_sleep_timeout(InactivitySleepTimeout::TwoHours, 101)
             .unwrap();
+        let nexrad_preferences = NexradAcquisitionPreferences {
+            coverage: crate::NexradCoverageMode::ViewportOnly,
+            ..NexradAcquisitionPreferences::default()
+        };
         first
-            .record_local_debug_flag(DebugFlagId::BadAutopilot, true, 102)
+            .record_local_nexrad_acquisition(nexrad_preferences, 102)
+            .unwrap();
+        first
+            .record_local_debug_flag(DebugFlagId::BadAutopilot, true, 103)
             .unwrap();
         first.record_local_aircraft_definition(&definition).unwrap();
         first
@@ -3327,6 +3393,10 @@ mod tests {
         assert_eq!(
             second.inactivity_sleep_timeout().unwrap(),
             Some(InactivitySleepTimeout::TwoHours)
+        );
+        assert_eq!(
+            second.nexrad_acquisition().unwrap(),
+            Some(nexrad_preferences)
         );
         assert!(second
             .debug_flags()

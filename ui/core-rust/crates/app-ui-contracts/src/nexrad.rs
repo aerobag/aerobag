@@ -13,6 +13,24 @@ pub struct NexradOverlayQueryResult {
     pub tiles: Vec<NexradOverlayTile>,
     pub stats: NexradOverlayStats,
     pub animation: NexradOverlayAnimation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_plan: Option<NexradOverlayCachePlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct NexradOverlayCachePlan {
+    pub retained_frame_versions: Vec<String>,
+    pub fetch_resources: Vec<NexradOverlayCacheResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct NexradOverlayCacheResource {
+    pub frame_version: String,
+    pub src: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

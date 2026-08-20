@@ -2,7 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, io::Read, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io::{Cursor, Read, Write},
+    sync::Arc,
+};
 
 use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
@@ -22,8 +26,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     live_feed_runtime_decision, AppError, AppErrorKind, AppResult, LiveFeedDurableInstalledProduct,
     LiveFeedRuntimeDecision, LiveFeedRuntimeInput, LiveFeedRuntimeState, LiveFeedsState,
-    NotamProjectionPreparer, PreparedLiveFeedEnvelope, PreparedLiveFeedPayload,
-    PreparedNotamPayload,
+    NexradAcquisitionDirective, NexradCoverageMode, NexradUpdateCadence, NotamProjectionPreparer,
+    PreparedLiveFeedEnvelope, PreparedLiveFeedPayload, PreparedNotamPayload,
 };
 
 pub use crate::live_feeds::{
@@ -40,6 +44,9 @@ pub struct LiveFeedCache {
     restoring_resources: BTreeMap<String, RestoringLiveFeedResources>,
     notam_preparer: NotamProjectionPreparer,
     pending_notam_prepared: Option<Vec<u8>>,
+    nexrad_acquisition: NexradAcquisitionDirective,
+    nexrad_request_clock_epoch_ms: i64,
+    last_nexrad_install_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +103,8 @@ pub enum LiveFeedInstalledPayload {
     },
     NexradPackage {
         manifest: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        render_manifest: Option<Vec<u8>>,
         package_blob_sha256: String,
         package_bytes: Option<Arc<Vec<u8>>>,
     },
@@ -422,6 +431,9 @@ impl LiveFeedCache {
         if product == "notams" {
             self.pending_notam_prepared = None;
         }
+        if product == "nexrad" {
+            self.last_nexrad_install_epoch_ms = Some(self.nexrad_request_clock_epoch_ms);
+        }
         self.remember_installed_state(candidate);
         Ok(())
     }
@@ -475,26 +487,70 @@ impl LiveFeedCache {
     }
 
     pub fn missing_requests(&self) -> Vec<LiveFeedCacheRequest> {
-        self.live_feeds
-            .durable_missing_requests(self.installed_states().map(|installed| {
-                LiveFeedDurableInstalledProduct {
-                    product: installed.product.clone(),
-                    version: installed.version.clone(),
-                    state_sha256: installed.state_sha256.clone(),
-                }
-            }))
+        self.policy_filtered_missing_requests()
     }
 
-    pub fn missing_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
-        self.live_feeds.durable_missing_requests_at_epoch_ms(
-            self.installed_states()
-                .map(|installed| LiveFeedDurableInstalledProduct {
-                    product: installed.product.clone(),
-                    version: installed.version.clone(),
-                    state_sha256: installed.state_sha256.clone(),
-                }),
-            epoch_ms,
-        )
+    fn policy_filtered_missing_requests(&self) -> Vec<LiveFeedCacheRequest> {
+        let mut requests = self
+            .live_feeds
+            .durable_missing_requests_with_nexrad_profile(
+                self.installed_states()
+                    .filter(|installed| {
+                        installed.product != "nexrad"
+                            || installed_nexrad_base_resolution(installed)
+                                == Some(self.nexrad_acquisition.offline_profile.base_resolution())
+                    })
+                    .map(|installed| LiveFeedDurableInstalledProduct {
+                        product: installed.product.clone(),
+                        version: installed.version.clone(),
+                        state_sha256: installed.state_sha256.clone(),
+                    }),
+                self.nexrad_acquisition.offline_profile.id(),
+            );
+        let nexrad_due = self.nexrad_acquisition.cadence != NexradUpdateCadence::Never
+            && self
+                .last_nexrad_install_epoch_ms
+                .is_none_or(|last_install| {
+                    self.nexrad_acquisition
+                        .cadence
+                        .interval_ms()
+                        .is_some_and(|interval| {
+                            interval == 0
+                                || self
+                                    .nexrad_request_clock_epoch_ms
+                                    .saturating_sub(last_install)
+                                    >= interval
+                        })
+                });
+        let viewport_only = self.nexrad_acquisition.coverage == NexradCoverageMode::ViewportOnly;
+        let backfill_animation_window =
+            self.nexrad_acquisition.cadence == NexradUpdateCadence::EveryUpdate;
+        let current_nexrad_version = self.live_feeds.current_product_version("nexrad");
+        requests.retain(|request| match &request.kind {
+            LiveFeedCacheRequestKind::Full {
+                product, version, ..
+            } if product == "nexrad" => {
+                !viewport_only
+                    && nexrad_due
+                    && (backfill_animation_window
+                        || current_nexrad_version == Some(version.as_str()))
+            }
+            _ => true,
+        });
+        if viewport_only {
+            requests.extend(self.live_feeds.nexrad_state_manifest_cache_requests());
+        }
+        requests
+    }
+
+    pub fn missing_requests_at_epoch_ms(&mut self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
+        self.nexrad_request_clock_epoch_ms = self.nexrad_request_clock_epoch_ms.max(epoch_ms);
+        self.live_feeds
+            .retryable_cache_requests(self.policy_filtered_missing_requests(), epoch_ms)
+    }
+
+    pub fn apply_nexrad_acquisition_directive(&mut self, directive: NexradAcquisitionDirective) {
+        self.nexrad_acquisition = directive;
     }
 
     pub fn current_refresh_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
@@ -542,14 +598,34 @@ impl LiveFeedCache {
                     .ingest_durable_request_resource(request, &bytes)?;
                 Ok(None)
             }
+            LiveFeedCacheRequestKind::State { product, version } => {
+                let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
+                    return Err(cache_error("state manifest must be bytes".to_string()));
+                };
+                let _ = (product, version);
+                self.live_feeds
+                    .ingest_durable_request_resource(request, &bytes)?;
+                Ok(None)
+            }
             LiveFeedCacheRequestKind::Full {
-                product, version, ..
+                product,
+                version,
+                install_profile,
+                ..
             } => {
                 let driver = registry.required_driver(product)?;
-                let full_ref = self
-                    .live_feeds
-                    .durable_full_payload_ref_for_request(product, version)?;
-                let mut installed = driver.install_full(product, version, full_ref, payload)?;
+                let full_ref = self.live_feeds.durable_full_payload_ref_for_request(
+                    product,
+                    version,
+                    install_profile.as_deref(),
+                )?;
+                let mut installed = driver.install_full(
+                    product,
+                    version,
+                    full_ref,
+                    install_profile.as_deref(),
+                    payload,
+                )?;
                 installed.collected_at_utc = self
                     .live_feeds
                     .product_collected_at_utc_for_version(product, version)
@@ -646,7 +722,7 @@ impl LiveFeedCache {
         }
         let retained = self
             .live_feeds
-            .durable_retained_versions("nexrad")
+            .client_retained_versions("nexrad")
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
         if let Some(states) = self.installed.get_mut("nexrad") {
@@ -803,6 +879,29 @@ fn installed_retention_key(installed: &LiveFeedInstalledState) -> (Option<String
     (observed_at_utc, installed.version.clone())
 }
 
+fn installed_nexrad_base_resolution(installed: &LiveFeedInstalledState) -> Option<u32> {
+    let LiveFeedInstalledPayload::NexradPackage {
+        manifest,
+        render_manifest,
+        ..
+    } = &installed.payload
+    else {
+        return None;
+    };
+    if render_manifest.is_none() {
+        return Some(0);
+    }
+    let manifest: Value =
+        serde_json::from_slice(render_manifest.as_ref().unwrap_or(manifest)).ok()?;
+    manifest
+        .get("levels")?
+        .as_array()?
+        .iter()
+        .filter_map(|level| level.get("res")?.as_u64())
+        .min()
+        .and_then(|resolution| u32::try_from(resolution).ok())
+}
+
 fn durable_retention_count(product: &str) -> usize {
     if product == "nexrad" {
         NEXRAD_FRAME_WINDOW_SIZE
@@ -934,9 +1033,11 @@ fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Va
     match &installed.payload {
         LiveFeedInstalledPayload::Json { bytes } => serde_json::from_slice(bytes).ok(),
         LiveFeedInstalledPayload::NavKv { manifest, .. } => serde_json::from_slice(manifest).ok(),
-        LiveFeedInstalledPayload::NexradPackage { manifest, .. } => {
-            serde_json::from_slice(manifest).ok()
-        }
+        LiveFeedInstalledPayload::NexradPackage {
+            manifest,
+            render_manifest,
+            ..
+        } => serde_json::from_slice(render_manifest.as_ref().unwrap_or(manifest)).ok(),
         LiveFeedInstalledPayload::NotamResources { .. } => None,
     }
 }
@@ -1052,6 +1153,7 @@ impl LiveFeedProductDriver {
         product_id: &str,
         version: &str,
         payload_ref: &LiveFeedPayloadRef,
+        install_profile: Option<&str>,
         payload: LiveFeedFetchedPayload,
     ) -> AppResult<LiveFeedInstalledState> {
         match self {
@@ -1167,6 +1269,8 @@ impl LiveFeedProductDriver {
                         payload_ref.state_sha256
                     )));
                 }
+                let (render_manifest, bytes) =
+                    prepare_nexrad_offline_package(&bytes, install_profile)?;
                 Ok(LiveFeedInstalledState {
                     product: product.clone(),
                     version: version.to_string(),
@@ -1174,6 +1278,7 @@ impl LiveFeedProductDriver {
                     collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::NexradPackage {
                         manifest,
+                        render_manifest,
                         package_blob_sha256: sha256_hex(&bytes),
                         package_bytes: Some(Arc::new(bytes)),
                     },
@@ -1248,6 +1353,7 @@ impl LiveFeedProductDriver {
                 })?;
                 verify_blob_sha256("persisted NEXRAD package", bytes, expected_blob_sha256)?;
                 let manifest = read_nexrad_package_manifest(bytes)?;
+                let render_manifest = read_optional_zip_member(bytes, "render-manifest.json")?;
                 let manifest_value: Value =
                     serde_json::from_slice(&manifest).map_err(cache_json_error)?;
                 let actual_state_sha256 = canonical_json_sha256(&manifest_value)?;
@@ -1267,6 +1373,7 @@ impl LiveFeedProductDriver {
                     collected_at_utc: summary.collected_at_utc.clone(),
                     payload: LiveFeedInstalledPayload::NexradPackage {
                         manifest,
+                        render_manifest,
                         package_blob_sha256: expected_blob_sha256.to_string(),
                         package_bytes: Some(Arc::new(bytes.to_vec())),
                     },
@@ -1534,6 +1641,211 @@ fn read_nexrad_package_manifest(bytes: &[u8]) -> AppResult<Vec<u8>> {
         .read_to_end(&mut manifest)
         .map_err(|error| cache_error(format!("failed to read NEXRAD manifest: {error}")))?;
     Ok(manifest)
+}
+
+fn read_optional_zip_member(bytes: &[u8], name: &str) -> AppResult<Option<Vec<u8>>> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| cache_error(format!("failed to open NEXRAD package: {error}")))?;
+    let Ok(mut member) = archive.by_name(name) else {
+        return Ok(None);
+    };
+    let mut value = Vec::new();
+    member
+        .read_to_end(&mut value)
+        .map_err(|error| cache_error(format!("failed to read NEXRAD {name}: {error}")))?;
+    Ok(Some(value))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NexradOfflinePackageManifest {
+    levels: Vec<NexradOfflinePackageLevel>,
+    tile_size: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NexradOfflinePackageLevel {
+    res: u32,
+    width: u32,
+    height: u32,
+    tile_cols: u32,
+    tile_rows: u32,
+}
+
+fn prepare_nexrad_offline_package(
+    bytes: &[u8],
+    install_profile: Option<&str>,
+) -> AppResult<(Option<Vec<u8>>, Vec<u8>)> {
+    let Some(install_profile) = install_profile else {
+        return Ok((None, bytes.to_vec()));
+    };
+    if let Some(render_manifest) = read_optional_zip_member(bytes, "render-manifest.json")? {
+        return Ok((Some(render_manifest), bytes.to_vec()));
+    }
+    let base_resolution = match install_profile {
+        product_contracts::live_feeds::v3::NEXRAD_OFFLINE_PROFILE_0 => 0,
+        product_contracts::live_feeds::v3::NEXRAD_OFFLINE_PROFILE_LOW1 => 1,
+        other => {
+            return Err(cache_error(format!(
+                "unsupported NEXRAD offline profile {other}"
+            )))
+        }
+    };
+    let manifest = read_nexrad_package_manifest(bytes)?;
+    let parsed: NexradOfflinePackageManifest =
+        serde_json::from_slice(&manifest).map_err(cache_json_error)?;
+    let base_level = parsed
+        .levels
+        .iter()
+        .find(|level| level.res == base_resolution)
+        .ok_or_else(|| {
+            cache_error(format!(
+                "NEXRAD {install_profile} package manifest has no res{base_resolution}"
+            ))
+        })?;
+    if base_level.tile_cols == 0 || base_level.tile_rows == 0 || parsed.tile_size == 0 {
+        return Err(cache_error(format!(
+            "NEXRAD {install_profile} package has invalid base-level dimensions"
+        )));
+    }
+
+    let mut members = read_zip_members(bytes)?;
+    let base_prefix = format!("tiles/res{base_resolution}/");
+    if !members.keys().any(|name| name.starts_with(&base_prefix)) {
+        return Err(cache_error(format!(
+            "NEXRAD {install_profile} package has no {base_prefix} tiles"
+        )));
+    }
+    let render_manifest = nexrad_render_manifest(&manifest, base_resolution)?;
+    members.insert("render-manifest.json".to_string(), render_manifest.clone());
+
+    let mut levels = parsed
+        .levels
+        .iter()
+        .filter(|level| level.res >= base_resolution)
+        .cloned()
+        .collect::<Vec<_>>();
+    levels.sort_by_key(|level| level.res);
+    for pair in levels.windows(2) {
+        let source = &pair[0];
+        let target = &pair[1];
+        if target.res != source.res + 1 {
+            return Err(cache_error(format!(
+                "NEXRAD overview levels jump from res{} to res{}",
+                source.res, target.res
+            )));
+        }
+        derive_nexrad_overview_level(&mut members, source, target, parsed.tile_size)?;
+    }
+    Ok((Some(render_manifest), write_nexrad_zip_members(members)?))
+}
+
+fn read_zip_members(bytes: &[u8]) -> AppResult<BTreeMap<String, Vec<u8>>> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| cache_error(format!("failed to open NEXRAD package: {error}")))?;
+    let mut members = BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut member = archive
+            .by_index(index)
+            .map_err(|error| cache_error(format!("failed to read NEXRAD ZIP member: {error}")))?;
+        if member.is_dir() {
+            continue;
+        }
+        let name = member.name().to_string();
+        let mut value = Vec::new();
+        member
+            .read_to_end(&mut value)
+            .map_err(|error| cache_error(format!("failed to read NEXRAD {name}: {error}")))?;
+        members.insert(name, value);
+    }
+    Ok(members)
+}
+
+fn nexrad_render_manifest(manifest: &[u8], base_resolution: u32) -> AppResult<Vec<u8>> {
+    let mut value: Value = serde_json::from_slice(manifest).map_err(cache_json_error)?;
+    let levels = value
+        .get_mut("levels")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| cache_error("NEXRAD manifest has no levels array".to_string()))?;
+    levels.retain(|level| {
+        level
+            .get("res")
+            .and_then(Value::as_u64)
+            .is_some_and(|res| res >= u64::from(base_resolution))
+    });
+    serde_json::to_vec(&value).map_err(cache_json_error)
+}
+
+fn derive_nexrad_overview_level(
+    members: &mut BTreeMap<String, Vec<u8>>,
+    source: &NexradOfflinePackageLevel,
+    target: &NexradOfflinePackageLevel,
+    tile_size: u32,
+) -> AppResult<()> {
+    for target_x in 0..target.tile_cols {
+        for target_y in 0..target.tile_rows {
+            let target_width = tile_size.min(target.width.saturating_sub(target_x * tile_size));
+            let target_height = tile_size.min(target.height.saturating_sub(target_y * tile_size));
+            let mut mosaic = image::RgbaImage::new(target_width * 2, target_height * 2);
+            for source_x in target_x * 2..(target_x * 2 + 2).min(source.tile_cols) {
+                for source_y in target_y * 2..(target_y * 2 + 2).min(source.tile_rows) {
+                    let path = format!("tiles/res{}/{source_x}/{source_y}.png", source.res);
+                    let png = members
+                        .get(&path)
+                        .ok_or_else(|| cache_error(format!("NEXRAD package is missing {path}")))?;
+                    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                        .map_err(|error| {
+                            cache_error(format!("failed to decode NEXRAD {path}: {error}"))
+                        })?
+                        .to_rgba8();
+                    image::imageops::overlay(
+                        &mut mosaic,
+                        &image,
+                        i64::from((source_x - target_x * 2) * tile_size),
+                        i64::from((source_y - target_y * 2) * tile_size),
+                    );
+                }
+            }
+            let overview = image::imageops::resize(
+                &mosaic,
+                target_width,
+                target_height,
+                image::imageops::FilterType::Triangle,
+            );
+            let mut png = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(overview)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .map_err(|error| {
+                    cache_error(format!(
+                        "failed to encode NEXRAD res{} overview: {error}",
+                        target.res
+                    ))
+                })?;
+            members.insert(
+                format!("tiles/res{}/{target_x}/{target_y}.png", target.res),
+                png.into_inner(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_nexrad_zip_members(members: BTreeMap<String, Vec<u8>>) -> AppResult<Vec<u8>> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in members {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default());
+        writer
+            .start_file(&name, options)
+            .map_err(|error| cache_error(format!("failed to add NEXRAD {name}: {error}")))?;
+        writer
+            .write_all(&bytes)
+            .map_err(|error| cache_error(format!("failed to write NEXRAD {name}: {error}")))?;
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| cache_error(format!("failed to finish NEXRAD package: {error}")))
 }
 
 fn decode_notam_checkpoint(payload_kind: Option<&str>, bytes: &[u8]) -> AppResult<NotamCheckpoint> {
@@ -1839,8 +2151,12 @@ fn cache_error(message: String) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NexradOfflineProfile;
     use had_nav_kv::NavKvPair;
-    use std::io::{Cursor, Read, Write};
+    use std::{
+        collections::BTreeSet,
+        io::{Cursor, Read, Write},
+    };
     use zip::CompressionMethod;
 
     const TEST_LIVE_FEED_ROOT: &str = "http://live.test";
@@ -1996,6 +2312,373 @@ mod tests {
         (serde_json::to_vec(&manifest).unwrap(), package)
     }
 
+    fn profiled_nexrad_version_fixture(
+        version: &str,
+        full_bytes: usize,
+        reduced_bytes: usize,
+    ) -> (Vec<u8>, BTreeMap<String, Vec<u8>>) {
+        let state_manifest = nexrad_state_manifest(version);
+        let state_bytes = serde_json::to_vec(&state_manifest).unwrap();
+        let state_sha256 = canonical_json_sha256(&state_manifest).unwrap();
+        let full = vec![0x40; full_bytes];
+        let reduced = vec![0x10; reduced_bytes];
+        let state_url = format!("states/nexrad/{version}/manifest.json");
+        let full_url = format!("packages/nexrad/{version}.offline_0.zip");
+        let reduced_url = format!("packages/nexrad/{version}.offline_low1.zip");
+        let manifest = serde_json::json!({
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "product": "nexrad",
+            "version": version,
+            "state": {
+                "kind": "json",
+                "url": state_url,
+                "bytes": state_bytes.len(),
+                "blob_sha256": sha256_hex(&state_bytes),
+                "state_sha256": state_sha256
+            },
+            "install_profiles": {
+                "offline_0": {
+                    "kind": "directory_package",
+                    "url": full_url,
+                    "bytes": full.len(),
+                    "blob_sha256": sha256_hex(&full),
+                    "state_sha256": state_sha256
+                },
+                "offline_low1": {
+                    "kind": "directory_package",
+                    "url": reduced_url,
+                    "bytes": reduced.len(),
+                    "blob_sha256": sha256_hex(&reduced),
+                    "state_sha256": state_sha256
+                }
+            }
+        });
+        (
+            serde_json::to_vec(&manifest).unwrap(),
+            BTreeMap::from([
+                (
+                    format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/{state_url}"),
+                    state_bytes,
+                ),
+                (
+                    format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/{full_url}"),
+                    full,
+                ),
+                (
+                    format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/{reduced_url}"),
+                    reduced,
+                ),
+            ]),
+        )
+    }
+
+    fn profiled_nexrad_cache() -> (LiveFeedCache, BTreeMap<String, Vec<u8>>) {
+        let history = ["v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7"];
+        let mut cache = live_feed_cache();
+        cache
+            .ingest_current(&nexrad_current_manifest("v8", &history))
+            .unwrap();
+        let mut payloads = BTreeMap::new();
+        for (index, version) in history.into_iter().chain(std::iter::once("v8")).enumerate() {
+            let (manifest, version_payloads) =
+                profiled_nexrad_version_fixture(version, 1_000 + index, 100 + index);
+            cache
+                .ingest_version_manifest("nexrad", version, &manifest)
+                .unwrap();
+            payloads.extend(version_payloads);
+        }
+        (cache, payloads)
+    }
+
+    fn simulated_download(
+        requests: &[LiveFeedCacheRequest],
+        payloads: &BTreeMap<String, Vec<u8>>,
+    ) -> (BTreeSet<String>, usize) {
+        let mut urls = BTreeSet::new();
+        let mut bytes = 0;
+        for request in requests {
+            assert!(
+                urls.insert(request.url.clone()),
+                "duplicate request {}",
+                request.url
+            );
+            bytes += payloads
+                .get(&request.url)
+                .unwrap_or_else(|| panic!("unexpected request {}", request.url))
+                .len();
+        }
+        (urls, bytes)
+    }
+
+    fn solid_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba(color));
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn reduced_nexrad_profile_derives_only_coarser_overviews() {
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "state_id": "v1",
+            "levels": [
+                {"res": 0, "width": 8, "height": 8, "tile_cols": 2, "tile_rows": 2},
+                {"res": 1, "width": 4, "height": 4, "tile_cols": 1, "tile_rows": 1},
+                {"res": 2, "width": 2, "height": 2, "tile_cols": 1, "tile_rows": 1}
+            ],
+            "tile_size": 4
+        }))
+        .unwrap();
+        let mut members = BTreeMap::from([
+            ("manifest.json".to_string(), manifest),
+            (
+                "tiles/res1/0/0.png".to_string(),
+                solid_png(4, 4, [20, 40, 60, 255]),
+            ),
+        ]);
+        let source = write_nexrad_zip_members(std::mem::take(&mut members)).unwrap();
+
+        let (render_manifest, package) = prepare_nexrad_offline_package(
+            &source,
+            Some(product_contracts::live_feeds::v3::NEXRAD_OFFLINE_PROFILE_LOW1),
+        )
+        .unwrap();
+
+        let render: Value = serde_json::from_slice(&render_manifest.unwrap()).unwrap();
+        assert_eq!(
+            render["levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["res"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let members = read_zip_members(&package).unwrap();
+        assert!(members.contains_key("tiles/res1/0/0.png"));
+        assert!(members.contains_key("tiles/res2/0/0.png"));
+        assert!(!members.keys().any(|name| name.starts_with("tiles/res0/")));
+        let overview = image::load_from_memory_with_format(
+            &members["tiles/res2/0/0.png"],
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        assert_eq!((overview.width(), overview.height()), (2, 2));
+        assert!(overview
+            .to_rgba8()
+            .pixels()
+            .all(|pixel| pixel.0 == [20, 40, 60, 255]));
+    }
+
+    #[test]
+    fn nexrad_modes_download_only_the_exact_profile_and_retained_frames() {
+        let retained_versions = ["v2", "v3", "v4", "v5", "v6", "v7", "v8"];
+
+        for (profile, suffix, bytes_per_version) in [
+            (
+                NexradOfflineProfile::Offline0,
+                "offline_0.zip",
+                (2_usize..=8).map(|index| 1_000 + index).collect::<Vec<_>>(),
+            ),
+            (
+                NexradOfflineProfile::OfflineLow1,
+                "offline_low1.zip",
+                (2_usize..=8).map(|index| 100 + index).collect::<Vec<_>>(),
+            ),
+        ] {
+            let (mut cache, payloads) = profiled_nexrad_cache();
+            cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+                coverage: NexradCoverageMode::FullOffline,
+                offline_profile: profile,
+                cadence: NexradUpdateCadence::EveryUpdate,
+            });
+
+            let requests = cache.missing_requests_at_epoch_ms(1_000);
+            assert_eq!(requests.len(), retained_versions.len());
+            assert!(requests.iter().all(|request| matches!(
+                &request.kind,
+                LiveFeedCacheRequestKind::Full {
+                    product,
+                    install_profile: Some(request_profile),
+                    ..
+                } if product == "nexrad" && request_profile == profile.id()
+            )));
+            let (urls, downloaded_bytes) = simulated_download(&requests, &payloads);
+            assert_eq!(
+                urls,
+                retained_versions
+                    .iter()
+                    .map(|version| format!(
+                        "{TEST_LIVE_FEED_ROOT}/live-feeds/v3/packages/nexrad/{version}.{suffix}"
+                    ))
+                    .collect()
+            );
+            assert_eq!(
+                downloaded_bytes,
+                bytes_per_version.into_iter().sum::<usize>()
+            );
+            assert!(urls
+                .iter()
+                .all(|url| !url.contains("/v0.") && !url.contains("/v1.")));
+        }
+    }
+
+    #[test]
+    fn decimated_nexrad_downloads_current_frame_without_backfilling_intermediate_frames() {
+        let (mut cache, payloads) = profiled_nexrad_cache();
+        cache.last_nexrad_install_epoch_ms = Some(0);
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::FullOffline,
+            offline_profile: NexradOfflineProfile::OfflineLow1,
+            cadence: NexradUpdateCadence::ThirtyMinutes,
+        });
+
+        assert!(cache.missing_requests_at_epoch_ms(29 * 60_000).is_empty());
+        let requests = cache.missing_requests_at_epoch_ms(30 * 60_000);
+        let (urls, downloaded_bytes) = simulated_download(&requests, &payloads);
+        assert_eq!(
+            urls,
+            BTreeSet::from([format!(
+                "{TEST_LIVE_FEED_ROOT}/live-feeds/v3/packages/nexrad/v8.offline_low1.zip"
+            )])
+        );
+        assert_eq!(downloaded_bytes, 108);
+        assert!(matches!(
+            &requests[0].kind,
+            LiveFeedCacheRequestKind::Full {
+                version,
+                install_profile: Some(profile),
+                ..
+            } if version == "v8" && profile == "offline_low1"
+        ));
+    }
+
+    #[test]
+    fn viewport_nexrad_downloads_only_retained_state_metadata_not_offline_packages() {
+        let (mut cache, payloads) = profiled_nexrad_cache();
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::ViewportOnly,
+            ..NexradAcquisitionDirective::default()
+        });
+
+        let requests = cache.missing_requests_at_epoch_ms(1_000);
+        assert_eq!(requests.len(), NEXRAD_FRAME_WINDOW_SIZE);
+        assert!(requests.iter().all(|request| matches!(
+            request.kind,
+            LiveFeedCacheRequestKind::State { ref product, .. } if product == "nexrad"
+        )));
+        let (urls, downloaded_bytes) = simulated_download(&requests, &payloads);
+        let expected_urls = ["v2", "v3", "v4", "v5", "v6", "v7", "v8"]
+            .into_iter()
+            .map(|version| {
+                format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/states/nexrad/{version}/manifest.json")
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_bytes = expected_urls
+            .iter()
+            .map(|url| payloads[url].len())
+            .sum::<usize>();
+        assert_eq!(urls, expected_urls);
+        assert_eq!(downloaded_bytes, expected_bytes);
+        assert!(urls.iter().all(|url| !url.contains("/packages/")));
+    }
+
+    #[test]
+    fn nexrad_cadence_fetches_metadata_but_defers_the_next_package() {
+        let registry = live_feed_product_registry();
+        let mut cache = live_feed_cache();
+        cache
+            .ingest_current(&nexrad_current_manifest("v1", &[]))
+            .unwrap();
+        let (v1_manifest, v1_package) = nexrad_version_manifest("v1");
+        let version_request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
+        cache
+            .install_fetched_payload(
+                &registry,
+                &version_request,
+                LiveFeedFetchedPayload::Bytes(v1_manifest),
+            )
+            .unwrap();
+        let package_request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
+        let installed = cache
+            .install_fetched_payload(
+                &registry,
+                &package_request,
+                LiveFeedFetchedPayload::Bytes(v1_package),
+            )
+            .unwrap()
+            .unwrap();
+        cache
+            .acknowledge_install_candidate("nexrad", &installed.version)
+            .unwrap();
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            cadence: NexradUpdateCadence::ThirtyMinutes,
+            ..NexradAcquisitionDirective::default()
+        });
+
+        cache
+            .ingest_current(&nexrad_current_manifest("v2", &["v1"]))
+            .unwrap();
+        let (v2_manifest, _) = nexrad_version_manifest("v2");
+        let version_request = cache.missing_requests_at_epoch_ms(10 * 60_000).remove(0);
+        assert!(matches!(
+            version_request.kind,
+            LiveFeedCacheRequestKind::Version { ref version, .. } if version == "v2"
+        ));
+        cache
+            .install_fetched_payload(
+                &registry,
+                &version_request,
+                LiveFeedFetchedPayload::Bytes(v2_manifest),
+            )
+            .unwrap();
+        assert!(cache.missing_requests_at_epoch_ms(10 * 60_000).is_empty());
+        assert!(cache
+            .missing_requests_at_epoch_ms(31 * 60_000)
+            .iter()
+            .any(|request| matches!(
+                request.kind,
+                LiveFeedCacheRequestKind::Full { ref product, ref version, .. }
+                    if product == "nexrad" && version == "v2"
+            )));
+    }
+
+    #[test]
+    fn viewport_nexrad_uses_state_manifests_instead_of_packages() {
+        let registry = live_feed_product_registry();
+        let mut cache = live_feed_cache();
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::ViewportOnly,
+            ..NexradAcquisitionDirective::default()
+        });
+        cache
+            .ingest_current(&nexrad_current_manifest("v1", &[]))
+            .unwrap();
+        let (version_manifest, _) = nexrad_version_manifest("v1");
+        let version_request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
+        cache
+            .install_fetched_payload(
+                &registry,
+                &version_request,
+                LiveFeedFetchedPayload::Bytes(version_manifest),
+            )
+            .unwrap();
+
+        let requests = cache.missing_requests_at_epoch_ms(1_000);
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(
+            requests[0].kind,
+            LiveFeedCacheRequestKind::State { ref product, ref version }
+                if product == "nexrad" && version == "v1"
+        ));
+        assert!(!requests.iter().any(|request| matches!(
+            request.kind,
+            LiveFeedCacheRequestKind::Full { ref product, .. } if product == "nexrad"
+        )));
+    }
+
     fn xz_json_bytes(value: &Value) -> Vec<u8> {
         nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(value).unwrap()).unwrap()
     }
@@ -2048,6 +2731,7 @@ mod tests {
                 "notams",
                 &checkpoint_id,
                 &checkpoint_ref,
+                None,
                 LiveFeedFetchedPayload::Bytes(checkpoint_bytes.clone()),
             )
             .unwrap();
@@ -2119,6 +2803,7 @@ mod tests {
                 "notams",
                 &checkpoint_id,
                 &checkpoint_ref,
+                None,
                 LiveFeedFetchedPayload::Bytes(checkpoint_bytes.clone()),
             )
             .unwrap();
@@ -2860,6 +3545,7 @@ mod tests {
                 product: "metars".to_string(),
                 version: "v2".to_string(),
                 payload_kind: Some("json_xz".to_string()),
+                install_profile: None,
             }
         );
     }
@@ -3017,7 +3703,8 @@ mod tests {
             LiveFeedCacheRequestKind::Full {
                 product: "obstacles".to_string(),
                 version: "v1".to_string(),
-                payload_kind: Some("nav_kv_package".to_string())
+                payload_kind: Some("nav_kv_package".to_string()),
+                install_profile: None,
             }
         );
         cache
@@ -3267,6 +3954,7 @@ mod tests {
                 product: "obstacles".to_string(),
                 version: "v2".to_string(),
                 payload_kind: Some("nav_kv_package".to_string()),
+                install_profile: None,
             }
         );
     }

@@ -44,6 +44,7 @@ fn nexrad_query_wire_matches_golden() {
             tiles: Vec::new(),
             stats: nexrad::NexradOverlayStats::default(),
             animation: nexrad::NexradOverlayAnimation::idle(),
+            cache_plan: None,
         },
         include_str!("goldens/nexrad-query.json"),
     );

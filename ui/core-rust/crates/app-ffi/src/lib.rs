@@ -1534,14 +1534,30 @@ pub fn live_feed_cache_missing_requests_at_epoch_ms_json(
     handle: u64,
     epoch_ms: i64,
 ) -> Result<String, String> {
-    let caches = live_feed_caches()
+    let mut caches = live_feed_caches()
         .lock()
         .map_err(|_| "live feed cache store poisoned".to_string())?;
     let cache = caches
-        .get(&(handle as u32))
+        .get_mut(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
     serde_json::to_string(&cache.missing_requests_at_epoch_ms(epoch_ms))
         .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_apply_session_policy(
+    handle: u64,
+    session_handle: u64,
+) -> Result<(), String> {
+    let directive = app_core::nexrad_acquisition_directive_in_session(session_handle as u32)
+        .map_err(|error| error.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache.apply_nexrad_acquisition_directive(directive);
+    Ok(())
 }
 
 pub fn live_feed_cache_current_refresh_requests_at_epoch_ms_json(
@@ -3263,6 +3279,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheS
         &mut env,
         live_feed_cache_sync_catalog_in_session_json(handle as u64, session_handle as u64),
     )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheApplySessionPolicy(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    session_handle: i64,
+) {
+    if let Err(message) = live_feed_cache_apply_session_policy(handle as u64, session_handle as u64)
+    {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
 use product_contracts::{
@@ -50,6 +50,7 @@ struct LiveFeedProductState {
     state_kind: Option<String>,
     state_ref: Option<LiveFeedPayloadRef>,
     install_state_ref: Option<LiveFeedPayloadRef>,
+    install_profile_refs: BTreeMap<String, LiveFeedPayloadRef>,
     delta_from_previous: Option<LiveFeedDeltaRef>,
     recent_deltas: Vec<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
@@ -68,6 +69,7 @@ struct LiveFeedProductHistoryState {
     state_kind: Option<String>,
     state_ref: Option<LiveFeedPayloadRef>,
     install_state_ref: Option<LiveFeedPayloadRef>,
+    install_profile_refs: BTreeMap<String, LiveFeedPayloadRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
 }
@@ -150,6 +152,12 @@ pub enum LiveFeedCacheRequestKind {
         product: String,
         version: String,
         payload_kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        install_profile: Option<String>,
+    },
+    State {
+        product: String,
+        version: String,
     },
     Delta {
         product: String,
@@ -517,6 +525,14 @@ impl LiveFeedsState {
                 }
                 validate_relative_url(&install_state.url)?;
             }
+            for (profile, install_state) in &manifest.install_profiles {
+                if install_state.kind.is_none() {
+                    return Err(invalid_live_feed(format!(
+                        "version resource {resource_id} install profile {profile} missing kind"
+                    )));
+                }
+                validate_relative_url(&install_state.url)?;
+            }
             if let Some(delta) = &manifest.delta_from_previous {
                 validate_relative_url(&delta.url)?;
                 if delta.kind.is_none() {
@@ -561,6 +577,7 @@ impl LiveFeedsState {
                 history.state_kind = manifest.state.kind.clone();
                 history.state_ref = Some(manifest.state);
                 history.install_state_ref = manifest.install_state;
+                history.install_profile_refs = manifest.install_profiles;
                 history.version_manifest = Some(manifest_json);
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
@@ -573,6 +590,7 @@ impl LiveFeedsState {
             entry.state_kind = manifest.state.kind.clone();
             entry.state_ref = Some(manifest.state);
             entry.install_state_ref = manifest.install_state;
+            entry.install_profile_refs = manifest.install_profiles;
             entry.delta_from_previous = manifest.delta_from_previous;
             entry.recent_deltas = manifest.recent_deltas;
             entry.version_manifest = Some(manifest_json);
@@ -989,7 +1007,7 @@ impl LiveFeedsState {
         self.current_loaded
     }
 
-    pub fn durable_retained_versions(&self, product: &str) -> Vec<String> {
+    pub fn client_retained_versions(&self, product: &str) -> Vec<String> {
         let Some(entry) = self.products.get(product) else {
             return Vec::new();
         };
@@ -1084,6 +1102,7 @@ impl LiveFeedsState {
         entry.state_kind = None;
         entry.state_ref = None;
         entry.install_state_ref = None;
+        entry.install_profile_refs.clear();
         entry.delta_from_previous = None;
         entry.recent_deltas.clear();
         entry.version_manifest = None;
@@ -1150,16 +1169,29 @@ impl LiveFeedsState {
             entry.state_kind = source_entry.state_kind.clone();
             entry.state_ref = source_entry.state_ref.clone();
             entry.install_state_ref = source_entry.install_state_ref.clone();
+            entry.install_profile_refs = source_entry.install_profile_refs.clone();
             entry.delta_from_previous = source_entry.delta_from_previous.clone();
             entry.recent_deltas = source_entry.recent_deltas.clone();
             entry.version_manifest = source_entry.version_manifest.clone();
             entry.history = source_entry.history.clone();
+            if product == "nexrad" && source_entry.state_manifest.is_some() {
+                entry.loaded_version = source_entry.loaded_version.clone();
+                entry.state_manifest = source_entry.state_manifest.clone();
+            }
         }
     }
 
     pub fn durable_missing_requests(
         &self,
         installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
+    ) -> Vec<LiveFeedCacheRequest> {
+        self.durable_missing_requests_with_nexrad_profile(installed, "offline_0")
+    }
+
+    pub fn durable_missing_requests_with_nexrad_profile(
+        &self,
+        installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
+        nexrad_profile: &str,
     ) -> Vec<LiveFeedCacheRequest> {
         if !self.current_loaded {
             return vec![self.durable_current_request()];
@@ -1201,9 +1233,14 @@ impl LiveFeedsState {
                         version_manifest: entry.version_manifest.as_ref(),
                         version_manifest_url: entry.version_manifest_url.as_deref(),
                         full_ref: entry
-                            .install_state_ref
-                            .as_ref()
+                            .install_profile_refs
+                            .get(nexrad_profile)
+                            .or(entry.install_state_ref.as_ref())
                             .or(entry.state_ref.as_ref()),
+                        install_profile: entry
+                            .install_profile_refs
+                            .contains_key(nexrad_profile)
+                            .then(|| nexrad_profile.to_string()),
                         expected_state_sha256: entry.expected_state_sha256.as_deref(),
                     },
                     &installed_by_product_version,
@@ -1221,9 +1258,14 @@ impl LiveFeedsState {
                             version_manifest: history.version_manifest.as_ref(),
                             version_manifest_url: history.version_manifest_url.as_deref(),
                             full_ref: history
-                                .install_state_ref
-                                .as_ref()
+                                .install_profile_refs
+                                .get(nexrad_profile)
+                                .or(history.install_state_ref.as_ref())
                                 .or(history.state_ref.as_ref()),
+                            install_profile: history
+                                .install_profile_refs
+                                .contains_key(nexrad_profile)
+                                .then(|| nexrad_profile.to_string()),
                             expected_state_sha256: history.expected_state_sha256.as_deref(),
                         },
                         &installed_by_product_version,
@@ -1277,6 +1319,7 @@ impl LiveFeedsState {
                             product: product.to_string(),
                             version: state.state_sha256.clone(),
                             payload_kind: state.kind.clone(),
+                            install_profile: None,
                         },
                     });
                 }
@@ -1314,6 +1357,7 @@ impl LiveFeedsState {
                         product: product.to_string(),
                         version: version.clone(),
                         payload_kind: full_ref.kind.clone(),
+                        install_profile: None,
                     },
                 });
             }
@@ -1350,7 +1394,7 @@ impl LiveFeedsState {
         }
     }
 
-    fn retryable_cache_requests(
+    pub(crate) fn retryable_cache_requests(
         &self,
         requests: Vec<LiveFeedCacheRequest>,
         epoch_ms: i64,
@@ -1376,6 +1420,9 @@ impl LiveFeedsState {
             LiveFeedCacheRequestKind::Version { product, version } => {
                 self.ingest_resource(&format!("live_feeds/version/{product}/{version}"), bytes)
             }
+            LiveFeedCacheRequestKind::State { product, version } => {
+                self.ingest_resource(&format!("live_feeds/state/{product}/{version}"), bytes)
+            }
             LiveFeedCacheRequestKind::Full { .. } | LiveFeedCacheRequestKind::Delta { .. } => {
                 Ok(())
             }
@@ -1386,6 +1433,7 @@ impl LiveFeedsState {
         &self,
         product: &str,
         version: &str,
+        install_profile: Option<&str>,
     ) -> AppResult<&LiveFeedPayloadRef> {
         let entry = self
             .products
@@ -1408,10 +1456,12 @@ impl LiveFeedsState {
                 .iter()
                 .find(|history| history.version == version)
                 .and_then(|history| {
-                    history
-                        .install_state_ref
-                        .as_ref()
-                        .or(history.state_ref.as_ref())
+                    install_profile
+                        .and_then(|profile| history.install_profile_refs.get(profile))
+                        .or(history
+                            .install_state_ref
+                            .as_ref()
+                            .or(history.state_ref.as_ref()))
                 })
                 .ok_or_else(|| {
                     invalid_live_feed(format!(
@@ -1425,11 +1475,43 @@ impl LiveFeedsState {
                 entry.current_version
             )));
         }
-        entry.durable_full_payload_ref(product).ok_or_else(|| {
-            invalid_live_feed(format!(
-                "{product}/{version} does not advertise an installable durable payload"
-            ))
-        })
+        install_profile
+            .and_then(|profile| entry.install_profile_refs.get(profile))
+            .or_else(|| entry.durable_full_payload_ref(product))
+            .ok_or_else(|| {
+                invalid_live_feed(format!(
+                    "{product}/{version} does not advertise an installable durable payload"
+                ))
+            })
+    }
+
+    pub fn nexrad_install_profile_bytes(&self) -> BTreeMap<String, u64> {
+        self.products
+            .get("nexrad")
+            .map(|entry| {
+                entry
+                    .install_profile_refs
+                    .iter()
+                    .map(|(profile, payload)| (profile.clone(), payload.bytes))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn nexrad_state_manifest_cache_requests(&self) -> Vec<LiveFeedCacheRequest> {
+        let Some(entry) = self.products.get("nexrad") else {
+            return Vec::new();
+        };
+        let mut requests = Vec::new();
+        if let Some(version) = entry.current_version.as_deref() {
+            append_nexrad_state_manifest_cache_request(self, &mut requests, version, entry);
+        }
+        let retained_history_count = NEXRAD_FRAME_WINDOW_SIZE.saturating_sub(1);
+        let retained_history_start = entry.history.len().saturating_sub(retained_history_count);
+        for history in &entry.history[retained_history_start..] {
+            append_nexrad_history_state_manifest_cache_request(self, &mut requests, history);
+        }
+        requests
     }
 
     pub fn durable_delta_ref_for_request(
@@ -1727,6 +1809,7 @@ impl LiveFeedProductState {
                     state.state_kind = None;
                     state.state_ref = None;
                     state.install_state_ref = None;
+                    state.install_profile_refs.clear();
                     state.version_manifest = None;
                     state.state_manifest = None;
                 }
@@ -1806,7 +1889,51 @@ struct DurableNexradRequest<'a> {
     version_manifest: Option<&'a Value>,
     version_manifest_url: Option<&'a str>,
     full_ref: Option<&'a LiveFeedPayloadRef>,
+    install_profile: Option<String>,
     expected_state_sha256: Option<&'a str>,
+}
+
+fn append_nexrad_state_manifest_cache_request(
+    state: &LiveFeedsState,
+    requests: &mut Vec<LiveFeedCacheRequest>,
+    version: &str,
+    entry: &LiveFeedProductState,
+) {
+    if entry.version_manifest.is_none() || entry.state_manifest.is_some() {
+        return;
+    }
+    let Some(state_ref) = entry.state_ref.as_ref() else {
+        return;
+    };
+    requests.push(LiveFeedCacheRequest {
+        id: format!("live_feeds/state/nexrad/{version}"),
+        url: state.required_live_feed_url(&state_ref.url),
+        kind: LiveFeedCacheRequestKind::State {
+            product: "nexrad".to_string(),
+            version: version.to_string(),
+        },
+    });
+}
+
+fn append_nexrad_history_state_manifest_cache_request(
+    state: &LiveFeedsState,
+    requests: &mut Vec<LiveFeedCacheRequest>,
+    entry: &LiveFeedProductHistoryState,
+) {
+    if entry.version_manifest.is_none() || entry.state_manifest.is_some() {
+        return;
+    }
+    let Some(state_ref) = entry.state_ref.as_ref() else {
+        return;
+    };
+    requests.push(LiveFeedCacheRequest {
+        id: format!("live_feeds/state/nexrad/{}", entry.version),
+        url: state.required_live_feed_url(&state_ref.url),
+        kind: LiveFeedCacheRequestKind::State {
+            product: "nexrad".to_string(),
+            version: entry.version.clone(),
+        },
+    });
 }
 
 fn append_durable_nexrad_request(
@@ -1821,6 +1948,7 @@ fn append_durable_nexrad_request(
         version_manifest,
         version_manifest_url,
         full_ref,
+        install_profile,
         expected_state_sha256,
     } = request;
     if installed
@@ -1852,6 +1980,7 @@ fn append_durable_nexrad_request(
                 product: product.to_string(),
                 version: version.to_string(),
                 payload_kind: full_ref.kind.clone(),
+                install_profile,
             },
         });
     }
@@ -2711,6 +2840,7 @@ mod tests {
             version: "s2".to_string(),
             previous: None,
             install_state: None,
+            install_profiles: std::collections::BTreeMap::new(),
             delta_from_previous: Some(latest.clone()),
             recent_deltas: vec![test_notam_delta_ref("s0", "s1"), latest],
             state: LiveFeedPayloadRef {

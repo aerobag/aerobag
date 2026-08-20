@@ -152,6 +152,18 @@ describe("map interaction boundaries", () => {
     expect(appSource).toContain("requestThrottledNexradViewportRefresh()");
   });
 
+  it("continues core-directed NEXRAD cache GC while the layer is hidden", () => {
+    const queryEffect = sourceBetween(
+      "if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {\n      nexradQueryRequestRef.current = null;",
+      "if (!mapIsVisible || !mapLayerState.nexrad.visible || !uiSession) {",
+    );
+    expect(queryEffect).not.toContain("!mapLayerState.nexrad.visible");
+    expect(queryEffect).toContain("pumpNexradQueryQueue()");
+
+    const imageElement = sourceBetween("<image\n                        href={nexradFrameCacheRef.current", "preserveAspectRatio=\"none\"");
+    expect(imageElement).not.toContain("href={resolveLiveFeedResourceUrl(tile.src)}");
+  });
+
   it("uses lightweight hover weather for METAR symbols without opening the map inspector", () => {
     const hoverSource = sourceBetween(
       "const handleMetarHoverEnter",

@@ -118,6 +118,8 @@ fn main() {
                 "NexradOverlayTileCorners",
                 "NexradOverlayTile",
                 "NexradOverlayStats",
+                "NexradOverlayCacheResource",
+                "NexradOverlayCachePlan",
                 "NexradOverlayQueryResult",
             ],
             tagged_unions: &[("NexradOverlayStatus", "state")],

@@ -2181,6 +2181,23 @@ internal fun MapExplorerPage(
                         fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                     }
                 }
+                withContext(Dispatchers.IO) {
+                    overlay.cachePlan
+                        ?.fetchResources
+                        ?.distinctBy { it.src }
+                        ?.forEach { planned ->
+                            sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
+                                val fetchStartMs = SystemClock.elapsedRealtime()
+                                fetchNexradCoreResource(
+                                    context,
+                                    resource,
+                                    latestDevServerBaseUrl,
+                                ).also {
+                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                }
+                            }
+                        }
+                }
                 if (overlay.tiles.isEmpty()) {
                     scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)
                     nexradFrame = null

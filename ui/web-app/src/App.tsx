@@ -154,6 +154,7 @@ import { resolveSituationOverlay } from "./domain/situationGeometry";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
+import { NexradFrameImageCache } from "./domain/nexradFrameCache";
 import {
   clampImageViewport,
   clampImageZoom,
@@ -1287,25 +1288,20 @@ function nexradTileBounds(tile: NexradOverlayTile) {
   };
 }
 
-function preloadImage(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error(`failed to load image: ${src}`));
-    image.src = src;
-  });
-}
-
-async function preloadNexradOverlayImages(query: NexradOverlayQueryResult): Promise<{ loaded: number; failed: number }> {
-  if (query.status.state !== "ready" || query.tiles.length === 0) {
+async function preloadNexradOverlayImages(
+  query: NexradOverlayQueryResult,
+  cache: NexradFrameImageCache,
+): Promise<{ loaded: number; failed: number }> {
+  if (!query.cache_plan) {
     return { loaded: 0, failed: 0 };
   }
-  const srcs = Array.from(new Set(query.tiles.map((tile) => resolveLiveFeedResourceUrl(tile.src))));
-  const results = await Promise.allSettled(srcs.map(preloadImage));
-  return {
-    loaded: results.filter((result) => result.status === "fulfilled").length,
-    failed: results.filter((result) => result.status === "rejected").length,
-  };
+  return cache.applyPlan({
+    retained_frame_versions: query.cache_plan.retained_frame_versions,
+    fetch_resources: query.cache_plan.fetch_resources.map((resource) => ({
+      frame_version: resource.frame_version,
+      src: resolveLiveFeedResourceUrl(resource.src),
+    })),
+  });
 }
 
 type NavigationPageOption = { id: AppPage; label: string; launcherLabel: string; iconSrc?: string };
@@ -4602,6 +4598,10 @@ function MapPage(props: {
   const [nexradAnimationTick, setNexradAnimationTick] = useState(0);
   const [nexradViewportRefreshTick, setNexradViewportRefreshTick] = useState(0);
   const [nexradOverlayFrame, setNexradOverlayFrame] = useState<MapDisplayFrame | null>(null);
+  const nexradFrameCacheRef = useRef<NexradFrameImageCache | null>(null);
+  if (!nexradFrameCacheRef.current) {
+    nexradFrameCacheRef.current = new NexradFrameImageCache();
+  }
   const nexradQueryRequestRef = useRef<{
     id: number;
     session: UiSession;
@@ -5044,13 +5044,15 @@ function MapPage(props: {
               continue;
             }
             const preloadStartedAt = performance.now();
-            const preload = await preloadNexradOverlayImages(query);
+            const preload = await preloadNexradOverlayImages(query, nexradFrameCacheRef.current!);
             const preloadDoneAt = performance.now();
             if (nexradQueryRequestRef.current?.id !== request.id) {
               continue;
             }
             setNexradOverlay(query);
-            setNexradOverlayFrame({ viewport: request.viewport, width: request.width, height: request.height });
+            setNexradOverlayFrame(query.status.state === "hidden"
+              ? null
+              : { viewport: request.viewport, width: request.width, height: request.height });
             const commitQueuedAt = performance.now();
             const previousPaint = nexradLastPaintTimingRef.current;
             window.requestAnimationFrame(() => {
@@ -5928,6 +5930,8 @@ function MapPage(props: {
 
   useEffect(() => () => clearNexradViewportRefreshTimer(), []);
 
+  useEffect(() => () => nexradFrameCacheRef.current?.clear(), []);
+
   useEffect(() => {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
       clearNexradViewportRefreshTimer();
@@ -5948,9 +5952,10 @@ function MapPage(props: {
   }, [mapIsVisible, mapLayerState.nexrad.visible, nexradOverlayFrame, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
 
   useEffect(() => {
-    if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
+    if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       nexradQueryRequestRef.current = null;
       nexradQueryPendingRef.current = false;
+      nexradFrameCacheRef.current?.cancelPendingLoads();
       nexradLastPaintTimingRef.current = null;
       clearNexradViewportRefreshTimer();
       setNexradOverlay({
@@ -5962,6 +5967,7 @@ function MapPage(props: {
       setNexradOverlayFrame(null);
       return;
     }
+    nexradFrameCacheRef.current?.cancelPendingLoads();
     nexradQueryRequestRef.current = {
       id: ++nexradQueryRequestIdRef.current,
       session: uiSession,
@@ -7472,7 +7478,7 @@ function MapPage(props: {
                       overflow="hidden"
                     >
                       <image
-                        href={resolveLiveFeedResourceUrl(tile.src)}
+                        href={nexradFrameCacheRef.current?.imageUrlFor(resolveLiveFeedResourceUrl(tile.src)) ?? undefined}
                         x={0}
                         y={0}
                         width={tile.image_width}

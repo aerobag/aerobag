@@ -59,6 +59,8 @@ interface NativeBridge {
 
     fun liveFeedCacheMissingRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
 
+    fun liveFeedCacheApplySessionPolicy(handle: Long, sessionHandle: Long)
+
     fun liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
 
     fun liveFeedCacheRuntimeDecisionJson(handle: Long, inputJson: String): String
@@ -686,6 +688,8 @@ object NativeBindings : NativeBridge {
     external override fun liveFeedCacheMissingRequestsJson(handle: Long): String
 
     external override fun liveFeedCacheMissingRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
+
+    external override fun liveFeedCacheApplySessionPolicy(handle: Long, sessionHandle: Long)
 
     external override fun liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
 

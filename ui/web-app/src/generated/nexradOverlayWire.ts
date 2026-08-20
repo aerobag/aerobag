@@ -58,8 +58,19 @@ export type NexradOverlayStats = {
   split_count: number;
 };
 
+export type NexradOverlayCacheResource = {
+  frame_version: string;
+  src: string;
+};
+
+export type NexradOverlayCachePlan = {
+  fetch_resources: NexradOverlayCacheResource[];
+  retained_frame_versions: string[];
+};
+
 export type NexradOverlayQueryResult = {
   animation: NexradOverlayAnimation;
+  cache_plan?: NexradOverlayCachePlan | null;
   stats: NexradOverlayStats;
   status: NexradOverlayStatus;
   tiles: NexradOverlayTile[];

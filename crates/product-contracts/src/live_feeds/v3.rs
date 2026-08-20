@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 3;
+pub const NEXRAD_OFFLINE_PROFILE_0: &str = "offline_0";
+pub const NEXRAD_OFFLINE_PROFILE_LOW1: &str = "offline_low1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +55,8 @@ pub struct VersionManifest {
     pub state: PayloadRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_state: Option<PayloadRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub install_profiles: BTreeMap<String, PayloadRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta_from_previous: Option<DeltaRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

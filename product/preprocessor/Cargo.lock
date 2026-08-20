@@ -68,6 +68,7 @@ dependencies = [
  "had-key",
  "had-nav-kv",
  "hkdf",
+ "image",
  "nav-kv-package",
  "notam-state",
  "postcard",

@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use app_ui_contracts::session::{
     DebugFlagId, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiSettingsAction,
@@ -19,6 +22,11 @@ const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
 const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
 const INACTIVITY_SLEEP_TIMEOUT_ROW_ID: &str = "inactivity_sleep_timeout";
 const INACTIVITY_SLEEP_TIMEOUT_ACTION_ID: &str = "inactivity_sleep_timeout";
+const NEXRAD_COVERAGE_ACTION_ID: &str = "nexrad_coverage";
+const NEXRAD_OFFLINE_PROFILE_ACTION_ID: &str = "nexrad_offline_profile";
+const NEXRAD_SHOWN_CADENCE_ACTION_ID: &str = "nexrad_shown_cadence";
+const NEXRAD_HIDDEN_CADENCE_ACTION_ID: &str = "nexrad_hidden_cadence";
+const NEXRAD_ASLEEP_CADENCE_ACTION_ID: &str = "nexrad_asleep_cadence";
 const FLIGHT_DATA_VISIBILITY_ROW_ID: &str = "flight_data_visibility";
 const FLIGHT_DATA_VISIBILITY_ACTION_ID: &str = "flight_data_visibility";
 const DEBUG_DIAGNOSTICS_SECTION_ID: &str = "debug_diagnostics";
@@ -26,6 +34,7 @@ const DEBUG_FLAG_ACTION_PREFIX: &str = "debug_flag.";
 const SETTINGS_TOGGLE_ON: &str = "on";
 const SETTINGS_TOGGLE_OFF: &str = "off";
 const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
+const NEXRAD_UPDATES_PER_HOUR: f64 = 12.0;
 
 pub trait SettingsStorage: Send + Sync {
     fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
@@ -177,12 +186,175 @@ impl InactivitySleepTimeout {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NexradCoverageMode {
+    #[default]
+    FullOffline,
+    ViewportOnly,
+}
+
+impl NexradCoverageMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::FullOffline => "full_offline",
+            Self::ViewportOnly => "viewport_only",
+        }
+    }
+
+    fn from_value_id(value_id: &str) -> Option<Self> {
+        match value_id {
+            "full_offline" => Some(Self::FullOffline),
+            "viewport_only" => Some(Self::ViewportOnly),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NexradOfflineProfile {
+    #[serde(rename = "offline_0")]
+    #[default]
+    Offline0,
+    #[serde(rename = "offline_low1")]
+    OfflineLow1,
+}
+
+impl NexradOfflineProfile {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Offline0 => "offline_0",
+            Self::OfflineLow1 => "offline_low1",
+        }
+    }
+
+    pub fn base_resolution(self) -> u32 {
+        match self {
+            Self::Offline0 => 0,
+            Self::OfflineLow1 => 1,
+        }
+    }
+
+    fn from_value_id(value_id: &str) -> Option<Self> {
+        match value_id {
+            "offline_0" => Some(Self::Offline0),
+            "offline_low1" => Some(Self::OfflineLow1),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NexradUpdateCadence {
+    #[default]
+    Never,
+    ThirtyMinutes,
+    TenMinutes,
+    EveryUpdate,
+}
+
+impl NexradUpdateCadence {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::ThirtyMinutes => "30m",
+            Self::TenMinutes => "10m",
+            Self::EveryUpdate => "every_update",
+        }
+    }
+
+    pub fn interval_ms(self) -> Option<i64> {
+        match self {
+            Self::Never => None,
+            Self::ThirtyMinutes => Some(30 * 60 * 1_000),
+            Self::TenMinutes => Some(10 * 60 * 1_000),
+            Self::EveryUpdate => Some(0),
+        }
+    }
+
+    fn from_value_id(value_id: &str) -> Option<Self> {
+        match value_id {
+            "never" => Some(Self::Never),
+            "30m" => Some(Self::ThirtyMinutes),
+            "10m" => Some(Self::TenMinutes),
+            "every_update" => Some(Self::EveryUpdate),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexradAcquisitionPreferences {
+    #[serde(default)]
+    pub coverage: NexradCoverageMode,
+    #[serde(default)]
+    pub offline_profile: NexradOfflineProfile,
+    #[serde(default = "default_nexrad_shown_cadence")]
+    pub shown_cadence: NexradUpdateCadence,
+    #[serde(default = "default_nexrad_hidden_cadence")]
+    pub hidden_cadence: NexradUpdateCadence,
+    #[serde(default)]
+    pub asleep_cadence: NexradUpdateCadence,
+}
+
+const fn default_nexrad_shown_cadence() -> NexradUpdateCadence {
+    NexradUpdateCadence::EveryUpdate
+}
+
+const fn default_nexrad_hidden_cadence() -> NexradUpdateCadence {
+    NexradUpdateCadence::ThirtyMinutes
+}
+
+impl Default for NexradAcquisitionPreferences {
+    fn default() -> Self {
+        Self {
+            coverage: NexradCoverageMode::FullOffline,
+            offline_profile: NexradOfflineProfile::Offline0,
+            shown_cadence: default_nexrad_shown_cadence(),
+            hidden_cadence: default_nexrad_hidden_cadence(),
+            asleep_cadence: NexradUpdateCadence::Never,
+        }
+    }
+}
+
+impl NexradAcquisitionPreferences {
+    fn normalize(mut self) -> Self {
+        self.hidden_cadence = self.hidden_cadence.min(self.shown_cadence);
+        self.asleep_cadence = self
+            .asleep_cadence
+            .min(self.hidden_cadence)
+            .min(NexradUpdateCadence::ThirtyMinutes);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexradAcquisitionDirective {
+    pub coverage: NexradCoverageMode,
+    pub offline_profile: NexradOfflineProfile,
+    pub cadence: NexradUpdateCadence,
+}
+
+impl Default for NexradAcquisitionDirective {
+    fn default() -> Self {
+        let preferences = NexradAcquisitionPreferences::default();
+        Self {
+            coverage: preferences.coverage,
+            offline_profile: preferences.offline_profile,
+            cadence: NexradUpdateCadence::EveryUpdate,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SettingsPreferences {
     #[serde(default)]
     pub display_dim_timeout: DisplayDimTimeout,
     #[serde(default)]
     pub inactivity_sleep_timeout: InactivitySleepTimeout,
+    #[serde(default)]
+    pub nexrad_acquisition: NexradAcquisitionPreferences,
     #[serde(default)]
     pub disabled_flight_data_cell_ids: BTreeSet<String>,
     #[serde(default)]
@@ -208,6 +380,7 @@ pub(crate) struct SettingsProjectionResult {
 struct SettingsProjectionCache {
     settings_revision: u64,
     display_policy_available: bool,
+    nexrad_profile_bytes: Option<BTreeMap<String, u64>>,
     flight_data_banner: FlightDataBannerModel,
     debug_state: UiDebugState,
     projection: SettingsProjection,
@@ -255,10 +428,12 @@ impl SettingsController {
         self.preferences.clone()
     }
 
-    pub fn restore_preferences(&mut self, preferences: SettingsPreferences) -> bool {
+    pub fn restore_preferences(&mut self, mut preferences: SettingsPreferences) -> bool {
+        preferences.nexrad_acquisition = preferences.nexrad_acquisition.normalize();
         let static_changed = self.preferences.display_dim_timeout
             != preferences.display_dim_timeout
             || self.preferences.inactivity_sleep_timeout != preferences.inactivity_sleep_timeout
+            || self.preferences.nexrad_acquisition != preferences.nexrad_acquisition
             || self.preferences.accepted_disclaimer_agreement_ids
                 != preferences.accepted_disclaimer_agreement_ids;
         let flight_data_changed = self.preferences.disabled_flight_data_cell_ids
@@ -276,7 +451,19 @@ impl SettingsController {
         &mut self,
         action: &UiSettingsAction,
         display_policy_available: bool,
+        nexrad_settings_available: bool,
     ) -> AppResult<bool> {
+        if matches!(
+            action.action_id.as_str(),
+            NEXRAD_COVERAGE_ACTION_ID
+                | NEXRAD_OFFLINE_PROFILE_ACTION_ID
+                | NEXRAD_SHOWN_CADENCE_ACTION_ID
+                | NEXRAD_HIDDEN_CADENCE_ACTION_ID
+                | NEXRAD_ASLEEP_CADENCE_ACTION_ID
+        ) && !nexrad_settings_available
+        {
+            return Err(invalid_settings_action(&action.action_id));
+        }
         let (changed, static_changed) = match action.action_id.as_str() {
             DISPLAY_DIM_TIMEOUT_ACTION_ID => {
                 if !display_policy_available {
@@ -307,6 +494,86 @@ impl SettingsController {
                     self.preferences.inactivity_sleep_timeout = timeout;
                     (true, true)
                 }
+            }
+            NEXRAD_COVERAGE_ACTION_ID => {
+                let coverage =
+                    NexradCoverageMode::from_value_id(&action.value_id).ok_or_else(|| {
+                        invalid_settings_action_value(&action.action_id, &action.value_id)
+                    })?;
+                let changed = self.preferences.nexrad_acquisition.coverage != coverage;
+                self.preferences.nexrad_acquisition.coverage = coverage;
+                (changed, changed)
+            }
+            NEXRAD_OFFLINE_PROFILE_ACTION_ID => {
+                let profile =
+                    NexradOfflineProfile::from_value_id(&action.value_id).ok_or_else(|| {
+                        invalid_settings_action_value(&action.action_id, &action.value_id)
+                    })?;
+                let changed = self.preferences.nexrad_acquisition.offline_profile != profile;
+                self.preferences.nexrad_acquisition.offline_profile = profile;
+                (changed, changed)
+            }
+            NEXRAD_SHOWN_CADENCE_ACTION_ID
+            | NEXRAD_HIDDEN_CADENCE_ACTION_ID
+            | NEXRAD_ASLEEP_CADENCE_ACTION_ID => {
+                let cadence =
+                    NexradUpdateCadence::from_value_id(&action.value_id).ok_or_else(|| {
+                        invalid_settings_action_value(&action.action_id, &action.value_id)
+                    })?;
+                if (action.action_id == NEXRAD_SHOWN_CADENCE_ACTION_ID
+                    && cadence == NexradUpdateCadence::Never)
+                    || (action.action_id == NEXRAD_ASLEEP_CADENCE_ACTION_ID
+                        && cadence > NexradUpdateCadence::ThirtyMinutes)
+                {
+                    return Err(invalid_settings_action_value(
+                        &action.action_id,
+                        &action.value_id,
+                    ));
+                }
+                let old = self.preferences.nexrad_acquisition;
+                match action.action_id.as_str() {
+                    NEXRAD_SHOWN_CADENCE_ACTION_ID => {
+                        self.preferences.nexrad_acquisition.shown_cadence = cadence;
+                        self.preferences.nexrad_acquisition.hidden_cadence = self
+                            .preferences
+                            .nexrad_acquisition
+                            .hidden_cadence
+                            .min(cadence);
+                        self.preferences.nexrad_acquisition.asleep_cadence = self
+                            .preferences
+                            .nexrad_acquisition
+                            .asleep_cadence
+                            .min(self.preferences.nexrad_acquisition.hidden_cadence);
+                    }
+                    NEXRAD_HIDDEN_CADENCE_ACTION_ID => {
+                        self.preferences.nexrad_acquisition.hidden_cadence = cadence;
+                        self.preferences.nexrad_acquisition.shown_cadence = self
+                            .preferences
+                            .nexrad_acquisition
+                            .shown_cadence
+                            .max(cadence);
+                        self.preferences.nexrad_acquisition.asleep_cadence = self
+                            .preferences
+                            .nexrad_acquisition
+                            .asleep_cadence
+                            .min(cadence);
+                    }
+                    NEXRAD_ASLEEP_CADENCE_ACTION_ID => {
+                        self.preferences.nexrad_acquisition.asleep_cadence = cadence;
+                        self.preferences.nexrad_acquisition.hidden_cadence = self
+                            .preferences
+                            .nexrad_acquisition
+                            .hidden_cadence
+                            .max(cadence);
+                        self.preferences.nexrad_acquisition.shown_cadence = self
+                            .preferences
+                            .nexrad_acquisition
+                            .shown_cadence
+                            .max(self.preferences.nexrad_acquisition.hidden_cadence);
+                    }
+                    _ => unreachable!(),
+                }
+                (old != self.preferences.nexrad_acquisition, true)
             }
             FLIGHT_DATA_VISIBILITY_ACTION_ID => {
                 if !crate::flight_data::is_flight_data_banner_cell_id(&action.value_id) {
@@ -366,6 +633,23 @@ impl SettingsController {
         self.preferences.inactivity_sleep_timeout
     }
 
+    pub fn nexrad_acquisition_preferences(&self) -> NexradAcquisitionPreferences {
+        self.preferences.nexrad_acquisition
+    }
+
+    pub fn set_nexrad_acquisition_preferences(
+        &mut self,
+        preferences: NexradAcquisitionPreferences,
+    ) -> bool {
+        let preferences = preferences.normalize();
+        if self.preferences.nexrad_acquisition == preferences {
+            return false;
+        }
+        self.preferences.nexrad_acquisition = preferences;
+        self.note_change(true);
+        true
+    }
+
     pub fn set_inactivity_sleep_timeout(&mut self, timeout: InactivitySleepTimeout) -> bool {
         if self.preferences.inactivity_sleep_timeout == timeout {
             return false;
@@ -383,12 +667,14 @@ impl SettingsController {
     pub fn project(
         &mut self,
         display_policy_available: bool,
+        nexrad_profile_bytes: Option<&BTreeMap<String, u64>>,
         flight_data_banner: &FlightDataBannerModel,
         debug_state: &UiDebugState,
     ) -> SettingsProjectionResult {
         if let Some(cache) = self.projection_cache.as_ref() {
             if cache.settings_revision == self.revision
                 && cache.display_policy_available == display_policy_available
+                && cache.nexrad_profile_bytes.as_ref() == nexrad_profile_bytes
                 && cache.flight_data_banner == *flight_data_banner
                 && cache.debug_state == *debug_state
             {
@@ -403,6 +689,7 @@ impl SettingsController {
             settings_page_state: project_settings_page_state(
                 &self.preferences,
                 display_policy_available,
+                nexrad_profile_bytes,
                 flight_data_banner,
                 debug_state,
             ),
@@ -413,6 +700,7 @@ impl SettingsController {
         self.projection_cache = Some(SettingsProjectionCache {
             settings_revision: self.revision,
             display_policy_available,
+            nexrad_profile_bytes: nexrad_profile_bytes.cloned(),
             flight_data_banner: flight_data_banner.clone(),
             debug_state: debug_state.clone(),
             projection: projection.clone(),
@@ -435,6 +723,7 @@ impl SettingsController {
 fn project_settings_page_state(
     preferences: &SettingsPreferences,
     display_policy_available: bool,
+    nexrad_profile_bytes: Option<&BTreeMap<String, u64>>,
     flight_data_banner: &FlightDataBannerModel,
     debug_state: &UiDebugState,
 ) -> UiSettingsPageState {
@@ -486,6 +775,9 @@ fn project_settings_page_state(
             action_id: INACTIVITY_SLEEP_TIMEOUT_ACTION_ID.to_string(),
         });
     }
+    if let Some(profile_bytes) = nexrad_profile_bytes {
+        append_nexrad_settings_rows(&mut rows, preferences, profile_bytes);
+    }
     let sections = vec![UiSettingsPageSection {
         id: DEBUG_DIAGNOSTICS_SECTION_ID.to_string(),
         title: "Debug Diagnostics".to_string(),
@@ -523,6 +815,158 @@ fn project_settings_page_state(
     }
 }
 
+fn append_nexrad_settings_rows(
+    rows: &mut Vec<UiSettingsPageRow>,
+    preferences: &SettingsPreferences,
+    profile_bytes: &BTreeMap<String, u64>,
+) {
+    let nexrad = preferences.nexrad_acquisition;
+    rows.push(settings_slider_row(
+        "nexrad_coverage",
+        "NEXRAD coverage",
+        nexrad.coverage.id(),
+        NEXRAD_COVERAGE_ACTION_ID,
+        [
+            (
+                NexradCoverageMode::FullOffline.id(),
+                "Full offline".to_string(),
+            ),
+            (
+                NexradCoverageMode::ViewportOnly.id(),
+                "Visible area only".to_string(),
+            ),
+        ],
+    ));
+    if nexrad.coverage == NexradCoverageMode::ViewportOnly {
+        return;
+    }
+
+    rows.push(settings_slider_row(
+        "nexrad_offline_profile",
+        "NEXRAD offline detail",
+        nexrad.offline_profile.id(),
+        NEXRAD_OFFLINE_PROFILE_ACTION_ID,
+        [
+            (NexradOfflineProfile::Offline0.id(), "Full".to_string()),
+            (
+                NexradOfflineProfile::OfflineLow1.id(),
+                "Reduced".to_string(),
+            ),
+        ],
+    ));
+    let bytes_per_update = profile_bytes.get(nexrad.offline_profile.id()).copied();
+    rows.push(nexrad_cadence_row(
+        "nexrad_shown_cadence",
+        "NEXRAD updates while shown",
+        nexrad.shown_cadence,
+        NEXRAD_SHOWN_CADENCE_ACTION_ID,
+        &[
+            NexradUpdateCadence::ThirtyMinutes,
+            NexradUpdateCadence::TenMinutes,
+            NexradUpdateCadence::EveryUpdate,
+        ],
+        bytes_per_update,
+    ));
+    rows.push(nexrad_cadence_row(
+        "nexrad_hidden_cadence",
+        "NEXRAD updates while hidden",
+        nexrad.hidden_cadence,
+        NEXRAD_HIDDEN_CADENCE_ACTION_ID,
+        &[
+            NexradUpdateCadence::Never,
+            NexradUpdateCadence::ThirtyMinutes,
+            NexradUpdateCadence::TenMinutes,
+            NexradUpdateCadence::EveryUpdate,
+        ],
+        bytes_per_update,
+    ));
+    rows.push(nexrad_cadence_row(
+        "nexrad_asleep_cadence",
+        "NEXRAD updates while app sleeps",
+        nexrad.asleep_cadence,
+        NEXRAD_ASLEEP_CADENCE_ACTION_ID,
+        &[
+            NexradUpdateCadence::Never,
+            NexradUpdateCadence::ThirtyMinutes,
+        ],
+        bytes_per_update,
+    ));
+}
+
+fn settings_slider_row<const N: usize>(
+    id: &str,
+    title: &str,
+    value_id: &str,
+    action_id: &str,
+    stops: [(&str, String); N],
+) -> UiSettingsPageRow {
+    UiSettingsPageRow {
+        kind: "slider".to_string(),
+        id: id.to_string(),
+        title: title.to_string(),
+        value_id: value_id.to_string(),
+        stops: stops
+            .into_iter()
+            .map(|(id, label)| UiSettingsSliderStop {
+                id: id.to_string(),
+                label,
+            })
+            .collect(),
+        items: Vec::new(),
+        action_id: action_id.to_string(),
+    }
+}
+
+fn nexrad_cadence_row(
+    id: &str,
+    title: &str,
+    value: NexradUpdateCadence,
+    action_id: &str,
+    cadences: &[NexradUpdateCadence],
+    bytes_per_update: Option<u64>,
+) -> UiSettingsPageRow {
+    let title = bytes_per_update
+        .map(|bytes| format!("{title} · {}", nexrad_usage_label(value, bytes)))
+        .unwrap_or_else(|| title.to_string());
+    UiSettingsPageRow {
+        kind: "slider".to_string(),
+        id: id.to_string(),
+        title,
+        value_id: value.id().to_string(),
+        stops: cadences
+            .iter()
+            .copied()
+            .map(|cadence| UiSettingsSliderStop {
+                id: cadence.id().to_string(),
+                label: nexrad_cadence_label(cadence),
+            })
+            .collect(),
+        items: Vec::new(),
+        action_id: action_id.to_string(),
+    }
+}
+
+fn nexrad_cadence_label(cadence: NexradUpdateCadence) -> String {
+    match cadence {
+        NexradUpdateCadence::Never => "Never",
+        NexradUpdateCadence::ThirtyMinutes => "30m",
+        NexradUpdateCadence::TenMinutes => "10m",
+        NexradUpdateCadence::EveryUpdate => "Every",
+    }
+    .to_string()
+}
+
+fn nexrad_usage_label(cadence: NexradUpdateCadence, bytes_per_update: u64) -> String {
+    let updates_per_hour = match cadence {
+        NexradUpdateCadence::Never => 0.0,
+        NexradUpdateCadence::ThirtyMinutes => 2.0,
+        NexradUpdateCadence::TenMinutes => 6.0,
+        NexradUpdateCadence::EveryUpdate => NEXRAD_UPDATES_PER_HOUR,
+    };
+    let mib_per_hour = bytes_per_update as f64 * updates_per_hour / (1024.0 * 1024.0);
+    format!("{mib_per_hour:.1} MiB/h")
+}
+
 pub(crate) fn debug_flag_settings_action(
     action: &UiSettingsAction,
 ) -> AppResult<Option<(DebugFlagId, bool)>> {
@@ -546,6 +990,14 @@ pub(crate) fn debug_flag_settings_action(
 
 pub(crate) fn cloud_synced_settings_action(action: &UiSettingsAction) -> bool {
     action.action_id == INACTIVITY_SLEEP_TIMEOUT_ACTION_ID
+        || matches!(
+            action.action_id.as_str(),
+            NEXRAD_COVERAGE_ACTION_ID
+                | NEXRAD_OFFLINE_PROFILE_ACTION_ID
+                | NEXRAD_SHOWN_CADENCE_ACTION_ID
+                | NEXRAD_HIDDEN_CADENCE_ACTION_ID
+                | NEXRAD_ASLEEP_CADENCE_ACTION_ID
+        )
 }
 
 pub(crate) fn all_debug_flags() -> [DebugFlagId; 10] {
@@ -719,16 +1171,16 @@ mod tests {
         let input = banner();
         let debug = debug_state();
 
-        let first = controller.project(false, &input, &debug);
+        let first = controller.project(false, None, &input, &debug);
         assert!(first.rebuilt);
         assert_eq!(first.projection.settings_page_state.rows.len(), 1);
         assert!(first.projection.display_policy.is_none());
 
-        let cached = controller.project(false, &input, &debug);
+        let cached = controller.project(false, None, &input, &debug);
         assert!(!cached.rebuilt);
         assert_eq!(cached.projection, first.projection);
 
-        let capability_changed = controller.project(true, &input, &debug);
+        let capability_changed = controller.project(true, None, &input, &debug);
         assert!(capability_changed.rebuilt);
         assert_eq!(
             capability_changed.projection.settings_page_state.rows.len(),
@@ -737,7 +1189,11 @@ mod tests {
 
         let mut changed_banner = input;
         changed_banner.cells[0].value = Some("13000".to_string());
-        assert!(controller.project(true, &changed_banner, &debug).rebuilt);
+        assert!(
+            controller
+                .project(true, None, &changed_banner, &debug)
+                .rebuilt
+        );
     }
 
     #[test]
@@ -745,7 +1201,7 @@ mod tests {
         let mut controller = SettingsController::default();
         let input = banner();
         let debug = debug_state();
-        controller.project(true, &input, &debug);
+        controller.project(true, None, &input, &debug);
 
         assert!(controller
             .perform_action(
@@ -754,11 +1210,12 @@ mod tests {
                     value_id: "30s".to_string(),
                 },
                 true,
+                false,
             )
             .expect("display action"));
         assert_eq!(controller.revision(), 1);
         assert_eq!(controller.static_revision(), 1);
-        assert!(controller.project(true, &input, &debug).rebuilt);
+        assert!(controller.project(true, None, &input, &debug).rebuilt);
 
         assert!(!controller
             .perform_action(
@@ -767,6 +1224,7 @@ mod tests {
                     value_id: "30s".to_string(),
                 },
                 true,
+                false,
             )
             .expect("idempotent display action"));
         assert_eq!(controller.revision(), 1);
@@ -778,11 +1236,12 @@ mod tests {
                     value_id: "nexrad_age".to_string(),
                 },
                 true,
+                false,
             )
             .expect("visibility action"));
         assert_eq!(controller.revision(), 2);
         assert_eq!(controller.static_revision(), 1);
-        let projection = controller.project(true, &input, &debug).projection;
+        let projection = controller.project(true, None, &input, &debug).projection;
         assert!(!projection
             .flight_data_banner
             .cells
@@ -796,6 +1255,79 @@ mod tests {
                 .expect("settings item")
                 .enabled
         );
+    }
+
+    #[test]
+    fn android_nexrad_rows_include_core_estimates_and_enforce_cadence_order() {
+        let mut controller = SettingsController::default();
+        let bytes = BTreeMap::from([
+            ("offline_0".to_string(), 1024 * 1024),
+            ("offline_low1".to_string(), 512 * 1024),
+        ]);
+        let projection = controller
+            .project(true, Some(&bytes), &banner(), &debug_state())
+            .projection;
+        let shown = projection
+            .settings_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "nexrad_shown_cadence")
+            .unwrap();
+        assert_eq!(shown.stops.last().unwrap().label, "Every");
+        assert!(shown.title.ends_with("12.0 MiB/h"));
+
+        controller
+            .perform_action(
+                &UiSettingsAction {
+                    action_id: NEXRAD_HIDDEN_CADENCE_ACTION_ID.to_string(),
+                    value_id: "every_update".to_string(),
+                },
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            controller.nexrad_acquisition_preferences().shown_cadence,
+            NexradUpdateCadence::EveryUpdate
+        );
+        controller
+            .perform_action(
+                &UiSettingsAction {
+                    action_id: NEXRAD_SHOWN_CADENCE_ACTION_ID.to_string(),
+                    value_id: "30m".to_string(),
+                },
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            controller.nexrad_acquisition_preferences().hidden_cadence,
+            NexradUpdateCadence::ThirtyMinutes
+        );
+
+        controller
+            .perform_action(
+                &UiSettingsAction {
+                    action_id: NEXRAD_COVERAGE_ACTION_ID.to_string(),
+                    value_id: "viewport_only".to_string(),
+                },
+                true,
+                true,
+            )
+            .unwrap();
+        let projection = controller
+            .project(true, Some(&bytes), &banner(), &debug_state())
+            .projection;
+        assert!(projection
+            .settings_page_state
+            .rows
+            .iter()
+            .any(|row| row.id == "nexrad_coverage"));
+        assert!(!projection
+            .settings_page_state
+            .rows
+            .iter()
+            .any(|row| row.id == "nexrad_offline_profile"));
     }
 
     #[test]

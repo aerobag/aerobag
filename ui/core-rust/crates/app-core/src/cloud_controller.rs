@@ -56,6 +56,7 @@ pub(crate) struct CloudDomainUpdates {
     pub remote_flight_plan: Option<FlightPlan>,
     pub offline_package_preferences: Option<OfflinePackagePreferences>,
     pub inactivity_sleep_timeout: Option<InactivitySleepTimeout>,
+    pub nexrad_acquisition: Option<crate::NexradAcquisitionPreferences>,
     pub debug_flags: Vec<(DebugFlagId, bool)>,
 }
 
@@ -115,6 +116,10 @@ impl CloudController {
 
     pub fn inactivity_sleep_timeout(&self) -> AppResult<Option<InactivitySleepTimeout>> {
         self.engine().inactivity_sleep_timeout()
+    }
+
+    pub fn nexrad_acquisition(&self) -> AppResult<Option<crate::NexradAcquisitionPreferences>> {
+        self.engine().nexrad_acquisition()
     }
 
     pub fn debug_flags(&self) -> AppResult<Vec<(DebugFlagId, bool)>> {
@@ -201,6 +206,20 @@ impl CloudController {
         let changed = self
             .engine_mut()
             .record_local_inactivity_sleep_timeout(timeout, now_epoch_ms)?;
+        if changed {
+            self.note_change();
+        }
+        Ok(changed)
+    }
+
+    pub fn record_local_nexrad_acquisition(
+        &mut self,
+        preferences: crate::NexradAcquisitionPreferences,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        let changed = self
+            .engine_mut()
+            .record_local_nexrad_acquisition(preferences, now_epoch_ms)?;
         if changed {
             self.note_change();
         }
@@ -319,6 +338,11 @@ impl CloudController {
             inactivity_sleep_timeout: completion
                 .inactivity_sleep_timeout_changed()
                 .then(|| self.inactivity_sleep_timeout())
+                .transpose()?
+                .flatten(),
+            nexrad_acquisition: completion
+                .nexrad_acquisition_changed()
+                .then(|| self.nexrad_acquisition())
                 .transpose()?
                 .flatten(),
             debug_flags: completion.debug_flags()?,

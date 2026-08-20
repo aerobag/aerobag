@@ -20,11 +20,11 @@ use app_core::planning::ProcedureLegProvenance;
 use app_core::{
     basic_terminal_state, common_resume_candidate_decision, cross_track_left_nm,
     direct_to_fix_with_course_continuation_requirement, great_circle_distance_nm,
-    initial_course_deg, reconcile_handoff, reentry_to_anchor_requirement,
-    yieldable_course_to_fix_requirement, AirportId, AppError, AppErrorKind, AppResult,
-    CommonResumeCandidateInput, ConcretizedNavItem, HandoffDecision, LatLon, LegDisplayElement,
-    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavRef, PathTermination,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureOptions, ProcedureSegment,
+    initial_course_deg, procedure_picker_choice_label, reconcile_handoff,
+    reentry_to_anchor_requirement, yieldable_course_to_fix_requirement, AirportId, AppError,
+    AppErrorKind, AppResult, CommonResumeCandidateInput, ConcretizedNavItem, HandoffDecision,
+    LatLon, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavRef,
+    PathTermination, ProcedureDiscontinuity, ProcedureKind, ProcedureOptions, ProcedureSegment,
     ProcedureSegmentRole, ProcedureSpecChoice, ResolvedLeg, ResolvedLegSource, StartRequirement,
     TerminalState,
 };
@@ -227,17 +227,13 @@ pub fn describe_procedure_options_from_rows(
             .collect::<Vec<_>>();
         let has_common_segment = approach_common_route_type(&rows).is_some();
         let valid_choices = if enroute_transitions.is_empty() {
-            vec![ProcedureSpecChoice {
-                runway_transition: None,
-                enroute_transition: None,
-            }]
+            vec![procedure_spec_choice(&kind, None, None)]
         } else {
             enroute_transitions
                 .iter()
                 .cloned()
-                .map(|enroute_transition| ProcedureSpecChoice {
-                    runway_transition: None,
-                    enroute_transition: Some(enroute_transition),
+                .map(|enroute_transition| {
+                    procedure_spec_choice(&kind, None, Some(enroute_transition))
                 })
                 .collect::<Vec<_>>()
         };
@@ -249,6 +245,7 @@ pub fn describe_procedure_options_from_rows(
             runway_transitions: Vec::new(),
             enroute_transitions,
             has_common_segment,
+            empty_message: "No published routes are available.".to_string(),
             valid_choices,
         });
     }
@@ -302,12 +299,12 @@ pub fn describe_procedure_options_from_rows(
         runway_choices
             .into_iter()
             .flat_map(|runway_transition| {
+                let kind = &kind;
                 enroute_choices
                     .iter()
                     .cloned()
-                    .map(move |enroute_transition| ProcedureSpecChoice {
-                        runway_transition: runway_transition.clone(),
-                        enroute_transition,
+                    .map(move |enroute_transition| {
+                        procedure_spec_choice(kind, runway_transition.clone(), enroute_transition)
                     })
             })
             .collect::<Vec<_>>()
@@ -322,8 +319,26 @@ pub fn describe_procedure_options_from_rows(
         runway_transitions,
         enroute_transitions,
         has_common_segment,
+        empty_message: "No published routes are available.".to_string(),
         valid_choices,
     })
+}
+
+fn procedure_spec_choice(
+    kind: &ProcedureKind,
+    runway_transition: Option<String>,
+    enroute_transition: Option<String>,
+) -> ProcedureSpecChoice {
+    let label = procedure_picker_choice_label(
+        kind,
+        runway_transition.as_deref(),
+        enroute_transition.as_deref(),
+    );
+    ProcedureSpecChoice {
+        runway_transition,
+        enroute_transition,
+        label,
+    }
 }
 
 fn bearing_degrees(from: LatLon, to: LatLon) -> f64 {
@@ -385,18 +400,19 @@ pub fn materialize_procedure_from_records(
     } = input;
     let options =
         describe_procedure_options_from_rows(airport_id, procedure_id, kind.clone(), rows.clone())?;
-    let requested = ProcedureSpecChoice {
-        runway_transition: runway_transition
+    let requested = procedure_spec_choice(
+        &kind,
+        runway_transition
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
-        enroute_transition: enroute_transition
+        enroute_transition
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
-    };
+    );
 
     if !options
         .valid_choices
@@ -5871,6 +5887,34 @@ fn path_termination_to_geometry(path: &PathTermination) -> pgt::ProcedurePathTer
 #[cfg(test)]
 mod published_geometry_build_tests {
     use super::*;
+
+    #[test]
+    fn procedure_options_include_core_owned_picker_presentation() {
+        let options = describe_procedure_options_from_rows(
+            "KSFO",
+            "ALWYS3",
+            ProcedureKind::Star,
+            vec![
+                ProcedureDistinctRow {
+                    route_type: "4".to_string(),
+                    transition_id: "INYOE".to_string(),
+                },
+                ProcedureDistinctRow {
+                    route_type: "5".to_string(),
+                    transition_id: "ALL".to_string(),
+                },
+                ProcedureDistinctRow {
+                    route_type: "6".to_string(),
+                    transition_id: "RW10B".to_string(),
+                },
+            ],
+        )
+        .expect("procedure options");
+
+        assert_eq!(options.empty_message, "No published routes are available.");
+        assert_eq!(options.valid_choices.len(), 1);
+        assert_eq!(options.valid_choices[0].label, "from INYOE to RW10B");
+    }
 
     #[test]
     fn sid_generated_direct_path_can_turn_onto_published_course() {

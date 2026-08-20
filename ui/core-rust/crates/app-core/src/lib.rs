@@ -1518,7 +1518,7 @@ fn procedure_load_entry_label(kind: &ProcedureKind, choice: &ProcedureSpecChoice
     }
 }
 
-pub(crate) fn procedure_picker_choice_label(
+pub fn procedure_picker_choice_label(
     kind: &ProcedureKind,
     runway_transition: Option<&str>,
     enroute_transition: Option<&str>,

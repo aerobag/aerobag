@@ -3656,6 +3656,11 @@ mod tests {
         let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         publication_store.initialize()?;
         let connection = rusqlite::Connection::open(publication_store.sqlite_path())?;
+        let expected_schema_version = connection.query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
         connection.execute(
             "UPDATE metadata SET value = '8' WHERE key = 'schema_version'",
             [],
@@ -3674,7 +3679,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "11"
+            expected_schema_version
         );
         assert!(publication_store.canonical_source_cursor()?.is_some());
         Ok(())

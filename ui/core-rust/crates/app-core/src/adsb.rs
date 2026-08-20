@@ -665,6 +665,7 @@ impl AdsbSessionState {
                             session_action: follow_action,
                             flight_plan_row_action: None,
                             navigation: None,
+                            external_url: None,
                         }],
                     },
                 ))

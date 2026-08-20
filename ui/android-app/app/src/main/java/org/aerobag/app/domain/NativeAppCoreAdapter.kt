@@ -382,6 +382,7 @@ sealed interface MapSelectionActionEffect {
         val target: String,
         val chartId: String,
     ) : MapSelectionActionEffect
+    data class OpenExternalUrl(val url: String) : MapSelectionActionEffect
 }
 
 data class MapSelectionDetailStatus(
@@ -3746,6 +3747,7 @@ private fun WireMapSelectionActionEffect.toUi(): MapSelectionActionEffect = when
         target = requireNotNull(target),
         chartId = requireNotNull(chart_id),
     )
+    "open_external_url" -> MapSelectionActionEffect.OpenExternalUrl(requireNotNull(url))
     else -> error("unknown map-selection action effect: $kind")
 }
 

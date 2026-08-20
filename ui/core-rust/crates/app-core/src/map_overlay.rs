@@ -276,6 +276,27 @@ pub struct ObstaclePointSemantics {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeatherCameraPointSemantics {
+    pub site_id: String,
+    pub site_name: String,
+    #[serde(default)]
+    pub site_identifier: Option<String>,
+    #[serde(default)]
+    pub icao: Option<String>,
+    pub page_url: String,
+    #[serde(default)]
+    pub operated_by: Option<String>,
+    #[serde(default)]
+    pub attribution: Option<String>,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub in_maintenance: Option<bool>,
+    #[serde(default)]
+    pub third_party: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PointVectorRecord {
     pub id: String,
     pub kind: String,
@@ -307,6 +328,8 @@ pub struct PointVectorRecord {
     pub elevation_msl_ft: Option<f64>,
     #[serde(default)]
     pub obstacle: Option<ObstaclePointSemantics>,
+    #[serde(default)]
+    pub weather_camera: Option<WeatherCameraPointSemantics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1449,6 +1472,8 @@ pub struct MapSelectionAction {
     pub flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
     #[serde(skip_serializing, skip_deserializing, default)]
     pub navigation: Option<MapSelectionNavigationAction>,
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub external_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1480,6 +1505,9 @@ pub enum MapSelectionActionEffect {
         airport_id: String,
         target: String,
         chart_id: String,
+    },
+    OpenExternalUrl {
+        url: String,
     },
 }
 
@@ -3205,6 +3233,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     let mut airspaces = Vec::new();
     let mut matched_nav_refs = BTreeSet::new();
     let mut vector_layer_airport_ids = BTreeSet::new();
+    let mut nearest_weather_camera = None::<(f64, String)>;
 
     for tile in visible_point_display_tile_window(
         config,
@@ -3277,6 +3306,16 @@ pub fn query_map_selection_for_surface_in_time_zone(
                     matched_nav_refs.insert(key);
                 }
                 airports.push(MapSelectionPointMatch { item, distance_px });
+            } else if record.style_class == "weather_camera" {
+                if let Some(item) = selection_item_for_weather_camera(record, symbol) {
+                    let replace_nearest = nearest_weather_camera
+                        .as_ref()
+                        .is_none_or(|(nearest_distance, _)| distance_px < *nearest_distance);
+                    if replace_nearest {
+                        nearest_weather_camera = Some((distance_px, item.id.clone()));
+                    }
+                    weather.push(MapSelectionPointMatch { item, distance_px });
+                }
             } else if record.style_class == "fix" || record.style_class == "nav" {
                 let item = selection_item_for_point(
                     record,
@@ -3391,9 +3430,17 @@ pub fn query_map_selection_for_surface_in_time_zone(
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let nearest_airport_id = airports.first().map(|matched| matched.item.id.clone());
+    let nearest_airport = airports
+        .first()
+        .map(|matched| (matched.distance_px, matched.item.id.clone()));
+    let nearest_point_id = match (nearest_airport, nearest_weather_camera) {
+        (Some(airport), Some(camera)) if camera.0 < airport.0 => Some(camera.1),
+        (Some(airport), _) => Some(airport.1),
+        (None, Some(camera)) => Some(camera.1),
+        (None, None) => None,
+    };
     let spot = spot_selection_item(click, plan);
-    let initial_selected_item_id = nearest_airport_id.or_else(|| Some(spot.id.clone()));
+    let initial_selected_item_id = nearest_point_id.or_else(|| Some(spot.id.clone()));
     navaids.push(MapSelectionPointMatch {
         item: spot,
         distance_px: f64::INFINITY,
@@ -3691,6 +3738,51 @@ fn selection_item_for_point(
             actions
         },
     }
+}
+
+fn selection_item_for_weather_camera(
+    record: &PointVectorRecord,
+    symbol_feature: NavSymbolFeature,
+) -> Option<MapSelectionItem> {
+    let camera = record.weather_camera.as_ref()?;
+    let description = camera
+        .operated_by
+        .as_deref()
+        .map(|operator| format!("Weather camera · {operator}"))
+        .or_else(|| Some("Weather camera".to_string()));
+    Some(MapSelectionItem {
+        id: record.id.clone(),
+        label: camera.site_name.clone(),
+        sublabel: camera
+            .site_identifier
+            .clone()
+            .or_else(|| camera.icao.clone())
+            .unwrap_or_else(|| "CAM".to_string()),
+        description,
+        distance: None,
+        secondary_description: record.location_label.clone(),
+        position: Some(LatLon {
+            lat: record.lat,
+            lon: record.lon,
+        }),
+        elevation_msl_ft: record.elevation_msl_ft,
+        detail_text: None,
+        highlight: MapSelectionHighlight::FeatureRef {
+            id: record.id.clone(),
+        },
+        nav_ref: None,
+        symbol_feature: Some(symbol_feature),
+        metar_feature: None,
+        weather_detail: None,
+        automatic_action_uid: None,
+        pirep_feature: None,
+        airspace_icon: None,
+        actions: vec![external_url_action(
+            "open_weather_camera",
+            "Open Camera",
+            &camera.page_url,
+        )],
+    })
 }
 
 struct SelectionItemData<'a> {
@@ -4934,6 +5026,29 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
+    }
+}
+
+fn external_url_action(id: &str, label: &str, url: &str) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: true,
+        display_only: false,
+        action_uid: None,
+        placeholder: false,
+        detail_text: None,
+        detail_title: None,
+        detail_status: None,
+        disabled_reason: None,
+        weather_detail: None,
+        airport_info_airport_id: None,
+        airspace_limit: None,
+        session_action: None,
+        flight_plan_row_action: None,
+        navigation: None,
+        external_url: Some(url.to_string()),
     }
 }
 
@@ -4957,6 +5072,7 @@ fn weather_action(weather_detail: Option<WeatherDetailUiView>) -> MapSelectionAc
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -4978,6 +5094,7 @@ fn airport_info_action(airport_id: &str) -> MapSelectionAction {
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -5006,6 +5123,7 @@ fn text_detail_action(
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -5041,6 +5159,7 @@ fn plate_target_action(
                 chart_id,
             }
         }),
+        external_url: None,
     }
 }
 
@@ -5074,6 +5193,7 @@ fn disabled_action_inner(
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -5099,6 +5219,7 @@ fn row_action(
         session_action: None,
         flight_plan_row_action,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -5121,6 +5242,7 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         session_action,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -5176,6 +5298,7 @@ fn airspace_limit_action_from_parts(
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -5522,6 +5645,7 @@ fn point_feature_label_priority(feature: &VisibleMapFeature) -> u8 {
         VectorIdentLabelStyle::Default => match feature.symbol_kind.as_str() {
             "nav" => 40,
             "airport" => 30,
+            "weather_camera" => 25,
             "fix" => 20,
             _ => 10,
         },
@@ -5547,6 +5671,7 @@ fn point_feature_symbol_rect(feature: &VisibleMapFeature, scale: f64) -> Option<
             runway_span.max(20.0)
         }
         "nav" => 22.0,
+        "weather_camera" => 22.0,
         "obstacle" => 18.0,
         "fix" => 18.0,
         _ => 16.0,
@@ -5591,7 +5716,10 @@ fn point_feature_label_rect(feature: &VisibleMapFeature, scale: f64) -> Option<L
     if text.is_empty() || !feature.screen_x.is_finite() || !feature.screen_y.is_finite() {
         return None;
     }
-    let label_y = if matches!(feature.symbol_kind.as_str(), "airport" | "nav") {
+    let label_y = if matches!(
+        feature.symbol_kind.as_str(),
+        "airport" | "nav" | "weather_camera"
+    ) {
         -24.0 * scale
     } else if feature.symbol_kind == "obstacle" {
         -14.0 * scale
@@ -6919,6 +7047,8 @@ fn point_symbol_kind(style_class: &str, kind: &str) -> String {
     let kind = kind.to_ascii_lowercase();
     if style == "airport" || kind == "airport" {
         "airport".to_string()
+    } else if style == "weather_camera" || kind == "weather camera" {
+        "weather_camera".to_string()
     } else if style == "nav" || kind.contains("vor") {
         "nav".to_string()
     } else if style.starts_with("obstacle") || kind == "obs" || kind == "obstacle" {
@@ -7108,6 +7238,14 @@ fn is_vor_family_kind(kind: &str) -> bool {
 }
 
 fn should_display_record(record: &PointVectorRecord) -> bool {
+    if record.style_class == "weather_camera"
+        && record
+            .weather_camera
+            .as_ref()
+            .is_some_and(|camera| camera.active == Some(false))
+    {
+        return false;
+    }
     if record.style_class == "airport"
         || record.kind.eq_ignore_ascii_case("airport")
         || record.id.starts_with("airports:")
@@ -7592,6 +7730,7 @@ mod tests {
             longest_runway_heading_true_deg: None,
             elevation_msl_ft: None,
             obstacle: None,
+            weather_camera: None,
         }
     }
 
@@ -8639,6 +8778,7 @@ mod tests {
                             longest_runway_heading_true_deg: Some(180.0),
                             elevation_msl_ft: Some(100.0),
                             obstacle: None,
+                            weather_camera: None,
                         }],
                         fixes: Vec::new(),
                         navaids: Vec::new(),
@@ -11030,6 +11170,7 @@ mod tests {
             longest_runway_heading_true_deg: Some(160.0),
             elevation_msl_ft: Some(433.0),
             obstacle: None,
+            weather_camera: None,
         };
         let mut farther_airport = nearest_airport.clone();
         farther_airport.id = "airports:KBFI".to_string();
@@ -11217,6 +11358,122 @@ mod tests {
     }
 
     #[test]
+    fn map_selection_exposes_weather_camera_as_weather_with_core_owned_open_action() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.2831,
+                lon: -121.3372,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let airport_tile =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0)
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
+        let camera = PointVectorRecord {
+            id: "weather-camera:150".to_string(),
+            kind: "weather camera".to_string(),
+            lat: viewport.center.lat,
+            lon: viewport.center.lon,
+            label: "SAC 150".to_string(),
+            location_label: Some("WA".to_string()),
+            style_class: "weather_camera".to_string(),
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft: Some(3800.0),
+            obstacle: None,
+            weather_camera: Some(WeatherCameraPointSemantics {
+                site_id: "150".to_string(),
+                site_name: "Stampede Pass".to_string(),
+                site_identifier: Some("SAC 150".to_string()),
+                icao: None,
+                page_url: "https://weathercams.faa.gov/cameras/cameraSite/150/summary".to_string(),
+                operated_by: Some("FAA".to_string()),
+                attribution: None,
+                active: Some(true),
+                in_maintenance: Some(false),
+                third_party: Some(false),
+            }),
+        };
+        let mut point_tiles = HashMap::new();
+        point_tiles.insert(
+            tile_key(
+                &airport_tile.layer,
+                airport_tile.z,
+                airport_tile.x,
+                airport_tile.y,
+            ),
+            PointTilePayload {
+                schema_version: 1,
+                layer: airport_tile.layer,
+                z: airport_tile.z,
+                x: airport_tile.x,
+                y: airport_tile.y,
+                records: vec![camera],
+            },
+        );
+        let vector_tiles =
+            aggregate_test_vector_tiles(&point_tiles, &HashMap::new(), &HashMap::new());
+        let config = test_map_overlay_config();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
+
+        let selection = query_map_selection(
+            &viewport,
+            1200.0,
+            900.0,
+            MapSelectionQuery::new(
+                &config,
+                viewport.center,
+                &vector_tiles,
+                &metar_tiles,
+                &airspaces,
+                &aliases,
+                &mut availability,
+            ),
+        );
+
+        let weather = selection
+            .categories
+            .iter()
+            .find(|category| category.id == "weather")
+            .expect("weather category");
+        let item = weather.items.first().expect("camera selection item");
+        assert_eq!(item.label, "Stampede Pass");
+        assert_eq!(item.sublabel, "SAC 150");
+        assert_eq!(
+            item.symbol_feature.as_ref().unwrap().symbol_kind,
+            "weather_camera"
+        );
+        assert_eq!(
+            selection.initial_selected_item_id.as_deref(),
+            Some(item.id.as_str())
+        );
+        let action = item.actions.first().expect("open camera action");
+        assert_eq!(action.id, "open_weather_camera");
+        assert_eq!(
+            action.external_url.as_deref(),
+            Some("https://weathercams.faa.gov/cameras/cameraSite/150/summary")
+        );
+        assert!(serde_json::to_value(action)
+            .unwrap()
+            .get("external_url")
+            .is_none());
+    }
+
+    #[test]
     fn map_selection_offers_remove_for_top_level_waypoint_already_in_plan() {
         let record = PointVectorRecord {
             id: "airports:KSEA".to_string(),
@@ -11237,6 +11494,7 @@ mod tests {
             longest_runway_heading_true_deg: Some(160.0),
             elevation_msl_ft: Some(433.0),
             obstacle: None,
+            weather_camera: None,
         };
         let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
         let plan = FlightPlan {
@@ -11411,6 +11669,7 @@ mod tests {
             longest_runway_heading_true_deg: None,
             elevation_msl_ft: None,
             obstacle: None,
+            weather_camera: None,
         };
         let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
         let plan = FlightPlan {
@@ -11591,6 +11850,7 @@ mod tests {
             longest_runway_heading_true_deg: None,
             elevation_msl_ft: None,
             obstacle: None,
+            weather_camera: None,
         };
         let feature = point_vector_record_to_symbol_feature(&record, None)
             .expect("VORTAC should be displayed");
@@ -11675,6 +11935,7 @@ mod tests {
             longest_runway_heading_true_deg: None,
             elevation_msl_ft: None,
             obstacle: None,
+            weather_camera: None,
         };
         let symbol = point_vector_record_to_symbol_feature(&record, None).unwrap();
         let item = selection_item_for_point(
@@ -11714,6 +11975,7 @@ mod tests {
             longest_runway_heading_true_deg: Some(120.0),
             elevation_msl_ft: Some(82.0),
             obstacle: None,
+            weather_camera: None,
         };
 
         assert!(
@@ -11754,6 +12016,7 @@ mod tests {
                     top_msl_ft: 3_451.0,
                     is_tall: true,
                 }),
+                weather_camera: None,
             },
             None,
         )
@@ -11814,6 +12077,7 @@ mod tests {
                         longest_runway_heading_true_deg: Some(160.0),
                         elevation_msl_ft: Some(433.0),
                         obstacle: None,
+                        weather_camera: None,
                     },
                     PointVectorRecord {
                         id: "airports:WN50".to_string(),
@@ -11834,6 +12098,7 @@ mod tests {
                         longest_runway_heading_true_deg: Some(90.0),
                         elevation_msl_ft: Some(120.0),
                         obstacle: None,
+                        weather_camera: None,
                     },
                     PointVectorRecord {
                         id: "airports:W57".to_string(),
@@ -11854,6 +12119,7 @@ mod tests {
                         longest_runway_heading_true_deg: Some(45.0),
                         elevation_msl_ft: Some(10.0),
                         obstacle: None,
+                        weather_camera: None,
                     },
                     PointVectorRecord {
                         id: "airports:H1".to_string(),
@@ -11874,6 +12140,7 @@ mod tests {
                         longest_runway_heading_true_deg: Some(0.0),
                         elevation_msl_ft: Some(200.0),
                         obstacle: None,
+                        weather_camera: None,
                     },
                 ],
             },

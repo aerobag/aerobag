@@ -28,7 +28,7 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type ActionSymbolId = "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info";
+export type ActionSymbolId = "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
 export const actionSymbols = {
   "activate_leg": [
     {
@@ -583,6 +583,28 @@ export const actionSymbols = {
       "line_join": null,
       "transform_degrees": null
     }
+  ],
+  "open_weather_camera": [
+    {
+      "path": "M -11 -7 H -5 L -2 -11 H 4 L 7 -7 H 11 V 8 H -11 Z",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 0 -5 C 3.314 -5 6 -2.314 6 1 C 6 4.314 3.314 7 0 7 C -3.314 7 -6 4.314 -6 1 C -6 -2.314 -3.314 -5 0 -5 Z",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": null,
+      "line_join": "round",
+      "transform_degrees": null
+    }
   ]
 } satisfies Record<ActionSymbolId, readonly NavSymbolLayer[]>;
 export function actionSymbol(actionId: string): readonly NavSymbolLayer[] | undefined {
@@ -614,6 +636,48 @@ export const airportOpenMarkerSymbol = [
   {
     "path": "M 0 -12 C 6.627 -12 12 -6.627 12 0 C 12 6.627 6.627 12 0 12 C -6.627 12 -12 6.627 -12 0 C -12 -6.627 -6.627 -12 0 -12 Z",
     "paint": "airport_open_marker",
+    "fill": "none",
+    "stroke": "class_c_magenta",
+    "stroke_width": 2,
+    "line_cap": null,
+    "line_join": "round",
+    "transform_degrees": null
+  }
+] satisfies readonly NavSymbolLayer[];
+export const weatherCameraSymbol = [
+  {
+    "path": "M -11 -7 H -5 L -2 -11 H 4 L 7 -7 H 11 V 8 H -11 Z",
+    "paint": "weather_camera_under",
+    "fill": "none",
+    "stroke": "white",
+    "stroke_width": 4,
+    "line_cap": "round",
+    "line_join": "round",
+    "transform_degrees": null
+  },
+  {
+    "path": "M 0 -5 C 3.314 -5 6 -2.314 6 1 C 6 4.314 3.314 7 0 7 C -3.314 7 -6 4.314 -6 1 C -6 -2.314 -3.314 -5 0 -5 Z",
+    "paint": "weather_camera_under",
+    "fill": "none",
+    "stroke": "white",
+    "stroke_width": 4,
+    "line_cap": null,
+    "line_join": "round",
+    "transform_degrees": null
+  },
+  {
+    "path": "M -11 -7 H -5 L -2 -11 H 4 L 7 -7 H 11 V 8 H -11 Z",
+    "paint": "weather_camera",
+    "fill": "paper",
+    "stroke": "class_c_magenta",
+    "stroke_width": 2,
+    "line_cap": "round",
+    "line_join": "round",
+    "transform_degrees": null
+  },
+  {
+    "path": "M 0 -5 C 3.314 -5 6 -2.314 6 1 C 6 4.314 3.314 7 0 7 C -3.314 7 -6 4.314 -6 1 C -6 -2.314 -3.314 -5 0 -5 Z",
+    "paint": "weather_camera",
     "fill": "none",
     "stroke": "class_c_magenta",
     "stroke_width": 2,

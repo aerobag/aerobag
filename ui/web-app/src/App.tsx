@@ -74,6 +74,7 @@ import {
   seaplaneAnchorPath,
   vorBandPath,
   vorOuterHexPath,
+  weatherCameraSymbol,
 } from "./generated/navSymbols";
 import {
   loadBestAvailableAdapter,
@@ -1541,6 +1542,7 @@ const airportLabelY = -24;
 const vorLabelY = -24;
 const fixLabelY = -15;
 const obstacleLabelY = -14;
+const weatherCameraLabelY = -24;
 
 type VectorPointSymbolFeature = NavSymbolFeature & {
   label_style?: VectorIdentLabelStyle;
@@ -1591,6 +1593,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
   const isAirport = feature.symbol_kind === "airport";
   const isVor = feature.symbol_kind === "nav";
   const isObstacle = feature.symbol_kind === "obstacle";
+  const isWeatherCamera = feature.symbol_kind === "weather_camera";
   const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
   const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
   if (isAirport) {
@@ -1666,6 +1669,21 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         <path d={vorOuterHexPath} className="vorBorder" />
         {showLabel ? (
           <VectorIdentLabel label={feature.label} y={vorLabelY} className="vorLabel" labelStyle={feature.label_style} />
+        ) : null}
+      </g>
+    );
+  }
+  if (isWeatherCamera) {
+    return (
+      <g className="mapUpright">
+        <RenderNavSymbolLayers layers={weatherCameraSymbol} />
+        {showLabel ? (
+          <VectorIdentLabel
+            label={feature.label}
+            y={weatherCameraLabelY}
+            className="fixLabel"
+            labelStyle={feature.label_style}
+          />
         ) : null}
       </g>
     );
@@ -7208,6 +7226,9 @@ function MapPage(props: {
           break;
         case "open_plate_target":
           onOpenPlateTarget(effect.airport_id, effect.target);
+          break;
+        case "open_external_url":
+          window.open(effect.url, "_blank", "noopener,noreferrer");
           break;
         case undefined:
           break;

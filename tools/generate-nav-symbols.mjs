@@ -248,6 +248,7 @@ export function actionSymbol(actionId: string): readonly NavSymbolLayer[] | unde
 }
 export const dataStatusWarningSymbol = ${JSON.stringify(symbolSource("data_status_warning"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const airportOpenMarkerSymbol = ${JSON.stringify(symbolSource("airport_open_marker"), null, 2)} satisfies readonly NavSymbolLayer[];
+export const weatherCameraSymbol = ${JSON.stringify(symbolSource("weather_camera"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const mapSelectionSpotSymbol = ${JSON.stringify(symbolSource("map_selection_spot"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const compassSymbol = ${JSON.stringify(symbolSource("compass"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const mapFollowInactiveSymbol = ${JSON.stringify(symbolSource("map_follow_inactive"), null, 2)} satisfies readonly NavSymbolLayer[];
@@ -452,6 +453,10 @@ fun dataStatusWarningSymbol(center: Offset, scale: Float): List<NavSymbolLayer> 
 
 fun airportOpenMarkerSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
     ${ktSymbolLayers("airport_open_marker")}
+)
+
+fun weatherCameraSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(
+    ${ktSymbolLayers("weather_camera")}
 )
 
 fun mapSelectionSpotSymbol(center: Offset, scale: Float): List<NavSymbolLayer> = listOf(

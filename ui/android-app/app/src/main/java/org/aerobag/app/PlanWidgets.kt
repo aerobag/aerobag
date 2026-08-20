@@ -307,6 +307,7 @@ import org.aerobag.app.generated.pirepSevereTurbulenceSymbol
 import org.aerobag.app.generated.seaplaneAnchorPath
 import org.aerobag.app.generated.vorBandPath
 import org.aerobag.app.generated.vorOuterHexPath
+import org.aerobag.app.generated.weatherCameraSymbol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -435,6 +436,12 @@ internal fun PlanWaypointSymbol(
                 drawPath(band, vorMarkerColor)
                 drawPath(band, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
                 drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
+            }
+
+            "weather_camera" -> {
+                weatherCameraSymbol(center, scale).forEach { layer ->
+                    drawNavSymbolLayer(layer, scale, uiTheme)
+                }
             }
 
             "obstacle" -> {

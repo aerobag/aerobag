@@ -612,7 +612,8 @@ export type MapSelectionActionEffect =
   | { kind: "show_weather"; detail: WeatherDetailUiView }
   | { kind: "load_airport_info"; airport_id: string; loading_text: string; failure_prefix: string }
   | { kind: "show_detail"; title: string; text: string; status?: MapSelectionDetailStatus | null }
-  | { kind: "open_plate_target"; airport_id: string; target: "Folder" | "CSup"; chart_id: string };
+  | { kind: "open_plate_target"; airport_id: string; target: "Folder" | "CSup"; chart_id: string }
+  | { kind: "open_external_url"; url: string };
 
 export type AirportInfoUiView = {
   airport_id: string;

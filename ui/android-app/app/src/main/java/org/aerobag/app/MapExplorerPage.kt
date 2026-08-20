@@ -154,6 +154,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -344,6 +345,7 @@ import org.aerobag.app.generated.pirepSevereTurbulenceSymbol
 import org.aerobag.app.generated.seaplaneAnchorPath
 import org.aerobag.app.generated.vorBandPath
 import org.aerobag.app.generated.vorOuterHexPath
+import org.aerobag.app.generated.weatherCameraSymbol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -666,6 +668,7 @@ internal fun MapExplorerPage(
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
 ) {
+    val uriHandler = LocalUriHandler.current
     val mapCompositionStartedAtMs = startupPerfTrace?.let { SystemClock.elapsedRealtime() }
     SideEffect(sessionRenderDiagnostics::recordMap)
     SideEffect { startupPerfTrace?.mark("map_composed") }
@@ -2622,6 +2625,7 @@ internal fun MapExplorerPage(
             is MapSelectionActionEffect.OpenPlateTarget -> {
                 actions.onOpenPlateTarget(effect.airportId, effect.target, effect.chartId)
             }
+            is MapSelectionActionEffect.OpenExternalUrl -> uriHandler.openUri(effect.url)
             null -> Unit
         }
         if (decision.dismissSelection) {
@@ -3544,7 +3548,32 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
     val contrastColor = Color.White
     val contrastStrokeWidth = 8f * densityScale
-    if (feature.symbolKind == "airport") {
+    if (feature.symbolKind == "weather_camera") {
+        val label = labelOverride ?: feature.label
+        weatherCameraSymbol(center, densityScale).forEach { layer ->
+            if (contrastOnly) {
+                drawNavSymbolLayerAsContrast(layer, densityScale, contrastColor, contrastStrokeWidth)
+            } else {
+                drawNavSymbolLayer(layer, densityScale, uiTheme)
+            }
+        }
+        if (!contrastOnly && drawLabel) {
+            if (selectedLabel) {
+                drawSelectedVectorIdentLabel(label, center.x, center.y - 24f * densityScale, densityScale)
+            } else {
+                drawVectorIdentLabel(
+                    label = label,
+                    centerX = center.x,
+                    baselineY = center.y - 24f * densityScale,
+                    strokePaint = fixLabelStrokePaint,
+                    fillPaint = fixLabelFillPaint,
+                    labelStyle = feature.labelStyle,
+                    densityScale = densityScale,
+                    uiTheme = uiTheme,
+                )
+            }
+        }
+    } else if (feature.symbolKind == "airport") {
         val label = labelOverride ?: feature.label
         val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
         val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint

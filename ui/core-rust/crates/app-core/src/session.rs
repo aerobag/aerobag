@@ -447,6 +447,7 @@ enum RegisteredMapSelectionAction {
         target: String,
         chart_id: String,
     },
+    OpenExternalUrl(String),
     PerformFlightPlanRow {
         row_uid: String,
         action_uid: String,
@@ -4524,6 +4525,11 @@ pub fn map_selection_action_decision_in_session(
                 target,
                 chart_id,
             }),
+        },
+        RegisteredMapSelectionAction::OpenExternalUrl(url) => MapSelectionActionDecision {
+            perform_session_mutation: false,
+            dismiss_selection: false,
+            effect: Some(MapSelectionActionEffect::OpenExternalUrl { url }),
         },
         RegisteredMapSelectionAction::PerformFlightPlanRow { .. }
         | RegisteredMapSelectionAction::PerformSession(_) => MapSelectionActionDecision {
@@ -9694,6 +9700,17 @@ fn registered_map_selection_action(
             action_uid: row_action.action_uid.clone(),
         }));
     }
+    if let Some(url) = &action.external_url {
+        if !url.starts_with("https://") || url.chars().any(char::is_whitespace) {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: format!("map-selection action has an unsafe external URL: {url}"),
+            });
+        }
+        return Ok(Some(RegisteredMapSelectionAction::OpenExternalUrl(
+            url.clone(),
+        )));
+    }
     if let Some(navigation) = &action.navigation {
         return Ok(Some(match navigation {
             MapSelectionNavigationAction::OpenPlateTarget {
@@ -9741,6 +9758,7 @@ fn map_selection_placeholder_action(index: usize) -> MapSelectionAction {
         session_action: None,
         flight_plan_row_action: None,
         navigation: None,
+        external_url: None,
     }
 }
 
@@ -16624,6 +16642,7 @@ mod tests {
                     top_msl_ft: 800.0,
                     is_tall: false,
                 }),
+                weather_camera: None,
             }],
         };
         let obstacle_key = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
@@ -20010,6 +20029,7 @@ mod tests {
                         longest_runway_heading_true_deg: None,
                         elevation_msl_ft: None,
                         obstacle: None,
+                        weather_camera: None,
                     }],
                     fixes: Vec::new(),
                     navaids: Vec::new(),
@@ -20568,6 +20588,7 @@ mod tests {
                     top_msl_ft: 800.0,
                     is_tall: false,
                 }),
+                weather_camera: None,
             }],
         };
         let obstacle_key = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
@@ -21151,6 +21172,7 @@ mod tests {
                     top_msl_ft: 800.0,
                     is_tall: false,
                 }),
+                weather_camera: None,
             }],
         };
         let obstacle_key = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
@@ -25874,6 +25896,7 @@ mod tests {
                         session_action: Some("direct-to-action".to_string()),
                         flight_plan_row_action: None,
                         navigation: None,
+                        external_url: None,
                     }],
                 }],
             }],
@@ -26051,6 +26074,7 @@ mod tests {
             session_action: None,
             flight_plan_row_action: None,
             navigation: None,
+            external_url: None,
         });
         let mut detail_item = test_map_selection_item("TFR", None, None);
         detail_item.detail_text = Some("inline summary".to_string());
@@ -26071,8 +26095,31 @@ mod tests {
             session_action: None,
             flight_plan_row_action: None,
             navigation: None,
+            external_url: None,
         });
-        let mut selection = test_map_selection_with_items(vec![weather_item, detail_item]);
+        let camera_url = "https://weathercams.faa.gov/cameras/cameraSite/150/summary".to_string();
+        let mut camera_item = test_map_selection_item("weather-camera:150", None, None);
+        camera_item.actions.push(MapSelectionAction {
+            id: "open_weather_camera".to_string(),
+            label: "Open Camera".to_string(),
+            enabled: true,
+            display_only: false,
+            action_uid: None,
+            placeholder: false,
+            detail_text: None,
+            detail_title: None,
+            detail_status: None,
+            weather_detail: None,
+            airport_info_airport_id: None,
+            disabled_reason: None,
+            airspace_limit: None,
+            session_action: None,
+            flight_plan_row_action: None,
+            navigation: None,
+            external_url: Some(camera_url.clone()),
+        });
+        let mut selection =
+            test_map_selection_with_items(vec![weather_item, detail_item, camera_item]);
         let init = create_ui_session(FlightPlan::default(), &[], None, None)
             .expect("create map-selection action session");
         {
@@ -26117,6 +26164,22 @@ mod tests {
                 .effect,
             Some(MapSelectionActionEffect::ShowDetail { .. })
         ));
+
+        let camera_action = &selection.categories[0].items[2].actions[0];
+        let camera_uid = camera_action
+            .action_uid
+            .as_deref()
+            .expect("camera action UID");
+        assert!(serde_json::to_value(camera_action)
+            .expect("camera action JSON")
+            .get("external_url")
+            .is_none());
+        assert_eq!(
+            map_selection_action_decision_in_session(init.handle, camera_uid.to_string())
+                .expect("camera decision")
+                .effect,
+            Some(MapSelectionActionEffect::OpenExternalUrl { url: camera_url })
+        );
 
         {
             let slot = session_slot(init.handle).expect("session slot");

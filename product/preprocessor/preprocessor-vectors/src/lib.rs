@@ -21,10 +21,11 @@ use preprocessor_core::runway::{
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use rusqlite::Connection;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use zip::ZipArchive;
 
 const POINT_LAYER_ZOOM_POLICY: &[(&str, u8)] = &[("airport", 9), ("fix", 9), ("nav", 9)];
+const MIN_PLAUSIBLE_WEATHER_CAMERA_SITE_COUNT: usize = 100;
 const MIN_OBSTACLE_AGL_FT: i32 = 400;
 const TALL_OBSTACLE_MIN_AGL_FT: i32 = 1000;
 const OBSTACLE_LAYER_ZOOM: u8 = 12;
@@ -80,6 +81,7 @@ const AIRSPACE_LABEL_CONTAINMENT_RATIO: f64 = 0.98;
 pub struct BuildVectorsRequest {
     pub main_db: PathBuf,
     pub data_input_dir: Option<PathBuf>,
+    pub weather_camera_inventory: Option<PathBuf>,
     pub output_dir: PathBuf,
     pub version_label: String,
     pub include_class_e_airspace: bool,
@@ -417,6 +419,36 @@ struct PointRecord {
     longest_runway_heading_true_deg: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     elevation_msl_ft: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    weather_camera: Option<WeatherCameraProperties>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct WeatherCameraProperties {
+    site_id: String,
+    site_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    site_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icao: Option<String>,
+    page_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operated_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attribution: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_maintenance: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    third_party: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WeatherCameraInventoryEnvelope {
+    success: bool,
+    count: usize,
+    payload: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -995,7 +1027,13 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
 
     let conn = Connection::open(&request.main_db)
         .with_context(|| format!("failed to open {}", request.main_db.display()))?;
-    let points = load_points(&conn)?;
+    let mut points = load_points(&conn)?;
+    if let Some(path) = &request.weather_camera_inventory {
+        points.extend(load_weather_camera_points(
+            path,
+            MIN_PLAUSIBLE_WEATHER_CAMERA_SITE_COUNT,
+        )?);
+    }
     let airport_points = points
         .iter()
         .filter(|point| point.style_class == "airport")
@@ -1764,6 +1802,7 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
                     .then(|| airport_runway_info.map(|runway| runway.heading_true_deg))
                     .flatten(),
                 elevation_msl_ft,
+                weather_camera: None,
             });
         }
     }
@@ -1847,6 +1886,7 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
                 longest_runway_length_ft: None,
                 longest_runway_heading_true_deg: None,
                 elevation_msl_ft: None,
+                weather_camera: None,
             },
             agl_ft: height_agl.round() as i32,
         });
@@ -2838,11 +2878,246 @@ fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {
         .collect()
 }
 
+fn load_weather_camera_points(
+    path: &Path,
+    minimum_site_count: usize,
+) -> anyhow::Result<Vec<PointRecord>> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read weather-camera inventory {}", path.display()))?;
+    parse_weather_camera_inventory(&bytes, minimum_site_count).with_context(|| {
+        format!(
+            "failed to parse weather-camera inventory {}",
+            path.display()
+        )
+    })
+}
+
+fn parse_weather_camera_inventory(
+    bytes: &[u8],
+    minimum_site_count: usize,
+) -> anyhow::Result<Vec<PointRecord>> {
+    let envelope: WeatherCameraInventoryEnvelope = serde_json::from_slice(bytes)
+        .context("weather-camera inventory is not the expected JSON payload envelope")?;
+    if !envelope.success {
+        bail!("weather-camera inventory reports an unsuccessful response");
+    }
+    if envelope.count != envelope.payload.len() {
+        bail!(
+            "weather-camera inventory count {} does not match its {} payload records",
+            envelope.count,
+            envelope.payload.len()
+        );
+    }
+    if envelope.payload.len() < minimum_site_count {
+        bail!(
+            "weather-camera inventory has only {} sites; expected at least {minimum_site_count}",
+            envelope.payload.len()
+        );
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut points = Vec::with_capacity(envelope.payload.len());
+    for (index, value) in envelope.payload.iter().enumerate() {
+        let object = value
+            .as_object()
+            .with_context(|| format!("weather-camera site {index} is not an object"))?;
+        let site_id = required_inventory_text(object, &["siteId", "site_id"], index)?;
+        if !site_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        {
+            bail!("weather-camera site {index} has unsafe siteId {site_id:?}");
+        }
+        if !seen.insert(site_id.clone()) {
+            bail!("weather-camera inventory repeats siteId {site_id}");
+        }
+        let lat = required_inventory_number(object, &["latitude", "lat"], index)?;
+        let lon = required_inventory_number(object, &["longitude", "lon"], index)?;
+        if !valid_lat_lon(lat, lon) {
+            bail!("weather-camera site {site_id} has invalid coordinates ({lat},{lon})");
+        }
+        let site_identifier =
+            optional_inventory_text(object, &["siteIdentifier", "site_identifier"]);
+        let icao = optional_inventory_text(object, &["icao"]);
+        let site_name = optional_inventory_text(object, &["siteName", "site_name"])
+            .or_else(|| site_identifier.clone())
+            .or_else(|| icao.clone())
+            .with_context(|| format!("weather-camera site {site_id} has no name or identifier"))?;
+        let label = site_identifier
+            .clone()
+            .or_else(|| icao.clone())
+            .unwrap_or_else(|| site_name.clone());
+        let state = optional_inventory_text(object, &["state"]);
+        let country = optional_inventory_text(object, &["country"]);
+        let location_label = match (state, country) {
+            (Some(state), Some(country)) if !weather_camera_country_is_us(&country) => {
+                Some(format!("{state}, {country}"))
+            }
+            (Some(state), _) => Some(state),
+            (None, Some(country)) => Some(country),
+            (None, None) => None,
+        };
+        let elevation_msl_ft = optional_inventory_number(object, &["elevation", "elevationFt"])
+            .transpose()
+            .with_context(|| format!("weather-camera site {site_id} has invalid elevation"))?;
+        points.push(PointRecord {
+            id: format!("weather-camera:{site_id}"),
+            kind: "weather camera".to_string(),
+            lat: round_coord(lat),
+            lon: round_coord(lon),
+            label,
+            location_label,
+            style_class: "weather_camera".to_string(),
+            obstacle: None,
+            towered: None,
+            fuel_available: None,
+            public_use: None,
+            private_use: None,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            longest_runway_length_ft: None,
+            longest_runway_heading_true_deg: None,
+            elevation_msl_ft,
+            weather_camera: Some(WeatherCameraProperties {
+                site_id: site_id.clone(),
+                site_name,
+                site_identifier,
+                icao,
+                page_url: format!(
+                    "https://weathercams.faa.gov/cameras/cameraSite/{site_id}/summary"
+                ),
+                operated_by: optional_inventory_text(object, &["operatedBy", "operated_by"]),
+                attribution: optional_inventory_text(object, &["attribution"]),
+                active: optional_inventory_bool(object, &["siteActive", "site_active"])
+                    .transpose()
+                    .with_context(|| {
+                        format!("weather-camera site {site_id} has invalid siteActive")
+                    })?,
+                in_maintenance: optional_inventory_bool(
+                    object,
+                    &["siteInMaintenance", "site_in_maintenance"],
+                )
+                .transpose()
+                .with_context(|| {
+                    format!("weather-camera site {site_id} has invalid siteInMaintenance")
+                })?,
+                third_party: optional_inventory_bool(object, &["thirdParty", "third_party"])
+                    .transpose()
+                    .with_context(|| {
+                        format!("weather-camera site {site_id} has invalid thirdParty")
+                    })?,
+            }),
+        });
+    }
+    Ok(points)
+}
+
+fn weather_camera_country_is_us(country: &str) -> bool {
+    matches!(
+        country.trim().to_ascii_uppercase().as_str(),
+        "US" | "USA" | "UNITED STATES" | "UNITED STATES OF AMERICA"
+    )
+}
+
+fn inventory_value<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Option<&'a serde_json::Value> {
+    names.iter().find_map(|name| object.get(*name))
+}
+
+fn optional_inventory_text(
+    object: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Option<String> {
+    let value = inventory_value(object, names)?;
+    let text = match value {
+        serde_json::Value::String(value) => value.trim().to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+fn required_inventory_text(
+    object: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+    index: usize,
+) -> anyhow::Result<String> {
+    optional_inventory_text(object, names).with_context(|| {
+        format!(
+            "weather-camera site {index} is missing {}",
+            names.first().copied().unwrap_or("required field")
+        )
+    })
+}
+
+fn optional_inventory_number(
+    object: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Option<anyhow::Result<f64>> {
+    let value = inventory_value(object, names)?;
+    if value.is_null() {
+        return None;
+    }
+    Some(match value {
+        serde_json::Value::Number(value) => value
+            .as_f64()
+            .context("number is outside the supported range"),
+        serde_json::Value::String(value) => {
+            value.trim().parse::<f64>().context("value is not a number")
+        }
+        _ => Err(anyhow::anyhow!(
+            "value is neither a number nor a numeric string"
+        )),
+    })
+}
+
+fn required_inventory_number(
+    object: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+    index: usize,
+) -> anyhow::Result<f64> {
+    optional_inventory_number(object, names).with_context(|| {
+        format!(
+            "weather-camera site {index} is missing {}",
+            names.first().copied().unwrap_or("required number")
+        )
+    })?
+}
+
+fn optional_inventory_bool(
+    object: &serde_json::Map<String, serde_json::Value>,
+    names: &[&str],
+) -> Option<anyhow::Result<bool>> {
+    let value = inventory_value(object, names)?;
+    if value.is_null() {
+        return None;
+    }
+    Some(match value {
+        serde_json::Value::Bool(value) => Ok(*value),
+        serde_json::Value::Number(value) if value.as_i64() == Some(1) => Ok(true),
+        serde_json::Value::Number(value) if value.as_i64() == Some(0) => Ok(false),
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+        serde_json::Value::String(value) if value.eq_ignore_ascii_case("false") => Ok(false),
+        _ => Err(anyhow::anyhow!("value is not a boolean")),
+    })
+}
+
 fn points_by_layer(points: &[PointRecord]) -> BTreeMap<String, Vec<PointRecord>> {
     let mut layers = BTreeMap::<String, Vec<PointRecord>>::new();
     for point in points {
+        // Weather cameras are sparse, static point features with the same display threshold as
+        // airports. Packing them into the already-faulted airport tiles avoids another tile read;
+        // style_class still preserves their independent display and inspection semantics.
+        let layer = if point.style_class == "weather_camera" {
+            "airport"
+        } else {
+            point.style_class.as_str()
+        };
         layers
-            .entry(point.style_class.clone())
+            .entry(layer.to_string())
             .or_default()
             .push(point.clone());
     }
@@ -4834,12 +5109,99 @@ mod tests {
             longest_runway_length_ft: None,
             longest_runway_heading_true_deg: None,
             elevation_msl_ft: None,
+            weather_camera: None,
         };
 
         let value = serde_json::to_value(point).unwrap();
         assert_eq!(value["lat"], serde_json::json!(47.4931389));
         assert_eq!(value["lon"], serde_json::json!(-122.2157501));
         assert_eq!(value["location_label"], "Renton, WA");
+    }
+
+    #[test]
+    fn scraped_weather_camera_inventory_becomes_typed_airport_tile_points() {
+        let inventory = br#"{
+            "success": true,
+            "count": 1,
+            "payload": [{
+                "siteId": 150,
+                "siteName": "Stampede Pass",
+                "siteIdentifier": "SAC 150",
+                "icao": null,
+                "latitude": "47.2831",
+                "longitude": -121.3372,
+                "elevation": "3800",
+                "siteInMaintenance": false,
+                "siteActive": true,
+                "thirdParty": false,
+                "country": "US",
+                "state": "WA",
+                "operatedBy": "FAA"
+            }]
+        }"#;
+
+        let points = parse_weather_camera_inventory(inventory, 1).unwrap();
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].id, "weather-camera:150");
+        assert_eq!(points[0].label, "SAC 150");
+        assert_eq!(points[0].style_class, "weather_camera");
+        assert_eq!(points[0].elevation_msl_ft, Some(3800.0));
+        assert_eq!(points[0].location_label.as_deref(), Some("WA"));
+        assert_eq!(
+            points[0].weather_camera.as_ref().unwrap(),
+            &WeatherCameraProperties {
+                site_id: "150".to_string(),
+                site_name: "Stampede Pass".to_string(),
+                site_identifier: Some("SAC 150".to_string()),
+                icao: None,
+                page_url: "https://weathercams.faa.gov/cameras/cameraSite/150/summary".to_string(),
+                operated_by: Some("FAA".to_string()),
+                attribution: None,
+                active: Some(true),
+                in_maintenance: Some(false),
+                third_party: Some(false),
+            }
+        );
+        let layers = points_by_layer(&points);
+        assert_eq!(layers.get("airport").unwrap().len(), 1);
+        assert!(!layers.contains_key("weather_camera"));
+    }
+
+    #[test]
+    fn scraped_weather_camera_inventory_rejects_partial_or_ambiguous_data() {
+        let duplicate = br#"{
+            "success": true,
+            "count": 2,
+            "payload": [
+                {"siteId":"abc","siteName":"One","latitude":47,"longitude":-122},
+                {"siteId":"abc","siteName":"Two","latitude":48,"longitude":-123}
+            ]
+        }"#;
+        assert!(parse_weather_camera_inventory(duplicate, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("repeats siteId abc"));
+
+        let too_small = br#"{
+            "success": true,
+            "count": 1,
+            "payload": [{"siteId":"abc","siteName":"One","latitude":47,"longitude":-122}]
+        }"#;
+        assert!(parse_weather_camera_inventory(too_small, 2)
+            .unwrap_err()
+            .to_string()
+            .contains("only 1 sites"));
+
+        let mismatched_count = br#"{
+            "success": true,
+            "count": 2,
+            "payload": [{"siteId":"abc","siteName":"One","latitude":47,"longitude":-122}]
+        }"#;
+        assert!(parse_weather_camera_inventory(mismatched_count, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("count 2 does not match its 1 payload records"));
     }
 
     #[test]

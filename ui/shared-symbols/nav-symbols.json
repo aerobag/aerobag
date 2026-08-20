@@ -3,6 +3,8 @@
   "paths": {
     "airport_circle_marker": "M 0 -12 C 6.627 -12 12 -6.627 12 0 C 12 6.627 6.627 12 0 12 C -6.627 12 -12 6.627 -12 0 C -12 -6.627 -6.627 -12 0 -12 Z",
     "airport_fuel_marker": "M -4 -17 H 4 V -11.314 A 12 12 0 0 1 11.314 -4 H 17 V 4 H 11.314 A 12 12 0 0 1 4 11.314 V 17 H -4 V 11.314 A 12 12 0 0 1 -11.314 4 H -17 V -4 H -11.314 A 12 12 0 0 1 -4 -11.314 Z",
+    "weather_camera_body": "M -11 -7 H -5 L -2 -11 H 4 L 7 -7 H 11 V 8 H -11 Z",
+    "weather_camera_lens": "M 0 -5 C 3.314 -5 6 -2.314 6 1 C 6 4.314 3.314 7 0 7 C -3.314 7 -6 4.314 -6 1 C -6 -2.314 -3.314 -5 0 -5 Z",
     "fix_triangle": "M 0 -8 L 7 6 L -7 6 Z",
     "heliport_h": "M -5 -7 V 7 M 5 -7 V 7 M -5 0 H 5",
     "seaplane_anchor": "M 0 -9 L 0 5 M -5 -5 L 5 -5 M -7 2 C -5 8 5 8 7 2",
@@ -143,6 +145,10 @@
       { "path": "action_weather_mast", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" },
       { "path": "action_weather_sock", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" }
     ],
+    "action_open_weather_camera": [
+      { "path": "weather_camera_body", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_cap": "round", "line_join": "round" },
+      { "path": "weather_camera_lens", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_join": "round" }
+    ],
     "data_status_warning": [
       { "path": "data_status_warning_glyph", "paint": "data_status_warning_glyph", "fill": "data_status_symbol_ink" }
     ],
@@ -163,6 +169,12 @@
         "stroke_width": 2,
         "line_join": "round"
       }
+    ],
+    "weather_camera": [
+      { "path": "weather_camera_body", "paint": "weather_camera_under", "fill": "none", "stroke": "white", "stroke_width": 4, "line_cap": "round", "line_join": "round" },
+      { "path": "weather_camera_lens", "paint": "weather_camera_under", "fill": "none", "stroke": "white", "stroke_width": 4, "line_join": "round" },
+      { "path": "weather_camera_body", "paint": "weather_camera", "fill": "paper", "stroke": "class_c_magenta", "stroke_width": 2, "line_cap": "round", "line_join": "round" },
+      { "path": "weather_camera_lens", "paint": "weather_camera", "fill": "none", "stroke": "class_c_magenta", "stroke_width": 2, "line_join": "round" }
     ],
     "map_selection_spot": [
       {
@@ -298,7 +310,8 @@
     "remove_from_flight_plan": "action_remove",
     "csup": "action_plates",
     "wx": "action_weather",
-    "airport_info": "action_waypoint_info"
+    "airport_info": "action_waypoint_info",
+    "open_weather_camera": "action_open_weather_camera"
   },
   "obstacle_dot": {
     "short_y": 4.8,

@@ -78,7 +78,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli run-native-tpp --region <AK|PAC|NW|SW|NC|EC|SC|NE|SE> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]
   preprocessor-cli build-data --input-dir <path> --output-dir <path> --manifest-version <cycle> [--resource-index-output <path>] [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
   preprocessor-cli audit-procedure-geometry --main-db <path> [--airport <id>] [--procedure <id>] [--transition <id>]
-  preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--include-class-e-airspace]
+  preprocessor-cli build-vectors --main-db <path> --output-dir <path> --version-label <label> [--data-input-dir <path>] [--weather-camera-inventory <path>] [--include-class-e-airspace]
   preprocessor-cli audit-bravo-unions --class-airspace-shp <path> --output-svg <path> [--version-label <label>]
   preprocessor-cli audit-class-airspace-simplification --class-airspace-shp <path> [--tolerances-degrees <csv>] [--ident <id>]
   preprocessor-cli build-obstacles [--build-root <path>] [--fetch-jobs <count>] [--snapshot-date <YYYY-MM-DD>]
@@ -2420,6 +2420,7 @@ fn main() -> anyhow::Result<()> {
         Some("build-vectors") => {
             let mut main_db = None;
             let mut data_input_dir = None;
+            let mut weather_camera_inventory = None;
             let mut output_dir = None;
             let mut version_label = None;
             let mut include_class_e_airspace = false;
@@ -2436,6 +2437,14 @@ fn main() -> anyhow::Result<()> {
                     }
                     Some("--data-input-dir") => {
                         data_input_dir = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .cloned()
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
+                    Some("--weather-camera-inventory") => {
+                        weather_camera_inventory = Some(PathBuf::from(
                             args.get(index + 1)
                                 .cloned()
                                 .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
@@ -2468,6 +2477,7 @@ fn main() -> anyhow::Result<()> {
             let request = BuildVectorsRequest {
                 main_db: main_db.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 data_input_dir,
+                weather_camera_inventory,
                 output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 include_class_e_airspace,

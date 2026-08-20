@@ -343,6 +343,7 @@ pub struct PrefetchRequest {
     pub url: String,
     pub cache_key: String,
     pub logical_file_name: Option<String>,
+    pub headers: BTreeMap<String, String>,
     pub force_http1: bool,
     pub allow_html: bool,
 }
@@ -354,6 +355,7 @@ impl PrefetchRequest {
             cache_key: url.clone(),
             url,
             logical_file_name: None,
+            headers: BTreeMap::new(),
             force_http1: false,
             allow_html: false,
         }
@@ -366,6 +368,11 @@ impl PrefetchRequest {
 
     pub fn with_cache_key(mut self, cache_key: impl Into<String>) -> Self {
         self.cache_key = cache_key.into();
+        self
+    }
+
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(name.into(), value.into());
         self
     }
 
@@ -624,6 +631,7 @@ fn prefetch_one(
                     layout: &layout,
                     cache_key: &request.cache_key,
                     network_url: &request.url,
+                    headers: &request.headers,
                     force_http1: request.force_http1,
                     allow_html: request.allow_html,
                     file_name,
@@ -632,7 +640,13 @@ fn prefetch_one(
                 })?;
             }
         } else {
-            fetch_network(&request.url, request.force_http1, file_name, dest_dir)?;
+            fetch_network(
+                &request.url,
+                &request.headers,
+                request.force_http1,
+                file_name,
+                dest_dir,
+            )?;
             source = "network";
         }
     }
@@ -686,6 +700,7 @@ struct NetworkFetchRequest<'a> {
     layout: &'a CacheLayout,
     cache_key: &'a str,
     network_url: &'a str,
+    headers: &'a BTreeMap<String, String>,
     force_http1: bool,
     allow_html: bool,
     file_name: &'a str,
@@ -716,6 +731,7 @@ fn fetch_network_with_cache_once(
         layout,
         cache_key,
         network_url,
+        headers,
         force_http1,
         allow_html,
         file_name,
@@ -728,6 +744,7 @@ fn fetch_network_with_cache_once(
     let cookies_path = temp_path.with_extension("cookies");
     let mut result = curl_download_with_status(
         network_url,
+        headers,
         force_http1,
         dest_dir,
         &temp_path,
@@ -742,6 +759,7 @@ fn fetch_network_with_cache_once(
         let _ = fs::remove_file(&headers_path);
         result = curl_download_with_status(
             network_url,
+            headers,
             force_http1,
             dest_dir,
             &temp_path,
@@ -805,6 +823,7 @@ struct CurlDownloadResult {
 
 fn curl_download_with_status(
     network_url: &str,
+    request_headers: &BTreeMap<String, String>,
     force_http1: bool,
     dest_dir: &Path,
     temp_path: &Path,
@@ -830,6 +849,7 @@ fn curl_download_with_status(
     if force_http1 {
         command.arg("--http1.1");
     }
+    append_request_headers(&mut command, request_headers);
     command.arg(network_url).current_dir(dest_dir);
     if let Some(etag) = metadata
         .and_then(|value| value.get("etag"))
@@ -861,13 +881,14 @@ fn curl_download_with_status(
 
 fn fetch_network(
     url: &str,
+    request_headers: &BTreeMap<String, String>,
     force_http1: bool,
     file_name: &str,
     dest_dir: &Path,
 ) -> anyhow::Result<()> {
     let mut last_error = None;
     for attempt in 1..=NETWORK_FETCH_OUTER_ATTEMPTS {
-        match fetch_network_once(url, force_http1, file_name, dest_dir) {
+        match fetch_network_once(url, request_headers, force_http1, file_name, dest_dir) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
@@ -882,6 +903,7 @@ fn fetch_network(
 
 fn fetch_network_once(
     url: &str,
+    request_headers: &BTreeMap<String, String>,
     force_http1: bool,
     file_name: &str,
     dest_dir: &Path,
@@ -904,6 +926,7 @@ fn fetch_network_once(
     if force_http1 {
         command.arg("--http1.1");
     }
+    append_request_headers(&mut command, request_headers);
     command.arg(url).current_dir(dest_dir);
     let status = command
         .status()
@@ -924,6 +947,12 @@ fn fetch_network_once(
         .with_context(|| format!("downloaded invalid data from {url}"))?;
     let _ = fs::remove_file(&cookies_path);
     Ok(())
+}
+
+fn append_request_headers(command: &mut Command, headers: &BTreeMap<String, String>) {
+    for (name, value) in headers {
+        command.arg("--header").arg(format!("{name}: {value}"));
+    }
 }
 
 fn looks_like_html(path: &Path) -> anyhow::Result<bool> {
@@ -1295,6 +1324,7 @@ mod tests {
     fn prefetch_request_carries_transport_outside_url() {
         let request = PrefetchRequest::new("https://tfr.faa.gov/tfrapi/exportTfrList")
             .with_logical_file_name("list.json")
+            .with_header("Referer", "https://tfr.faa.gov/")
             .with_http1();
         assert_eq!(request.url, "https://tfr.faa.gov/tfrapi/exportTfrList");
         assert_eq!(
@@ -1302,6 +1332,10 @@ mod tests {
             "https://tfr.faa.gov/tfrapi/exportTfrList"
         );
         assert_eq!(request.logical_file_name.as_deref(), Some("list.json"));
+        assert_eq!(
+            request.headers.get("Referer").map(String::as_str),
+            Some("https://tfr.faa.gov/")
+        );
         assert!(request.force_http1);
     }
 

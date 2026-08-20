@@ -833,6 +833,7 @@ data class WireMapSelectionActionEffect(
     val status: WireMapSelectionDetailStatus? = null,
     val target: String? = null,
     val chart_id: String? = null,
+    val url: String? = null,
 )
 
 @Serializable

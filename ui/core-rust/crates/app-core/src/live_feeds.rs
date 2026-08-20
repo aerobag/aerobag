@@ -2493,7 +2493,7 @@ fn product_supports_prepared_record_delta_without_raw_state(product: &str) -> bo
     supports_prepared_live_feed(product) && supports_record_delta(product)
 }
 
-fn record_delta_schema(product: &str) -> Option<(String, Option<String>)> {
+fn record_delta_schema(product: &str) -> Option<(String, Option<String>, Option<String>)> {
     crate::live_feed_product_registry().record_json_delta_schema(product)
 }
 
@@ -2501,57 +2501,20 @@ fn apply_live_feed_record_delta(
     from_state: &Value,
     delta: &LiveFeedRecordDelta,
 ) -> AppResult<Value> {
-    let (records_key, count_key) = record_delta_schema(&delta.product).ok_or_else(|| {
-        invalid_live_feed(format!(
-            "unsupported live feed delta product: {}",
-            delta.product
-        ))
-    })?;
-    let from_version = from_state
-        .get("version_label")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_live_feed("live feed state missing version_label".to_string()))?;
-    if from_version != delta.from_version {
-        return Err(invalid_live_feed(format!(
-            "delta starts at {}, but local state is {}",
-            delta.from_version, from_version
-        )));
-    }
-    let mut result = from_state.clone();
-    {
-        let result_object = result.as_object_mut().ok_or_else(|| {
-            invalid_live_feed("live feed state must be a JSON object".to_string())
+    let (records_key, record_id_key, count_key) =
+        record_delta_schema(&delta.product).ok_or_else(|| {
+            invalid_live_feed(format!(
+                "unsupported live feed delta product: {}",
+                delta.product
+            ))
         })?;
-        for key in &delta.top_level_removed {
-            result_object.remove(key);
-        }
-        for (key, value) in &delta.top_level_changed {
-            result_object.insert(key.clone(), value.clone());
-        }
-    }
-    let record_count = {
-        let records = result
-            .get_mut(records_key.as_str())
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| invalid_live_feed(format!("state missing {records_key} object")))?;
-        for station_id in &delta.removed {
-            records.remove(station_id);
-        }
-        for (station_id, record) in &delta.changed {
-            records.insert(station_id.clone(), record.clone());
-        }
-        records.len()
-    };
-    let version = result
-        .get_mut("version_label")
-        .ok_or_else(|| invalid_live_feed("live feed state missing version_label".to_string()))?;
-    *version = Value::String(delta.to_version.clone());
-    if let Some(count_key) = count_key {
-        if let Some(count) = result.get_mut(count_key.as_str()) {
-            *count = serde_json::json!(record_count);
-        }
-    }
-    Ok(result)
+    crate::live_feed_cache::apply_record_json_delta(
+        &records_key,
+        record_id_key.as_deref(),
+        count_key.as_deref(),
+        from_state,
+        delta,
+    )
 }
 
 fn live_feed_metar_tile_xy(lat: f64, lon: f64, zoom: u32) -> Option<(u32, u32)> {
@@ -2769,12 +2732,25 @@ mod tests {
             (
                 "tfrs",
                 serde_json::json!({
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "version_label": "v1",
                     "generated_at_utc": "2026-05-18T20:00:00Z",
-                    "notam_count": 0,
-                    "area_group_count": 0,
-                    "areas": []
+                    "notam_count": 1,
+                    "area_group_count": 1,
+                    "areas": [{
+                        "area_id": "6/7042:0123456789abcdef",
+                        "notam_id": "6/7042",
+                        "area_index": 0,
+                        "schedule_fragments": [],
+                        "upper_limit": { "value_text": "5000", "unit": "FT" },
+                        "lower_limit": { "value_text": "SFC", "unit": "" },
+                        "polygon": [
+                            { "lat": 47.0, "lon": -122.0 },
+                            { "lat": 47.1, "lon": -122.0 },
+                            { "lat": 47.0, "lon": -121.9 }
+                        ],
+                        "summary_text": "TFR:: fixture"
+                    }]
                 }),
             ),
         ];
@@ -3709,6 +3685,61 @@ mod tests {
         let applied = apply_live_feed_record_delta(&from, &delta).unwrap();
 
         assert_eq!(applied, to);
+    }
+
+    #[test]
+    fn record_delta_round_trips_keyed_tfr_area_array() {
+        let from = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "from",
+            "notam_count": 1,
+            "area_group_count": 1,
+            "areas": [
+                {"area_id": "6/7042:a", "notam_id": "6/7042", "summary_text": "old"}
+            ]
+        });
+        let to = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "to",
+            "notam_count": 2,
+            "area_group_count": 2,
+            "areas": [
+                {"area_id": "6/7042:a", "notam_id": "6/7042", "summary_text": "new"},
+                {"area_id": "6/7043:b", "notam_id": "6/7043", "summary_text": "added"}
+            ]
+        });
+        let delta = LiveFeedRecordDelta {
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+            product: "tfrs".to_string(),
+            from_version: "from".to_string(),
+            to_version: "to".to_string(),
+            top_level_changed: BTreeMap::from([
+                ("notam_count".to_string(), serde_json::json!(2)),
+                ("area_group_count".to_string(), serde_json::json!(2)),
+            ]),
+            top_level_removed: Vec::new(),
+            changed: BTreeMap::from([
+                (
+                    "6/7042:a".to_string(),
+                    serde_json::json!({
+                        "area_id": "6/7042:a",
+                        "notam_id": "6/7042",
+                        "summary_text": "new"
+                    }),
+                ),
+                (
+                    "6/7043:b".to_string(),
+                    serde_json::json!({
+                        "area_id": "6/7043:b",
+                        "notam_id": "6/7043",
+                        "summary_text": "added"
+                    }),
+                ),
+            ]),
+            removed: Vec::new(),
+        };
+
+        assert_eq!(apply_live_feed_record_delta(&from, &delta).unwrap(), to);
     }
 
     #[test]

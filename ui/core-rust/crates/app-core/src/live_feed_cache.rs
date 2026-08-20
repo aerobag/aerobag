@@ -125,6 +125,7 @@ pub enum LiveFeedProductDriver {
     RecordJson {
         product: String,
         records_key: String,
+        record_id_key: Option<String>,
         count_key: Option<String>,
     },
     NavKv {
@@ -965,11 +966,18 @@ impl LiveFeedProductRegistry {
         self.drivers.get(product)
     }
 
-    pub fn record_json_delta_schema(&self, product: &str) -> Option<(String, Option<String>)> {
+    pub fn record_json_delta_schema(
+        &self,
+        product: &str,
+    ) -> Option<(String, Option<String>, Option<String>)> {
         self.driver(product)
             .and_then(LiveFeedProductDriver::record_json_delta_schema)
-            .map(|(records_key, count_key)| {
-                (records_key.to_string(), count_key.map(str::to_string))
+            .map(|(records_key, record_id_key, count_key)| {
+                (
+                    records_key.to_string(),
+                    record_id_key.map(str::to_string),
+                    count_key.map(str::to_string),
+                )
             })
     }
 
@@ -992,6 +1000,17 @@ pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
             } => LiveFeedProductDriver::RecordJson {
                 product,
                 records_key: records_key.to_string(),
+                record_id_key: None,
+                count_key: count_key.map(str::to_string),
+            },
+            LiveFeedCachePolicy::RecordJsonArray {
+                records_key,
+                record_id_key,
+                count_key,
+            } => LiveFeedProductDriver::RecordJson {
+                product,
+                records_key: records_key.to_string(),
+                record_id_key: Some(record_id_key.to_string()),
                 count_key: count_key.map(str::to_string),
             },
             LiveFeedCachePolicy::FullJson => LiveFeedProductDriver::FullJson { product },
@@ -1013,13 +1032,14 @@ impl LiveFeedProductDriver {
         }
     }
 
-    fn record_json_delta_schema(&self) -> Option<(&str, Option<&str>)> {
+    fn record_json_delta_schema(&self) -> Option<(&str, Option<&str>, Option<&str>)> {
         match self {
             Self::RecordJson {
                 records_key,
+                record_id_key,
                 count_key,
                 ..
-            } => Some((records_key, count_key.as_deref())),
+            } => Some((records_key, record_id_key.as_deref(), count_key.as_deref())),
             Self::NavKv { .. }
             | Self::FullJson { .. }
             | Self::NexradPackage { .. }
@@ -1320,6 +1340,7 @@ impl LiveFeedProductDriver {
             Self::RecordJson {
                 product,
                 records_key,
+                record_id_key,
                 count_key,
             } => {
                 if installed.product != *product
@@ -1348,6 +1369,7 @@ impl LiveFeedProductDriver {
                 .map_err(|error| cache_error(error.to_string()))?;
                 let next = apply_record_json_delta(
                     records_key,
+                    record_id_key.as_deref(),
                     count_key.as_deref(),
                     &from_state,
                     &delta,
@@ -1673,8 +1695,9 @@ fn read_nav_kv_members_from_zip(product: &str, bytes: &[u8]) -> AppResult<NavKvA
     Ok((members.manifest, members.root, members.pages))
 }
 
-fn apply_record_json_delta(
+pub(crate) fn apply_record_json_delta(
     records_key: &str,
+    record_id_key: Option<&str>,
     count_key: Option<&str>,
     from_state: &Value,
     delta: &LiveFeedRecordDelta,
@@ -1701,7 +1724,51 @@ fn apply_record_json_delta(
             result_object.insert(key.clone(), value.clone());
         }
     }
-    let record_count = {
+    let record_count = if let Some(record_id_key) = record_id_key {
+        let records = result
+            .get_mut(records_key)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| cache_error(format!("state missing {records_key} array")))?;
+        let mut records_by_id = BTreeMap::new();
+        for record in std::mem::take(records) {
+            let record_id = record
+                .get(record_id_key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    cache_error(format!(
+                        "{records_key} record missing string {record_id_key}"
+                    ))
+                })?
+                .to_string();
+            if records_by_id.insert(record_id.clone(), record).is_some() {
+                return Err(cache_error(format!(
+                    "duplicate {records_key} record id {record_id}"
+                )));
+            }
+        }
+        for record_id in &delta.removed {
+            records_by_id.remove(record_id);
+        }
+        for (record_id, record) in &delta.changed {
+            let embedded_id = record
+                .get(record_id_key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    cache_error(format!(
+                        "changed {records_key} record missing string {record_id_key}"
+                    ))
+                })?;
+            if embedded_id != record_id {
+                return Err(cache_error(format!(
+                    "changed {records_key} record key {record_id} disagrees with embedded id {embedded_id}"
+                )));
+            }
+            records_by_id.insert(record_id.clone(), record.clone());
+        }
+        let record_count = records_by_id.len();
+        *records = records_by_id.into_values().collect();
+        record_count
+    } else {
         let records = result
             .get_mut(records_key)
             .and_then(Value::as_object_mut)
@@ -2269,19 +2336,35 @@ mod tests {
             registry.record_json_delta_schema("metars"),
             Some((
                 "metars_by_station".to_string(),
+                None,
                 Some("metar_count".to_string())
             ))
         );
         assert_eq!(
             registry.record_json_delta_schema("tafs"),
-            Some(("tafs_by_station".to_string(), Some("taf_count".to_string())))
+            Some((
+                "tafs_by_station".to_string(),
+                None,
+                Some("taf_count".to_string())
+            ))
         );
         assert_eq!(
             registry.record_json_delta_schema("pireps"),
-            Some(("pireps_by_id".to_string(), Some("pirep_count".to_string())))
+            Some((
+                "pireps_by_id".to_string(),
+                None,
+                Some("pirep_count".to_string())
+            ))
         );
         assert_eq!(registry.record_json_delta_schema("notams"), None);
-        assert_eq!(registry.record_json_delta_schema("tfrs"), None);
+        assert_eq!(
+            registry.record_json_delta_schema("tfrs"),
+            Some((
+                "areas".to_string(),
+                Some("area_id".to_string()),
+                Some("area_group_count".to_string())
+            ))
+        );
         assert!(matches!(
             registry.driver("winds-aloft"),
             Some(LiveFeedProductDriver::NavKv { .. })
@@ -2576,6 +2659,99 @@ mod tests {
             .unwrap();
         assert_eq!(installed.version, "v2");
         assert_eq!(installed.state_sha256, v2_sha);
+    }
+
+    #[test]
+    fn tfr_keyed_array_cache_installs_full_then_delta() {
+        let registry = live_feed_product_registry();
+        let v1 = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "v1",
+            "notam_count": 2,
+            "area_group_count": 2,
+            "areas": [
+                {"area_id": "6/7042:a", "notam_id": "6/7042", "summary_text": "old"},
+                {"area_id": "6/7043:b", "notam_id": "6/7043", "summary_text": "remove"}
+            ]
+        });
+        let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("tfrs", "v1", &v1, None);
+        let mut cache = live_feed_cache();
+        cache
+            .ingest_current(&current_manifest("tfrs", "v1", &v1_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("tfrs", "v1", &v1_manifest)
+            .unwrap();
+        let request = cache.missing_requests().remove(0);
+        cache
+            .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(v1_bytes))
+            .unwrap();
+
+        let v2 = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "v2",
+            "notam_count": 2,
+            "area_group_count": 2,
+            "areas": [
+                {"area_id": "6/7042:a", "notam_id": "6/7042", "summary_text": "new"},
+                {"area_id": "6/7044:c", "notam_id": "6/7044", "summary_text": "add"}
+            ]
+        });
+        let v2_sha = canonical_json_sha256(&v2).unwrap();
+        let delta = serde_json::json!({
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "product": "tfrs",
+            "from_version": "v1",
+            "to_version": "v2",
+            "top_level_changed": {},
+            "top_level_removed": [],
+            "changed": {
+                "6/7042:a": {"area_id": "6/7042:a", "notam_id": "6/7042", "summary_text": "new"},
+                "6/7044:c": {"area_id": "6/7044:c", "notam_id": "6/7044", "summary_text": "add"}
+            },
+            "removed": ["6/7043:b"]
+        });
+        let delta_bytes = xz_json_bytes(&delta);
+        let delta_ref = LiveFeedDeltaRef {
+            kind: Some("record_json_delta_xz".to_string()),
+            from_version: "v1".to_string(),
+            from_state_sha256: v1_sha,
+            to_version: "v2".to_string(),
+            to_state_sha256: v2_sha.clone(),
+            url: "deltas/tfrs/v1__v2.json.xz".to_string(),
+            bytes: delta_bytes.len() as u64,
+            blob_sha256: sha256_hex(&delta_bytes),
+            mutation_count: None,
+        };
+        let (v2_manifest, _, _) = json_version_manifest("tfrs", "v2", &v2, Some(delta_ref.clone()));
+        let v2_manifest =
+            version_manifest_with_state_bytes(&v2_manifest, delta_bytes.len() as u64 + 1024);
+        cache
+            .ingest_current(&current_manifest("tfrs", "v2", &v2_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("tfrs", "v2", &v2_manifest)
+            .unwrap();
+        let request = cache.missing_requests().remove(0);
+        assert!(matches!(
+            request.kind,
+            LiveFeedCacheRequestKind::Delta { .. }
+        ));
+        let installed = cache
+            .install_fetched_payload(
+                &registry,
+                &request,
+                LiveFeedFetchedPayload::Bytes(delta_bytes),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(installed.version, "v2");
+        assert_eq!(installed.state_sha256, v2_sha);
+        let LiveFeedInstalledPayload::Json { bytes } = installed.payload else {
+            panic!("expected TFR JSON payload");
+        };
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), v2);
     }
 
     #[test]

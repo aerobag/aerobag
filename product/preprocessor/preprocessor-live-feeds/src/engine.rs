@@ -264,6 +264,11 @@ pub enum DeltaPolicy {
         records_key: String,
         count_key: Option<String>,
     },
+    KeyedArrayRecords {
+        records_key: String,
+        record_id_key: String,
+        count_key: Option<String>,
+    },
     NavKv {
         pairs: Vec<NavKvPair>,
     },
@@ -1259,6 +1264,67 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             previous_version = Some(previous.current.clone());
             delta_path = Some(path);
         }
+        if let (
+            Some(previous),
+            DeltaPolicy::KeyedArrayRecords {
+                records_key,
+                record_id_key,
+                ..
+            },
+        ) = (previous_entry.as_ref(), &delta_policy)
+        {
+            let previous_state_path = self.root.join(&previous.state_url);
+            let previous_state = read_json_value(&previous_state_path)?;
+            let previous_sha256 = canonical_json_sha256(&previous_state)?;
+            if previous_sha256 != previous.state_sha256 {
+                bail!(
+                    "previous {product} state hash mismatch for {}: expected {}, got {}",
+                    previous.current,
+                    previous.state_sha256,
+                    previous_sha256
+                );
+            }
+            let previous_is_keyed = previous_state
+                .get(records_key)
+                .and_then(Value::as_array)
+                .is_some_and(|records| {
+                    records
+                        .iter()
+                        .all(|record| record.get(record_id_key).and_then(Value::as_str).is_some())
+                });
+            if previous_is_keyed {
+                let delta = build_keyed_array_record_delta(
+                    &product,
+                    records_key,
+                    record_id_key,
+                    &previous_state,
+                    &state_value,
+                )?;
+                changed_count = delta.changed.len();
+                removed_count = delta.removed.len();
+                let product_delta_dir = self.root.join("deltas").join(&product);
+                fs::create_dir_all(&product_delta_dir)
+                    .with_context(|| format!("failed to create {}", product_delta_dir.display()))?;
+                let path =
+                    product_delta_dir.join(format!("{}__{}.json.xz", previous.current, version));
+                write_xz_json_pretty_file(&path, &delta)?;
+                let bytes = fs::read(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                delta_ref = Some(LiveDeltaRef {
+                    kind: Some("record_json_delta_xz".to_string()),
+                    from_version: previous.current.clone(),
+                    from_state_sha256: previous.state_sha256.clone(),
+                    to_version: version.clone(),
+                    to_state_sha256: state_sha256.clone(),
+                    url: live_feeds_relative_url(&self.root, &path)?,
+                    bytes: bytes.len() as u64,
+                    blob_sha256: sha256_hex(&bytes),
+                    mutation_count: None,
+                });
+                previous_version = Some(previous.current.clone());
+                delta_path = Some(path);
+            }
+        }
         if let (Some(previous), DeltaPolicy::NavKv { pairs }) =
             (previous_entry.as_ref(), &delta_policy)
         {
@@ -2063,6 +2129,62 @@ pub fn build_record_delta(
     })
 }
 
+pub fn build_keyed_array_record_delta(
+    product: &str,
+    records_key: &str,
+    record_id_key: &str,
+    from_state: &Value,
+    to_state: &Value,
+) -> anyhow::Result<LiveFeedRecordDelta> {
+    let from_version = state_version_label(from_state)?;
+    let to_version = state_version_label(to_state)?;
+    let from_object = state_object(from_state)?;
+    let to_object = state_object(to_state)?;
+    let from_records = state_keyed_array_record_map(from_state, records_key, record_id_key)?;
+    let to_records = state_keyed_array_record_map(to_state, records_key, record_id_key)?;
+
+    let mut top_level_changed = BTreeMap::new();
+    for (key, to_value) in to_object {
+        if key == "version_label" || key == records_key {
+            continue;
+        }
+        if from_object.get(key) != Some(to_value) {
+            top_level_changed.insert(key.clone(), to_value.clone());
+        }
+    }
+    let mut top_level_removed = from_object
+        .keys()
+        .filter(|key| key.as_str() != "version_label" && key.as_str() != records_key)
+        .filter(|key| !to_object.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    top_level_removed.sort();
+
+    let mut changed = BTreeMap::new();
+    for (record_id, to_record) in &to_records {
+        if from_records.get(record_id) != Some(to_record) {
+            changed.insert((*record_id).to_string(), (*to_record).clone());
+        }
+    }
+    let mut removed = from_records
+        .keys()
+        .filter(|record_id| !to_records.contains_key(*record_id))
+        .map(|record_id| (*record_id).to_string())
+        .collect::<Vec<_>>();
+    removed.sort();
+
+    Ok(LiveFeedRecordDelta {
+        schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+        product: product.to_string(),
+        from_version: from_version.to_string(),
+        to_version: to_version.to_string(),
+        top_level_changed,
+        top_level_removed,
+        changed,
+        removed,
+    })
+}
+
 pub fn apply_record_delta(
     records_key: &str,
     count_key: Option<&str>,
@@ -2105,6 +2227,82 @@ pub fn apply_record_delta(
     *result
         .get_mut("version_label")
         .context("state missing version_label")? = Value::String(delta.to_version.clone());
+    if let Some(count_key) = count_key {
+        if let Some(count) = result.get_mut(count_key) {
+            *count = serde_json::json!(record_count);
+        }
+    }
+    Ok(result)
+}
+
+pub fn apply_keyed_array_record_delta(
+    records_key: &str,
+    record_id_key: &str,
+    count_key: Option<&str>,
+    from_state: &Value,
+    delta: &LiveFeedRecordDelta,
+) -> anyhow::Result<Value> {
+    let from_version = state_version_label(from_state)?;
+    if from_version != delta.from_version {
+        bail!(
+            "delta starts at {}, but local state is {}",
+            delta.from_version,
+            from_version
+        );
+    }
+    let mut result = from_state.clone();
+    {
+        let result_object = result
+            .as_object_mut()
+            .context("live feed state must be a JSON object")?;
+        for key in &delta.top_level_removed {
+            result_object.remove(key);
+        }
+        for (key, value) in &delta.top_level_changed {
+            result_object.insert(key.clone(), value.clone());
+        }
+    }
+    let record_count = {
+        let records = result
+            .get_mut(records_key)
+            .and_then(Value::as_array_mut)
+            .with_context(|| format!("state missing {records_key} array"))?;
+        let mut records_by_id = BTreeMap::new();
+        for record in std::mem::take(records) {
+            let record_id = record
+                .get(record_id_key)
+                .and_then(Value::as_str)
+                .with_context(|| format!("{records_key} record missing string {record_id_key}"))?
+                .to_string();
+            if records_by_id.insert(record_id.clone(), record).is_some() {
+                bail!("duplicate {records_key} record id {record_id}");
+            }
+        }
+        for record_id in &delta.removed {
+            records_by_id.remove(record_id);
+        }
+        for (record_id, record) in &delta.changed {
+            let embedded_id = record
+                .get(record_id_key)
+                .and_then(Value::as_str)
+                .with_context(|| {
+                    format!("changed {records_key} record missing string {record_id_key}")
+                })?;
+            if embedded_id != record_id {
+                bail!(
+                    "changed {records_key} record key {record_id} disagrees with embedded id {embedded_id}"
+                );
+            }
+            records_by_id.insert(record_id.clone(), record.clone());
+        }
+        let record_count = records_by_id.len();
+        *records = records_by_id.into_values().collect();
+        record_count
+    };
+    let version = result
+        .get_mut("version_label")
+        .context("live feed state missing version_label")?;
+    *version = Value::String(delta.to_version.clone());
     if let Some(count_key) = count_key {
         if let Some(count) = result.get_mut(count_key) {
             *count = serde_json::json!(record_count);
@@ -3080,6 +3278,28 @@ fn state_record_map<'a>(
         .with_context(|| format!("state missing {records_key} object"))
 }
 
+fn state_keyed_array_record_map<'a>(
+    state: &'a Value,
+    records_key: &str,
+    record_id_key: &str,
+) -> anyhow::Result<BTreeMap<&'a str, &'a Value>> {
+    let records = state
+        .get(records_key)
+        .and_then(Value::as_array)
+        .with_context(|| format!("state missing {records_key} array"))?;
+    let mut records_by_id = BTreeMap::new();
+    for record in records {
+        let record_id = record
+            .get(record_id_key)
+            .and_then(Value::as_str)
+            .with_context(|| format!("{records_key} record missing string {record_id_key}"))?;
+        if records_by_id.insert(record_id, record).is_some() {
+            bail!("duplicate {records_key} record id {record_id}");
+        }
+    }
+    Ok(records_by_id)
+}
+
 fn canonical_json_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -3520,6 +3740,90 @@ mod tests {
         assert_eq!(
             apply_record_delta("records", Some("record_count"), &from, &delta)?,
             to
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn keyed_array_publisher_migrates_legacy_checkpoint_before_emitting_delta() -> anyhow::Result<()>
+    {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root,
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 8, 20, 5, 0, 0).unwrap()),
+        );
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "v1",
+            "area_group_count": 1,
+            "areas": [{"notam_id": "6/7042"}]
+        });
+        let keyed = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "v2",
+            "area_group_count": 1,
+            "areas": [{"area_id": "6/7042:area", "notam_id": "6/7042"}]
+        });
+        let changed = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "v3",
+            "area_group_count": 2,
+            "areas": [
+                {"area_id": "6/7042:area", "notam_id": "6/7042"},
+                {"area_id": "6/7043:area", "notam_id": "6/7043"}
+            ]
+        });
+
+        let publish = |version: &str, value: Value, delta_policy: DeltaPolicy| {
+            let path = temp.path().join(format!("tfrs-{version}.json"));
+            write_json_pretty_file(&path, &value)?;
+            publisher.publish(BuiltLiveFeedState {
+                product: "tfrs".to_string(),
+                version: version.to_string(),
+                payload: LiveFeedStatePayload::JsonFile { path, value },
+                state_sha256: None,
+                state_payload_kind: None,
+                status_timestamps: Default::default(),
+                delta_policy,
+                precomputed_delta: None,
+                changed_count_if_no_delta: 1,
+            })
+        };
+
+        publish("v1", legacy, DeltaPolicy::None)?;
+        let migration = publish(
+            "v2",
+            keyed.clone(),
+            DeltaPolicy::KeyedArrayRecords {
+                records_key: "areas".to_string(),
+                record_id_key: "area_id".to_string(),
+                count_key: Some("area_group_count".to_string()),
+            },
+        )?;
+        assert!(migration.delta_path.is_none());
+
+        let update = publish(
+            "v3",
+            changed.clone(),
+            DeltaPolicy::KeyedArrayRecords {
+                records_key: "areas".to_string(),
+                record_id_key: "area_id".to_string(),
+                count_key: Some("area_group_count".to_string()),
+            },
+        )?;
+        let delta_path = update.delta_path.expect("keyed TFR delta");
+        let delta: LiveFeedRecordDelta = serde_json::from_value(read_json_value(&delta_path)?)?;
+        assert_eq!(delta.changed.len(), 1);
+        assert_eq!(
+            apply_keyed_array_record_delta(
+                "areas",
+                "area_id",
+                Some("area_group_count"),
+                &keyed,
+                &delta,
+            )?,
+            changed
         );
         Ok(())
     }

@@ -29,6 +29,11 @@ pub enum LiveFeedCachePolicy {
         records_key: &'static str,
         count_key: Option<&'static str>,
     },
+    RecordJsonArray {
+        records_key: &'static str,
+        record_id_key: &'static str,
+        count_key: Option<&'static str>,
+    },
     FullJson,
     NavKv,
     NexradPackage,
@@ -120,9 +125,13 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 5 * 60,
         },
         retention_seconds: THREE_HOURS,
-        cache: LiveFeedCachePolicy::FullJson,
+        cache: LiveFeedCachePolicy::RecordJsonArray {
+            records_key: "areas",
+            record_id_key: "area_id",
+            count_key: Some("area_group_count"),
+        },
         preparation: LiveFeedPreparationPolicy::Tfrs,
-        delta: LiveFeedDeltaPolicy::None,
+        delta: LiveFeedDeltaPolicy::RecordJson,
         ui_invalidation: LiveFeedUiInvalidationPolicy::MapOverlay,
         user_freshness: Some(LiveFeedAgePolicy {
             info_after_ms: Some(HOUR_MS),
@@ -331,6 +340,7 @@ mod tests {
                     assert!(matches!(
                         policy.cache,
                         LiveFeedCachePolicy::RecordJson { .. }
+                            | LiveFeedCachePolicy::RecordJsonArray { .. }
                     ));
                     assert!(policy.preparation.is_prepared());
                 }

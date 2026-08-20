@@ -15,9 +15,9 @@ use serde_json::Value;
 
 use crate::{
     engine::{
-        read_json_value, read_nav_kv_pairs_from_dir, write_json_pretty_file, BuiltLiveFeedState,
-        CompiledFixtureEvent, CompiledFixtureTimeline, DeltaPolicy, LiveFeedRecordDelta,
-        ProductBuilder, UpstreamEvent, UpstreamSource,
+        read_json_value, read_nav_kv_pairs_from_dir, sha256_hex, write_json_pretty_file,
+        BuiltLiveFeedState, CompiledFixtureEvent, CompiledFixtureTimeline, DeltaPolicy,
+        LiveFeedRecordDelta, ProductBuilder, UpstreamEvent, UpstreamSource,
     },
     products::{
         directory_live_feed_state, json_live_feed_state, live_nexrad_tile_count,
@@ -458,7 +458,11 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
                 json_count(&state_value, "taf_count", "tafs_by_station"),
             ),
             "tfrs" => (
-                DeltaPolicy::None,
+                DeltaPolicy::KeyedArrayRecords {
+                    records_key: "areas".to_string(),
+                    record_id_key: "area_id".to_string(),
+                    count_key: Some("area_group_count".to_string()),
+                },
                 state_value
                     .get("areas")
                     .and_then(serde_json::Value::as_array)
@@ -632,36 +636,81 @@ fn normalize_simulated_state_schema(
     );
     object.insert("generated_at_utc".to_string(), Value::String(timestamp));
 
-    let area_count = object
-        .get("areas")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    object
-        .entry("area_group_count".to_string())
-        .or_insert_with(|| serde_json::json!(area_count));
-
     let mut notam_ids = BTreeSet::new();
-    if let Some(areas) = object.get_mut("areas").and_then(Value::as_array_mut) {
-        for area in areas {
-            let Some(area_object) = area.as_object_mut() else {
-                continue;
-            };
-            if let Some(notam_id) = area_object.get("notam_id").and_then(Value::as_str) {
-                notam_ids.insert(notam_id.to_string());
-            }
-            if !area_object.contains_key("summary_text") {
-                let summary = area_object
-                    .remove("avare_text")
-                    .unwrap_or_else(|| Value::String(String::new()));
-                area_object.insert("summary_text".to_string(), summary);
-            } else {
-                area_object.remove("avare_text");
+    let mut areas_by_id = BTreeMap::new();
+    match object
+        .remove("areas")
+        .unwrap_or_else(|| Value::Array(Vec::new()))
+    {
+        Value::Array(areas) => {
+            for mut area in areas {
+                normalize_simulated_tfr_area(&mut area, &mut notam_ids);
+                let base_area_id = simulated_tfr_area_id(&area);
+                let mut area_id = base_area_id.clone();
+                let mut duplicate_index = 2;
+                while areas_by_id.contains_key(&area_id) {
+                    area_id = format!("{base_area_id}:{duplicate_index}");
+                    duplicate_index += 1;
+                }
+                if let Some(area_object) = area.as_object_mut() {
+                    area_object.insert("area_id".to_string(), Value::String(area_id.clone()));
+                }
+                areas_by_id.insert(area_id, area);
             }
         }
+        Value::Object(areas) => {
+            for (area_id, mut area) in areas {
+                normalize_simulated_tfr_area(&mut area, &mut notam_ids);
+                if let Some(area_object) = area.as_object_mut() {
+                    area_object
+                        .entry("area_id".to_string())
+                        .or_insert_with(|| Value::String(area_id.clone()));
+                }
+                areas_by_id.insert(area_id, area);
+            }
+        }
+        _ => {}
     }
+    let area_count = areas_by_id.len();
+    object.insert(
+        "areas".to_string(),
+        Value::Array(areas_by_id.into_values().collect()),
+    );
+    object.insert(
+        "area_group_count".to_string(),
+        serde_json::json!(area_count),
+    );
     object
         .entry("notam_count".to_string())
         .or_insert_with(|| serde_json::json!(notam_ids.len()));
+}
+
+fn normalize_simulated_tfr_area(area: &mut Value, notam_ids: &mut BTreeSet<String>) {
+    let Some(area_object) = area.as_object_mut() else {
+        return;
+    };
+    if let Some(notam_id) = area_object.get("notam_id").and_then(Value::as_str) {
+        notam_ids.insert(notam_id.to_string());
+    }
+    if !area_object.contains_key("summary_text") {
+        let summary = area_object
+            .remove("avare_text")
+            .unwrap_or_else(|| Value::String(String::new()));
+        area_object.insert("summary_text".to_string(), summary);
+    } else {
+        area_object.remove("avare_text");
+    }
+}
+
+fn simulated_tfr_area_id(area: &Value) -> String {
+    let notam_id = area
+        .get("notam_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let identity = serde_json::json!([notam_id, area.get("polygon")]);
+    let identity_bytes = serde_json::to_vec(&identity).unwrap_or_default();
+    let digest = sha256_hex(&identity_bytes);
+    format!("{notam_id}:{}", &digest[..16])
 }
 
 fn write_simulated_json_state(
@@ -1399,11 +1448,12 @@ mod tests {
         assert_eq!(value["generated_at_utc"], "2026-05-18T20:12:00Z");
         assert_eq!(value["notam_count"], 1);
         assert_eq!(value["area_group_count"], 1);
-        assert_eq!(
-            value["areas"][0]["summary_text"],
-            "TFR:: legacy summary text"
-        );
-        assert!(value["areas"][0].get("avare_text").is_none());
+        let area = &value["areas"][0];
+        assert!(area["area_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(area["summary_text"], "TFR:: legacy summary text");
+        assert!(area.get("avare_text").is_none());
         assert_eq!(read_json_value(&path)?, value);
         Ok(())
     }

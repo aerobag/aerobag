@@ -528,6 +528,7 @@ pub struct StructuredTfrDataset {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StructuredTfrArea {
+    area_id: String,
     notam_id: String,
     area_index: usize,
     schedule_fragments: Vec<StructuredTfrScheduleFragment>,
@@ -942,25 +943,31 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
     let (entries, parsed_areas) = load_parsed_tfr_areas(&request.input_dir)?;
-    let structured_areas = parsed_areas
-        .iter()
-        .cloned()
-        .map(|area| {
-            let notam = request.notams_by_fdc_id.get(&area.notam_id).cloned();
-            let (lower_limit, upper_limit) =
-                enriched_tfr_limits(&area, notam.as_ref().and_then(tfr_notam_altitude_text));
-            StructuredTfrArea {
-                notam_id: area.notam_id,
-                area_index: area.area_index,
-                schedule_fragments: area.schedule_fragments,
-                upper_limit,
-                lower_limit,
-                polygon: area.polygon.clone(),
-                summary_text: area.summary_text,
-                notam,
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut structured_areas_by_id = BTreeMap::new();
+    for area in parsed_areas.iter().cloned() {
+        let area_id = structured_tfr_area_id(&area)?;
+        let notam = request.notams_by_fdc_id.get(&area.notam_id).cloned();
+        let (lower_limit, upper_limit) =
+            enriched_tfr_limits(&area, notam.as_ref().and_then(tfr_notam_altitude_text));
+        let structured_area = StructuredTfrArea {
+            area_id: area_id.clone(),
+            notam_id: area.notam_id,
+            area_index: area.area_index,
+            schedule_fragments: area.schedule_fragments,
+            upper_limit,
+            lower_limit,
+            polygon: area.polygon,
+            summary_text: area.summary_text,
+            notam,
+        };
+        if structured_areas_by_id
+            .insert(area_id.clone(), structured_area)
+            .is_some()
+        {
+            bail!("duplicate stable TFR area identity {area_id}");
+        }
+    }
+    let structured_areas = structured_areas_by_id.into_values().collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("tfrs.json");
     let manifest_path = request
         .output_dir
@@ -972,7 +979,7 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
     write_json_pretty(
         &structured_json_path,
         &StructuredTfrDataset {
-            schema_version: 1,
+            schema_version: 2,
             version_label: request.version_label.clone(),
             notam_count: entries.len(),
             area_group_count: structured_areas.len(),
@@ -1008,6 +1015,51 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
         notam_count: entries.len(),
         area_group_count: parsed_areas.len(),
     })
+}
+
+fn structured_tfr_area_id(area: &ParsedTfrArea) -> anyhow::Result<String> {
+    let polygon_identity = canonical_tfr_polygon_identity(&area.polygon)?;
+    let mut hasher = Sha256::new();
+    hasher.update(area.notam_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(&polygon_identity);
+    let digest = format!("{:x}", hasher.finalize());
+    Ok(format!("{}:{}", area.notam_id, &digest[..16]))
+}
+
+fn canonical_tfr_polygon_identity(polygon: &[StructuredTfrPoint]) -> anyhow::Result<Vec<u8>> {
+    let mut points = polygon
+        .iter()
+        .map(|point| [point.lat, point.lon])
+        .collect::<Vec<_>>();
+    if points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    if points.is_empty() {
+        bail!("cannot identify an empty TFR polygon");
+    }
+
+    let mut canonical: Option<Vec<u8>> = None;
+    for reversed in [false, true] {
+        let ordered = if reversed {
+            points.iter().rev().copied().collect::<Vec<_>>()
+        } else {
+            points.clone()
+        };
+        for offset in 0..ordered.len() {
+            let rotated = ordered[offset..]
+                .iter()
+                .chain(&ordered[..offset])
+                .copied()
+                .collect::<Vec<_>>();
+            let encoded = serde_json::to_vec(&rotated)
+                .context("failed to encode canonical TFR polygon identity")?;
+            if canonical.as_ref().is_none_or(|current| encoded < *current) {
+                canonical = Some(encoded);
+            }
+        }
+    }
+    canonical.context("TFR polygon identity has no canonical rotation")
 }
 
 pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildMetarResult> {
@@ -4044,6 +4096,29 @@ mod tests {
     }
 
     #[test]
+    fn tfr_polygon_identity_ignores_ring_start_and_orientation() -> anyhow::Result<()> {
+        let point = |lat, lon| StructuredTfrPoint { lat, lon };
+        let forward = vec![
+            point(47.0, -122.0),
+            point(47.1, -122.0),
+            point(47.0, -121.9),
+            point(47.0, -122.0),
+        ];
+        let rotated = vec![
+            point(47.1, -122.0),
+            point(47.0, -121.9),
+            point(47.0, -122.0),
+            point(47.1, -122.0),
+        ];
+        let reversed = forward.iter().rev().cloned().collect::<Vec<_>>();
+
+        let expected = canonical_tfr_polygon_identity(&forward)?;
+        assert_eq!(canonical_tfr_polygon_identity(&rotated)?, expected);
+        assert_eq!(canonical_tfr_polygon_identity(&reversed)?, expected);
+        Ok(())
+    }
+
+    #[test]
     fn tfr_dataset_prefers_wfs_geojson_when_present() -> anyhow::Result<()> {
         let temp = TempDir::new().context("failed to create temp dir")?;
         let input_dir = temp.path().join("input");
@@ -4094,6 +4169,9 @@ mod tests {
         assert_eq!(1, dataset["notam_count"]);
         assert_eq!(1, dataset["area_group_count"]);
         let area = &dataset["areas"][0];
+        assert!(area["area_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
         assert_eq!("6/7042", area["notam_id"]);
         assert_eq!(1.0, area["polygon"][1]["lon"]);
         assert_eq!(1.0, area["polygon"][2]["lat"]);
@@ -4213,6 +4291,9 @@ mod tests {
 
         let dataset: Value = serde_json::from_slice(&fs::read(&result.structured_json_path)?)?;
         let area = &dataset["areas"][0];
+        assert!(area["area_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
         assert_eq!("SFC", area["lower_limit"]["value_text"]);
         assert_eq!("8500", area["upper_limit"]["value_text"]);
         assert_eq!("FT", area["upper_limit"]["unit"]);

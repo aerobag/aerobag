@@ -23,8 +23,9 @@ use crate::winds_aloft::{build_atmosphere_dataset, BuildAtmosphereDatasetRequest
 use crate::{
     build_metar_dataset, build_pirep_dataset, build_taf_dataset, build_tfr_dataset,
     engine::{
-        read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
-        LiveFeedStatePayload, LiveFeedStatusTimestamps, ProductBuilder, UpstreamEvent,
+        canonical_json_sha256, read_json_value, sha256_hex, write_json_pretty_file,
+        BuiltLiveFeedState, DeltaPolicy, LiveFeedStatePayload, LiveFeedStatusTimestamps,
+        ProductBuilder, UpstreamEvent,
     },
     load_tfr_notam_ids, metar_content_fingerprint,
     notam_store::{NotamPersistentStore, NotamStateReader},
@@ -118,6 +119,30 @@ pub fn keyed_record_json_live_feed_state(
         state_value,
         DeltaPolicy::KeyedRecords {
             records_key: records_key.to_string(),
+            count_key: count_key.map(str::to_string),
+        },
+        changed_count_if_no_delta,
+    )
+}
+
+pub fn keyed_array_json_live_feed_state(
+    product: &str,
+    version: String,
+    state_source_path: PathBuf,
+    state_value: Value,
+    records_key: &str,
+    record_id_key: &str,
+    count_key: Option<&str>,
+    changed_count_if_no_delta: usize,
+) -> BuiltLiveFeedState {
+    json_live_feed_state(
+        product,
+        version,
+        state_source_path,
+        state_value,
+        DeltaPolicy::KeyedArrayRecords {
+            records_key: records_key.to_string(),
+            record_id_key: record_id_key.to_string(),
             count_key: count_key.map(str::to_string),
         },
         changed_count_if_no_delta,
@@ -689,28 +714,44 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             &input_dir.join("notam-enrichment-by-fdc-id.json"),
             &notams_by_fdc_id,
         )?;
-        let fingerprint = hash_tree(&input_dir)?;
-        let version = content_version_label(&fingerprint);
+        let source_fingerprint = hash_tree(&input_dir)?;
+        let provisional_version = content_version_label(&source_fingerprint);
         let result = build_tfr_dataset(&BuildTfrRequest {
             input_dir,
             output_dir,
-            version_label: version.clone(),
+            version_label: provisional_version,
             generated_at_utc,
             notams_by_fdc_id,
         })?;
-        let state_value = read_json_value(&result.structured_json_path)?;
+        let mut state_value = read_json_value(&result.structured_json_path)?;
+        let semantic_version = tfr_semantic_version(&state_value)?;
+        state_value["version_label"] = Value::String(semantic_version.clone());
+        write_json_pretty_file(&result.structured_json_path, &state_value)?;
         Ok(with_collected_at(
-            json_live_feed_state(
+            keyed_array_json_live_feed_state(
                 "tfrs",
-                version,
+                semantic_version,
                 result.structured_json_path,
                 state_value,
-                DeltaPolicy::None,
+                "areas",
+                "area_id",
+                Some("area_group_count"),
                 result.area_group_count,
             ),
             generated_at_utc,
         ))
     }
+}
+
+fn tfr_semantic_version(state_value: &Value) -> anyhow::Result<String> {
+    let mut semantic_state = state_value.clone();
+    semantic_state
+        .as_object_mut()
+        .context("TFR state must be a JSON object")?
+        .remove("version_label");
+    Ok(content_version_label(&canonical_json_sha256(
+        &semantic_state,
+    )?))
 }
 
 impl TfrLiveFeedBuilder {
@@ -1313,6 +1354,35 @@ mod tests {
             },
             "bodyText": xml
         })
+    }
+
+    #[test]
+    fn tfr_semantic_version_ignores_source_version_but_tracks_area_content() -> anyhow::Result<()> {
+        let first = serde_json::json!({
+            "schema_version": 2,
+            "version_label": "source-a",
+            "notam_count": 1,
+            "area_group_count": 1,
+            "areas": [{
+                "area_id": "6/7042:area",
+                "notam_id": "6/7042",
+                "polygon": [{ "lat": 47.0, "lon": -122.0 }]
+            }]
+        });
+        let mut same_content = first.clone();
+        same_content["version_label"] = Value::String("source-b".to_string());
+        let mut changed_content = same_content.clone();
+        changed_content["areas"][0]["polygon"][0]["lat"] = serde_json::json!(47.1);
+
+        assert_eq!(
+            tfr_semantic_version(&first)?,
+            tfr_semantic_version(&same_content)?
+        );
+        assert_ne!(
+            tfr_semantic_version(&first)?,
+            tfr_semantic_version(&changed_content)?
+        );
+        Ok(())
     }
 
     #[test]

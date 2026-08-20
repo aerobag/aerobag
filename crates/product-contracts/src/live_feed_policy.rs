@@ -93,6 +93,9 @@ pub struct LiveFeedProductPolicy {
     pub status_order: u8,
     pub producer: LiveFeedProducerPolicy,
     pub retention_seconds: u64,
+    /// Prior versions advertised to clients in `current.json` and SSE events.
+    /// Server-side publication retention is independent of this client window.
+    pub client_history_entries: usize,
     pub cache: LiveFeedCachePolicy,
     pub preparation: LiveFeedPreparationPolicy,
     pub delta: LiveFeedDeltaPolicy,
@@ -109,6 +112,7 @@ impl LiveFeedProductPolicy {
 
 const THREE_HOURS: u64 = 3 * 60 * 60;
 const SEVEN_DAYS: u64 = 7 * 24 * 60 * 60;
+pub const NEXRAD_CLIENT_HISTORY_ENTRIES: usize = 6;
 
 /// The authoritative roster and policy for every public live-feed product.
 ///
@@ -125,6 +129,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 5 * 60,
         },
         retention_seconds: THREE_HOURS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::RecordJsonArray {
             records_key: "areas",
             record_id_key: "area_id",
@@ -151,6 +156,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 3 * 60,
         },
         retention_seconds: THREE_HOURS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::Notam,
         preparation: LiveFeedPreparationPolicy::Notams,
         delta: LiveFeedDeltaPolicy::Notam,
@@ -173,6 +179,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 5 * 60,
         },
         retention_seconds: THREE_HOURS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::RecordJson {
             records_key: "metars_by_station",
             count_key: Some("metar_count"),
@@ -198,6 +205,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 5 * 60,
         },
         retention_seconds: THREE_HOURS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::RecordJson {
             records_key: "pireps_by_id",
             count_key: Some("pirep_count"),
@@ -223,6 +231,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 5 * 60,
         },
         retention_seconds: THREE_HOURS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::RecordJson {
             records_key: "tafs_by_station",
             count_key: Some("taf_count"),
@@ -248,6 +257,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 5 * 60,
         },
         retention_seconds: 34 * 60,
+        client_history_entries: NEXRAD_CLIENT_HISTORY_ENTRIES,
         cache: LiveFeedCachePolicy::NexradPackage,
         preparation: LiveFeedPreparationPolicy::None,
         delta: LiveFeedDeltaPolicy::None,
@@ -270,6 +280,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 6 * 60 * 60,
         },
         retention_seconds: SEVEN_DAYS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::NavKv,
         preparation: LiveFeedPreparationPolicy::None,
         delta: LiveFeedDeltaPolicy::NavKv,
@@ -292,6 +303,7 @@ pub const LIVE_FEED_PRODUCT_POLICIES: &[LiveFeedProductPolicy] = &[
             nominal_interval_seconds: 60 * 60,
         },
         retention_seconds: SEVEN_DAYS,
+        client_history_entries: 0,
         cache: LiveFeedCachePolicy::NavKv,
         preparation: LiveFeedPreparationPolicy::None,
         delta: LiveFeedDeltaPolicy::None,
@@ -335,6 +347,9 @@ mod tests {
                 policy.operator_health.warning_after_seconds
                     < policy.operator_health.critical_after_seconds
             );
+            if policy.client_history_entries > 0 {
+                assert_eq!(policy.cache, LiveFeedCachePolicy::NexradPackage);
+            }
             match policy.delta {
                 LiveFeedDeltaPolicy::RecordJson => {
                     assert!(matches!(

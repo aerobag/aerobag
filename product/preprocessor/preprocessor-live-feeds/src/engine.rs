@@ -44,7 +44,6 @@ use crate::notam_store::{
 };
 
 pub use product_contracts::LIVE_FEEDS_SCHEMA_VERSION;
-pub const LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES: usize = 12;
 pub const LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT: usize = 5;
 const LIVE_FEED_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 const NOTAM_MAX_RETAINED_MUTATIONS: u64 = 100;
@@ -2757,7 +2756,16 @@ pub fn write_live_feeds_current_manifest(
     current: &LiveFeedsCurrentManifest,
 ) -> anyhow::Result<PathBuf> {
     let path = root.join("current.json");
-    write_json_pretty_file(&path, current)?;
+    let mut current = current.clone();
+    for (product, entry) in &mut current.products {
+        let history_limit = live_feed_product_policy(product)
+            .map(|policy| policy.client_history_entries)
+            .unwrap_or(0);
+        if entry.history.len() > history_limit {
+            entry.history.drain(0..entry.history.len() - history_limit);
+        }
+    }
+    write_json_pretty_file(&path, &current)?;
     Ok(path)
 }
 
@@ -2768,6 +2776,12 @@ fn live_feed_current_history_entries(
     policy: &LiveFeedRetentionPolicy,
     now: DateTime<Utc>,
 ) -> anyhow::Result<Vec<LiveFeedCurrentHistoryEntry>> {
+    let history_limit = live_feed_product_policy(product)
+        .map(|policy| policy.client_history_entries)
+        .unwrap_or(0);
+    if history_limit == 0 {
+        return Ok(Vec::new());
+    }
     let product_versions_root = live_root.join("versions").join(product);
     if !product_versions_root.is_dir() {
         return Ok(Vec::new());
@@ -2836,8 +2850,8 @@ fn live_feed_current_history_entries(
         .map(|(version, (modified, _, entry))| (modified, version, entry))
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    if entries.len() > LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES {
-        entries.drain(0..entries.len() - LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES);
+    if entries.len() > history_limit {
+        entries.drain(0..entries.len() - history_limit);
     }
     Ok(entries.into_iter().map(|(_, _, entry)| entry).collect())
 }
@@ -4428,7 +4442,7 @@ mod tests {
     }
 
     #[test]
-    fn current_manifest_and_invalidation_history_are_bounded() -> anyhow::Result<()> {
+    fn only_client_consumed_history_is_advertised_and_bounded() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let root = temp.path().join("live-feeds");
         let publisher = FileLiveFeedPublisher::new(root.clone(), FixedClock::new(Utc::now()));
@@ -4440,7 +4454,7 @@ mod tests {
             let records = [("KSEA", index)];
             let (_, event) = publisher.publish_and_invalidation(json_state(
                 temp.path(),
-                "metars",
+                "nexrad",
                 &file_stem,
                 &version,
                 "records",
@@ -4450,11 +4464,14 @@ mod tests {
         }
 
         let current = read_live_feeds_current(&root)?.expect("current");
-        let history = &current.products["metars"].history;
-        assert_eq!(history.len(), LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES);
+        let history = &current.products["nexrad"].history;
+        assert_eq!(
+            history.len(),
+            product_contracts::NEXRAD_CLIENT_HISTORY_ENTRIES
+        );
         assert_eq!(
             history.first().map(|entry| entry.version.as_str()),
-            Some("v01")
+            Some("v07")
         );
         assert_eq!(
             history.last().map(|entry| entry.version.as_str()),
@@ -4468,14 +4485,6 @@ mod tests {
                 .join(entry.state_url.as_deref().expect("history state url"))
                 .is_file());
         }
-        Ok(())
-    }
-
-    #[test]
-    fn current_manifest_history_deduplicates_semantic_versions() -> anyhow::Result<()> {
-        let temp = tempdir()?;
-        let root = temp.path().join("live-feeds");
-        let publisher = FileLiveFeedPublisher::new(root.clone(), FixedClock::new(Utc::now()));
 
         publisher.publish(json_state(
             temp.path(),
@@ -4485,10 +4494,6 @@ mod tests {
             "records",
             &[("KSEA", 1)],
         )?)?;
-        fs::copy(
-            root.join("versions/metars/v1.json"),
-            root.join("versions/metars/v1.checkpoint.json"),
-        )?;
         publisher.publish(json_state(
             temp.path(),
             "metars",
@@ -4497,9 +4502,40 @@ mod tests {
             "records",
             &[("KSEA", 2)],
         )?)?;
+        let current = read_live_feeds_current(&root)?.expect("current");
+        assert!(current.products["metars"].history.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn client_history_deduplicates_semantic_versions() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(root.clone(), FixedClock::new(Utc::now()));
+
+        publisher.publish(json_state(
+            temp.path(),
+            "nexrad",
+            "nexrad-v1",
+            "v1",
+            "records",
+            &[("KSEA", 1)],
+        )?)?;
+        fs::copy(
+            root.join("versions/nexrad/v1.json"),
+            root.join("versions/nexrad/v1.checkpoint.json"),
+        )?;
+        publisher.publish(json_state(
+            temp.path(),
+            "nexrad",
+            "nexrad-v2",
+            "v2",
+            "records",
+            &[("KSEA", 2)],
+        )?)?;
 
         let current = read_live_feeds_current(&root)?.expect("current");
-        let history = &current.products["metars"].history;
+        let history = &current.products["nexrad"].history;
         assert_eq!(
             history.iter().filter(|entry| entry.version == "v1").count(),
             1,

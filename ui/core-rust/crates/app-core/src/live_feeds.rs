@@ -28,7 +28,7 @@ const CURRENT_ADDRESS: &str = "/live-feeds/v3/current.json";
 const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v3/";
 const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
 pub const LIVE_FEED_HISTORY_MAX_ENTRIES: usize = 12;
-pub const NEXRAD_FRAME_WINDOW_SIZE: usize = 7;
+pub const NEXRAD_FRAME_WINDOW_SIZE: usize = product_contracts::NEXRAD_CLIENT_HISTORY_ENTRIES + 1;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LiveFeedsState {

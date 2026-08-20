@@ -137,6 +137,15 @@ class AerobagCloudProductionTests(unittest.TestCase):
         self.assertIn("proxy_buffering off;", nginx)
         self.assertIn("client_max_body_size 2097152;", nginx)
 
+    def test_nginx_compresses_json_control_manifests_without_recompressing_payloads(self) -> None:
+        nginx = deploy_prod.nginx_config(self.config)
+        self.assertIn("gzip on;", nginx)
+        self.assertIn("gzip_proxied any;", nginx)
+        self.assertIn("gzip_types application/json;", nginx)
+        self.assertIn("gzip_vary on;", nginx)
+        self.assertNotIn("application/zip", nginx)
+        self.assertNotIn("image/png", nginx)
+
     def test_cloud_service_uses_external_policy_secret_and_persistent_data(self) -> None:
         unit = deploy_prod.cloud_server_unit(self.config)
         self.assertIn("User=aerobag-cloud", unit)

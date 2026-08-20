@@ -1111,6 +1111,15 @@ def nginx_config(config: dict[str, Any]) -> str:
 
     client_max_body_size 256k;
 
+    # Live-feed control manifests are ordinary JSON. Payloads already compressed
+    # as XZ, ZIP, or PNG use other content types and are not recompressed.
+    gzip on;
+    gzip_comp_level 6;
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_types application/json;
+    gzip_vary on;
+
     location = /__debug_log {{
         proxy_pass http://{CLIENT_DEBUG_LISTEN};
         proxy_http_version 1.1;

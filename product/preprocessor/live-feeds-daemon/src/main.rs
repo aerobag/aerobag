@@ -2137,10 +2137,18 @@ fn write_sse_frame(writer: &mut impl Write, frame: &[LiveFeedSseEvent]) -> anyho
 fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow::Result<()> {
     writeln!(writer, "id: {}", event.id).context("failed to write SSE id")?;
     writeln!(writer, "event: live-feed-current").context("failed to write SSE event")?;
+    let mut payload = event.payload.clone();
+    let history_limit = live_feed_product_policy(&payload.product)
+        .map(|policy| policy.client_history_entries)
+        .unwrap_or(0);
+    if payload.history.len() > history_limit {
+        let remove_count = payload.history.len() - history_limit;
+        payload.history.drain(0..remove_count);
+    }
     writeln!(
         writer,
         "data: {}\n",
-        serde_json::to_string(&event.payload).context("failed to encode SSE payload")?
+        serde_json::to_string(&payload).context("failed to encode SSE payload")?
     )
     .context("failed to write SSE data")
 }
@@ -2427,13 +2435,33 @@ fn serve_live_feed_file(
     relative: &str,
 ) -> anyhow::Result<()> {
     let relative_path = safe_relative_path(relative)?;
-    let file_path = root.join(relative_path);
+    let file_path = root.join(&relative_path);
     if !file_path.is_file() {
         return write_status(stream, 404, "not found");
     }
     let bytes =
         fs::read(&file_path).with_context(|| format!("failed to read {}", file_path.display()))?;
-    write_response(stream, method, content_type(&file_path), "no-cache", &bytes)
+    write_response(
+        stream,
+        method,
+        content_type(&file_path),
+        live_feed_file_cache_control(&relative_path),
+        &bytes,
+    )
+}
+
+fn live_feed_file_cache_control(relative_path: &Path) -> &'static str {
+    match relative_path.components().next() {
+        Some(Component::Normal(component))
+            if matches!(
+                component.to_str(),
+                Some("versions" | "states" | "deltas" | "packages")
+            ) =>
+        {
+            "public, max-age=31536000, immutable"
+        }
+        _ => "no-cache",
+    }
 }
 
 fn write_response(
@@ -3087,8 +3115,7 @@ mod tests {
             .iter()
             .find(|event| event.id == "metars:m2")
             .expect("metars event");
-        assert_eq!(metars.payload.history.len(), 1);
-        assert_eq!(metars.payload.history[0].version, "m1");
+        assert!(metars.payload.history.is_empty());
         Ok(())
     }
 
@@ -3120,8 +3147,40 @@ mod tests {
         assert!(text.contains("event: live-feed-current\n"));
         assert!(text.contains("\"schema_version\":3"), "{text}");
         assert!(text.contains("\"product\":\"metars\""));
-        assert!(text.contains("\"history\":[{"), "{text}");
-        assert!(text.contains("\"version\":\"m0\""), "{text}");
+        assert!(!text.contains("\"history\""), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn sse_frame_keeps_only_the_nexrad_history_window() -> anyhow::Result<()> {
+        let history = (0..9)
+            .map(|index| LiveFeedCurrentHistoryEntry {
+                version: format!("n{index}"),
+                version_manifest_url: format!("versions/nexrad/n{index}.json"),
+                state_url: Some(format!("states/nexrad/n{index}.json")),
+                state_sha256: Some(format!("{index}").repeat(64).chars().take(64).collect()),
+            })
+            .collect();
+        let frame = vec![LiveFeedSseEvent {
+            id: "nexrad:n9".to_string(),
+            payload: LiveFeedCurrentEvent {
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+                product: "nexrad".to_string(),
+                version: "n9".to_string(),
+                version_manifest_url: "versions/nexrad/n9.json".to_string(),
+                state_url: "states/nexrad/n9.json".to_string(),
+                state_sha256: "9".repeat(64),
+                published_at_utc: None,
+                collected_at_utc: None,
+                history,
+            },
+        }];
+        let mut bytes = Vec::new();
+        write_sse_frame(&mut bytes, &frame)?;
+        let text = String::from_utf8(bytes)?;
+        assert!(!text.contains("\"version\":\"n2\""), "{text}");
+        assert!(text.contains("\"version\":\"n3\""), "{text}");
+        assert!(text.contains("\"version\":\"n8\""), "{text}");
         Ok(())
     }
 
@@ -3263,18 +3322,8 @@ mod tests {
         let temp = tempdir()?;
         for index in 1..=10 {
             publish_json_version(temp.path(), "metars", &format!("v{index:03}"))?;
+            publish_json_version(temp.path(), "nexrad", &format!("n{index:03}"))?;
         }
-        publish_json_version(temp.path(), "nexrad", "v001")?;
-        let current_path = temp.path().join("current.json");
-        let mut current: LiveFeedsCurrentManifest =
-            serde_json::from_slice(&fs::read(&current_path)?)?;
-        current
-            .products
-            .get_mut("metars")
-            .expect("metars current")
-            .history
-            .retain(|entry| entry.version == "v007");
-        write_live_feeds_current_manifest(temp.path(), &current)?;
 
         prune_simulation_publication(temp.path(), 3)?;
 
@@ -3296,10 +3345,14 @@ mod tests {
                 "{version} state should be retained"
             );
         }
-        assert!(temp.path().join("versions/metars/v007.json").is_file());
-        assert!(temp.path().join("states/metars/v007.json.xz").is_file());
+        assert!(!temp.path().join("versions/metars/v007.json").exists());
+        assert!(!temp.path().join("states/metars/v007.json.xz").exists());
         assert!(!temp.path().join("versions/metars/v006.json").exists());
         assert!(!temp.path().join("states/metars/v006.json.xz").exists());
+        assert!(temp.path().join("versions/nexrad/n004.json").is_file());
+        assert!(temp.path().join("states/nexrad/n004.json.xz").is_file());
+        assert!(!temp.path().join("versions/nexrad/n003.json").exists());
+        assert!(!temp.path().join("states/nexrad/n003.json.xz").exists());
         assert!(!temp
             .path()
             .join("deltas/metars/v001__v002.json.xz")
@@ -3308,10 +3361,10 @@ mod tests {
             .path()
             .join("deltas/metars/v009__v010.json.xz")
             .is_file());
-        assert!(temp.path().join("versions/nexrad/v001.json").is_file());
         let current: LiveFeedsCurrentManifest =
             serde_json::from_slice(&fs::read(temp.path().join("current.json"))?)?;
         assert_eq!(current.products["metars"].current, "v010");
+        assert_eq!(current.products["nexrad"].current, "n010");
         Ok(())
     }
 
@@ -3337,9 +3390,28 @@ mod tests {
             "{response}"
         );
         assert!(
+            response.contains("Cache-Control: public, max-age=31536000, immutable"),
+            "{response}"
+        );
+        assert!(
             response.ends_with("{\"version_label\":\"m1\"}"),
             "{response}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mutable_live_feed_pointer_is_not_cached() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        publish_json_version(&live_feeds_contract_root(temp.path()), "metars", "m1")?;
+
+        let response = request_once(
+            temp.path(),
+            "GET /live-feeds/v3/current.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )?;
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.contains("Cache-Control: no-cache"), "{response}");
+        assert!(!response.contains("immutable"), "{response}");
         Ok(())
     }
 

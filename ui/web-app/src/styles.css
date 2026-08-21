@@ -3792,16 +3792,27 @@ button {
   gap: var(--thumb-gap);
 }
 
+.settingsSliderStops.isBinary {
+  display: grid;
+  width: 40%;
+  margin-inline: auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .settingsSliderStops button {
   min-width: var(--thumb);
-  min-height: calc(var(--thumb) * 0.58);
+  min-height: calc(var(--thumb) * 0.62);
   border: 1px solid var(--theme-panel-border);
   border-radius: calc(var(--thumb-radius) * 0.65);
   background: var(--theme-button-unchecked);
   color: var(--theme-button-fg);
   font: inherit;
-  font-size: calc(var(--thumb) * 0.18);
+  font-size: calc(var(--thumb) * 0.22);
   font-weight: 900;
+}
+
+.settingsSliderStops.isBinary button {
+  min-width: 0;
 }
 
 .settingsSliderStops button.isActive {

@@ -376,6 +376,8 @@ pub struct UiSettingsPageRow {
     pub kind: String,
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub indent_level: u8,
     pub value_id: String,
     pub stops: Vec<UiSettingsSliderStop>,
     #[serde(default)]

@@ -12946,10 +12946,13 @@ function SettingsPageRowView(props: {
   onSettingsAction: (actionId: string, valueId: string) => void;
 }) {
   const { row } = props;
+  const rowStyle = row.indent_level > 0
+    ? ({ marginInlineStart: `calc(var(--thumb) * ${0.35 * row.indent_level})` } as CSSProperties)
+    : undefined;
   if (row.kind === "toggle") {
     const enabled = row.value_id === "on";
     return (
-      <label className="settingsPageRow settingsToggleRow">
+      <label className="settingsPageRow settingsToggleRow" style={rowStyle}>
         <span>{row.title}</span>
         <input
           type="checkbox"
@@ -12961,7 +12964,7 @@ function SettingsPageRowView(props: {
     );
   }
   return (
-    <section className="settingsPageRow">
+    <section className="settingsPageRow" style={rowStyle}>
       <h2>{row.title}</h2>
       {row.kind === "grid_choices" ? (
         <div className="settingsFlightDataGrid">
@@ -12979,7 +12982,7 @@ function SettingsPageRowView(props: {
         </div>
       ) : null}
       {row.kind === "slider" && row.stops.length > 0 ? (
-        <div className="settingsSliderStops">
+        <div className={`settingsSliderStops${row.stops.length === 2 ? " isBinary" : ""}`}>
           {row.stops.map((stop) => (
             <button
               key={stop.id}

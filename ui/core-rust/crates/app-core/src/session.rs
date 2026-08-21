@@ -10448,49 +10448,46 @@ fn nexrad_tile_bytes_loaded(session: &UiSession, src: &str) -> AppResult<bool> {
 
 fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<CoreResourceRequest> {
     let resource_id = nexrad_tile_resource_id(src)?;
-    match session
+    let acquisition_policy = session
         .coordinator
         .platform_capabilities
         .live_feeds
         .as_ref()
         .map(|capability| capability.acquisition_policy)
-    {
-        Some(LiveFeedAcquisitionPolicy::JitPublicResources) => {
-            Ok(CoreResourceRequest::public_url(resource_id, src, false))
-        }
-        Some(LiveFeedAcquisitionPolicy::DurableCompleteStates) => {
-            if session.settings.nexrad_acquisition_preferences().coverage
-                == NexradCoverageMode::ViewportOnly
-            {
-                return Ok(CoreResourceRequest::public_url(resource_id, src, false));
-            }
-            let (version, member_path) = nexrad_installed_member(src).ok_or_else(|| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("NEXRAD tile URL {src} does not identify a package member"),
-            })?;
-            let installed = session
-                .weather
-                .runtime()
-                .nexrad_installed
-                .get(&version)
-                .ok_or_else(|| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("NEXRAD frame {version} is not installed"),
-                })?;
-            Ok(CoreResourceRequest::live_feed_package_member(
-                resource_id,
-                "nexrad",
-                version,
-                installed.package_blob_sha256.clone(),
-                member_path,
-                false,
-            ))
-        }
-        None => Err(AppError {
+        .ok_or_else(|| AppError {
             kind: AppErrorKind::Internal,
             message: "platform did not declare a live-feed acquisition policy".to_string(),
-        }),
+        })?;
+    let installed_member = nexrad_installed_member(src);
+    if let Some((version, member_path)) = installed_member.as_ref() {
+        if let Some(installed) = session.weather.runtime().nexrad_installed.get(version) {
+            return Ok(CoreResourceRequest::live_feed_package_member(
+                resource_id,
+                "nexrad",
+                version.clone(),
+                installed.package_blob_sha256.clone(),
+                member_path.clone(),
+                false,
+            ));
+        }
     }
+    if acquisition_policy == LiveFeedAcquisitionPolicy::JitPublicResources
+        || session.settings.nexrad_acquisition_preferences().coverage
+            == NexradCoverageMode::ViewportOnly
+    {
+        return Ok(session
+            .weather
+            .live_feeds()
+            .public_live_feed_resource(resource_id, src, false));
+    }
+    let (version, _) = installed_member.ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("NEXRAD tile URL {src} does not identify a package member"),
+    })?;
+    Err(AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("NEXRAD frame {version} is not installed"),
+    })
 }
 
 pub fn nexrad_acquisition_directive_in_session(
@@ -21647,7 +21644,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_nexrad_package_drives_overlay_and_tile_lookup() {
+    fn installed_nexrad_package_drives_overlay_and_tile_lookup_after_switch_to_viewport() {
         let manifest = serde_json::json!({
             "state_id": "nexrad-installed-v1",
             "observed_at_utc": "2026-05-21T12:00:00Z",
@@ -21724,6 +21721,15 @@ mod tests {
             query.stats.observed_at_utc,
             Some(utc("2026-05-21T12:00:00Z"))
         );
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_coverage".to_string(),
+                value_id: "viewport_only".to_string(),
+            },
+            1_234,
+        )
+        .expect("switch to viewport-only NEXRAD");
         let outcome =
             prepare_nexrad_tile_in_session(init.handle, &query.tiles[0].src).expect("prepare tile");
         let HadOperationOutcome::NeedResources { resources } = outcome else {
@@ -22345,6 +22351,8 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
+        configure_live_feed_source_in_session(init.handle, "https://feeds.example.test")
+            .expect("configure live-feed source");
         let src = "/live-feeds/v3/states/nexrad/state-v1/tiles/res3/0/0.png";
 
         let outcome = prepare_nexrad_tile_in_session(init.handle, src).expect("prepare tile");
@@ -22360,7 +22368,7 @@ mod tests {
         assert_eq!(
             resources[0].source,
             CoreResourceSource::PublicUrl {
-                url: src.to_string()
+                url: format!("https://feeds.example.test{src}")
             }
         );
 
@@ -22372,6 +22380,40 @@ mod tests {
         assert!(matches!(outcome, HadOperationOutcome::Complete { .. }));
         let bytes = nexrad_tile_bytes_in_session(init.handle, src).expect("tile bytes");
         assert_eq!(bytes, b"png-bytes");
+    }
+
+    #[test]
+    fn android_viewport_nexrad_tile_uses_absolute_live_feed_url() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
+        configure_live_feed_source_in_session(init.handle, "https://feeds.example.test")
+            .expect("configure live-feed source");
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_coverage".to_string(),
+                value_id: "viewport_only".to_string(),
+            },
+            1_234,
+        )
+        .expect("select viewport-only NEXRAD");
+        let src = "/live-feeds/v3/states/nexrad/state-v1/tiles/res0/10/2.png";
+
+        let outcome = prepare_nexrad_tile_in_session(init.handle, src).expect("prepare tile");
+        let HadOperationOutcome::NeedResources { resources } = outcome else {
+            panic!("expected missing viewport NEXRAD tile to fault a resource");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(
+            resources[0].source,
+            CoreResourceSource::PublicUrl {
+                url: format!("https://feeds.example.test{src}")
+            }
+        );
     }
 
     #[test]

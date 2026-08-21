@@ -53,9 +53,9 @@ import org.aerobag.app.domain.UiSettingsPageState
 
 private val SettingsPageTitleTextSize = 16.sp
 private val SettingsPageRowTitleTextSize = 13.sp
-private val SettingsPageStopTextSize = 9.sp
-private val SettingsSliderStopLabelSlotWidth = 48.dp
-private val SettingsSliderStopLabelsHeight = 12.dp
+private val SettingsPageStopTextSize = 12.sp
+private val SettingsSliderStopLabelSlotWidth = 112.dp
+private val SettingsSliderStopLabelsHeight = 18.dp
 
 @Composable
 internal fun SettingsPage(
@@ -149,10 +149,16 @@ private fun SettingsPageRowView(
     row: UiSettingsPageRow,
     onSettingsAction: (String, String) -> Unit,
 ) {
-    when (row.kind) {
-        "grid_choices" -> SettingsGridChoicesRow(row, onSettingsAction)
-        "slider" -> SettingsSliderRow(row, onSettingsAction)
-        "toggle" -> SettingsToggleRow(row, onSettingsAction)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = ThumbSize * (0.35f * row.indentLevel.toFloat())),
+    ) {
+        when (row.kind) {
+            "grid_choices" -> SettingsGridChoicesRow(row, onSettingsAction)
+            "slider" -> SettingsSliderRow(row, onSettingsAction)
+            "toggle" -> SettingsToggleRow(row, onSettingsAction)
+        }
     }
 }
 
@@ -325,27 +331,41 @@ private fun SettingsSliderRow(
     }
     val maxIndex = (row.stops.size - 1).coerceAtLeast(0)
     SettingsPageRowSurface(title = row.title) {
-        Slider(
-            value = sliderIndex.coerceIn(0f, maxIndex.toFloat()),
-            onValueChange = { value ->
-                sliderIndex = value.roundToInt().coerceIn(0, maxIndex).toFloat()
-            },
-            onValueChangeFinished = {
-                val nextStop = row.stops.getOrNull(sliderIndex.roundToInt())
-                if (nextStop != null && nextStop.id != row.valueId) {
-                    onSettingsAction(row.actionId, nextStop.id)
-                }
-            },
-            valueRange = 0f..maxIndex.toFloat(),
-            steps = (row.stops.size - 2).coerceAtLeast(0),
-        )
-        SettingsSliderStopLabels(row)
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = if (row.stops.size == 2) {
+                    Modifier.fillMaxWidth(0.4f)
+                } else {
+                    Modifier.fillMaxWidth()
+                },
+                verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.14f),
+            ) {
+                Slider(
+                    value = sliderIndex.coerceIn(0f, maxIndex.toFloat()),
+                    onValueChange = { value ->
+                        sliderIndex = value.roundToInt().coerceIn(0, maxIndex).toFloat()
+                    },
+                    onValueChangeFinished = {
+                        val nextStop = row.stops.getOrNull(sliderIndex.roundToInt())
+                        if (nextStop != null && nextStop.id != row.valueId) {
+                            onSettingsAction(row.actionId, nextStop.id)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    valueRange = 0f..maxIndex.toFloat(),
+                    steps = (row.stops.size - 2).coerceAtLeast(0),
+                )
+                SettingsSliderStopLabels(row)
+            }
+        }
     }
 }
 
 @Composable
 private fun SettingsSliderStopLabels(row: UiSettingsPageRow) {
-    val uiTheme = LocalAerobagUiTheme.current
     val maxIndex = (row.stops.size - 1).coerceAtLeast(1)
     BoxWithConstraints(
         modifier = Modifier
@@ -369,7 +389,7 @@ private fun SettingsSliderStopLabels(row: UiSettingsPageRow) {
                 color = if (stop.id == row.valueId) {
                     Color(0xFF101820)
                 } else {
-                    uiTheme.controls.buttonFg.copy(alpha = 0.70f)
+                    Color(0xFF101820).copy(alpha = 0.72f)
                 },
                 textAlign = TextAlign.Center,
                 maxLines = 1,

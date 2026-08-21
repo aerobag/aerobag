@@ -312,6 +312,7 @@ import org.aerobag.app.domain.worldToLatLon
 import org.aerobag.app.domain.zoomAroundPoint
 import org.aerobag.app.domain.zoomImageAroundPoint
 import org.aerobag.app.generated.NexradOverlayScreenPoint
+import org.aerobag.app.generated.NexradOverlayCacheResource
 import org.aerobag.app.generated.NexradOverlayTile
 import org.aerobag.app.generated.UiStatusPlatformEffect
 import kotlinx.serialization.json.Json
@@ -475,6 +476,22 @@ private fun terrainBitmapCacheStats(
 
 private fun nexradFrameStats(frame: NexradOverlayFrame?): Pair<Int, Long> {
     return (frame?.decodedImageCount ?: 0) to (frame?.decodedBytes ?: 0L)
+}
+
+internal suspend fun prefetchNexradCacheResourcesBestEffort(
+    resources: List<NexradOverlayCacheResource>,
+    fetch: suspend (NexradOverlayCacheResource) -> Unit,
+    reportFailure: (NexradOverlayCacheResource, Throwable) -> Unit,
+) {
+    resources.distinctBy { it.src }.forEach { resource ->
+        try {
+            fetch(resource)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            reportFailure(resource, error)
+        }
+    }
 }
 
 private const val TerrainWarningStatusId = "terrain:warning_unavailable"
@@ -2182,10 +2199,9 @@ internal fun MapExplorerPage(
                     }
                 }
                 withContext(Dispatchers.IO) {
-                    overlay.cachePlan
-                        ?.fetchResources
-                        ?.distinctBy { it.src }
-                        ?.forEach { planned ->
+                    prefetchNexradCacheResourcesBestEffort(
+                        resources = overlay.cachePlan?.fetchResources.orEmpty(),
+                        fetch = { planned ->
                             sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
                                 val fetchStartMs = SystemClock.elapsedRealtime()
                                 fetchNexradCoreResource(
@@ -2196,7 +2212,15 @@ internal fun MapExplorerPage(
                                     fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                                 }
                             }
-                        }
+                        },
+                        reportFailure = { planned, error ->
+                            Log.w(
+                                "AerobagLayers",
+                                "NEXRAD background prefetch failed for ${planned.src}; continuing selected frame",
+                                error,
+                            )
+                        },
+                    )
                 }
                 if (overlay.tiles.isEmpty()) {
                     scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)

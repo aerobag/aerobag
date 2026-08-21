@@ -731,6 +731,7 @@ fn project_settings_page_state(
         kind: "grid_choices".to_string(),
         id: FLIGHT_DATA_VISIBILITY_ROW_ID.to_string(),
         title: "Flight data grid".to_string(),
+        indent_level: 0,
         value_id: String::new(),
         stops: Vec::new(),
         items: flight_data_banner
@@ -748,6 +749,7 @@ fn project_settings_page_state(
             kind: "slider".to_string(),
             id: DISPLAY_DIM_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Display dims after...".to_string(),
+            indent_level: 0,
             value_id: preferences.display_dim_timeout.id().to_string(),
             stops: DisplayDimTimeout::all_stops()
                 .into_iter()
@@ -763,6 +765,7 @@ fn project_settings_page_state(
             kind: "slider".to_string(),
             id: INACTIVITY_SLEEP_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Screen and GPS sleep after...".to_string(),
+            indent_level: 0,
             value_id: preferences.inactivity_sleep_timeout.id().to_string(),
             stops: InactivitySleepTimeout::all_stops()
                 .into_iter()
@@ -790,6 +793,7 @@ fn project_settings_page_state(
                     kind: "toggle".to_string(),
                     id: format!("debug_{id}"),
                     title: title.to_string(),
+                    indent_level: 0,
                     value_id: if debug_flag_enabled(debug_state, flag_id) {
                         SETTINGS_TOGGLE_ON
                     } else {
@@ -828,14 +832,15 @@ fn append_nexrad_settings_rows(
         NEXRAD_COVERAGE_ACTION_ID,
         [
             (
-                NexradCoverageMode::FullOffline.id(),
-                "Full offline".to_string(),
-            ),
-            (
                 NexradCoverageMode::ViewportOnly.id(),
                 "Visible area only".to_string(),
             ),
+            (
+                NexradCoverageMode::FullOffline.id(),
+                "Full offline".to_string(),
+            ),
         ],
+        0,
     ));
     if nexrad.coverage == NexradCoverageMode::ViewportOnly {
         return;
@@ -847,12 +852,13 @@ fn append_nexrad_settings_rows(
         nexrad.offline_profile.id(),
         NEXRAD_OFFLINE_PROFILE_ACTION_ID,
         [
-            (NexradOfflineProfile::Offline0.id(), "Full".to_string()),
             (
                 NexradOfflineProfile::OfflineLow1.id(),
                 "Reduced".to_string(),
             ),
+            (NexradOfflineProfile::Offline0.id(), "Full".to_string()),
         ],
+        1,
     ));
     let bytes_per_update = profile_bytes.get(nexrad.offline_profile.id()).copied();
     rows.push(nexrad_cadence_row(
@@ -899,11 +905,13 @@ fn settings_slider_row<const N: usize>(
     value_id: &str,
     action_id: &str,
     stops: [(&str, String); N],
+    indent_level: u8,
 ) -> UiSettingsPageRow {
     UiSettingsPageRow {
         kind: "slider".to_string(),
         id: id.to_string(),
         title: title.to_string(),
+        indent_level,
         value_id: value_id.to_string(),
         stops: stops
             .into_iter()
@@ -932,6 +940,7 @@ fn nexrad_cadence_row(
         kind: "slider".to_string(),
         id: id.to_string(),
         title,
+        indent_level: 1,
         value_id: value.id().to_string(),
         stops: cadences
             .iter()
@@ -1267,6 +1276,41 @@ mod tests {
         let projection = controller
             .project(true, Some(&bytes), &banner(), &debug_state())
             .projection;
+        let coverage = projection
+            .settings_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "nexrad_coverage")
+            .unwrap();
+        assert_eq!(coverage.indent_level, 0);
+        assert_eq!(
+            coverage
+                .stops
+                .iter()
+                .map(|stop| stop.id.as_str())
+                .collect::<Vec<_>>(),
+            ["viewport_only", "full_offline"]
+        );
+        let offline_detail = projection
+            .settings_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "nexrad_offline_profile")
+            .unwrap();
+        assert_eq!(
+            offline_detail
+                .stops
+                .iter()
+                .map(|stop| stop.id.as_str())
+                .collect::<Vec<_>>(),
+            ["offline_low1", "offline_0"]
+        );
+        assert!(projection
+            .settings_page_state
+            .rows
+            .iter()
+            .filter(|row| row.id.starts_with("nexrad_") && row.id != "nexrad_coverage")
+            .all(|row| row.indent_level == 1));
         let shown = projection
             .settings_page_state
             .rows

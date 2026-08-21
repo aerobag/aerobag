@@ -183,6 +183,7 @@ export type UiSettingsGridItem = {
 export type UiSettingsPageRow = {
   action_id: string;
   id: string;
+  indent_level: number;
   items: UiSettingsGridItem[];
   kind: string;
   stops: UiSettingsSliderStop[];

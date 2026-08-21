@@ -855,6 +855,13 @@
         "id": {
           "type": "string"
         },
+        "indent_level": {
+          "default": 0,
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
         "items": {
           "default": [],
           "items": {

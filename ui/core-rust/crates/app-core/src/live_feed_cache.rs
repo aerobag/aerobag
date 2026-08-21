@@ -2151,7 +2151,13 @@ fn cache_error(message: String) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NexradOfflineProfile;
+    use crate::{
+        weather_controller::{
+            nexrad_animation_for_frames, nexrad_frame_candidates, LiveNexradInstalledState,
+            WeatherController,
+        },
+        NexradOfflineProfile,
+    };
     use had_nav_kv::NavKvPair;
     use std::{
         collections::BTreeSet,
@@ -2553,6 +2559,173 @@ mod tests {
                 ..
             } if version == "v8" && profile == "offline_low1"
         ));
+    }
+
+    #[test]
+    fn decimated_nexrad_schedules_fetch_and_animate_only_sparse_frames() {
+        let versions = (0..=12)
+            .map(|index| format!("v{index:02}"))
+            .collect::<Vec<_>>();
+        let fixtures = versions
+            .iter()
+            .map(|version| (version.clone(), nexrad_version_manifest(version)))
+            .collect::<BTreeMap<_, _>>();
+
+        for (cadence, due_every, expected_retained) in [
+            (
+                NexradUpdateCadence::TenMinutes,
+                2,
+                vec!["v06", "v08", "v10", "v12"],
+            ),
+            (NexradUpdateCadence::ThirtyMinutes, 6, vec!["v06", "v12"]),
+        ] {
+            let registry = live_feed_product_registry();
+            let mut cache = live_feed_cache();
+            cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+                coverage: NexradCoverageMode::FullOffline,
+                cadence,
+                ..NexradAcquisitionDirective::default()
+            });
+            let mut downloaded_urls = Vec::new();
+            let mut downloaded_bytes = 0;
+
+            for (index, version) in versions.iter().enumerate() {
+                let history = versions[..index]
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let epoch_ms = index as i64 * 5 * 60_000;
+                cache
+                    .ingest_current(&nexrad_current_manifest(version, &history))
+                    .unwrap();
+
+                let version_requests = cache.missing_requests_at_epoch_ms(epoch_ms);
+                assert!(version_requests.iter().any(|request| matches!(
+                    &request.kind,
+                    LiveFeedCacheRequestKind::Version {
+                        product,
+                        version: request_version,
+                    } if product == "nexrad" && request_version == version
+                )));
+                for request in &version_requests {
+                    let LiveFeedCacheRequestKind::Version {
+                        product,
+                        version: request_version,
+                    } = &request.kind
+                    else {
+                        panic!("{cadence:?} requested imagery before metadata at {version}");
+                    };
+                    assert_eq!(product, "nexrad");
+                    cache
+                        .install_fetched_payload(
+                            &registry,
+                            request,
+                            LiveFeedFetchedPayload::Bytes(fixtures[request_version].0.clone()),
+                        )
+                        .unwrap();
+                }
+
+                let package_requests = cache.missing_requests_at_epoch_ms(epoch_ms);
+                if index % due_every == 0 {
+                    assert_eq!(package_requests.len(), 1, "{cadence:?} at {version}");
+                    let request = &package_requests[0];
+                    assert!(matches!(
+                        &request.kind,
+                        LiveFeedCacheRequestKind::Full {
+                            product,
+                            version: request_version,
+                            ..
+                        } if product == "nexrad" && request_version == version
+                    ));
+                    assert_eq!(
+                        request.url,
+                        format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/install/nexrad/{version}.zip")
+                    );
+                    let package = fixtures[version].1.clone();
+                    downloaded_urls.push(request.url.clone());
+                    downloaded_bytes += package.len();
+                    let installed = cache
+                        .install_fetched_payload(
+                            &registry,
+                            request,
+                            LiveFeedFetchedPayload::Bytes(package),
+                        )
+                        .unwrap()
+                        .expect("scheduled NEXRAD package should install");
+                    cache
+                        .acknowledge_install_candidate("nexrad", &installed.version)
+                        .unwrap();
+                } else {
+                    assert!(package_requests.is_empty(), "{cadence:?} at {version}");
+                }
+            }
+
+            let expected_downloaded_versions = versions
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| index % due_every == 0)
+                .map(|(_, version)| version)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                downloaded_urls,
+                expected_downloaded_versions
+                    .iter()
+                    .map(|version| format!(
+                        "{TEST_LIVE_FEED_ROOT}/live-feeds/v3/install/nexrad/{version}.zip"
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                downloaded_bytes,
+                expected_downloaded_versions
+                    .iter()
+                    .map(|version| fixtures[*version].1.len())
+                    .sum::<usize>()
+            );
+
+            let retained_versions = cache
+                .installed_states()
+                .filter(|installed| installed.product == "nexrad")
+                .map(|installed| installed.version.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(retained_versions, expected_retained);
+
+            let mut weather = WeatherController::default();
+            weather.replace_live_feeds(cache.live_feeds_state().clone());
+            for installed in cache
+                .installed_states()
+                .filter(|installed| installed.product == "nexrad")
+            {
+                let LiveFeedInstalledPayload::NexradPackage {
+                    manifest,
+                    package_blob_sha256,
+                    ..
+                } = &installed.payload
+                else {
+                    panic!("expected installed NEXRAD package");
+                };
+                weather.runtime_mut().nexrad_installed.insert(
+                    installed.version.clone(),
+                    LiveNexradInstalledState {
+                        version: installed.version.clone(),
+                        package_blob_sha256: package_blob_sha256.clone(),
+                        manifest: serde_json::from_slice(manifest).unwrap(),
+                    },
+                );
+            }
+            let frames = nexrad_frame_candidates(&weather);
+            assert_eq!(
+                frames
+                    .iter()
+                    .map(|frame| frame.version.as_str())
+                    .collect::<Vec<_>>(),
+                expected_retained
+            );
+            assert_eq!(
+                nexrad_animation_for_frames(&frames, 0).frame_count,
+                expected_retained.len()
+            );
+        }
     }
 
     #[test]

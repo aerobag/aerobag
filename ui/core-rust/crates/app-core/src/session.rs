@@ -16319,7 +16319,7 @@ mod tests {
             init.handle,
             UiSettingsAction {
                 action_id: "nexrad_coverage".to_string(),
-                value_id: "viewport_only".to_string(),
+                value_id: "full_offline".to_string(),
             },
             1_234,
         )
@@ -16332,7 +16332,7 @@ mod tests {
                 .find(|row| row.id == "nexrad_coverage")
                 .unwrap()
                 .value_id,
-            "viewport_only"
+            "full_offline"
         );
         let persisted = storage
             .read_settings()
@@ -16342,7 +16342,7 @@ mod tests {
         assert_eq!(
             persisted["cloud"]["records"]["cached"]["settings/nexrad_acquisition"]["value"]
                 ["coverage"],
-            "viewport_only"
+            "full_offline"
         );
 
         let restored =
@@ -16361,7 +16361,7 @@ mod tests {
                 .find(|row| row.id == "nexrad_coverage")
                 .unwrap()
                 .value_id,
-            "viewport_only"
+            "full_offline"
         );
     }
 
@@ -21673,6 +21673,24 @@ mod tests {
             init.handle,
             LiveFeedAcquisitionPolicy::DurableCompleteStates,
         );
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_coverage".to_string(),
+                value_id: "full_offline".to_string(),
+            },
+            1_234,
+        )
+        .expect("select full-offline NEXRAD");
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_offline_profile".to_string(),
+                value_id: "offline_0".to_string(),
+            },
+            1_234,
+        )
+        .expect("select full-detail NEXRAD");
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
         install_live_feed_installed_state_in_session(
@@ -21759,6 +21777,24 @@ mod tests {
             init.handle,
             LiveFeedAcquisitionPolicy::DurableCompleteStates,
         );
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_coverage".to_string(),
+                value_id: "full_offline".to_string(),
+            },
+            1_234,
+        )
+        .expect("select full-offline NEXRAD");
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_offline_profile".to_string(),
+                value_id: "offline_0".to_string(),
+            },
+            1_234,
+        )
+        .expect("select full-detail NEXRAD");
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
         for (version, observed_at_utc) in [

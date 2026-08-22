@@ -2762,6 +2762,11 @@ mod tests {
     fn nexrad_cadence_fetches_metadata_but_defers_the_next_package() {
         let registry = live_feed_product_registry();
         let mut cache = live_feed_cache();
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::FullOffline,
+            offline_profile: NexradOfflineProfile::Offline0,
+            ..NexradAcquisitionDirective::default()
+        });
         cache
             .ingest_current(&nexrad_current_manifest("v1", &[]))
             .unwrap();
@@ -2787,8 +2792,9 @@ mod tests {
             .acknowledge_install_candidate("nexrad", &installed.version)
             .unwrap();
         cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::FullOffline,
+            offline_profile: NexradOfflineProfile::Offline0,
             cadence: NexradUpdateCadence::ThirtyMinutes,
-            ..NexradAcquisitionDirective::default()
         });
 
         cache
@@ -3246,6 +3252,11 @@ mod tests {
     fn durable_nexrad_retains_the_complete_animation_window() {
         let registry = live_feed_product_registry();
         let mut cache = live_feed_cache();
+        cache.apply_nexrad_acquisition_directive(NexradAcquisitionDirective {
+            coverage: NexradCoverageMode::FullOffline,
+            offline_profile: NexradOfflineProfile::Offline0,
+            ..NexradAcquisitionDirective::default()
+        });
         let published_versions = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"];
         let retained_versions = ["v3", "v4", "v5", "v6", "v7", "v8", "v9"];
         cache

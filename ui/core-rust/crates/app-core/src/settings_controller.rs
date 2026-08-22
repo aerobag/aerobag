@@ -42,6 +42,8 @@ const NEXRAD_COVERAGE_HELP: &str = "Visible loads on demand, uses less data. Ful
 const NEXRAD_OFFLINE_DETAIL_HELP: &str = "Reduce detail to use less data.";
 const NEXRAD_SHOWN_CADENCE_HELP: &str = "Load fewer frames to use less data.";
 const NEXRAD_HIDDEN_CADENCE_HELP: &str = "Eagerly fetch fewer frames to use less data.";
+const NEXRAD_ASLEEP_CADENCE_HELP: &str =
+    "Save data by not fetching nexrad if app is entirely asleep";
 const NEXRAD_UPDATES_PER_HOUR: f64 = 12.0;
 
 pub trait SettingsStorage: Send + Sync {
@@ -197,8 +199,8 @@ impl InactivitySleepTimeout {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NexradCoverageMode {
-    #[default]
     FullOffline,
+    #[default]
     ViewportOnly,
 }
 
@@ -222,9 +224,9 @@ impl NexradCoverageMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NexradOfflineProfile {
     #[serde(rename = "offline_0")]
-    #[default]
     Offline0,
     #[serde(rename = "offline_low1")]
+    #[default]
     OfflineLow1,
 }
 
@@ -307,18 +309,18 @@ pub struct NexradAcquisitionPreferences {
 }
 
 const fn default_nexrad_shown_cadence() -> NexradUpdateCadence {
-    NexradUpdateCadence::EveryUpdate
+    NexradUpdateCadence::TenMinutes
 }
 
 const fn default_nexrad_hidden_cadence() -> NexradUpdateCadence {
-    NexradUpdateCadence::ThirtyMinutes
+    NexradUpdateCadence::Never
 }
 
 impl Default for NexradAcquisitionPreferences {
     fn default() -> Self {
         Self {
-            coverage: NexradCoverageMode::FullOffline,
-            offline_profile: NexradOfflineProfile::Offline0,
+            coverage: NexradCoverageMode::ViewportOnly,
+            offline_profile: NexradOfflineProfile::OfflineLow1,
             shown_cadence: default_nexrad_shown_cadence(),
             hidden_cadence: default_nexrad_hidden_cadence(),
             asleep_cadence: NexradUpdateCadence::Never,
@@ -905,7 +907,7 @@ fn append_nexrad_settings_rows(
     rows.push(nexrad_cadence_row(
         "nexrad_asleep_cadence",
         "NEXRAD updates while app sleeps",
-        None,
+        Some(NEXRAD_ASLEEP_CADENCE_HELP),
         nexrad.asleep_cadence,
         NEXRAD_ASLEEP_CADENCE_ACTION_ID,
         &[
@@ -1312,6 +1314,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["viewport_only", "full_offline"]
         );
+        assert_eq!(coverage.value_id, "viewport_only");
+        assert!(!projection
+            .settings_page_state
+            .rows
+            .iter()
+            .any(|row| row.id == "nexrad_offline_profile"));
+
+        controller
+            .perform_action(
+                &UiSettingsAction {
+                    action_id: NEXRAD_COVERAGE_ACTION_ID.to_string(),
+                    value_id: "full_offline".to_string(),
+                },
+                true,
+                true,
+            )
+            .unwrap();
+        let projection = controller
+            .project(true, Some(&bytes), &banner(), &debug_state())
+            .projection;
         let offline_detail = projection
             .settings_page_state
             .rows
@@ -1339,7 +1361,8 @@ mod tests {
             .find(|row| row.id == "nexrad_shown_cadence")
             .unwrap();
         assert_eq!(shown.stops.last().unwrap().label, "Every");
-        assert!(shown.title.ends_with("12.0 MiB/h"));
+        assert_eq!(shown.value_id, "10m");
+        assert!(shown.title.ends_with("3.0 MiB/h"));
 
         controller
             .perform_action(
@@ -1402,6 +1425,16 @@ mod tests {
             ("offline_0".to_string(), 1024 * 1024),
             ("offline_low1".to_string(), 512 * 1024),
         ]);
+        controller
+            .perform_action(
+                &UiSettingsAction {
+                    action_id: NEXRAD_COVERAGE_ACTION_ID.to_string(),
+                    value_id: "full_offline".to_string(),
+                },
+                true,
+                true,
+            )
+            .unwrap();
         let projection = controller
             .project(true, Some(&bytes), &banner(), &debug_state())
             .projection;
@@ -1439,7 +1472,28 @@ mod tests {
             help("nexrad_hidden_cadence"),
             Some(NEXRAD_HIDDEN_CADENCE_HELP)
         );
-        assert_eq!(help("nexrad_asleep_cadence"), None);
+        assert_eq!(
+            help("nexrad_asleep_cadence"),
+            Some(NEXRAD_ASLEEP_CADENCE_HELP)
+        );
+    }
+
+    #[test]
+    fn fresh_nexrad_preferences_minimize_data_demand() {
+        let expected = NexradAcquisitionPreferences {
+            coverage: NexradCoverageMode::ViewportOnly,
+            offline_profile: NexradOfflineProfile::OfflineLow1,
+            shown_cadence: NexradUpdateCadence::TenMinutes,
+            hidden_cadence: NexradUpdateCadence::Never,
+            asleep_cadence: NexradUpdateCadence::Never,
+        };
+
+        assert_eq!(NexradAcquisitionPreferences::default(), expected);
+        assert_eq!(
+            serde_json::from_str::<NexradAcquisitionPreferences>("{}").unwrap(),
+            expected,
+            "missing persisted fields must use the same low-data defaults",
+        );
     }
 
     #[test]

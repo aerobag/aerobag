@@ -43,17 +43,18 @@ use product_build::{
     audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
     ensure_nofile_limit, explain_product_build, gc_artifact_retention, gc_build_cache,
     gc_fetch_cache, gc_publication, gc_rust_build_cache, maybe_reexec_build_under_cgroup,
-    merge_current_artifacts_manifests, publish_discovery_manifest, ArtifactRetentionGcReport,
-    BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport, FetchCacheGcCandidateKind,
-    FetchCacheGcConfig, FetchCacheGcReport, ProcedureGeometryAuditFilter, ProductBuildConfig,
-    PublicationGcConfig, PublicationGcReport, RustBuildCacheGcReport,
+    merge_current_artifacts_manifests_to_path, publish_discovery_manifest,
+    ArtifactRetentionGcReport, BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport,
+    FetchCacheGcCandidateKind, FetchCacheGcConfig, FetchCacheGcReport,
+    ProcedureGeometryAuditFilter, ProductBuildConfig, PublicationGcConfig, PublicationGcReport,
+    RustBuildCacheGcReport,
 };
 use sha2::{Digest, Sha256};
 
 fn usage() -> &'static str {
     "usage:
   preprocessor-cli build-product [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli merge-current-artifacts [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
+  preprocessor-cli merge-current-artifacts [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --output <path> --manifest <path> [--manifest <path>]...
   preprocessor-cli publish-discovery-manifest [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
   preprocessor-cli gc [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
@@ -2658,6 +2659,7 @@ fn main() -> anyhow::Result<()> {
             let mut passthrough = Vec::new();
             let mut as_of_utc = None;
             let mut manifests = Vec::new();
+            let mut output = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -2679,6 +2681,13 @@ fn main() -> anyhow::Result<()> {
                         ));
                         index += 2;
                     }
+                    "--output" => {
+                        output = Some(PathBuf::from(
+                            args.get(index + 1)
+                                .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+                        ));
+                        index += 2;
+                    }
                     _ => {
                         passthrough.push(args[index].clone());
                         index += 1;
@@ -2686,10 +2695,13 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             let config = ProductBuildConfig::from_env_and_args(&passthrough)?;
-            let path = merge_current_artifacts_manifests(
+            let as_of_utc = as_of_utc.unwrap_or_else(Utc::now);
+            let output = output.ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+            let path = merge_current_artifacts_manifests_to_path(
                 &config.build_root,
-                as_of_utc.unwrap_or_else(Utc::now),
+                as_of_utc,
                 &manifests,
+                &output,
             )?;
             println!("{}", path.display());
         }

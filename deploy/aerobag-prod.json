@@ -8,9 +8,9 @@
   "cargo_target_dir": "/var/cache/aerobag-build/target",
   "web_dist": "/mnt/aerobag-data/ui-target/web/dist",
   "checkout_ref": "main",
-  "additional_publication_refs": [
-  ],
   "live_feeds_listen": "127.0.0.1:8095",
+  "release_desired_state": "deploy/releases.json",
+  "release_live_port_base": 8100,
   "cloud_server_listen": "127.0.0.1:8099",
   "cloud_server_storage_root": "/mnt/aerobag-data/cloud-storage",
   "cloud_server_secret_source": "/root/aerobag-credentials/aerobag-cloud-server-production.bin",

@@ -27,6 +27,9 @@ const gpsCaptureRoot = process.env.AEROBAG_GPS_CAPTURE_ROOT
   ? path.resolve(process.env.AEROBAG_GPS_CAPTURE_ROOT)
   : path.join("/tmp", "aerobag-gps-captures");
 const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
+const packageSourceBaseUrl = process.env.AEROBAG_PACKAGE_SOURCE_BASE_URL ?? null;
+const downloadsBaseUrl = process.env.AEROBAG_DOWNLOADS_BASE_URL ?? null;
+const webPublicBaseUrl = process.env.AEROBAG_WEB_PUBLIC_BASE_URL ?? "/";
 const aerobagCloudServerBaseUrl = process.env.AEROBAG_CLOUD_SERVER_BASE_URL ?? null;
 const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_LOG_ENABLED ?? "");
 const webE2eEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_E2E_ENABLED ?? "");
@@ -345,11 +348,14 @@ function aerobagProductContractsPlugin(): Plugin {
 }
 
 export default defineConfig({
+  base: webPublicBaseUrl,
   plugins: [aerobagProductContractsPlugin(), react(), aerobagStaticPlugin()],
   define: {
     __AEROBAG_DEBUG_LOG_ENABLED__: JSON.stringify(webDebugLogEnabled),
     __AEROBAG_E2E_ENABLED__: JSON.stringify(webE2eEnabled),
     __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
+    __AEROBAG_PACKAGE_SOURCE_BASE_URL__: JSON.stringify(packageSourceBaseUrl),
+    __AEROBAG_DOWNLOADS_BASE_URL__: JSON.stringify(downloadsBaseUrl),
     __AEROBAG_CLOUD_SERVER_BASE_URL__: JSON.stringify(aerobagCloudServerBaseUrl),
     __AEROBAG_CLIENT_BUILD_INFO__: JSON.stringify(clientBuildInfo),
   },
@@ -382,7 +388,9 @@ export default defineConfig({
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
   },
   build: {
-    outDir: path.join(webTargetRoot, "dist"),
+    outDir: process.env.AEROBAG_WEB_DIST
+      ? path.resolve(process.env.AEROBAG_WEB_DIST)
+      : path.join(webTargetRoot, "dist"),
     emptyOutDir: true,
   },
   worker: {

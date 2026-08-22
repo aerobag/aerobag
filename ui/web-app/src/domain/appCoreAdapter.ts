@@ -115,6 +115,7 @@ export type {
   UiSurfaceStatusState,
 } from "../generated/sessionPageWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
+import { packageSourceBaseUrl } from "./packageSourceUrl";
 import {
   advanceSharedNavKvStore,
   attachNavKvStoreToSession,
@@ -1303,7 +1304,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         await debugTiming("startup.session.configure_data_sources", async () =>
           applyResourceFreeBootstrapMutation(module.configure_data_sources_in_session(
             created.handle,
-            origin ? `${origin}/packages` : "/packages",
+            packageSourceBaseUrl(),
             liveFeedRoot ? `${liveFeedRoot}/live-feeds` : "/live-feeds",
             origin ? `${origin}${DebugLogDeveloperServerPath}` : DebugLogDeveloperServerPath,
           ), "startup.session.configure_data_sources"),

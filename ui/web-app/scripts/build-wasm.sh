@@ -29,7 +29,7 @@ PY
 )"
 UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
 OUT_DIR="$UI_TARGET_ROOT/web/generated"
-RUST_TARGET_DIR="$UI_TARGET_ROOT/shared/rust-target"
+RUST_TARGET_DIR="${AEROBAG_UI_RUST_TARGET_DIR:-$UI_TARGET_ROOT/shared/rust-target}"
 
 if command -v wasm-bindgen >/dev/null 2>&1; then
   WASM_BINDGEN_BIN="$(command -v wasm-bindgen)"

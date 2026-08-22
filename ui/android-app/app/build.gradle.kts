@@ -80,7 +80,9 @@ val uiTargetRoot = File(
     System.getenv("AEROBAG_UI_TARGET_ROOT")
         ?: rootDir.parentFile.parentFile.resolve(targetRootFile.readText().trim()).absolutePath,
 )
-val rustTargetDir = uiTargetRoot.resolve("shared/rust-target")
+val rustTargetDir = System.getenv("AEROBAG_UI_RUST_TARGET_DIR")
+    ?.let { file(it) }
+    ?: uiTargetRoot.resolve("shared/rust-target")
 val rustProjectDir = file("../../core-rust")
 layout.buildDirectory.set(uiTargetRoot.resolve("android/build/app"))
 val rustJniLibsDir = layout.buildDirectory.dir("generated/rustJniLibs")

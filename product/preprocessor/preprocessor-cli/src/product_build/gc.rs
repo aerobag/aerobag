@@ -3,6 +3,84 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::*;
+use std::path::Component;
+
+const RELEASE_GC_ROOTS_RELATIVE_PATH: &str = "state/release-gc-roots.json";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseGcRoots {
+    schema_version: u32,
+    current_artifacts_paths: Vec<String>,
+}
+
+pub(super) fn active_current_artifacts_paths(build_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let registry_path = build_root.join(RELEASE_GC_ROOTS_RELATIVE_PATH);
+    if !registry_path.is_file() {
+        return Ok(vec![current_artifacts_path(build_root)]);
+    }
+    let registry: ReleaseGcRoots = serde_json::from_slice(
+        &fs::read(&registry_path)
+            .with_context(|| format!("failed to read {}", registry_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", registry_path.display()))?;
+    if registry.schema_version != 1 {
+        bail!(
+            "{} has unsupported schema_version {}",
+            registry_path.display(),
+            registry.schema_version
+        );
+    }
+    if registry.current_artifacts_paths.is_empty() {
+        bail!(
+            "{} must contain at least one current_artifacts path",
+            registry_path.display()
+        );
+    }
+    let mut paths = BTreeSet::new();
+    for value in registry.current_artifacts_paths {
+        let relative = Path::new(&value);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+            || relative.file_name().and_then(|name| name.to_str())
+                != Some(current_artifacts_latest_alias_filename())
+        {
+            bail!(
+                "{} contains unsafe current_artifacts path {:?}",
+                registry_path.display(),
+                value
+            );
+        }
+        let path = build_root.join(relative);
+        if !path.is_file() {
+            bail!(
+                "{} references missing current_artifacts file {}",
+                registry_path.display(),
+                path.display()
+            );
+        }
+        paths.insert(path);
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn load_active_current_artifacts(
+    build_root: &Path,
+) -> anyhow::Result<(PathBuf, Vec<CurrentArtifactsManifest>)> {
+    let paths = active_current_artifacts_paths(build_root)?;
+    let report_path = if paths.len() == 1 {
+        paths[0].clone()
+    } else {
+        build_root.join(RELEASE_GC_ROOTS_RELATIVE_PATH)
+    };
+    let mut manifests = Vec::new();
+    for path in paths {
+        manifests.extend(load_current_artifacts_list(&path)?);
+    }
+    Ok((report_path, manifests))
+}
 
 pub(super) fn manifest_generated_at(node_records: &[NodeRecord]) -> String {
     node_records
@@ -148,8 +226,8 @@ struct CurrentBuildManifestSet {
 }
 
 fn current_build_manifests(config: &ProductBuildConfig) -> anyhow::Result<CurrentBuildManifests> {
-    let current_artifacts_path = current_artifacts_path(&config.build_root);
-    let current_artifacts = load_current_artifacts_list(&current_artifacts_path)?;
+    let (current_artifacts_path, current_artifacts) =
+        load_active_current_artifacts(&config.build_root)?;
     let build_manifests_root = build_manifests_root(&config.build_root);
     let mut manifest_dirs = BTreeMap::new();
     for manifest in &current_artifacts {
@@ -384,8 +462,8 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
 }
 
 pub fn gc_publication(config: &PublicationGcConfig) -> anyhow::Result<PublicationGcReport> {
-    let current_artifacts_path = current_artifacts_path(&config.build_root);
-    let current_artifacts = load_current_artifacts_list(&current_artifacts_path)?;
+    let (current_artifacts_path, current_artifacts) =
+        load_active_current_artifacts(&config.build_root)?;
     let mut current_publish_roots = BTreeSet::<PathBuf>::new();
     for manifest in &current_artifacts {
         current_publish_roots.insert(publish_dir_from_artifact_root(
@@ -895,25 +973,49 @@ mod tests {
     }
 
     #[test]
-    fn publication_gc_keeps_all_current_versions_and_evicts_unreferenced_roots() {
+    fn publication_gc_keeps_production_and_staging_registry_roots() {
         let temp = tempdir().unwrap();
         let build_root = temp.path().join("artifacts");
-        let current_artifacts = vec![
-            current_manifest("nav6-sunset-abc", "20260609T000000Z", "NAV6"),
-            current_manifest(
-                "master-def",
-                "20260609T000010Z",
-                product_contracts::NAV_DB_CONTRACT_ID,
-            ),
-        ];
-        fs::create_dir_all(build_root.join("published")).unwrap();
+        let production_artifacts = vec![current_manifest(
+            "nav6-sunset-abc",
+            "20260609T000000Z",
+            "NAV6",
+        )];
+        let staging_artifacts = vec![current_manifest(
+            "master-def",
+            "20260609T000010Z",
+            product_contracts::NAV_DB_CONTRACT_ID,
+        )];
+        let production_current =
+            build_root.join("channel-generations/7/production/packages/current_artifacts.json");
+        let staging_current =
+            build_root.join("channel-generations/7/staging/packages/current_artifacts.json");
+        fs::create_dir_all(production_current.parent().unwrap()).unwrap();
+        fs::create_dir_all(staging_current.parent().unwrap()).unwrap();
         fs::write(
-            build_root
-                .join("published")
-                .join(current_artifacts_latest_alias_filename()),
-            serde_json::to_vec_pretty(&current_artifacts).unwrap(),
+            &production_current,
+            serde_json::to_vec_pretty(&production_artifacts).unwrap(),
         )
         .unwrap();
+        fs::write(
+            &staging_current,
+            serde_json::to_vec_pretty(&staging_artifacts).unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(build_root.join("state")).unwrap();
+        fs::write(
+            build_root.join(RELEASE_GC_ROOTS_RELATIVE_PATH),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "current_artifacts_paths": [
+                    "channel-generations/7/production/packages/current_artifacts.json",
+                    "channel-generations/7/staging/packages/current_artifacts.json"
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(build_root.join("published")).unwrap();
         for (label, timestamp) in [
             ("nav6-sunset-abc", "20260609T000000Z"),
             ("master-def", "20260609T000010Z"),

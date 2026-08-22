@@ -155,6 +155,7 @@ import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateO
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { NexradFrameImageCache } from "./domain/nexradFrameCache";
+import { appPageForPath, appPageUrl } from "./domain/webRouteUrl";
 import {
   clampImageViewport,
   clampImageZoom,
@@ -1369,8 +1370,11 @@ function useNavigationPagePolicy(): NavigationPagePolicy {
 }
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
-const aboutPagePath = "/about";
-const androidApkMetadataPath = "/downloads/android-apk.json";
+declare const __AEROBAG_DOWNLOADS_BASE_URL__: string | null;
+
+const androidApkMetadataPath = `${
+  __AEROBAG_DOWNLOADS_BASE_URL__?.replace(/\/+$/, "") || "/downloads"
+}/android-apk.json`;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
@@ -1426,11 +1430,14 @@ function appPageForCurrentPath(): AppPage | null {
   if (typeof window === "undefined") {
     return null;
   }
-  return window.location.pathname === aboutPagePath ? "about" : null;
+  return appPageForPath(window.location.pathname);
 }
 
 function urlForAppPage(page: AppPage): string {
-  return page === "about" ? aboutPagePath : "/";
+  return appPageUrl(
+    page,
+    typeof window === "undefined" ? "/" : window.location.pathname,
+  );
 }
 
 type RasterRenderTile = {
@@ -12650,7 +12657,7 @@ function AboutPage() {
             )}
           </div>
           <div className="aboutActionColumn">
-            <a href="/" className="aboutActionButton aboutWebActionButton">
+            <a href={urlForAppPage("home")} className="aboutActionButton aboutWebActionButton">
               Open Web App
             </a>
           </div>

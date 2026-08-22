@@ -20,6 +20,11 @@ from typing import Any
 
 from admin_index import admin_index_html
 from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
+from release_reconciler import (
+    load_desired_releases,
+    render_live_feed_nginx_routes,
+    resolve_release_tag,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -204,7 +209,8 @@ def load_config(path: Path) -> dict[str, Any]:
     missing = [key for key in required if key not in config]
     if missing:
         raise SystemExit(f"{path} missing required keys: {', '.join(missing)}")
-    config.setdefault("additional_publication_refs", [])
+    config.setdefault("release_desired_state", "deploy/releases.json")
+    config.setdefault("release_live_port_base", 8100)
     config.setdefault("pipeline_health_listen", PIPELINE_HEALTH_LISTEN)
     config.setdefault("pipeline_health_poll_seconds", 60)
     config.setdefault(
@@ -264,21 +270,21 @@ def validate_cloud_deploy_config(config: dict[str, Any]) -> None:
 
 
 def publication_refs(config: dict[str, Any]) -> list[str]:
-    refs: list[str] = []
-    for ref in [*config["additional_publication_refs"], config["checkout_ref"]]:
-        if ref not in refs:
-            refs.append(ref)
-    return refs
+    return list(load_desired_releases(repo_path(config["release_desired_state"])).tags())
 
 
 def assert_local_refs_exist(config: dict[str, Any], *, dry_run: bool) -> None:
+    if dry_run:
+        for ref in publication_refs(config):
+            run_local(
+                ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                cwd=REPO_ROOT,
+                capture=True,
+                dry_run=True,
+            )
+        return
     for ref in publication_refs(config):
-        run_local(
-            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-            cwd=REPO_ROOT,
-            capture=True,
-            dry_run=dry_run,
-        )
+        resolve_release_tag(REPO_ROOT, ref)
 
 
 def assert_clean_checkout(*, allow_dirty: bool, dry_run: bool) -> None:
@@ -557,9 +563,6 @@ def stop_stale_units(config: dict[str, Any], *, dry_run: bool) -> None:
     units = [
         "aerobag-build-fast-subset.timer",
         "aerobag-build-fast-subset.service",
-        "aerobag-build-product.timer",
-        "aerobag-build-product.service",
-        "aerobag-live-feeds.service",
         "aerobag-cloud-server.service",
         "aerobag-cloud-backup.timer",
         "aerobag-cloud-backup.service",
@@ -575,6 +578,67 @@ def stop_stale_units(config: dict[str, Any], *, dry_run: bool) -> None:
         if command -v systemctl >/dev/null 2>&1; then
           systemctl stop {unit_args} 2>/dev/null || true
           systemctl disable aerobag-build-fast-subset.timer aerobag-build-fast-subset.service 2>/dev/null || true
+        fi
+        """
+    ).strip()
+    run_ssh(config, command, dry_run=dry_run)
+
+
+def assert_release_reconciliation_idle(
+    config: dict[str, Any], *, dry_run: bool
+) -> None:
+    """Reject source/config replacement while the release controller is running."""
+
+    lock_path = f"{config['artifact_root']}/locks/release-reconciler.lock"
+    command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        unit=aerobag-build-product.service
+        active_state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null || true)"
+        if [ "$active_state" = active ] || [ "$active_state" = activating ] || [ "$active_state" = reloading ] || [ "$active_state" = deactivating ]; then
+          echo "release reconciliation is already running (active_state=$active_state)" >&2
+          exit 1
+        fi
+        install -d -m 0755 {shell_quote(config['artifact_root'] + '/locks')}
+        if ! flock -n {shell_quote(lock_path)} true; then
+          echo "release reconciliation lock is already held" >&2
+          exit 1
+        fi
+        """
+    ).strip()
+    run_ssh(config, command, dry_run=dry_run)
+
+
+def quiesce_release_reconciliation(
+    config: dict[str, Any], *, dry_run: bool
+) -> None:
+    """Close the timer race without terminating an active reconciliation."""
+
+    lock_path = f"{config['artifact_root']}/locks/release-reconciler.lock"
+    command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        unit=aerobag-build-product.service
+        timer=aerobag-build-product.timer
+        timer_was_active=false
+        if systemctl is-active --quiet "$timer" 2>/dev/null; then
+          timer_was_active=true
+        fi
+        systemctl stop "$timer" 2>/dev/null || true
+        reject() {{
+          if [ "$timer_was_active" = true ]; then
+            systemctl start "$timer"
+          fi
+          echo "$1" >&2
+          exit 1
+        }}
+        active_state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null || true)"
+        if [ "$active_state" = active ] || [ "$active_state" = activating ] || [ "$active_state" = reloading ] || [ "$active_state" = deactivating ]; then
+          reject "release reconciliation is already running (active_state=$active_state)"
+        fi
+        install -d -m 0755 {shell_quote(config['artifact_root'] + '/locks')}
+        if ! flock -n {shell_quote(lock_path)} true; then
+          reject "release reconciliation lock is already held"
         fi
         """
     ).strip()
@@ -710,7 +774,7 @@ rustup target add \
   aarch64-linux-android
 
 cd "$SOURCE_ROOT/product/preprocessor"
-cargo build --release -p preprocessor-cli -p live-feeds-daemon
+cargo build --release -p preprocessor-cli
 
 cd "$SOURCE_ROOT/services"
 cargo build --release -p aerobag-cloud-server
@@ -775,45 +839,25 @@ test -x "$ANDROID_HOME/ndk/$REQUIRED_NDK/toolchains/llvm/prebuilt/linux-x86_64/b
 
 
 def build_product_script(config: dict[str, Any]) -> str:
-    refs = " ".join(shell_quote(ref) for ref in publication_refs(config))
-    primary_ref = shell_quote(config["checkout_ref"])
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 source /etc/aerobag/env
 export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
 
-mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/locks" "$ARTIFACT_ROOT/state" "$ARTIFACT_ROOT/scratch" "$ARTIFACT_ROOT/worktrees" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
+mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/locks" "$ARTIFACT_ROOT/state" "$ARTIFACT_ROOT/scratch" "$ARTIFACT_ROOT/worktrees" "$ARTIFACT_ROOT/release-builds" "$ARTIFACT_ROOT/channel-generations" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
 
 /usr/local/bin/aerobag-ensure-toolchain
 
-cd "$SOURCE_ROOT"
-"$SOURCE_ROOT/product/preprocessor/scripts/build_multi_version_publication.py" \\
-  --release \\
-  --primary-ref {primary_ref} \\
-  --build-root "$ARTIFACT_ROOT" \\
-  --target-dir "$CARGO_TARGET_DIR" \\
-  {refs}
-
-/usr/local/bin/aerobag-write-health
-"""
-
-
-def build_web_android_script() -> str:
-    return """#!/usr/bin/env bash
-set -euo pipefail
-source /etc/aerobag/env
-export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
-export ANDROID_HOME ANDROID_SDK_ROOT
-export AEROBAG_ANDROID_KEYSTORE AEROBAG_ANDROID_KEYSTORE_PASSWORD AEROBAG_ANDROID_KEY_ALIAS AEROBAG_ANDROID_KEY_PASSWORD AEROBAG_ANDROID_EXPECTED_CERT_SHA256
-
-/usr/local/bin/aerobag-ensure-android-sdk
-
-cd "$SOURCE_ROOT/ui/web-app"
-npm run install:wasm-opt
-npm run build:release
-
-cd "$SOURCE_ROOT/ui/android-app"
-./scripts/build_prod_apk.sh
+"$SOURCE_ROOT/tools/reconcile_prod_releases.py" \\
+  --desired "$SOURCE_ROOT/{config['release_desired_state']}" \\
+  --observed "$ARTIFACT_ROOT/state/releases-observed.json" \\
+  --source-root "$SOURCE_ROOT" \\
+  --artifact-root "$ARTIFACT_ROOT" \\
+  --cargo-target-dir "$CARGO_TARGET_DIR" \\
+  --ui-target-root "$AEROBAG_UI_TARGET_ROOT" \\
+  --live-port-base {config['release_live_port_base']} \\
+  --legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev" \\
+  --refresh-products
 
 /usr/local/bin/aerobag-write-health
 """
@@ -936,8 +980,29 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             deploy_config = {"error": str(exc)}
 
-    current_path = artifact_root / "published" / "current_artifacts.json"
-    live_current = artifact_root / "live-feeds" / "v2" / "current.json"
+    current_path = artifact_root / "channel-current/production/packages/current_artifacts.json"
+    release_state_path = artifact_root / "state/releases-observed.json"
+    release_state = {}
+    if release_state_path.is_file():
+        try:
+            release_state = json.loads(release_state_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            release_state = {"error": str(exc)}
+    production_release = release_state.get("production")
+    live_current = (
+        artifact_root
+        / "live-feeds/releases"
+        / production_release
+        / "v3/current.json"
+        if isinstance(production_release, str)
+        else artifact_root / "live-feeds/v3/current.json"
+    )
+    release_services = {
+        f"aerobag-live-feeds-release@{tag}.service": service_state(
+            f"aerobag-live-feeds-release@{tag}.service"
+        )
+        for tag in release_state.get("releases", {})
+    }
     payload = {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -946,7 +1011,7 @@ def main() -> int:
         else None,
         "deploy_config": deploy_config,
         "services": {
-            "aerobag-live-feeds.service": service_state("aerobag-live-feeds.service"),
+            **release_services,
             "aerobag-cloud-server.service": service_state("aerobag-cloud-server.service"),
             "aerobag-cloud-backup.service": service_state("aerobag-cloud-backup.service"),
             "aerobag-cloud-backup.timer": service_state("aerobag-cloud-backup.timer"),
@@ -959,6 +1024,7 @@ def main() -> int:
             "nginx.service": service_state("nginx.service"),
         },
         "current_artifacts": current_artifacts_summary(current_path),
+        "releases": release_state,
         "live_feeds": {
             "current_json": str(live_current),
             "current_json_exists": live_current.exists(),
@@ -1088,8 +1154,7 @@ def pipeline_health_script() -> str:
 
 
 def nginx_config(config: dict[str, Any]) -> str:
-    web_dist = config["web_dist"]
-    published_root = f"{config['artifact_root']}/published"
+    channel_root = f"{config['artifact_root']}/channel-current"
     health_root = f"{config['data_root']}/health"
     admin_root = f"{config['data_root']}/admin"
     server_name = config["nginx_server_name"]
@@ -1106,7 +1171,7 @@ def nginx_config(config: dict[str, Any]) -> str:
     real_ip_header Aerobag-Client-Address;
     real_ip_recursive off;
 
-    root {web_dist};
+    root {channel_root}/production/web;
     index index.html;
 
     client_max_body_size 256k;
@@ -1157,7 +1222,7 @@ def nginx_config(config: dict[str, Any]) -> str:
     }}
 
     location = /packages/current_artifacts.json {{
-        alias {published_root}/current_artifacts.json;
+        alias {channel_root}/production/packages/current_artifacts.json;
         add_header Cache-Control "no-cache";
     }}
 
@@ -1170,7 +1235,46 @@ def nginx_config(config: dict[str, Any]) -> str:
     }}
 
     location /packages/ {{
-        alias {published_root}/;
+        alias {channel_root}/production/packages/;
+        add_header Cache-Control "public, max-age=300";
+    }}
+
+    location = /downloads/android-apk.json {{
+        alias {channel_root}/production/downloads/android-apk.json;
+        add_header Cache-Control "no-cache";
+    }}
+
+    location /downloads/ {{
+        alias {channel_root}/production/downloads/;
+        add_header Cache-Control "public, max-age=300";
+    }}
+
+    location = /staging {{
+        return 302 /staging/;
+    }}
+
+    location /staging/packages/ {{
+        alias {channel_root}/staging/packages/;
+        add_header Cache-Control "public, max-age=300";
+    }}
+
+    location /staging/downloads/ {{
+        alias {channel_root}/staging/downloads/;
+        add_header Cache-Control "public, max-age=300";
+    }}
+
+    location /staging/ {{
+        alias {channel_root}/staging/web/;
+        try_files $uri $uri/ /staging/index.html;
+    }}
+
+    location ~ ^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:about)?$ {{
+        alias {channel_root}/releases/$1/web/index.html;
+        add_header Cache-Control "no-cache";
+    }}
+
+    location /releases/ {{
+        alias {channel_root}/releases/;
         add_header Cache-Control "public, max-age=300";
     }}
 
@@ -1179,12 +1283,7 @@ def nginx_config(config: dict[str, Any]) -> str:
         add_header Cache-Control "public, max-age=3600";
     }}
 
-    location /live-feeds/ {{
-        proxy_pass http://{config['live_feeds_listen']};
-        proxy_http_version 1.1;
-        proxy_buffering off;
-        proxy_read_timeout 1h;
-    }}
+    include {channel_root}/*.nginx.conf;
 
     # EventSource requires its short-lived bearer ticket in the query string.
     # Never copy that transient capability into the host access log.
@@ -1221,7 +1320,7 @@ def nginx_config(config: dict[str, Any]) -> str:
 
 def build_product_unit() -> str:
     return """[Unit]
-Description=Aerobag cycle product publication build
+Description=Aerobag desired-state release reconciliation
 After=network-online.target
 Wants=network-online.target
 
@@ -1235,7 +1334,7 @@ TimeoutStartSec=infinity
 
 def build_product_timer() -> str:
     return """[Unit]
-Description=Run Aerobag product publication builds
+Description=Reconcile Aerobag releases and refresh product publication
 
 [Timer]
 OnBootSec=30min
@@ -1248,22 +1347,23 @@ WantedBy=timers.target
 """
 
 
-def live_feeds_unit(config: dict[str, Any]) -> str:
+def release_live_feeds_unit(config: dict[str, Any]) -> str:
     nms_args = ""
     if config["nms_notams_enabled"]:
         nms_args = (
             f" --nms-notams-config {shell_quote(config['nms_notams_prod_config'])}"
-            ' --nms-notams-state-root "$ARTIFACT_ROOT/state/nms-notams"'
+            ' --nms-notams-state-root "$ARTIFACT_ROOT/state/nms-notams/$AEROBAG_RELEASE_TAG"'
         )
     return f"""[Unit]
-Description=Aerobag live-feeds daemon
+Description=Aerobag live-feeds daemon for release %i
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"{nms_args}'
+EnvironmentFile=/etc/aerobag/live-feeds/%i.env
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{nms_args}'
 Restart=always
 RestartSec=10
 
@@ -1394,8 +1494,8 @@ WantedBy=multi-user.target
 def pipeline_health_unit() -> str:
     return """[Unit]
 Description=Aerobag preprocessing pipeline health monitor
-After=network.target aerobag-live-feeds.service aerobag-cloud-server.service aerobag-build-watch.service
-Wants=aerobag-live-feeds.service aerobag-cloud-server.service aerobag-build-watch.service
+After=network.target aerobag-cloud-server.service aerobag-build-watch.service
+Wants=aerobag-cloud-server.service aerobag-build-watch.service
 
 [Service]
 Type=simple
@@ -1504,13 +1604,6 @@ def write_remote_config(
             mode="0755",
             dry_run=dry_run,
         )
-        write_remote_file(
-            config,
-            "/usr/local/bin/aerobag-build-web-and-android",
-            build_web_android_script(),
-            mode="0755",
-            dry_run=dry_run,
-        )
     write_remote_file(config, NGINX_SITE, nginx_config(config), dry_run=dry_run)
     if include_build_config:
         write_remote_file(
@@ -1527,8 +1620,8 @@ def write_remote_config(
         )
     write_remote_file(
         config,
-        f"{SYSTEMD_DIR}/aerobag-live-feeds.service",
-        live_feeds_unit(config),
+        f"{SYSTEMD_DIR}/aerobag-live-feeds-release@.service",
+        release_live_feeds_unit(config),
         dry_run=dry_run,
     )
     write_remote_file(
@@ -1612,6 +1705,58 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, command, dry_run=dry_run)
 
 
+def ensure_legacy_channel_view(config: dict[str, Any], *, dry_run: bool) -> None:
+    """Keep the pre-reconciler deployment live during the first isolated build."""
+
+    artifact_root = config["artifact_root"]
+    generation = f"{artifact_root}/channel-generations/legacy-bootstrap"
+    write_remote_file(
+        config,
+        f"{generation}/gc-root-manifests.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "current_artifacts_paths": [
+                    "production/packages/current_artifacts.json"
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
+        f"{generation}/live-feeds.nginx.conf",
+        render_live_feed_nginx_routes(
+            production_endpoint=f"http://{config['live_feeds_listen']}",
+            staging_endpoint=None,
+            release_endpoints={},
+        ),
+        dry_run=dry_run,
+    )
+    command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        generation={shell_quote(generation)}
+        install -d -m 0755 "$generation/production" "$generation/releases"
+        ln -sfn {shell_quote(config['web_dist'])} "$generation/production/web"
+        ln -sfn {shell_quote(artifact_root + '/published')} "$generation/production/packages"
+        ln -sfn {shell_quote(config['web_dist'] + '/downloads')} "$generation/production/downloads"
+        if [ ! -e {shell_quote(artifact_root + '/channel-current')} ]; then
+          if [ ! -s {shell_quote(DEPLOYED_REV_FILE)} ]; then
+            echo "cannot bootstrap release channels without the deployed revision" >&2
+            exit 1
+          fi
+          install -m 0644 {shell_quote(DEPLOYED_REV_FILE)} {shell_quote(artifact_root + '/state/legacy-deployed-rev')}
+          ln -s channel-generations/legacy-bootstrap {shell_quote(artifact_root + '/channel-current')}
+        fi
+        """
+    ).strip()
+    run_ssh(config, command, dry_run=dry_run)
+
+
 def migrate_cloud_storage_layout(config: dict[str, Any], *, dry_run: bool) -> None:
     legacy_root = f"{config['data_root']}/cloud"
     storage_root = config["cloud_server_storage_root"]
@@ -1651,9 +1796,9 @@ def reload_services(config: dict[str, Any], *, dry_run: bool) -> None:
         rm -f /etc/nginx/sites-enabled/default
         nginx -t
         systemctl daemon-reload
-        systemctl enable nginx.service
-        systemctl restart nginx.service
-        systemctl enable aerobag-live-feeds.service aerobag-cloud-server.service aerobag-cloud-backup.timer aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
+        systemctl enable --now nginx.service
+        systemctl reload nginx.service
+        systemctl enable aerobag-cloud-server.service aerobag-cloud-backup.timer aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
         """
     ).strip()
     run_ssh(config, command, dry_run=dry_run)
@@ -1664,7 +1809,6 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
         command = textwrap.dedent(
             """
             set -euo pipefail
-            systemctl restart aerobag-live-feeds.service
             systemctl restart aerobag-cloud-server.service
             systemctl restart aerobag-client-debug-log.service
             systemctl restart aerobag-build-watch.service
@@ -1681,7 +1825,6 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
     command = textwrap.dedent(
         """
         set -euo pipefail
-        systemctl restart aerobag-live-feeds.service
         systemctl restart aerobag-cloud-server.service
         systemctl restart aerobag-client-debug-log.service
         systemctl restart aerobag-build-watch.service
@@ -1702,10 +1845,6 @@ def run_initial_toolchain_build(config: dict[str, Any], *, dry_run: bool) -> Non
 
 def run_android_sdk_setup(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, "/usr/local/bin/aerobag-ensure-android-sdk", dry_run=dry_run)
-
-
-def run_web_android_build(config: dict[str, Any], *, dry_run: bool) -> None:
-    run_ssh(config, "/usr/local/bin/aerobag-build-web-and-android", dry_run=dry_run)
 
 
 def verify_async_product_build(config: dict[str, Any], *, dry_run: bool) -> None:
@@ -1731,6 +1870,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
         deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
         prepare_remote_paths(config, dry_run=args.dry_run)
+        ensure_legacy_channel_view(config, dry_run=args.dry_run)
         migrate_cloud_storage_layout(config, dry_run=args.dry_run)
         install_nms_notams_credential(config, dry_run=args.dry_run)
         install_cloud_server_secret(config, dry_run=args.dry_run)
@@ -1750,8 +1890,10 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     deployed_rev = local_ref_sha(config["checkout_ref"], dry_run=args.dry_run)
 
     install_bootstrap_packages(config, dry_run=args.dry_run)
+    quiesce_release_reconciliation(config, dry_run=args.dry_run)
     stop_stale_units(config, dry_run=args.dry_run)
     prepare_remote_paths(config, dry_run=args.dry_run)
+    ensure_legacy_channel_view(config, dry_run=args.dry_run)
     migrate_cloud_storage_layout(config, dry_run=args.dry_run)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1783,7 +1925,6 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     reload_services(config, dry_run=args.dry_run)
     start_runtime(config, skip_build=args.skip_build, dry_run=args.dry_run)
     if not args.skip_build:
-        run_web_android_build(config, dry_run=args.dry_run)
         verify_async_product_build(config, dry_run=args.dry_run)
 
 

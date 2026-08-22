@@ -1945,7 +1945,7 @@ use artifact_verification::*;
 
 mod publication;
 use publication::*;
-pub use publication::{merge_current_artifacts_manifests, publish_discovery_manifest};
+pub use publication::{merge_current_artifacts_manifests_to_path, publish_discovery_manifest};
 
 mod gc;
 use gc::*;
@@ -5128,7 +5128,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_current_artifacts_writes_list_alias() {
+    fn merge_current_artifacts_writes_to_explicit_channel_path() {
         let temp = tempdir().unwrap();
         let publish_dir = temp
             .path()
@@ -5191,17 +5191,23 @@ mod tests {
         )
         .unwrap();
 
-        let current_path = merge_current_artifacts_manifests(
+        let requested_path = temp
+            .path()
+            .join("channel-generations/42/staging/packages/current_artifacts.json");
+        let current_path = merge_current_artifacts_manifests_to_path(
             temp.path(),
             Utc.with_ymd_and_hms(2026, 5, 14, 0, 1, 2).unwrap(),
             &[product_path],
+            &requested_path,
         )
         .unwrap();
 
-        assert_eq!(
-            current_path,
-            temp.path().join("published").join("current_artifacts.json")
-        );
+        assert_eq!(current_path, requested_path);
+        assert!(!temp
+            .path()
+            .join("published")
+            .join("current_artifacts.json")
+            .is_file());
         assert!(!temp
             .path()
             .join("published")
@@ -5285,10 +5291,11 @@ mod tests {
 
         assert!(!artifact_verification_is_cached(&package_path).unwrap());
 
-        merge_current_artifacts_manifests(
+        merge_current_artifacts_manifests_to_path(
             temp.path(),
             Utc.with_ymd_and_hms(2026, 5, 14, 0, 1, 2).unwrap(),
             &[product_path],
+            &temp.path().join("published/current_artifacts.json"),
         )
         .unwrap();
         assert!(!artifact_verification_is_cached(&package_path).unwrap());
@@ -5362,10 +5369,11 @@ mod tests {
             product_paths.push(product_path);
         }
 
-        let current_path = merge_current_artifacts_manifests(
+        let current_path = merge_current_artifacts_manifests_to_path(
             temp.path(),
             Utc.with_ymd_and_hms(2026, 5, 14, 0, 2, 0).unwrap(),
             &product_paths,
+            &temp.path().join("published/current_artifacts.json"),
         )
         .unwrap();
 

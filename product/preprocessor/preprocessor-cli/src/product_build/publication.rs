@@ -386,22 +386,6 @@ fn publication_root_url(
     Ok(format!("{}/", value.trim_matches('/')))
 }
 
-pub(super) fn write_current_artifacts_aliases(
-    build_root: &Path,
-    _as_of_utc: DateTime<Utc>,
-    manifests: &[CurrentArtifactsManifest],
-) -> anyhow::Result<PathBuf> {
-    let publication_root = build_root.join("published");
-    fs::create_dir_all(&publication_root)
-        .with_context(|| format!("failed to create {}", publication_root.display()))?;
-
-    let latest_filename = current_artifacts_latest_alias_filename();
-    let publication_latest_path = publication_root.join(latest_filename);
-    write_current_artifacts_json(&publication_latest_path, manifests)?;
-
-    Ok(publication_latest_path)
-}
-
 pub(super) fn write_product_artifacts_manifest_json(
     publish_dir: &Path,
     manifest: &CurrentArtifactsManifest,
@@ -472,10 +456,11 @@ pub(super) fn current_artifacts_contracts(
     Ok(contracts)
 }
 
-pub fn merge_current_artifacts_manifests(
+pub fn merge_current_artifacts_manifests_to_path(
     build_root: &Path,
-    as_of_utc: DateTime<Utc>,
+    _as_of_utc: DateTime<Utc>,
     manifest_paths: &[PathBuf],
+    output_path: &Path,
 ) -> anyhow::Result<PathBuf> {
     if manifest_paths.is_empty() {
         bail!("merge-current-artifacts requires at least one --manifest");
@@ -489,7 +474,34 @@ pub fn merge_current_artifacts_manifests(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     validate_merged_current_artifacts(build_root, &manifests)?;
-    write_current_artifacts_aliases(build_root, as_of_utc, &manifests)
+
+    let build_root = normalize_absolute_path(build_root);
+    let output_path = normalize_absolute_path(output_path);
+    if !output_path.starts_with(&build_root) {
+        bail!(
+            "merge-current-artifacts output must be under build root {}: {}",
+            build_root.display(),
+            output_path.display()
+        );
+    }
+    if output_path.file_name().and_then(|name| name.to_str())
+        != Some(current_artifacts_latest_alias_filename())
+    {
+        bail!(
+            "merge-current-artifacts output must be named {}: {}",
+            current_artifacts_latest_alias_filename(),
+            output_path.display()
+        );
+    }
+    let parent = output_path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "merge-current-artifacts output has no parent: {}",
+            output_path.display()
+        )
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    write_current_artifacts_json(&output_path, &manifests)?;
+    Ok(output_path)
 }
 
 pub(super) fn current_startup_prefetch_manifest(

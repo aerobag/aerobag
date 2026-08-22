@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
@@ -31,16 +32,47 @@ class ProductPublicationTests(unittest.TestCase):
             core_contract,
         )
 
-    def test_deployment_names_checkout_revision_as_primary(self) -> None:
-        script = deploy_prod.build_product_script(
-            {
-                "checkout_ref": "main",
-                "additional_publication_refs": ["legacy-nav15"],
-            }
-        )
+    def test_deployment_runs_the_desired_state_reconciler(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        script = deploy_prod.build_product_script(config)
 
-        self.assertIn("--primary-ref main", script)
-        self.assertIn("legacy-nav15 main", script)
+        self.assertIn("tools/reconcile_prod_releases.py", script)
+        self.assertIn("--desired \"$SOURCE_ROOT/deploy/releases.json\"", script)
+        self.assertIn(
+            '--legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev"',
+            script,
+        )
+        self.assertNotIn("build_multi_version_publication.py", script)
+
+    def test_nginx_serves_stable_channel_views_not_build_directories(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        nginx = deploy_prod.nginx_config(config)
+
+        self.assertIn("/channel-current/production/web", nginx)
+        self.assertIn("/channel-current/staging/packages/", nginx)
+        self.assertIn("/channel-current/releases/", nginx)
+        self.assertIn("/web/(?:about)?$", nginx)
+        self.assertNotIn(f"root {config['web_dist']};", nginx)
+
+    def test_deploy_rejects_in_progress_reconciliation_instead_of_stopping_it(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+            deploy_prod.quiesce_release_reconciliation(config, dry_run=False)
+
+        command = run_ssh.call_args.args[1]
+        self.assertIn("systemctl stop \"$timer\"", command)
+        self.assertIn("release reconciliation is already running", command)
+        self.assertIn("systemctl start \"$timer\"", command)
+        self.assertNotIn("systemctl stop aerobag-build-product.service", command)
+
+    def test_stale_unit_cleanup_never_terminates_release_reconciliation(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+            deploy_prod.stop_stale_units(config, dry_run=False)
+
+        command = run_ssh.call_args.args[1]
+        self.assertNotIn("aerobag-build-product.service", command)
+        self.assertNotIn("aerobag-build-product.timer", command)
 
 
 class AndroidSigningKeyTests(unittest.TestCase):
@@ -182,13 +214,14 @@ class AerobagCloudProductionTests(unittest.TestCase):
         self.assertIn("aerobag-cloud-server.service", deploy_prod.health_script())
         pipeline_unit = deploy_prod.pipeline_health_unit()
         self.assertIn(
-            "After=network.target aerobag-live-feeds.service aerobag-cloud-server.service",
+            "After=network.target aerobag-cloud-server.service",
             pipeline_unit,
         )
         self.assertIn(
-            "Wants=aerobag-live-feeds.service aerobag-cloud-server.service",
+            "Wants=aerobag-cloud-server.service",
             pipeline_unit,
         )
+        self.assertNotIn("aerobag-live-feeds.service", pipeline_unit)
 
     def test_cloud_policy_is_explicit_and_complete(self) -> None:
         policy = deploy_prod.cloud_policy(self.config)

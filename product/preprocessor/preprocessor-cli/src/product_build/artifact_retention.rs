@@ -12,7 +12,9 @@ use std::{
 use anyhow::{bail, Context};
 use product_contracts::publication::current::v1::CurrentArtifactsManifest;
 
-use super::{build_manifests_root, publish_path_key, BuildCacheGcMode};
+use super::{
+    active_current_artifacts_paths, build_manifests_root, publish_path_key, BuildCacheGcMode,
+};
 
 const BUILD_MANIFEST_HISTORY_DIRS: usize = 2;
 const ROTATED_BUILD_LOGS: usize = 8;
@@ -108,32 +110,33 @@ fn gc_artifact_retention_with_policy(
 }
 
 fn current_build_manifest_keys(build_root: &Path) -> anyhow::Result<BTreeSet<String>> {
-    let current_path = build_root.join("published/current_artifacts.json");
-    let manifests: Vec<CurrentArtifactsManifest> = serde_json::from_slice(
-        &fs::read(&current_path)
-            .with_context(|| format!("failed to read {}", current_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", current_path.display()))?;
     let mut keys = BTreeSet::new();
-    for manifest in manifests {
-        let packaged = publish_dir_from_artifact_root(
-            build_root,
-            &manifest.artifact_roots.packaged,
-            "packaged",
-        )?;
-        let unpacked = publish_dir_from_artifact_root(
-            build_root,
-            &manifest.artifact_roots.unpacked,
-            "unpacked",
-        )?;
-        if packaged != unpacked {
-            bail!(
-                "current artifact roots resolve to different publications: {} and {}",
-                packaged.display(),
-                unpacked.display()
-            );
+    for current_path in active_current_artifacts_paths(build_root)? {
+        let manifests: Vec<CurrentArtifactsManifest> = serde_json::from_slice(
+            &fs::read(&current_path)
+                .with_context(|| format!("failed to read {}", current_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", current_path.display()))?;
+        for manifest in manifests {
+            let packaged = publish_dir_from_artifact_root(
+                build_root,
+                &manifest.artifact_roots.packaged,
+                "packaged",
+            )?;
+            let unpacked = publish_dir_from_artifact_root(
+                build_root,
+                &manifest.artifact_roots.unpacked,
+                "unpacked",
+            )?;
+            if packaged != unpacked {
+                bail!(
+                    "current artifact roots resolve to different publications: {} and {}",
+                    packaged.display(),
+                    unpacked.display()
+                );
+            }
+            keys.insert(publish_path_key(&packaged, build_root));
         }
-        keys.insert(publish_path_key(&packaged, build_root));
     }
     Ok(keys)
 }

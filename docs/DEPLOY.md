@@ -7,12 +7,12 @@ cd /root/aerobag-preprocessor/aerobag
 tools/deploy_prod.py --config deploy/aerobag-prod.json
 ```
 
-By default, deploy starts the long cycle product publication asynchronously,
-then builds the web static tree and Android APK synchronously. A web or Android
-build failure makes `deploy_prod.py` fail.
+Release assignments come exclusively from `deploy/releases.json`. By default,
+deploy installs the controller and starts release reconciliation asynchronously.
+Missing cycle products, web output, signed APK, and live-feed binaries are built
+behind the currently served channel; no build writes into active production.
 
-Use `--skip-build` to install/update prod, restart live-feeds, and skip both the
-async cycle product publication and the synchronous web/Android build.
+Use `--skip-build` to update infrastructure without starting reconciliation.
 
 Use `--runtime-config-only` to refresh env files, generated helper scripts,
 nginx, and systemd runtime units without touching the source checkout or
@@ -21,8 +21,8 @@ currently running product build.
 The deploy tool is intentionally dev-pushed. `aerobag-prod` does not need git
 credentials back to dev or GitHub. The tool creates a local git bundle with all
 refs, copies it to prod, fetches all heads/tags into `/opt/aerobag`, checks out
-the configured production ref, and leaves the other refs available for
-multi-version publication worktrees.
+`main`, and leaves the configured annotated release tags available for isolated
+release worktrees.
 
 ## Config
 
@@ -30,10 +30,11 @@ The checked-in prod config is `deploy/aerobag-prod.json`.
 
 Important fields:
 
-- `checkout_ref`: the source ref used for the running prod checkout and
-  live-feeds daemon.
-- `additional_publication_refs`: older product-contract branches to include in
-  the merged cycle publication, such as `nav6-sunset`.
+- `checkout_ref`: the source ref containing the deployment controller. It does
+  not select the production application release.
+- `release_desired_state`: checked-in production/staging/sunset assignments.
+- `release_live_port_base`: start of the loopback port range allocated to
+  isolated release live-feed daemons.
 - `artifact_root`: the persistent product build root. It owns `cache/`,
   `live-feeds/`, `published/`, `logs/`, `locks/`, `state/`, `scratch/`, and
   `worktrees/`.
@@ -54,6 +55,51 @@ Important fields:
 
 The package list is not host config. It lives in
 `deploy/prod-packages.txt` and is installed from the checked-out repo on prod.
+
+## Release Workflow
+
+`deploy/releases.json` remains the authoritative desired state. The normal
+operator interface creates the required tag and desired-state commits, shows
+the exact commands and a colored config diff, and asks before changing anything:
+
+```bash
+tools/prod_manage.py --stage
+tools/prod_manage.py --promote
+```
+
+`--stage` chooses the first unused UTC-date release name such as
+`2026-08-22.1`, commits the visible checkout as the release, creates and pushes
+an immutable annotated tag, then commits the staging assignment and invokes
+`deploy_prod.py`. If the checkout is already clean, it tags the current `main`
+commit rather than creating an empty release commit. Production remains on its
+current generation while the candidate builds, starts a separate live-feed
+daemon, and is qualified at `https://aerobag.org/staging/`.
+
+`--promote` requires a clean `main` synchronized with `origin/main`, and checks
+that the configured candidate is active and qualified on staging. It commits
+the production pointer change, clears staging, pushes, and invokes deployment.
+It does not guess whether the previous production release should remain under
+`sunset`; use a complete manual desired-state edit when old installed clients
+need a stated retention deadline.
+
+Both operations reject an active release reconciliation before making Git
+changes. `deploy_prod.py` independently closes the systemd-timer race and
+rejects a held reconciler lock; deployment no longer kills an in-progress
+release build. Re-run the same operation only after the prior reconciliation
+finishes.
+
+The first controller deployment preserves the pre-deploy
+`/etc/aerobag/deployed-rev` in release state before updating the source
+checkout. The configured initial production tag must resolve to that exact
+commit; otherwise legacy adoption fails rather than guessing which bytes are
+live.
+
+Promotion is another desired-state commit: move the staged tag to `production`,
+clear or replace `staging`, and retain the prior production under `sunset` with
+an explicit expiration when old clients still need its contracts. A qualified
+promotion is a channel-pointer change and graceful nginx reload, not a rebuild.
+Rollback assigns the retained prior tag to production. GC roots production,
+staging, unexpired sunset releases, and the previous generation.
 
 ## Aerobag Cloud Backups
 
@@ -192,37 +238,44 @@ The prod container uses:
 /opt/aerobag                                      git checkout
 /mnt/aerobag-data/artifacts/cache                build/fetch cache
 /mnt/aerobag-data/artifacts/live-feeds           live-feed publication
+/mnt/aerobag-data/artifacts/release-builds        immutable web/APK/daemon releases
+/mnt/aerobag-data/artifacts/channel-generations   immutable serving views
+/mnt/aerobag-data/artifacts/channel-current       active generation symlink
 /mnt/aerobag-data/artifacts/logs                 build/watch logs
 /mnt/aerobag-data/artifacts/locks                publication locks
 /mnt/aerobag-data/artifacts/published            public cycle publication root
 /mnt/aerobag-data/artifacts/scratch              transient build scratch
 /mnt/aerobag-data/artifacts/state                operational manifests and markers
 /mnt/aerobag-data/artifacts/worktrees            multi-version build worktrees
-/mnt/aerobag-data/ui-target/web/dist             static web app
+/mnt/aerobag-data/ui-target                       shared UI build cache
 /var/cache/aerobag-build/target                  Rust build cache
 /etc/aerobag/deployed-rev                        deployed checkout commit
 /etc/aerobag/deploy-config.json                  deployed ref summary
 ```
 
-The public cycle publication contract is:
+Immutable cycle publications remain under `published/`. Public discovery is
+channel-specific:
 
 ```text
-/mnt/aerobag-data/artifacts/published/current_artifacts.json
 /mnt/aerobag-data/artifacts/published/<publish-label>/<timestamp>/packaged/
 /mnt/aerobag-data/artifacts/published/<publish-label>/<timestamp>/unpacked/
+/mnt/aerobag-data/artifacts/channel-current/production/packages/current_artifacts.json
+/mnt/aerobag-data/artifacts/channel-current/staging/packages/current_artifacts.json
+/mnt/aerobag-data/artifacts/channel-current/releases/<tag>/packages/current_artifacts.json
 ```
 
-`current_artifacts.json` is always a JSON list and is written only by
-`preprocessor-cli merge-current-artifacts`.
+Each discovery file is a distinct JSON list validated and written by the
+production release's `preprocessor-cli merge-current-artifacts --output`.
+Artifact subtrees are shared through symlinks; discovery files are not.
 
 ## Services
 
 The deploy installs these systemd units:
 
-- `aerobag-build-product.service`: one-shot multi-version cycle publication and
-  cache GC.
-- `aerobag-build-product.timer`: runs the product build every 2 hours.
-- `aerobag-live-feeds.service`: continuous live-feeds daemon.
+- `aerobag-build-product.service`: one-shot desired-state reconciliation.
+- `aerobag-build-product.timer`: refreshes release products every 2 hours.
+- `aerobag-live-feeds-release@<tag>.service`: isolated release daemon. Nginx
+  routes production, staging, and release-scoped clients to selected instances.
 - `aerobag-cloud-server.service`: localhost-only Aerobag Cloud daemon running as
   the dedicated `aerobag-cloud` user with state under
   `/mnt/aerobag-data/cloud-storage`.
@@ -236,13 +289,13 @@ The deploy installs these systemd units:
   health status every minute.
 - `nginx.service`: public HTTP server on port 80.
 
-The generated live-feeds unit runs the daemon in production mode by omitting
-simulation/fixture flags:
+Each generated release live-feed unit uses its immutable binary and isolated
+mutable roots while sharing only the fetch cache:
 
 ```bash
-"$CARGO_TARGET_DIR/release/aerobag-live-feedsd" \
-  --live-root "$ARTIFACT_ROOT/live-feeds" \
-  --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" \
+"$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" \
+  --live-root "$AEROBAG_RELEASE_LIVE_ROOT" \
+  --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" \
   --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" \
   --fetch-cache-mode fill \
   --listen "$AEROBAG_LIVE_FEEDS_LISTEN"
@@ -272,44 +325,23 @@ http://aerobag-prod.iac.jonh.net/build-watch/
 http://aerobag-prod.iac.jonh.net/build-watch/api/state
 ```
 
-The default timer command uses:
-
-`checkout_ref` is the primary publication revision. It is built first, and its
-preserved `preprocessor-cli` performs the final manifest merge and publication
-GC. `additional_publication_refs` are older compatibility revisions and cannot
-change those coordinator semantics.
+The timer invokes the desired-state controller:
 
 ```bash
-/opt/aerobag/product/preprocessor/scripts/build_multi_version_publication.py \
-  --release \
-  --primary-ref main \
-  --build-root /mnt/aerobag-data/artifacts \
-  --target-dir /var/cache/aerobag-build/target \
-  <additional refs...> main
+/opt/aerobag/tools/reconcile_prod_releases.py \
+  --desired /opt/aerobag/deploy/releases.json \
+  --observed /mnt/aerobag-data/artifacts/state/releases-observed.json \
+  --source-root /opt/aerobag \
+  --artifact-root /mnt/aerobag-data/artifacts \
+  --cargo-target-dir /var/cache/aerobag-build/target \
+  --refresh-products
 ```
 
-It then runs:
-
-```bash
-/var/cache/aerobag-build/target/release/preprocessor-cli \
-  gc-build-cache --profile production \
-  --build-root /mnt/aerobag-data/artifacts \
-  --bootstrap-from-build-manifests --execute
-```
-
-Normal deploy also runs this web/Android build synchronously after starting the
-cycle product service:
-
-```bash
-/usr/local/bin/aerobag-ensure-android-sdk
-
-cd /opt/aerobag/ui/web-app
-npm run install:wasm-opt
-npm run build:release
-
-cd /opt/aerobag/ui/android-app
-./scripts/build_prod_apk.sh
-```
+For each missing tag, the controller builds cycle publication with
+`build_multi_version_publication.py --no-activate`, then builds immutable web,
+APK, and daemon outputs with `tools/build_release.py`. Promotion only creates a
+new channel generation, reloads nginx gracefully, validates the public channel,
+and runs channel-aware GC. It does not rebuild the release.
 
 `build_prod_apk.sh` verifies that `JAVA_HOME` resolves to a full JDK with
 `jlink` before invoking Gradle. On prod that should be
@@ -320,25 +352,21 @@ Release-like WASM builds require Binaryen `version_129` or newer. The pinned
 where the WASM build script finds it automatically. Set `AEROBAG_WASM_OPT_BIN`
 only if using a different install location.
 
-The Android APK publisher runs after the web build because the web build empties
-and recreates `$AEROBAG_WEB_DIST`. It writes a hash-named APK under
-`$AEROBAG_WEB_DIST/downloads/` plus
-`$AEROBAG_WEB_DIST/downloads/android-apk.json`, which the About page uses for
-the download link. Do not publish a stable APK filename such as `latest.apk`.
+The Android APK publisher writes into the temporary release tree. The APK pins
+`/releases/<tag>/packages/` and `/releases/<tag>/live-feeds/`; the exact staged
+APK is linked from production after promotion. Do not publish a stable APK
+filename such as `latest.apk`.
 
 The Android APK publisher:
 
-1. builds the Android app with `ANDROID_PACKAGE_SOURCE_BASE_URL` defaulting to
-   `https://aerobag.org/packages/`
-2. builds with `ANDROID_LIVE_FEED_SOURCE_BASE_URL` defaulting to
-   `https://aerobag.org`
-3. preserves the stable Android app identity `org.aerobag.app`
-4. builds the packaged Rust JNI library in release mode for `arm64-v8a` by
+1. builds with release-scoped package and live-feed endpoints
+2. preserves the stable Android app identity `org.aerobag.app`
+3. builds the packaged Rust JNI library in release mode for `arm64-v8a` by
    default; override `ANDROID_BUILD_RUST_RELEASE` or `ANDROID_TARGET_ABIS` only
    for development diagnostics
-5. copies exactly one versioned APK name into `$AEROBAG_WEB_DIST/downloads`,
+4. copies exactly one versioned APK name into the immutable release downloads,
    for example `aerobag-android-4dbd9ead.apk`
-6. writes `$AEROBAG_WEB_DIST/downloads/android-apk.json`, which is what the
+5. writes release-scoped `downloads/android-apk.json`, which is what the
    `/about` page reads to show the current versioned link
 
 The obsolete `build-fast-subset` path is not part of production deploy. Live
@@ -348,10 +376,9 @@ METAR/TFR/NEXRAD/winds/obstacle data is owned by `aerobag-live-feedsd`.
 
 Prod serves:
 
-- `/`: static web app from `/mnt/aerobag-data/ui-target/web/dist`
-- `/downloads/`: Android APK metadata and versioned APK from the static web app
-- `/packages/`: `/mnt/aerobag-data/artifacts/published/`
-- `/live-feeds/`: proxied to `aerobag-live-feedsd`
+- `/`, `/downloads/`, `/packages/`, `/live-feeds/`: active production channel
+- `/staging/` and its package/download/live-feed subpaths: staging channel
+- `/releases/<tag>/`: durable release-scoped resources
 - `/cloud/`: proxied to the localhost ACS daemon with SSE buffering disabled
 - `/icons/`: source-tree icon assets
 - `/health.json`: machine-readable deploy/build/live-feed status
@@ -413,8 +440,9 @@ It reports:
 
 - deployed commit and configured publication refs
 - systemd active/enabled states
-- `published/current_artifacts.json` age, manifest count, and contract summary
-- `live-feeds/v3/current.json` age
+- active production `current_artifacts.json` age, manifest count, and contracts
+- desired/observed release state and per-release service state
+- active production release `live-feeds/v3/current.json` age
 - most recent orchestrator log path
 
 The live-feeds daemon also serves:

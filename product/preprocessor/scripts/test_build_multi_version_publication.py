@@ -4,6 +4,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import json
 import subprocess
 import tempfile
 import unittest
@@ -30,6 +31,46 @@ class MultiVersionPublicationWorktreeTests(unittest.TestCase):
 
         self.assertEqual(args.refs, ["main", "legacy-nav15"])
         self.assertEqual(args.build_args, ["--profile", "production"])
+
+    def test_isolated_build_requires_and_records_a_results_destination(self) -> None:
+        with self.assertRaises(SystemExit):
+            publication.parse_args(
+                ["--primary-ref", "release-a", "--no-activate", "release-a"]
+            )
+        args = publication.parse_args(
+            [
+                "--primary-ref",
+                "release-a",
+                "--no-activate",
+                "--results-output",
+                "/tmp/releases.json",
+                "release-a",
+            ]
+        )
+        self.assertTrue(args.no_activate)
+        self.assertEqual(args.results_output, Path("/tmp/releases.json"))
+
+    def test_build_results_pin_each_ref_to_commit_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "results.json"
+            publication.write_build_results(
+                output,
+                [
+                    publication.BuiltRevision(
+                        ref="2026-08-22.1",
+                        sha="a" * 40,
+                        worktree=Path("/worktree"),
+                        binary=Path("/binary"),
+                        manifest=Path("/published/product_artifacts.json"),
+                    )
+                ],
+            )
+            document = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(document["releases"][0]["commit"], "a" * 40)
+            self.assertEqual(
+                document["releases"][0]["product_artifacts"],
+                "/published/product_artifacts.json",
+            )
 
     def test_primary_is_first_and_compatibility_order_is_input_independent(self) -> None:
         forward = publication.primary_first_refs(

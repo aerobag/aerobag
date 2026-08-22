@@ -10,6 +10,7 @@ import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -172,7 +173,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="RFC3339 UTC timestamp recorded in the merged current_artifacts file",
     )
+    parser.add_argument(
+        "--no-activate",
+        action="store_true",
+        help=(
+            "build immutable per-ref publications without writing the legacy "
+            "current_artifacts alias or running GC"
+        ),
+    )
+    parser.add_argument(
+        "--results-output",
+        type=Path,
+        default=None,
+        help="write the built ref/commit/product_artifacts mapping as JSON",
+    )
     args = parser.parse_args(parser_args)
+    if args.no_activate and args.results_output is None:
+        parser.error("--no-activate requires --results-output")
     args.build_args = build_args
     return args
 
@@ -351,6 +368,8 @@ def merge_command(
         "merge-current-artifacts",
         "--build-root",
         str(build_root),
+        "--output",
+        str(build_root / "published" / "current_artifacts.json"),
     ]
     if as_of_utc:
         command.extend(["--as-of-utc", as_of_utc])
@@ -361,6 +380,27 @@ def merge_command(
 
 def gc_command(primary_binary: Path, build_root: Path) -> list[str]:
     return [str(primary_binary), "gc", "--build-root", str(build_root)]
+
+
+def write_build_results(path: Path, builds: list[BuiltRevision]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = {
+        "schema_version": 1,
+        "releases": [
+            {
+                "ref": build.ref,
+                "commit": build.sha,
+                "product_artifacts": str(build.manifest),
+            }
+            for build in builds
+        ],
+    }
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
 
 
 def main() -> int:
@@ -434,52 +474,55 @@ def main() -> int:
             primary = builds[0]
             if primary.ref != args.primary_ref:
                 raise RuntimeError("primary publication was not built first")
-            manifests = [build.manifest for build in builds]
-            merge = merge_command(primary.binary, build_root, manifests, args.as_of_utc)
-            with publication_log.task(
-                "merge-current-artifacts",
-                manifests=len(manifests),
-                primary_ref=primary.ref,
-                primary_sha=primary.sha,
-            ):
-                result = run(
-                    merge,
-                    cwd=primary.worktree / PREPROCESSOR_DIR,
-                    env=env,
-                    capture=True,
-                )
-                print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-                output_lines = [line for line in result.stdout.splitlines() if line]
-                if len(output_lines) != 1:
-                    raise RuntimeError(
-                        "merge-current-artifacts must report exactly one output path; "
-                        f"got {len(output_lines)} lines"
+            if args.results_output is not None:
+                write_build_results(args.results_output.resolve(), builds)
+            if not args.no_activate:
+                manifests = [build.manifest for build in builds]
+                merge = merge_command(primary.binary, build_root, manifests, args.as_of_utc)
+                with publication_log.task(
+                    "merge-current-artifacts",
+                    manifests=len(manifests),
+                    primary_ref=primary.ref,
+                    primary_sha=primary.sha,
+                ):
+                    result = run(
+                        merge,
+                        cwd=primary.worktree / PREPROCESSOR_DIR,
+                        env=env,
+                        capture=True,
                     )
-                current_artifacts_path = Path(output_lines[-1]).resolve()
-                expected_current = (
-                    build_root / "published" / "current_artifacts.json"
-                ).resolve()
-                if current_artifacts_path != expected_current:
-                    raise RuntimeError(
-                        "merge-current-artifacts reported unexpected output path "
-                        f"{current_artifacts_path}; expected {expected_current}"
-                    )
-                if not current_artifacts_path.is_file():
-                    raise RuntimeError(
-                        "merge-current-artifacts reported missing output "
-                        f"{current_artifacts_path}"
-                    )
+                    print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+                    output_lines = [line for line in result.stdout.splitlines() if line]
+                    if len(output_lines) != 1:
+                        raise RuntimeError(
+                            "merge-current-artifacts must report exactly one output path; "
+                            f"got {len(output_lines)} lines"
+                        )
+                    current_artifacts_path = Path(output_lines[-1]).resolve()
+                    expected_current = (
+                        build_root / "published" / "current_artifacts.json"
+                    ).resolve()
+                    if current_artifacts_path != expected_current:
+                        raise RuntimeError(
+                            "merge-current-artifacts reported unexpected output path "
+                            f"{current_artifacts_path}; expected {expected_current}"
+                        )
+                    if not current_artifacts_path.is_file():
+                        raise RuntimeError(
+                            "merge-current-artifacts reported missing output "
+                            f"{current_artifacts_path}"
+                        )
 
-            gc = gc_command(primary.binary, build_root)
-            with publication_log.task(
-                "publication-gc", primary_ref=primary.ref, primary_sha=primary.sha
-            ):
-                run(
-                    gc,
-                    cwd=primary.worktree / PREPROCESSOR_DIR,
-                    env=env,
-                    capture=True,
-                )
+                gc = gc_command(primary.binary, build_root)
+                with publication_log.task(
+                    "publication-gc", primary_ref=primary.ref, primary_sha=primary.sha
+                ):
+                    run(
+                        gc,
+                        cwd=primary.worktree / PREPROCESSOR_DIR,
+                        env=env,
+                        capture=True,
+                    )
         finally:
             with publication_log.task("publication-cleanup"):
                 for worktree in reversed(worktrees):
@@ -494,13 +537,16 @@ def main() -> int:
         publication_log.log(f"complete FAIL error={one_line(error)}")
         raise
     else:
-        if current_artifacts_path is None:
+        if current_artifacts_path is None and not args.no_activate:
             error = RuntimeError("publication completed without current_artifacts path")
             publication_log.log(f"complete FAIL error={one_line(error)}")
             raise error
-        publication_log.log(
-            f"complete PASS current_artifacts={current_artifacts_path}"
+        result_name = (
+            f"build_results={args.results_output.resolve()}"
+            if args.no_activate
+            else f"current_artifacts={current_artifacts_path}"
         )
+        publication_log.log(f"complete PASS {result_name}")
         return 0
     finally:
         worktree_lock.close()

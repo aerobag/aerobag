@@ -30,6 +30,39 @@ internal enum class SessionRenderScope {
     HighRate,
 }
 
+internal enum class RenderOwnerPublicationDisposition {
+    Applied,
+    Current,
+    Stale,
+}
+
+/** A rendered projection and the newest session revision actually published into it. */
+internal class VersionedRenderOwner<Source, Projection>(
+    initialSource: Source,
+    private val revisionOf: (Source) -> Long,
+    private val project: (Source) -> Projection,
+) {
+    private val projection = mutableStateOf(project(initialSource))
+
+    val state: State<Projection> = projection
+
+    var publishedRevision: Long = revisionOf(initialSource)
+        private set
+
+    fun publish(source: Source): RenderOwnerPublicationDisposition {
+        val revision = revisionOf(source)
+        return when {
+            revision < publishedRevision -> RenderOwnerPublicationDisposition.Stale
+            revision == publishedRevision -> RenderOwnerPublicationDisposition.Current
+            else -> {
+                projection.value = project(source)
+                publishedRevision = revision
+                RenderOwnerPublicationDisposition.Applied
+            }
+        }
+    }
+}
+
 internal fun sessionRenderScopes(
     changedGroups: Set<UiSessionUpdateGroup>,
     fullSnapshot: Boolean,
@@ -81,37 +114,40 @@ internal fun UiSessionSnapshot.withHighRateProjection(
 @Stable
 internal class SessionRenderModel(initialSnapshot: UiSessionSnapshot) {
     private val latestSnapshot = AtomicReference(initialSnapshot)
-    private val shellSnapshot = mutableStateOf(initialSnapshot)
-    private val highRateProjection = mutableStateOf(HighRateSessionProjection.from(initialSnapshot))
+    private val shellOwner = VersionedRenderOwner(
+        initialSource = initialSnapshot,
+        revisionOf = UiSessionSnapshot::sessionRevision,
+        project = { it },
+    )
+    private val highRateOwner = VersionedRenderOwner(
+        initialSource = initialSnapshot,
+        revisionOf = UiSessionSnapshot::sessionRevision,
+        project = HighRateSessionProjection::from,
+    )
 
-    val shellSnapshotState: State<UiSessionSnapshot> = shellSnapshot
-    val highRateProjectionState: State<HighRateSessionProjection> = highRateProjection
+    val shellSnapshotState: State<UiSessionSnapshot> = shellOwner.state
+    val highRateProjectionState: State<HighRateSessionProjection> = highRateOwner.state
     val currentRevision: Long
         get() = latestSnapshot.get().sessionRevision
 
     fun observe(snapshot: UiSessionSnapshot) {
-        latestSnapshot.updateAndGet { current ->
-            if (snapshot.sessionRevision >= current.sessionRevision) snapshot else current
-        }
+        observeLatest(snapshot)
     }
 
     fun publish(publication: NativeUiSession.SnapshotPublication) {
         val snapshot = publication.snapshot
-        if (snapshot.sessionRevision < latestSnapshot.get().sessionRevision) return
-        latestSnapshot.set(snapshot)
+        observeLatest(snapshot)
         val scopes = sessionRenderScopes(publication.changedGroups, publication.fullSnapshot)
         if (SessionRenderScope.HighRate in scopes) {
-            highRateProjection.value = HighRateSessionProjection.from(snapshot)
+            highRateOwner.publish(snapshot)
         }
         if (SessionRenderScope.Shell in scopes) {
-            shellSnapshot.value = snapshot
+            shellOwner.publish(snapshot)
         }
     }
 
     fun publishUnannouncedSnapshot(snapshot: UiSessionSnapshot): Boolean {
-        val current = latestSnapshot.get()
-        if (snapshot.sessionRevision < current.sessionRevision) return false
-        if (snapshot.sessionRevision == current.sessionRevision) return true
+        val latest = observeLatest(snapshot)
         publish(
             NativeUiSession.SnapshotPublication(
                 snapshot = snapshot,
@@ -119,8 +155,13 @@ internal class SessionRenderModel(initialSnapshot: UiSessionSnapshot) {
                 fullSnapshot = true,
             ),
         )
-        return true
+        return snapshot.sessionRevision >= latest.sessionRevision
     }
+
+    private fun observeLatest(snapshot: UiSessionSnapshot): UiSessionSnapshot =
+        latestSnapshot.updateAndGet { current ->
+            if (snapshot.sessionRevision >= current.sessionRevision) snapshot else current
+        }
 }
 
 internal data class SessionRenderCounts(

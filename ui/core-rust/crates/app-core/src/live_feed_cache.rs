@@ -47,6 +47,13 @@ pub struct LiveFeedCache {
     nexrad_acquisition: NexradAcquisitionDirective,
     nexrad_request_clock_epoch_ms: i64,
     last_nexrad_install_epoch_ms: Option<i64>,
+    winds_aloft_download_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LiveFeedCacheAcquisitionDirective {
+    pub nexrad: NexradAcquisitionDirective,
+    pub winds_aloft_download_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +97,39 @@ struct RestoringLiveFeedResources {
     resources: BTreeMap<String, Vec<u8>>,
 }
 
+pub struct LiveFeedResourceRestorationPlan {
+    restoring: RestoringLiveFeedResources,
+}
+
+pub struct PreparedLiveFeedResourceRestoration {
+    installed: LiveFeedInstalledState,
+    notam_preparer: Option<NotamProjectionPreparer>,
+    pending_notam_prepared: Option<Vec<u8>>,
+}
+
+impl LiveFeedResourceRestorationPlan {
+    pub fn prepare(
+        self,
+        registry: &LiveFeedProductRegistry,
+    ) -> AppResult<PreparedLiveFeedResourceRestoration> {
+        let product = self.restoring.manifest.summary.product.as_str();
+        let installed = registry
+            .required_driver(product)?
+            .install_persisted_resources(&self.restoring)?;
+        let (notam_preparer, pending_notam_prepared) = if product == "notams" {
+            let (preparer, prepared) = prepare_restored_notam_candidate(&installed)?;
+            (Some(preparer), Some(prepared))
+        } else {
+            (None, None)
+        };
+        Ok(PreparedLiveFeedResourceRestoration {
+            installed,
+            notam_preparer,
+            pending_notam_prepared,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveFeedInstalledPayload {
@@ -100,6 +140,12 @@ pub enum LiveFeedInstalledPayload {
         manifest: Vec<u8>,
         root: Vec<u8>,
         pages: Vec<Vec<u8>>,
+    },
+    NavKvPackage {
+        manifest: Vec<u8>,
+        root: Vec<u8>,
+        package_blob_sha256: String,
+        package_bytes: Option<Arc<Vec<u8>>>,
     },
     NexradPackage {
         manifest: Vec<u8>,
@@ -122,6 +168,30 @@ pub enum LiveFeedFetchedPayload {
         root: Vec<u8>,
         pages: Vec<Vec<u8>>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveFeedFullInstallPlan {
+    driver: LiveFeedProductDriver,
+    product: String,
+    version: String,
+    payload_ref: LiveFeedPayloadRef,
+    install_profile: Option<String>,
+    collected_at_utc: Option<String>,
+}
+
+impl LiveFeedFullInstallPlan {
+    pub fn install(self, payload: LiveFeedFetchedPayload) -> AppResult<LiveFeedInstalledState> {
+        let mut installed = self.driver.install_full(
+            &self.product,
+            &self.version,
+            &self.payload_ref,
+            self.install_profile.as_deref(),
+            payload,
+        )?;
+        installed.collected_at_utc = self.collected_at_utc;
+        Ok(installed)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,10 +297,12 @@ impl LiveFeedCache {
             .get_mut(product)
             .and_then(|states| states.get_mut(version))
             .ok_or_else(|| cache_error(format!("{product}/{version} is not installed")))?;
-        if let LiveFeedInstalledPayload::NexradPackage { package_bytes, .. } =
-            &mut installed.payload
-        {
-            *package_bytes = None;
+        match &mut installed.payload {
+            LiveFeedInstalledPayload::NexradPackage { package_bytes, .. }
+            | LiveFeedInstalledPayload::NavKvPackage { package_bytes, .. } => {
+                *package_bytes = None;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -326,23 +398,33 @@ impl LiveFeedCache {
         registry: &LiveFeedProductRegistry,
         product: &str,
     ) -> AppResult<()> {
-        let restoring = self.restoring_resources.remove(product).ok_or_else(|| {
-            cache_error(format!("resource restoration is not active for {product}"))
-        })?;
-        let result = (|| {
-            let driver = registry.required_driver(product)?;
-            let installed = driver.install_persisted_resources(&restoring)?;
-            if product == "notams" {
-                self.prepare_restored_notam_candidate(&installed)?;
-            }
-            self.stage_or_remember_installed_state(installed);
-            Ok(())
-        })();
-        if result.is_err() {
-            self.restoring_resources
-                .insert(product.to_string(), restoring);
+        let plan = self.take_resource_restoration_plan(product)?;
+        let prepared = plan.prepare(registry)?;
+        self.commit_prepared_resource_restoration(prepared);
+        Ok(())
+    }
+
+    pub fn take_resource_restoration_plan(
+        &mut self,
+        product: &str,
+    ) -> AppResult<LiveFeedResourceRestorationPlan> {
+        self.restoring_resources
+            .remove(product)
+            .map(|restoring| LiveFeedResourceRestorationPlan { restoring })
+            .ok_or_else(|| cache_error(format!("resource restoration is not active for {product}")))
+    }
+
+    pub fn commit_prepared_resource_restoration(
+        &mut self,
+        prepared: PreparedLiveFeedResourceRestoration,
+    ) {
+        if let Some(preparer) = prepared.notam_preparer {
+            self.notam_preparer = preparer;
         }
-        result
+        if let Some(payload) = prepared.pending_notam_prepared {
+            self.pending_notam_prepared = Some(payload);
+        }
+        self.stage_or_remember_installed_state(prepared.installed);
     }
 
     pub fn install_candidate(&self, product: &str) -> Option<&LiveFeedInstalledState> {
@@ -454,10 +536,13 @@ impl LiveFeedCache {
         summary: &LiveFeedInstalledSummary,
         bytes: &[u8],
     ) -> AppResult<()> {
-        let driver = registry.required_driver(&summary.product)?;
-        let installed = driver.install_persisted(summary, bytes)?;
-        self.stage_or_remember_installed_state(installed);
+        let installed = prepare_installed_payload_bytes(registry, summary, bytes)?;
+        self.ingest_prepared_installed_state(installed);
         Ok(())
+    }
+
+    pub fn ingest_prepared_installed_state(&mut self, installed: LiveFeedInstalledState) {
+        self.stage_or_remember_installed_state(installed);
     }
 
     pub fn ingest_current(&mut self, bytes: &[u8]) -> AppResult<()> {
@@ -507,6 +592,9 @@ impl LiveFeedCache {
                     }),
                 self.nexrad_acquisition.offline_profile.id(),
             );
+        let winds_metadata_request = self
+            .live_feeds
+            .current_state_manifest_cache_request("winds-aloft");
         let nexrad_due = self.nexrad_acquisition.cadence != NexradUpdateCadence::Never
             && self
                 .last_nexrad_install_epoch_ms
@@ -535,8 +623,19 @@ impl LiveFeedCache {
                     && (backfill_animation_window
                         || current_nexrad_version == Some(version.as_str()))
             }
+            LiveFeedCacheRequestKind::Full { product, .. }
+            | LiveFeedCacheRequestKind::Delta { product, .. }
+                if product == "winds-aloft" =>
+            {
+                self.winds_aloft_download_requested
+            }
             _ => true,
         });
+        if !self.winds_aloft_download_requested {
+            if let Some(request) = winds_metadata_request {
+                requests.push(request);
+            }
+        }
         if viewport_only {
             requests.extend(self.live_feeds.nexrad_state_manifest_cache_requests());
         }
@@ -551,6 +650,11 @@ impl LiveFeedCache {
 
     pub fn apply_nexrad_acquisition_directive(&mut self, directive: NexradAcquisitionDirective) {
         self.nexrad_acquisition = directive;
+    }
+
+    pub fn apply_acquisition_directive(&mut self, directive: LiveFeedCacheAcquisitionDirective) {
+        self.nexrad_acquisition = directive.nexrad;
+        self.winds_aloft_download_requested = directive.winds_aloft_download_requested;
     }
 
     pub fn current_refresh_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
@@ -607,33 +711,12 @@ impl LiveFeedCache {
                     .ingest_durable_request_resource(request, &bytes)?;
                 Ok(None)
             }
-            LiveFeedCacheRequestKind::Full {
-                product,
-                version,
-                install_profile,
-                ..
-            } => {
-                let driver = registry.required_driver(product)?;
-                let full_ref = self.live_feeds.durable_full_payload_ref_for_request(
-                    product,
-                    version,
-                    install_profile.as_deref(),
-                )?;
-                let mut installed = driver.install_full(
-                    product,
-                    version,
-                    full_ref,
-                    install_profile.as_deref(),
-                    payload,
-                )?;
-                installed.collected_at_utc = self
-                    .live_feeds
-                    .product_collected_at_utc_for_version(product, version)
-                    .map(str::to_string);
-                if product == "notams" {
-                    self.prepare_full_notam_candidate(&installed)?;
-                }
-                self.stage_fetched_installed_state(installed.clone());
+            LiveFeedCacheRequestKind::Full { .. } => {
+                let plan = self.full_install_plan(registry, request)?.ok_or_else(|| {
+                    cache_error("full live-feed request produced no install plan".to_string())
+                })?;
+                let installed = plan.install(payload)?;
+                self.commit_prepared_full_install(request, installed.clone())?;
                 Ok(Some(installed))
             }
             LiveFeedCacheRequestKind::Delta {
@@ -669,6 +752,75 @@ impl LiveFeedCache {
                 Ok(Some(installed))
             }
         }
+    }
+
+    pub fn full_install_plan(
+        &self,
+        registry: &LiveFeedProductRegistry,
+        request: &LiveFeedCacheRequest,
+    ) -> AppResult<Option<LiveFeedFullInstallPlan>> {
+        let LiveFeedCacheRequestKind::Full {
+            product,
+            version,
+            install_profile,
+            ..
+        } = &request.kind
+        else {
+            return Ok(None);
+        };
+        Ok(Some(LiveFeedFullInstallPlan {
+            driver: registry.required_driver(product)?.clone(),
+            product: product.clone(),
+            version: version.clone(),
+            payload_ref: self
+                .live_feeds
+                .durable_full_payload_ref_for_request(product, version, install_profile.as_deref())?
+                .clone(),
+            install_profile: install_profile.clone(),
+            collected_at_utc: self
+                .live_feeds
+                .product_collected_at_utc_for_version(product, version)
+                .map(str::to_string),
+        }))
+    }
+
+    pub fn commit_prepared_full_install(
+        &mut self,
+        request: &LiveFeedCacheRequest,
+        installed: LiveFeedInstalledState,
+    ) -> AppResult<()> {
+        let LiveFeedCacheRequestKind::Full {
+            product,
+            version,
+            install_profile,
+            ..
+        } = &request.kind
+        else {
+            return Err(cache_error(
+                "prepared full install does not belong to a full request".to_string(),
+            ));
+        };
+        let current_ref = self.live_feeds.durable_full_payload_ref_for_request(
+            product,
+            version,
+            install_profile.as_deref(),
+        )?;
+        if installed.product != *product
+            || installed.version != *version
+            || installed.state_sha256 != current_ref.state_sha256
+            || (product == "winds-aloft"
+                && installed.summary().blob_sha256.as_deref()
+                    != Some(current_ref.blob_sha256.as_str()))
+        {
+            return Err(cache_error(format!(
+                "prepared {product}/{version} full install no longer matches the catalog"
+            )));
+        }
+        if product == "notams" {
+            self.prepare_full_notam_candidate(&installed)?;
+        }
+        self.stage_fetched_installed_state(installed);
+        Ok(())
     }
 
     fn remember_installed_state(&mut self, installed: LiveFeedInstalledState) {
@@ -787,42 +939,6 @@ impl LiveFeedCache {
         Ok(())
     }
 
-    fn prepare_restored_notam_candidate(
-        &mut self,
-        installed: &LiveFeedInstalledState,
-    ) -> AppResult<()> {
-        let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &installed.payload
-        else {
-            return Err(cache_error(
-                "restored NOTAM candidate is not an immutable resource chain".to_string(),
-            ));
-        };
-        self.notam_preparer.reset();
-        let checkpoint = decode_notam_checkpoint(Some("notam_checkpoint_xz"), checkpoint)?;
-        self.notam_preparer
-            .install_checkpoint(checkpoint, &mut NotamApplyWork::default())
-            .map_err(|error| cache_error(format!("invalid persisted NOTAM checkpoint: {error}")))?;
-        for bytes in deltas {
-            let delta = decode_notam_delta(Some("notam_ordered_delta_xz"), bytes)?;
-            self.notam_preparer
-                .apply_delta(delta, &mut NotamApplyWork::default())
-                .map_err(|error| cache_error(format!("invalid persisted NOTAM delta: {error}")))?;
-        }
-        self.require_prepared_notam_target(installed)?;
-        let checkpoint = self
-            .notam_preparer
-            .projection_checkpoint()
-            .ok_or_else(|| cache_error("restored NOTAM projection is unavailable".to_string()))?;
-        self.pending_notam_prepared = Some(encode_cached_notam_envelope(
-            format!("live_feeds/state/notams/{}", installed.version),
-            installed,
-            None,
-            None,
-            PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
-        )?);
-        Ok(())
-    }
-
     fn require_prepared_notam_target(&self, installed: &LiveFeedInstalledState) -> AppResult<()> {
         let actual = self.notam_preparer.state_id().ok_or_else(|| {
             cache_error("canonical NOTAM worker state is unavailable".to_string())
@@ -835,6 +951,57 @@ impl LiveFeedCache {
         }
         Ok(())
     }
+}
+
+pub fn prepare_installed_payload_bytes(
+    registry: &LiveFeedProductRegistry,
+    summary: &LiveFeedInstalledSummary,
+    bytes: &[u8],
+) -> AppResult<LiveFeedInstalledState> {
+    registry
+        .required_driver(&summary.product)?
+        .install_persisted(summary, bytes)
+}
+
+fn prepare_restored_notam_candidate(
+    installed: &LiveFeedInstalledState,
+) -> AppResult<(NotamProjectionPreparer, Vec<u8>)> {
+    let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &installed.payload else {
+        return Err(cache_error(
+            "restored NOTAM candidate is not an immutable resource chain".to_string(),
+        ));
+    };
+    let mut preparer = NotamProjectionPreparer::default();
+    let checkpoint = decode_notam_checkpoint(Some("notam_checkpoint_xz"), checkpoint)?;
+    preparer
+        .install_checkpoint(checkpoint, &mut NotamApplyWork::default())
+        .map_err(|error| cache_error(format!("invalid persisted NOTAM checkpoint: {error}")))?;
+    for bytes in deltas {
+        let delta = decode_notam_delta(Some("notam_ordered_delta_xz"), bytes)?;
+        preparer
+            .apply_delta(delta, &mut NotamApplyWork::default())
+            .map_err(|error| cache_error(format!("invalid persisted NOTAM delta: {error}")))?;
+    }
+    let actual = preparer
+        .state_id()
+        .ok_or_else(|| cache_error("canonical NOTAM worker state is unavailable".to_string()))?;
+    if actual != installed.version || actual != installed.state_sha256 {
+        return Err(cache_error(format!(
+            "prepared NOTAM target {actual} does not match installed {}/{}",
+            installed.version, installed.state_sha256
+        )));
+    }
+    let checkpoint = preparer
+        .projection_checkpoint()
+        .ok_or_else(|| cache_error("restored NOTAM projection is unavailable".to_string()))?;
+    let prepared = encode_cached_notam_envelope(
+        format!("live_feeds/state/notams/{}", installed.version),
+        installed,
+        None,
+        None,
+        PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
+    )?;
+    Ok((preparer, prepared))
 }
 
 fn encode_cached_notam_envelope(
@@ -922,6 +1089,10 @@ impl LiveFeedInstalledState {
                 LiveFeedInstalledPayload::NexradPackage {
                     package_blob_sha256,
                     ..
+                }
+                | LiveFeedInstalledPayload::NavKvPackage {
+                    package_blob_sha256,
+                    ..
                 } => Some(package_blob_sha256.clone()),
                 _ => None,
             },
@@ -940,6 +1111,16 @@ impl LiveFeedInstalledState {
                 ..
             } => Err(cache_error(
                 "NEXRAD package bytes have been released after persistence".to_string(),
+            )),
+            LiveFeedInstalledPayload::NavKvPackage {
+                package_bytes: Some(bytes),
+                ..
+            } => Ok(bytes.as_ref().clone()),
+            LiveFeedInstalledPayload::NavKvPackage {
+                package_bytes: None,
+                ..
+            } => Err(cache_error(
+                "NavKv package bytes have been released after persistence".to_string(),
             )),
             LiveFeedInstalledPayload::NavKv {
                 manifest,
@@ -1032,7 +1213,10 @@ fn validate_resource_manifest(manifest: &LiveFeedResourceManifest) -> AppResult<
 fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Value> {
     match &installed.payload {
         LiveFeedInstalledPayload::Json { bytes } => serde_json::from_slice(bytes).ok(),
-        LiveFeedInstalledPayload::NavKv { manifest, .. } => serde_json::from_slice(manifest).ok(),
+        LiveFeedInstalledPayload::NavKv { manifest, .. }
+        | LiveFeedInstalledPayload::NavKvPackage { manifest, .. } => {
+            serde_json::from_slice(manifest).ok()
+        }
         LiveFeedInstalledPayload::NexradPackage {
             manifest,
             render_manifest,
@@ -1046,7 +1230,7 @@ impl LiveFeedInstalledPayload {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::Json { .. } => "json",
-            Self::NavKv { .. } => "nav_kv_package",
+            Self::NavKv { .. } | Self::NavKvPackage { .. } => "nav_kv_package",
             Self::NexradPackage { .. } => "nexrad_package",
             Self::NotamResources { .. } => "notam_resources",
         }
@@ -1210,6 +1394,9 @@ impl LiveFeedProductDriver {
                             &bytes,
                             required_blob_sha256("nav_kv full package", product, payload_ref)?,
                         )?;
+                        if product == "winds-aloft" {
+                            return verify_nav_kv_package(product, version, payload_ref, bytes);
+                        }
                         read_nav_kv_members_from_zip(product, &bytes)?
                     }
                 };
@@ -1322,6 +1509,33 @@ impl LiveFeedProductDriver {
                     return Err(cache_error(format!(
                         "{product} persisted payload metadata is not nav_kv"
                     )));
+                }
+                if product == "winds-aloft" {
+                    let expected_blob_sha256 = summary.blob_sha256.as_deref().ok_or_else(|| {
+                        cache_error(
+                            "persisted winds-aloft package metadata has no blob hash".to_string(),
+                        )
+                    })?;
+                    verify_blob_sha256(
+                        "persisted winds-aloft package",
+                        bytes,
+                        expected_blob_sha256,
+                    )?;
+                    let payload_ref = LiveFeedPayloadRef {
+                        kind: Some("nav_kv_package".to_string()),
+                        url: String::new(),
+                        bytes: bytes.len() as u64,
+                        blob_sha256: expected_blob_sha256.to_string(),
+                        state_sha256: summary.state_sha256.clone(),
+                    };
+                    let mut installed = verify_nav_kv_package(
+                        product,
+                        &summary.version,
+                        &payload_ref,
+                        bytes.to_vec(),
+                    )?;
+                    installed.collected_at_utc = summary.collected_at_utc.clone();
+                    return Ok(installed);
                 }
                 let (manifest, root, pages) = read_nav_kv_members_from_zip(product, bytes)?;
                 let payload_ref = LiveFeedPayloadRef {
@@ -1944,6 +2158,58 @@ fn verify_nav_kv_state(
     })
 }
 
+fn verify_nav_kv_package(
+    product: &str,
+    version: &str,
+    payload_ref: &LiveFeedPayloadRef,
+    bytes: Vec<u8>,
+) -> AppResult<LiveFeedInstalledState> {
+    let manifest = read_required_zip_member(product, &bytes, "manifest.json")?;
+    let root = read_required_zip_member(product, &bytes, "root")?;
+    let parsed_manifest: NavKvInstallManifest =
+        serde_json::from_slice(&manifest).map_err(cache_json_error)?;
+    if parsed_manifest.product_id != product || parsed_manifest.version_label != version {
+        return Err(cache_error(format!(
+            "nav_kv manifest contained {}/{}, expected {product}/{version}",
+            parsed_manifest.product_id, parsed_manifest.version_label
+        )));
+    }
+    let expected_encoding = format!("had-nav-kv-v{NAV_KV_VERSION}");
+    if parsed_manifest.encoding != expected_encoding {
+        return Err(cache_error(format!(
+            "unsupported {product} nav_kv encoding {}, expected {expected_encoding}",
+            parsed_manifest.encoding
+        )));
+    }
+    if parsed_manifest.state_sha256 != payload_ref.state_sha256 {
+        return Err(cache_error(format!(
+            "{product} nav_kv manifest hash {} did not match payload ref {}",
+            parsed_manifest.state_sha256, payload_ref.state_sha256
+        )));
+    }
+    let parsed_root = NavKvRoot::parse(&root)
+        .map_err(|err| cache_error(format!("failed to parse {product} root: {err}")))?;
+    if parsed_root.page_count() as usize != parsed_manifest.page_count {
+        return Err(cache_error(format!(
+            "{product} nav_kv root page count mismatch: root {}, manifest {}",
+            parsed_root.page_count(),
+            parsed_manifest.page_count
+        )));
+    }
+    Ok(LiveFeedInstalledState {
+        product: product.to_string(),
+        version: version.to_string(),
+        state_sha256: payload_ref.state_sha256.clone(),
+        collected_at_utc: None,
+        payload: LiveFeedInstalledPayload::NavKvPackage {
+            manifest,
+            root,
+            package_blob_sha256: payload_ref.blob_sha256.clone(),
+            package_bytes: Some(Arc::new(bytes)),
+        },
+    })
+}
+
 fn required_blob_sha256<'a>(
     _label: &str,
     _product: &str,
@@ -2001,6 +2267,19 @@ fn write_nav_kv_zip_bytes(manifest: &[u8], root: &[u8], pages: &[Vec<u8>]) -> Ap
 }
 
 type NavKvArchiveMembers = (Vec<u8>, Vec<u8>, Vec<Vec<u8>>);
+
+fn read_required_zip_member(product: &str, bytes: &[u8], name: &str) -> AppResult<Vec<u8>> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| cache_error(format!("failed to open {product} package: {error}")))?;
+    let mut member = archive
+        .by_name(name)
+        .map_err(|error| cache_error(format!("{product} package has no {name}: {error}")))?;
+    let mut value = Vec::new();
+    member.read_to_end(&mut value).map_err(|error| {
+        cache_error(format!("failed to read {product} package {name}: {error}"))
+    })?;
+    Ok(value)
+}
 
 fn read_nav_kv_members_from_zip(product: &str, bytes: &[u8]) -> AppResult<NavKvArchiveMembers> {
     let members = nav_kv_package::read_package_bytes(product, bytes).map_err(cache_error)?;
@@ -3246,6 +3525,131 @@ mod tests {
 
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].id, "live_feeds/current");
+    }
+
+    #[test]
+    fn durable_winds_fetches_metadata_until_core_requests_the_package() {
+        let mut cache = live_feed_cache();
+        let version = "winds-v2";
+        let state_sha256 = "winds-state-v2";
+        cache
+            .ingest_current(&current_manifest("winds-aloft", version, state_sha256))
+            .unwrap();
+        let version_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "product": "winds-aloft",
+            "version": version,
+            "state": {
+                "kind": "nav_kv",
+                "url": format!("states/winds-aloft/{version}/manifest.json"),
+                "bytes": 256,
+                "blob_sha256": "state-blob",
+                "state_sha256": state_sha256
+            },
+            "install_state": {
+                "kind": "nav_kv_package",
+                "url": format!("packages/winds-aloft/{version}.zip"),
+                "bytes": 12_000_000,
+                "blob_sha256": "package-blob",
+                "state_sha256": state_sha256
+            }
+        }))
+        .unwrap();
+        cache
+            .ingest_version_manifest("winds-aloft", version, &version_manifest)
+            .unwrap();
+
+        let metadata_request = cache.missing_requests_at_epoch_ms(1_000);
+        assert_eq!(metadata_request.len(), 1);
+        assert!(matches!(
+            &metadata_request[0].kind,
+            LiveFeedCacheRequestKind::State { product, version: requested }
+                if product == "winds-aloft" && requested == version
+        ));
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "product_id": "winds-aloft",
+            "version_label": version,
+            "state_sha256": state_sha256
+        }))
+        .unwrap();
+        cache
+            .install_fetched_payload(
+                &live_feed_product_registry(),
+                &metadata_request[0],
+                LiveFeedFetchedPayload::Bytes(metadata),
+            )
+            .unwrap();
+        assert!(cache.missing_requests_at_epoch_ms(2_000).is_empty());
+
+        cache.apply_acquisition_directive(LiveFeedCacheAcquisitionDirective {
+            nexrad: NexradAcquisitionDirective::default(),
+            winds_aloft_download_requested: true,
+        });
+        let package_request = cache.missing_requests_at_epoch_ms(3_000);
+        assert_eq!(package_request.len(), 1);
+        assert!(matches!(
+            &package_request[0].kind,
+            LiveFeedCacheRequestKind::Full { product, version: requested, .. }
+                if product == "winds-aloft" && requested == version
+        ));
+    }
+
+    #[test]
+    fn winds_package_is_persisted_verbatim_without_decoding_pages() {
+        let (manifest, root, pages, state_sha256) =
+            crate::forecast_atmosphere::tests::test_forecast_payload();
+        assert!(!pages.is_empty());
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default());
+        writer.start_file("manifest.json", options).unwrap();
+        writer.write_all(&manifest_bytes).unwrap();
+        writer.start_file("root", options).unwrap();
+        writer.write_all(&root).unwrap();
+        for page in 0..pages.len() {
+            writer
+                .start_file(format!("page_{page:04}"), options)
+                .unwrap();
+            // Deliberately not an XZ stream. Installation must not touch pages;
+            // the requested page is decoded only when core later consumes it.
+            writer.write_all(b"deferred-page-bytes").unwrap();
+        }
+        let package = writer.finish().unwrap().into_inner();
+        let payload_ref = LiveFeedPayloadRef {
+            kind: Some("nav_kv_package".to_string()),
+            url: "packages/winds.zip".to_string(),
+            bytes: package.len() as u64,
+            blob_sha256: sha256_hex(&package),
+            state_sha256,
+        };
+        let registry = live_feed_product_registry();
+        let driver = registry.required_driver("winds-aloft").unwrap();
+
+        let installed = driver
+            .install_full(
+                "winds-aloft",
+                &manifest.version_label,
+                &payload_ref,
+                None,
+                LiveFeedFetchedPayload::Bytes(package.clone()),
+            )
+            .expect("install immutable winds package");
+        assert!(matches!(
+            &installed.payload,
+            LiveFeedInstalledPayload::NavKvPackage { .. }
+        ));
+        assert_eq!(installed.payload_bytes().unwrap(), package);
+        assert_eq!(
+            installed.summary().blob_sha256.as_deref(),
+            Some(payload_ref.blob_sha256.as_str())
+        );
+
+        let restored = prepare_installed_payload_bytes(&registry, &installed.summary(), &package)
+            .expect("restore immutable winds package");
+        assert_eq!(restored.payload_bytes().unwrap(), package);
     }
 
     #[test]

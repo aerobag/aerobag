@@ -946,6 +946,24 @@ pub fn report_live_feed_connection_event_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn report_live_feed_acquisition_phase_in_session_json(
+    handle: u64,
+    product: &str,
+    phase: &str,
+) -> Result<String, String> {
+    let phase = match phase {
+        "idle" => app_core::WindsAloftAcquisitionPhase::Idle,
+        "requested" => app_core::WindsAloftAcquisitionPhase::Requested,
+        "downloading" => app_core::WindsAloftAcquisitionPhase::Downloading,
+        "installing" => app_core::WindsAloftAcquisitionPhase::Installing,
+        _ => return Err(format!("unsupported live-feed acquisition phase: {phase}")),
+    };
+    let outcome =
+        app_core::report_live_feed_acquisition_phase_in_session(handle as u32, product, phase)
+            .map_err(|error| error.to_string())?;
+    serde_json::to_string(&outcome).map_err(|error| error.to_string())
+}
+
 pub fn get_map_overlay_in_session_json(
     handle: u64,
     viewport_json: &str,
@@ -1309,6 +1327,20 @@ fn live_feed_caches() -> &'static Mutex<HashMap<u32, app_core::LiveFeedCache>> {
     LIVE_FEED_CACHES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn prepare_then_with_live_feed_caches<T, R>(
+    prepare: impl FnOnce() -> Result<T, String>,
+    commit: impl FnOnce(&mut HashMap<u32, app_core::LiveFeedCache>, T) -> Result<R, String>,
+) -> Result<R, String> {
+    // Keep package hashing, archive inspection, and projection construction out
+    // of the process-wide cache registry lock. The closure boundary is covered
+    // by a concurrency regression test below.
+    let prepared = prepare()?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    commit(&mut caches, prepared)
+}
+
 fn ui_session_work_schedulers() -> &'static Mutex<HashMap<u32, app_core::UiSessionWorkScheduler>> {
     UI_SESSION_WORK_SCHEDULERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1564,15 +1596,16 @@ pub fn live_feed_cache_apply_session_policy(
     handle: u64,
     session_handle: u64,
 ) -> Result<(), String> {
-    let directive = app_core::nexrad_acquisition_directive_in_session(session_handle as u32)
-        .map_err(|error| error.to_string())?;
+    let directive =
+        app_core::live_feed_cache_acquisition_directive_in_session(session_handle as u32)
+            .map_err(|error| error.to_string())?;
     let mut caches = live_feed_caches()
         .lock()
         .map_err(|_| "live feed cache store poisoned".to_string())?;
     let cache = caches
         .get_mut(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
-    cache.apply_nexrad_acquisition_directive(directive);
+    cache.apply_acquisition_directive(directive);
     Ok(())
 }
 
@@ -1612,6 +1645,39 @@ pub fn live_feed_cache_install_fetched_bytes_json(
 ) -> Result<String, String> {
     let request: app_core::LiveFeedCacheRequest =
         serde_json::from_str(request_json).map_err(|err| err.to_string())?;
+    if matches!(
+        &request.kind,
+        app_core::LiveFeedCacheRequestKind::Full { .. }
+    ) {
+        let plan = {
+            let caches = live_feed_caches()
+                .lock()
+                .map_err(|_| "live feed cache store poisoned".to_string())?;
+            caches
+                .get(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                .full_install_plan(&app_core::live_feed_product_registry(), &request)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "full request produced no install plan".to_string())?
+        };
+        // Blob hashing, archive inspection, and any offline package preparation
+        // run without the cache registry lock. Only the validated-state swap is locked.
+        return prepare_then_with_live_feed_caches(
+            || {
+                plan.install(app_core::LiveFeedFetchedPayload::Bytes(bytes.to_vec()))
+                    .map_err(|error| error.to_string())
+            },
+            |caches, installed| {
+                let summary = installed.summary();
+                caches
+                    .get_mut(&(handle as u32))
+                    .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                    .commit_prepared_full_install(&request, installed)
+                    .map_err(|error| error.to_string())?;
+                serde_json::to_string(&Some(summary)).map_err(|error| error.to_string())
+            },
+        );
+    }
     let mut caches = live_feed_caches()
         .lock()
         .map_err(|_| "live feed cache store poisoned".to_string())?;
@@ -1698,15 +1764,25 @@ pub fn live_feed_cache_ingest_installed_payload_bytes(
 ) -> Result<(), String> {
     let summary: app_core::LiveFeedInstalledSummary =
         serde_json::from_str(summary_json).map_err(|err| err.to_string())?;
-    let mut caches = live_feed_caches()
-        .lock()
-        .map_err(|_| "live feed cache store poisoned".to_string())?;
-    let cache = caches
-        .get_mut(&(handle as u32))
-        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
-    cache
-        .ingest_installed_payload_bytes(&app_core::live_feed_product_registry(), &summary, bytes)
-        .map_err(|err| err.to_string())
+    // Hashing and parsing a persisted package can be expensive. Prepare it before
+    // taking the cache registry lock; committing the validated state is tiny.
+    prepare_then_with_live_feed_caches(
+        || {
+            app_core::prepare_installed_payload_bytes(
+                &app_core::live_feed_product_registry(),
+                &summary,
+                bytes,
+            )
+            .map_err(|err| err.to_string())
+        },
+        |caches, installed| {
+            let cache = caches
+                .get_mut(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+            cache.ingest_prepared_installed_state(installed);
+            Ok(())
+        },
+    )
 }
 
 pub fn live_feed_cache_installed_payload_bytes(
@@ -1808,15 +1884,29 @@ pub fn live_feed_cache_finish_restoring_resources(
     handle: u64,
     product: &str,
 ) -> Result<(), String> {
-    let mut caches = live_feed_caches()
-        .lock()
-        .map_err(|_| "live feed cache store poisoned".to_string())?;
-    let cache = caches
-        .get_mut(&(handle as u32))
-        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
-    cache
-        .finish_restoring_resources(&app_core::live_feed_product_registry(), product)
-        .map_err(|err| err.to_string())
+    let plan = {
+        let mut caches = live_feed_caches()
+            .lock()
+            .map_err(|_| "live feed cache store poisoned".to_string())?;
+        caches
+            .get_mut(&(handle as u32))
+            .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+            .take_resource_restoration_plan(product)
+            .map_err(|error| error.to_string())?
+    };
+    prepare_then_with_live_feed_caches(
+        || {
+            plan.prepare(&app_core::live_feed_product_registry())
+                .map_err(|error| error.to_string())
+        },
+        |caches, prepared| {
+            caches
+                .get_mut(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                .commit_prepared_resource_restoration(prepared);
+            Ok(())
+        },
+    )
 }
 
 pub fn live_feed_cache_install_product_in_session_json(
@@ -4325,6 +4415,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_reportLiveFeed
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_reportLiveFeedAcquisitionPhaseInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+    phase: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, product).and_then(|product| {
+        get_java_string(&mut env, phase).and_then(|phase| {
+            report_live_feed_acquisition_phase_in_session_json(handle as u64, &product, &phase)
+        })
+    });
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getMapOverlayInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -4876,6 +4982,47 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_coreHadOperati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expensive_live_feed_preparation_does_not_hold_registry_lock() {
+        let handle = create_live_feed_cache_json("https://feeds.example.test", None).unwrap();
+        let (preparation_started_tx, preparation_started_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_preparation_tx, release_preparation_rx) = std::sync::mpsc::sync_channel(0);
+        let preparation = std::thread::spawn(move || {
+            prepare_then_with_live_feed_caches(
+                || {
+                    preparation_started_tx.send(()).unwrap();
+                    release_preparation_rx.recv().unwrap();
+                    Ok(())
+                },
+                |caches, ()| {
+                    caches
+                        .get(&(handle as u32))
+                        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+                    Ok(())
+                },
+            )
+        });
+        preparation_started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("preparation should start");
+
+        let (query_finished_tx, query_finished_rx) = std::sync::mpsc::sync_channel(0);
+        let query = std::thread::spawn(move || {
+            query_finished_tx
+                .send(live_feed_cache_missing_requests_json(handle))
+                .unwrap();
+        });
+        let query_result = query_finished_rx.recv_timeout(std::time::Duration::from_secs(2));
+        release_preparation_tx.send(()).unwrap();
+        preparation.join().unwrap().unwrap();
+        query.join().unwrap();
+
+        query_result
+            .expect("cache query must complete while package preparation is blocked")
+            .expect("cache query should succeed");
+        destroy_live_feed_cache_json(handle).unwrap();
+    }
 
     #[test]
     fn navigation_policy_is_available_before_a_ui_session_exists() {

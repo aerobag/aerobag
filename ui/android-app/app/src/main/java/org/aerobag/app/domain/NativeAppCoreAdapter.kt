@@ -1113,6 +1113,10 @@ class NativeUiSession internal constructor(
     private fun executePagedOperation(operation: () -> String): PagedSessionOperationResult =
         navKvStore?.runPagedSessionOperation(
             operation = operation,
+            fetchSessionResource = sessionResourceFetcher,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
         )
             ?: run {
@@ -1912,6 +1916,12 @@ class NativeUiSession internal constructor(
     fun reportLiveFeedConnectionEvent(event: LiveFeedConnectionEvent): UiSessionSnapshot {
         return runPagedSnapshot("reportLiveFeedConnectionEvent") {
             bridge.reportLiveFeedConnectionEventInSessionJson(handle, json.encodeToString(event))
+        }
+    }
+
+    fun reportLiveFeedAcquisitionPhase(product: String, phase: String): UiSessionSnapshot {
+        return runPagedSnapshot("reportLiveFeedAcquisitionPhase") {
+            bridge.reportLiveFeedAcquisitionPhaseInSessionJson(handle, product, phase)
         }
     }
 
@@ -4213,7 +4223,19 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
         enabled = departure.enabled,
         disabledReason = departure.disabled_reason,
     ),
-    forecast = forecast?.let { AltitudePlannerForecastUiView(summary = it.summary) },
+    forecast = forecast?.let { forecast ->
+        AltitudePlannerForecastUiView(
+            summary = forecast.summary,
+            action = forecast.action?.let { action ->
+                AltitudePlannerForecastActionUiView(
+                    label = action.label,
+                    enabled = action.enabled,
+                    actionUid = action.action_uid,
+                    disabledReason = action.disabled_reason,
+                )
+            },
+        )
+    },
     advisories = advisories,
     unavailableReasons = unavailable_reasons.map {
         AltitudePlannerUnavailableReason(code = it.code, message = it.message)
@@ -4277,7 +4299,19 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
         enabled = departure.enabled,
         disabled_reason = departure.disabledReason,
     ),
-    forecast = forecast?.let { WireAltitudePlannerForecastUiView(summary = it.summary) },
+    forecast = forecast?.let { forecast ->
+        WireAltitudePlannerForecastUiView(
+            summary = forecast.summary,
+            action = forecast.action?.let { action ->
+                WireAltitudePlannerForecastActionUiView(
+                    label = action.label,
+                    enabled = action.enabled,
+                    action_uid = action.actionUid,
+                    disabled_reason = action.disabledReason,
+                )
+            },
+        )
+    },
     advisories = advisories,
     unavailable_reasons = unavailableReasons.map {
         WireAltitudePlannerUnavailableReason(code = it.code, message = it.message)

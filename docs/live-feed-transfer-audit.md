@@ -1,6 +1,8 @@
 # Live-feed transfer audit
 
-Date: 2026-08-20
+Baseline measured: 2026-08-20
+
+Implementation status updated: 2026-08-22
 
 ## Bottom line
 
@@ -8,20 +10,38 @@ Yes: Aerobag constructs deltas first, serializes them, and then XZ-compresses th
 finished delta. Full record states are compressed the same way. NEXRAD and NavKv
 products use already-compressed binary/package representations instead.
 
-The warm Android path is currently about **365 MiB/day/client** in the observed
-weather, excluding TCP/TLS/IP overhead. Roughly 279 MiB is NEXRAD and 49 MiB is
-winds aloft. While subscribed, web has a fixed warm rate of about **36.5 MiB/day**
-for the record, NOTAM, and TFR products, then adds viewport/query-dependent
-NEXRAD, winds, and obstacle resources. Today web stops its entire live-feed
-subscription after 60 minutes without interaction (or immediately when the
-document becomes hidden), so that rate must not be extrapolated across an
-abandoned three-day browser tab. Web therefore does not have one honest
-platform-wide daily number without specifying activity, visibility, map, and
-flight-plan workload.
+The **historical baseline** warm Android path was about **365 MiB/day/client** in
+the observed weather, excluding TCP/TLS/IP overhead. Roughly 279 MiB was NEXRAD
+and 49 MiB was winds aloft. While subscribed, web's historical fixed warm rate
+was about **36.5 MiB/day** for the record, NOTAM, and TFR products, plus
+viewport/query-dependent NEXRAD, winds, and obstacle resources. These numbers
+are deliberately retained as the before-optimization accounting baseline; they
+no longer describe every current client policy.
 
-There are several clean savings. TFR semantic no-op suppression plus a keyed-array
-delta was implemented during this audit. There is not evidence that a naive
-NEXRAD or winds delta would help; both need product-specific work.
+Since that measurement, Aerobag has shipped TFR semantic no-op suppression and
+deltas, removed unused product history from client control messages, enabled
+production gzip for plain JSON, fixed immutable-resource cache headers, added
+core-owned NEXRAD coverage/detail/cadence policies, and made Android winds-aloft
+packages on-demand. Web still stops its entire live-feed subscription after 60
+minutes without interaction (or immediately when the document becomes hidden).
+Android's NEXRAD rate now depends on time spent shown, hidden, and asleep plus the
+selected coverage and offline detail. There is therefore no honest single current
+daily number until those mode times are specified or measured.
+
+There is still no evidence that a naive NEXRAD or winds delta would help; both
+need product-specific work. Winds no longer transfers automatically on Android,
+so its codec is now a per-download optimization rather than a standing daily
+cost. The completed and open work is tracked at the end of this document.
+
+A repeatable corpus analyzer now closes the accounting loop for policies whose
+requests are determined by the feed metadata. Under an explicit representative
+Android day of 4 hours shown, 4 hours hidden, and 16 hours asleep, the current
+on-demand-winds policy models at **58.29 MiB/day** with full-detail NEXRAD and
+**26.63 MiB/day** with reduced-detail NEXRAD, between explicit forecast
+downloads. Each requested winds refresh adds the currently advertised package,
+about 12.2 MiB in this corpus. Viewport-only traffic remains inherently
+route/view dependent and needs a client request trace rather than a producer
+corpus.
 
 We do not need to leave an app running for a day. We do need to observe the
 producer for a day once if we want a faithful, replayable corpus of changes that
@@ -46,7 +66,7 @@ normalized state
 The implementation uses `serde_json::to_vec_pretty` before XZ. That formatting is
 not free, but XZ removes most of it.
 
-Product transport shapes:
+Historical baseline product transport shapes:
 
 | Product           | Warm payload                                                                        |
 | ----------------- | ----------------------------------------------------------------------------------- |
@@ -59,13 +79,15 @@ Product transport shapes:
 | Winds web         | Plain state manifest/root plus just-in-time XZ NavKv pages                          |
 | Winds Android     | Complete NavKv ZIP package for each changed forecast cycle                          |
 
-The live-feed daemon sends stored bytes as-is. It does not negotiate HTTP gzip or
-Brotli. `current.json`, version manifests, and SSE are consequently plain JSON;
-XZ, ZIP, and PNG bodies should not receive another HTTP content encoding.
+The live-feed daemon still sends stored bytes as-is. Production nginx now enables
+gzip for `application/json`, which covers `current.json` and version manifests;
+XZ, ZIP, and PNG bodies correctly remain unrecompressed. SSE keeps
+`no-transform` semantics and is not included in this gzip claim. Direct clients
+of the development daemon likewise do not receive HTTP content encoding.
 
-Every static live-feed resource is currently sent with `Cache-Control: no-cache`,
-including immutable version, state, delta, package, and tile URLs. The production
-nginx proxy does not change that behavior.
+Version manifests, versioned states, deltas, packages, and tiles now receive
+`Cache-Control: public, max-age=31536000, immutable`. Mutable `current.json`,
+status responses, and the event stream retain no-cache/no-store semantics.
 
 ## Measurement basis
 
@@ -158,14 +180,14 @@ deltas. Older clients do not advertise TFR delta support and continue to fetch t
 backward-compatible full array. This should reduce the baseline 17.8 MiB/day to
 well below 1 MiB/day in similar conditions, including reduced control traffic.
 
-### 2. Non-NEXRAD history is repeated in every SSE event but not consumed
+### 2. Non-NEXRAD history was repeated in every SSE event but not consumed — implemented
 
-Current events carry up to 12 history entries for every product. Core needs the
-history window for NEXRAD animation and durable NEXRAD installation. The current
-web and Android acquisition paths do not load historical states for the other
+At baseline, current events carried up to 12 history entries for every product.
+Core needs the history window for NEXRAD animation and durable NEXRAD
+installation. Web and Android do not load historical states for the other
 products; NOTAM recovery uses `recent_deltas` in its version manifest instead.
 
-Current event sizes with and without history are:
+Baseline event sizes with and without history were:
 
 | Product     | Current bytes | Without history | Repeated history |
 | ----------- | ------------: | --------------: | ---------------: |
@@ -181,6 +203,11 @@ Keeping history only for products whose client policy consumes it would save abo
 `current.json` from 28.7 KiB to roughly 5.5 KiB. Server retention does not require
 exposing those entries: the pruning code independently retains version manifests
 for each product's configured retention window.
+
+This is now implemented in the shared product policy. NEXRAD advertises the six
+prior frames consumed by its seven-frame animation window; every other product
+advertises zero client history. The same rule is applied to both `current.json`
+and SSE events without changing server-side retention.
 
 For example, this is the shape of a real 3,129-byte METAR event captured at
 04:46Z (hashes shortened here only for readability):
@@ -204,32 +231,34 @@ The same event is 369 bytes without `history`; 2,760 bytes are repeated prior
 versions that neither METAR client consumes. The complete captured record is in
 the capture's `events.jsonl`.
 
-### 3. Plain control JSON has no HTTP compression
+### 3. Plain control JSON had no HTTP compression — implemented in production
 
-The current `current.json` shrinks from 28,679 to 5,889 bytes with ordinary gzip
+The baseline `current.json` shrinks from 28,679 to 5,889 bytes with ordinary gzip
 (79.5%), saving 22.8 KiB per bootstrap/reconnect. Retained NOTAM version manifests
 shrink by 79.7% on average. Across the warm Android estimates, compressing version
 manifests saves approximately **2.7 MiB/day/client** out of their present 3.74
 MiB/day. NOTAM is currently control-plane-heavy: about 1.0 MiB/day of delta bodies
 is surrounded by about 2.7 MiB/day of version manifests and 2.3 MiB/day of SSE.
 
-Enable HTTP gzip for ordinary JSON manifests/current responses, either in the
-daemon or explicitly in the production proxy. Do not recompress `.xz`, ZIP, or PNG
-payloads. Streaming SSE compression needs separate latency/buffering validation;
-trimming unused history is the safer first SSE optimization.
+Production nginx now enables gzip for ordinary JSON manifests/current responses.
+It does not recompress `.xz`, ZIP, or PNG payloads. The direct daemon and SSE
+remain uncompressed; streaming SSE compression still needs separate
+latency/buffering validation and is not counted as completed work.
 
-### 4. Immutable resources are marked `no-cache`
+### 4. Immutable resources were marked `no-cache` — implemented
 
 Version manifests, versioned states, deltas, packages, and versioned NEXRAD tiles
 are immutable. They should use a long-lived immutable cache policy. Only
 `current.json`, status, and the event stream need no-cache semantics.
 
-This does not change the steady connected-client table because core ordinarily
-requests a version once. It avoids needless retransfers across web reloads, route
-revisits, and reconnect/recovery paths. The Android durable cache already provides
-stronger application-level persistence for installed products.
+The daemon now marks the immutable versioned trees with a one-year immutable
+cache policy while leaving mutable endpoints uncached. This does not change the
+steady connected-client table because core ordinarily requests a version once.
+It avoids needless retransfers across web reloads, route revisits, and
+reconnect/recovery paths. The Android durable cache already provides stronger
+application-level persistence for installed products.
 
-### 5. Pretty JSON before XZ leaves a small amount on the table
+### 5. Pretty JSON before XZ leaves a small amount on the table — open
 
 Across all currently retained deltas, compact JSON before the same XZ settings
 would save:
@@ -246,7 +275,7 @@ The obstacle percentage is large because binary values serialize as very large
 pretty-printed number arrays, but obstacle changes are rare. This is a cheap and
 safe cleanup, not a leading daily-byte win.
 
-### 6. NEXRAD dominates Android, but a naive delta loses
+### 6. NEXRAD dominated Android — acquisition controls implemented; temporal encoding open
 
 The Android client intentionally installs a complete CONUS frame so it has a
 durable offline animation window. The observed producer emitted 256 changes in
@@ -254,14 +283,20 @@ durable offline animation window. The observed producer emitted 256 changes in
 MiB per package, that costs about 279 MiB/day in this sample. Web already avoids
 this by fetching visible tiles only.
 
-Android currently does this regardless of whether the NEXRAD overlay is visible.
-The durable-cache request builder unconditionally requests the current frame and
-the six advertised history frames. A cadence controller therefore must select and
-retain the last acquired frames, not wake periodically and ask for the producer's
-last six frames. The latter would backfill nearly every skipped update and erase
-the intended saving. When a client becomes active it should fetch the newest frame
-immediately, skip intervening producer frames, and let its animation buffer refill
-with subsequently selected frames.
+That unconditional behavior was the historical baseline. Core now owns both
+platform policies. Web fetches no NEXRAD tile bodies until the layer is shown,
+then uses retained metadata to fetch only missing tiles for the visible viewport
+and animation window. Hiding the layer retains fresh tiles for likely reuse but
+fetches no new tile bodies. The web application still stops all live feeds after
+60 minutes of inactivity or while the document is hidden.
+
+Android now offers full-offline and visible-area-only coverage. Full-offline mode
+has separate shown, hidden, and asleep cadences plus full and reduced detail
+profiles; visible-area-only mode reuses the same JIT viewport planner as web.
+Decimated schedules fetch only the newest schedule-allowed frame and animate the
+sparse retained set. They do not backfill skipped producer frames. The default is
+full detail with every update while shown, every 30 minutes while hidden, and no
+NEXRAD acquisition while asleep.
 
 At the observed package size, useful order-of-magnitude settings labels are:
 
@@ -274,11 +309,25 @@ At the observed package size, useful order-of-magnitude settings labels are:
 | Every 60 min                   |                 ~23 MiB/day |
 | Never                          |                   0 MiB/day |
 
-These should be displayed as per-mode rates, not simply summed: active, inactive,
-and asleep are mutually exclusive portions of a day. A useful overall figure is
-either actual bytes over the last 24 hours or a projection weighted by the recent
-time spent in each mode. Package size varies with the weather, so estimates should
-use a recent rolling average and say they are estimates.
+Those are retained as the old all-resolution-package estimates. The new publisher
+puts only the selected base level in an offline package; core derives coarser
+overviews after download. In the 139 profiled manifests retained by the completed
+capture, the advertised package sizes were:
+
+| Offline profile  | Average package | Every update | Every 10 min | Every 30 min |
+| ---------------- | --------------: | -----------: | -----------: | -----------: |
+| Full (`res0`)    |       0.790 MiB |   9.46 MiB/h |   4.76 MiB/h |   1.62 MiB/h |
+| Reduced (`res1`) |       0.225 MiB |   2.70 MiB/h |   1.36 MiB/h |   0.46 MiB/h |
+
+These rates come from exact schedule replay across the 139 publications in the
+11.60-hour profile-compatible part of the capture, rather than average package
+size multiplied by a nominal cadence. Reduced detail was 28.6% of full-detail
+bytes in that sample. Settings display per-mode MiB/h using the currently
+advertised package sizes rather than summing shown, hidden, and asleep, which are
+mutually exclusive conditions. A personalized daily figure still requires time
+spent in each condition; recording actual bytes and condition residence over a
+rolling 24-hour window remains optional product telemetry, not a gap in the
+policy simulator.
 
 Tests on six adjacent current five-minute frames found:
 
@@ -292,14 +341,13 @@ a different whole-grid, two-minute representation. That remains encouraging for 
 purpose-built temporal format, but it does not justify bolting an XOR delta onto
 the current tiled PNG package.
 
-About 28% of a current package is the three downsampled overview levels. An Android
-format that transfers the finest level and deterministically derives overview
-levels could save meaningful bytes, at the cost of device CPU, install complexity,
-and a different durable representation. A corridor/viewport-aware Android cache
-could save more, but changes the current complete-CONUS offline guarantee. Both
-need explicit product work and measurement.
+The two immediate representation/policy ideas are implemented: offline packages
+transfer one base level and deterministically derive coarser levels, and Android's
+visible-area-only option trades the complete-CONUS offline guarantee for the JIT
+viewport path. A purpose-built temporal codec remains open and should be revisited
+only after measuring actual residence-weighted usage under the new policies.
 
-### 7. Winds needs an acquisition policy more than a generic delta
+### 7. Winds needed an acquisition policy more than a generic delta — implemented
 
 For a real adjacent pair, all 903 logical values and all 492 page hashes changed.
 The target install package was 12.80 MB. The existing pretty-JSON NavKv delta was
@@ -335,7 +383,31 @@ altitude planner offer an explicit download such as “Using 18Z forecast (7h ol
 00Z available (1h old), 12.2 MiB. Update.” Web's just-in-time page path is already
 closer to this bandwidth shape.
 
-### 8. Small protocol safeguards and startup duplication
+That acquisition policy is now implemented in core. Android's durable cache
+continues to fetch the current version manifest and roughly 1.2 KiB atmosphere
+state manifest so core can show the available cycle, validity, age, and package
+size. It does not fetch the NavKv install package until the user invokes the
+core-issued action on the Altitude Planner. An older installed forecast remains
+usable while a newer cycle is advertised, and the page clearly separates the
+downloaded forecast from the available one. Core owns the visible
+`DOWNLOAD REQUESTED`, `DOWNLOADING WINDS`, and `INSTALLING WINDS` phases;
+Android reports transport progress but does not invent UI state. Installing the
+advertised version clears the transient request automatically.
+
+The downloaded NavKv ZIP is persisted byte-for-byte. Installation validates its
+blob, manifest, and root without expanding its XZ pages or constructing a larger
+client-side archive. When planning needs a page, core issues a package-member
+resource request and Android reads and decodes only that member. Full-package
+preparation and persisted-package restoration also run outside the cache locks;
+only the validated-state swap is serialized.
+
+The request is deliberately session-local navigation/application state. It is
+not a setting, does not sync through cloud, and is not confused with the user's
+selected `FORECAST` versus `NO WIND` planning model. Web retains its existing JIT
+NavKv page acquisition. The Data Status page reports an uninstalled Android
+forecast as informational `ON DEMAND`, not as a false unavailable-data alert.
+
+### 8. Small protocol safeguards and startup duplication — open
 
 - The durable client compares advertised delta bytes with full bytes and chooses
   full when the delta is larger. The just-in-time web path does not make the same
@@ -355,43 +427,145 @@ immutable states/deltas/packages before the normal retention pass removes them.
 Hard links avoid a second physical copy on the current filesystem and remain valid
 after the producer removes its original link.
 
-A real 24-hour capture is running at:
+A real 24-hour capture completed at:
 
 ```text
 /root/aerobag-artifacts/analysis/live-feed-transfer-20260820T0335Z
 ```
 
-It started at `2026-08-20T03:32:19Z`, is scheduled to stop at
-`2026-08-21T03:32:19Z`, and uses a 15-second poll interval. The detached process
-was PID 4144395 when launched. `capture.json` is its heartbeat/status file;
-`samples.jsonl` and `events.jsonl` are append-only measurements; the mirrored
-`live-feeds/v3` directory is the replay corpus.
+It ran from `2026-08-20T03:32:19Z` through `2026-08-21T03:32:19Z` at a
+15-second poll interval and finished with state `complete`: 5,740 polls, 3,335
+product samples, and 1,946 observed current events. `samples.jsonl` and
+`events.jsonl` are append-only measurements; the mirrored `live-feeds/v3`
+directory is the replay corpus.
 
-The existing status ring is enough to identify and size the large opportunities
-now. The completed capture is useful for validating a TFR implementation, testing
-control-plane changes, and replaying a representative multi-product day at high
-speed. Accelerated polling against upstream today would mostly redownload the same
-published products and would not synthesize the future forecast/radar/NOTAM changes
-that a faithful corpus needs.
+The corpus occupies about 1 GiB because it is a producer archive, not a trace of
+one client's requests. It preserves full states, deltas, tile directories, and
+install packages together. The largest components are 429 MiB of NEXRAD state
+directories, 123 MiB of NEXRAD packages, 118 MiB of winds state data, and 110 MiB
+of winds packages. A warm client chooses only one applicable transfer path.
 
-## Suggested burn order
+The run crossed several implementation changes: TFR deltas, client-history
+trimming, and NEXRAD profile publication landed during the capture. It is useful
+for transition testing and codec experiments, but it is not a clean all-before or
+all-after daily benchmark. The capture tool at the time also did not archive
+`install_profiles`; it retained their manifests and underlying NEXRAD state tiles
+but not the new profile ZIPs. The checked-in tool now archives those refs for
+future captures. Retain this corpus; do not commit its approximately 1 GiB of
+artifacts to git.
 
-1. Done: suppress TFR semantic no-ops and add a backward-compatible stable-key
-   array delta.
-2. Emit current/SSE history only for products whose acquisition policy uses it.
-3. Add gzip for plain JSON control resources and immutable caching for versioned
-   resources.
-4. Switch XZ JSON inputs from pretty to compact serialization.
-5. Apply the delta-vs-full size rule to the just-in-time path too.
-6. Add a shared core acquisition controller. For web, report interaction and
-   visibility to core and use every-update / 20-minute / 60-minute NEXRAD modes at
-   the 0 / 20 / 120-minute thresholds. For Android, persist separate active,
-   inactive, and asleep NEXRAD cadences in user state; core enforces that active
-   is at least as eager as inactive and commands package acquisition. Keep SSE
-   metadata flowing even when a product payload is decimated.
-7. Make winds forecast packages on-demand while continuing to advertise fresh
-   availability metadata; retain the spatial-predictor codec as a second-stage
-   optimization if its implementation complexity earns the remaining saving.
-8. Use the completed day corpus to validate all estimates and benchmark compact
-   JSON/XZ against binary record-delta envelopes. Test protobuf as a serialization
-   format, not gRPC as a transport.
+### Repeatable corpus accounting
+
+`tools/analyze-live-feed-transfer.mjs` replays the captured event and artifact
+corpus as a warm client. It reconstructs the historical and current SSE history
+policies, accounts for each unique version manifest, models production gzip at
+level 6, selects applicable deltas only when they beat the full payload, and
+replays exact NEXRAD cadence decisions without backfilling skipped frames.
+
+Run the checked-in analysis with:
+
+```text
+node tools/analyze-live-feed-transfer.mjs \
+  --capture /root/aerobag-artifacts/analysis/live-feed-transfer-20260820T0335Z \
+  --residence-hours 4,4,16
+```
+
+Use `--format json` for machine-readable output. Initial snapshots establish the
+warm cache and are excluded from recurring totals. The analyzer recovered 42
+NOTAM manifests archived under their equivalent post-compaction names and found
+no unresolved manifests among 1,938 observed changes.
+
+The exact full-day control-plane result is:
+
+| Component         | Historical |  Current | Saving |
+| ----------------- | ---------: | -------: | -----: |
+| SSE history       |   7.00 MiB | 1.35 MiB |  80.7% |
+| Version manifests |   5.91 MiB | 1.34 MiB |  77.4% |
+| Combined control  |  12.91 MiB | 2.69 MiB |  79.2% |
+
+This replaces the earlier projection with corpus replay: history trimming saves
+5.65 MiB/day and manifest gzip saves 4.57 MiB/day in this capture. Gzip bytes are
+a deterministic level-6 model over the exact archived entity bodies; HTTP
+headers, TLS, retries, and carrier accounting remain excluded.
+
+The full-day non-NEXRAD Android payload replay is:
+
+| Product     | Historical | Captured current | Saving |
+| ----------- | ---------: | ---------------: | -----: |
+| METAR       |   6.51 MiB |         6.51 MiB |   0.0% |
+| NOTAM       |   1.21 MiB |         1.21 MiB |   0.0% |
+| PIREP       |   2.48 MiB |         2.48 MiB |   0.0% |
+| TAF         |  766.5 KiB |        766.5 KiB |   0.0% |
+| TFR         |  11.20 MiB |         9.08 MiB |  18.9% |
+| Winds aloft |  48.56 MiB |        48.56 MiB |   0.0% |
+
+The full-day TFR number is deliberately conservative because the capture began
+before the implementation landed. In the fully implemented 11.60-hour window,
+TFR delta selection reduced 2.29 MiB of full states to 170.4 KiB, a 92.7%
+reduction; suppressed semantic no-op publications are absent and would save
+additional bytes.
+
+The same fully compatible window gives exact NEXRAD transfer counts:
+
+| Profile | Cadence      | Frames |      Bytes | Observed rate |
+| ------- | ------------ | -----: | ---------: | ------------: |
+| Full    | Every update |    139 | 109.76 MiB |    9.46 MiB/h |
+| Full    | 10 minutes   |     70 |  55.20 MiB |    4.76 MiB/h |
+| Full    | 30 minutes   |     24 |  18.77 MiB |    1.62 MiB/h |
+| Reduced | Every update |    139 |  31.33 MiB |    2.70 MiB/h |
+| Reduced | 10 minutes   |     70 |  15.76 MiB |    1.36 MiB/h |
+| Reduced | 30 minutes   |     24 |   5.36 MiB |    0.46 MiB/h |
+| Either  | Never        |      0 |        0 B |    0.00 MiB/h |
+
+For the explicit 4/4/16-hour residence split, combining exact full-day control
+and non-NEXRAD observations with the fully implemented TFR rate and observed
+NEXRAD rates produces:
+
+| Scenario                           | Modeled 24-hour bytes | Saving vs reference |
+| ---------------------------------- | --------------------: | ------------------: |
+| Current-format reference           |            310.66 MiB |                0.0% |
+| Current, full                      |            106.85 MiB |               65.6% |
+| Current, reduced                   |             75.19 MiB |               75.8% |
+| Current, full + winds on demand    |             58.29 MiB |               81.2% |
+| Current, reduced + winds on demand |             26.63 MiB |               91.4% |
+
+The reference uses raw control JSON, historical TFR full-state transfer,
+automatic winds, and full-profile NEXRAD on every publication. It is lower than
+the original 365.1 MiB/day historical baseline because this corpus can compare
+the new single-base-resolution NEXRAD packages exactly but cannot reconstruct the
+discarded older all-resolution ZIPs. Web and Android visible-area-only NEXRAD,
+web winds, and web obstacles require viewport/route request traces and are
+intentionally not assigned fabricated totals.
+
+## Implementation ledger
+
+| Item                                     | Status | Baseline accounting effect                                        |
+| ---------------------------------------- | ------ | ----------------------------------------------------------------- |
+| TFR semantic no-op suppression and delta | Done   | Delta-only replay saved 92.7% in the fully current window         |
+| Client history only where consumed       | Done   | Measured saving of 5.65 MiB/day/client                            |
+| Production gzip for control JSON         | Done   | Modeled manifest saving of 4.57 MiB/day/client                    |
+| Immutable resource cache policy          | Done   | Avoids reload/recovery retransfers; no steady-state table change  |
+| Core-owned NEXRAD acquisition policies   | Done   | Replaces one 279 MiB/day behavior with mode-dependent rates       |
+| Completed day capture corpus             | Done   | Preserves the original evidence and source material               |
+| Repeatable corpus policy analyzer        | Done   | Exact replay plus explicit 4/4/16-hour daily policy projections   |
+| Compact JSON before XZ                   | Open   | 1-3% for active record deltas; 25.8% for rare obstacle deltas     |
+| JIT delta-versus-full size guard         | Open   | No waste observed in the baseline; defensive correctness          |
+| Winds on-demand immutable lazy package    | Done   | Removes 48.6 MiB/day baseline and avoids page expansion/repacking |
+| Current/SSE bootstrap deduplication      | Open   | About 52 KiB per connection in the historical uncompressed form   |
+| NEXRAD temporal codec                    | Open   | Potentially material, but new policy-weighted usage is unmeasured |
+
+## Recommended next burn order
+
+1. Switch XZ JSON inputs from pretty to compact serialization. It is a contained,
+   low-risk cleanup with modest recurring savings and a large percentage win on
+   rare obstacle deltas.
+2. Apply the delta-versus-full size rule to the JIT path. This did not waste bytes
+   in the baseline sample, so treat it as a protocol safeguard rather than a major
+   rate reduction.
+3. Reconsider a NEXRAD temporal codec only after actual mode-residence accounting
+   shows that full-offline acquisition remains dominant. The naive tile XOR
+   experiment remains a loss; any follow-up needs a domain-specific format.
+4. Consider the measured winds spatial predictor only if explicit download size
+   proves painful. It saved 29.4%, but no longer reduces an automatic daily cost.
+5. Leave current/SSE bootstrap deduplication and possible SSE compression until
+   the larger work is measured. They are control-plane polish, not leading wins.

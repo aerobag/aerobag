@@ -74,13 +74,18 @@ describe("flight plan layout CSS", () => {
     expect(plannerPage).not.toContain('type="datetime-local"');
     expect(plannerPage).not.toContain("new Date(");
     expect(plannerPage).toContain("planner.forecast.summary");
+    expect(plannerPage).toContain("planner.forecast.action.label");
+    expect(plannerPage).toContain('data-testid="altitude-planner-forecast-action"');
+    expect(plannerPage).toContain("performAction(action.action_uid)");
     expect(plannerPage).toContain("panel?.advisories");
     expect(plannerPage).not.toMatch(/onPerformAltitudePlannerAction\(actionUid\)[\s\S]*?\.then\(reload\)/);
     expect(plannerPage).toContain("panel.columns.map");
     expect(plannerPage).toContain("row.cells.map");
     expect(plannerPage).toContain('className="altitudeComparisonRegion"');
     expect(plannerPage).toContain('className="altitudeComparisonLoading"');
-    expect(plannerPage).toContain("loading && panel === null");
+    expect(plannerPage).toContain("{loading && showUserActionSpinner ? (");
+    expect(plannerPage).toContain("comparisonRequestGeneration.current += 1");
+    expect(plannerPage).toContain("if (enteredAltitudePlanner) setShowUserActionSpinner(true)");
     const controlTray = plannerPage.slice(
       plannerPage.indexOf('data-testid="altitude-planner-control-tray"'),
       plannerPage.indexOf("</header>"),
@@ -109,6 +114,9 @@ describe("flight plan layout CSS", () => {
       .join("\n");
     expect(departureWarningStyles).toContain("var(--theme-data-status-warning-stroke)");
     expect(plannerPage).not.toContain('{loading ? <p>Calculating…</p> : null}');
+    expect(plannerPage).toContain('comparisonRefreshRevision');
+    expect(plannerPage).toContain('setComparisonRefreshRevision((revision) => revision + 1)');
+    expect(plannerPage).toContain('if (userActionPendingRefresh.current) return;');
     expect(plannerPage).not.toMatch(/tailwind|headwind|average_wind|toFixed/);
 
     const comparisonRegion = [...styles.matchAll(/\.altitudeComparisonRegion\s*\{([^}]*)\}/g)]

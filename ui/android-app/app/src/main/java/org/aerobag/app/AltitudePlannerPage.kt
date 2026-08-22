@@ -32,8 +32,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +53,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.AltitudeComparisonPanelUiView
 import org.aerobag.app.domain.AltitudePlannerDepartureEditorUiView
 import org.aerobag.app.domain.AltitudePlannerUiView
@@ -75,10 +82,14 @@ internal fun AltitudePlannerPage(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val uiTheme = LocalAerobagUiTheme.current
+    val plannerScope = rememberCoroutineScope()
+    val plannerWorkMutex = remember(uiSession) { Mutex() }
     var comparisonPanel by remember { mutableStateOf<AltitudeComparisonPanelUiView?>(null) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var refreshRevision by remember { mutableStateOf(0) }
+    var userActionsInFlight by remember { mutableIntStateOf(0) }
+    var comparisonRefreshRevision by remember { mutableIntStateOf(0) }
+    var pendingUserRefreshRevision by remember { mutableStateOf<Int?>(null) }
     var departureTimeInput by remember { mutableStateOf(planner.departure.timeValue) }
     var departureWhenInput by remember { mutableStateOf(planner.departure.whenValue) }
     var openControlId by remember { mutableStateOf<String?>(null) }
@@ -90,11 +101,20 @@ internal fun AltitudePlannerPage(
         if (!departureWhenFocused) departureWhenInput = planner.departure.whenValue
     }
 
-    LaunchedEffect(page, planVersion, planner.estimateSummary.label, refreshRevision) {
+    val plannerProjectionKey = planVersion to planner
+    LaunchedEffect(page, plannerProjectionKey, comparisonRefreshRevision) {
+        if (userActionsInFlight > 0 && pendingUserRefreshRevision == null) {
+            return@LaunchedEffect
+        }
+        val requestRefreshRevision = comparisonRefreshRevision
         loading = true
         errorMessage = null
         try {
-            comparisonPanel = uiSession.altitudeComparisons()
+            comparisonPanel = withContext(Dispatchers.IO) {
+                plannerWorkMutex.withLock {
+                    uiSession.altitudeComparisons()
+                }
+            }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
@@ -102,46 +122,67 @@ internal fun AltitudePlannerPage(
             errorMessage = error.message ?: "Altitude comparison failed"
         } finally {
             loading = false
+            if (pendingUserRefreshRevision?.let { it <= requestRefreshRevision } == true) {
+                pendingUserRefreshRevision = null
+            }
+        }
+    }
+
+    fun performPlannerMutation(
+        operation: () -> UiSessionSnapshot,
+        onFailure: (Throwable) -> Unit = onSessionCommandFailure,
+    ) {
+        if (userActionsInFlight > 0) return
+        userActionsInFlight += 1
+        errorMessage = null
+        plannerScope.launch {
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
+                    plannerWorkMutex.withLock {
+                        operation()
+                    }
+                }
+                onApplySessionSnapshot(snapshot)
+                comparisonRefreshRevision += 1
+                pendingUserRefreshRevision = comparisonRefreshRevision
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                pendingUserRefreshRevision = null
+                onFailure(error)
+            } finally {
+                userActionsInFlight -= 1
+            }
         }
     }
 
     fun performAction(actionUid: String) {
         openControlId = null
-        try {
-            onApplySessionSnapshot(uiSession.performAltitudePlannerAction(actionUid))
-            refreshRevision += 1
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            onSessionCommandFailure(error)
-        }
+        performPlannerMutation(
+            operation = { uiSession.performAltitudePlannerAction(actionUid) },
+        )
     }
 
     fun setDepartureInput(field: String, input: String) {
-        try {
-            onApplySessionSnapshot(uiSession.setAltitudePlannerDepartureInput(field, input))
-            refreshRevision += 1
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            departureTimeInput = planner.departure.timeValue
-            departureWhenInput = planner.departure.whenValue
-            errorMessage = error.message ?: "Invalid departure time"
-        }
+        performPlannerMutation(
+            operation = { uiSession.setAltitudePlannerDepartureInput(field, input) },
+            onFailure = { error ->
+                departureTimeInput = planner.departure.timeValue
+                departureWhenInput = planner.departure.whenValue
+                errorMessage = error.message ?: "Invalid departure time"
+            },
+        )
     }
 
     fun toggleDepartureTimeBasis() {
-        try {
-            onApplySessionSnapshot(
-                uiSession.performTimeDisplayAction(planner.departure.timeDisplayActionId),
-            )
-            refreshRevision += 1
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            onSessionCommandFailure(error)
-        }
+        performPlannerMutation(
+            operation = {
+                uiSession.performTimeDisplayAction(planner.departure.timeDisplayActionId)
+            },
+        )
     }
+
+    val userActionLoading = userActionsInFlight > 0 || pendingUserRefreshRevision != null
 
     Box(
         modifier = Modifier
@@ -260,6 +301,14 @@ internal fun AltitudePlannerPage(
                     messages = listOf(forecast.summary),
                     foreground = uiTheme.controls.panelFg,
                     background = uiTheme.controls.panelBg,
+                    actionLabel = forecast.action?.label,
+                    actionEnabled = forecast.action?.enabled ?: false,
+                    onAction = forecast.action?.actionUid?.let { actionUid ->
+                        { performAction(actionUid) }
+                    },
+                    onDisabledAction = forecast.action?.disabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                 )
             }
             if (planner.unavailableReasons.isNotEmpty()) {
@@ -353,7 +402,7 @@ internal fun AltitudePlannerPage(
                         }
                     }
                 }
-                if (loading && comparisonPanel == null) {
+                if (userActionLoading || (loading && comparisonPanel == null)) {
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
@@ -530,6 +579,10 @@ private fun PlannerMessagePanel(
     messages: List<String>,
     foreground: Color,
     background: Color,
+    actionLabel: String? = null,
+    actionEnabled: Boolean = false,
+    onAction: (() -> Unit)? = null,
+    onDisabledAction: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -544,6 +597,19 @@ private fun PlannerMessagePanel(
                 text = message,
                 color = foreground,
                 style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        if (actionLabel != null) {
+            CompactSquareButton(
+                label = actionLabel,
+                modifier = Modifier
+                    .width(ThumbSize * 3f)
+                    .height(ThumbSize * 0.72f),
+                enabled = actionEnabled,
+                maxLines = 2,
+                testTag = "parity:altitude-planner-forecast-action",
+                onDisabledClick = onDisabledAction,
+                onClick = { onAction?.invoke() },
             )
         }
     }

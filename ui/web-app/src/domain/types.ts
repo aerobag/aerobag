@@ -305,7 +305,15 @@ export type AltitudePlannerUiView = {
   };
   controls: AltitudePlannerControlUiView[];
   departure: AltitudePlannerDepartureEditorUiView;
-  forecast?: { summary: string } | null;
+  forecast?: {
+    summary: string;
+    action?: {
+      label: string;
+      enabled: boolean;
+      action_uid?: string | null;
+      disabled_reason?: string | null;
+    } | null;
+  } | null;
   advisories?: string[];
   unavailable_reasons?: AltitudePlannerUnavailableReason[];
 };

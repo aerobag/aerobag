@@ -93,6 +93,9 @@ internal class RetainedLiveFeedRuntime(
         cache = cache,
         sourceRootUrl = sourceRootUrl,
         beforePump = { uiSession.syncLiveFeedCacheAcquisitionPolicy(cache) },
+        reportAcquisitionPhase = { product, phase ->
+            uiSession.reportLiveFeedAcquisitionPhase(product, phase)
+        },
     )
     private var started = false
     private var closed = false
@@ -103,6 +106,7 @@ internal class RetainedLiveFeedRuntime(
             UiSessionUpdateGroup.Settings,
             UiSessionUpdateGroup.Map,
             UiSessionUpdateGroup.Ownship,
+            UiSessionUpdateGroup.FlightPlan,
         ),
     ) {
         val shouldPump = synchronized(lock) { started && !closed }

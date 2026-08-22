@@ -1299,6 +1299,7 @@ const ALTITUDE_ACTION_PREFIX: &str = "altitude-planner:select:";
 const AIRCRAFT_ACTION_PREFIX: &str = "altitude-planner:aircraft:";
 pub(crate) const SELECT_NO_WIND_ACTION_UID: &str = "altitude-planner:wind:no-wind";
 pub(crate) const SELECT_GFS_WIND_ACTION_UID: &str = "altitude-planner:wind:gfs";
+pub(crate) const DOWNLOAD_CURRENT_WINDS_ACTION_UID: &str = "altitude-planner:wind:download-current";
 static NO_WIND_ATMOSPHERE: crate::NoWindIsaAtmosphere = crate::NoWindIsaAtmosphere;
 
 #[derive(Clone, Copy)]
@@ -1822,6 +1823,23 @@ fn planner_forecast_ui(
     local_time_zone: chrono_tz::Tz,
 ) -> Option<crate::AltitudePlannerForecastUiView> {
     let manifest = atmosphere.manifest?;
+    Some(crate::AltitudePlannerForecastUiView {
+        summary: planner_forecast_summary(
+            manifest,
+            now_epoch_ms,
+            time_display_mode,
+            local_time_zone,
+        )?,
+        action: None,
+    })
+}
+
+pub(crate) fn planner_forecast_summary(
+    manifest: &product_contracts::AtmosphereManifest,
+    now_epoch_ms: i64,
+    time_display_mode: crate::TimeDisplayMode,
+    local_time_zone: chrono_tz::Tz,
+) -> Option<String> {
     let cycle = DateTime::<Utc>::from_timestamp_millis(manifest.cycle_time_epoch_ms)?;
     let valid_from = manifest
         .valid_times_epoch_ms
@@ -1840,30 +1858,28 @@ fn planner_forecast_ui(
     } else {
         format!("{age_hours:.1}h old")
     };
-    Some(crate::AltitudePlannerForecastUiView {
-        summary: format!(
-            "NOAA {} cycle {} ({age}); valid {} through {}.",
-            manifest.model_id.to_uppercase(),
-            crate::format_dated_time(
-                cycle.timestamp_millis(),
-                time_display_mode,
-                local_time_zone,
-                crate::DatedTimeStyle::MonthDayMinute,
-            ),
-            crate::format_dated_time(
-                valid_from.timestamp_millis(),
-                time_display_mode,
-                local_time_zone,
-                crate::DatedTimeStyle::MonthDayMinute,
-            ),
-            crate::format_dated_time(
-                valid_through.timestamp_millis(),
-                time_display_mode,
-                local_time_zone,
-                crate::DatedTimeStyle::MonthDayMinute,
-            ),
+    Some(format!(
+        "NOAA {} cycle {} ({age}); valid {} through {}.",
+        manifest.model_id.to_uppercase(),
+        crate::format_dated_time(
+            cycle.timestamp_millis(),
+            time_display_mode,
+            local_time_zone,
+            crate::DatedTimeStyle::MonthDayMinute,
         ),
-    })
+        crate::format_dated_time(
+            valid_from.timestamp_millis(),
+            time_display_mode,
+            local_time_zone,
+            crate::DatedTimeStyle::MonthDayMinute,
+        ),
+        crate::format_dated_time(
+            valid_through.timestamp_millis(),
+            time_display_mode,
+            local_time_zone,
+            crate::DatedTimeStyle::MonthDayMinute,
+        ),
+    ))
 }
 
 struct AltitudeComparisonInput<'a> {

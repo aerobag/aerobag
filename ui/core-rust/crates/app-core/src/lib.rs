@@ -70,8 +70,8 @@ pub use altitude_planner::{
     AircraftPerformanceProfile, AltitudeComparisonPanelUiView, AltitudeComparisonUiView,
     AltitudePlannerControlId, AltitudePlannerControlOptionUiView, AltitudePlannerControlUiView,
     AltitudePlannerDepartureEditorUiView, AltitudePlannerDepartureInputField,
-    AltitudePlannerForecastUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
-    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
+    AltitudePlannerForecastActionUiView, AltitudePlannerForecastUiView, AltitudePlannerUiInput,
+    AltitudePlannerUiView, AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
     AltitudePlannerWindFallback, AtmosphereModel, AtmosphereSample, CruisePerformancePoint,
     FlightEstimateKind, FlightPlanEstimateBasis, FlightPlanEstimateModeUiView, NoWindIsaAtmosphere,
     ParsedAltitudePlannerDeparture, PerformanceAirspeedBasis, TrajectoryLegPrediction,
@@ -132,9 +132,11 @@ pub use had_ops::{
 };
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use live_feed_cache::{
-    live_feed_product_registry, LiveFeedCache, LiveFeedFetchedPayload, LiveFeedInstalledPayload,
-    LiveFeedInstalledState, LiveFeedInstalledSummary, LiveFeedProductDriver,
-    LiveFeedProductRegistry, LiveFeedResourceManifest, LiveFeedResourceRef,
+    live_feed_product_registry, prepare_installed_payload_bytes, LiveFeedCache,
+    LiveFeedCacheAcquisitionDirective, LiveFeedFetchedPayload, LiveFeedFullInstallPlan,
+    LiveFeedInstalledPayload, LiveFeedInstalledState, LiveFeedInstalledSummary,
+    LiveFeedProductDriver, LiveFeedProductRegistry, LiveFeedResourceManifest, LiveFeedResourceRef,
+    LiveFeedResourceRestorationPlan, PreparedLiveFeedResourceRestoration,
 };
 pub use live_feed_runtime::{
     live_feed_runtime_decision, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
@@ -271,6 +273,7 @@ pub use raster_tiles::{
     RasterResourceMode, RasterTileBounds, RasterTileDraw, RasterTileLevel, RasterTilePlan,
     RasterTilePlanOptions, RasterTileResource, RasterTileSource,
 };
+pub use session::WindsAloftAcquisitionPhase;
 pub use session::{
     accept_disclaimer_in_session, advance_nav_kv_store_in_session_with_open_result,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
@@ -305,7 +308,8 @@ pub use session::{
     ingest_resource_in_session, ingest_resource_in_session_at_epoch_ms, ingest_tafs_in_session,
     ingest_tfrs_in_session, insert_nav_kv_page_for_attached_sessions,
     install_live_feed_installed_state_in_session,
-    install_prepared_live_feed_cache_product_in_session, live_feed_runtime_decision_in_session,
+    install_prepared_live_feed_cache_product_in_session,
+    live_feed_cache_acquisition_directive_in_session, live_feed_runtime_decision_in_session,
     load_offline_package_library_cache_in_session, load_playback_trace_in_session,
     load_raster_map_catalog_in_session, maintain_nav_db_in_session_at_epoch_ms,
     map_selection_action_decision_in_session, navigation_page_state_for_platform,
@@ -322,7 +326,8 @@ pub use session::{
     refresh_live_feed_current_in_session, register_ownship_source_in_session,
     render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
     render_terrain_overlay_tiles_in_session, report_cloud_event_stream_event_in_session,
-    report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
+    report_live_feed_acquisition_phase_in_session, report_live_feed_connection_event_in_session,
+    report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,
     resolve_nav_db_artifact_candidates_in_session, restore_chart_page_state_in_session,

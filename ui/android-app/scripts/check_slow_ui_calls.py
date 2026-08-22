@@ -73,6 +73,28 @@ CHECKS = (
         ),
     ),
     Check(
+        name="altitude_planner_session_work",
+        pattern=re.compile(
+            r"\buiSession\.(?:altitudeComparisons|performAltitudePlannerAction|setAltitudePlannerDepartureInput)\("
+        ),
+        allow=(
+            AllowRule(
+                "AltitudePlannerPage.kt",
+                None,
+                "background planner query",
+                "Altitude comparison calculation is serialized on the planner's IO worker lane.",
+                ("withContext(Dispatchers.IO)",),
+            ),
+            AllowRule(
+                "AltitudePlannerPage.kt",
+                None,
+                "background planner mutation",
+                "Planner mutation callbacks are executed by performPlannerMutation on the serialized IO worker lane.",
+                ("performPlannerMutation(",),
+            ),
+        ),
+    ),
+    Check(
         name="native_get_in_session",
         pattern=re.compile(r"\b(get|bridge\.get)[A-Za-z0-9_]*InSession[A-Za-z0-9_]*\("),
         allow=(

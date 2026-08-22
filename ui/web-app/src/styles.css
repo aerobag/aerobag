@@ -3197,7 +3197,19 @@ button {
 }
 
 .altitudePlannerProvenance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.2);
   background: color-mix(in srgb, var(--theme-panel-bg) 82%, white);
+  white-space: pre-line;
+}
+
+.altitudePlannerForecastAction {
+  flex: 0 0 auto;
+  min-width: calc(var(--thumb) * 2.5);
+  min-height: calc(var(--thumb) * 0.72);
+  font-size: calc(var(--thumb) * 0.2);
 }
 
 .altitudePlannerAdvisories {

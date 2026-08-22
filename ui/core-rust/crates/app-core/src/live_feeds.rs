@@ -55,6 +55,7 @@ struct LiveFeedProductState {
     recent_deltas: Vec<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
+    catalog_state_manifest: Option<Value>,
     history: Vec<LiveFeedProductHistoryState>,
 }
 
@@ -650,6 +651,7 @@ impl LiveFeedsState {
                     )));
                 }
             }
+            entry.catalog_state_manifest = Some(parsed.clone());
             entry.state_manifest = Some(parsed);
             entry.loaded_version = Some(version);
             self.resource_failure_retry_after_epoch_ms
@@ -924,6 +926,18 @@ impl LiveFeedsState {
         self.products.get(product)?.state_manifest.as_ref()
     }
 
+    pub fn current_product_catalog_state_manifest(&self, product: &str) -> Option<&Value> {
+        self.products.get(product)?.catalog_state_manifest.as_ref()
+    }
+
+    pub fn current_product_install_bytes(&self, product: &str) -> Option<u64> {
+        self.products
+            .get(product)?
+            .install_state_ref
+            .as_ref()
+            .map(|payload| payload.bytes)
+    }
+
     pub fn product_loaded_version(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
         if entry
@@ -1106,6 +1120,7 @@ impl LiveFeedsState {
         entry.delta_from_previous = None;
         entry.recent_deltas.clear();
         entry.version_manifest = None;
+        entry.catalog_state_manifest = None;
         entry.sync_history(history);
         Ok(())
     }
@@ -1140,8 +1155,9 @@ impl LiveFeedsState {
         if collected_at_utc.is_some() {
             entry.collected_at_utc = collected_at_utc;
         }
-        if state_manifest.is_some() {
-            entry.state_manifest = state_manifest;
+        if let Some(state_manifest) = state_manifest {
+            entry.catalog_state_manifest = Some(state_manifest.clone());
+            entry.state_manifest = Some(state_manifest);
         }
     }
 
@@ -1173,6 +1189,7 @@ impl LiveFeedsState {
             entry.delta_from_previous = source_entry.delta_from_previous.clone();
             entry.recent_deltas = source_entry.recent_deltas.clone();
             entry.version_manifest = source_entry.version_manifest.clone();
+            entry.catalog_state_manifest = source_entry.catalog_state_manifest.clone();
             entry.history = source_entry.history.clone();
             if product == "nexrad" && source_entry.state_manifest.is_some() {
                 entry.loaded_version = source_entry.loaded_version.clone();
@@ -1326,27 +1343,28 @@ impl LiveFeedsState {
                 continue;
             }
             let full_ref = entry.durable_full_payload_ref(product);
-            if let Some(delta) =
-                entry.durable_applicable_delta(product, installed_by_product.get(product))
-            {
-                if durable_delta_is_preferred(delta, full_ref) {
-                    requests.push(LiveFeedCacheRequest {
-                        id: format!(
-                            "live_feeds/delta/{}/{}/{}",
-                            product, delta.from_version, delta.to_version
-                        ),
-                        url: self.required_live_feed_url(&delta.url),
-                        kind: LiveFeedCacheRequestKind::Delta {
-                            product: product.to_string(),
-                            from_version: delta.from_version.clone(),
-                            to_version: delta.to_version.clone(),
-                            payload_kind: delta
-                                .kind
-                                .clone()
-                                .or_else(|| Some(durable_delta_payload_kind(product).to_string())),
-                        },
-                    });
-                    continue;
+            if product != "winds-aloft" {
+                if let Some(delta) =
+                    entry.durable_applicable_delta(product, installed_by_product.get(product))
+                {
+                    if durable_delta_is_preferred(delta, full_ref) {
+                        requests.push(LiveFeedCacheRequest {
+                            id: format!(
+                                "live_feeds/delta/{}/{}/{}",
+                                product, delta.from_version, delta.to_version
+                            ),
+                            url: self.required_live_feed_url(&delta.url),
+                            kind: LiveFeedCacheRequestKind::Delta {
+                                product: product.to_string(),
+                                from_version: delta.from_version.clone(),
+                                to_version: delta.to_version.clone(),
+                                payload_kind: delta.kind.clone().or_else(|| {
+                                    Some(durable_delta_payload_kind(product).to_string())
+                                }),
+                            },
+                        });
+                        continue;
+                    }
                 }
             }
             if let Some(full_ref) = full_ref {
@@ -1512,6 +1530,26 @@ impl LiveFeedsState {
             append_nexrad_history_state_manifest_cache_request(self, &mut requests, history);
         }
         requests
+    }
+
+    pub fn current_state_manifest_cache_request(
+        &self,
+        product: &str,
+    ) -> Option<LiveFeedCacheRequest> {
+        let entry = self.products.get(product)?;
+        let version = entry.current_version.as_deref()?;
+        if entry.version_manifest.is_none() || entry.catalog_state_manifest.is_some() {
+            return None;
+        }
+        let state_ref = entry.state_ref.as_ref()?;
+        Some(LiveFeedCacheRequest {
+            id: format!("live_feeds/state/{product}/{version}"),
+            url: self.required_live_feed_url(&state_ref.url),
+            kind: LiveFeedCacheRequestKind::State {
+                product: product.to_string(),
+                version: version.to_string(),
+            },
+        })
     }
 
     pub fn durable_delta_ref_for_request(

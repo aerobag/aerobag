@@ -286,6 +286,14 @@ data class AltitudeComparisonPanelUiView(
 
 data class AltitudePlannerForecastUiView(
     val summary: String,
+    val action: AltitudePlannerForecastActionUiView?,
+)
+
+data class AltitudePlannerForecastActionUiView(
+    val label: String,
+    val enabled: Boolean,
+    val actionUid: String?,
+    val disabledReason: String?,
 )
 
 data class AltitudePlannerDepartureEditorUiView(

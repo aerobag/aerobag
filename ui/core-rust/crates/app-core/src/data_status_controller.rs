@@ -117,6 +117,9 @@ pub(crate) struct DataStatusForecastInput {
     pub loaded: bool,
     pub listed: bool,
     pub index_loaded: bool,
+    pub on_demand: bool,
+    pub update_available: bool,
+    pub acquisition_phase: crate::WindsAloftAcquisitionPhase,
     pub version_label: Option<String>,
     pub model_id: Option<String>,
     pub cycle_time_epoch_ms: Option<i64>,
@@ -1086,13 +1089,77 @@ fn winds_aloft_status_page_row(
             facts,
         );
     }
+    if forecast.on_demand && forecast.acquisition_phase != crate::WindsAloftAcquisitionPhase::Idle {
+        return status_page_row(
+            "live_feed:winds-aloft",
+            "Winds aloft",
+            match forecast.acquisition_phase {
+                crate::WindsAloftAcquisitionPhase::Requested => "REQUESTED",
+                crate::WindsAloftAcquisitionPhase::Downloading => "DOWNLOADING",
+                crate::WindsAloftAcquisitionPhase::Installing => "INSTALLING",
+                crate::WindsAloftAcquisitionPhase::Idle => "ON DEMAND",
+            },
+            UiStatusSeverity::Info,
+            match forecast.acquisition_phase {
+                crate::WindsAloftAcquisitionPhase::Requested => {
+                    "The current forecast download is queued."
+                }
+                crate::WindsAloftAcquisitionPhase::Downloading => {
+                    "The current forecast package is downloading."
+                }
+                crate::WindsAloftAcquisitionPhase::Installing => {
+                    "The downloaded forecast package is being installed."
+                }
+                crate::WindsAloftAcquisitionPhase::Idle => "No forecast acquisition is active.",
+            },
+            facts,
+        );
+    }
     if forecast.loaded {
+        if forecast.on_demand && forecast.update_available {
+            return status_page_row(
+                "live_feed:winds-aloft",
+                "Winds aloft",
+                "UPDATE",
+                UiStatusSeverity::Info,
+                "An installed forecast remains available; a newer forecast can be downloaded from the Altitude Planner.",
+                facts,
+            );
+        }
         return status_page_row(
             "live_feed:winds-aloft",
             "Winds aloft",
             "OK",
             UiStatusSeverity::Ok,
             "NOAA forecast atmosphere is loaded.",
+            facts,
+        );
+    }
+    if forecast.on_demand && forecast.listed {
+        return status_page_row(
+            "live_feed:winds-aloft",
+            "Winds aloft",
+            match forecast.acquisition_phase {
+                crate::WindsAloftAcquisitionPhase::Idle => "ON DEMAND",
+                crate::WindsAloftAcquisitionPhase::Requested => "REQUESTED",
+                crate::WindsAloftAcquisitionPhase::Downloading => "DOWNLOADING",
+                crate::WindsAloftAcquisitionPhase::Installing => "INSTALLING",
+            },
+            UiStatusSeverity::Info,
+            match forecast.acquisition_phase {
+                crate::WindsAloftAcquisitionPhase::Idle => {
+                    "No forecast is installed. Download one from the Altitude Planner when needed."
+                }
+                crate::WindsAloftAcquisitionPhase::Requested => {
+                    "The current forecast download is queued."
+                }
+                crate::WindsAloftAcquisitionPhase::Downloading => {
+                    "The current forecast package is downloading."
+                }
+                crate::WindsAloftAcquisitionPhase::Installing => {
+                    "The downloaded forecast package is being installed."
+                }
+            },
             facts,
         );
     }
@@ -1948,6 +2015,9 @@ mod tests {
                 loaded: false,
                 listed: false,
                 index_loaded: false,
+                on_demand: false,
+                update_available: false,
+                acquisition_phase: crate::WindsAloftAcquisitionPhase::Idle,
                 version_label: None,
                 model_id: None,
                 cycle_time_epoch_ms: None,

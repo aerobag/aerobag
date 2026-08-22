@@ -134,6 +134,86 @@ class LiveFeedCacheTest {
     }
 
     @Test
+    fun slowPersistedPackagePreparationDoesNotBlockCacheQueries() {
+        val enteredRestore = CountDownLatch(1)
+        val releaseRestore = CountDownLatch(1)
+        val enteredQuery = CountDownLatch(1)
+        val bridge = liveFeedBridge(
+            ingestInstalledPayload = {
+                enteredRestore.countDown()
+                assertTrue(releaseRestore.await(2, TimeUnit.SECONDS))
+            },
+            missingRequestsJson = {
+                enteredQuery.countDown()
+                "[]"
+            },
+        )
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
+        val restore = Thread {
+            cache.ingestInstalledPayload(
+                LiveFeedInstalledSummary(
+                    product = "nexrad",
+                    version = "stale-frame",
+                    stateSha256 = "state",
+                    payloadKind = "nexrad_package",
+                ),
+                byteArrayOf(1, 2, 3),
+            )
+        }
+        restore.start()
+        assertTrue(enteredRestore.await(2, TimeUnit.SECONDS))
+
+        val query = Thread { cache.missingRequests() }
+        query.start()
+        assertTrue(
+            "persisted package preparation must not hold the cache operation lock",
+            enteredQuery.await(500, TimeUnit.MILLISECONDS),
+        )
+
+        releaseRestore.countDown()
+        restore.join(2_000)
+        query.join(2_000)
+        cache.close()
+    }
+
+    @Test
+    fun slowImmutableResourceProjectionDoesNotBlockCacheQueries() {
+        val enteredFinish = CountDownLatch(1)
+        val releaseFinish = CountDownLatch(1)
+        val enteredQuery = CountDownLatch(1)
+        val bridge = liveFeedBridge(
+            beginRestoringResources = {},
+            restoreResourceBytes = {},
+            finishRestoringResources = {
+                enteredFinish.countDown()
+                assertTrue(releaseFinish.await(2, TimeUnit.SECONDS))
+            },
+            missingRequestsJson = {
+                enteredQuery.countDown()
+                "[]"
+            },
+        )
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
+        val restore = Thread {
+            cache.restoreInstalledResources(resourceManifest()) { byteArrayOf(1, 2, 3) }
+        }
+        restore.start()
+        assertTrue(enteredFinish.await(2, TimeUnit.SECONDS))
+
+        val query = Thread { cache.missingRequests() }
+        query.start()
+        assertTrue(
+            "immutable resource projection must not hold the cache operation lock",
+            enteredQuery.await(500, TimeUnit.MILLISECONDS),
+        )
+
+        releaseFinish.countDown()
+        restore.join(2_000)
+        query.join(2_000)
+        cache.close()
+    }
+
+    @Test
     fun persistedRestoreRunsOnlyOnceForRetainedCache() {
         val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = liveFeedBridge())
         val restoreCount = AtomicInteger(0)
@@ -226,6 +306,7 @@ class LiveFeedCacheTest {
         restoreResourceBytes: () -> Unit = {},
         abortRestoringResources: () -> Unit = {},
         finishRestoringResources: () -> Unit = {},
+        ingestInstalledPayload: () -> Unit = {},
     ): NativeBridge =
         Proxy.newProxyInstance(
             NativeBridge::class.java.classLoader,
@@ -241,6 +322,7 @@ class LiveFeedCacheTest {
                 "liveFeedCacheRestoreResourceBytes" -> restoreResourceBytes()
                 "liveFeedCacheAbortRestoringResources" -> abortRestoringResources()
                 "liveFeedCacheFinishRestoringResources" -> finishRestoringResources()
+                "liveFeedCacheIngestInstalledPayloadBytes" -> ingestInstalledPayload()
                 "destroyLiveFeedCache" -> {
                     destroyLiveFeedCache()
                     Unit

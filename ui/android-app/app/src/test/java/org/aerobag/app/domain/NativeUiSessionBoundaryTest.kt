@@ -50,6 +50,20 @@ class NativeUiSessionBoundaryTest {
             "Committed mutations must resume snapshot projection instead of running twice.",
             sessionBody.contains("resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) }"),
         )
+        val pagedOperationBody = balancedBlockAfterMarker(
+            sessionBody,
+            "private fun executePagedOperation(operation: () -> String)",
+        )
+        assertTrue(
+            "Every paged snapshot mutation must be able to load non-NAVKV session resources.",
+            pagedOperationBody.contains("fetchSessionResource = sessionResourceFetcher"),
+        )
+        assertTrue(
+            "Every paged snapshot mutation must ingest loaded resources into its active session.",
+            pagedOperationBody.contains(
+                "bridge.ingestResourceInSession(handle, resource.id, bytes)",
+            ),
+        )
         assertTrue(
             "NativeUiSession must expose core invalidations from paged mutations.",
             sessionBody.contains("fun subscribeInvalidations(listener: (List<String>) -> Unit)"),

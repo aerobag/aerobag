@@ -501,6 +501,12 @@ interface NativeBridge {
 
     fun reportLiveFeedConnectionEventInSessionJson(handle: Long, eventJson: String): String
 
+    fun reportLiveFeedAcquisitionPhaseInSessionJson(
+        handle: Long,
+        product: String,
+        phase: String,
+    ): String
+
     fun getMapOverlayInSessionJson(
         handle: Long,
         viewportJson: String,
@@ -1145,6 +1151,12 @@ object NativeBindings : NativeBridge {
     external override fun ingestLiveFeedSseEventsInSessionJson(handle: Long, eventsJson: String): String
 
     external override fun reportLiveFeedConnectionEventInSessionJson(handle: Long, eventJson: String): String
+
+    external override fun reportLiveFeedAcquisitionPhaseInSessionJson(
+        handle: Long,
+        product: String,
+        phase: String,
+    ): String
 
     external override fun getMapOverlayInSessionJson(
         handle: Long,

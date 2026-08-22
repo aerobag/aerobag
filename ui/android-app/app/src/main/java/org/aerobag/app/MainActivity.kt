@@ -2687,14 +2687,15 @@ internal fun AerobagApp(
     var nextSessionCommandNoticeId by remember(uiSession) { mutableLongStateOf(1L) }
     var sessionCommandNotice by remember(uiSession) { mutableStateOf<SessionCommandNotice?>(null) }
     fun applySessionSnapshot(nextSnapshot: UiSessionSnapshot): Boolean {
-        if (nextSnapshot.sessionRevision < sessionRenderModel.currentRevision) {
+        val acceptedAsLatest = sessionRenderModel.publishUnannouncedSnapshot(nextSnapshot)
+        if (!acceptedAsLatest) {
             Log.i(
                 "AerobagSession",
-                "ignored stale snapshot revision=${nextSnapshot.sessionRevision} current=${sessionRenderModel.currentRevision}",
+                "snapshot revision=${nextSnapshot.sessionRevision} trails latest=${sessionRenderModel.currentRevision}; " +
+                    "published to any lagging render owners",
             )
-            return false
         }
-        return sessionRenderModel.publishUnannouncedSnapshot(nextSnapshot)
+        return acceptedAsLatest
     }
     fun recoverSessionCommandFailure(error: Throwable, notifyUser: Boolean = true) {
         if (error is CancellationException) {

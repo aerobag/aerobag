@@ -75,6 +75,7 @@ pub(crate) struct LiveNavKvSource {
     pub page_path_template: String,
     pub page_count: u32,
     pub state_sha256: String,
+    pub package_blob_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone)]

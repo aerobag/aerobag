@@ -38,6 +38,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.aerobag.app.diagnosticLogInfo
@@ -208,7 +209,7 @@ class LiveFeedCache(
     fun installFetchedBytes(
         request: LiveFeedCacheRequest,
         bytes: ByteArray,
-    ): LiveFeedInstalledSummary? = withOpenHandle { handle ->
+    ): LiveFeedInstalledSummary? = withOpenHandleConcurrent { handle ->
         json.decodeFromString(
             bridge.liveFeedCacheInstallFetchedBytesJson(
                 handle,
@@ -236,7 +237,7 @@ class LiveFeedCache(
         bridge.liveFeedCacheReleasePersistedPayloadBytes(handle, product, version)
     }
 
-    fun ingestInstalledPayload(summary: LiveFeedInstalledSummary, payloadBytes: ByteArray) = withOpenHandle { handle ->
+    fun ingestInstalledPayload(summary: LiveFeedInstalledSummary, payloadBytes: ByteArray) = withOpenHandleConcurrent { handle ->
         bridge.liveFeedCacheIngestInstalledPayloadBytes(
             handle,
             json.encodeToString(summary),
@@ -259,7 +260,7 @@ class LiveFeedCache(
     fun restoreInstalledResources(
         manifest: LiveFeedResourceManifest,
         readResource: (LiveFeedResourceRef) -> ByteArray,
-    ) = withOpenHandle { handle ->
+    ) = withOpenHandleConcurrent { handle ->
         val product = manifest.summary.product
         bridge.liveFeedCacheBeginRestoringResources(handle, json.encodeToString(manifest))
         try {
@@ -357,6 +358,14 @@ class LiveFeedCache(
     }
 
     private inline fun <T> withOpenHandle(block: (Long) -> T): T {
+        return withOpenHandleConcurrent { handle ->
+            synchronized(operationLock) {
+                block(handle)
+            }
+        }
+    }
+
+    private inline fun <T> withOpenHandleConcurrent(block: (Long) -> T): T {
         synchronized(lifecycleLock) {
             if (closed) {
                 throw LiveFeedCacheClosedException()
@@ -364,9 +373,7 @@ class LiveFeedCache(
             activeCalls += 1
         }
         try {
-            return synchronized(operationLock) {
-                block(handle)
-            }
+            return block(handle)
         } finally {
             val destroyNow = synchronized(lifecycleLock) {
                 activeCalls -= 1
@@ -392,6 +399,7 @@ class AndroidLiveFeedClient(
     private val cache: LiveFeedCache,
     private val sourceRootUrl: String,
     private val beforePump: () -> Unit = {},
+    private val reportAcquisitionPhase: suspend (product: String, phase: String) -> Unit = { _, _ -> },
     private val json: Json = Json {
         encodeDefaults = true
         ignoreUnknownKeys = true
@@ -556,8 +564,11 @@ class AndroidLiveFeedClient(
         var installs = 0
         var madeProgress = false
         for (request in requests) {
+            val acquisitionProduct = request.acquisitionProduct()
             try {
+                acquisitionProduct?.let { reportAcquisitionPhase(it, "downloading") }
                 val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
+                acquisitionProduct?.let { reportAcquisitionPhase(it, "installing") }
                 val summary = withContext(Dispatchers.IO) {
                     cache.installFetchedBytes(request, bytes)
                 }
@@ -601,6 +612,7 @@ class AndroidLiveFeedClient(
                 madeProgress = true
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
+                acquisitionProduct?.let { reportAcquisitionPhase(it, "requested") }
                 cache.recordRequestFailure(request.id, SystemClock.elapsedRealtime())
                 val retryDecision = cache.runtimeDecision(
                     LiveFeedRuntimeInput(
@@ -618,6 +630,14 @@ class AndroidLiveFeedClient(
             }
         }
         return LiveFeedPumpResult(installs = installs, madeProgress = madeProgress)
+    }
+
+    private fun LiveFeedCacheRequest.acquisitionProduct(): String? {
+        val requestKind = kind["kind"]?.jsonPrimitive?.content
+        val product = kind["product"]?.jsonPrimitive?.content
+        return product.takeIf {
+            it == "winds-aloft" && (requestKind == "full" || requestKind == "delta")
+        }
     }
 
     private suspend fun readSseLoop(

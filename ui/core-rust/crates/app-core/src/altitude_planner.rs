@@ -113,6 +113,18 @@ pub struct AltitudeComparisonPanelUiView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AltitudePlannerForecastUiView {
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<AltitudePlannerForecastActionUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudePlannerForecastActionUiView {
+    pub label: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +351,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     ),
                 )
             },
+            action: None,
         }),
         _ => input.forecast,
     };
@@ -1798,6 +1811,7 @@ mod tests {
             time_display_mode: TimeDisplayMode::Utc,
             forecast: Some(AltitudePlannerForecastUiView {
                 summary: "ordinary provenance".to_string(),
+                action: None,
             }),
             wind_fallback: Some(AltitudePlannerWindFallback::ForecastCoverage {
                 valid_from_epoch_ms: 0,

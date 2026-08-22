@@ -114,6 +114,7 @@ pub(crate) struct SessionProjectionDependencies {
 pub(crate) struct SessionProjectionVersionState {
     versions: SessionProjectionVersions,
     dependencies: Option<SessionProjectionDependencies>,
+    flight_plan_update_forced: bool,
 }
 
 impl SessionProjectionVersionState {
@@ -121,9 +122,15 @@ impl SessionProjectionVersionState {
         self.versions
     }
 
+    pub fn force_flight_plan_update(&mut self) {
+        self.versions.flight_plan = self.versions.flight_plan.saturating_add(1);
+        self.flight_plan_update_forced = true;
+    }
+
     pub fn observe(&mut self, dependencies: SessionProjectionDependencies) {
         let Some(previous) = self.dependencies.take() else {
             self.dependencies = Some(dependencies);
+            self.flight_plan_update_forced = false;
             return;
         };
         advance_if_changed(
@@ -141,11 +148,15 @@ impl SessionProjectionVersionState {
             &previous.application_shell,
             &dependencies.application_shell,
         );
-        advance_if_changed(
-            &mut self.versions.flight_plan,
-            &previous.flight_plan,
-            &dependencies.flight_plan,
-        );
+        if self.flight_plan_update_forced {
+            self.flight_plan_update_forced = false;
+        } else {
+            advance_if_changed(
+                &mut self.versions.flight_plan,
+                &previous.flight_plan,
+                &dependencies.flight_plan,
+            );
+        }
         advance_if_changed(
             &mut self.versions.ownship,
             &previous.ownship,

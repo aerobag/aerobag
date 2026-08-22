@@ -8845,6 +8845,8 @@ function AltitudePlannerPage(props: {
   const planner = props.planUiState.altitude_planner;
   const [panel, setPanel] = useState<AltitudeComparisonPanelUiView | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showUserActionSpinner, setShowUserActionSpinner] = useState(false);
+  const [comparisonRefreshRevision, setComparisonRefreshRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [departureTimeInput, setDepartureTimeInput] = useState(planner.departure.time_value);
   const [departureWhenInput, setDepartureWhenInput] = useState(planner.departure.when_value);
@@ -8852,6 +8854,9 @@ function AltitudePlannerPage(props: {
   const departureTimeFocused = useRef(false);
   const departureWhenFocused = useRef(false);
   const suppressDepartureBlurSubmit = useRef(false);
+  const userActionPendingRefresh = useRef(false);
+  const comparisonRequestGeneration = useRef(0);
+  const previousPage = useRef<AppPage | null>(null);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const comparisonControlKey = planner.controls.map((control) => {
     const selectedOption = control.options?.find((option) => option.selected)?.action_uid ?? "";
@@ -8859,25 +8864,42 @@ function AltitudePlannerPage(props: {
   }).join("|");
 
   const reload = () => {
+    const generation = ++comparisonRequestGeneration.current;
     setLoading(true);
     setError(null);
     void props.onQueryAltitudeComparisons()
-      .then(setPanel)
-      .catch((reason: unknown) => {
-        setPanel(null);
-        setError(errorMessage(reason));
+      .then((nextPanel) => {
+        if (comparisonRequestGeneration.current === generation) setPanel(nextPanel);
       })
-      .finally(() => setLoading(false));
+      .catch((reason: unknown) => {
+        if (comparisonRequestGeneration.current === generation) {
+          setPanel(null);
+          setError(errorMessage(reason));
+        }
+      })
+      .finally(() => {
+        if (comparisonRequestGeneration.current === generation) {
+          setLoading(false);
+          setShowUserActionSpinner(false);
+        }
+      });
   };
 
   useEffect(() => {
-    if (props.page === "altitude") reload();
+    const enteredAltitudePlanner = previousPage.current !== "altitude" && props.page === "altitude";
+    previousPage.current = props.page;
+    if (props.page === "altitude") {
+      if (userActionPendingRefresh.current) return;
+      if (enteredAltitudePlanner) setShowUserActionSpinner(true);
+      reload();
+    }
   }, [
     props.page,
     props.planUiState.plan_version,
     planner.estimate_summary.label,
     planner.departure.time_value,
     comparisonControlKey,
+    comparisonRefreshRevision,
   ]);
 
   useEffect(() => {
@@ -8888,14 +8910,38 @@ function AltitudePlannerPage(props: {
   const performAction = (actionUid: string) => {
     setOpenControlId(null);
     setError(null);
+    comparisonRequestGeneration.current += 1;
+    setLoading(true);
+    setShowUserActionSpinner(true);
+    userActionPendingRefresh.current = true;
     void Promise.resolve(props.onPerformAltitudePlannerAction(actionUid))
-      .catch((reason: unknown) => setError(errorMessage(reason)));
+      .then(() => {
+        userActionPendingRefresh.current = false;
+        setComparisonRefreshRevision((revision) => revision + 1);
+      })
+      .catch((reason: unknown) => {
+        userActionPendingRefresh.current = false;
+        setLoading(false);
+        setShowUserActionSpinner(false);
+        setError(errorMessage(reason));
+      });
   };
 
   const submitDepartureInput = (field: "time" | "when", input: string) => {
     setError(null);
+    comparisonRequestGeneration.current += 1;
+    setLoading(true);
+    setShowUserActionSpinner(true);
+    userActionPendingRefresh.current = true;
     void Promise.resolve(props.onSetDepartureInput(field, input))
+      .then(() => {
+        userActionPendingRefresh.current = false;
+        setComparisonRefreshRevision((revision) => revision + 1);
+      })
       .catch((reason: unknown) => {
+        userActionPendingRefresh.current = false;
+        setLoading(false);
+        setShowUserActionSpinner(false);
         setDepartureTimeInput(planner.departure.time_value);
         setDepartureWhenInput(planner.departure.when_value);
         setError(errorMessage(reason));
@@ -8904,6 +8950,10 @@ function AltitudePlannerPage(props: {
 
   const toggleDepartureTimeBasis = () => {
     setError(null);
+    comparisonRequestGeneration.current += 1;
+    setLoading(true);
+    setShowUserActionSpinner(true);
+    userActionPendingRefresh.current = true;
     void (async () => {
       try {
         if (departureTimeInput !== planner.departure.time_value) {
@@ -8913,7 +8963,12 @@ function AltitudePlannerPage(props: {
           await props.onSetDepartureInput("when", departureWhenInput);
         }
         await props.onToggleDepartureTimeBasis();
+        userActionPendingRefresh.current = false;
+        setComparisonRefreshRevision((revision) => revision + 1);
       } catch (reason: unknown) {
+        userActionPendingRefresh.current = false;
+        setLoading(false);
+        setShowUserActionSpinner(false);
         setDepartureTimeInput(planner.departure.time_value);
         setDepartureWhenInput(planner.departure.when_value);
         setError(errorMessage(reason));
@@ -9045,7 +9100,28 @@ function AltitudePlannerPage(props: {
 
       <div className="altitudePlannerPageBody">
         {planner.forecast ? (
-          <div className="altitudePlannerProvenance">{planner.forecast.summary}</div>
+          <div className="altitudePlannerProvenance">
+            <span>{planner.forecast.summary}</span>
+            {planner.forecast.action ? (
+              <button
+                type="button"
+                className={`trayButton altitudePlannerForecastAction${planner.forecast.action.enabled ? "" : " isDisabled"}`}
+                data-testid="altitude-planner-forecast-action"
+                aria-disabled={planner.forecast.action.enabled ? undefined : "true"}
+                title={planner.forecast.action.disabled_reason ?? undefined}
+                onClick={() => {
+                  const action = planner.forecast?.action;
+                  if (action?.enabled && action.action_uid) {
+                    performAction(action.action_uid);
+                  } else if (action?.disabled_reason) {
+                    showDisabledAction(action.disabled_reason);
+                  }
+                }}
+              >
+                {planner.forecast.action.label}
+              </button>
+            ) : null}
+          </div>
         ) : null}
         {(planner.unavailable_reasons ?? []).length > 0 ? (
           <div className="altitudePlannerReasons" data-testid="altitude-planner-status">
@@ -9086,7 +9162,7 @@ function AltitudePlannerPage(props: {
               ))}
             </div>
           ) : null}
-          {loading && panel === null ? (
+          {loading && showUserActionSpinner ? (
             <div className="altitudeComparisonLoading" role="status" aria-live="polite">
               <span className="altitudeComparisonSpinner" aria-hidden="true" />
               <span>Calculating…</span>

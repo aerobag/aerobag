@@ -53,15 +53,24 @@ timestamps and rejects unknown fields.
 `deploy/releases.json` remains the only release intent. Operator commands may
 make and apply its commits, but they do not introduce a second state model:
 
-- `tools/prod_manage.py --stage` creates an immutable release tag, assigns it to
-  staging, and performs full reconciliation.
-- `tools/prod_manage.py --promote` commits the qualified staging assignment as
-  production and performs activation-only reconciliation.
+- `tools/prod_manage.py --stage` is a desired-state change. It requires a clean
+  synchronized checkout, assigns a new immutable release to staging, commits and
+  tags that exact commit, then enters the reconciliation workflow. If `HEAD` is
+  already the assigned staging release, it exits locally and directs the operator
+  to `--reconcile` instead of turning a change command into an implicit retry.
+- `tools/prod_manage.py --promote` is a desired-state change. It commits the
+  qualified staging assignment as production, clears staging, and then enters
+  activation-only reconciliation. With no staging assignment it exits locally;
+  it does not contact production merely to check whether an earlier promotion
+  completed.
 - `tools/prod_manage.py --reconcile` does not edit release intent. It installs
-  or repairs the host and fully converges the checked-in assignments.
+  or repairs the host and fully converges the checked-in assignments. When
+  production is already converged it reports that state and performs no deploy.
 
-All three commands reject overlapping reconciliation. Direct desired-state
-edits followed by `--reconcile` remain the complete lower-level interface.
+Commands that would mutate intent retain the remote-idle safety check before and
+after confirmation. Reconciliation also rejects an overlapping reconciler.
+Direct desired-state edits followed by `--reconcile` remain the complete
+lower-level interface.
 
 ### Release Naming
 
@@ -70,14 +79,15 @@ Before assigning a new staging release:
 1. Choose an unused release name such as `2026-08-22.1`.
 2. Verify that no tag, release-state record, or release-output directory uses
    that name.
-3. Create an annotated Git tag at the candidate application commit.
-4. Push the tag to the canonical repository.
-5. In a later commit, assign that tag to `staging` in `deploy/releases.json`.
+3. Assign that name to `staging` in `deploy/releases.json` and commit the change.
+4. Create an annotated Git tag at that exact desired-state commit.
+5. Atomically push `main` and the tag to the canonical repository.
 
-The configuration commit therefore normally follows the release tag by one
-commit. This is intentional infrastructure-as-code behavior. Application
-artifacts are built from the configured tag, not from the later commit running
-the deployment controller.
+Consequently, a clean checkout whose `HEAD` resolves to the configured staging
+tag has already expressed that staging intent. Re-running `--stage` is an error,
+not a reconciliation request. A missing, lightweight, or otherwise unresolvable
+tag named by desired state is an integrity error and is never guessed or
+recreated.
 
 Release tags are immutable. If a tag is deleted or resolves to a different tag
 object or commit than production previously observed, reconciliation fails

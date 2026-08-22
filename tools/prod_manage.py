@@ -39,11 +39,12 @@ class ManagementError(RuntimeError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stage or promote the checked-in Aerobag release desired state."
+        description="Change or reconcile Aerobag's checked-in production release intent."
     )
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--stage", action="store_true")
     operation.add_argument("--promote", action="store_true")
+    operation.add_argument("--reconcile", action="store_true")
     return parser.parse_args()
 
 
@@ -83,11 +84,7 @@ def serialize_release_document(document: dict[str, Any]) -> str:
 
 
 def stage_document(document: dict[str, Any], tag: str) -> dict[str, Any]:
-    desired = releases.parse_desired_releases(document)
-    if desired.staging is not None:
-        raise ManagementError(
-            f"staging already names {desired.staging.tag}; promote or clear it explicitly first"
-        )
+    releases.parse_desired_releases(document)
     proposed = json.loads(json.dumps(document))
     proposed["staging"] = {"tag": tag}
     releases.parse_desired_releases(proposed)
@@ -153,7 +150,9 @@ def existing_release_tags() -> set[str]:
 def assert_main_not_behind(*, require_synchronized: bool) -> None:
     branch = git("branch", "--show-current")
     if branch != "main":
-        raise ManagementError(f"release management requires branch main, not {branch or 'detached HEAD'}")
+        raise ManagementError(
+            f"release management requires branch main, not {branch or 'detached HEAD'}"
+        )
     counts = git("rev-list", "--left-right", "--count", "origin/main...HEAD")
     try:
         behind, ahead = (int(value) for value in counts.split())
@@ -165,14 +164,15 @@ def assert_main_not_behind(*, require_synchronized: bool) -> None:
         )
     if require_synchronized and ahead:
         raise ManagementError(
-            f"main is {ahead} commit(s) ahead of origin/main; promotion requires a synchronized checkout"
+            f"main is {ahead} commit(s) ahead of origin/main; release management "
+            "requires a synchronized checkout"
         )
 
 
-def assert_clean_checkout() -> None:
+def assert_clean_checkout(operation: str) -> None:
     status = git("status", "--porcelain")
     if status:
-        raise ManagementError("promotion requires a clean checkout")
+        raise ManagementError(f"can't {operation} with uncommitted work")
 
 
 def write_atomic(path: Path, content: str) -> None:
@@ -193,25 +193,114 @@ def assert_remote_idle(config: dict[str, Any]) -> None:
         deploy_prod.assert_release_reconciliation_idle(config, dry_run=False)
     except subprocess.CalledProcessError as error:
         raise ManagementError(
-            "production release reconciliation is still running; wait for it to finish before changing release intent"
+            "production release reconciliation is already running; wait for it to finish"
         ) from error
 
 
-def load_remote_observed(config: dict[str, Any]) -> dict[str, Any]:
+def load_remote_observed(config: dict[str, Any]) -> releases.ObservedState:
     path = f"{config['artifact_root']}/state/releases-observed.json"
+    quoted_path = deploy_prod.shell_quote(path)
     result = deploy_prod.run_ssh(
         config,
-        f"cat {deploy_prod.shell_quote(path)}",
+        f"if test -f {quoted_path}; then cat {quoted_path}; fi",
         capture=True,
         dry_run=False,
     )
+    if not result.stdout.strip():
+        return releases.ObservedState.empty()
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise ManagementError(f"production release state is invalid: {error}") from error
-    if not isinstance(value, dict):
-        raise ManagementError("production release state is not an object")
-    return value
+    return releases.ObservedState.from_dict(value)
+
+
+def reconciliation_plan(
+    desired: releases.DesiredReleases,
+    observed: releases.ObservedState,
+) -> releases.ReconciliationPlan:
+    resolved = releases.resolve_desired_tags(REPO_ROOT, desired)
+    for tag, identity in resolved.items():
+        record = observed.releases.get(tag)
+        if record is not None:
+            releases.verify_release_identity(identity, record)
+    return releases.plan_reconciliation(desired, observed)
+
+
+def remote_runtime_failures(
+    config: dict[str, Any],
+    desired: releases.DesiredReleases,
+    observed: releases.ObservedState,
+    controller_commit: str,
+) -> list[str]:
+    checks = [
+        (
+            f"test -d {deploy_prod.shell_quote(config['source_root'] + '/.git')}",
+            "controller source is not installed",
+        ),
+        (
+            f"test \"$(cat {deploy_prod.shell_quote(deploy_prod.DEPLOYED_REV_FILE)} "
+            f"2>/dev/null || true)\" = {deploy_prod.shell_quote(controller_commit)}",
+            "installed controller revision differs",
+        ),
+        (
+            f"test -L {deploy_prod.shell_quote(config['artifact_root'] + '/channel-current')}",
+            "active channel link is missing",
+        ),
+    ]
+    required_units = [
+        "nginx.service",
+        "aerobag-cloud-server.service",
+        "aerobag-client-debug-log.service",
+        "aerobag-build-watch.service",
+        "aerobag-pipeline-health.service",
+        "aerobag-build-product.timer",
+        "aerobag-health.timer",
+        "aerobag-cloud-backup.timer",
+        *(f"aerobag-live-feeds-release@{tag}.service" for tag in desired.tags()),
+    ]
+    checks.extend(
+        (f"systemctl is-active --quiet {deploy_prod.shell_quote(unit)}", f"{unit} is not active")
+        for unit in required_units
+    )
+    for tag in desired.tags():
+        record = observed.releases.get(tag)
+        if record is None:
+            continue
+        for path, description in (
+            (record.release_root, f"release output for {tag} is missing"),
+            (record.product_manifest, f"product manifest for {tag} is missing"),
+            (record.qualification_record, f"qualification record for {tag} is missing"),
+        ):
+            if path is not None:
+                checks.append(
+                    (f"test -e {deploy_prod.shell_quote(path)}", description)
+                )
+
+    lines = [
+        f"{command} || printf '%s\\n' {deploy_prod.shell_quote(description)}"
+        for command, description in checks
+    ]
+    result = deploy_prod.run_ssh(
+        config,
+        "\n".join(lines),
+        capture=True,
+        dry_run=False,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def describe_assignments(desired: releases.DesiredReleases) -> str:
+    staging = desired.staging.tag if desired.staging is not None else "none"
+    sunset = ", ".join(binding.tag for binding in desired.sunset) or "none"
+    return f"production={desired.production.tag}, staging={staging}, sunset={sunset}"
+
+
+def print_success(message: str) -> None:
+    if "NO_COLOR" in os.environ:
+        print(message)
+    else:
+        print(f"\x1b[32m{message}\x1b[0m")
 
 
 def assert_staging_is_qualified(
@@ -220,18 +309,27 @@ def assert_staging_is_qualified(
     if desired.staging is None:
         raise ManagementError("there is no staging release to promote")
     observed = load_remote_observed(config)
-    if observed.get("production") != desired.production.tag:
+    if observed.production != desired.production.tag:
         raise ManagementError(
             "production has not converged on the production release in deploy/releases.json"
         )
-    if observed.get("staging") != desired.staging.tag:
+    if observed.staging != desired.staging.tag:
         raise ManagementError(
             f"{desired.staging.tag} is not the currently active staging release"
         )
-    record = observed.get("releases", {}).get(desired.staging.tag)
-    if not isinstance(record, dict) or record.get("qualification_status") != "passed":
+    record = observed.releases.get(desired.staging.tag)
+    if record is None or record.qualification_status != "passed":
         raise ManagementError(
-            f"staging release {desired.staging.tag} has not passed qualification"
+            f"staging release {desired.staging.tag} has not passed qualification; "
+            "use --reconcile before promoting"
+        )
+    plan = reconciliation_plan(
+        releases.effective_desired_releases(desired), observed
+    )
+    if not plan.converged:
+        raise ManagementError(
+            f"staging release {desired.staging.tag} has not fully converged; "
+            "use --reconcile before promoting"
         )
 
 
@@ -269,92 +367,78 @@ def failed_command_summary(command: str | list[str]) -> str:
 
 
 def stage(config_path: Path, releases_path: Path) -> int:
-    config = deploy_prod.load_config(config_path)
+    assert_clean_checkout("stage")
     git("fetch", "--tags", "origin", capture=False)
-    assert_main_not_behind(require_synchronized=False)
-    assert_remote_idle(config)
+    assert_main_not_behind(require_synchronized=True)
 
     document = load_release_document(releases_path)
     desired = releases.parse_desired_releases(document)
+    head = git("rev-parse", "HEAD")
     if desired.staging is not None:
-        assert_main_not_behind(require_synchronized=True)
-        assert_clean_checkout()
-        tag = desired.staging.tag
-        print_proposal(
-            f"This command will resume staging {tag}, running this command:",
-            ["tools/deploy_prod.py --config deploy/aerobag-prod.json"],
-            f"  deploy/releases.json already assigns staging to {tag}; no source change is needed.",
-        )
-        if not confirmed():
-            print("aborted")
-            return 1
-        assert_remote_idle(config)
-        deploy(config_path)
-        return 0
+        staged = releases.resolve_release_tag(REPO_ROOT, desired.staging.tag)
+        if staged.commit == head:
+            raise ManagementError(
+                f"this commit is already staged as {desired.staging.tag}; "
+                "use --reconcile to check production state"
+            )
 
+    config = deploy_prod.load_config(config_path)
+    assert_remote_idle(config)
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
     old_text = serialize_release_document(document)
     new_text = serialize_release_document(proposed)
-    dirty = git("status", "--porcelain")
-    commands = []
-    if dirty:
-        commands.extend(
-            [
-                "git add -A",
-                f'git commit -m "Prepare release {tag}"',
-            ]
+    replacement_note = None
+    if desired.staging is not None:
+        replacement_note = (
+            f"This replaces staging release {desired.staging.tag}. The old release tag remains "
+            "immutable, but it will no longer be assigned to the staging channel."
         )
-    else:
-        commands.append("Use current HEAD (checkout is clean)")
-    commands.extend(
-        [
-            f'git tag -a {tag} -m "Aerobag {tag}"',
-            "git push origin main",
-            f"git push origin {tag}",
-            f"Modify deploy/releases.json to make staging {tag}",
-            "git add deploy/releases.json",
-            f'git commit -m "Stage {tag}"',
-            "git push origin main",
-            "tools/deploy_prod.py --config deploy/aerobag-prod.json",
-        ]
-    )
+    commands = [
+        f"Modify deploy/releases.json to make staging {tag}",
+        "git add deploy/releases.json",
+        f'git commit -m "Stage {tag}"',
+        f'git tag -a {tag} -m "Aerobag {tag}"',
+        f"git push --atomic origin main {tag}",
+        "tools/prod_manage.py --reconcile",
+    ]
     print_proposal(
         f"This command will stage {tag}, running these commands:",
         commands,
         color_diff(releases_path, old_text, new_text),
-        note=(f"The release commit will include:\n{dirty}" if dirty else None),
+        note=replacement_note,
     )
     if not confirmed():
         print("aborted")
         return 1
 
     assert_remote_idle(config)
+    git("fetch", "--tags", "origin", capture=False)
     if tag in existing_release_tags():
         raise ManagementError(f"release tag {tag} appeared during confirmation; retry")
-    if dirty:
-        git("add", "-A", capture=False)
-        git("commit", "-m", f"Prepare release {tag}", capture=False)
-    git("tag", "-a", tag, "-m", f"Aerobag {tag}", capture=False)
-    git("push", "origin", "main", capture=False)
-    git("push", "origin", tag, capture=False)
     write_atomic(releases_path, new_text)
     git("add", str(releases_path.relative_to(REPO_ROOT)), capture=False)
     git("commit", "-m", f"Stage {tag}", capture=False)
-    git("push", "origin", "main", capture=False)
-    deploy(config_path)
-    return 0
+    git("tag", "-a", tag, "-m", f"Aerobag {tag}", capture=False)
+    git("push", "--atomic", "origin", "main", tag, capture=False)
+    return reconcile(config_path, releases_path)
 
 
 def promote(config_path: Path, releases_path: Path) -> int:
-    config = deploy_prod.load_config(config_path)
+    assert_clean_checkout("promote")
     git("fetch", "--tags", "origin", capture=False)
     assert_main_not_behind(require_synchronized=True)
-    assert_clean_checkout()
-    assert_remote_idle(config)
 
     document = load_release_document(releases_path)
     desired = releases.parse_desired_releases(document)
+    if desired.staging is None:
+        raise ManagementError(
+            "nothing is staged; nothing to promote. Use --reconcile to confirm "
+            "promotion is complete"
+        )
+
+    config = deploy_prod.load_config(config_path)
+    assert_remote_idle(config)
     assert_staging_is_qualified(config, desired)
     proposed, old_production, candidate = promotion_document(document)
     old_text = serialize_release_document(document)
@@ -364,7 +448,7 @@ def promote(config_path: Path, releases_path: Path) -> int:
         "git add deploy/releases.json",
         f'git commit -m "Promote {candidate}"',
         "git push origin main",
-        "tools/deploy_prod.py --config deploy/aerobag-prod.json",
+        "tools/prod_manage.py --reconcile",
     ]
     print_proposal(
         f"This command will promote {candidate} to production, running these commands:",
@@ -385,7 +469,64 @@ def promote(config_path: Path, releases_path: Path) -> int:
     git("add", str(releases_path.relative_to(REPO_ROOT)), capture=False)
     git("commit", "-m", f"Promote {candidate}", capture=False)
     git("push", "origin", "main", capture=False)
+    return reconcile(config_path, releases_path)
+
+
+def reconcile(config_path: Path, releases_path: Path) -> int:
+    assert_clean_checkout("reconcile")
+    git("fetch", "--tags", "origin", capture=False)
+    assert_main_not_behind(require_synchronized=True)
+
+    document = load_release_document(releases_path)
+    desired = releases.effective_desired_releases(
+        releases.parse_desired_releases(document)
+    )
+    config = deploy_prod.load_config(config_path)
+    assert_remote_idle(config)
+    observed = load_remote_observed(config)
+    plan = reconciliation_plan(desired, observed)
+    controller_commit = git("rev-parse", "HEAD")
+    runtime_failures = (
+        remote_runtime_failures(config, desired, observed, controller_commit)
+        if plan.converged
+        else []
+    )
+    assignments = describe_assignments(desired)
+    if plan.converged and not runtime_failures:
+        print_success(f"Production is reconciled: {assignments}")
+        return 0
+
+    actions = ", ".join(
+        action.kind if action.tag is None else f"{action.kind}({action.tag})"
+        for action in plan.actions
+    )
+    detail = (
+        actions
+        or plan.blocked_reason
+        or "; ".join(runtime_failures)
+        or "deployment state differs"
+    )
+    print(f"Production needs reconciliation ({detail}): {assignments}")
     deploy(config_path)
+
+    observed = load_remote_observed(config)
+    final_plan = reconciliation_plan(desired, observed)
+    final_runtime_failures = (
+        remote_runtime_failures(config, desired, observed, controller_commit)
+        if final_plan.converged
+        else []
+    )
+    if not final_plan.converged or final_runtime_failures:
+        detail = final_plan.blocked_reason or ", ".join(
+            action.kind if action.tag is None else f"{action.kind}({action.tag})"
+            for action in final_plan.actions
+        )
+        if final_runtime_failures:
+            detail = "; ".join(final_runtime_failures)
+        raise ManagementError(
+            f"deployment completed without converging release state: {detail}"
+        )
+    print_success(f"Production reconciliation completed: {assignments}")
     return 0
 
 
@@ -394,7 +535,9 @@ def main() -> int:
     try:
         if args.stage:
             return stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
-        return promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
+        if args.promote:
+            return promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
+        return reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
     except (ManagementError, releases.ReleaseConfigError) as error:
         print(f"prod_manage: {error}", file=sys.stderr)
         return 2

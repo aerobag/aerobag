@@ -65,28 +65,39 @@ the exact commands and a colored config diff, and asks before changing anything:
 ```bash
 tools/prod_manage.py --stage
 tools/prod_manage.py --promote
+tools/prod_manage.py --reconcile
 ```
 
 `--stage` chooses the first unused UTC-date release name such as
-`2026-08-22.1`, commits the visible checkout as the release, creates and pushes
-an immutable annotated tag, then commits the staging assignment and invokes
-`deploy_prod.py`. If the checkout is already clean, it tags the current `main`
-commit rather than creating an empty release commit. Production remains on its
-current generation while the candidate builds, starts a separate live-feed
-daemon, and is qualified at `https://aerobag.org/staging/`.
+`2026-08-22.1`. It requires a clean synchronized `main`, commits the staging
+assignment, creates an immutable annotated tag at that same commit, atomically
+pushes both, then reconciles production. Production remains on its current
+generation while the candidate builds, starts a separate live-feed daemon, and
+is qualified at `https://aerobag.org/staging/`. If the current commit is already
+the assigned staging release, the command exits and directs the operator to
+`--reconcile`.
 
 `--promote` requires a clean `main` synchronized with `origin/main`, and checks
 that the configured candidate is active and qualified on staging. It commits
-the production pointer change, clears staging, pushes, and invokes deployment.
+the production pointer change, clears staging, pushes, and reconciles deployment.
+With no staging assignment it exits locally without contacting production.
 It does not guess whether the previous production release should remain under
 `sunset`; use a complete manual desired-state edit when old installed clients
 need a stated retention deadline.
 
-Both operations reject an active release reconciliation before making Git
-changes. `deploy_prod.py` independently closes the systemd-timer race and
-rejects a held reconciler lock; deployment no longer kills an in-progress
-release build. Re-run the same operation only after the prior reconciliation
-finishes.
+`--reconcile` never edits, commits, tags, or pushes desired state. It first
+compares the checked-in assignments with observed state and the installed
+runtime. A converged server produces a green success message without deployment;
+otherwise the command runs the idempotent full deployment and waits for verified
+convergence. Use it to resume interrupted staging, finish promotion, repair host
+drift, or recover a replaced container.
+
+All operations reject an active release reconciliation before making changes.
+The intent-changing commands repeat that check after confirmation.
+`deploy_prod.py` independently closes the systemd-timer race and rejects a held
+reconciler lock; deployment no longer kills an in-progress release build. Run
+`--reconcile` after the prior reconciliation finishes instead of repeating an
+intent-changing operation.
 
 The first controller deployment preserves the pre-deploy
 `/etc/aerobag/deployed-rev` in release state before updating the source

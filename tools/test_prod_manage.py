@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import unittest
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -33,13 +34,18 @@ def desired_document(*, staging: str | None = None) -> dict:
 
 
 class DesiredStateMutationTests(unittest.TestCase):
-    def test_public_cli_exposes_only_stage_and_promote(self) -> None:
+    def test_public_cli_exposes_stage_promote_and_reconcile(self) -> None:
         with mock.patch.object(sys, "argv", ["prod_manage.py", "--stage"]):
             args = prod_manage.parse_args()
         self.assertTrue(args.stage)
         self.assertFalse(args.promote)
+        self.assertFalse(args.reconcile)
         self.assertFalse(hasattr(args, "config"))
         self.assertFalse(hasattr(args, "releases"))
+
+        with mock.patch.object(sys, "argv", ["prod_manage.py", "--reconcile"]):
+            args = prod_manage.parse_args()
+        self.assertTrue(args.reconcile)
 
     def test_next_release_name_increments_only_the_current_utc_day(self) -> None:
         self.assertEqual(
@@ -59,11 +65,13 @@ class DesiredStateMutationTests(unittest.TestCase):
         self.assertEqual(proposed["sunset"], original["sunset"])
         self.assertIsNone(original["staging"])
 
-    def test_stage_refuses_to_overwrite_an_existing_candidate(self) -> None:
-        with self.assertRaisesRegex(prod_manage.ManagementError, "already names"):
-            prod_manage.stage_document(
-                desired_document(staging="2026-08-21.1"), "2026-08-22.1"
-            )
+    def test_stage_replaces_an_existing_candidate_without_changing_other_bindings(self) -> None:
+        original = desired_document(staging="2026-08-21.1")
+        proposed = prod_manage.stage_document(original, "2026-08-22.1")
+
+        self.assertEqual(proposed["staging"], {"tag": "2026-08-22.1"})
+        self.assertEqual(proposed["production"], original["production"])
+        self.assertEqual(proposed["sunset"], original["sunset"])
 
     def test_promotion_moves_staging_to_production_without_guessing_sunset(self) -> None:
         original = desired_document(staging="2026-08-22.1")
@@ -86,20 +94,46 @@ class PromotionGateTests(unittest.TestCase):
             desired_document(staging="2026-08-22.1")
         )
 
-    def observed(self, *, status: str = "passed") -> dict:
-        return {
-            "production": "2026-08-20.1",
-            "staging": "2026-08-22.1",
-            "releases": {
-                "2026-08-22.1": {"qualification_status": status},
-            },
-        }
+    def observed(self, *, status: str = "passed") -> releases.ObservedState:
+        candidate = releases.ObservedRelease(
+            tag="2026-08-22.1",
+            tag_object="1" * 40,
+            commit="2" * 40,
+            qualification_status=status,
+        )
+        return releases.ObservedState(
+            production="2026-08-20.1",
+            staging=candidate.tag,
+            releases={candidate.tag: candidate},
+        )
 
     def test_qualified_active_staging_release_can_be_promoted(self) -> None:
-        with mock.patch.object(
-            prod_manage, "load_remote_observed", return_value=self.observed()
+        with (
+            mock.patch.object(
+                prod_manage, "load_remote_observed", return_value=self.observed()
+            ),
+            mock.patch.object(
+                prod_manage,
+                "reconciliation_plan",
+                return_value=releases.ReconciliationPlan([]),
+            ),
         ):
             prod_manage.assert_staging_is_qualified({}, self.desired())
+
+    def test_qualified_but_nonconverged_staging_requires_reconciliation(self) -> None:
+        pending = releases.ReconciliationPlan(
+            [releases.ReconcileAction("start_live_feeds", "2026-08-22.1")]
+        )
+        with (
+            mock.patch.object(
+                prod_manage, "load_remote_observed", return_value=self.observed()
+            ),
+            mock.patch.object(
+                prod_manage, "reconciliation_plan", return_value=pending
+            ),
+        ):
+            with self.assertRaisesRegex(prod_manage.ManagementError, "fully converged"):
+                prod_manage.assert_staging_is_qualified({}, self.desired())
 
     def test_unqualified_staging_release_is_rejected_before_git_mutation(self) -> None:
         with mock.patch.object(
@@ -112,7 +146,7 @@ class PromotionGateTests(unittest.TestCase):
 
     def test_wrong_active_staging_release_is_rejected(self) -> None:
         observed = self.observed()
-        observed["staging"] = "some-other-release"
+        observed.staging = "some-other-release"
         with mock.patch.object(
             prod_manage, "load_remote_observed", return_value=observed
         ):
@@ -145,55 +179,70 @@ class ReconciliationCompletionTests(unittest.TestCase):
 
 
 class StageOrderingTests(unittest.TestCase):
-    def test_existing_staging_intent_resumes_deployment_without_new_git_changes(self) -> None:
+    @staticmethod
+    def clean_git(*args: str, capture: bool = True) -> str:
+        if args[:2] == ("status", "--porcelain"):
+            return ""
+        if args[:2] == ("branch", "--show-current"):
+            return "main"
+        if args[:3] == ("rev-list", "--left-right", "--count"):
+            return "0 0"
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if args[:2] == ("tag", "--list"):
+            return ""
+        return ""
+
+    def test_dirty_checkout_is_rejected_before_network_or_mutation(self) -> None:
+        with (
+            mock.patch.object(prod_manage, "git", return_value=" M app") as git,
+            mock.patch.object(prod_manage.deploy_prod, "load_config") as load_config,
+        ):
+            with self.assertRaisesRegex(
+                prod_manage.ManagementError, "can't stage with uncommitted work"
+            ):
+                prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+                )
+
+        git.assert_called_once_with("status", "--porcelain")
+        load_config.assert_not_called()
+
+    def test_commit_already_assigned_to_staging_exits_without_prod_access(self) -> None:
         document = desired_document(staging="2026-08-22.1")
 
-        def fake_git(*args: str, capture: bool = True) -> str:
-            if args[:2] == ("branch", "--show-current"):
-                return "main"
-            if args[:3] == ("rev-list", "--left-right", "--count"):
-                return "0 0"
-            if args[:2] == ("status", "--porcelain"):
-                return ""
-            return ""
-
         with (
-            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
-            mock.patch.object(prod_manage, "git", side_effect=fake_git) as git,
-            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
-            mock.patch.object(prod_manage, "print_proposal") as proposal,
-            mock.patch.object(prod_manage, "confirmed", return_value=True),
-            mock.patch.object(prod_manage, "deploy") as deploy,
+            mock.patch.object(
+                prod_manage.releases,
+                "resolve_release_tag",
+                return_value=releases.ResolvedTag(
+                    tag="2026-08-22.1",
+                    tag_object="b" * 40,
+                    commit="a" * 40,
+                ),
+            ),
+            mock.patch.object(prod_manage.deploy_prod, "load_config") as load_config,
+            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
         ):
-            result = prod_manage.stage(
-                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
-            )
+            with self.assertRaisesRegex(
+                prod_manage.ManagementError,
+                "already staged as 2026-08-22.1.*--reconcile",
+            ):
+                prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+                )
 
-        self.assertEqual(result, 0)
-        self.assertEqual(idle.call_count, 2)
-        self.assertFalse(
-            any(
-                call.args and call.args[0] in {"add", "commit", "tag", "push"}
-                for call in git.call_args_list
-            )
-        )
-        self.assertIn("resume staging 2026-08-22.1", proposal.call_args.args[0])
-        deploy.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+        load_config.assert_not_called()
+        idle.assert_not_called()
 
     def test_running_reconciler_aborts_before_confirmation_or_git_mutation(self) -> None:
         document = desired_document()
 
-        def fake_git(*args: str, capture: bool = True) -> str:
-            if args[:2] == ("branch", "--show-current"):
-                return "main"
-            if args[:3] == ("rev-list", "--left-right", "--count"):
-                return "0 0"
-            return ""
-
         with (
             mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
-            mock.patch.object(prod_manage, "git", side_effect=fake_git),
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
             mock.patch.object(
                 prod_manage,
                 "assert_remote_idle",
@@ -215,13 +264,7 @@ class StageOrderingTests(unittest.TestCase):
 
         def fake_git(*args: str, capture: bool = True) -> str:
             git_calls.append((args, capture))
-            if args[:2] == ("branch", "--show-current"):
-                return "main"
-            if args[:3] == ("rev-list", "--left-right", "--count"):
-                return "0 0"
-            if args[:2] == ("status", "--porcelain"):
-                return " M app"
-            return ""
+            return self.clean_git(*args, capture=capture)
 
         with (
             mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
@@ -234,7 +277,7 @@ class StageOrderingTests(unittest.TestCase):
             mock.patch.object(prod_manage, "print_proposal"),
             mock.patch.object(prod_manage, "confirmed", return_value=True),
             mock.patch.object(prod_manage, "write_atomic") as write_atomic,
-            mock.patch.object(prod_manage, "deploy") as deploy,
+            mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
         ):
             result = prod_manage.stage(
                 prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
@@ -250,18 +293,184 @@ class StageOrderingTests(unittest.TestCase):
         self.assertEqual(
             mutation_calls,
             [
-                ("add", "-A"),
-                ("commit", "-m", "Prepare release 2026-08-22.1"),
-                ("tag", "-a", "2026-08-22.1", "-m", "Aerobag 2026-08-22.1"),
-                ("push", "origin", "main"),
-                ("push", "origin", "2026-08-22.1"),
                 ("add", "deploy/releases.json"),
                 ("commit", "-m", "Stage 2026-08-22.1"),
-                ("push", "origin", "main"),
+                ("tag", "-a", "2026-08-22.1", "-m", "Aerobag 2026-08-22.1"),
+                ("push", "--atomic", "origin", "main", "2026-08-22.1"),
             ],
         )
         write_atomic.assert_called_once()
+        reconcile.assert_called_once_with(
+            prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+        )
+
+
+class ReconcileCommandTests(unittest.TestCase):
+    def desired(self) -> releases.DesiredReleases:
+        return releases.parse_desired_releases(desired_document())
+
+    def common_patches(self, plan: releases.ReconciliationPlan):
+        return (
+            mock.patch.object(prod_manage, "assert_clean_checkout"),
+            mock.patch.object(prod_manage, "git", return_value=""),
+            mock.patch.object(prod_manage, "assert_main_not_behind"),
+            mock.patch.object(
+                prod_manage, "load_release_document", return_value=desired_document()
+            ),
+            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(
+                prod_manage,
+                "load_remote_observed",
+                return_value=releases.ObservedState.empty(),
+            ),
+            mock.patch.object(
+                prod_manage, "remote_runtime_failures", return_value=[]
+            ),
+            mock.patch.object(prod_manage, "reconciliation_plan", return_value=plan),
+        )
+
+    def test_converged_reconcile_reports_success_without_deploying(self) -> None:
+        patches = self.common_patches(releases.ReconciliationPlan([]))
+        with ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            deploy = stack.enter_context(mock.patch.object(prod_manage, "deploy"))
+            success = stack.enter_context(
+                mock.patch.object(prod_manage, "print_success")
+            )
+            result = prod_manage.reconcile(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
+
+        self.assertEqual(result, 0)
+        deploy.assert_not_called()
+        self.assertIn("Production is reconciled", success.call_args.args[0])
+
+    def test_nonconverged_reconcile_deploys_then_verifies_convergence(self) -> None:
+        pending = releases.ReconciliationPlan(
+            [releases.ReconcileAction("build_release", "2026-08-20.1")]
+        )
+        patches = self.common_patches(pending)
+        with ExitStack() as stack:
+            for patcher in patches[:-1]:
+                stack.enter_context(patcher)
+            stack.enter_context(
+                mock.patch.object(
+                    prod_manage,
+                    "reconciliation_plan",
+                    side_effect=[pending, releases.ReconciliationPlan([])],
+                )
+            )
+            deploy = stack.enter_context(mock.patch.object(prod_manage, "deploy"))
+            success = stack.enter_context(
+                mock.patch.object(prod_manage, "print_success")
+            )
+            result = prod_manage.reconcile(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
+
+        self.assertEqual(result, 0)
         deploy.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+        self.assertIn("reconciliation completed", success.call_args.args[0])
+
+    def test_converged_journal_with_missing_runtime_is_repaired(self) -> None:
+        converged = releases.ReconciliationPlan([])
+        patches = self.common_patches(converged)
+        with ExitStack() as stack:
+            for patcher in patches[:-2]:
+                stack.enter_context(patcher)
+            stack.enter_context(
+                mock.patch.object(
+                    prod_manage,
+                    "remote_runtime_failures",
+                    side_effect=[["controller source is not installed"], []],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    prod_manage, "reconciliation_plan", return_value=converged
+                )
+            )
+            deploy = stack.enter_context(mock.patch.object(prod_manage, "deploy"))
+            stack.enter_context(mock.patch.object(prod_manage, "print_success"))
+            result = prod_manage.reconcile(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
+
+        self.assertEqual(result, 0)
+        deploy.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+
+
+class PromoteCommandTests(unittest.TestCase):
+    def test_nothing_staged_exits_without_prod_access(self) -> None:
+        with (
+            mock.patch.object(
+                prod_manage,
+                "git",
+                side_effect=StageOrderingTests.clean_git,
+            ),
+            mock.patch.object(
+                prod_manage,
+                "load_release_document",
+                return_value=desired_document(),
+            ),
+            mock.patch.object(prod_manage.deploy_prod, "load_config") as load_config,
+            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+        ):
+            with self.assertRaisesRegex(
+                prod_manage.ManagementError, "nothing is staged.*--reconcile"
+            ):
+                prod_manage.promote(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+                )
+
+        load_config.assert_not_called()
+        idle.assert_not_called()
+
+    def test_successful_promotion_commits_intent_then_reconciles(self) -> None:
+        document = desired_document(staging="2026-08-22.1")
+        git_calls: list[tuple[tuple[str, ...], bool]] = []
+
+        def fake_git(*args: str, capture: bool = True) -> str:
+            git_calls.append((args, capture))
+            return StageOrderingTests.clean_git(*args, capture=capture)
+
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=fake_git),
+            mock.patch.object(
+                prod_manage, "load_release_document", return_value=document
+            ),
+            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+            mock.patch.object(prod_manage, "assert_staging_is_qualified"),
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "confirmed", return_value=True),
+            mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
+        ):
+            result = prod_manage.promote(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(idle.call_count, 2)
+        mutation_calls = [
+            args
+            for args, capture in git_calls
+            if not capture and args[0] not in {"fetch"}
+        ]
+        self.assertEqual(
+            mutation_calls,
+            [
+                ("add", "deploy/releases.json"),
+                ("commit", "-m", "Promote 2026-08-22.1"),
+                ("push", "origin", "main"),
+            ],
+        )
+        reconcile.assert_called_once_with(
+            prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+        )
 
 
 if __name__ == "__main__":

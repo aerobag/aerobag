@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 from datetime import datetime, timezone
@@ -854,12 +855,20 @@ mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$AR
 
 /usr/local/bin/aerobag-ensure-toolchain
 
+# Historical release builds share Cargo's target cache and may replace its
+# top-level binary. Pin the controller tool before entering the reconciler.
+CONTROLLER_REV="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+CONTROLLER_TOOL_ROOT="$ARTIFACT_ROOT/release-controller/$CONTROLLER_REV"
+mkdir -p "$CONTROLLER_TOOL_ROOT"
+install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" "$CONTROLLER_TOOL_ROOT/preprocessor-cli"
+
 "$SOURCE_ROOT/tools/reconcile_prod_releases.py" \\
   --desired "$SOURCE_ROOT/{config['release_desired_state']}" \\
   --observed "$ARTIFACT_ROOT/state/releases-observed.json" \\
   --source-root "$SOURCE_ROOT" \\
   --artifact-root "$ARTIFACT_ROOT" \\
   --cargo-target-dir "$CARGO_TARGET_DIR" \\
+  --controller-preprocessor "$CONTROLLER_TOOL_ROOT/preprocessor-cli" \\
   --ui-target-root "$AEROBAG_UI_TARGET_ROOT" \\
   --live-port-base {config['release_live_port_base']} \\
   --legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev" \\

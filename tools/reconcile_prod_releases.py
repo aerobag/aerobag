@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--cargo-target-dir", type=Path, required=True)
+    parser.add_argument("--controller-preprocessor", type=Path, required=True)
     parser.add_argument("--ui-target-root", type=Path, required=True)
     parser.add_argument("--public-origin", default="https://aerobag.org")
     parser.add_argument("--live-port-base", type=int, default=8100)
@@ -260,7 +261,7 @@ class Controller:
             return
         _run(
             [
-                str(self.production_preprocessor()),
+                str(self.controller_preprocessor()),
                 "gc",
                 "--build-root",
                 str(self.artifact_root),
@@ -497,15 +498,10 @@ class Controller:
             return tag
         return None
 
-    def production_preprocessor(self) -> Path:
-        record = self.observed.releases[self.desired.production.tag]
-        if record.legacy_adopted:
-            # The adopted release predates explicit-output merge and
-            # channel-aware GC. This bridge remains only while that explicitly
-            # adopted release is production; normal releases govern their own
-            # data.
-            return self.args.cargo_target_dir.resolve() / "release/preprocessor-cli"
-        return Path(record.release_root or "") / "bin/preprocessor-cli"
+    def controller_preprocessor(self) -> Path:
+        # Merge and GC implement the deployed controller's publication contract,
+        # not any client release's runtime contract.
+        return self.args.controller_preprocessor.resolve()
 
     def activate(self) -> None:
         production_tags = [
@@ -543,13 +539,13 @@ class Controller:
             staging_manifests=staging,
             release_assets=assets,
         )
-        production_preprocessor = self.production_preprocessor()
+        controller_preprocessor = self.controller_preprocessor()
 
         def merge_channel(
             manifests: list[releases.ChannelManifest], output: Path
         ) -> None:
             command = [
-                str(production_preprocessor),
+                str(controller_preprocessor),
                 "merge-current-artifacts",
                 "--build-root",
                 str(self.artifact_root),

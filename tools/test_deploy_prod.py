@@ -6,11 +6,15 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -21,6 +25,34 @@ import deploy_prod  # noqa: E402
 
 
 class ProductPublicationTests(unittest.TestCase):
+    def test_remote_failure_is_reported_without_a_secondary_error(self) -> None:
+        failure = subprocess.CalledProcessError(
+            1,
+            ["ssh", "-o", "BatchMode=yes", "root@prod", "multiline\nscript"],
+        )
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                deploy_prod,
+                "parse_args",
+                return_value=SimpleNamespace(config=Path("config.json")),
+            ),
+            mock.patch.object(
+                deploy_prod,
+                "load_config",
+                return_value={"source_root": "/source", "artifact_root": "/artifacts"},
+            ),
+            mock.patch.object(deploy_prod, "publication_refs", return_value=[]),
+            mock.patch.object(deploy_prod, "ssh_target", return_value="root@prod"),
+            mock.patch.object(deploy_prod, "deploy", side_effect=failure),
+            redirect_stderr(stderr),
+        ):
+            result = deploy_prod.main()
+
+        self.assertEqual(result, 2)
+        self.assertIn("remote command on root@prod", stderr.getvalue())
+        self.assertNotIn("multiline", stderr.getvalue())
+
     def test_live_feed_publication_path_matches_current_contract(self) -> None:
         self.assertEqual(deploy_prod.LIVE_FEEDS_CONTRACT_PATH, "v3")
         core_contract = (
@@ -51,7 +83,16 @@ class ProductPublicationTests(unittest.TestCase):
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         script = deploy_prod.build_product_script(config)
 
+        self.assertIn(
+            'install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" '
+            '"$CONTROLLER_TOOL_ROOT/preprocessor-cli"',
+            script,
+        )
         self.assertIn("tools/reconcile_prod_releases.py", script)
+        self.assertIn(
+            '--controller-preprocessor "$CONTROLLER_TOOL_ROOT/preprocessor-cli"',
+            script,
+        )
         self.assertIn("--desired \"$SOURCE_ROOT/deploy/releases.json\"", script)
         self.assertIn(
             '--legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev"',

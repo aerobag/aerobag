@@ -163,7 +163,10 @@ class ControllerRecoveryTests(unittest.TestCase):
         observed: releases.ObservedState,
     ) -> controller.Controller:
         instance = controller.Controller.__new__(controller.Controller)
-        instance.args = SimpleNamespace(observed=root / "observed.json")
+        instance.args = SimpleNamespace(
+            observed=root / "observed.json",
+            controller_preprocessor=root / "controller/preprocessor-cli",
+        )
         instance.artifact_root = root
         instance.desired = releases.DesiredReleases(
             production=releases.ReleaseBinding("prod"),
@@ -226,14 +229,12 @@ class ControllerRecoveryTests(unittest.TestCase):
                 gc_pending=True,
             )
             instance = self.controller(root, observed)
-            instance.args.cargo_target_dir = root / "cargo-target"
-
             with mock.patch.object(controller, "_run") as run:
                 instance.run_pending_gc()
 
             run.assert_called_once_with(
                 [
-                    str(root / "release/bin/preprocessor-cli"),
+                    str(root / "controller/preprocessor-cli"),
                     "gc",
                     "--build-root",
                     str(root),

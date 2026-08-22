@@ -519,8 +519,13 @@ class Controller:
             record = self.observed.releases[tag]
             if record.release_root is None or record.live_feed_endpoint is None:
                 raise RuntimeError(f"release {tag} is not ready for activation")
+            release_root = Path(record.release_root)
+            release_builder.normalize_release_permissions(release_root)
+            release_builder.validate_release_directory(
+                release_root, record.tag, record.commit
+            )
             assets[tag] = releases.ReleaseAssets(
-                Path(record.release_root), record.live_feed_endpoint
+                release_root, record.live_feed_endpoint
             )
 
         generation_number = self.observed.generation + 1

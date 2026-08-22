@@ -90,7 +90,33 @@ def directory_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def normalize_release_permissions(path: Path) -> None:
+    """Make immutable release bytes readable without making them writable."""
+
+    if not path.is_dir():
+        raise RuntimeError(f"immutable release directory is missing: {path}")
+    path.chmod(0o755)
+    for member in sorted(path.rglob("*")):
+        if member.is_symlink():
+            raise RuntimeError(f"immutable release tree must not contain symlinks: {member}")
+        if member.is_dir():
+            member.chmod(0o755)
+        elif member.is_file():
+            relative = member.relative_to(path)
+            member.chmod(0o755 if relative.parts[0] == "bin" else 0o644)
+
+
+def validate_release_permissions(path: Path) -> None:
+    for member in [path, *sorted(path.rglob("*"))]:
+        mode = member.stat().st_mode
+        if member.is_dir() and mode & 0o005 != 0o005:
+            raise RuntimeError(f"immutable release directory is not public: {member}")
+        if member.is_file() and mode & 0o004 != 0o004:
+            raise RuntimeError(f"immutable release file is not readable: {member}")
+
+
 def validate_release_directory(path: Path, tag: str, commit: str) -> dict:
+    validate_release_permissions(path)
     metadata_path = path / "release.json"
     document = json.loads(metadata_path.read_text(encoding="utf-8"))
     if document.get("tag") != tag or document.get("commit") != commit:
@@ -142,6 +168,7 @@ def _load_existing_release(path: Path, tag: str, commit: str) -> bool:
     metadata_path = path / "release.json"
     if not metadata_path.is_file():
         return False
+    normalize_release_permissions(path)
     validate_release_directory(path, tag, commit)
     return True
 
@@ -270,6 +297,7 @@ def build_release(args: argparse.Namespace) -> Path:
             json.dumps(metadata, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        normalize_release_permissions(temporary_root)
         validate_release_directory(temporary_root, args.tag, args.commit)
         os.replace(temporary_root, final_root)
     except BaseException:

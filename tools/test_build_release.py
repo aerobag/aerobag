@@ -57,6 +57,24 @@ class ReleaseBuildTests(unittest.TestCase):
             (root / "a/asset.js").write_text("two", encoding="utf-8")
             self.assertNotEqual(first, build_release.directory_sha256(root))
 
+    def test_release_permissions_are_normalized_for_static_serving(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "release"
+            (root / "web/assets").mkdir(parents=True, mode=0o700)
+            (root / "web/index.html").write_text("web", encoding="utf-8")
+            (root / "web/index.html").chmod(0o600)
+            (root / "bin").mkdir(mode=0o700)
+            (root / "bin/daemon").write_bytes(b"binary")
+            (root / "bin/daemon").chmod(0o600)
+            root.chmod(0o700)
+
+            build_release.normalize_release_permissions(root)
+            build_release.validate_release_permissions(root)
+
+            self.assertEqual(root.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((root / "web/index.html").stat().st_mode & 0o777, 0o644)
+            self.assertEqual((root / "bin/daemon").stat().st_mode & 0o777, 0o755)
+
     def test_legacy_web_output_is_collected_without_using_the_served_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

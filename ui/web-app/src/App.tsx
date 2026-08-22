@@ -12869,6 +12869,7 @@ function SettingsPage(props: {
   onSelectPage: (page: AppPage) => void;
   onSettingsAction: (actionId: string, valueId: string) => void;
 }) {
+  const { toast: settingsHelpToast, show: showSettingsHelp } = useDisabledActionToast();
   return (
     <section className="appPage settingsPage">
       <PrimaryNavigationDock
@@ -12891,6 +12892,7 @@ function SettingsPage(props: {
               key={row.id}
               row={row}
               onSettingsAction={props.onSettingsAction}
+              onHelp={showSettingsHelp}
             />
           ))}
           {props.state.sections.map((section) => (
@@ -12898,10 +12900,16 @@ function SettingsPage(props: {
               key={section.id}
               section={section}
               onSettingsAction={props.onSettingsAction}
+              onHelp={showSettingsHelp}
             />
           ))}
         </div>
       </div>
+      {settingsHelpToast ? (
+        <div className="mapSelectionToast" role="status" aria-live="polite">
+          {settingsHelpToast.message}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -12912,6 +12920,7 @@ type SettingsPageSectionState = UiSessionSnapshot["settings_page_state"]["sectio
 function SettingsPageSectionView(props: {
   section: SettingsPageSectionState;
   onSettingsAction: (actionId: string, valueId: string) => void;
+  onHelp: (message: string) => void;
 }) {
   const [expanded, setExpanded] = useState(!props.section.collapsed_by_default);
   const contentId = useId();
@@ -12934,6 +12943,7 @@ function SettingsPageSectionView(props: {
             key={row.id}
             row={row}
             onSettingsAction={props.onSettingsAction}
+            onHelp={props.onHelp}
           />
         ))}
       </div>
@@ -12944,6 +12954,7 @@ function SettingsPageSectionView(props: {
 function SettingsPageRowView(props: {
   row: SettingsPageRowState;
   onSettingsAction: (actionId: string, valueId: string) => void;
+  onHelp: (message: string) => void;
 }) {
   const { row } = props;
   const rowStyle = row.indent_level > 0
@@ -12965,7 +12976,7 @@ function SettingsPageRowView(props: {
   }
   return (
     <section className="settingsPageRow" style={rowStyle}>
-      <h2>{row.title}</h2>
+      <SettingsPageRowTitle row={row} onHelp={props.onHelp} />
       {row.kind === "grid_choices" ? (
         <div className="settingsFlightDataGrid">
           {row.items.map((item) => (
@@ -12997,6 +13008,31 @@ function SettingsPageRowView(props: {
         </div>
       ) : null}
     </section>
+  );
+}
+
+function SettingsPageRowTitle(props: {
+  row: SettingsPageRowState;
+  onHelp: (message: string) => void;
+}) {
+  const helpText = props.row.help_text?.trim();
+  return (
+    <div className="settingsPageRowTitle">
+      <h2>{props.row.title}</h2>
+      {helpText ? (
+        <span className="settingsPageRowHelp">
+          <button
+            type="button"
+            aria-label={`Help for ${props.row.title}`}
+            title={helpText}
+            data-testid={`settings-help-${props.row.id}`}
+            onClick={() => props.onHelp(helpText)}
+          >
+            ?
+          </button>
+        </span>
+      ) : null}
+    </div>
   );
 }
 

@@ -7,6 +7,7 @@ package org.aerobag.app
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items as lazyColumnItems
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Checkbox
@@ -36,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -264,7 +267,7 @@ private fun SettingsGridChoicesRow(
     onSettingsAction: (String, String) -> Unit,
 ) {
     val gap = ThumbSize * 0.1f
-    SettingsPageRowSurface(title = row.title) {
+    SettingsPageRowSurface(row = row) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val columnCount = floor(
                 (maxWidth.value + gap.value) /
@@ -291,7 +294,7 @@ private fun SettingsGridChoicesRow(
 
 @Composable
 private fun SettingsPageRowSurface(
-    title: String,
+    row: UiSettingsPageRow,
     content: @Composable () -> Unit,
 ) {
     Column(
@@ -302,18 +305,54 @@ private fun SettingsPageRowSurface(
             .padding(ThumbSize * 0.28f),
         verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.14f),
     ) {
+        SettingsPageRowHeader(row)
+        content()
+    }
+}
+
+@Composable
+private fun SettingsPageRowHeader(row: UiSettingsPageRow) {
+    val context = LocalContext.current
+    val foreground = Color(0xFF101820)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.16f),
+    ) {
         Text(
-            text = title,
+            text = row.title,
+            modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.titleLarge.copy(
                 fontSize = SettingsPageRowTitleTextSize,
                 lineHeight = SettingsPageRowTitleTextSize * 1.08f,
                 fontWeight = FontWeight.Black,
             ),
-            color = Color(0xFF101820),
+            color = foreground,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        content()
+        row.helpText?.takeIf(String::isNotBlank)?.let { helpText ->
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .border(1.dp, foreground, CircleShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.Button,
+                    ) { showActionToast(context, helpText, long = true) }
+                    .testTag("parity:settings-help:${row.id}"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "?",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = foreground,
+                )
+            }
+        }
     }
 }
 
@@ -330,7 +369,7 @@ private fun SettingsSliderRow(
         mutableStateOf(selectedIndex.toFloat())
     }
     val maxIndex = (row.stops.size - 1).coerceAtLeast(0)
-    SettingsPageRowSurface(title = row.title) {
+    SettingsPageRowSurface(row = row) {
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center,

@@ -3734,12 +3734,40 @@ button {
 }
 
 .settingsPageRow h2 {
-  margin-bottom: calc(var(--thumb) * 0.18);
   color: #101820;
   font-size: calc(var(--thumb) * 0.25);
   font-weight: 900;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.settingsPageRowTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.16);
+  margin-bottom: calc(var(--thumb) * 0.18);
+}
+
+.settingsPageRowHelp {
+  flex: 0 0 auto;
+}
+
+.settingsPageRowHelp button {
+  display: grid;
+  width: calc(var(--thumb) * 0.42);
+  height: calc(var(--thumb) * 0.42);
+  padding: 0;
+  border: 1px solid #101820;
+  border-radius: 50%;
+  background: transparent;
+  color: #101820;
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.24);
+  font-weight: 950;
+  line-height: 1;
+  place-items: center;
+  cursor: help;
 }
 
 .settingsToggleRow {

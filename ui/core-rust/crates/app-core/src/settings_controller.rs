@@ -34,6 +34,14 @@ const DEBUG_FLAG_ACTION_PREFIX: &str = "debug_flag.";
 const SETTINGS_TOGGLE_ON: &str = "on";
 const SETTINGS_TOGGLE_OFF: &str = "off";
 const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
+const FLIGHT_DATA_VISIBILITY_HELP: &str = "Select which data items appear on the chart page.";
+const DISPLAY_DIM_TIMEOUT_HELP: &str = "Save power while keeping the screen unlocked.";
+const INACTIVITY_SLEEP_TIMEOUT_HELP: &str =
+    "Avoid battery drain when you leave your tablet in your flight bag.";
+const NEXRAD_COVERAGE_HELP: &str = "Visible loads on demand, uses less data. Full offline loads eagerly, useful when network coverage is sketchy.";
+const NEXRAD_OFFLINE_DETAIL_HELP: &str = "Reduce detail to use less data.";
+const NEXRAD_SHOWN_CADENCE_HELP: &str = "Load fewer frames to use less data.";
+const NEXRAD_HIDDEN_CADENCE_HELP: &str = "Eagerly fetch fewer frames to use less data.";
 const NEXRAD_UPDATES_PER_HOUR: f64 = 12.0;
 
 pub trait SettingsStorage: Send + Sync {
@@ -731,6 +739,7 @@ fn project_settings_page_state(
         kind: "grid_choices".to_string(),
         id: FLIGHT_DATA_VISIBILITY_ROW_ID.to_string(),
         title: "Flight data grid".to_string(),
+        help_text: Some(FLIGHT_DATA_VISIBILITY_HELP.to_string()),
         indent_level: 0,
         value_id: String::new(),
         stops: Vec::new(),
@@ -749,6 +758,7 @@ fn project_settings_page_state(
             kind: "slider".to_string(),
             id: DISPLAY_DIM_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Display dims after...".to_string(),
+            help_text: Some(DISPLAY_DIM_TIMEOUT_HELP.to_string()),
             indent_level: 0,
             value_id: preferences.display_dim_timeout.id().to_string(),
             stops: DisplayDimTimeout::all_stops()
@@ -765,6 +775,7 @@ fn project_settings_page_state(
             kind: "slider".to_string(),
             id: INACTIVITY_SLEEP_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Screen and GPS sleep after...".to_string(),
+            help_text: Some(INACTIVITY_SLEEP_TIMEOUT_HELP.to_string()),
             indent_level: 0,
             value_id: preferences.inactivity_sleep_timeout.id().to_string(),
             stops: InactivitySleepTimeout::all_stops()
@@ -793,6 +804,7 @@ fn project_settings_page_state(
                     kind: "toggle".to_string(),
                     id: format!("debug_{id}"),
                     title: title.to_string(),
+                    help_text: None,
                     indent_level: 0,
                     value_id: if debug_flag_enabled(debug_state, flag_id) {
                         SETTINGS_TOGGLE_ON
@@ -828,6 +840,7 @@ fn append_nexrad_settings_rows(
     rows.push(settings_slider_row(
         "nexrad_coverage",
         "NEXRAD coverage",
+        Some(NEXRAD_COVERAGE_HELP),
         nexrad.coverage.id(),
         NEXRAD_COVERAGE_ACTION_ID,
         [
@@ -849,6 +862,7 @@ fn append_nexrad_settings_rows(
     rows.push(settings_slider_row(
         "nexrad_offline_profile",
         "NEXRAD offline detail",
+        Some(NEXRAD_OFFLINE_DETAIL_HELP),
         nexrad.offline_profile.id(),
         NEXRAD_OFFLINE_PROFILE_ACTION_ID,
         [
@@ -864,6 +878,7 @@ fn append_nexrad_settings_rows(
     rows.push(nexrad_cadence_row(
         "nexrad_shown_cadence",
         "NEXRAD updates while shown",
+        Some(NEXRAD_SHOWN_CADENCE_HELP),
         nexrad.shown_cadence,
         NEXRAD_SHOWN_CADENCE_ACTION_ID,
         &[
@@ -876,6 +891,7 @@ fn append_nexrad_settings_rows(
     rows.push(nexrad_cadence_row(
         "nexrad_hidden_cadence",
         "NEXRAD updates while hidden",
+        Some(NEXRAD_HIDDEN_CADENCE_HELP),
         nexrad.hidden_cadence,
         NEXRAD_HIDDEN_CADENCE_ACTION_ID,
         &[
@@ -889,6 +905,7 @@ fn append_nexrad_settings_rows(
     rows.push(nexrad_cadence_row(
         "nexrad_asleep_cadence",
         "NEXRAD updates while app sleeps",
+        None,
         nexrad.asleep_cadence,
         NEXRAD_ASLEEP_CADENCE_ACTION_ID,
         &[
@@ -902,6 +919,7 @@ fn append_nexrad_settings_rows(
 fn settings_slider_row<const N: usize>(
     id: &str,
     title: &str,
+    help_text: Option<&str>,
     value_id: &str,
     action_id: &str,
     stops: [(&str, String); N],
@@ -911,6 +929,7 @@ fn settings_slider_row<const N: usize>(
         kind: "slider".to_string(),
         id: id.to_string(),
         title: title.to_string(),
+        help_text: help_text.map(str::to_string),
         indent_level,
         value_id: value_id.to_string(),
         stops: stops
@@ -928,6 +947,7 @@ fn settings_slider_row<const N: usize>(
 fn nexrad_cadence_row(
     id: &str,
     title: &str,
+    help_text: Option<&str>,
     value: NexradUpdateCadence,
     action_id: &str,
     cadences: &[NexradUpdateCadence],
@@ -940,6 +960,7 @@ fn nexrad_cadence_row(
         kind: "slider".to_string(),
         id: id.to_string(),
         title,
+        help_text: help_text.map(str::to_string),
         indent_level: 1,
         value_id: value.id().to_string(),
         stops: cadences
@@ -1372,6 +1393,53 @@ mod tests {
             .rows
             .iter()
             .any(|row| row.id == "nexrad_offline_profile"));
+    }
+
+    #[test]
+    fn settings_help_text_is_projected_by_core() {
+        let mut controller = SettingsController::default();
+        let bytes = BTreeMap::from([
+            ("offline_0".to_string(), 1024 * 1024),
+            ("offline_low1".to_string(), 512 * 1024),
+        ]);
+        let projection = controller
+            .project(true, Some(&bytes), &banner(), &debug_state())
+            .projection;
+        let rows = &projection.settings_page_state.rows;
+        let help = |id: &str| {
+            rows.iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("missing settings row {id}"))
+                .help_text
+                .as_deref()
+        };
+
+        assert_eq!(
+            help(FLIGHT_DATA_VISIBILITY_ROW_ID),
+            Some(FLIGHT_DATA_VISIBILITY_HELP)
+        );
+        assert_eq!(
+            help(DISPLAY_DIM_TIMEOUT_ROW_ID),
+            Some(DISPLAY_DIM_TIMEOUT_HELP)
+        );
+        assert_eq!(
+            help(INACTIVITY_SLEEP_TIMEOUT_ROW_ID),
+            Some(INACTIVITY_SLEEP_TIMEOUT_HELP)
+        );
+        assert_eq!(help("nexrad_coverage"), Some(NEXRAD_COVERAGE_HELP));
+        assert_eq!(
+            help("nexrad_offline_profile"),
+            Some(NEXRAD_OFFLINE_DETAIL_HELP)
+        );
+        assert_eq!(
+            help("nexrad_shown_cadence"),
+            Some(NEXRAD_SHOWN_CADENCE_HELP)
+        );
+        assert_eq!(
+            help("nexrad_hidden_cadence"),
+            Some(NEXRAD_HIDDEN_CADENCE_HELP)
+        );
+        assert_eq!(help("nexrad_asleep_cadence"), None);
     }
 
     #[test]

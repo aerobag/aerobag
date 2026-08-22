@@ -182,6 +182,7 @@ export type UiSettingsGridItem = {
 
 export type UiSettingsPageRow = {
   action_id: string;
+  help_text?: string | null;
   id: string;
   indent_level: number;
   items: UiSettingsGridItem[];

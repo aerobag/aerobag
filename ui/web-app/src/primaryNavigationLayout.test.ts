@@ -31,6 +31,17 @@ describe("primary navigation layout", () => {
     expect(dock).toContain("<ChartPlateReturnButton");
   });
 
+  it("uses the standard hover and click help behavior on settings rows", () => {
+    const settingsPage = sourceBetween("function SettingsPage(", "function DataStatusPage(");
+
+    expect(settingsPage).toContain("useDisabledActionToast()");
+    expect(settingsPage).toContain("title={helpText}");
+    expect(settingsPage).toContain("onClick={() => props.onHelp(helpText)}");
+    expect(settingsPage).toContain('className="mapSelectionToast"');
+    expect(settingsPage).not.toContain("settingsPageRowHelpText");
+    expect(styles).not.toContain(".settingsPageRowHelpText");
+  });
+
   it("keeps page navigation out of the map and plate top control rows", () => {
     const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
     const chartsPage = sourceBetween("function ChartsPage(", "function HomePage(");

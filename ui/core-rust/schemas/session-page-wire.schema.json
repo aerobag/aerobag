@@ -852,6 +852,12 @@
         "action_id": {
           "type": "string"
         },
+        "help_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },

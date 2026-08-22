@@ -13,11 +13,18 @@ export function launchChrome({
   userDataDir,
   width = 1200,
   height = 1000,
+  transport = "websocket",
 } = {}) {
   if (!userDataDir) {
     throw new Error("launchChrome requires userDataDir");
   }
+  if (transport !== "websocket" && transport !== "pipe") {
+    throw new Error(`unsupported Chrome DevTools transport: ${transport}`);
+  }
   return new Promise((resolve, reject) => {
+    const transportArgs = transport === "pipe"
+      ? ["--remote-debugging-pipe"]
+      : ["--remote-debugging-port=0"];
     const child = spawn(chromeBin, [
       "--headless=new",
       "--no-sandbox",
@@ -25,12 +32,16 @@ export function launchChrome({
       "--disable-dev-shm-usage",
       "--no-first-run",
       "--no-default-browser-check",
-      "--remote-debugging-port=0",
+      ...transportArgs,
       `--user-data-dir=${userDataDir}`,
       `--window-size=${width},${height}`,
       "about:blank",
     ], {
-      stdio: ["ignore", "ignore", "pipe"],
+      // Chrome's pipe transport reserves descriptors 3 and 4 for CDP input
+      // and output. It avoids opening a DevTools listener on constrained hosts.
+      stdio: transport === "pipe"
+        ? ["ignore", "ignore", "pipe", "pipe", "pipe"]
+        : ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
     const timeout = setTimeout(() => {
@@ -40,8 +51,19 @@ export function launchChrome({
       clearTimeout(timeout);
       reject(error);
     });
+    if (transport === "pipe") {
+      child.once("spawn", () => {
+        clearTimeout(timeout);
+        resolve({
+          process: child,
+          pipeWrite: child.stdio[3],
+          pipeRead: child.stdio[4],
+        });
+      });
+    }
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
+      if (transport === "pipe") return;
       const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
       if (match) {
         clearTimeout(timeout);
@@ -57,8 +79,8 @@ export function launchChrome({
   });
 }
 
-export async function connectToBrowser(wsUrl) {
-  const client = new CdpClient(wsUrl);
+export async function connectToBrowser(endpoint) {
+  const client = new CdpClient(endpoint);
   await client.open();
   return {
     close: () => client.close(),
@@ -166,27 +188,35 @@ class CdpPage {
 }
 
 class CdpClient {
-  constructor(wsUrl) {
-    this.wsUrl = wsUrl;
+  constructor(endpoint) {
+    this.endpoint = endpoint;
     this.nextId = 1;
     this.pending = new Map();
     this.listeners = new Map();
   }
 
   open() {
+    if (typeof this.endpoint !== "string") {
+      this.pipeWrite = this.endpoint.pipeWrite;
+      this.pipeBuffer = Buffer.alloc(0);
+      this.endpoint.pipeRead.on("data", (chunk) => this.handlePipeData(chunk));
+      this.endpoint.pipeRead.on("error", (error) => this.close(error));
+      return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.wsUrl);
+      this.ws = new WebSocket(this.endpoint);
       this.ws.addEventListener("open", resolve, { once: true });
       this.ws.addEventListener("error", reject, { once: true });
       this.ws.addEventListener("message", (event) => this.handleMessage(event.data));
     });
   }
 
-  close() {
+  close(error = undefined) {
     this.ws?.close();
+    this.pipeWrite?.end();
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeout);
-      pending.reject(new Error(`CDP connection closed while request ${id} was pending`));
+      pending.reject(error ?? new Error(`CDP connection closed while request ${id} was pending`));
     }
     this.pending.clear();
   }
@@ -203,7 +233,12 @@ class CdpClient {
         reject(new Error(`CDP request timed out: ${method}`));
       }, 15000);
       this.pending.set(id, { resolve, reject, timeout });
-      this.ws.send(JSON.stringify(message));
+      const encoded = JSON.stringify(message);
+      if (this.pipeWrite) {
+        this.pipeWrite.write(`${encoded}\0`);
+      } else {
+        this.ws.send(encoded);
+      }
     });
   }
 
@@ -216,6 +251,17 @@ class CdpClient {
 
   offEvent(sessionId, method, handler) {
     this.listeners.get(`${sessionId}:${method}`)?.delete(handler);
+  }
+
+  handlePipeData(chunk) {
+    this.pipeBuffer = Buffer.concat([this.pipeBuffer, chunk]);
+    for (;;) {
+      const delimiter = this.pipeBuffer.indexOf(0);
+      if (delimiter < 0) return;
+      const message = this.pipeBuffer.subarray(0, delimiter).toString("utf8");
+      this.pipeBuffer = this.pipeBuffer.subarray(delimiter + 1);
+      if (message) this.handleMessage(message);
+    }
   }
 
   handleMessage(data) {

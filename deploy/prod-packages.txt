@@ -20,6 +20,7 @@ nodejs
 npm
 rustup
 nginx
+google-chrome-stable
 pkg-config
 git
 rsync

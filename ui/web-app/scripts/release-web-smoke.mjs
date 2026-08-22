@@ -25,8 +25,13 @@ const userDataDir = await mkdtemp(path.join(os.tmpdir(), "aerobag-release-smoke-
 let chrome;
 let browser;
 try {
-  chrome = await launchChrome({ userDataDir, width: 1200, height: 900 });
-  browser = await connectToBrowser(chrome.wsUrl);
+  chrome = await launchChrome({
+    userDataDir,
+    width: 1200,
+    height: 900,
+    transport: "pipe",
+  });
+  browser = await connectToBrowser(chrome);
   const page = await browser.createPage();
   await page.navigate(url);
   const result = await waitFor(

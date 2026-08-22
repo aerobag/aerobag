@@ -100,6 +100,30 @@ class ProductPublicationTests(unittest.TestCase):
         )
         self.assertNotIn("build_multi_version_publication.py", script)
 
+    def test_staging_qualification_browser_is_an_installed_dependency(self) -> None:
+        packages = (deploy_prod.REPO_ROOT / deploy_prod.REPO_PACKAGE_MANIFEST).read_text(
+            encoding="utf-8"
+        ).splitlines()
+        self.assertIn("google-chrome-stable", packages)
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        self.assertIn(
+            "CHROME_BIN=/usr/bin/google-chrome-stable\n",
+            deploy_prod.env_file(config),
+        )
+        self.assertIn(
+            "export PATH CHROME_BIN",
+            deploy_prod.build_product_script(config),
+        )
+
+    def test_google_chrome_package_source_is_installed_before_repo_packages(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+            deploy_prod.install_external_package_sources(config, dry_run=False)
+
+        command = run_ssh.call_args.args[1]
+        self.assertIn(deploy_prod.GOOGLE_CHROME_SIGNING_KEY_URL, command)
+        self.assertIn(deploy_prod.GOOGLE_CHROME_APT_SOURCE, command)
+
     def test_nginx_serves_stable_channel_views_not_build_directories(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         nginx = deploy_prod.nginx_config(config)
@@ -107,13 +131,26 @@ class ProductPublicationTests(unittest.TestCase):
         self.assertIn("/channel-current/production/web", nginx)
         self.assertIn("/channel-current/staging/packages/", nginx)
         self.assertIn("/channel-current/releases/", nginx)
-        self.assertIn("/web/(?:about)?$", nginx)
         self.assertIn(
-            'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/(?:about)?$" {',
+            "location = /staging/ {\n        rewrite ^ /staging/index.html last;",
             nginx,
         )
-        self.assertIn('location ~ "^/staging/(?:about)?$" {', nginx)
-        self.assertNotIn("/staging/index.html", nginx)
+        self.assertIn(
+            'location ~ "^/staging/(?:index\\.html|about)$" {', nginx
+        )
+        self.assertIn(
+            'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/$" {',
+            nginx,
+        )
+        self.assertIn(
+            "rewrite ^/releases/([^/]+)/web/$ /releases/$1/web/index.html last;",
+            nginx,
+        )
+        self.assertIn(
+            'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/(?:index\\.html|about)$" {',
+            nginx,
+        )
+        self.assertNotIn('location ~ "^/staging/(?:about)?$" {', nginx)
         self.assertNotIn(f"root {config['web_dist']};", nginx)
 
     def test_deploy_rejects_in_progress_reconciliation_instead_of_stopping_it(self) -> None:

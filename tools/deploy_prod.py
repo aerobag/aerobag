@@ -44,7 +44,7 @@ ENV_FILE = "/etc/aerobag/env"
 DEPLOYED_REV_FILE = "/etc/aerobag/deployed-rev"
 DEPLOY_CONFIG_FILE = "/etc/aerobag/deploy-config.json"
 REPO_PACKAGE_MANIFEST = "deploy/prod-packages.txt"
-BOOTSTRAP_PACKAGES = ["ca-certificates", "git", "rsync"]
+BOOTSTRAP_PACKAGES = ["ca-certificates", "curl", "git", "rsync"]
 CLIENT_DEBUG_LISTEN = "127.0.0.1:8096"
 BUILD_WATCH_LISTEN = "127.0.0.1:8097"
 PIPELINE_HEALTH_LISTEN = "127.0.0.1:8098"
@@ -68,6 +68,13 @@ DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE = Path(
 DEFAULT_NMS_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/nms-notams.json"
 NMS_PRODUCTION_API_BASE_URL = "https://api-nms.aim.faa.gov/nmsapi/v1"
 NMS_PRODUCTION_TOKEN_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
+GOOGLE_CHROME_SIGNING_KEY_URL = "https://dl.google.com/linux/linux_signing_key.pub"
+GOOGLE_CHROME_APT_SOURCE = (
+    "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] "
+    "https://dl.google.com/linux/chrome/deb/ stable main"
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -546,6 +553,23 @@ def install_bootstrap_packages(config: dict[str, Any], *, dry_run: bool) -> None
     run_ssh(config, command, dry_run=dry_run)
 
 
+def install_external_package_sources(config: dict[str, Any], *, dry_run: bool) -> None:
+    command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        install -d -m 0755 /etc/apt/keyrings
+        key="$(mktemp)"
+        trap 'rm -f "$key"' EXIT
+        curl --fail --location --silent --show-error \
+          {shell_quote(GOOGLE_CHROME_SIGNING_KEY_URL)} --output "$key"
+        install -m 0644 "$key" /etc/apt/keyrings/google-chrome.asc
+        printf '%s\n' {shell_quote(GOOGLE_CHROME_APT_SOURCE)} \
+          > /etc/apt/sources.list.d/google-chrome.list
+        """
+    ).strip()
+    run_ssh(config, command, dry_run=dry_run)
+
+
 def install_repo_packages(config: dict[str, Any], *, dry_run: bool) -> None:
     package_file = f"{config['source_root']}/{REPO_PACKAGE_MANIFEST}"
     command = textwrap.dedent(
@@ -739,6 +763,7 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_PIPELINE_HEALTH_POLL_SECONDS": str(config["pipeline_health_poll_seconds"]),
         "ANDROID_HOME": ANDROID_SDK_ROOT,
         "ANDROID_SDK_ROOT": ANDROID_SDK_ROOT,
+        "CHROME_BIN": "/usr/bin/google-chrome-stable",
         "AEROBAG_ANDROID_KEYSTORE": config["android_signing_prod_keystore"],
         "AEROBAG_ANDROID_KEYSTORE_PASSWORD": config["android_signing_keystore_password"],
         "AEROBAG_ANDROID_KEY_ALIAS": config["android_signing_key_alias"],
@@ -849,7 +874,7 @@ def build_product_script(config: dict[str, Any]) -> str:
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 source /etc/aerobag/env
-export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
+export PATH CHROME_BIN CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
 
 mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/locks" "$ARTIFACT_ROOT/state" "$ARTIFACT_ROOT/scratch" "$ARTIFACT_ROOT/worktrees" "$ARTIFACT_ROOT/release-builds" "$ARTIFACT_ROOT/channel-generations" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
 
@@ -1278,7 +1303,14 @@ def nginx_config(config: dict[str, Any]) -> str:
         add_header Cache-Control "public, max-age=300";
     }}
 
-    location ~ "^/staging/(?:about)?$" {{
+    # A slash-ended URI runs nginx's index module after alias resolution. Do
+    # not alias that URI directly to index.html or nginx appends index.html a
+    # second time (index.htmlindex.html).
+    location = /staging/ {{
+        rewrite ^ /staging/index.html last;
+    }}
+
+    location ~ "^/staging/(?:index\\.html|about)$" {{
         alias {channel_root}/staging/web/index.html;
         add_header Cache-Control "no-cache";
     }}
@@ -1288,7 +1320,11 @@ def nginx_config(config: dict[str, Any]) -> str:
         add_header Cache-Control "public, max-age=300";
     }}
 
-    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:about)?$" {{
+    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/$" {{
+        rewrite ^/releases/([^/]+)/web/$ /releases/$1/web/index.html last;
+    }}
+
+    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:index\\.html|about)$" {{
         alias {channel_root}/releases/$1/web/index.html;
         add_header Cache-Control "no-cache";
     }}
@@ -1961,6 +1997,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
             dry_run=args.dry_run,
         )
 
+    install_external_package_sources(config, dry_run=args.dry_run)
     install_repo_packages(config, dry_run=args.dry_run)
     install_android_signing_key(config, dry_run=args.dry_run)
     install_nms_notams_credential(config, dry_run=args.dry_run)

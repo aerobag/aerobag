@@ -37,8 +37,8 @@ class LiveFeedAllocationTests(unittest.TestCase):
             self.assertEqual(
                 scratch_root, root / "scratch/live-feeds/releases/2026-08-22.1"
             )
-            self.assertTrue(live_root.parent.is_dir())
-            self.assertTrue(scratch_root.parent.is_dir())
+            self.assertTrue(live_root.is_dir())
+            self.assertTrue(scratch_root.is_dir())
 
     def test_each_release_gets_a_stable_distinct_loopback_port(self) -> None:
         observed = releases.ObservedState.empty()

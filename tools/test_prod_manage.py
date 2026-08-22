@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -127,15 +128,39 @@ class ReconciliationCompletionTests(unittest.TestCase):
             mock.patch.object(
                 prod_manage.deploy_prod, "load_config", return_value=config
             ),
-            mock.patch.object(prod_manage.deploy_prod, "run_ssh") as run_ssh,
+            mock.patch.object(
+                prod_manage.deploy_prod,
+                "run_ssh",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, "old-invocation\n"),
+                    subprocess.CompletedProcess([], 0, ""),
+                ],
+            ) as run_ssh,
         ):
             prod_manage.deploy(prod_manage.DEFAULT_CONFIG)
 
-        command = run_ssh.call_args.args[1]
+        self.assertEqual(run_ssh.call_count, 2)
+        command = run_ssh.call_args_list[1].args[1]
+        self.assertIn("previous_invocation=old-invocation", command)
+        self.assertIn("did not start a new systemd invocation", command)
         self.assertIn("while true", command)
         self.assertIn("active|activating|reloading|deactivating", command)
         self.assertIn("release reconciliation completed successfully", command)
         self.assertIn("journalctl -u", command)
+
+    def test_multiline_ssh_failure_is_reported_without_echoing_shell_body(self) -> None:
+        summary = prod_manage.failed_command_summary(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "root@aerobag-prod",
+                "set -euo pipefail\nwhile true; do\n  sleep 1\ndone",
+            ]
+        )
+
+        self.assertEqual(summary, "remote command on root@aerobag-prod")
+        self.assertNotIn("while", summary)
 
 
 class StageOrderingTests(unittest.TestCase):

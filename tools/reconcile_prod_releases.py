@@ -85,10 +85,10 @@ def prepare_release_live_feed_paths(
 ) -> tuple[Path, Path]:
     live_root = artifact_root / "live-feeds/releases" / tag
     scratch_root = artifact_root / "scratch/live-feeds/releases" / tag
-    # The daemon creates its release directory, but deliberately requires the
-    # controller-owned namespace above it to exist.
-    live_root.parent.mkdir(parents=True, exist_ok=True)
-    scratch_root.parent.mkdir(parents=True, exist_ok=True)
+    # The daemon creates the contract tree below live_root, but deliberately
+    # requires these controller-owned release roots to exist.
+    live_root.mkdir(parents=True, exist_ok=True)
+    scratch_root.mkdir(parents=True, exist_ok=True)
     return live_root, scratch_root
 
 

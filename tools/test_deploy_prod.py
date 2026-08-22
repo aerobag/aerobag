@@ -32,6 +32,21 @@ class ProductPublicationTests(unittest.TestCase):
             core_contract,
         )
 
+    def test_release_live_feed_mutable_state_is_explicitly_release_scoped(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        unit = deploy_prod.release_live_feeds_unit(config)
+
+        self.assertIn(
+            '--tfr-detail-backfill-state-root '
+            '"$AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT/tfr-detail-backfill"',
+            unit,
+        )
+        self.assertIn(
+            '--nms-notams-state-root '
+            '"$AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT/nms-notams"',
+            unit,
+        )
+
     def test_deployment_runs_the_desired_state_reconciler(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         script = deploy_prod.build_product_script(config)
@@ -79,6 +94,34 @@ class ProductPublicationTests(unittest.TestCase):
         command = run_ssh.call_args.args[1]
         self.assertNotIn("aerobag-build-product.service", command)
         self.assertNotIn("aerobag-build-product.timer", command)
+
+    def test_managed_release_deploy_waits_on_the_exact_systemd_start(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+            deploy_prod.start_runtime(
+                config,
+                skip_build=False,
+                wait_for_reconciliation=True,
+                dry_run=False,
+            )
+
+        command = run_ssh.call_args.args[1]
+        self.assertIn("systemctl start aerobag-build-product.service", command)
+        self.assertNotIn("start --no-block aerobag-build-product.service", command)
+        self.assertIn("journalctl -u aerobag-build-product.service", command)
+
+    def test_ordinary_deploy_keeps_product_build_asynchronous(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+            deploy_prod.start_runtime(
+                config,
+                skip_build=False,
+                wait_for_reconciliation=False,
+                dry_run=False,
+            )
+
+        command = run_ssh.call_args.args[1]
+        self.assertIn("start --no-block aerobag-build-product.service", command)
 
 
 class AndroidSigningKeyTests(unittest.TestCase):

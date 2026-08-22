@@ -253,63 +253,19 @@ def confirmed() -> bool:
 
 
 def deploy(config_path: Path) -> None:
-    config = deploy_prod.load_config(config_path)
-    previous = deploy_prod.run_ssh(
-        config,
-        "systemctl show aerobag-build-product.service --property=InvocationID --value 2>/dev/null || true",
-        capture=True,
-        dry_run=False,
-    ).stdout.strip()
-    run([str(TOOLS_DIR / "deploy_prod.py"), "--config", str(config_path)], capture=False)
-    print("waiting for production release reconciliation to finish...", flush=True)
-    deploy_prod.run_ssh(
-        config,
-        f"""set -euo pipefail
-unit=aerobag-build-product.service
-previous_invocation={deploy_prod.shell_quote(previous)}
-for attempt in $(seq 1 60); do
-  invocation="$(systemctl show "$unit" --property=InvocationID --value)"
-  if [ -n "$invocation" ] && [ "$invocation" != "$previous_invocation" ]; then
-    break
-  fi
-  if [ "$attempt" = 60 ]; then
-    echo "release reconciliation did not start a new systemd invocation" >&2
-    exit 1
-  fi
-  sleep 1
-done
-while true; do
-  active_state="$(systemctl show "$unit" --property=ActiveState --value)"
-  result="$(systemctl show "$unit" --property=Result --value)"
-  case "$active_state" in
-    active|activating|reloading|deactivating)
-      sleep 5
-      ;;
-    inactive)
-      if [ "$result" = success ]; then
-        echo "release reconciliation completed successfully"
-        exit 0
-      fi
-      ;;
-    failed)
-      ;;
-  esac
-  echo "release reconciliation failed: active_state=$active_state result=$result" >&2
-  systemctl status "$unit" --no-pager >&2 || true
-  journalctl -u "$unit" -n 100 --no-pager >&2 || true
-  exit 1
-done""",
-        dry_run=False,
+    run(
+        [
+            str(TOOLS_DIR / "deploy_prod.py"),
+            "--config",
+            str(config_path),
+            "--wait-for-reconciliation",
+        ],
+        capture=False,
     )
 
 
 def failed_command_summary(command: str | list[str]) -> str:
-    parts = [command] if isinstance(command, str) else [str(part) for part in command]
-    if parts and Path(parts[0]).name == "ssh":
-        target = next((part for part in parts[1:] if "@" in part), "remote host")
-        return f"remote command on {target}"
-    concise = [part for part in parts if "\n" not in part]
-    return " ".join(concise) or Path(parts[0]).name
+    return deploy_prod.failed_command_summary(command)
 
 
 def stage(config_path: Path, releases_path: Path) -> int:

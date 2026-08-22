@@ -21,6 +21,7 @@ from typing import Any
 from admin_index import admin_index_html
 from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
 from release_reconciler import (
+    RELEASE_LIVE_FEEDS_STATE_ENV,
     load_desired_releases,
     render_live_feed_nginx_routes,
     resolve_release_tag,
@@ -97,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         "--allow-dirty",
         action="store_true",
         help="allow deployment when the local checkout has uncommitted changes",
+    )
+    parser.add_argument(
+        "--wait-for-reconciliation",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--dry-run",
@@ -1353,11 +1359,19 @@ WantedBy=timers.target
 
 
 def release_live_feeds_unit(config: dict[str, Any]) -> str:
+    state_root = f"${RELEASE_LIVE_FEEDS_STATE_ENV}"
+    # Immutable release binaries currently expose worker-specific state flags.
+    # Keep path ownership here: both are children of the one controller-owned
+    # live-feed state root, rather than independent deployment settings.
+    state_args = (
+        ' --tfr-detail-backfill-state-root '
+        f'"{state_root}/tfr-detail-backfill"'
+    )
     nms_args = ""
     if config["nms_notams_enabled"]:
         nms_args = (
             f" --nms-notams-config {shell_quote(config['nms_notams_prod_config'])}"
-            ' --nms-notams-state-root "$ARTIFACT_ROOT/state/nms-notams/$AEROBAG_RELEASE_TAG"'
+            f' --nms-notams-state-root "{state_root}/nms-notams"'
         )
     return f"""[Unit]
 Description=Aerobag live-feeds daemon for release %i
@@ -1368,7 +1382,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/aerobag/env
 EnvironmentFile=/etc/aerobag/live-feeds/%i.env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{nms_args}'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; source /etc/aerobag/live-feeds/%i.env; exec "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" --live-root "$AEROBAG_RELEASE_LIVE_ROOT" --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" --fetch-cache-root "$AEROBAG_RELEASE_FETCH_CACHE" --fetch-cache-mode fill --listen "$AEROBAG_RELEASE_LIVE_LISTEN"{state_args}{nms_args}'
 Restart=always
 RestartSec=10
 
@@ -1809,7 +1823,13 @@ def reload_services(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, command, dry_run=dry_run)
 
 
-def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) -> None:
+def start_runtime(
+    config: dict[str, Any],
+    *,
+    skip_build: bool,
+    wait_for_reconciliation: bool,
+    dry_run: bool,
+) -> None:
     if skip_build:
         command = textwrap.dedent(
             """
@@ -1827,20 +1847,34 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
         run_ssh(config, command, dry_run=dry_run)
         return
 
-    command = textwrap.dedent(
-        """
-        set -euo pipefail
-        systemctl restart aerobag-cloud-server.service
-        systemctl restart aerobag-client-debug-log.service
-        systemctl restart aerobag-build-watch.service
-        systemctl restart aerobag-pipeline-health.service
-        systemctl start --no-block aerobag-build-product.service
-        systemctl start aerobag-build-product.timer
-        systemctl start aerobag-health.timer
-        systemctl start aerobag-cloud-backup.timer
-        systemctl start aerobag-health.service || true
-        """
-    ).strip()
+    if wait_for_reconciliation:
+        start_product = textwrap.dedent(
+            """
+            if ! systemctl start aerobag-build-product.service; then
+              echo "release reconciliation failed" >&2
+              systemctl status aerobag-build-product.service --no-pager >&2 || true
+              journalctl -u aerobag-build-product.service -n 100 --no-pager >&2 || true
+              exit 1
+            fi
+            """
+        ).strip()
+    else:
+        start_product = "systemctl start --no-block aerobag-build-product.service"
+
+    command = "\n".join(
+        [
+            "set -euo pipefail",
+            "systemctl restart aerobag-cloud-server.service",
+            "systemctl restart aerobag-client-debug-log.service",
+            "systemctl restart aerobag-build-watch.service",
+            "systemctl restart aerobag-pipeline-health.service",
+            start_product,
+            "systemctl start aerobag-build-product.timer",
+            "systemctl start aerobag-health.timer",
+            "systemctl start aerobag-cloud-backup.timer",
+            "systemctl start aerobag-health.service || true",
+        ]
+    )
     run_ssh(config, command, dry_run=dry_run)
 
 
@@ -1887,7 +1921,12 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
             dry_run=args.dry_run,
         )
         reload_services(config, dry_run=args.dry_run)
-        start_runtime(config, skip_build=True, dry_run=args.dry_run)
+        start_runtime(
+            config,
+            skip_build=True,
+            wait_for_reconciliation=False,
+            dry_run=args.dry_run,
+        )
         return
 
     assert_local_refs_exist(config, dry_run=args.dry_run)
@@ -1928,9 +1967,23 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     run_initial_toolchain_build(config, dry_run=args.dry_run)
     run_android_sdk_setup(config, dry_run=args.dry_run)
     reload_services(config, dry_run=args.dry_run)
-    start_runtime(config, skip_build=args.skip_build, dry_run=args.dry_run)
-    if not args.skip_build:
+    start_runtime(
+        config,
+        skip_build=args.skip_build,
+        wait_for_reconciliation=args.wait_for_reconciliation,
+        dry_run=args.dry_run,
+    )
+    if not args.skip_build and not args.wait_for_reconciliation:
         verify_async_product_build(config, dry_run=args.dry_run)
+
+
+def failed_command_summary(command: str | list[str]) -> str:
+    parts = [command] if isinstance(command, str) else [str(part) for part in command]
+    if parts and Path(parts[0]).name == "ssh":
+        target = next((part for part in parts[1:] if "@" in part), "remote host")
+        return f"remote command on {target}"
+    concise = [part for part in parts if "\n" not in part]
+    return " ".join(concise) or Path(parts[0]).name
 
 
 def main() -> int:
@@ -1942,8 +1995,16 @@ def main() -> int:
         + f" to {ssh_target(config)} source={config['source_root']} artifacts={config['artifact_root']}",
         flush=True,
     )
-    deploy(config, args)
-    return 0
+    try:
+        deploy(config, args)
+        return 0
+    except subprocess.CalledProcessError as error:
+        print(
+            f"deploy_prod: command failed with exit {error.returncode}: "
+            f"{failed_command_summary(error.cmd)}",
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":

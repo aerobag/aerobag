@@ -82,14 +82,29 @@ def allocate_live_feed_endpoint(
 
 def prepare_release_live_feed_paths(
     artifact_root: Path, tag: str
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     live_root = artifact_root / "live-feeds/releases" / tag
     scratch_root = artifact_root / "scratch/live-feeds/releases" / tag
+    state_root = artifact_root / "state/live-feeds/releases" / tag
     # The daemon creates the contract tree below live_root, but deliberately
     # requires these controller-owned release roots to exist.
     live_root.mkdir(parents=True, exist_ok=True)
     scratch_root.mkdir(parents=True, exist_ok=True)
-    return live_root, scratch_root
+    state_root.mkdir(parents=True, exist_ok=True)
+    return live_root, scratch_root, state_root
+
+
+def service_failure_detail(unit: str) -> str | None:
+    result = subprocess.run(
+        ["journalctl", "-u", unit, "-n", "40", "--no-pager"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    errors = [line for line in lines if "Error:" in line]
+    return (errors or lines)[-1] if lines else None
 
 
 def _sha256(path: Path) -> str:
@@ -419,7 +434,7 @@ class Controller:
         environment_root.mkdir(parents=True, exist_ok=True)
         environment = environment_root / f"{tag}.env"
         release_root = Path(record.release_root or "")
-        live_root, scratch_root = prepare_release_live_feed_paths(
+        live_root, scratch_root, state_root = prepare_release_live_feed_paths(
             self.artifact_root, tag
         )
         values = {
@@ -428,6 +443,7 @@ class Controller:
             "AEROBAG_RELEASE_LIVE_LISTEN": f"127.0.0.1:{port}",
             "AEROBAG_RELEASE_LIVE_ROOT": str(live_root),
             "AEROBAG_RELEASE_LIVE_SCRATCH": str(scratch_root),
+            releases.RELEASE_LIVE_FEEDS_STATE_ENV: str(state_root),
             "AEROBAG_RELEASE_FETCH_CACHE": str(self.artifact_root / "cache/fetch"),
         }
         environment.write_text(
@@ -451,7 +467,13 @@ class Controller:
             except OSError as error:
                 last_error = error
             time.sleep(1)
-        record.last_error = f"live-feed health did not become ready: {last_error}"
+        detail = service_failure_detail(unit)
+        _run(["systemctl", "disable", "--now", unit])
+        record.last_error = (
+            f"live-feed health did not become ready: {detail}"
+            if detail is not None
+            else f"live-feed health did not become ready: {last_error}"
+        )
         record.live_feed_status = "failed"
         self.save()
         raise RuntimeError(record.last_error)

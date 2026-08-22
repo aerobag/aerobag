@@ -296,10 +296,16 @@ mutable roots while sharing only the fetch cache:
 "$AEROBAG_RELEASE_ROOT/bin/aerobag-live-feedsd" \
   --live-root "$AEROBAG_RELEASE_LIVE_ROOT" \
   --scratch-root "$AEROBAG_RELEASE_LIVE_SCRATCH" \
+  --tfr-detail-backfill-state-root "$AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT/tfr-detail-backfill" \
   --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" \
   --fetch-cache-mode fill \
   --listen "$AEROBAG_LIVE_FEEDS_LISTEN"
 ```
+
+`AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT` is the sole controller-owned root for
+daemon-private persistent state. TFR detail state lives below
+`tfr-detail-backfill/`; when NMS NOTAM ingestion is enabled, its collector and
+publication state live below `nms-notams/`.
 
 Manual product rebuild:
 

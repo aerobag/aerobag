@@ -27,8 +27,8 @@ class LiveFeedAllocationTests(unittest.TestCase):
     def test_controller_creates_daemon_owned_release_namespace_parents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            live_root, scratch_root = controller.prepare_release_live_feed_paths(
-                root, "2026-08-22.1"
+            live_root, scratch_root, state_root = (
+                controller.prepare_release_live_feed_paths(root, "2026-08-22.1")
             )
 
             self.assertEqual(
@@ -37,8 +37,30 @@ class LiveFeedAllocationTests(unittest.TestCase):
             self.assertEqual(
                 scratch_root, root / "scratch/live-feeds/releases/2026-08-22.1"
             )
+            self.assertEqual(
+                state_root, root / "state/live-feeds/releases/2026-08-22.1"
+            )
             self.assertTrue(live_root.is_dir())
             self.assertTrue(scratch_root.is_dir())
+            self.assertTrue(state_root.is_dir())
+
+    def test_daemon_failure_reports_the_latest_specific_error(self) -> None:
+        journal = SimpleNamespace(
+            stdout=(
+                "systemd: service failed\n"
+                "daemon: Error: first validation failure\n"
+                "daemon: Error: controlling validation failure\n"
+                "systemd: restart scheduled\n"
+            )
+        )
+        with mock.patch.object(
+            controller.subprocess, "run", return_value=journal
+        ):
+            detail = controller.service_failure_detail("example.service")
+
+        self.assertEqual(
+            detail, "daemon: Error: controlling validation failure"
+        )
 
     def test_each_release_gets_a_stable_distinct_loopback_port(self) -> None:
         observed = releases.ObservedState.empty()

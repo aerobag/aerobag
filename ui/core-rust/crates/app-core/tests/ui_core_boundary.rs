@@ -579,6 +579,7 @@ fn durable_session_writes_are_owned_by_transaction_helpers() {
 
     for function in [
         "perform_settings_action_in_session",
+        "perform_aircraft_library_action_in_session",
         "accept_disclaimer_in_session",
     ] {
         assert!(

@@ -2632,6 +2632,9 @@ pub fn complete_cloud_provider_request_in_session(
         for (flag_id, enabled) in updates.debug_flags {
             apply_debug_flag(session, flag_id, enabled)?;
         }
+        if updates.aircraft_library_changed {
+            session.settings.note_aircraft_library_change();
+        }
         let mut invalidations = vec![UiInvalidation::SessionSnapshot];
         if let Some(remote_plan) = updates.remote_flight_plan {
             let navigation_active = session
@@ -2904,6 +2907,127 @@ pub fn perform_settings_action_in_session(
                         now_epoch_ms,
                     )?;
                 }
+            }
+        }
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
+}
+
+pub fn perform_aircraft_library_action_in_session(
+    handle: u32,
+    action_id: &str,
+    source_json: Option<&str>,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let action = crate::aircraft_library::parse_action(action_id)?;
+    let source_json = source_json.map(str::to_string);
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    run_session_model_transaction(session, move |session| {
+        let private_definitions = session.cloud.aircraft_definitions()?;
+        match action {
+            crate::aircraft_library::AircraftLibraryAction::BeginAdd => {
+                session
+                    .settings
+                    .replace_aircraft_editor(Some(crate::aircraft_library::new_editor()?));
+            }
+            crate::aircraft_library::AircraftLibraryAction::BeginEdit { definition_hash } => {
+                let definition = private_definitions.get(&definition_hash).ok_or_else(|| {
+                    AppError {
+                        kind: AppErrorKind::UnsupportedOperation,
+                        message: format!(
+                            "only user aircraft can be edited; {definition_hash:?} is not a user aircraft"
+                        ),
+                    }
+                })?;
+                session.settings.replace_aircraft_editor(Some(
+                    crate::aircraft_library::edit_definition(&definition_hash, definition)?,
+                ));
+            }
+            crate::aircraft_library::AircraftLibraryAction::SetIncluded {
+                definition_hash,
+                included,
+            } => {
+                let known_private = private_definitions.contains_key(&definition_hash);
+                let known_system = match session.nav_data.store() {
+                    Some(store) => crate::had_ops::system_aircraft_definitions(store)?
+                        .contains_key(&definition_hash),
+                    None => false,
+                };
+                if !known_private && !known_system {
+                    return Err(AppError {
+                        kind: AppErrorKind::UnsupportedOperation,
+                        message: format!("unknown aircraft definition {definition_hash:?}"),
+                    }
+                    .into());
+                }
+                session.cloud.record_local_aircraft_library_membership(
+                    &definition_hash,
+                    product_contracts::AircraftLibraryMembership { included },
+                    now_epoch_ms,
+                )?;
+                session.settings.note_aircraft_library_change();
+            }
+            crate::aircraft_library::AircraftLibraryAction::Save => {
+                let mut editor =
+                    session
+                        .settings
+                        .aircraft_editor()
+                        .cloned()
+                        .ok_or_else(|| AppError {
+                            kind: AppErrorKind::UnsupportedOperation,
+                            message: "aircraft-library save requested without an open editor"
+                                .to_string(),
+                        })?;
+                editor.source_json = source_json.unwrap_or_default();
+                match crate::aircraft_library::validate_source(&editor.source_json, &editor) {
+                    Ok((definition_hash, definition, normalized_source)) => {
+                        let system_definitions = match session.nav_data.store() {
+                            Some(store) => crate::had_ops::system_aircraft_definitions(store)?,
+                            None => BTreeMap::new(),
+                        };
+                        if crate::aircraft_library::definition_is_superseded(
+                            &definition_hash,
+                            system_definitions
+                                .values()
+                                .chain(private_definitions.values()),
+                        ) {
+                            editor.source_json = normalized_source;
+                            editor.validation_error =
+                                Some(crate::aircraft_library::SUPERSEDED_IMPORT_ERROR.to_string());
+                            session.settings.replace_aircraft_editor(Some(editor));
+                        } else {
+                            session
+                                .cloud
+                                .record_local_aircraft_definition(&definition)?;
+                            session.cloud.record_local_aircraft_library_membership(
+                                &definition_hash,
+                                product_contracts::AircraftLibraryMembership { included: true },
+                                now_epoch_ms,
+                            )?;
+                            if let Some(replaced) = editor.replacing_definition_hash.as_deref() {
+                                if replaced != definition_hash {
+                                    session.cloud.record_local_aircraft_library_membership(
+                                        replaced,
+                                        product_contracts::AircraftLibraryMembership {
+                                            included: false,
+                                        },
+                                        now_epoch_ms,
+                                    )?;
+                                }
+                            }
+                            session.settings.replace_aircraft_editor(None);
+                        }
+                    }
+                    Err(error) => {
+                        editor.validation_error = Some(error);
+                        session.settings.replace_aircraft_editor(Some(editor));
+                    }
+                }
+            }
+            crate::aircraft_library::AircraftLibraryAction::Cancel => {
+                session.settings.replace_aircraft_editor(None);
             }
         }
         Ok(vec![UiInvalidation::SessionSnapshot])
@@ -11837,11 +11961,32 @@ fn try_snapshot_for_session(
             .fetch_add(1, Ordering::Relaxed);
     }
     let SettingsProjection {
-        settings_page_state,
+        mut settings_page_state,
         display_policy,
         disclaimer_state,
         flight_data_banner,
     } = settings_projection.projection;
+    let system_aircraft_definitions = match session.nav_data.store() {
+        Some(store) => crate::had_ops::system_aircraft_definitions(store)?,
+        None => BTreeMap::new(),
+    };
+    let private_aircraft_definitions = session
+        .cloud
+        .aircraft_definitions()
+        .map_err(|error| HadReadError::Fatal(error.message))?;
+    let aircraft_library_memberships = session
+        .cloud
+        .aircraft_library_memberships()
+        .map_err(|error| HadReadError::Fatal(error.message))?;
+    let aircraft_catalog = crate::aircraft_library::build_catalog(
+        system_aircraft_definitions,
+        &private_aircraft_definitions,
+        &aircraft_library_memberships,
+    );
+    settings_page_state.aircraft_library = Some(crate::aircraft_library::project_state(
+        &aircraft_catalog,
+        session.settings.aircraft_editor(),
+    ));
     app_ui_state.flight_data_banner = flight_data_banner;
     let cloud_page_state = cloud_projection.page_state;
     let package_projection = session
@@ -12310,13 +12455,18 @@ fn project_session_app_ui_state(
     );
     let private_aircraft_definitions = session_aircraft_definitions(session)
         .map_err(|error| HadReadError::Fatal(error.message))?;
-    let aircraft_definitions_digest = session
+    let aircraft_library_memberships = session
         .cloud
-        .aircraft_definitions_digest()
+        .aircraft_library_memberships()
+        .map_err(|error| HadReadError::Fatal(error.message))?;
+    let aircraft_library_digest = session
+        .cloud
+        .aircraft_library_digest()
         .map_err(|error| HadReadError::Fatal(error.message))?;
     let flight_plan_projection = session.flight_plan.project(
         nav_kv_store.as_deref(),
         &private_aircraft_definitions,
+        &aircraft_library_memberships,
         FlightPlanProjectionInputs {
             ownship_position: situation_projection.ownship.render.position,
             ownship_speed_kt: situation_projection.ownship.render.speed_kt,
@@ -12328,7 +12478,7 @@ fn project_session_app_ui_state(
             now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
             nav_data_generation: session.nav_data.generation(),
             weather_revision,
-            aircraft_definitions_digest,
+            aircraft_library_digest,
             local_time_zone,
             time_display_mode: session.coordinator.time_display_mode,
             ete_scope: session.settings.flight_plan_ete_scope(),
@@ -16513,6 +16663,261 @@ mod tests {
         assert_eq!(diagnostics.transaction_rollback_count, 1);
         assert_eq!(diagnostics.settings_revision, 0);
         destroy_session(init.handle);
+    }
+
+    #[test]
+    fn aircraft_library_editor_validates_then_persists_and_filters_a_private_model() {
+        let init = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create aircraft-library session");
+        perform_aircraft_library_action_in_session(init.handle, "aircraft_library/add", None, 100)
+            .expect("open aircraft editor");
+        let opened = get_session_snapshot(init.handle).expect("open editor snapshot");
+        let editor = opened
+            .settings_page_state
+            .aircraft_library
+            .as_ref()
+            .and_then(|library| library.editor.as_ref())
+            .expect("aircraft editor");
+        let valid_source = editor.source_json.clone();
+
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/save",
+            Some("{"),
+            101,
+        )
+        .expect("reject invalid model in editor");
+        let invalid = get_session_snapshot(init.handle).expect("invalid editor snapshot");
+        assert!(invalid
+            .settings_page_state
+            .aircraft_library
+            .as_ref()
+            .and_then(|library| library.editor.as_ref())
+            .and_then(|editor| editor.validation_error.as_ref())
+            .is_some_and(|error| error.contains("Invalid JSON")));
+
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/save",
+            Some(&valid_source),
+            102,
+        )
+        .expect("save valid private aircraft");
+        let saved = get_session_snapshot(init.handle).expect("saved library snapshot");
+        let library = saved
+            .settings_page_state
+            .aircraft_library
+            .as_ref()
+            .expect("aircraft library");
+        assert!(library.editor.is_none());
+        let entry = library
+            .entries
+            .iter()
+            .find(|entry| entry.source_label == "USER")
+            .expect("private aircraft entry");
+        assert!(entry.included);
+        assert!(entry.edit_action.is_some());
+        let definition_hash = entry.definition_hash.clone();
+        let edit_action = entry
+            .edit_action
+            .as_ref()
+            .expect("private aircraft edit action")
+            .action_id
+            .clone();
+
+        perform_aircraft_library_action_in_session(init.handle, &edit_action, None, 103)
+            .expect("edit private aircraft");
+        let edit_source = get_session_snapshot(init.handle)
+            .expect("edit aircraft snapshot")
+            .settings_page_state
+            .aircraft_library
+            .and_then(|library| library.editor)
+            .expect("aircraft editor")
+            .source_json;
+        let mut edited_definition: serde_json::Value =
+            serde_json::from_str(&edit_source).expect("aircraft definition JSON");
+        edited_definition["label"] = serde_json::Value::String("EDITED MY AIRCRAFT".to_string());
+        let edited_source =
+            serde_json::to_string_pretty(&edited_definition).expect("edited aircraft JSON");
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/save",
+            Some(&edited_source),
+            104,
+        )
+        .expect("save edited private aircraft");
+        let edited = get_session_snapshot(init.handle).expect("edited library snapshot");
+        let edited_entry = edited
+            .settings_page_state
+            .aircraft_library
+            .as_ref()
+            .expect("aircraft library")
+            .entries
+            .iter()
+            .find(|entry| entry.source_label == "USER")
+            .expect("edited private aircraft entry");
+        assert_eq!(edited_entry.label, "EDITED MY AIRCRAFT");
+        assert_ne!(edited_entry.definition_hash, definition_hash);
+        let edited_definition_hash = edited_entry.definition_hash.clone();
+        let exclude_action = edited_entry.toggle_action.action_id.clone();
+        let edited_edit_action = edited_entry
+            .edit_action
+            .as_ref()
+            .expect("edited private aircraft edit action")
+            .action_id
+            .clone();
+
+        perform_aircraft_library_action_in_session(init.handle, &edited_edit_action, None, 105)
+            .expect("open edited private aircraft");
+        let current_source = get_session_snapshot(init.handle)
+            .expect("current aircraft editor snapshot")
+            .settings_page_state
+            .aircraft_library
+            .and_then(|library| library.editor)
+            .expect("current aircraft editor")
+            .source_json;
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/cancel",
+            None,
+            106,
+        )
+        .expect("close current aircraft editor");
+
+        perform_aircraft_library_action_in_session(init.handle, &exclude_action, None, 107)
+            .expect("hide private aircraft");
+        let hidden = get_session_snapshot(init.handle).expect("hidden library snapshot");
+        assert!(
+            !hidden
+                .settings_page_state
+                .aircraft_library
+                .as_ref()
+                .expect("aircraft library")
+                .entries
+                .iter()
+                .find(|entry| entry.source_label == "USER")
+                .expect("private aircraft entry")
+                .included
+        );
+
+        perform_aircraft_library_action_in_session(init.handle, "aircraft_library/add", None, 108)
+            .expect("open import editor for old revision");
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/save",
+            Some(&valid_source),
+            109,
+        )
+        .expect("reject superseded old revision");
+        let rejected = get_session_snapshot(init.handle).expect("rejected import snapshot");
+        assert_eq!(
+            rejected
+                .settings_page_state
+                .aircraft_library
+                .as_ref()
+                .and_then(|library| library.editor.as_ref())
+                .and_then(|editor| editor.validation_error.as_deref()),
+            Some(crate::aircraft_library::SUPERSEDED_IMPORT_ERROR),
+        );
+        assert_eq!(
+            rejected
+                .settings_page_state
+                .aircraft_library
+                .as_ref()
+                .expect("aircraft library")
+                .entries
+                .iter()
+                .filter(|entry| entry.source_label == "USER")
+                .count(),
+            1,
+        );
+
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/cancel",
+            None,
+            110,
+        )
+        .expect("close rejected import");
+        perform_aircraft_library_action_in_session(init.handle, "aircraft_library/add", None, 111)
+            .expect("open import editor for current revision");
+        perform_aircraft_library_action_in_session(
+            init.handle,
+            "aircraft_library/save",
+            Some(&current_source),
+            112,
+        )
+        .expect("re-import hidden current revision");
+        let restored = get_session_snapshot(init.handle).expect("restored library snapshot");
+        let restored_entry = restored
+            .settings_page_state
+            .aircraft_library
+            .as_ref()
+            .expect("aircraft library")
+            .entries
+            .iter()
+            .find(|entry| entry.source_label == "USER")
+            .expect("restored private aircraft entry");
+        assert_eq!(restored_entry.definition_hash, edited_definition_hash);
+        assert!(restored_entry.included);
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("session");
+        let retained_definitions = session
+            .cloud
+            .aircraft_definitions()
+            .expect("retained immutable aircraft definitions");
+        assert!(retained_definitions.contains_key(&definition_hash));
+        assert!(retained_definitions.contains_key(&edited_definition_hash));
+        drop(session);
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn private_aircraft_survives_local_session_restart() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let first = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create first aircraft-library session");
+        configure_platform_capabilities_in_session(
+            first.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .expect("configure first storage");
+        perform_aircraft_library_action_in_session(first.handle, "aircraft_library/add", None, 100)
+            .expect("open aircraft editor");
+        let source = get_session_snapshot(first.handle)
+            .expect("editor snapshot")
+            .settings_page_state
+            .aircraft_library
+            .and_then(|library| library.editor)
+            .expect("aircraft editor")
+            .source_json;
+        perform_aircraft_library_action_in_session(
+            first.handle,
+            "aircraft_library/save",
+            Some(&source),
+            101,
+        )
+        .expect("save private aircraft");
+        destroy_session(first.handle);
+
+        let second = create_ui_session(FlightPlan::default(), &[], None, None)
+            .expect("create second aircraft-library session");
+        let restored = configure_platform_capabilities_in_session(
+            second.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .expect("restore aircraft library");
+        assert!(restored
+            .settings_page_state
+            .aircraft_library
+            .as_ref()
+            .expect("aircraft library")
+            .entries
+            .iter()
+            .any(|entry| entry.source_label == "USER"));
+        destroy_session(second.handle);
     }
 
     #[test]

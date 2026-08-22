@@ -455,6 +455,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setMapLayerVisibility: (...args) => updateSnapshot(call("setMapLayerVisibility", args)),
     setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),
     performSettingsAction: (...args) => updateSnapshot(call("performSettingsAction", args)),
+    performAircraftLibraryAction: (...args) => updateSnapshot(call("performAircraftLibraryAction", args)),
     performCloudUiAction: (...args) => updateSnapshot(call("performCloudUiAction", args)),
     recordOfflinePackagePreferences: (...args) => updateSnapshot(call("recordOfflinePackagePreferences", args)),
     takeCloudProviderRequest: (...args) => call("takeCloudProviderRequest", args),

@@ -66,6 +66,60 @@ try {
   }
   await page.evaluate("document.querySelector('[data-testid=\"home-button-settings\"]')?.click()");
 
+  const aircraftLibrary = await waitFor(
+    () => page.evaluate(`(() => {
+      const library = document.querySelector('[data-testid="settings-aircraft-library"]');
+      if (!library) return null;
+      return {
+        systemEntries: library.querySelectorAll('[data-testid="settings-aircraft-entry-system"]').length,
+        icons: library.querySelectorAll('.aircraftSymbolIcon').length,
+      };
+    })()`),
+    10_000,
+    "Aircraft library did not appear",
+  );
+  if (aircraftLibrary.systemEntries < 1 || aircraftLibrary.icons < aircraftLibrary.systemEntries) {
+    throw new Error(`Aircraft library did not render bundled models and symbols: ${JSON.stringify(aircraftLibrary)}`);
+  }
+  await page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-add\"]')?.click()");
+  const validAircraftSource = await waitFor(
+    () => page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-source\"]')?.value ?? null"),
+    10_000,
+    "Aircraft editor did not open",
+  );
+  await page.evaluate(`(() => {
+    const editor = document.querySelector('[data-testid="settings-aircraft-source"]');
+    if (!editor) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(editor, '{');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('[data-testid="settings-aircraft-save"]')?.click();
+  })()`);
+  await waitFor(
+    () => page.evaluate("document.querySelector('.settingsAircraftError')?.textContent?.includes('Invalid JSON') ?? false"),
+    10_000,
+    "Invalid aircraft definition did not remain in the editor with feedback",
+  );
+  await page.evaluate(`(() => {
+    const editor = document.querySelector('[data-testid="settings-aircraft-source"]');
+    if (!editor) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(editor, ${JSON.stringify(validAircraftSource)});
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('[data-testid="settings-aircraft-save"]')?.click();
+  })()`);
+  await waitFor(
+    () => page.evaluate("Boolean(document.querySelector('[data-testid=\"settings-aircraft-entry-user\"]'))"),
+    10_000,
+    "Valid private aircraft did not enter the library",
+  );
+  const orderedAircraftSources = await page.evaluate(`[
+    ...document.querySelectorAll('.settingsAircraftEntry .settingsAircraftIdentity small'),
+  ].map((element) => element.textContent?.trim())`);
+  if (orderedAircraftSources[0] !== "USER") {
+    throw new Error(`Private aircraft did not sort before system aircraft: ${JSON.stringify(orderedAircraftSources)}`);
+  }
+
   const initial = await waitFor(
     () => page.evaluate(`(() => {
       const header = document.querySelector('[data-testid="settings-section-debug_diagnostics"]');
@@ -80,6 +134,22 @@ try {
   );
   if (initial.expanded !== "false" || initial.toggleVisible) {
     throw new Error(`Debug Diagnostics did not start folded: ${JSON.stringify(initial)}`);
+  }
+  const diagnosticsOrder = await page.evaluate(`(() => {
+    const library = document.querySelector('[data-testid="settings-aircraft-library"]');
+    const diagnostics = document
+      .querySelector('[data-testid="settings-section-debug_diagnostics"]')
+      ?.closest('.settingsPageSection');
+    return {
+      libraryBeforeDiagnostics: Boolean(
+        library && diagnostics
+          && (library.compareDocumentPosition(diagnostics) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ),
+      diagnosticsIsLast: diagnostics?.parentElement?.lastElementChild === diagnostics,
+    };
+  })()`);
+  if (!diagnosticsOrder.libraryBeforeDiagnostics || !diagnosticsOrder.diagnosticsIsLast) {
+    throw new Error(`Debug Diagnostics was not the final settings block: ${JSON.stringify(diagnosticsOrder)}`);
   }
 
   await page.evaluate("document.querySelector('[data-testid=\"settings-section-debug_diagnostics\"]')?.click()");
@@ -99,9 +169,22 @@ try {
   );
 
   if (screenshotPath) {
+    await page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-library\"]')?.scrollIntoView({ block: 'start' })");
     const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
     await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
   }
+  await page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-toggle-user\"]')?.click()");
+  await waitFor(
+    () => page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-entry-user\"]')?.classList.contains('isHidden') ?? false"),
+    10_000,
+    "Hidden private aircraft did not remain available in the library",
+  );
+  await page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-toggle-user\"]')?.click()");
+  await waitFor(
+    () => page.evaluate("!(document.querySelector('[data-testid=\"settings-aircraft-entry-user\"]')?.classList.contains('isHidden') ?? true)"),
+    10_000,
+    "Hidden private aircraft could not be shown again",
+  );
   if (page.diagnostics.some((entry) => entry.method === "Runtime.exceptionThrown")) {
     throw new Error(`browser exceptions observed: ${JSON.stringify(page.diagnostics.slice(-10))}`);
   }

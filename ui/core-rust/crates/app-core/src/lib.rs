@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 mod adsb;
+mod aircraft_library;
 pub mod aircraft_profiles;
 pub mod airport_info;
 pub mod altitude_planner;
@@ -309,7 +310,8 @@ pub use session::{
     load_raster_map_catalog_in_session, maintain_nav_db_in_session_at_epoch_ms,
     map_selection_action_decision_in_session, navigation_page_state_for_platform,
     nexrad_acquisition_directive_in_session, nexrad_tile_bytes_in_session,
-    open_chart_airport_in_session, pause_playback_in_session, perform_cloud_ui_action_in_session,
+    open_chart_airport_in_session, pause_playback_in_session,
+    perform_aircraft_library_action_in_session, perform_cloud_ui_action_in_session,
     perform_flight_plan_column_action_in_session, perform_flight_plan_command_in_session,
     perform_map_selection_ui_action_in_session, perform_ownship_text_action_in_session,
     perform_settings_action_in_session, perform_status_action_in_session,

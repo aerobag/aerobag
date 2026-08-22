@@ -4,14 +4,17 @@
 
 package org.aerobag.app
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.PathParser
+import org.aerobag.app.domain.AircraftSymbolUiView
 
 private const val AircraftPlanViewCanonicalWidth = 100f
 
@@ -45,4 +48,22 @@ internal fun DrawScope.drawAircraftPlanView(
     )
     drawPath(path, Color(0xFFE6E6E6))
     drawContext.canvas.restore()
+}
+
+@Composable
+internal fun AircraftPlanViewIcon(
+    symbol: AircraftSymbolUiView,
+    modifier: Modifier = Modifier,
+) {
+    val path = rememberAircraftPlanViewPath(symbol.pathData)
+    Canvas(modifier = modifier) {
+        path?.let {
+            drawAircraftPlanView(
+                path = it,
+                center = center,
+                headingDeg = symbol.rotationDegrees,
+                wingspanPx = size.minDimension * 0.82f,
+            )
+        }
+    }
 }

@@ -85,6 +85,8 @@ pub struct AltitudePlannerControlOptionUiView {
     pub label: String,
     pub action_uid: String,
     pub selected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trailing_symbol: Option<app_ui_contracts::session::UiAircraftSymbol>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

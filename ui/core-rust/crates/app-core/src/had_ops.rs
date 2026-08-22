@@ -1402,6 +1402,7 @@ pub(crate) fn planner_aircraft_selection_cruise_altitude(
 
 fn aircraft_control_options(
     aircraft: &PlannerAircraft,
+    library_memberships: &BTreeMap<String, product_contracts::AircraftLibraryMembership>,
 ) -> (
     Vec<crate::AltitudePlannerControlOptionUiView>,
     Vec<crate::AltitudePlannerControlOptionUiView>,
@@ -1413,6 +1414,22 @@ fn aircraft_control_options(
             .cmp(&right.1.label)
             .then_with(|| left.0.cmp(right.0))
     });
+    let superseded = aircraft
+        .definitions
+        .values()
+        .flat_map(|definition| definition.supersedes.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let definitions = definitions
+        .into_iter()
+        .filter(|(hash, _)| {
+            hash.as_str() == aircraft.selection.definition_hash
+                || (!superseded.contains(*hash)
+                    && library_memberships
+                        .get(*hash)
+                        .map(|membership| membership.included)
+                        .unwrap_or(true))
+        })
+        .collect::<Vec<_>>();
     let aircraft_options = if definitions.len() > 1 {
         definitions
             .into_iter()
@@ -1425,6 +1442,7 @@ fn aircraft_control_options(
                     label: definition.label.clone(),
                     action_uid: planner_aircraft_action_uid(&selection),
                     selected: hash == &aircraft.selection.definition_hash,
+                    trailing_symbol: Some(crate::aircraft_library::aircraft_symbol(definition)),
                 }
             })
             .collect()
@@ -1445,6 +1463,7 @@ fn aircraft_control_options(
                     label: profile.label.clone(),
                     action_uid: planner_aircraft_action_uid(&selection),
                     selected: profile.id == aircraft.selection.profile_id,
+                    trailing_symbol: None,
                 }
             })
             .collect()
@@ -1460,18 +1479,7 @@ fn planner_aircraft(
     private_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
 ) -> Result<PlannerAircraft, HadReadError> {
     let default_selection = product_contracts::default_aircraft_selection();
-    let mut definitions = BTreeMap::new();
-    for key in nav_kv_prefix_keys(store, product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)? {
-        let hash = key
-            .strip_prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)
-            .ok_or_else(|| {
-                HadReadError::Fatal(format!("invalid aircraft definition key: {key}"))
-            })?;
-        let definition: product_contracts::AircraftDefinition =
-            read_required_key(store, &key, "aircraft definition")?;
-        validate_aircraft_definition(hash, &definition)?;
-        definitions.insert(hash.to_string(), definition);
-    }
+    let mut definitions = system_aircraft_definitions(store)?;
     for (hash, definition) in private_definitions {
         validate_aircraft_definition(hash, definition)?;
         definitions.insert(hash.clone(), definition.clone());
@@ -1545,6 +1553,24 @@ fn planner_aircraft(
         definitions,
         advisory,
     })
+}
+
+pub(crate) fn system_aircraft_definitions(
+    store: &NavKvStore,
+) -> Result<BTreeMap<String, product_contracts::AircraftDefinition>, HadReadError> {
+    let mut definitions = BTreeMap::new();
+    for key in nav_kv_prefix_keys(store, product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)? {
+        let hash = key
+            .strip_prefix(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)
+            .ok_or_else(|| {
+                HadReadError::Fatal(format!("invalid aircraft definition key: {key}"))
+            })?;
+        let definition: product_contracts::AircraftDefinition =
+            read_required_key(store, &key, "aircraft definition")?;
+        validate_aircraft_definition(hash, &definition)?;
+        definitions.insert(hash.to_string(), definition);
+    }
+    Ok(definitions)
 }
 
 pub(crate) fn default_aircraft_plan_view_path(
@@ -1957,6 +1983,7 @@ fn altitude_comparisons(
 pub(crate) fn flight_plan_ui_projection(
     store: &NavKvStore,
     private_aircraft_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
+    aircraft_library_memberships: &BTreeMap<String, product_contracts::AircraftLibraryMembership>,
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,
     computer: crate::FlightDataComputer,
@@ -2071,7 +2098,8 @@ pub(crate) fn flight_plan_ui_projection(
     } else {
         crate::FlightPlanEstimateBasis::Unavailable
     };
-    let (aircraft_options, aircraft_profile_options) = aircraft_control_options(&aircraft);
+    let (aircraft_options, aircraft_profile_options) =
+        aircraft_control_options(&aircraft, aircraft_library_memberships);
     ui_state.altitude_planner = crate::project_altitude_planner_ui(crate::AltitudePlannerUiInput {
         aircraft_label: Some(aircraft.definition.label.clone()),
         aircraft_profile_label: Some(aircraft.profile.profile_label.clone()),
@@ -4998,6 +5026,7 @@ mod tests {
         Ok(flight_plan_ui_projection(
             store,
             &test_aircraft_definitions(),
+            &BTreeMap::new(),
             plan,
             current_ui_state,
             computer,
@@ -6369,6 +6398,7 @@ mod tests {
             flight_plan_ui_projection(
                 &store,
                 &test_aircraft_definitions(),
+                &BTreeMap::new(),
                 plan.clone(),
                 crate::project_ui_state(&plan),
                 crate::FlightDataComputer::default(),
@@ -6408,6 +6438,37 @@ mod tests {
     }
 
     #[test]
+    fn aircraft_library_membership_filters_the_short_menu_but_keeps_the_selection_resolvable() {
+        let store = three_airport_nav_store(
+            LatLon { lat: 0.0, lon: 0.0 },
+            LatLon { lat: 0.0, lon: 1.0 },
+            LatLon { lat: 0.0, lon: 2.0 },
+        );
+        let definitions = test_aircraft_definitions();
+        let aircraft = planner_aircraft(&store, None, &definitions).expect("planner aircraft");
+        let hidden_hash = definitions
+            .keys()
+            .find(|hash| **hash != aircraft.selection.definition_hash)
+            .expect("alternate aircraft")
+            .clone();
+        let memberships = BTreeMap::from([(
+            hidden_hash.clone(),
+            product_contracts::AircraftLibraryMembership { included: false },
+        )]);
+        let (options, _) = aircraft_control_options(&aircraft, &memberships);
+        assert!(options
+            .iter()
+            .all(|option| !option.action_uid.contains(&hidden_hash)));
+
+        let selected_memberships = BTreeMap::from([(
+            aircraft.selection.definition_hash.clone(),
+            product_contracts::AircraftLibraryMembership { included: false },
+        )]);
+        let (options, _) = aircraft_control_options(&aircraft, &selected_memberships);
+        assert!(options.iter().any(|option| option.selected));
+    }
+
+    #[test]
     fn selected_missing_forecast_visibly_falls_back_to_no_wind_model() {
         let aaa = LatLon { lat: 0.0, lon: 0.0 };
         let bbb = LatLon { lat: 0.0, lon: 1.5 };
@@ -6417,6 +6478,7 @@ mod tests {
         let state = flight_plan_ui_projection(
             &store,
             &test_aircraft_definitions(),
+            &BTreeMap::new(),
             plan.clone(),
             crate::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
@@ -6465,6 +6527,7 @@ mod tests {
         let state = flight_plan_ui_projection(
             &store,
             &test_aircraft_definitions(),
+            &BTreeMap::new(),
             plan.clone(),
             crate::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
@@ -6532,6 +6595,7 @@ mod tests {
         let state = flight_plan_ui_projection(
             &store,
             &test_aircraft_definitions(),
+            &BTreeMap::new(),
             plan.clone(),
             crate::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
@@ -7646,6 +7710,7 @@ mod tests {
         let ui_state = flight_plan_ui_projection(
             &store,
             &test_aircraft_definitions(),
+            &BTreeMap::new(),
             mutation.clone(),
             crate::project_ui_state(&mutation),
             crate::FlightDataComputer::default(),

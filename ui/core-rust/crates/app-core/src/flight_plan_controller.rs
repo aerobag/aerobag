@@ -177,7 +177,7 @@ pub(crate) struct FlightPlanProjectionInputs {
     pub now_epoch_ms: i64,
     pub nav_data_generation: u64,
     pub weather_revision: u64,
-    pub aircraft_definitions_digest: [u8; 32],
+    pub aircraft_library_digest: [u8; 32],
     pub local_time_zone: chrono_tz::Tz,
     pub time_display_mode: crate::TimeDisplayMode,
     pub ete_scope: crate::FlightPlanEteScope,
@@ -661,6 +661,10 @@ impl FlightPlanController {
         &mut self,
         store: Option<&NavKvStore>,
         private_aircraft_definitions: &BTreeMap<String, product_contracts::AircraftDefinition>,
+        aircraft_library_memberships: &BTreeMap<
+            String,
+            product_contracts::AircraftLibraryMembership,
+        >,
         inputs: FlightPlanProjectionInputs,
         atmosphere: crate::had_ops::PlannerAtmosphereSelection<'_>,
     ) -> Result<FlightPlanProjectionResult, HadReadError> {
@@ -704,6 +708,7 @@ impl FlightPlanController {
                     let projection = crate::had_ops::flight_plan_ui_projection(
                         store,
                         private_aircraft_definitions,
+                        aircraft_library_memberships,
                         plan.clone(),
                         ui_state,
                         computer,
@@ -1146,7 +1151,7 @@ mod tests {
             ownship_altitude_ft: None,
             now_epoch_ms: 0,
             nav_data_generation: 0,
-            aircraft_definitions_digest: [0; 32],
+            aircraft_library_digest: [0; 32],
             weather_revision: 0,
             local_time_zone: chrono_tz::UTC,
             time_display_mode: crate::TimeDisplayMode::Local,
@@ -1198,7 +1203,13 @@ mod tests {
             FlightPlanController::new(direct_to_plan(), Vec::new()).expect("controller");
 
         let unavailable = controller
-            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                inputs(),
+                atmosphere(),
+            )
             .expect("projection without ownship")
             .projection;
         let (row, action) = direct_to_action(&unavailable);
@@ -1221,7 +1232,13 @@ mod tests {
             lon: -122.3,
         });
         let available = controller
-            .project(None, &BTreeMap::new(), positioned_inputs, atmosphere())
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                positioned_inputs,
+                atmosphere(),
+            )
             .expect("projection with ownship")
             .projection;
         let (_, action) = direct_to_action(&available);
@@ -1234,22 +1251,40 @@ mod tests {
         let mut controller = FlightPlanController::new(plan(), Vec::new()).expect("controller");
         assert!(
             controller
-                .project(None, &BTreeMap::new(), inputs(), atmosphere())
+                .project(
+                    None,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    inputs(),
+                    atmosphere()
+                )
                 .expect("projection")
                 .rebuilt
         );
         assert!(
             !controller
-                .project(None, &BTreeMap::new(), inputs(), atmosphere())
+                .project(
+                    None,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    inputs(),
+                    atmosphere()
+                )
                 .expect("projection")
                 .rebuilt
         );
 
         let mut definitions_changed = inputs();
-        definitions_changed.aircraft_definitions_digest = [1; 32];
+        definitions_changed.aircraft_library_digest = [1; 32];
         assert!(
             controller
-                .project(None, &BTreeMap::new(), definitions_changed, atmosphere(),)
+                .project(
+                    None,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    definitions_changed,
+                    atmosphere(),
+                )
                 .expect("aircraft definition invalidation")
                 .rebuilt
         );
@@ -1262,7 +1297,13 @@ mod tests {
         }]);
         assert!(
             controller
-                .project(None, &BTreeMap::new(), inputs(), atmosphere())
+                .project(
+                    None,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    inputs(),
+                    atmosphere()
+                )
                 .expect("projection")
                 .rebuilt
         );
@@ -1403,7 +1444,13 @@ mod tests {
     fn projected_history_controls_track_cursor_availability() {
         let mut controller = FlightPlanController::new(plan(), Vec::new()).expect("controller");
         let initial = controller
-            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                inputs(),
+                atmosphere(),
+            )
             .expect("initial projection")
             .projection
             .ui_state
@@ -1419,7 +1466,13 @@ mod tests {
             .apply_definition_edit(edited)
             .expect("definition edit");
         let edited = controller
-            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                inputs(),
+                atmosphere(),
+            )
             .expect("edited projection")
             .projection
             .ui_state
@@ -1429,7 +1482,13 @@ mod tests {
 
         controller.undo_definition_edit().expect("undo");
         let undone = controller
-            .project(None, &BTreeMap::new(), inputs(), atmosphere())
+            .project(
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                inputs(),
+                atmosphere(),
+            )
             .expect("undone projection")
             .projection
             .ui_state

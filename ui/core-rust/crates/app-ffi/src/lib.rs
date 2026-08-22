@@ -308,6 +308,22 @@ pub fn perform_settings_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn perform_aircraft_library_action_in_session_json(
+    handle: u64,
+    action_id: &str,
+    source_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let outcome = app_core::perform_aircraft_library_action_in_session(
+        handle as u32,
+        action_id,
+        Some(source_json),
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn perform_cloud_ui_action_in_session_json(
     handle: u64,
     action_id_json: &str,
@@ -3527,6 +3543,28 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performSetting
     let result = (|| {
         let action_json = get_java_string(&mut env, action_json)?;
         perform_settings_action_in_session_json(handle as u64, &action_json, now_epoch_ms)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performAircraftLibraryActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_id: JString,
+    source_json: JString,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let action_id = get_java_string(&mut env, action_id)?;
+        let source_json = get_java_string(&mut env, source_json)?;
+        perform_aircraft_library_action_in_session_json(
+            handle as u64,
+            &action_id,
+            &source_json,
+            now_epoch_ms,
+        )
     })();
     return_string(&mut env, result)
 }

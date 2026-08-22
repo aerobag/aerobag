@@ -256,6 +256,12 @@ data class AltitudePlannerControlOptionUiView(
     val label: String,
     val actionUid: String,
     val selected: Boolean,
+    val trailingSymbol: AircraftSymbolUiView?,
+)
+
+data class AircraftSymbolUiView(
+    val pathData: String,
+    val rotationDegrees: Float,
 )
 
 data class AltitudePlannerUnavailableReason(

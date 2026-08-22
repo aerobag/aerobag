@@ -2024,6 +2024,14 @@ internal fun MenuDock(
                                         accentColor = option.accentColor,
                                         toggleState = option.toggleState,
                                         iconResId = option.iconResId,
+                                        trailingContent = option.aircraftSymbol?.let { symbol ->
+                                            {
+                                                AircraftPlanViewIcon(
+                                                    symbol = symbol,
+                                                    modifier = Modifier.size(ThumbSize * 0.72f),
+                                                )
+                                            }
+                                        },
                                         accessoryContentDescription = option.accessoryContentDescription,
                                         accessoryIconResId = option.accessoryIconResId,
                                         accessoryTestTag = option.accessoryTestTag,

@@ -1251,6 +1251,13 @@ data class WireAltitudePlannerControlOptionUiView(
     val label: String,
     val action_uid: String,
     val selected: Boolean,
+    val trailing_symbol: WireAircraftSymbolUiView? = null,
+)
+
+@Serializable
+data class WireAircraftSymbolUiView(
+    val path_data: String,
+    val rotation_degrees: Int,
 )
 
 @Serializable

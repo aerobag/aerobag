@@ -76,6 +76,7 @@ import {
   vorOuterHexPath,
   weatherCameraSymbol,
 } from "./generated/navSymbols";
+import type { UiAircraftSymbol } from "./generated/sessionPageWire";
 import {
   loadBestAvailableAdapter,
   resolveLiveFeedResourceUrl,
@@ -880,6 +881,7 @@ type TrayOption =
     id: string;
     label: string;
     iconSrc?: string;
+    aircraftSymbol?: UiAircraftSymbol | null;
     toggleState?: UiMapLayerToggleState;
     active?: boolean;
     disabled?: boolean;
@@ -4355,6 +4357,14 @@ function OperationalApp() {
               );
               applySessionSnapshot(nextSnapshot, "settings_action");
             });
+          }}
+          onAircraftLibraryAction={(actionId, sourceJson) => {
+            if (!uiSession) return;
+            void uiSession
+              .performAircraftLibraryAction(actionId, sourceJson)
+              .then((nextSnapshot) => {
+                applySessionSnapshot(nextSnapshot, "aircraft_library_action");
+              });
           }}
         />
       </PageLayer>
@@ -8943,6 +8953,7 @@ function AltitudePlannerPage(props: {
                     id: option.action_uid,
                     label: option.label,
                     active: option.selected,
+                    aircraftSymbol: option.trailing_symbol,
                     onSelect: () => performAction(option.action_uid),
                   }))}
                 />
@@ -10763,7 +10774,7 @@ function TrayDock(props: {
                     <button
                       key={option.id}
                       type="button"
-                      className={`trayButton${option.active ? " isActive" : ""}${optionDisabled ? " isDisabled" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
+                      className={`trayButton${option.active ? " isActive" : ""}${optionDisabled ? " isDisabled" : ""}${option.iconSrc || option.aircraftSymbol ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
                       data-testid={`tray-option-${option.id}`}
                       disabled={optionDisabled && !optionDisabledReason}
                       aria-disabled={optionDisabled ? "true" : undefined}
@@ -10785,7 +10796,7 @@ function TrayDock(props: {
                         }
                       }}
                     >
-                      {option.iconSrc || option.toggleState ? (
+                      {option.iconSrc || option.aircraftSymbol || option.toggleState ? (
                         <span className="trayButtonContent">
                           {option.iconSrc ? (
                             <span className="trayButtonIconFrame" aria-hidden="true">
@@ -10793,6 +10804,9 @@ function TrayDock(props: {
                             </span>
                           ) : null}
                           <span className="trayButtonText">{option.label}</span>
+                          {option.aircraftSymbol ? (
+                            <AircraftSymbolIcon symbol={option.aircraftSymbol} />
+                          ) : null}
                           {option.toggleState ? (
                             <span
                               className={`trayButtonToggle${option.toggleState.visible ? " isOn" : ""}${option.toggleState.enabled ? "" : " isDisabled"}`}
@@ -12875,6 +12889,7 @@ function SettingsPage(props: {
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onSettingsAction: (actionId: string, valueId: string) => void;
+  onAircraftLibraryAction: (actionId: string, sourceJson?: string) => void;
 }) {
   const { toast: settingsHelpToast, show: showSettingsHelp } = useDisabledActionToast();
   return (
@@ -12902,6 +12917,13 @@ function SettingsPage(props: {
               onHelp={showSettingsHelp}
             />
           ))}
+          {props.state.aircraft_library ? (
+            <SettingsAircraftLibrary
+              state={props.state.aircraft_library}
+              onAction={props.onAircraftLibraryAction}
+              onDisabledAction={showSettingsHelp}
+            />
+          ) : null}
           {props.state.sections.map((section) => (
             <SettingsPageSectionView
               key={section.id}
@@ -12916,6 +12938,118 @@ function SettingsPage(props: {
         <div className="mapSelectionToast" role="status" aria-live="polite">
           {settingsHelpToast.message}
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+type AircraftLibraryState = NonNullable<UiSessionSnapshot["settings_page_state"]["aircraft_library"]>;
+
+function SettingsAircraftLibrary(props: {
+  state: AircraftLibraryState;
+  onAction: (actionId: string, sourceJson?: string) => void;
+  onDisabledAction: (message: string) => void;
+}) {
+  const [sourceJson, setSourceJson] = useState(props.state.editor?.source_json ?? "");
+  useEffect(() => {
+    setSourceJson(props.state.editor?.source_json ?? "");
+  }, [props.state.editor?.source_json]);
+
+  const invoke = (action: AircraftLibraryState["add_action"], source?: string) => {
+    const reason = disabledReasonText(action.disabled_reason);
+    if (!action.enabled) {
+      if (reason) props.onDisabledAction(reason);
+      return;
+    }
+    props.onAction(action.action_id, source);
+  };
+
+  return (
+    <section
+      className="settingsAircraftLibrary"
+      aria-label={props.state.title}
+      data-testid="settings-aircraft-library"
+    >
+      <div className="settingsAircraftLibraryHeader">
+        <div>
+          <h2>{props.state.title}</h2>
+          <p>{props.state.summary}</p>
+        </div>
+        {!props.state.editor ? (
+          <button
+            type="button"
+            data-testid="settings-aircraft-add"
+            onClick={() => invoke(props.state.add_action)}
+          >
+            {props.state.add_action.label}
+          </button>
+        ) : null}
+      </div>
+      <div className="settingsAircraftGrid">
+        {props.state.entries.map((entry) => (
+          <article
+            className={`settingsAircraftEntry${entry.included ? "" : " isHidden"}`}
+            key={entry.definition_hash}
+            data-testid={`settings-aircraft-entry-${entry.source_label.toLowerCase()}`}
+          >
+            <div className="settingsAircraftIdentity">
+              <span>
+                <strong>{entry.label}</strong>
+                <small>{entry.source_label}</small>
+              </span>
+              <AircraftSymbolIcon symbol={entry.symbol} />
+            </div>
+            <div className="settingsAircraftActions">
+              <button
+                type="button"
+                data-testid={`settings-aircraft-toggle-${entry.source_label.toLowerCase()}`}
+                onClick={() => invoke(entry.toggle_action)}
+              >
+                {entry.toggle_action.label}
+              </button>
+              {entry.edit_action ? (
+                <button type="button" onClick={() => invoke(entry.edit_action!)}>
+                  {entry.edit_action.label}
+                </button>
+              ) : null}
+            </div>
+          </article>
+        ))}
+      </div>
+      {props.state.editor ? (
+        <section className="settingsAircraftEditor">
+          <h3>{props.state.editor.title}</h3>
+          <label>
+            <span>{props.state.editor.field_label}</span>
+            <textarea
+              data-testid="settings-aircraft-source"
+              spellCheck={false}
+              value={sourceJson}
+              onChange={(event) => setSourceJson(event.currentTarget.value)}
+            />
+          </label>
+          {props.state.editor.validation_error ? (
+            <p className="settingsAircraftError" role="alert">
+              {props.state.editor.validation_error}
+            </p>
+          ) : null}
+          <div className="settingsAircraftEditorActions">
+            <button
+              type="button"
+              data-testid="settings-aircraft-save"
+              onClick={() => invoke(props.state.editor!.save_action, sourceJson)}
+            >
+              {props.state.editor.save_action.label}
+            </button>
+            <button
+              type="button"
+              data-testid="settings-aircraft-cancel"
+              onClick={() => invoke(props.state.editor!.cancel_action)}
+            >
+              {props.state.editor.cancel_action.label}
+            </button>
+          </div>
+        </section>
       ) : null}
     </section>
   );
@@ -13621,6 +13755,16 @@ function AircraftPlanViewPath(props: { pathData: string }) {
       />
       <path d={props.pathData} fill="#e6e6e6" />
     </>
+  );
+}
+
+function AircraftSymbolIcon(props: { symbol: UiAircraftSymbol }) {
+  return (
+    <svg className="aircraftSymbolIcon" viewBox="-55 -55 110 110" aria-hidden="true">
+      <g transform={`rotate(${props.symbol.rotation_degrees})`}>
+        <AircraftPlanViewPath pathData={props.symbol.path_data} />
+      </g>
+    </svg>
   );
 }
 

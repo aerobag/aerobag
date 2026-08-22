@@ -85,20 +85,21 @@ fn build_nav_kv_aircraft_pairs() -> anyhow::Result<(Vec<NavKvPair>, Vec<String>)
             "bundled default aircraft does not match the immutable default selection contract"
         );
     }
-    let default_definition_key =
-        product_contracts::aircraft_definition_key(default_hash).map_err(anyhow::Error::msg)?;
-
     let mut pairs = Vec::new();
+    let mut prefetch_keys = Vec::new();
     for (hash, definition) in definitions {
+        let key = product_contracts::aircraft_definition_key(&hash).map_err(anyhow::Error::msg)?;
+        prefetch_keys.push(key.clone());
         pairs.push(json_pair(
-            product_contracts::aircraft_definition_key(&hash).map_err(anyhow::Error::msg)?,
+            key,
             &serde_json::to_value(&definition)?,
             "aircraft definition",
         )?);
     }
-    // The default C172 is required before the first flight plan exists, because
-    // it also supplies the initial ownship silhouette.
-    Ok((pairs, vec![default_definition_key]))
+    // The settings library is a startup projection. Bundled definitions are a
+    // small catalog, so prefetch it whole rather than page-faulting as the user
+    // opens Settings.
+    Ok((pairs, prefetch_keys))
 }
 
 pub(super) fn round_nav_coordinate(value: f64) -> f64 {
@@ -6579,10 +6580,14 @@ mod tests {
         assert!(prefetch_keys.contains(
             &product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()
         ));
+        assert_eq!(prefetch_keys.len(), BUNDLED_AIRCRAFT_DEFINITIONS.len());
         assert_eq!(
             prefetch_keys,
-            vec![product_contracts::aircraft_definition_key(&default.definition_hash).unwrap()],
-            "startup prefetch must explicitly retain the default C172 definition",
+            pairs
+                .iter()
+                .map(|pair| pair.key.clone())
+                .collect::<Vec<_>>(),
+            "the startup Settings projection needs the complete bundled aircraft catalog",
         );
     }
 

@@ -249,6 +249,10 @@ export type AltitudePlannerControlOptionUiView = {
   label: string;
   action_uid: string;
   selected: boolean;
+  trailing_symbol?: {
+    path_data: string;
+    rotation_degrees: number;
+  } | null;
 };
 
 export type AltitudePlannerDepartureEditorUiView = {

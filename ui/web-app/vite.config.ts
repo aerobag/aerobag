@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import fs from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
@@ -256,8 +257,59 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
   };
 }
 
+const generatedWasmPath = path.join(generatedRoot, "app_wasm_bg.wasm");
+const generatedWasmRequestPath = `/@fs${generatedWasmPath}`;
+
+function serveGeneratedWasm(
+  req: IncomingMessage,
+  res: ServerResponse,
+  next: () => void,
+) {
+  const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+  if (requestPath !== generatedWasmRequestPath) {
+    next();
+    return;
+  }
+  const fileStat = fs.existsSync(generatedWasmPath) ? fs.statSync(generatedWasmPath) : null;
+  if (!fileStat?.isFile()) {
+    next();
+    return;
+  }
+
+  const etag = `W/"${fileStat.size.toString(16)}-${Math.trunc(fileStat.mtimeMs).toString(16)}"`;
+  res.setHeader("Content-Type", "application/wasm");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("ETag", etag);
+  res.setHeader("Vary", "Accept-Encoding");
+  if (req.headers["if-none-match"] === etag) {
+    res.statusCode = 304;
+    res.end();
+    return;
+  }
+
+  const supportsGzip = /\bgzip\b/.test(req.headers["accept-encoding"] ?? "");
+  if (supportsGzip) {
+    res.setHeader("Content-Encoding", "gzip");
+  } else {
+    res.setHeader("Content-Length", String(fileStat.size));
+  }
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+
+  const stream = fs.createReadStream(generatedWasmPath);
+  if (supportsGzip) {
+    stream.pipe(zlib.createGzip()).pipe(res);
+  } else {
+    stream.pipe(res);
+  }
+}
+
 function aerobagStaticPlugin(): Plugin {
   function installMiddlewares(server: { middlewares: { use: (...args: unknown[]) => void } }) {
+    // Vite otherwise serves this 20+ MiB development artifact uncompressed.
+    server.middlewares.use(serveGeneratedWasm);
     server.middlewares.use("/__debug_log", (req, res, next) => {
       if (req.method !== "POST") {
         next();

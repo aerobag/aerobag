@@ -58,6 +58,7 @@ pub(crate) struct CloudDomainUpdates {
     pub inactivity_sleep_timeout: Option<InactivitySleepTimeout>,
     pub nexrad_acquisition: Option<crate::NexradAcquisitionPreferences>,
     pub debug_flags: Vec<(DebugFlagId, bool)>,
+    pub aircraft_library_changed: bool,
 }
 
 pub(crate) struct CloudController {
@@ -132,11 +133,10 @@ impl CloudController {
         self.engine().aircraft_definitions()
     }
 
-    pub fn aircraft_definitions_digest(&self) -> AppResult<[u8; 32]> {
-        self.engine().aircraft_definitions_digest()
+    pub fn aircraft_library_digest(&self) -> AppResult<[u8; 32]> {
+        self.engine().aircraft_library_digest()
     }
 
-    #[cfg(test)]
     pub fn record_local_aircraft_definition(
         &mut self,
         definition: &product_contracts::AircraftDefinition,
@@ -144,6 +144,29 @@ impl CloudController {
         let changed = self
             .engine_mut()
             .record_local_aircraft_definition(definition)?;
+        if changed {
+            self.note_change();
+        }
+        Ok(changed)
+    }
+
+    pub fn aircraft_library_memberships(
+        &self,
+    ) -> AppResult<BTreeMap<String, product_contracts::AircraftLibraryMembership>> {
+        self.engine().aircraft_library_memberships()
+    }
+
+    pub fn record_local_aircraft_library_membership(
+        &mut self,
+        definition_hash: &str,
+        membership: product_contracts::AircraftLibraryMembership,
+        now_epoch_ms: i64,
+    ) -> AppResult<bool> {
+        let changed = self.engine_mut().record_local_aircraft_library_membership(
+            definition_hash,
+            membership,
+            now_epoch_ms,
+        )?;
         if changed {
             self.note_change();
         }
@@ -346,6 +369,7 @@ impl CloudController {
                 .transpose()?
                 .flatten(),
             debug_flags: completion.debug_flags()?,
+            aircraft_library_changed: completion.aircraft_library_changed(),
         })
     }
 

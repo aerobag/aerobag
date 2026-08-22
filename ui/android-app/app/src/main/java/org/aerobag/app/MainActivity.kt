@@ -1154,6 +1154,7 @@ internal data class MenuDockOption(
     val accentColor: Color? = null,
     val toggleState: UiMapLayerToggleState? = null,
     @DrawableRes val iconResId: Int? = null,
+    val aircraftSymbol: org.aerobag.app.domain.AircraftSymbolUiView? = null,
     val accessoryContentDescription: String? = null,
     @DrawableRes val accessoryIconResId: Int? = null,
     val accessoryTestTag: String? = null,
@@ -3696,6 +3697,11 @@ internal fun AerobagApp(
                         onSettingsAction = { actionId, valueId ->
                             applySessionCommand("performSettingsAction") {
                                 uiSession.performSettingsAction(actionId, valueId)
+                            }
+                        },
+                        onAircraftLibraryAction = { actionId, sourceJson ->
+                            applySessionCommand("performAircraftLibraryAction") {
+                                uiSession.performAircraftLibraryAction(actionId, sourceJson)
                             }
                         },
                     )

@@ -461,6 +461,13 @@ impl CloudCompletion {
             .contains_key(NEXRAD_ACQUISITION_RECORD_KEY)
     }
 
+    pub(crate) fn aircraft_library_changed(&self) -> bool {
+        self.changed_records.keys().any(|key| {
+            key.starts_with(product_contracts::AIRCRAFT_DEFINITION_KEY_PREFIX)
+                || key.starts_with(AIRCRAFT_LIBRARY_RECORD_PREFIX)
+        })
+    }
+
     pub(crate) fn debug_flags(&self) -> AppResult<Vec<(DebugFlagId, bool)>> {
         self.changed_records
             .iter()
@@ -929,31 +936,36 @@ impl CloudEngine {
             .collect()
     }
 
-    pub fn aircraft_definitions_digest(&self) -> AppResult<[u8; 32]> {
+    pub fn aircraft_library_digest(&self) -> AppResult<[u8; 32]> {
         let mut digest = Sha256::new();
         for (hash, definition) in self.aircraft_definitions()? {
             digest.update(hash.as_bytes());
             digest.update(definition.content_hash().map_err(cloud_error)?);
         }
+        for (hash, membership) in self.aircraft_library_memberships()? {
+            digest.update(hash.as_bytes());
+            digest.update([u8::from(membership.included)]);
+        }
         Ok(digest.finalize().into())
     }
 
-    #[cfg(test)]
-    pub fn aircraft_library_definition_hashes(&self) -> AppResult<BTreeSet<String>> {
-        let mut hashes = BTreeSet::new();
+    pub fn aircraft_library_memberships(
+        &self,
+    ) -> AppResult<BTreeMap<String, product_contracts::AircraftLibraryMembership>> {
+        let mut memberships = BTreeMap::new();
         for (key, record) in &self.persistent.records.cached {
             let Some(hash) = key.strip_prefix(AIRCRAFT_LIBRARY_RECORD_PREFIX) else {
                 continue;
             };
             product_contracts::validate_aircraft_definition_hash(hash).map_err(cloud_error)?;
-            if aircraft_library_membership_from_record(record)?.included {
-                hashes.insert(hash.to_string());
-            }
+            memberships.insert(
+                hash.to_string(),
+                aircraft_library_membership_from_record(record)?,
+            );
         }
-        Ok(hashes)
+        Ok(memberships)
     }
 
-    #[cfg(test)]
     pub fn record_local_aircraft_definition(
         &mut self,
         definition: &product_contracts::AircraftDefinition,
@@ -972,17 +984,15 @@ impl CloudEngine {
         Ok(true)
     }
 
-    #[cfg(test)]
     pub fn record_local_aircraft_library_membership(
         &mut self,
         definition_hash: &str,
-        included: bool,
+        membership: product_contracts::AircraftLibraryMembership,
         now_epoch_ms: i64,
     ) -> AppResult<bool> {
         product_contracts::validate_aircraft_definition_hash(definition_hash)
             .map_err(cloud_error)?;
         let key = format!("{AIRCRAFT_LIBRARY_RECORD_PREFIX}{definition_hash}");
-        let membership = product_contracts::AircraftLibraryMembership { included };
         let existing = self
             .persistent
             .records
@@ -3382,7 +3392,11 @@ mod tests {
             .unwrap();
         first.record_local_aircraft_definition(&definition).unwrap();
         first
-            .record_local_aircraft_library_membership(&hash, true, 103)
+            .record_local_aircraft_library_membership(
+                &hash,
+                product_contracts::AircraftLibraryMembership { included: true },
+                103,
+            )
             .unwrap();
         assert!(pump_acs(&mut first, &mut provider, 110).is_empty());
 
@@ -3407,8 +3421,32 @@ mod tests {
             Some(&definition)
         );
         assert_eq!(
-            second.aircraft_library_definition_hashes().unwrap(),
-            BTreeSet::from([hash])
+            second.aircraft_library_memberships().unwrap(),
+            BTreeMap::from([(
+                hash.clone(),
+                product_contracts::AircraftLibraryMembership { included: true },
+            )])
+        );
+
+        second
+            .record_local_aircraft_library_membership(
+                &hash,
+                product_contracts::AircraftLibraryMembership { included: false },
+                130,
+            )
+            .unwrap();
+        assert!(pump_acs(&mut second, &mut provider, 140).is_empty());
+        first
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        assert!(pump_acs(&mut first, &mut provider, 150).is_empty());
+        assert_eq!(
+            first.aircraft_library_memberships().unwrap().get(&hash),
+            Some(&product_contracts::AircraftLibraryMembership { included: false })
+        );
+        assert_eq!(
+            first.aircraft_definitions().unwrap().get(&hash),
+            Some(&definition)
         );
     }
 

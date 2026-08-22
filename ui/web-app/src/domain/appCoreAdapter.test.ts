@@ -190,6 +190,7 @@ describe("loadBestAvailableAdapter", () => {
       set_map_layer_visibility_in_session_paged: async () => mutationOutcomeJson(),
       set_map_layer_enabled_in_session_paged: async () => mutationOutcomeJson(),
       perform_settings_action_in_session: async () => mutationOutcomeJson(),
+      perform_aircraft_library_action_in_session: async () => mutationOutcomeJson(),
       accept_disclaimer_in_session: async () => mutationOutcomeJson(),
       set_resource_policy_in_session: async () => {
         startupCalls.push("set-resource-policy");

@@ -303,6 +303,164 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "UiAircraftLibraryAction": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "label",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "UiAircraftLibraryEditor": {
+      "additionalProperties": false,
+      "properties": {
+        "cancel_action": {
+          "$ref": "#/$defs/UiAircraftLibraryAction"
+        },
+        "field_label": {
+          "type": "string"
+        },
+        "save_action": {
+          "$ref": "#/$defs/UiAircraftLibraryAction"
+        },
+        "source_json": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "validation_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "title",
+        "field_label",
+        "source_json",
+        "save_action",
+        "cancel_action"
+      ],
+      "type": "object"
+    },
+    "UiAircraftLibraryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "definition_hash": {
+          "type": "string"
+        },
+        "edit_action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiAircraftLibraryAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "included": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "source_label": {
+          "type": "string"
+        },
+        "symbol": {
+          "$ref": "#/$defs/UiAircraftSymbol"
+        },
+        "toggle_action": {
+          "$ref": "#/$defs/UiAircraftLibraryAction"
+        }
+      },
+      "required": [
+        "definition_hash",
+        "label",
+        "source_label",
+        "included",
+        "symbol",
+        "toggle_action"
+      ],
+      "type": "object"
+    },
+    "UiAircraftLibraryState": {
+      "additionalProperties": false,
+      "properties": {
+        "add_action": {
+          "$ref": "#/$defs/UiAircraftLibraryAction"
+        },
+        "editor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiAircraftLibraryEditor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/UiAircraftLibraryEntry"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "summary",
+        "entries",
+        "add_action"
+      ],
+      "type": "object"
+    },
+    "UiAircraftSymbol": {
+      "additionalProperties": false,
+      "properties": {
+        "path_data": {
+          "type": "string"
+        },
+        "rotation_degrees": {
+          "format": "int16",
+          "maximum": 32767,
+          "minimum": -32768,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path_data",
+        "rotation_degrees"
+      ],
+      "type": "object"
+    },
     "UiChartPageState": {
       "additionalProperties": false,
       "properties": {
@@ -931,6 +1089,16 @@
     "UiSettingsPageState": {
       "additionalProperties": false,
       "properties": {
+        "aircraft_library": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiAircraftLibraryState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "rows": {
           "items": {
             "$ref": "#/$defs/UiSettingsPageRow"
@@ -1164,7 +1332,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 7,
+  "x-contract-version": 8,
   "x-export-order": [
     "UiNavigationPageId",
     "UiNavigationPageOption",
@@ -1198,6 +1366,11 @@
     "UiDebugState",
     "UiSettingsSliderStop",
     "UiSettingsGridItem",
+    "UiAircraftSymbol",
+    "UiAircraftLibraryAction",
+    "UiAircraftLibraryEntry",
+    "UiAircraftLibraryEditor",
+    "UiAircraftLibraryState",
     "UiSettingsPageRow",
     "UiSettingsPageSection",
     "UiSettingsPageState",

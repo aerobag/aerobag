@@ -405,6 +405,13 @@ interface NativeBridge {
         nowEpochMs: Long,
     ): String
 
+    fun performAircraftLibraryActionInSessionJson(
+        handle: Long,
+        actionId: String,
+        sourceJson: String,
+        nowEpochMs: Long,
+    ): String
+
     fun performCloudUiActionInSessionJson(
         handle: Long,
         actionIdJson: String,
@@ -1040,6 +1047,13 @@ object NativeBindings : NativeBridge {
     external override fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    external override fun performAircraftLibraryActionInSessionJson(
+        handle: Long,
+        actionId: String,
+        sourceJson: String,
         nowEpochMs: Long,
     ): String
 

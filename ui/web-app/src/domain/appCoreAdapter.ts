@@ -884,6 +884,7 @@ export interface UiSession {
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
+  performAircraftLibraryAction(actionId: string, sourceJson?: string): Promise<UiSessionSnapshot>;
   performCloudUiAction(actionId: CloudUiActionId, fields: CloudUiFieldValue[], nowEpochMs: number): Promise<UiSessionSnapshot>;
   recordOfflinePackagePreferences(preferencesJson: string, nowEpochMs: number): Promise<UiSessionSnapshot>;
   takeCloudProviderRequest(nowEpochMs: number): Promise<CloudHttpRequest | null>;
@@ -1018,6 +1019,7 @@ type WasmModule = {
   set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_settings_action_in_session(handle: number, actionJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_aircraft_library_action_in_session(handle: number, actionId: string, sourceJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   record_offline_package_preferences_in_session(handle: number, preferencesJson: string, nowEpochMs: bigint): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
@@ -1892,6 +1894,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      performAircraftLibraryAction: async (actionId, sourceJson = "") => {
+        snapshot = await runSessionMutation(() =>
+          this.module.perform_aircraft_library_action_in_session(
+            handle,
+            actionId,
+            sourceJson,
+            BigInt(Date.now()),
+          ),
+        );
+        return snapshot;
+      },
       performCloudUiAction: async (actionId, fields, nowEpochMs) => {
         snapshot = await runSessionMutation(() =>
           this.module.perform_cloud_ui_action_in_session(
@@ -2423,6 +2436,7 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_visibility_in_session_paged",
     "set_map_layer_enabled_in_session_paged",
     "perform_settings_action_in_session",
+    "perform_aircraft_library_action_in_session",
     "perform_cloud_ui_action_in_session",
     "record_offline_package_preferences_in_session",
     "take_cloud_provider_request_in_session",

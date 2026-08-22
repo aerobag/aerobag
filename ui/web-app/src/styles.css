@@ -3839,6 +3839,149 @@ button {
   font-weight: 900;
 }
 
+.settingsAircraftLibrary {
+  display: grid;
+  gap: calc(var(--thumb) * 0.18);
+  padding: calc(var(--thumb) * 0.24);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  background: color-mix(in srgb, white 90%, var(--theme-button-unchecked) 10%);
+  color: #101820;
+}
+
+.settingsAircraftLibraryHeader,
+.settingsAircraftIdentity,
+.settingsAircraftActions,
+.settingsAircraftEditorActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.12);
+}
+
+.settingsAircraftLibrary h2,
+.settingsAircraftLibrary h3,
+.settingsAircraftLibrary p {
+  margin: 0;
+}
+
+.settingsAircraftLibrary h2,
+.settingsAircraftLibrary h3 {
+  font-size: calc(var(--thumb) * 0.25);
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.settingsAircraftLibraryHeader p {
+  margin-top: calc(var(--thumb) * 0.04);
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 700;
+}
+
+.settingsAircraftLibrary button {
+  min-height: calc(var(--thumb) * 0.56);
+  padding: 0 calc(var(--thumb) * 0.18);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.6);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settingsAircraftGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 4.2), 1fr));
+  gap: calc(var(--thumb) * 0.1);
+}
+
+.settingsAircraftEntry {
+  position: relative;
+  display: grid;
+  gap: calc(var(--thumb) * 0.08);
+  overflow: hidden;
+  padding: calc(var(--thumb) * 0.14);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.5);
+  background: white;
+}
+
+.settingsAircraftEntry.isHidden::after {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, transparent 60%, var(--theme-button-disabled) 40%);
+  content: "";
+  pointer-events: none;
+}
+
+.settingsAircraftIdentity span {
+  display: grid;
+  min-width: 0;
+}
+
+.settingsAircraftIdentity strong {
+  font-size: calc(var(--thumb) * 0.22);
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.settingsAircraftIdentity small {
+  font-size: calc(var(--thumb) * 0.15);
+  font-weight: 900;
+}
+
+.aircraftSymbolIcon {
+  width: calc(var(--thumb) * 0.72);
+  height: calc(var(--thumb) * 0.72);
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.settingsAircraftActions {
+  position: relative;
+  z-index: 1;
+  justify-content: flex-start;
+}
+
+.settingsAircraftEditor {
+  display: grid;
+  gap: calc(var(--thumb) * 0.1);
+  padding-top: calc(var(--thumb) * 0.08);
+}
+
+.settingsAircraftEditor label,
+.settingsAircraftEditor label > span {
+  display: grid;
+  gap: calc(var(--thumb) * 0.06);
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 900;
+}
+
+.settingsAircraftEditor textarea {
+  width: 100%;
+  min-height: calc(var(--thumb) * 7);
+  resize: vertical;
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.5);
+  padding: calc(var(--thumb) * 0.14);
+  background: white;
+  color: #101820;
+  font: 700 calc(var(--thumb) * 0.18)/1.35 "JetBrains Mono", monospace;
+}
+
+.settingsAircraftError {
+  color: var(--theme-data-status-warning-stroke);
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 900;
+}
+
+.settingsAircraftEditorActions {
+  justify-content: flex-start;
+}
+
 .settingsSliderStops.isBinary button {
   min-width: 0;
 }

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const AIRCRAFT_DEFINITION_SCHEMA_VERSION: u32 = 2;
@@ -12,6 +12,11 @@ pub const AIRCRAFT_DEFINITION_KEY_PREFIX: &str = "aircraft/definition/";
 pub const DEFAULT_AIRCRAFT_DEFINITION_HASH: &str =
     "d3bb0ffe0b906f2adc10f0e1aecb97ac449f65a8b081f0502cd547a25cc9fc9b";
 pub const DEFAULT_AIRCRAFT_PROFILE_ID: &str = "normal-cruise";
+pub const MAX_AIRCRAFT_DEFINITION_JSON_BYTES: usize = 64 * 1024;
+const MAX_AIRCRAFT_TEXT_BYTES: usize = 160;
+const MAX_AIRCRAFT_SOURCE_BYTES: usize = 4 * 1024;
+const MAX_AIRCRAFT_PROFILES: usize = 16;
+const MAX_AIRCRAFT_PERFORMANCE_POINTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,10 +111,32 @@ pub struct AircraftSelection {
     pub profile_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AircraftLibraryMembership {
     pub included: bool,
+}
+
+impl<'de> Deserialize<'de> for AircraftLibraryMembership {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireMembership {
+            included: bool,
+            // Normalize the short-lived development tombstone contract to hidden.
+            #[serde(default)]
+            deleted: bool,
+        }
+
+        let wire = WireMembership::deserialize(deserializer)?;
+        let _ = wire.deleted;
+        Ok(Self {
+            included: wire.included,
+        })
+    }
 }
 
 pub fn default_aircraft_selection() -> AircraftSelection {
@@ -135,6 +162,11 @@ impl AircraftDefinition {
         require_text("default_profile_id", &self.default_profile_id)?;
         if self.profiles.is_empty() {
             return Err("aircraft definition has no performance profiles".to_string());
+        }
+        if self.profiles.len() > MAX_AIRCRAFT_PROFILES {
+            return Err(format!(
+                "aircraft definition has more than {MAX_AIRCRAFT_PROFILES} performance profiles"
+            ));
         }
 
         let mut profile_ids = BTreeSet::new();
@@ -181,7 +213,7 @@ impl AircraftPerformanceProfileDefinition {
     fn validate(&self) -> Result<(), String> {
         require_text("profile.id", &self.id)?;
         require_text("profile.label", &self.label)?;
-        require_text("profile.source", &self.source)?;
+        require_bounded_text("profile.source", &self.source, MAX_AIRCRAFT_SOURCE_BYTES)?;
         if self
             .reference_weight_lb
             .is_some_and(|weight| !weight.is_finite() || weight <= 0.0)
@@ -246,8 +278,16 @@ pub fn validate_aircraft_definition_hash(hash: &str) -> Result<(), String> {
 }
 
 fn require_text(field: &str, value: &str) -> Result<(), String> {
+    require_bounded_text(field, value, MAX_AIRCRAFT_TEXT_BYTES)
+}
+
+fn require_bounded_text(field: &str, value: &str, maximum_bytes: usize) -> Result<(), String> {
     if value.trim().is_empty() {
         Err(format!("aircraft definition {field} is empty"))
+    } else if value.len() > maximum_bytes {
+        Err(format!(
+            "aircraft definition {field} exceeds {maximum_bytes} bytes"
+        ))
     } else {
         Ok(())
     }
@@ -347,6 +387,11 @@ fn validate_cruise_points(
             "profile {profile_id} cruise table needs at least two points"
         ));
     }
+    if points.len() > MAX_AIRCRAFT_PERFORMANCE_POINTS {
+        return Err(format!(
+            "profile {profile_id} cruise table exceeds {MAX_AIRCRAFT_PERFORMANCE_POINTS} points"
+        ));
+    }
     validate_altitudes(
         profile_id,
         "cruise",
@@ -374,6 +419,11 @@ fn validate_vertical_points(
     if points.len() < 2 {
         return Err(format!(
             "profile {profile_id} {phase} table needs at least two points"
+        ));
+    }
+    if points.len() > MAX_AIRCRAFT_PERFORMANCE_POINTS {
+        return Err(format!(
+            "profile {profile_id} {phase} table exceeds {MAX_AIRCRAFT_PERFORMANCE_POINTS} points"
         ));
     }
     validate_altitudes(
@@ -553,5 +603,16 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("duplicate superseded"));
+    }
+
+    #[test]
+    fn development_tombstones_normalize_to_hidden_membership() {
+        let membership: AircraftLibraryMembership =
+            serde_json::from_str(r#"{"included":false,"deleted":true}"#).unwrap();
+        assert_eq!(membership, AircraftLibraryMembership { included: false });
+        assert_eq!(
+            serde_json::to_string(&membership).unwrap(),
+            r#"{"included":false}"#,
+        );
     }
 }

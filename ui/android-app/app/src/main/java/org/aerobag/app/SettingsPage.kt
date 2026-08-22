@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,6 +51,8 @@ import androidx.compose.ui.zIndex
 import kotlin.math.floor
 import kotlin.math.roundToInt
 import org.aerobag.app.domain.NavElementUiView
+import org.aerobag.app.domain.UiAircraftLibraryAction
+import org.aerobag.app.domain.UiAircraftLibraryState
 import org.aerobag.app.domain.UiSettingsPageRow
 import org.aerobag.app.domain.UiSettingsPageSection
 import org.aerobag.app.domain.UiSettingsPageState
@@ -70,6 +73,7 @@ internal fun SettingsPage(
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onSettingsAction: (String, String) -> Unit,
+    onAircraftLibraryAction: (String, String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Box(
@@ -115,7 +119,7 @@ internal fun SettingsPage(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (state.rows.isEmpty() && state.sections.isEmpty()) {
+            if (state.rows.isEmpty() && state.sections.isEmpty() && state.aircraftLibrary == null) {
                 Text(
                     text = state.summary.ifBlank { "No settings available." },
                     style = MaterialTheme.typography.bodyLarge.copy(
@@ -133,6 +137,14 @@ internal fun SettingsPage(
                     lazyColumnItems(state.rows, key = { it.id }) { row ->
                         SettingsPageRowView(row = row, onSettingsAction = onSettingsAction)
                     }
+                    state.aircraftLibrary?.let { library ->
+                        item(key = "aircraft-library") {
+                            SettingsAircraftLibrary(
+                                state = library,
+                                onAction = onAircraftLibraryAction,
+                            )
+                        }
+                    }
                     state.sections.forEach { section ->
                         item(key = "section:${section.id}") {
                             SettingsPageSectionView(
@@ -142,6 +154,174 @@ internal fun SettingsPage(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsAircraftLibrary(
+    state: UiAircraftLibraryState,
+    onAction: (String, String) -> Unit,
+) {
+    val context = LocalContext.current
+    val uiTheme = LocalAerobagUiTheme.current
+    var sourceJson by remember(state.editor?.sourceJson) {
+        mutableStateOf(state.editor?.sourceJson.orEmpty())
+    }
+    fun invoke(action: UiAircraftLibraryAction, source: String = "") {
+        if (action.enabled) {
+            onAction(action.actionId, source)
+        } else {
+            showDisabledActionToast(context, action.disabledReason)
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(ThumbRadius))
+            .background(uiTheme.controls.panelBg)
+            .padding(ThumbSize * 0.22f),
+        verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = state.title.uppercase(),
+                    fontSize = SettingsPageRowTitleTextSize,
+                    lineHeight = SettingsPageRowTitleTextSize * 1.08f,
+                    fontWeight = FontWeight.Black,
+                    color = uiTheme.controls.panelFg,
+                )
+                Text(
+                    text = state.summary,
+                    fontSize = SettingsPageStopTextSize,
+                    lineHeight = SettingsPageStopTextSize * 1.15f,
+                    fontWeight = FontWeight.Bold,
+                    color = uiTheme.controls.panelFg,
+                )
+            }
+            if (state.editor == null) {
+                CompactSquareButton(
+                    label = state.addAction.label,
+                    wide = true,
+                    modifier = Modifier
+                        .width(ThumbSize * 1.8f)
+                        .height(ThumbSize * 0.72f),
+                    onClick = { invoke(state.addAction) },
+                )
+            }
+        }
+        state.entries.forEach { entry ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(ThumbRadius * 0.7f))
+                    .background(uiTheme.controls.buttonUnchecked)
+                    .padding(ThumbSize * 0.12f),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = entry.label,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = SettingsPageRowTitleTextSize,
+                                fontWeight = FontWeight.Black,
+                                color = uiTheme.controls.buttonFg,
+                            )
+                            Text(
+                                text = entry.sourceLabel,
+                                fontSize = SettingsPageStopTextSize,
+                                fontWeight = FontWeight.Black,
+                                color = uiTheme.controls.buttonFg,
+                            )
+                        }
+                        AircraftPlanViewIcon(
+                            symbol = entry.symbol,
+                            modifier = Modifier.size(ThumbSize * 0.72f),
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                        CompactSquareButton(
+                            label = entry.toggleAction.label,
+                            wide = true,
+                            modifier = Modifier
+                                .width(ThumbSize * 1.4f)
+                                .height(ThumbSize * 0.66f),
+                            onClick = { invoke(entry.toggleAction) },
+                        )
+                        entry.editAction?.let { editAction ->
+                            CompactSquareButton(
+                                label = editAction.label,
+                                wide = true,
+                                modifier = Modifier
+                                    .width(ThumbSize * 1.4f)
+                                    .height(ThumbSize * 0.66f),
+                                onClick = { invoke(editAction) },
+                            )
+                        }
+                    }
+                }
+                if (!entry.included) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(uiTheme.controls.buttonDisabled.copy(alpha = 0.4f)),
+                    )
+                }
+            }
+        }
+        state.editor?.let { editor ->
+            Text(
+                text = editor.title.uppercase(),
+                fontSize = SettingsPageRowTitleTextSize,
+                fontWeight = FontWeight.Black,
+                color = uiTheme.controls.panelFg,
+            )
+            OutlinedTextField(
+                value = sourceJson,
+                onValueChange = { sourceJson = it },
+                label = { Text(editor.fieldLabel) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ThumbSize * 7f),
+                textStyle = MaterialTheme.typography.bodySmall,
+            )
+            editor.validationError?.let { error ->
+                Text(
+                    text = error,
+                    color = uiTheme.controls.dataStatusWarningStroke,
+                    fontSize = SettingsPageStopTextSize,
+                    fontWeight = FontWeight.Black,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap)) {
+                CompactSquareButton(
+                    label = editor.saveAction.label,
+                    wide = true,
+                    modifier = Modifier
+                        .width(ThumbSize * 2f)
+                        .height(ThumbSize * 0.72f),
+                    onClick = { invoke(editor.saveAction, sourceJson) },
+                )
+                CompactSquareButton(
+                    label = editor.cancelAction.label,
+                    wide = true,
+                    modifier = Modifier
+                        .width(ThumbSize * 1.6f)
+                        .height(ThumbSize * 0.72f),
+                    onClick = { invoke(editor.cancelAction) },
+                )
             }
         }
     }

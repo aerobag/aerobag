@@ -399,6 +399,7 @@ struct SettingsProjectionCache {
 #[derive(Clone, Default)]
 pub(crate) struct SettingsController {
     preferences: SettingsPreferences,
+    aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
     revision: u64,
     static_revision: u64,
     projection_cache: Option<SettingsProjectionCache>,
@@ -406,6 +407,7 @@ pub(crate) struct SettingsController {
 
 pub(crate) struct SettingsModelCheckpoint {
     preferences: SettingsPreferences,
+    aircraft_editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
     revision: u64,
     static_revision: u64,
 }
@@ -422,6 +424,7 @@ impl SettingsController {
     pub fn checkpoint_model(&self) -> SettingsModelCheckpoint {
         SettingsModelCheckpoint {
             preferences: self.preferences.clone(),
+            aircraft_editor: self.aircraft_editor.clone(),
             revision: self.revision,
             static_revision: self.static_revision,
         }
@@ -429,6 +432,7 @@ impl SettingsController {
 
     pub fn rollback_model(&mut self, checkpoint: SettingsModelCheckpoint) {
         self.preferences = checkpoint.preferences;
+        self.aircraft_editor = checkpoint.aircraft_editor;
         self.revision = checkpoint.revision;
         self.static_revision = checkpoint.static_revision;
         self.projection_cache = None;
@@ -436,6 +440,26 @@ impl SettingsController {
 
     pub fn persistent_preferences(&self) -> SettingsPreferences {
         self.preferences.clone()
+    }
+
+    pub fn aircraft_editor(&self) -> Option<&crate::aircraft_library::AircraftLibraryEditorModel> {
+        self.aircraft_editor.as_ref()
+    }
+
+    pub fn replace_aircraft_editor(
+        &mut self,
+        editor: Option<crate::aircraft_library::AircraftLibraryEditorModel>,
+    ) -> bool {
+        if self.aircraft_editor == editor {
+            return false;
+        }
+        self.aircraft_editor = editor;
+        self.note_change(true);
+        true
+    }
+
+    pub fn note_aircraft_library_change(&mut self) {
+        self.note_change(true);
     }
 
     pub fn restore_preferences(&mut self, mut preferences: SettingsPreferences) -> bool {
@@ -830,6 +854,7 @@ fn project_settings_page_state(
         },
         rows,
         sections,
+        aircraft_library: None,
     }
 }
 

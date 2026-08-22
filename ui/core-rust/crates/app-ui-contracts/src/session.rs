@@ -369,6 +369,64 @@ pub struct UiSettingsGridItem {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAircraftSymbol {
+    pub path_data: String,
+    pub rotation_degrees: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAircraftLibraryAction {
+    pub action_id: String,
+    pub label: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAircraftLibraryEntry {
+    pub definition_hash: String,
+    pub label: String,
+    pub source_label: String,
+    pub included: bool,
+    pub symbol: UiAircraftSymbol,
+    pub toggle_action: UiAircraftLibraryAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_action: Option<UiAircraftLibraryAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAircraftLibraryEditor {
+    pub title: String,
+    pub field_label: String,
+    pub source_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_error: Option<String>,
+    pub save_action: UiAircraftLibraryAction,
+    pub cancel_action: UiAircraftLibraryAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAircraftLibraryState {
+    pub title: String,
+    pub summary: String,
+    pub entries: Vec<UiAircraftLibraryEntry>,
+    pub add_action: UiAircraftLibraryAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<UiAircraftLibraryEditor>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -406,6 +464,8 @@ pub struct UiSettingsPageState {
     pub rows: Vec<UiSettingsPageRow>,
     #[serde(default)]
     pub sections: Vec<UiSettingsPageSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aircraft_library: Option<UiAircraftLibraryState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -383,7 +383,7 @@
   ],
   "title": "NexradOverlayQueryResult",
   "type": "object",
-  "x-contract-version": 7,
+  "x-contract-version": 8,
   "x-export-order": [
     "NexradOverlayStatus",
     "NexradOverlayAnimationPhase",

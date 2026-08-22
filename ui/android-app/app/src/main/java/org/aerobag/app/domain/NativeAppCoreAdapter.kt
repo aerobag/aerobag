@@ -46,6 +46,11 @@ import org.aerobag.app.generated.UiMapLayerOption as WireUiMapLayerOption
 import org.aerobag.app.generated.UiMapLayerToggleState as WireUiMapLayerToggleState
 import org.aerobag.app.generated.UiNavDbIdentity as WireUiNavDbIdentity
 import org.aerobag.app.generated.UiPlaybackPanelState as WireUiPlaybackPanelState
+import org.aerobag.app.generated.UiAircraftLibraryAction as WireUiAircraftLibraryAction
+import org.aerobag.app.generated.UiAircraftLibraryEditor as WireUiAircraftLibraryEditor
+import org.aerobag.app.generated.UiAircraftLibraryEntry as WireUiAircraftLibraryEntry
+import org.aerobag.app.generated.UiAircraftLibraryState as WireUiAircraftLibraryState
+import org.aerobag.app.generated.UiAircraftSymbol as WireUiAircraftSymbol
 import org.aerobag.app.generated.UiSettingsGridItem as WireUiSettingsGridItem
 import org.aerobag.app.generated.UiSettingsPageRow as WireUiSettingsPageRow
 import org.aerobag.app.generated.UiSettingsPageSection as WireUiSettingsPageSection
@@ -1760,6 +1765,18 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun performAircraftLibraryAction(
+        actionId: String,
+        sourceJson: String = "",
+    ): UiSessionSnapshot = runPagedSnapshot("performAircraftLibraryAction") {
+        bridge.performAircraftLibraryActionInSessionJson(
+            handle,
+            actionId,
+            sourceJson,
+            System.currentTimeMillis(),
+        )
+    }
+
     fun performCloudUiAction(
         actionId: CloudUiActionId,
         fields: List<CloudUiFieldValue>,
@@ -3046,6 +3063,41 @@ data class UiSettingsPageState(
     val summary: String,
     val rows: List<UiSettingsPageRow>,
     val sections: List<UiSettingsPageSection>,
+    val aircraftLibrary: UiAircraftLibraryState?,
+)
+
+data class UiAircraftLibraryAction(
+    val actionId: String,
+    val label: String,
+    val enabled: Boolean,
+    val disabledReason: String?,
+)
+
+data class UiAircraftLibraryEntry(
+    val definitionHash: String,
+    val label: String,
+    val sourceLabel: String,
+    val included: Boolean,
+    val symbol: AircraftSymbolUiView,
+    val toggleAction: UiAircraftLibraryAction,
+    val editAction: UiAircraftLibraryAction?,
+)
+
+data class UiAircraftLibraryEditor(
+    val title: String,
+    val fieldLabel: String,
+    val sourceJson: String,
+    val validationError: String?,
+    val saveAction: UiAircraftLibraryAction,
+    val cancelAction: UiAircraftLibraryAction,
+)
+
+data class UiAircraftLibraryState(
+    val title: String,
+    val summary: String,
+    val entries: List<UiAircraftLibraryEntry>,
+    val addAction: UiAircraftLibraryAction,
+    val editor: UiAircraftLibraryEditor?,
 )
 
 data class UiDisplayPolicy(
@@ -3278,6 +3330,46 @@ private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
     summary = summary,
     rows = rows.map { it.toUi() },
     sections = sections.map { it.toUi() },
+    aircraftLibrary = aircraftLibrary?.toUi(),
+)
+
+private fun WireUiAircraftSymbol.toUi() = AircraftSymbolUiView(
+    pathData = pathData,
+    rotationDegrees = rotationDegrees.toFloat(),
+)
+
+private fun WireUiAircraftLibraryAction.toUi() = UiAircraftLibraryAction(
+    actionId = actionId,
+    label = label,
+    enabled = enabled,
+    disabledReason = disabledReason,
+)
+
+private fun WireUiAircraftLibraryEntry.toUi() = UiAircraftLibraryEntry(
+    definitionHash = definitionHash,
+    label = label,
+    sourceLabel = sourceLabel,
+    included = included,
+    symbol = symbol.toUi(),
+    toggleAction = toggleAction.toUi(),
+    editAction = editAction?.toUi(),
+)
+
+private fun WireUiAircraftLibraryEditor.toUi() = UiAircraftLibraryEditor(
+    title = title,
+    fieldLabel = fieldLabel,
+    sourceJson = sourceJson,
+    validationError = validationError,
+    saveAction = saveAction.toUi(),
+    cancelAction = cancelAction.toUi(),
+)
+
+private fun WireUiAircraftLibraryState.toUi() = UiAircraftLibraryState(
+    title = title,
+    summary = summary,
+    entries = entries.map { it.toUi() },
+    addAction = addAction.toUi(),
+    editor = editor?.toUi(),
 )
 
 private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
@@ -4098,6 +4190,12 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
                     label = option.label,
                     actionUid = option.action_uid,
                     selected = option.selected,
+                    trailingSymbol = option.trailing_symbol?.let {
+                        AircraftSymbolUiView(
+                            pathData = it.path_data,
+                            rotationDegrees = it.rotation_degrees.toFloat(),
+                        )
+                    },
                 )
             },
         )
@@ -4156,6 +4254,12 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
                     label = option.label,
                     action_uid = option.actionUid,
                     selected = option.selected,
+                    trailing_symbol = option.trailingSymbol?.let {
+                        WireAircraftSymbolUiView(
+                            path_data = it.pathData,
+                            rotation_degrees = it.rotationDegrees.toInt(),
+                        )
+                    },
                 )
             },
         )

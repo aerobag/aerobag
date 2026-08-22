@@ -50,6 +50,7 @@ declare module "@generated/app_wasm.js" {
   export const set_resource_policy_in_session: (...args: unknown[]) => string;
   export const accept_disclaimer_in_session: (...args: unknown[]) => string;
   export const perform_settings_action_in_session: (...args: unknown[]) => string;
+  export const perform_aircraft_library_action_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;

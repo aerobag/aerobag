@@ -200,6 +200,7 @@ internal fun AltitudePlannerPage(
                                         key = option.actionUid,
                                         label = option.label,
                                         active = option.selected,
+                                        aircraftSymbol = option.trailingSymbol,
                                         onSelect = { performAction(option.actionUid) },
                                     )
                                 },

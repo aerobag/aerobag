@@ -44,8 +44,6 @@ def parse_args() -> argparse.Namespace:
     operation = parser.add_mutually_exclusive_group(required=True)
     operation.add_argument("--stage", action="store_true")
     operation.add_argument("--promote", action="store_true")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--releases", type=Path, default=DEFAULT_RELEASES)
     return parser.parse_args()
 
 
@@ -366,8 +364,8 @@ def main() -> int:
     args = parse_args()
     try:
         if args.stage:
-            return stage(args.config.resolve(), args.releases.resolve())
-        return promote(args.config.resolve(), args.releases.resolve())
+            return stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
+        return promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
     except (ManagementError, releases.ReleaseConfigError) as error:
         print(f"prod_manage: {error}", file=sys.stderr)
         return 2

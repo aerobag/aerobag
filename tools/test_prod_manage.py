@@ -32,6 +32,14 @@ def desired_document(*, staging: str | None = None) -> dict:
 
 
 class DesiredStateMutationTests(unittest.TestCase):
+    def test_public_cli_exposes_only_stage_and_promote(self) -> None:
+        with mock.patch.object(sys, "argv", ["prod_manage.py", "--stage"]):
+            args = prod_manage.parse_args()
+        self.assertTrue(args.stage)
+        self.assertFalse(args.promote)
+        self.assertFalse(hasattr(args, "config"))
+        self.assertFalse(hasattr(args, "releases"))
+
     def test_next_release_name_increments_only_the_current_utc_day(self) -> None:
         self.assertEqual(
             prod_manage.next_release_name(

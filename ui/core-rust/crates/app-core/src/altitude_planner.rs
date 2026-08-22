@@ -472,10 +472,10 @@ fn format_departure_offset(offset_ms: i64) -> String {
     if days > 0 {
         parts.push(format!("{days}d"));
     }
-    if hours > 0 {
+    if days <= 7 && hours > 0 {
         parts.push(format!("{hours}h"));
     }
-    if minutes > 0 {
+    if total_minutes <= 6 * 60 && minutes > 0 {
         parts.push(format!("{minutes}m"));
     }
     let value = parts.join(" ");
@@ -698,6 +698,9 @@ fn parse_departure_offset(raw_input: &str, now_epoch_ms: i64) -> Result<Option<i
     if magnitude_ms > i64::MAX as f64 {
         return Err("departure offset is too large".to_string());
     }
+    if magnitude_ms > MAX_DEPARTURE_OFFSET_MS as f64 {
+        return Err("departure offset must be 999 days or less".to_string());
+    }
     let offset_ms = if negative {
         -(magnitude_ms as i64)
     } else {
@@ -710,6 +713,8 @@ fn parse_departure_offset(raw_input: &str, now_epoch_ms: i64) -> Result<Option<i
         .ok_or_else(|| "departure time is outside the supported UTC range".to_string())?;
     Ok((offset_ms != 0).then_some(departure))
 }
+
+const MAX_DEPARTURE_OFFSET_MS: i64 = 999 * 24 * 60 * 60 * 1_000;
 
 fn format_altitude_ft(altitude_ft: i32) -> String {
     let digits = altitude_ft.abs().to_string();
@@ -1540,6 +1545,33 @@ mod tests {
             ..AltitudePlannerUiInput::default()
         });
         assert!(!dynamic_now.departure.when_is_past);
+    }
+
+    #[test]
+    fn departure_offset_projection_drops_precision_as_the_distance_grows() {
+        const MINUTE_MS: i64 = 60 * 1_000;
+        const HOUR_MS: i64 = 60 * MINUTE_MS;
+        const DAY_MS: i64 = 24 * HOUR_MS;
+
+        assert_eq!(format_departure_offset(5 * HOUR_MS + 59 * MINUTE_MS), "5h 59m");
+        assert_eq!(format_departure_offset(6 * HOUR_MS + MINUTE_MS), "6h");
+        assert_eq!(format_departure_offset(DAY_MS + 12 * HOUR_MS), "1d 12h");
+        assert_eq!(format_departure_offset(7 * DAY_MS + 23 * HOUR_MS), "7d 23h");
+        assert_eq!(format_departure_offset(8 * DAY_MS + 23 * HOUR_MS), "8d");
+
+        let longest = format_departure_offset(-(7 * DAY_MS + 23 * HOUR_MS));
+        assert_eq!(longest, "−7d 23h");
+        assert_eq!(longest.chars().count(), 7);
+    }
+
+    #[test]
+    fn departure_offset_parser_caps_offsets_at_999_days() {
+        let now = utc("2026-08-05T19:15:30Z").timestamp_millis();
+        assert!(parse_departure_offset("999d", now).is_ok());
+        assert_eq!(
+            parse_departure_offset("1000d", now).unwrap_err(),
+            "departure offset must be 999 days or less",
+        );
     }
 
     struct ConstantAtmosphere {

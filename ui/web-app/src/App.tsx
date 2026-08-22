@@ -9073,7 +9073,7 @@ function AltitudePlannerPage(props: {
             <label>
               <span>{planner.departure.when_label}</span>
               <input
-                className={planner.departure.when_is_past ? "isWarning" : undefined}
+                className={`altitudePlannerDepartureWhen${planner.departure.when_is_past ? " isWarning" : ""}`}
                 type="text"
                 inputMode="text"
                 value={departureWhenInput}

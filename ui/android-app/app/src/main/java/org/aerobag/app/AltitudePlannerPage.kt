@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -468,7 +469,7 @@ private fun DepartureEditorRow(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = Modifier
-            .width(ThumbSize * 6.2f)
+            .width((ThumbSize * 6.2f) + DepartureWhenFieldWidth - (ThumbSize * 0.9f))
             .height(ThumbSize),
         color = uiTheme.controls.controlGroupBg,
         shape = RoundedCornerShape(ThumbRadius),
@@ -499,6 +500,7 @@ private fun DepartureEditorRow(
             DepartureLabel(departure.whenLabel)
             DepartureTextField(
                 value = whenValue,
+                width = DepartureWhenFieldWidth,
                 enabled = departure.enabled,
                 warning = departure.whenIsPast,
                 onValueChange = onWhenValueChange,
@@ -529,6 +531,7 @@ private fun DepartureLabel(label: String) {
 @Composable
 private fun DepartureTextField(
     value: String,
+    width: Dp = ThumbSize * 0.9f,
     enabled: Boolean,
     warning: Boolean = false,
     onValueChange: (String) -> Unit,
@@ -539,7 +542,7 @@ private fun DepartureTextField(
     val doneAction = rememberCurrentAction(onDone)
     Surface(
         modifier = Modifier
-            .width(ThumbSize * 0.9f)
+            .width(width)
             .height(ThumbSize * 0.58f),
         color = uiTheme.controls.textInputBg,
         shape = RoundedCornerShape(ThumbRadius),
@@ -557,10 +560,8 @@ private fun DepartureTextField(
                 .padding(horizontal = ThumbSize * 0.1f),
             enabled = enabled,
             singleLine = true,
-            textStyle = TextStyle(
+            textStyle = DepartureInputTextStyle.copy(
                 color = uiTheme.controls.panelFg,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
             ),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -573,6 +574,13 @@ private fun DepartureTextField(
         )
     }
 }
+
+private val DepartureWhenFieldWidth = ThumbSize * 1.25f
+
+private val DepartureInputTextStyle = TextStyle(
+    fontSize = 12.sp,
+    fontWeight = FontWeight.Bold,
+)
 
 @Composable
 private fun PlannerMessagePanel(

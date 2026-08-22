@@ -3270,6 +3270,12 @@ button {
   box-shadow: inset 0 0 0 1px var(--theme-data-status-warning-stroke);
 }
 
+.altitudePlannerDeparture input.altitudePlannerDepartureWhen {
+  width: calc(var(--thumb) * 1.25);
+  min-width: calc(var(--thumb) * 1.25);
+  max-width: calc(var(--thumb) * 1.25);
+}
+
 .altitudePlannerDepartureBasis {
   width: calc(var(--thumb) * 1.45);
   min-width: calc(var(--thumb) * 1.45);

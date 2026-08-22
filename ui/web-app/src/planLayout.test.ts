@@ -103,12 +103,21 @@ describe("flight plan layout CSS", () => {
       .map((match) => match[1] ?? "")
       .join("\n");
     expect(departureInputStyles).toContain("background: var(--theme-text-input-bg)");
+    expect(plannerPage).not.toContain("departureWhenInput.length + 4");
+    const departureWhenInputStyles = [
+      ...styles.matchAll(/\.altitudePlannerDeparture input\.altitudePlannerDepartureWhen\s*\{([^}]*)\}/g),
+    ]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(departureWhenInputStyles).toContain("width: calc(var(--thumb) * 1.25)");
+    expect(departureWhenInputStyles).toContain("min-width: calc(var(--thumb) * 1.25)");
+    expect(departureWhenInputStyles).toContain("max-width: calc(var(--thumb) * 1.25)");
     const departureBasisStyles = [...styles.matchAll(/\.altitudePlannerDepartureBasis\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");
     expect(departureBasisStyles).toContain("min-width: calc(var(--thumb) * 1.45)");
     expect(departureBasisStyles).toContain("height: calc(var(--thumb) * 0.58)");
-    expect(plannerPage).toContain('className={planner.departure.when_is_past ? "isWarning" : undefined}');
+    expect(plannerPage).toContain('planner.departure.when_is_past ? " isWarning" : ""');
     const departureWarningStyles = [...styles.matchAll(/\.altitudePlannerDeparture input\.isWarning\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");

@@ -52,6 +52,10 @@ class ProductPublicationTests(unittest.TestCase):
         self.assertIn("/channel-current/staging/packages/", nginx)
         self.assertIn("/channel-current/releases/", nginx)
         self.assertIn("/web/(?:about)?$", nginx)
+        self.assertIn(
+            'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/(?:about)?$" {',
+            nginx,
+        )
         self.assertNotIn(f"root {config['web_dist']};", nginx)
 
     def test_deploy_rejects_in_progress_reconciliation_instead_of_stopping_it(self) -> None:

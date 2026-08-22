@@ -263,6 +263,23 @@ def stage(config_path: Path, releases_path: Path) -> int:
     assert_remote_idle(config)
 
     document = load_release_document(releases_path)
+    desired = releases.parse_desired_releases(document)
+    if desired.staging is not None:
+        assert_main_not_behind(require_synchronized=True)
+        assert_clean_checkout()
+        tag = desired.staging.tag
+        print_proposal(
+            f"This command will resume staging {tag}, running this command:",
+            ["tools/deploy_prod.py --config deploy/aerobag-prod.json"],
+            f"  deploy/releases.json already assigns staging to {tag}; no source change is needed.",
+        )
+        if not confirmed():
+            print("aborted")
+            return 1
+        assert_remote_idle(config)
+        deploy(config_path)
+        return 0
+
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
     old_text = serialize_release_document(document)

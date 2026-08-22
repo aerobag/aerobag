@@ -1268,7 +1268,7 @@ def nginx_config(config: dict[str, Any]) -> str:
         try_files $uri $uri/ /staging/index.html;
     }}
 
-    location ~ ^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:about)?$ {{
+    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:about)?$" {{
         alias {channel_root}/releases/$1/web/index.html;
         add_header Cache-Control "no-cache";
     }}

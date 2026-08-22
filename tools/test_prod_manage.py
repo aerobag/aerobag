@@ -120,6 +120,42 @@ class PromotionGateTests(unittest.TestCase):
 
 
 class StageOrderingTests(unittest.TestCase):
+    def test_existing_staging_intent_resumes_deployment_without_new_git_changes(self) -> None:
+        document = desired_document(staging="2026-08-22.1")
+
+        def fake_git(*args: str, capture: bool = True) -> str:
+            if args[:2] == ("branch", "--show-current"):
+                return "main"
+            if args[:3] == ("rev-list", "--left-right", "--count"):
+                return "0 0"
+            if args[:2] == ("status", "--porcelain"):
+                return ""
+            return ""
+
+        with (
+            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "git", side_effect=fake_git) as git,
+            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+            mock.patch.object(prod_manage, "load_release_document", return_value=document),
+            mock.patch.object(prod_manage, "print_proposal") as proposal,
+            mock.patch.object(prod_manage, "confirmed", return_value=True),
+            mock.patch.object(prod_manage, "deploy") as deploy,
+        ):
+            result = prod_manage.stage(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(idle.call_count, 2)
+        self.assertFalse(
+            any(
+                call.args and call.args[0] in {"add", "commit", "tag", "push"}
+                for call in git.call_args_list
+            )
+        )
+        self.assertIn("resume staging 2026-08-22.1", proposal.call_args.args[0])
+        deploy.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+
     def test_running_reconciler_aborts_before_confirmation_or_git_mutation(self) -> None:
         document = desired_document()
 

@@ -119,6 +119,25 @@ class PromotionGateTests(unittest.TestCase):
                 prod_manage.assert_staging_is_qualified({}, self.desired())
 
 
+class ReconciliationCompletionTests(unittest.TestCase):
+    def test_deploy_waits_for_the_async_reconciler_terminal_result(self) -> None:
+        config = {"ssh_user": "root", "ssh_host": "prod"}
+        with (
+            mock.patch.object(prod_manage, "run"),
+            mock.patch.object(
+                prod_manage.deploy_prod, "load_config", return_value=config
+            ),
+            mock.patch.object(prod_manage.deploy_prod, "run_ssh") as run_ssh,
+        ):
+            prod_manage.deploy(prod_manage.DEFAULT_CONFIG)
+
+        command = run_ssh.call_args.args[1]
+        self.assertIn("while true", command)
+        self.assertIn("active|activating|reloading|deactivating", command)
+        self.assertIn("release reconciliation completed successfully", command)
+        self.assertIn("journalctl -u", command)
+
+
 class StageOrderingTests(unittest.TestCase):
     def test_existing_staging_intent_resumes_deployment_without_new_git_changes(self) -> None:
         document = desired_document(staging="2026-08-22.1")

@@ -24,6 +24,22 @@ import release_reconciler as releases  # noqa: E402
 
 
 class LiveFeedAllocationTests(unittest.TestCase):
+    def test_controller_creates_daemon_owned_release_namespace_parents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live_root, scratch_root = controller.prepare_release_live_feed_paths(
+                root, "2026-08-22.1"
+            )
+
+            self.assertEqual(
+                live_root, root / "live-feeds/releases/2026-08-22.1"
+            )
+            self.assertEqual(
+                scratch_root, root / "scratch/live-feeds/releases/2026-08-22.1"
+            )
+            self.assertTrue(live_root.parent.is_dir())
+            self.assertTrue(scratch_root.parent.is_dir())
+
     def test_each_release_gets_a_stable_distinct_loopback_port(self) -> None:
         observed = releases.ObservedState.empty()
         observed.releases["old"] = releases.ObservedRelease(

@@ -254,6 +254,35 @@ def confirmed() -> bool:
 
 def deploy(config_path: Path) -> None:
     run([str(TOOLS_DIR / "deploy_prod.py"), "--config", str(config_path)], capture=False)
+    config = deploy_prod.load_config(config_path)
+    print("waiting for production release reconciliation to finish...", flush=True)
+    deploy_prod.run_ssh(
+        config,
+        """set -euo pipefail
+unit=aerobag-build-product.service
+while true; do
+  active_state="$(systemctl show "$unit" --property=ActiveState --value)"
+  result="$(systemctl show "$unit" --property=Result --value)"
+  case "$active_state" in
+    active|activating|reloading|deactivating)
+      sleep 5
+      ;;
+    inactive)
+      if [ "$result" = success ]; then
+        echo "release reconciliation completed successfully"
+        exit 0
+      fi
+      ;;
+    failed)
+      ;;
+  esac
+  echo "release reconciliation failed: active_state=$active_state result=$result" >&2
+  systemctl status "$unit" --no-pager >&2 || true
+  journalctl -u "$unit" -n 100 --no-pager >&2 || true
+  exit 1
+done""",
+        dry_run=False,
+    )
 
 
 def stage(config_path: Path, releases_path: Path) -> int:

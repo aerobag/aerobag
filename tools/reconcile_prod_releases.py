@@ -80,6 +80,18 @@ def allocate_live_feed_endpoint(
     raise RuntimeError("no free release live-feed port in configured range")
 
 
+def prepare_release_live_feed_paths(
+    artifact_root: Path, tag: str
+) -> tuple[Path, Path]:
+    live_root = artifact_root / "live-feeds/releases" / tag
+    scratch_root = artifact_root / "scratch/live-feeds/releases" / tag
+    # The daemon creates its release directory, but deliberately requires the
+    # controller-owned namespace above it to exist.
+    live_root.parent.mkdir(parents=True, exist_ok=True)
+    scratch_root.parent.mkdir(parents=True, exist_ok=True)
+    return live_root, scratch_root
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -407,16 +419,15 @@ class Controller:
         environment_root.mkdir(parents=True, exist_ok=True)
         environment = environment_root / f"{tag}.env"
         release_root = Path(record.release_root or "")
+        live_root, scratch_root = prepare_release_live_feed_paths(
+            self.artifact_root, tag
+        )
         values = {
             "AEROBAG_RELEASE_ROOT": str(release_root),
             "AEROBAG_RELEASE_TAG": tag,
             "AEROBAG_RELEASE_LIVE_LISTEN": f"127.0.0.1:{port}",
-            "AEROBAG_RELEASE_LIVE_ROOT": str(
-                self.artifact_root / "live-feeds/releases" / tag
-            ),
-            "AEROBAG_RELEASE_LIVE_SCRATCH": str(
-                self.artifact_root / "scratch/live-feeds/releases" / tag
-            ),
+            "AEROBAG_RELEASE_LIVE_ROOT": str(live_root),
+            "AEROBAG_RELEASE_LIVE_SCRATCH": str(scratch_root),
             "AEROBAG_RELEASE_FETCH_CACHE": str(self.artifact_root / "cache/fetch"),
         }
         environment.write_text(

@@ -1263,9 +1263,14 @@ def nginx_config(config: dict[str, Any]) -> str:
         add_header Cache-Control "public, max-age=300";
     }}
 
+    location ~ "^/staging/(?:about)?$" {{
+        alias {channel_root}/staging/web/index.html;
+        add_header Cache-Control "no-cache";
+    }}
+
     location /staging/ {{
         alias {channel_root}/staging/web/;
-        try_files $uri $uri/ /staging/index.html;
+        add_header Cache-Control "public, max-age=300";
     }}
 
     location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:about)?$" {{

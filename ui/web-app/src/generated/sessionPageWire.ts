@@ -211,11 +211,17 @@ export type UiAircraftLibraryEditor = {
   validation_error?: string | null;
 };
 
+export type UiSettingsSyncIndicator = {
+  help_text: string;
+  symbol: string;
+};
+
 export type UiAircraftLibraryState = {
   add_action: UiAircraftLibraryAction;
   editor?: UiAircraftLibraryEditor | null;
   entries: UiAircraftLibraryEntry[];
   summary: string;
+  sync_indicator?: UiSettingsSyncIndicator | null;
   title: string;
 };
 
@@ -227,6 +233,7 @@ export type UiSettingsPageRow = {
   items: UiSettingsGridItem[];
   kind: string;
   stops: UiSettingsSliderStop[];
+  sync_indicator?: UiSettingsSyncIndicator | null;
   title: string;
   value_id: string;
 };

@@ -199,6 +199,7 @@ fn main() {
                 "UiAircraftLibraryAction",
                 "UiAircraftLibraryEntry",
                 "UiAircraftLibraryEditor",
+                "UiSettingsSyncIndicator",
                 "UiAircraftLibraryState",
                 "UiSettingsPageRow",
                 "UiSettingsPageSection",

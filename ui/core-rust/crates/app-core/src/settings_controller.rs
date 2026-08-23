@@ -10,7 +10,7 @@ use std::{
 use app_ui_contracts::session::{
     DebugFlagId, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiSettingsAction,
     UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageSection, UiSettingsPageState,
-    UiSettingsSliderStop,
+    UiSettingsSliderStop, UiSettingsSyncIndicator,
 };
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,15 @@ const NEXRAD_SHOWN_CADENCE_HELP: &str = "Load fewer frames to use less data.";
 const NEXRAD_HIDDEN_CADENCE_HELP: &str = "Eagerly fetch fewer frames to use less data.";
 const NEXRAD_ASLEEP_CADENCE_HELP: &str =
     "Save data by not fetching nexrad if app is entirely asleep";
+const CLOUD_SYNC_SYMBOL: &str = "\u{2601}\u{fe0e}";
+const CLOUD_SYNC_HELP: &str = "Synchronized through your Sync Account.";
 const NEXRAD_UPDATES_PER_HOUR: f64 = 12.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudSyncedSettingsRecord {
+    InactivitySleepTimeout,
+    NexradAcquisition,
+}
 
 pub trait SettingsStorage: Send + Sync {
     fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
@@ -390,6 +398,7 @@ pub(crate) struct SettingsProjectionResult {
 struct SettingsProjectionCache {
     settings_revision: u64,
     display_policy_available: bool,
+    sync_account_configured: bool,
     nexrad_profile_bytes: Option<BTreeMap<String, u64>>,
     flight_data_banner: FlightDataBannerModel,
     debug_state: UiDebugState,
@@ -701,6 +710,7 @@ impl SettingsController {
     pub fn project(
         &mut self,
         display_policy_available: bool,
+        sync_account_configured: bool,
         nexrad_profile_bytes: Option<&BTreeMap<String, u64>>,
         flight_data_banner: &FlightDataBannerModel,
         debug_state: &UiDebugState,
@@ -708,6 +718,7 @@ impl SettingsController {
         if let Some(cache) = self.projection_cache.as_ref() {
             if cache.settings_revision == self.revision
                 && cache.display_policy_available == display_policy_available
+                && cache.sync_account_configured == sync_account_configured
                 && cache.nexrad_profile_bytes.as_ref() == nexrad_profile_bytes
                 && cache.flight_data_banner == *flight_data_banner
                 && cache.debug_state == *debug_state
@@ -723,6 +734,7 @@ impl SettingsController {
             settings_page_state: project_settings_page_state(
                 &self.preferences,
                 display_policy_available,
+                sync_account_configured,
                 nexrad_profile_bytes,
                 flight_data_banner,
                 debug_state,
@@ -734,6 +746,7 @@ impl SettingsController {
         self.projection_cache = Some(SettingsProjectionCache {
             settings_revision: self.revision,
             display_policy_available,
+            sync_account_configured,
             nexrad_profile_bytes: nexrad_profile_bytes.cloned(),
             flight_data_banner: flight_data_banner.clone(),
             debug_state: debug_state.clone(),
@@ -757,6 +770,7 @@ impl SettingsController {
 fn project_settings_page_state(
     preferences: &SettingsPreferences,
     display_policy_available: bool,
+    sync_account_configured: bool,
     nexrad_profile_bytes: Option<&BTreeMap<String, u64>>,
     flight_data_banner: &FlightDataBannerModel,
     debug_state: &UiDebugState,
@@ -766,6 +780,7 @@ fn project_settings_page_state(
         id: FLIGHT_DATA_VISIBILITY_ROW_ID.to_string(),
         title: "Flight data grid".to_string(),
         help_text: Some(FLIGHT_DATA_VISIBILITY_HELP.to_string()),
+        sync_indicator: None,
         indent_level: 0,
         value_id: String::new(),
         stops: Vec::new(),
@@ -785,6 +800,7 @@ fn project_settings_page_state(
             id: DISPLAY_DIM_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Display dims after...".to_string(),
             help_text: Some(DISPLAY_DIM_TIMEOUT_HELP.to_string()),
+            sync_indicator: None,
             indent_level: 0,
             value_id: preferences.display_dim_timeout.id().to_string(),
             stops: DisplayDimTimeout::all_stops()
@@ -802,6 +818,7 @@ fn project_settings_page_state(
             id: INACTIVITY_SLEEP_TIMEOUT_ROW_ID.to_string(),
             title: "\u{1F50B} Screen and GPS sleep after...".to_string(),
             help_text: Some(INACTIVITY_SLEEP_TIMEOUT_HELP.to_string()),
+            sync_indicator: None,
             indent_level: 0,
             value_id: preferences.inactivity_sleep_timeout.id().to_string(),
             stops: InactivitySleepTimeout::all_stops()
@@ -818,7 +835,7 @@ fn project_settings_page_state(
     if let Some(profile_bytes) = nexrad_profile_bytes {
         append_nexrad_settings_rows(&mut rows, preferences, profile_bytes);
     }
-    let sections = vec![UiSettingsPageSection {
+    let mut sections = vec![UiSettingsPageSection {
         id: DEBUG_DIAGNOSTICS_SECTION_ID.to_string(),
         title: "Debug Diagnostics".to_string(),
         collapsed_by_default: true,
@@ -831,6 +848,7 @@ fn project_settings_page_state(
                     id: format!("debug_{id}"),
                     title: title.to_string(),
                     help_text: None,
+                    sync_indicator: None,
                     indent_level: 0,
                     value_id: if debug_flag_enabled(debug_state, flag_id) {
                         SETTINGS_TOGGLE_ON
@@ -845,6 +863,17 @@ fn project_settings_page_state(
             })
             .collect(),
     }];
+    if sync_account_configured {
+        for row in rows.iter_mut().chain(
+            sections
+                .iter_mut()
+                .flat_map(|section| section.rows.iter_mut()),
+        ) {
+            if settings_action_is_cloud_synced(&row.action_id) {
+                row.sync_indicator = cloud_sync_indicator(true);
+            }
+        }
+    }
     UiSettingsPageState {
         title: "Settings".to_string(),
         summary: if rows.is_empty() && sections.is_empty() {
@@ -957,6 +986,7 @@ fn settings_slider_row<const N: usize>(
         id: id.to_string(),
         title: title.to_string(),
         help_text: help_text.map(str::to_string),
+        sync_indicator: None,
         indent_level,
         value_id: value_id.to_string(),
         stops: stops
@@ -988,6 +1018,7 @@ fn nexrad_cadence_row(
         id: id.to_string(),
         title,
         help_text: help_text.map(str::to_string),
+        sync_indicator: None,
         indent_level: 1,
         value_id: value.id().to_string(),
         stops: cadences
@@ -1045,16 +1076,33 @@ pub(crate) fn debug_flag_settings_action(
     Ok(Some((flag_id, enabled)))
 }
 
-pub(crate) fn cloud_synced_settings_action(action: &UiSettingsAction) -> bool {
-    action.action_id == INACTIVITY_SLEEP_TIMEOUT_ACTION_ID
-        || matches!(
-            action.action_id.as_str(),
-            NEXRAD_COVERAGE_ACTION_ID
-                | NEXRAD_OFFLINE_PROFILE_ACTION_ID
-                | NEXRAD_SHOWN_CADENCE_ACTION_ID
-                | NEXRAD_HIDDEN_CADENCE_ACTION_ID
-                | NEXRAD_ASLEEP_CADENCE_ACTION_ID
-        )
+pub(crate) fn cloud_synced_settings_record(action_id: &str) -> Option<CloudSyncedSettingsRecord> {
+    match action_id {
+        INACTIVITY_SLEEP_TIMEOUT_ACTION_ID => {
+            Some(CloudSyncedSettingsRecord::InactivitySleepTimeout)
+        }
+        NEXRAD_COVERAGE_ACTION_ID
+        | NEXRAD_OFFLINE_PROFILE_ACTION_ID
+        | NEXRAD_SHOWN_CADENCE_ACTION_ID
+        | NEXRAD_HIDDEN_CADENCE_ACTION_ID
+        | NEXRAD_ASLEEP_CADENCE_ACTION_ID => Some(CloudSyncedSettingsRecord::NexradAcquisition),
+        _ => None,
+    }
+}
+
+fn settings_action_is_cloud_synced(action_id: &str) -> bool {
+    cloud_synced_settings_record(action_id).is_some()
+        || action_id
+            .strip_prefix(DEBUG_FLAG_ACTION_PREFIX)
+            .and_then(debug_flag_from_id)
+            .is_some()
+}
+
+pub(crate) fn cloud_sync_indicator(configured: bool) -> Option<UiSettingsSyncIndicator> {
+    configured.then(|| UiSettingsSyncIndicator {
+        symbol: CLOUD_SYNC_SYMBOL.to_string(),
+        help_text: CLOUD_SYNC_HELP.to_string(),
+    })
 }
 
 pub(crate) fn all_debug_flags() -> [DebugFlagId; 10] {
@@ -1228,16 +1276,16 @@ mod tests {
         let input = banner();
         let debug = debug_state();
 
-        let first = controller.project(false, None, &input, &debug);
+        let first = controller.project(false, false, None, &input, &debug);
         assert!(first.rebuilt);
         assert_eq!(first.projection.settings_page_state.rows.len(), 1);
         assert!(first.projection.display_policy.is_none());
 
-        let cached = controller.project(false, None, &input, &debug);
+        let cached = controller.project(false, false, None, &input, &debug);
         assert!(!cached.rebuilt);
         assert_eq!(cached.projection, first.projection);
 
-        let capability_changed = controller.project(true, None, &input, &debug);
+        let capability_changed = controller.project(true, false, None, &input, &debug);
         assert!(capability_changed.rebuilt);
         assert_eq!(
             capability_changed.projection.settings_page_state.rows.len(),
@@ -1248,9 +1296,56 @@ mod tests {
         changed_banner.cells[0].value = Some("13000".to_string());
         assert!(
             controller
-                .project(true, None, &changed_banner, &debug)
+                .project(true, false, None, &changed_banner, &debug)
                 .rebuilt
         );
+    }
+
+    #[test]
+    fn cloud_indicators_follow_the_core_owned_record_classifier() {
+        let mut controller = SettingsController::default();
+        let bytes = BTreeMap::from([
+            ("offline_low1".to_string(), 1024),
+            ("offline_0".to_string(), 2048),
+        ]);
+        let unlinked = controller
+            .project(true, false, Some(&bytes), &banner(), &debug_state())
+            .projection
+            .settings_page_state;
+        assert!(unlinked
+            .rows
+            .iter()
+            .chain(
+                unlinked
+                    .sections
+                    .iter()
+                    .flat_map(|section| section.rows.iter())
+            )
+            .all(|row| row.sync_indicator.is_none()));
+
+        let linked = controller
+            .project(true, true, Some(&bytes), &banner(), &debug_state())
+            .projection
+            .settings_page_state;
+        for local_id in [FLIGHT_DATA_VISIBILITY_ROW_ID, DISPLAY_DIM_TIMEOUT_ROW_ID] {
+            assert!(linked
+                .rows
+                .iter()
+                .find(|row| row.id == local_id)
+                .is_some_and(|row| row.sync_indicator.is_none()));
+        }
+        for synced_id in [INACTIVITY_SLEEP_TIMEOUT_ROW_ID, "nexrad_coverage"] {
+            assert!(linked
+                .rows
+                .iter()
+                .find(|row| row.id == synced_id)
+                .is_some_and(|row| row.sync_indicator.is_some()));
+        }
+        assert!(linked
+            .sections
+            .iter()
+            .flat_map(|section| section.rows.iter())
+            .all(|row| row.sync_indicator.is_some()));
     }
 
     #[test]
@@ -1258,7 +1353,7 @@ mod tests {
         let mut controller = SettingsController::default();
         let input = banner();
         let debug = debug_state();
-        controller.project(true, None, &input, &debug);
+        controller.project(true, false, None, &input, &debug);
 
         assert!(controller
             .perform_action(
@@ -1272,7 +1367,11 @@ mod tests {
             .expect("display action"));
         assert_eq!(controller.revision(), 1);
         assert_eq!(controller.static_revision(), 1);
-        assert!(controller.project(true, None, &input, &debug).rebuilt);
+        assert!(
+            controller
+                .project(true, false, None, &input, &debug)
+                .rebuilt
+        );
 
         assert!(!controller
             .perform_action(
@@ -1298,7 +1397,9 @@ mod tests {
             .expect("visibility action"));
         assert_eq!(controller.revision(), 2);
         assert_eq!(controller.static_revision(), 1);
-        let projection = controller.project(true, None, &input, &debug).projection;
+        let projection = controller
+            .project(true, false, None, &input, &debug)
+            .projection;
         assert!(!projection
             .flight_data_banner
             .cells
@@ -1322,7 +1423,7 @@ mod tests {
             ("offline_low1".to_string(), 512 * 1024),
         ]);
         let projection = controller
-            .project(true, Some(&bytes), &banner(), &debug_state())
+            .project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         let coverage = projection
             .settings_page_state
@@ -1357,7 +1458,7 @@ mod tests {
             )
             .unwrap();
         let projection = controller
-            .project(true, Some(&bytes), &banner(), &debug_state())
+            .project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         let offline_detail = projection
             .settings_page_state
@@ -1429,7 +1530,7 @@ mod tests {
             )
             .unwrap();
         let projection = controller
-            .project(true, Some(&bytes), &banner(), &debug_state())
+            .project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         assert!(projection
             .settings_page_state
@@ -1461,7 +1562,7 @@ mod tests {
             )
             .unwrap();
         let projection = controller
-            .project(true, Some(&bytes), &banner(), &debug_state())
+            .project(true, false, Some(&bytes), &banner(), &debug_state())
             .projection;
         let rows = &projection.settings_page_state.rows;
         let help = |id: &str| {

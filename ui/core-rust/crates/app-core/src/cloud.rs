@@ -709,7 +709,7 @@ impl CloudEngine {
         }
     }
 
-    fn has_linked_account(&self) -> bool {
+    pub(crate) fn has_linked_account(&self) -> bool {
         self.persistent
             .account
             .as_ref()

@@ -115,8 +115,8 @@ use crate::{
         SettingsProjectionDependencies, StatusProjectionDependencies,
     },
     settings_controller::{
-        cloud_synced_settings_action, debug_flag_settings_action, SettingsController,
-        SettingsModelCheckpoint, SettingsProjection,
+        cloud_sync_indicator, cloud_synced_settings_record, debug_flag_settings_action,
+        CloudSyncedSettingsRecord, SettingsController, SettingsModelCheckpoint, SettingsProjection,
     },
     situation_controller::{
         selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
@@ -2920,17 +2920,21 @@ pub fn perform_settings_action_in_session(
                 display_policy_available,
                 nexrad_settings_available,
             )?;
-            if changed && cloud_synced_settings_action(&action) {
-                if action.action_id == "inactivity_sleep_timeout" {
-                    session.cloud.record_local_inactivity_sleep_timeout(
-                        session.settings.inactivity_sleep_timeout(),
-                        now_epoch_ms,
-                    )?;
-                } else {
-                    session.cloud.record_local_nexrad_acquisition(
-                        session.settings.nexrad_acquisition_preferences(),
-                        now_epoch_ms,
-                    )?;
+            if changed {
+                match cloud_synced_settings_record(&action.action_id) {
+                    Some(CloudSyncedSettingsRecord::InactivitySleepTimeout) => {
+                        session.cloud.record_local_inactivity_sleep_timeout(
+                            session.settings.inactivity_sleep_timeout(),
+                            now_epoch_ms,
+                        )?;
+                    }
+                    Some(CloudSyncedSettingsRecord::NexradAcquisition) => {
+                        session.cloud.record_local_nexrad_acquisition(
+                            session.settings.nexrad_acquisition_preferences(),
+                            now_epoch_ms,
+                        )?;
+                    }
+                    None => {}
                 }
             }
         }
@@ -11959,6 +11963,7 @@ fn session_projection_dependencies(
         settings: SettingsProjectionDependencies {
             static_revision: session.settings.static_revision(),
             display_policy_available: capabilities.display_policy.is_some(),
+            sync_account_configured: session.cloud.has_linked_account(),
             debug_state: session.coordinator.debug_state.clone(),
         },
         cloud: CloudProjectionDependencies {
@@ -12220,8 +12225,10 @@ fn try_snapshot_for_session(
             capability.acquisition_policy == LiveFeedAcquisitionPolicy::DurableCompleteStates
         })
         .map(|_| session.weather.live_feeds().nexrad_install_profile_bytes());
+    let sync_account_configured = session.cloud.has_linked_account();
     let settings_projection = session.settings.project(
         display_policy_available,
+        sync_account_configured,
         nexrad_profile_bytes.as_ref(),
         &app_ui_state.flight_data_banner,
         &session.coordinator.debug_state,
@@ -12258,6 +12265,7 @@ fn try_snapshot_for_session(
     settings_page_state.aircraft_library = Some(crate::aircraft_library::project_state(
         &aircraft_catalog,
         session.settings.aircraft_editor(),
+        cloud_sync_indicator(sync_account_configured),
     ));
     app_ui_state.flight_data_banner = flight_data_banner;
     let cloud_page_state = cloud_projection.page_state;
@@ -16860,7 +16868,7 @@ mod tests {
     }
 
     #[test]
-    fn android_nexrad_setting_is_persisted_as_a_cloud_record() {
+    fn android_nexrad_settings_persist_as_one_atomic_cloud_record() {
         let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
         let capabilities = PlatformCapabilities {
             live_feeds: Some(PlatformLiveFeedsCapability {
@@ -16896,6 +16904,24 @@ mod tests {
                 .value_id,
             "full_offline"
         );
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_hidden_cadence".to_string(),
+                value_id: "every_update".to_string(),
+            },
+            1_235,
+        )
+        .expect("raise hidden NEXRAD cadence");
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_shown_cadence".to_string(),
+                value_id: "30m".to_string(),
+            },
+            1_236,
+        )
+        .expect("lower shown NEXRAD cadence");
         let persisted = storage
             .read_settings()
             .expect("read settings")
@@ -16905,6 +16931,20 @@ mod tests {
             persisted["cloud"]["records"]["cached"]["settings/nexrad_acquisition"]["value"]
                 ["coverage"],
             "full_offline"
+        );
+        let nexrad_record =
+            &persisted["cloud"]["records"]["cached"]["settings/nexrad_acquisition"]["value"];
+        assert_eq!(nexrad_record["shown_cadence"], "thirty_minutes");
+        assert_eq!(nexrad_record["hidden_cadence"], "thirty_minutes");
+        assert_eq!(nexrad_record["asleep_cadence"], "never");
+        assert_eq!(
+            persisted["cloud"]["records"]["cached"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|key| key.starts_with("settings/nexrad"))
+                .count(),
+            1
         );
 
         let restored =
@@ -16925,6 +16965,22 @@ mod tests {
                 .value_id,
             "full_offline"
         );
+        for (row_id, expected) in [
+            ("nexrad_shown_cadence", "30m"),
+            ("nexrad_hidden_cadence", "30m"),
+            ("nexrad_asleep_cadence", "never"),
+        ] {
+            assert_eq!(
+                restored
+                    .settings_page_state
+                    .rows
+                    .iter()
+                    .find(|row| row.id == row_id)
+                    .unwrap()
+                    .value_id,
+                expected
+            );
+        }
     }
 
     #[test]

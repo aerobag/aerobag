@@ -13051,6 +13051,11 @@ function SettingsAircraftLibrary(props: {
           <h2>{props.state.title}</h2>
           <p>{props.state.summary}</p>
         </div>
+        <SettingsSyncIndicatorView
+          indicator={props.state.sync_indicator}
+          testId="aircraft-library"
+          onHelp={props.onDisabledAction}
+        />
         {!props.state.editor ? (
           <button
             type="button"
@@ -13179,16 +13184,25 @@ function SettingsPageRowView(props: {
     : undefined;
   if (row.kind === "toggle") {
     const enabled = row.value_id === "on";
+    const inputId = `settings-toggle-input-${row.id}`;
     return (
-      <label className="settingsPageRow settingsToggleRow" style={rowStyle}>
-        <span>{row.title}</span>
+      <section className="settingsPageRow settingsToggleRow" style={rowStyle}>
+        <span className="settingsToggleRowTitle">
+          <label htmlFor={inputId}>{row.title}</label>
+          <SettingsSyncIndicatorView
+            indicator={row.sync_indicator}
+            testId={row.id}
+            onHelp={props.onHelp}
+          />
+        </span>
         <input
+          id={inputId}
           type="checkbox"
           data-testid={`settings-toggle-${row.id}`}
           checked={enabled}
           onChange={() => props.onSettingsAction(row.action_id, enabled ? "off" : "on")}
         />
-      </label>
+      </section>
     );
   }
   return (
@@ -13236,6 +13250,11 @@ function SettingsPageRowTitle(props: {
   return (
     <div className="settingsPageRowTitle">
       <h2>{props.row.title}</h2>
+      <SettingsSyncIndicatorView
+        indicator={props.row.sync_indicator}
+        testId={props.row.id}
+        onHelp={props.onHelp}
+      />
       {helpText ? (
         <span className="settingsPageRowHelp">
           <button
@@ -13250,6 +13269,26 @@ function SettingsPageRowTitle(props: {
         </span>
       ) : null}
     </div>
+  );
+}
+
+function SettingsSyncIndicatorView(props: {
+  indicator: SettingsPageRowState["sync_indicator"];
+  testId: string;
+  onHelp: (message: string) => void;
+}) {
+  if (!props.indicator) return null;
+  return (
+    <button
+      type="button"
+      className="settingsSyncIndicator"
+      aria-label={props.indicator.help_text}
+      title={props.indicator.help_text}
+      data-testid={`settings-sync-${props.testId}`}
+      onClick={() => props.onHelp(props.indicator!.help_text)}
+    >
+      {props.indicator.symbol}
+    </button>
   );
 }
 

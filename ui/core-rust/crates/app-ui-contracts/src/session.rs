@@ -421,10 +421,20 @@ pub struct UiAircraftLibraryEditor {
 pub struct UiAircraftLibraryState {
     pub title: String,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_indicator: Option<UiSettingsSyncIndicator>,
     pub entries: Vec<UiAircraftLibraryEntry>,
     pub add_action: UiAircraftLibraryAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<UiAircraftLibraryEditor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiSettingsSyncIndicator {
+    pub symbol: String,
+    pub help_text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -436,6 +446,8 @@ pub struct UiSettingsPageRow {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_indicator: Option<UiSettingsSyncIndicator>,
     #[serde(default)]
     pub indent_level: u8,
     pub value_id: String,

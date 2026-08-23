@@ -56,6 +56,7 @@ import org.aerobag.app.domain.UiAircraftLibraryState
 import org.aerobag.app.domain.UiSettingsPageRow
 import org.aerobag.app.domain.UiSettingsPageSection
 import org.aerobag.app.domain.UiSettingsPageState
+import org.aerobag.app.domain.UiSettingsSyncIndicator
 
 private val SettingsPageTitleTextSize = 16.sp
 private val SettingsPageRowTitleTextSize = 13.sp
@@ -204,6 +205,9 @@ private fun SettingsAircraftLibrary(
                     fontWeight = FontWeight.Bold,
                     color = uiTheme.controls.panelFg,
                 )
+            }
+            state.syncIndicator?.let { indicator ->
+                SettingsSyncIndicatorView(indicator, "aircraft-library")
             }
             if (state.editor == null) {
                 CompactSquareButton(
@@ -433,6 +437,9 @@ private fun SettingsToggleRow(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+        row.syncIndicator?.let { indicator ->
+            SettingsSyncIndicatorView(indicator, row.id)
+        }
         Checkbox(
             checked = enabled,
             onCheckedChange = null,
@@ -511,6 +518,9 @@ private fun SettingsPageRowHeader(row: UiSettingsPageRow) {
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+        row.syncIndicator?.let { indicator ->
+            SettingsSyncIndicatorView(indicator, row.id)
+        }
         row.helpText?.takeIf(String::isNotBlank)?.let { helpText ->
             Box(
                 modifier = Modifier
@@ -533,6 +543,32 @@ private fun SettingsPageRowHeader(row: UiSettingsPageRow) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsSyncIndicatorView(
+    indicator: UiSettingsSyncIndicator,
+    testId: String,
+) {
+    val context = LocalContext.current
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+            ) { showActionToast(context, indicator.helpText, long = true) }
+            .testTag("parity:settings-sync:$testId"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = indicator.symbol,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFF101820),
+        )
     }
 }
 

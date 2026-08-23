@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use app_ui_contracts::session::{
     UiAircraftLibraryAction, UiAircraftLibraryEditor, UiAircraftLibraryEntry,
-    UiAircraftLibraryState, UiAircraftSymbol,
+    UiAircraftLibraryState, UiAircraftSymbol, UiSettingsSyncIndicator,
 };
 
 use crate::{AppError, AppErrorKind, AppResult};
@@ -218,6 +218,7 @@ fn superseded_hashes<'a>(
 pub(crate) fn project_state(
     catalog: &AircraftCatalog,
     editor: Option<&AircraftLibraryEditorModel>,
+    sync_indicator: Option<UiSettingsSyncIndicator>,
 ) -> UiAircraftLibraryState {
     let mut entries = catalog
         .definitions
@@ -258,6 +259,7 @@ pub(crate) fn project_state(
         summary:
             "Choose aircraft for the Altitude page short menu, or add a private performance model."
                 .to_string(),
+        sync_indicator,
         entries,
         add_action: action(ADD_ACTION_ID.to_string(), "+ Add aircraft"),
         editor: editor.map(|editor| UiAircraftLibraryEditor {
@@ -417,7 +419,7 @@ mod tests {
             &BTreeMap::new(),
         );
 
-        let state = project_state(&catalog, None);
+        let state = project_state(&catalog, None, None);
         assert_eq!(
             state
                 .entries

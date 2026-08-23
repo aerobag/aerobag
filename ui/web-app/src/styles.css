@@ -3767,6 +3767,10 @@ button {
   margin-bottom: calc(var(--thumb) * 0.18);
 }
 
+.settingsPageRowTitle > h2 {
+  flex: 1 1 auto;
+}
+
 .settingsPageRowHelp {
   flex: 0 0 auto;
 }
@@ -3797,8 +3801,39 @@ button {
   color: #101820;
   font-size: calc(var(--thumb) * 0.23);
   font-weight: 850;
-  cursor: pointer;
   user-select: none;
+}
+
+.settingsToggleRowTitle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.12);
+}
+
+.settingsToggleRowTitle label {
+  flex: 1 1 auto;
+  cursor: pointer;
+}
+
+.settingsSyncIndicator,
+.settingsAircraftLibrary button.settingsSyncIndicator {
+  display: grid;
+  width: calc(var(--thumb) * 0.42);
+  min-width: calc(var(--thumb) * 0.42);
+  height: calc(var(--thumb) * 0.42);
+  min-height: calc(var(--thumb) * 0.42);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #101820;
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.3);
+  font-weight: 950;
+  line-height: 1;
+  place-items: center;
+  cursor: help;
 }
 
 .settingsToggleRow input {
@@ -3894,6 +3929,10 @@ button {
   margin-top: calc(var(--thumb) * 0.04);
   font-size: calc(var(--thumb) * 0.19);
   font-weight: 700;
+}
+
+.settingsAircraftLibraryHeader > div:first-child {
+  flex: 1 1 auto;
 }
 
 .settingsAircraftLibrary button {

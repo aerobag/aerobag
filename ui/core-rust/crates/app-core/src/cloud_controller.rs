@@ -107,6 +107,10 @@ impl CloudController {
         self.engine().persistent()
     }
 
+    pub fn has_linked_account(&self) -> bool {
+        self.engine().has_linked_account()
+    }
+
     pub fn cached_flight_plan(&self) -> Option<FlightPlan> {
         self.engine().cached_flight_plan()
     }

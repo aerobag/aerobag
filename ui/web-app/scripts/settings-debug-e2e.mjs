@@ -81,6 +81,12 @@ try {
   if (aircraftLibrary.systemEntries < 1 || aircraftLibrary.icons < aircraftLibrary.systemEntries) {
     throw new Error(`Aircraft library did not render bundled models and symbols: ${JSON.stringify(aircraftLibrary)}`);
   }
+  const unlinkedSyncIndicators = await page.evaluate(
+    "document.querySelectorAll('[data-testid^=\"settings-sync-\"]').length",
+  );
+  if (unlinkedSyncIndicators !== 0) {
+    throw new Error(`Unlinked settings page rendered ${unlinkedSyncIndicators} cloud sync indicators`);
+  }
   await page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-add\"]')?.click()");
   const validAircraftSource = await waitFor(
     () => page.evaluate("document.querySelector('[data-testid=\"settings-aircraft-source\"]')?.value ?? null"),

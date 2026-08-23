@@ -56,6 +56,7 @@ import org.aerobag.app.generated.UiSettingsPageRow as WireUiSettingsPageRow
 import org.aerobag.app.generated.UiSettingsPageSection as WireUiSettingsPageSection
 import org.aerobag.app.generated.UiSettingsPageState as WireUiSettingsPageState
 import org.aerobag.app.generated.UiSettingsSliderStop as WireUiSettingsSliderStop
+import org.aerobag.app.generated.UiSettingsSyncIndicator as WireUiSettingsSyncIndicator
 import org.aerobag.app.generated.UiSessionUpdateGroup
 import org.aerobag.app.generated.UiStatusAction as WireUiStatusAction
 import org.aerobag.app.generated.UiStatusActionDecision
@@ -3049,11 +3050,17 @@ data class UiSettingsGridItem(
     val enabled: Boolean,
 )
 
+data class UiSettingsSyncIndicator(
+    val symbol: String,
+    val helpText: String,
+)
+
 data class UiSettingsPageRow(
     val kind: String,
     val id: String,
     val title: String,
     val helpText: String?,
+    val syncIndicator: UiSettingsSyncIndicator?,
     val indentLevel: Int,
     val valueId: String,
     val stops: List<UiSettingsSliderStop>,
@@ -3105,6 +3112,7 @@ data class UiAircraftLibraryEditor(
 data class UiAircraftLibraryState(
     val title: String,
     val summary: String,
+    val syncIndicator: UiSettingsSyncIndicator?,
     val entries: List<UiAircraftLibraryEntry>,
     val addAction: UiAircraftLibraryAction,
     val editor: UiAircraftLibraryEditor?,
@@ -3316,11 +3324,17 @@ private fun WireUiSettingsGridItem.toUi() = UiSettingsGridItem(
     enabled = enabled,
 )
 
+private fun WireUiSettingsSyncIndicator.toUi() = UiSettingsSyncIndicator(
+    symbol = symbol,
+    helpText = helpText,
+)
+
 private fun WireUiSettingsPageRow.toUi() = UiSettingsPageRow(
     kind = kind,
     id = id,
     title = title,
     helpText = helpText,
+    syncIndicator = syncIndicator?.toUi(),
     indentLevel = indentLevel,
     valueId = valueId,
     stops = stops.map { it.toUi() },
@@ -3377,6 +3391,7 @@ private fun WireUiAircraftLibraryEditor.toUi() = UiAircraftLibraryEditor(
 private fun WireUiAircraftLibraryState.toUi() = UiAircraftLibraryState(
     title = title,
     summary = summary,
+    syncIndicator = syncIndicator?.toUi(),
     entries = entries.map { it.toUi() },
     addAction = addAction.toUi(),
     editor = editor?.toUi(),

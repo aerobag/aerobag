@@ -430,6 +430,16 @@
         "summary": {
           "type": "string"
         },
+        "sync_indicator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiSettingsSyncIndicator"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "title": {
           "type": "string"
         }
@@ -1042,6 +1052,16 @@
           },
           "type": "array"
         },
+        "sync_indicator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiSettingsSyncIndicator"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "title": {
           "type": "string"
         },
@@ -1139,6 +1159,22 @@
       "required": [
         "id",
         "label"
+      ],
+      "type": "object"
+    },
+    "UiSettingsSyncIndicator": {
+      "additionalProperties": false,
+      "properties": {
+        "help_text": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "help_text"
       ],
       "type": "object"
     },
@@ -1370,6 +1406,7 @@
     "UiAircraftLibraryAction",
     "UiAircraftLibraryEntry",
     "UiAircraftLibraryEditor",
+    "UiSettingsSyncIndicator",
     "UiAircraftLibraryState",
     "UiSettingsPageRow",
     "UiSettingsPageSection",

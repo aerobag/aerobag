@@ -1,10 +1,8 @@
 {
   "production": {
-    "tag": "2026-08-20.1"
-  },
-  "schema_version": 1,
-  "staging": {
     "tag": "2026-08-23.1"
   },
+  "schema_version": 1,
+  "staging": null,
   "sunset": []
 }

@@ -652,6 +652,8 @@ async function ensureBadAutopilotDebugFlag(serial, result) {
     }
     if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:Settings"))) {
       await tapTag(serial, "parity:home-button:Settings", 10000);
+      await delay(400);
+      await scrollUntilTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 12);
     } else if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
       await tapTag(serial, "parity:button:HOME", 10000);
     } else {

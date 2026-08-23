@@ -28,7 +28,7 @@ describe("About navigation policy", () => {
   it("opens the web app through document navigation without requiring a ready core session", () => {
     const aboutPage = sourceBetween("function AboutPage(", "function formatApkSize(");
 
-    expect(aboutPage).toContain('href="/"');
+    expect(aboutPage).toContain('href={urlForAppPage("home")}');
     expect(aboutPage).not.toContain("onOpenApp");
   });
 });

@@ -1344,6 +1344,9 @@ mod tests {
     };
     use crate::StructuredNotamRecord;
     use chrono::TimeZone;
+    use product_contracts::live_feeds::v3::{
+        NEXRAD_OFFLINE_PROFILE_0, NEXRAD_OFFLINE_PROFILE_LOW1,
+    };
     use serde::Deserialize;
     use tempfile::tempdir;
 
@@ -2119,13 +2122,19 @@ mod tests {
             assert_eq!(version_manifest.version, version);
             assert!(version_manifest.previous.is_none());
             assert_eq!(version_manifest.state.kind.as_deref(), Some("json"));
+            assert!(version_manifest.install_state.is_none());
             assert_eq!(
                 version_manifest
-                    .install_state
-                    .as_ref()
-                    .and_then(|state| state.kind.as_deref()),
-                Some("directory_package")
+                    .install_profiles
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                vec![NEXRAD_OFFLINE_PROFILE_0, NEXRAD_OFFLINE_PROFILE_LOW1]
             );
+            assert!(version_manifest
+                .install_profiles
+                .values()
+                .all(|state| { state.kind.as_deref() == Some("directory_package") }));
             assert!(version_manifest.delta_from_previous.is_none());
 
             if let Some(previous) = previous_version.as_deref() {

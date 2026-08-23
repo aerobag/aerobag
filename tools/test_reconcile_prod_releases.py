@@ -23,6 +23,26 @@ import reconcile_prod_releases as controller  # noqa: E402
 import release_reconciler as releases  # noqa: E402
 
 
+class MaintenancePolicyTests(unittest.TestCase):
+    def test_assignment_change_defers_refresh_and_gc_until_periodic_reconcile(self) -> None:
+        self.assertEqual(
+            controller.maintenance_policy(
+                assignment_pending=True,
+                refresh_requested=True,
+            ),
+            (False, False),
+        )
+
+    def test_periodic_reconcile_runs_requested_maintenance(self) -> None:
+        self.assertEqual(
+            controller.maintenance_policy(
+                assignment_pending=False,
+                refresh_requested=True,
+            ),
+            (True, True),
+        )
+
+
 class LiveFeedAllocationTests(unittest.TestCase):
     def test_controller_creates_daemon_owned_release_namespace_parents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

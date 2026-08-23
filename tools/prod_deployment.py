@@ -1,23 +1,21 @@
-#!/usr/bin/env python3
-
 # SPDX-FileCopyrightText: 2026 Aerobag contributors
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""Internal production deployment machinery used by prod_manage."""
+
 from __future__ import annotations
 
-import argparse
 import ipaddress
 import json
 import os
 import shlex
 import subprocess
-import sys
 import tempfile
 import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from admin_index import admin_index_html
 from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
@@ -74,51 +72,12 @@ GOOGLE_CHROME_APT_SOURCE = (
     "https://dl.google.com/linux/chrome/deb/ stable main"
 )
 COMMAND_LOG_ENV = "AEROBAG_COMMAND_LOG"
+ProgressReporter = Callable[[str], None]
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Deploy Aerobag production from dev to an aerobag-prod container. "
-            "The target receives a full git repo via bundle, then builds cycle "
-            "publication, live-feeds, the static web app, and Android APK."
-        )
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=DEFAULT_CONFIG,
-        help=f"deployment config JSON (default: {DEFAULT_CONFIG})",
-    )
-    parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="install/update prod but do not start product publication or build web/Android outputs",
-    )
-    parser.add_argument(
-        "--runtime-config-only",
-        action="store_true",
-        help=(
-            "only refresh env, generated helper scripts, nginx, and systemd runtime "
-            "config; do not hydrate source, install packages, or touch the product build"
-        ),
-    )
-    parser.add_argument(
-        "--allow-dirty",
-        action="store_true",
-        help="allow deployment when the local checkout has uncommitted changes",
-    )
-    parser.add_argument(
-        "--wait-for-reconciliation",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print commands and generated paths without changing prod",
-    )
-    return parser.parse_args()
+def _report(progress: ProgressReporter | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def sh_join(args: list[str | os.PathLike[str]]) -> str:
@@ -1928,58 +1887,43 @@ def reload_services(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, command, dry_run=dry_run)
 
 
-def start_runtime(
-    config: dict[str, Any],
-    *,
-    skip_build: bool,
-    wait_for_reconciliation: bool,
-    dry_run: bool,
-) -> None:
-    if skip_build:
-        command = textwrap.dedent(
-            """
-            set -euo pipefail
-            systemctl restart aerobag-cloud-server.service
-            systemctl restart aerobag-client-debug-log.service
-            systemctl restart aerobag-build-watch.service
-            systemctl restart aerobag-pipeline-health.service
-            systemctl start aerobag-health.service || true
-            systemctl start aerobag-build-product.timer
-            systemctl start aerobag-health.timer
-            systemctl start aerobag-cloud-backup.timer
-            """
-        ).strip()
-        run_ssh(config, command, dry_run=dry_run)
-        return
+def start_support_runtime(config: dict[str, Any], *, dry_run: bool) -> None:
+    command = textwrap.dedent(
+        """
+        set -euo pipefail
+        systemctl restart aerobag-cloud-server.service
+        systemctl restart aerobag-client-debug-log.service
+        systemctl restart aerobag-build-watch.service
+        systemctl restart aerobag-pipeline-health.service
+        systemctl start aerobag-health.service || true
+        systemctl start aerobag-build-product.timer
+        systemctl start aerobag-health.timer
+        systemctl start aerobag-cloud-backup.timer
+        """
+    ).strip()
+    run_ssh(config, command, dry_run=dry_run)
 
-    if wait_for_reconciliation:
-        start_product = textwrap.dedent(
-            """
-            if ! systemctl start aerobag-build-product.service; then
-              echo "release reconciliation failed" >&2
-              systemctl status aerobag-build-product.service --no-pager >&2 || true
-              journalctl -u aerobag-build-product.service -n 100 --no-pager >&2 || true
-              exit 1
-            fi
-            """
-        ).strip()
-    else:
-        start_product = "systemctl start --no-block aerobag-build-product.service"
 
-    command = "\n".join(
-        [
-            "set -euo pipefail",
-            "systemctl restart aerobag-cloud-server.service",
-            "systemctl restart aerobag-client-debug-log.service",
-            "systemctl restart aerobag-build-watch.service",
-            "systemctl restart aerobag-pipeline-health.service",
-            start_product,
-            "systemctl start aerobag-build-product.timer",
-            "systemctl start aerobag-health.timer",
-            "systemctl start aerobag-cloud-backup.timer",
-            "systemctl start aerobag-health.service || true",
-        ]
-    )
+def start_reconciled_runtime(config: dict[str, Any], *, dry_run: bool) -> None:
+    command = textwrap.dedent(
+        """
+        set -euo pipefail
+        systemctl restart aerobag-cloud-server.service
+        systemctl restart aerobag-client-debug-log.service
+        systemctl restart aerobag-build-watch.service
+        systemctl restart aerobag-pipeline-health.service
+        if ! systemctl start aerobag-build-product.service; then
+          echo "release reconciliation failed" >&2
+          systemctl status aerobag-build-product.service --no-pager >&2 || true
+          journalctl -u aerobag-build-product.service -n 100 --no-pager >&2 || true
+          exit 1
+        fi
+        systemctl start aerobag-build-product.timer
+        systemctl start aerobag-health.timer
+        systemctl start aerobag-cloud-backup.timer
+        systemctl start aerobag-health.service || true
+        """
+    ).strip()
     run_ssh(config, command, dry_run=dry_run)
 
 
@@ -2002,99 +1946,125 @@ def run_android_sdk_setup(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, "/usr/local/bin/aerobag-ensure-android-sdk", dry_run=dry_run)
 
 
-def verify_async_product_build(config: dict[str, Any], *, dry_run: bool) -> None:
-    command = textwrap.dedent(
-        """
-        set -euo pipefail
-        unit=aerobag-build-product.service
-        active_state="$(systemctl show "$unit" --property=ActiveState --value)"
-        result="$(systemctl show "$unit" --property=Result --value)"
-        if [ "$active_state" = failed ] || [ "$result" != success ]; then
-          echo "asynchronous cycle build failed: active_state=$active_state result=$result" >&2
-          systemctl status "$unit" --no-pager >&2 || true
-          journalctl -u "$unit" -n 80 --no-pager >&2 || true
-          exit 1
-        fi
-        echo "asynchronous cycle build state: active_state=$active_state result=$result"
-        """
-    ).strip()
-    run_ssh(config, command, dry_run=dry_run)
-
-
-def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
-    if args.runtime_config_only:
-        deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
-        prepare_remote_paths(config, dry_run=args.dry_run)
-        ensure_legacy_channel_view(config, dry_run=args.dry_run)
-        migrate_cloud_storage_layout(config, dry_run=args.dry_run)
-        install_nms_notams_credential(config, dry_run=args.dry_run)
-        install_cloud_server_secret(config, dry_run=args.dry_run)
-        install_cloud_server_policy(config, dry_run=args.dry_run)
-        write_remote_config(
-            config,
-            deployed_rev=deployed_rev,
-            include_build_config=False,
-            dry_run=args.dry_run,
-        )
-        reload_services(config, dry_run=args.dry_run)
-        start_runtime(
-            config,
-            skip_build=True,
-            wait_for_reconciliation=False,
-            dry_run=args.dry_run,
-        )
-        start_release_live_feeds(config, dry_run=args.dry_run)
-        return
-
-    assert_local_refs_exist(config, dry_run=args.dry_run)
-    assert_clean_checkout(allow_dirty=args.allow_dirty, dry_run=args.dry_run)
-    deployed_rev = local_ref_sha(config["checkout_ref"], dry_run=args.dry_run)
-
-    install_bootstrap_packages(config, dry_run=args.dry_run)
-    quiesce_release_reconciliation(config, dry_run=args.dry_run)
-    prepare_remote_paths(config, dry_run=args.dry_run)
-    ensure_legacy_channel_view(config, dry_run=args.dry_run)
-    migrate_cloud_storage_layout(config, dry_run=args.dry_run)
-
+def sync_source_checkout(config: dict[str, Any], *, dry_run: bool) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     remote_bundle_path = f"/tmp/aerobag-deploy-{timestamp}.bundle"
     with tempfile.TemporaryDirectory(prefix="aerobag-deploy-") as temp_dir:
         bundle_path = Path(temp_dir) / "aerobag.bundle"
-        create_git_bundle(bundle_path, dry_run=args.dry_run)
-        copy_bundle(config, bundle_path, remote_bundle_path, dry_run=args.dry_run)
+        create_git_bundle(bundle_path, dry_run=dry_run)
+        copy_bundle(config, bundle_path, remote_bundle_path, dry_run=dry_run)
         install_repo_from_bundle(
             config,
             remote_bundle_path,
-            dry_run=args.dry_run,
+            dry_run=dry_run,
         )
 
-    install_external_package_sources(config, dry_run=args.dry_run)
-    install_repo_packages(config, dry_run=args.dry_run)
-    install_android_signing_key(config, dry_run=args.dry_run)
-    install_nms_notams_credential(config, dry_run=args.dry_run)
-    install_cloud_server_secret(config, dry_run=args.dry_run)
-    install_cloud_server_policy(config, dry_run=args.dry_run)
+
+def repair_runtime(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Repair generated runtime configuration without hydrating build tools."""
+
+    _report(progress, "Repairing generated runtime configuration")
+    deployed_rev = remote_deployed_rev(config, dry_run=dry_run)
+    prepare_remote_paths(config, dry_run=dry_run)
+    ensure_legacy_channel_view(config, dry_run=dry_run)
+    migrate_cloud_storage_layout(config, dry_run=dry_run)
+    install_nms_notams_credential(config, dry_run=dry_run)
+    install_cloud_server_secret(config, dry_run=dry_run)
+    install_cloud_server_policy(config, dry_run=dry_run)
+    write_remote_config(
+        config,
+        deployed_rev=deployed_rev,
+        include_build_config=False,
+        dry_run=dry_run,
+    )
+    reload_services(config, dry_run=dry_run)
+    start_support_runtime(config, dry_run=dry_run)
+    start_release_live_feeds(config, dry_run=dry_run)
+
+
+def reconcile_host(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Converge an empty, damaged, or stale production host from desired state."""
+
+    _report(progress, "Checking host prerequisites and persistent paths")
+    assert_local_refs_exist(config, dry_run=dry_run)
+    assert_clean_checkout(allow_dirty=False, dry_run=dry_run)
+    deployed_rev = local_ref_sha(config["checkout_ref"], dry_run=dry_run)
+
+    install_bootstrap_packages(config, dry_run=dry_run)
+    quiesce_release_reconciliation(config, dry_run=dry_run)
+    prepare_remote_paths(config, dry_run=dry_run)
+    ensure_legacy_channel_view(config, dry_run=dry_run)
+    migrate_cloud_storage_layout(config, dry_run=dry_run)
+    _report(progress, "Synchronizing the production controller checkout")
+    sync_source_checkout(config, dry_run=dry_run)
+
+    _report(progress, "Installing runtime dependencies and configuration")
+    install_external_package_sources(config, dry_run=dry_run)
+    install_repo_packages(config, dry_run=dry_run)
+    install_android_signing_key(config, dry_run=dry_run)
+    install_nms_notams_credential(config, dry_run=dry_run)
+    install_cloud_server_secret(config, dry_run=dry_run)
+    install_cloud_server_policy(config, dry_run=dry_run)
     write_remote_file(
         config,
         DEPLOY_CONFIG_FILE,
         deploy_config_json(config, deployed_rev),
-        dry_run=args.dry_run,
+        dry_run=dry_run,
     )
-    write_remote_config(config, deployed_rev=deployed_rev, dry_run=args.dry_run)
-    run_initial_toolchain_build(config, dry_run=args.dry_run)
-    run_android_sdk_setup(config, dry_run=args.dry_run)
+    write_remote_config(config, deployed_rev=deployed_rev, dry_run=dry_run)
+    run_initial_toolchain_build(config, dry_run=dry_run)
+    run_android_sdk_setup(config, dry_run=dry_run)
     # Keep the old runtime serving until every fallible installation step has
     # completed. Only the final service handoff needs these units stopped.
-    stop_stale_units(config, dry_run=args.dry_run)
-    reload_services(config, dry_run=args.dry_run)
-    start_runtime(
-        config,
-        skip_build=args.skip_build,
-        wait_for_reconciliation=args.wait_for_reconciliation,
-        dry_run=args.dry_run,
-    )
-    if not args.skip_build and not args.wait_for_reconciliation:
-        verify_async_product_build(config, dry_run=args.dry_run)
+    stop_stale_units(config, dry_run=dry_run)
+    reload_services(config, dry_run=dry_run)
+    _report(progress, "Reconciling release artifacts and channel assignments")
+    start_reconciled_runtime(config, dry_run=dry_run)
+
+
+def activate_release_intent(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Publish desired-state changes and run only the release controller."""
+
+    _report(progress, "Synchronizing promoted release intent")
+    assert_local_refs_exist(config, dry_run=dry_run)
+    assert_clean_checkout(allow_dirty=False, dry_run=dry_run)
+    quiesce_release_reconciliation(config, dry_run=dry_run)
+    try:
+        sync_source_checkout(config, dry_run=dry_run)
+        _report(progress, "Switching the production channel")
+        command = textwrap.dedent(
+            """
+            set -euo pipefail
+            if ! systemctl start aerobag-build-product.service; then
+              echo "release activation failed" >&2
+              systemctl status aerobag-build-product.service --no-pager >&2 || true
+              journalctl -u aerobag-build-product.service -n 100 --no-pager >&2 || true
+              exit 1
+            fi
+            """
+        ).strip()
+        run_ssh(config, command, dry_run=dry_run)
+    finally:
+        run_ssh(
+            config,
+            "systemctl start aerobag-build-product.timer",
+            dry_run=dry_run,
+        )
 
 
 def failed_command_summary(command: str | list[str]) -> str:
@@ -2104,28 +2074,3 @@ def failed_command_summary(command: str | list[str]) -> str:
         return f"remote command on {target}"
     concise = [part for part in parts if "\n" not in part]
     return " ".join(concise) or Path(parts[0]).name
-
-
-def main() -> int:
-    args = parse_args()
-    config = load_config(args.config)
-    print(
-        "deploying refs="
-        + ",".join(publication_refs(config))
-        + f" to {ssh_target(config)} source={config['source_root']} artifacts={config['artifact_root']}",
-        flush=True,
-    )
-    try:
-        deploy(config, args)
-        return 0
-    except subprocess.CalledProcessError as error:
-        print(
-            f"deploy_prod: command failed with exit {error.returncode}: "
-            f"{failed_command_summary(error.cmd)}",
-            file=sys.stderr,
-        )
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

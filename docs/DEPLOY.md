@@ -1,24 +1,20 @@
 # Production Deploy
 
-Aerobag production is deployed from the dev machine with:
+Aerobag production is managed from the dev machine with one operator CLI:
 
 ```bash
 cd /root/aerobag-preprocessor/aerobag
-tools/deploy_prod.py --config deploy/aerobag-prod.json
+tools/prod_manage.py --reconcile
 ```
 
-Release assignments come exclusively from `deploy/releases.json`. By default,
-deploy installs the controller and starts release reconciliation asynchronously.
-Missing cycle products, web output, signed APK, and live-feed binaries are built
-behind the currently served channel; no build writes into active production.
+Release assignments come exclusively from `deploy/releases.json`.
+`prod_manage.py` maps stage, promotion, and recovery intent onto distinct
+internal deployment operations; there is no second deployment CLI that can
+bypass those semantics. Missing cycle products, web output, signed APK, and
+live-feed binaries are built behind the currently served channel; no build
+writes into active production.
 
-Use `--skip-build` to update infrastructure without starting reconciliation.
-
-Use `--runtime-config-only` to refresh env files, generated helper scripts,
-nginx, and systemd runtime units without touching the source checkout or
-currently running product build.
-
-The deploy tool is intentionally dev-pushed. `aerobag-prod` does not need git
+The production controller is intentionally dev-pushed. `aerobag-prod` does not need git
 credentials back to dev or GitHub. The tool creates a local git bundle with all
 refs, copies it to prod, fetches all heads/tags into `/opt/aerobag`, checks out
 `main`, and leaves the configured annotated release tags available for isolated
@@ -79,7 +75,9 @@ the assigned staging release, the command exits and directs the operator to
 
 `--promote` requires a clean `main` synchronized with `origin/main`, and checks
 that the configured candidate is active and qualified on staging. It commits
-the production pointer change, clears staging, pushes, and reconciles deployment.
+the production pointer change, clears staging, pushes, synchronizes only the
+new release intent, and activates the qualified channel generation. It does not
+install host packages, refresh products, or synchronously run GC.
 With no staging assignment it exits locally without contacting production.
 It does not guess whether the previous production release should remain under
 `sunset`; use a complete manual desired-state edit when old installed clients
@@ -96,9 +94,9 @@ repair host drift, or recover a replaced container.
 
 Convergence is defined by release intent and runtime health, not by whether the
 deployment-owned source mirror equals the caller's latest unrelated `main`
-commit. Use `tools/deploy_prod.py` explicitly when the intended operation is to
-roll out controller, host-package, or systemd/nginx changes without changing a
-release assignment.
+commit. Controller, host-package, and systemd/nginx changes are installed by
+the full `--stage` or `--reconcile` path; there is no independent deployment
+entry point.
 
 `prod_manage` captures subprocess command traces and output in a private
 per-invocation file under `/tmp`. Successful and operator-aborted invocations
@@ -107,7 +105,7 @@ output concise while preserving complete diagnostics for inspection or handoff.
 
 All operations reject an active release reconciliation before making changes.
 The intent-changing commands repeat that check after confirmation.
-`deploy_prod.py` independently closes the systemd-timer race and rejects a held
+The internal deployment module independently closes the systemd-timer race and rejects a held
 reconciler lock; deployment no longer kills an in-progress release build. Run
 `--reconcile` after the prior reconciliation finishes instead of repeating an
 intent-changing operation.
@@ -231,7 +229,7 @@ Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
 They require a full JDK, not just a JRE, because Android Gradle transforms use
 `jlink` while processing platform modules. Prod installs `openjdk-21-jdk` from
 `deploy/prod-packages.txt`; local builds may also use a full Java 17 JDK.
-`deploy_prod.py` installs the Android command-line tools, platform 34,
+The full `prod_manage.py --reconcile` path installs the Android command-line tools, platform 34,
 build-tools 34.0.0, platform-tools, accepts SDK licenses, installs NDK
 `26.3.11579264`, installs the Rust `x86_64-linux-android` and
 `aarch64-linux-android` targets, and writes `ui/android-app/local.properties`.
@@ -370,8 +368,9 @@ The timer invokes the desired-state controller:
 For each missing tag, the controller builds cycle publication with
 `build_multi_version_publication.py --no-activate`, then builds immutable web,
 APK, and daemon outputs with `tools/build_release.py`. Promotion only creates a
-new channel generation, reloads nginx gracefully, validates the public channel,
-and runs channel-aware GC. It does not rebuild the release.
+new channel generation and reloads nginx gracefully. Product refresh and
+channel-aware GC are deferred to periodic reconciliation. Promotion does not
+rebuild or requalify the release.
 
 `build_prod_apk.sh` verifies that `JAVA_HOME` resolves to a full JDK with
 `jlink` before invoking Gradle. On prod that should be

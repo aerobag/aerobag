@@ -560,8 +560,9 @@ allowed to drain.
 8. **Retire in-place deployment**
    Remove the path that restarts the sole live-feed daemon, rebuilds the active
    web directory, and starts a product build against production discovery.
-   `tools/deploy_prod` becomes an idempotent desired-state reconciler plus rare
-   infrastructure bootstrap.
+   `tools/prod_manage.py --reconcile` becomes an idempotent desired-state
+   reconciler plus rare infrastructure bootstrap. Deployment machinery remains
+   an internal module, not a second operator entry point.
 
 9. **Activation-only promotion**
    Add the strict no-build controller mode, lightweight controller/intent

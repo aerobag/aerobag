@@ -16,18 +16,19 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS_DIR.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
-import deploy_prod  # noqa: E402
+import prod_deployment as deployment  # noqa: E402
 import release_reconciler as releases  # noqa: E402
 
 
@@ -62,7 +63,7 @@ def run(
     capture: bool = False,
     cwd: Path = REPO_ROOT,
 ) -> subprocess.CompletedProcess[str]:
-    return deploy_prod.run_local(
+    return deployment.run_local(
         command,
         cwd=cwd,
         capture=capture,
@@ -195,7 +196,7 @@ def write_atomic(path: Path, content: str) -> None:
 
 def assert_remote_idle(config: dict[str, Any]) -> None:
     try:
-        deploy_prod.assert_release_reconciliation_idle(config, dry_run=False)
+        deployment.assert_release_reconciliation_idle(config, dry_run=False)
     except subprocess.CalledProcessError as error:
         raise ManagementError(
             "production release reconciliation is already running; wait for it to finish"
@@ -204,8 +205,8 @@ def assert_remote_idle(config: dict[str, Any]) -> None:
 
 def load_remote_observed(config: dict[str, Any]) -> releases.ObservedState:
     path = f"{config['artifact_root']}/state/releases-observed.json"
-    quoted_path = deploy_prod.shell_quote(path)
-    result = deploy_prod.run_ssh(
+    quoted_path = deployment.shell_quote(path)
+    result = deployment.run_ssh(
         config,
         f"if test -f {quoted_path}; then cat {quoted_path}; fi",
         capture=True,
@@ -239,17 +240,17 @@ def remote_runtime_failures(
 ) -> list[RuntimeFailure]:
     checks = [
         (
-            f"test -d {deploy_prod.shell_quote(config['source_root'] + '/.git')}",
+            f"test -d {deployment.shell_quote(config['source_root'] + '/.git')}",
             "host",
             "controller source is not installed",
         ),
         (
-            f"test -s {deploy_prod.shell_quote(deploy_prod.DEPLOYED_REV_FILE)}",
+            f"test -s {deployment.shell_quote(deployment.DEPLOYED_REV_FILE)}",
             "host",
             "installed controller revision is missing",
         ),
         (
-            f"test -L {deploy_prod.shell_quote(config['artifact_root'] + '/channel-current')}",
+            f"test -L {deployment.shell_quote(config['artifact_root'] + '/channel-current')}",
             "release",
             "active channel link is missing",
         ),
@@ -267,7 +268,7 @@ def remote_runtime_failures(
     ]
     checks.extend(
         (
-            f"systemctl is-active --quiet {deploy_prod.shell_quote(unit)}",
+            f"systemctl is-active --quiet {deployment.shell_quote(unit)}",
             "service",
             f"{unit} is not active",
         )
@@ -284,15 +285,15 @@ def remote_runtime_failures(
         ):
             if path is not None:
                 checks.append(
-                    (f"test -e {deploy_prod.shell_quote(path)}", "release", description)
+                    (f"test -e {deployment.shell_quote(path)}", "release", description)
                 )
 
     lines = [
         f"{command} || printf '%s\\t%s\\n' "
-        f"{deploy_prod.shell_quote(category)} {deploy_prod.shell_quote(description)}"
+        f"{deployment.shell_quote(category)} {deployment.shell_quote(description)}"
         for command, category, description in checks
     ]
-    result = deploy_prod.run_ssh(
+    result = deployment.run_ssh(
         config,
         "\n".join(lines),
         capture=True,
@@ -332,16 +333,16 @@ def create_operation_log() -> Path:
 
 
 def set_operation_log(path: Path) -> str | None:
-    previous = os.environ.get(deploy_prod.COMMAND_LOG_ENV)
-    os.environ[deploy_prod.COMMAND_LOG_ENV] = str(path)
+    previous = os.environ.get(deployment.COMMAND_LOG_ENV)
+    os.environ[deployment.COMMAND_LOG_ENV] = str(path)
     return previous
 
 
 def restore_operation_log(previous: str | None) -> None:
     if previous is None:
-        os.environ.pop(deploy_prod.COMMAND_LOG_ENV, None)
+        os.environ.pop(deployment.COMMAND_LOG_ENV, None)
     else:
-        os.environ[deploy_prod.COMMAND_LOG_ENV] = previous
+        os.environ[deployment.COMMAND_LOG_ENV] = previous
 
 
 def assert_staging_is_qualified(
@@ -391,32 +392,53 @@ def confirmed() -> bool:
     return input("proceed? y/N ").strip().lower() in {"y", "yes"}
 
 
+def report_deployment_progress(message: str) -> None:
+    print(f"  {message}...", flush=True)
+
+
+def timed_operation(label: str, operation: Callable[[], None]) -> None:
+    print(f"{label}...", flush=True)
+    started = time.monotonic()
+    operation()
+    elapsed = time.monotonic() - started
+    print(f"{label} complete ({elapsed:.1f}s).", flush=True)
+
+
 def deploy(config_path: Path) -> None:
-    run(
-        [
-            str(TOOLS_DIR / "deploy_prod.py"),
-            "--config",
-            str(config_path),
-            "--wait-for-reconciliation",
-        ],
-        capture=False,
+    config = deployment.load_config(config_path)
+    timed_operation(
+        "Reconciling production",
+        lambda: deployment.reconcile_host(
+            config,
+            progress=report_deployment_progress,
+        ),
+    )
+
+
+def activate_release_intent(config_path: Path) -> None:
+    config = deployment.load_config(config_path)
+    timed_operation(
+        "Promoting release",
+        lambda: deployment.activate_release_intent(
+            config,
+            progress=report_deployment_progress,
+        ),
     )
 
 
 def repair_runtime(config_path: Path) -> None:
-    run(
-        [
-            str(TOOLS_DIR / "deploy_prod.py"),
-            "--config",
-            str(config_path),
-            "--runtime-config-only",
-        ],
-        capture=False,
+    config = deployment.load_config(config_path)
+    timed_operation(
+        "Repairing production runtime",
+        lambda: deployment.repair_runtime(
+            config,
+            progress=report_deployment_progress,
+        ),
     )
 
 
 def failed_command_summary(command: str | list[str]) -> str:
-    return deploy_prod.failed_command_summary(command)
+    return deployment.failed_command_summary(command)
 
 
 def stage(config_path: Path, releases_path: Path) -> int:
@@ -435,7 +457,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
                 "use --reconcile to check production state"
             )
 
-    config = deploy_prod.load_config(config_path)
+    config = deployment.load_config(config_path)
     assert_remote_idle(config)
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
@@ -490,7 +512,7 @@ def promote(config_path: Path, releases_path: Path) -> int:
             "promotion is complete"
         )
 
-    config = deploy_prod.load_config(config_path)
+    config = deployment.load_config(config_path)
     assert_remote_idle(config)
     assert_staging_is_qualified(config, desired)
     proposed, old_production, candidate = promotion_document(document)
@@ -522,6 +544,7 @@ def promote(config_path: Path, releases_path: Path) -> int:
     git("add", str(releases_path.relative_to(REPO_ROOT)), capture=False)
     git("commit", "-m", f"Promote {candidate}", capture=False)
     git("push", "origin", "main", capture=False)
+    activate_release_intent(config_path)
     return reconcile(config_path, releases_path)
 
 
@@ -534,7 +557,7 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
     desired = releases.effective_desired_releases(
         releases.parse_desired_releases(document)
     )
-    config = deploy_prod.load_config(config_path)
+    config = deployment.load_config(config_path)
     assert_remote_idle(config)
     observed = load_remote_observed(config)
     plan = reconciliation_plan(desired, observed)
@@ -603,12 +626,12 @@ def main() -> int:
             else:
                 result = reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
         except (ManagementError, releases.ReleaseConfigError) as error:
-            deploy_prod.append_command_log(f"prod_manage: {error}")
+            deployment.append_command_log(f"prod_manage: {error}")
             print(f"prod_manage: {error}", file=sys.stderr)
             result = 2
         except subprocess.CalledProcessError as error:
             summary = failed_command_summary(error.cmd)
-            deploy_prod.append_command_log(
+            deployment.append_command_log(
                 f"prod_manage: command failed with exit {error.returncode}: {summary}"
             )
             print(
@@ -618,11 +641,11 @@ def main() -> int:
             )
             result = 2
         except KeyboardInterrupt:
-            deploy_prod.append_command_log("prod_manage interrupted by operator")
+            deployment.append_command_log("prod_manage interrupted by operator")
             print("prod_manage: interrupted", file=sys.stderr)
             result = 130
         except Exception:  # noqa: BLE001 - preserve unexpected details in the log.
-            deploy_prod.append_command_log(traceback.format_exc())
+            deployment.append_command_log(traceback.format_exc())
             print("prod_manage: unexpected internal failure", file=sys.stderr)
             result = 2
     finally:

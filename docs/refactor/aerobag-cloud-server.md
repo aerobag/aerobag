@@ -480,7 +480,7 @@ root.
 
 ### Production
 
-`tools/deploy_prod.py` will:
+The internal production deployment module will:
 
 - build and install the release daemon;
 - install and maintain `aerobag-cloud-server.service`;
@@ -703,7 +703,7 @@ plans. Both cases now have Android unit coverage.
 Status: complete on 2026-08-04, excluding the separately authorized production
 deployment.
 
-- Extend `tools/deploy_prod.py` with the daemon build, systemd unit, persistent
+- Extend the internal production deployment module with the daemon build, systemd unit, persistent
   data/secrets paths, nginx SSE configuration, service reporting, and pipeline
   health wiring.
 - Add coherent SQLite-plus-blob backup and restore tooling and exercise a

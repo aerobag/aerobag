@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 import io
 import json
 import os
@@ -15,14 +15,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
-import deploy_prod  # noqa: E402
+import prod_deployment as deploy_prod  # noqa: E402
 
 
 class ProductPublicationTests(unittest.TestCase):
@@ -50,33 +49,9 @@ class ProductPublicationTests(unittest.TestCase):
             self.assertIn("printf secret", log)
             self.assertIn("captured output", log)
 
-    def test_remote_failure_is_reported_without_a_secondary_error(self) -> None:
-        failure = subprocess.CalledProcessError(
-            1,
-            ["ssh", "-o", "BatchMode=yes", "root@prod", "multiline\nscript"],
-        )
-        stderr = io.StringIO()
-        with (
-            mock.patch.object(
-                deploy_prod,
-                "parse_args",
-                return_value=SimpleNamespace(config=Path("config.json")),
-            ),
-            mock.patch.object(
-                deploy_prod,
-                "load_config",
-                return_value={"source_root": "/source", "artifact_root": "/artifacts"},
-            ),
-            mock.patch.object(deploy_prod, "publication_refs", return_value=[]),
-            mock.patch.object(deploy_prod, "ssh_target", return_value="root@prod"),
-            mock.patch.object(deploy_prod, "deploy", side_effect=failure),
-            redirect_stderr(stderr),
-        ):
-            result = deploy_prod.main()
-
-        self.assertEqual(result, 2)
-        self.assertIn("remote command on root@prod", stderr.getvalue())
-        self.assertNotIn("multiline", stderr.getvalue())
+    def test_deployment_module_has_no_independent_cli(self) -> None:
+        self.assertFalse(hasattr(deploy_prod, "parse_args"))
+        self.assertFalse(hasattr(deploy_prod, "main"))
 
     def test_live_feed_publication_path_matches_current_contract(self) -> None:
         self.assertEqual(deploy_prod.LIVE_FEEDS_CONTRACT_PATH, "v3")
@@ -239,30 +214,67 @@ class ProductPublicationTests(unittest.TestCase):
     def test_managed_release_deploy_waits_on_the_exact_systemd_start(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
-            deploy_prod.start_runtime(
-                config,
-                skip_build=False,
-                wait_for_reconciliation=True,
-                dry_run=False,
-            )
+            deploy_prod.start_reconciled_runtime(config, dry_run=False)
 
         command = run_ssh.call_args.args[1]
         self.assertIn("systemctl start aerobag-build-product.service", command)
         self.assertNotIn("start --no-block aerobag-build-product.service", command)
         self.assertIn("journalctl -u aerobag-build-product.service", command)
 
-    def test_ordinary_deploy_keeps_product_build_asynchronous(self) -> None:
+    def test_promotion_only_syncs_intent_and_starts_release_controller(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with (
+            mock.patch.object(deploy_prod, "assert_local_refs_exist"),
+            mock.patch.object(deploy_prod, "assert_clean_checkout"),
+            mock.patch.object(deploy_prod, "quiesce_release_reconciliation") as quiesce,
+            mock.patch.object(deploy_prod, "sync_source_checkout") as sync_source,
+            mock.patch.object(deploy_prod, "run_ssh") as run_ssh,
+            mock.patch.object(deploy_prod, "install_repo_packages") as install_packages,
+            mock.patch.object(deploy_prod, "run_android_sdk_setup") as setup_android,
+        ):
+            deploy_prod.activate_release_intent(config)
+
+        quiesce.assert_called_once_with(config, dry_run=False)
+        sync_source.assert_called_once_with(config, dry_run=False)
+        command = run_ssh.call_args_list[0].args[1]
+        self.assertIn("systemctl start aerobag-build-product.service", command)
+        self.assertEqual(
+            run_ssh.call_args_list[1].args[1],
+            "systemctl start aerobag-build-product.timer",
+        )
+        install_packages.assert_not_called()
+        setup_android.assert_not_called()
+
+    def test_promotion_restores_periodic_timer_when_intent_sync_fails(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with (
+            mock.patch.object(deploy_prod, "assert_local_refs_exist"),
+            mock.patch.object(deploy_prod, "assert_clean_checkout"),
+            mock.patch.object(deploy_prod, "quiesce_release_reconciliation"),
+            mock.patch.object(
+                deploy_prod,
+                "sync_source_checkout",
+                side_effect=RuntimeError("sync failed"),
+            ),
+            mock.patch.object(deploy_prod, "run_ssh") as run_ssh,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sync failed"):
+                deploy_prod.activate_release_intent(config)
+
+        run_ssh.assert_called_once_with(
+            config,
+            "systemctl start aerobag-build-product.timer",
+            dry_run=False,
+        )
+
+    def test_runtime_repair_does_not_start_product_build(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
-            deploy_prod.start_runtime(
-                config,
-                skip_build=False,
-                wait_for_reconciliation=False,
-                dry_run=False,
-            )
+            deploy_prod.start_support_runtime(config, dry_run=False)
 
         command = run_ssh.call_args.args[1]
-        self.assertIn("start --no-block aerobag-build-product.service", command)
+        self.assertNotIn("aerobag-build-product.service", command)
+        self.assertIn("systemctl start aerobag-build-product.timer", command)
 
 
 class AndroidSigningKeyTests(unittest.TestCase):

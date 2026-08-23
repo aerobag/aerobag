@@ -144,6 +144,18 @@ def qualification_is_current(record: releases.ObservedRelease) -> bool:
         return False
 
 
+def maintenance_policy(
+    *, assignment_pending: bool, refresh_requested: bool
+) -> tuple[bool, bool]:
+    """Return whether to run GC and product refresh before reconciliation."""
+
+    if assignment_pending:
+        # Assignment changes must converge promptly. Periodic reconciliation
+        # performs maintenance after the new channel generation is active.
+        return False, False
+    return True, refresh_requested
+
+
 class Controller:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -631,7 +643,6 @@ class Controller:
             if tag not in all_tags and record.live_feed_status == "running":
                 record.draining_until_utc = draining_deadline
         self.save()
-        self.run_pending_gc()
 
     def qualify(self, tag: str) -> None:
         if self.observed.staging != tag:
@@ -787,13 +798,21 @@ def main() -> int:
         except BlockingIOError:
             raise SystemExit("another release reconciliation is already running") from None
         controller = Controller(args)
+        assignment_pending = not releases.plan_reconciliation(
+            controller.desired, controller.observed
+        ).converged
+        run_gc, refresh_products = maintenance_policy(
+            assignment_pending=assignment_pending,
+            refresh_requested=args.refresh_products,
+        )
         if not args.plan:
             controller.save()
         if not args.plan:
             controller.stop_completed_drains()
             controller.recover_activated_generation()
-            controller.run_pending_gc()
-        if args.refresh_products and not args.plan:
+            if run_gc:
+                controller.run_pending_gc()
+        if refresh_products and not args.plan:
             controller.refresh_products()
         return controller.reconcile(plan_only=args.plan)
 

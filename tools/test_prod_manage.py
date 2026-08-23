@@ -38,6 +38,10 @@ def desired_document(*, staging: str | None = None) -> dict:
 
 
 class DesiredStateMutationTests(unittest.TestCase):
+    def test_prod_manage_is_the_only_public_production_cli(self) -> None:
+        self.assertFalse((Path(TOOLS_DIR) / "deploy_prod").exists())
+        self.assertFalse((Path(TOOLS_DIR) / "deploy_prod.py").exists())
+
     def test_public_cli_exposes_stage_promote_and_reconcile(self) -> None:
         with mock.patch.object(sys, "argv", ["prod_manage.py", "--stage"]):
             args = prod_manage.parse_args()
@@ -62,7 +66,7 @@ class OperationLogTests(unittest.TestCase):
             log_path = Path(temp_dir) / "operation.log"
 
             def successful_reconcile(*_args: object) -> int:
-                prod_manage.deploy_prod.append_command_log("hidden shell fluff")
+                prod_manage.deployment.append_command_log("hidden shell fluff")
                 return 0
 
             stdout = io.StringIO()
@@ -92,7 +96,7 @@ class OperationLogTests(unittest.TestCase):
             log_path = Path(temp_dir) / "operation.log"
 
             def failed_reconcile(*_args: object) -> int:
-                prod_manage.deploy_prod.append_command_log("subprocess details")
+                prod_manage.deployment.append_command_log("subprocess details")
                 raise prod_manage.ManagementError("reconciliation failed")
 
             stderr = io.StringIO()
@@ -227,13 +231,33 @@ class PromotionGateTests(unittest.TestCase):
 
 
 class ReconciliationCompletionTests(unittest.TestCase):
-    def test_deploy_waits_for_the_reconciler_started_by_the_deployer(self) -> None:
-        with mock.patch.object(prod_manage, "run") as run:
+    def test_timed_operation_reports_phase_and_elapsed_time(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch.object(prod_manage.time, "monotonic", side_effect=[10.0, 12.5]),
+            redirect_stdout(output),
+        ):
+            prod_manage.timed_operation(
+                "Promoting release",
+                lambda: prod_manage.report_deployment_progress("Switching channel"),
+            )
+
+        self.assertIn("Promoting release...", output.getvalue())
+        self.assertIn("Switching channel...", output.getvalue())
+        self.assertIn("Promoting release complete (2.5s).", output.getvalue())
+
+    def test_deploy_calls_internal_full_host_reconciliation(self) -> None:
+        config = {"host": "prod"}
+        with (
+            mock.patch.object(prod_manage.deployment, "load_config", return_value=config),
+            mock.patch.object(prod_manage.deployment, "reconcile_host") as reconcile_host,
+        ):
             prod_manage.deploy(prod_manage.DEFAULT_CONFIG)
 
-        command = run.call_args.args[0]
-        self.assertEqual(command[-1], "--wait-for-reconciliation")
-        self.assertNotIn("InvocationID", " ".join(command))
+        reconcile_host.assert_called_once_with(
+            config,
+            progress=prod_manage.report_deployment_progress,
+        )
 
     def test_multiline_ssh_failure_is_reported_without_echoing_shell_body(self) -> None:
         summary = prod_manage.failed_command_summary(
@@ -249,13 +273,18 @@ class ReconciliationCompletionTests(unittest.TestCase):
         self.assertEqual(summary, "remote command on root@aerobag-prod")
         self.assertNotIn("while", summary)
 
-    def test_runtime_repair_uses_config_only_deployment(self) -> None:
-        with mock.patch.object(prod_manage, "run") as run:
+    def test_runtime_repair_calls_internal_config_repair(self) -> None:
+        config = {"host": "prod"}
+        with (
+            mock.patch.object(prod_manage.deployment, "load_config", return_value=config),
+            mock.patch.object(prod_manage.deployment, "repair_runtime") as repair,
+        ):
             prod_manage.repair_runtime(prod_manage.DEFAULT_CONFIG)
 
-        command = run.call_args.args[0]
-        self.assertEqual(command[-1], "--runtime-config-only")
-        self.assertNotIn("--wait-for-reconciliation", command)
+        repair.assert_called_once_with(
+            config,
+            progress=prod_manage.report_deployment_progress,
+        )
 
 
 class StageOrderingTests(unittest.TestCase):
@@ -276,7 +305,7 @@ class StageOrderingTests(unittest.TestCase):
     def test_dirty_checkout_is_rejected_before_network_or_mutation(self) -> None:
         with (
             mock.patch.object(prod_manage, "git", return_value=" M app") as git,
-            mock.patch.object(prod_manage.deploy_prod, "load_config") as load_config,
+            mock.patch.object(prod_manage.deployment, "load_config") as load_config,
         ):
             with self.assertRaisesRegex(
                 prod_manage.ManagementError, "can't stage with uncommitted work"
@@ -303,7 +332,7 @@ class StageOrderingTests(unittest.TestCase):
                     commit="a" * 40,
                 ),
             ),
-            mock.patch.object(prod_manage.deploy_prod, "load_config") as load_config,
+            mock.patch.object(prod_manage.deployment, "load_config") as load_config,
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
         ):
             with self.assertRaisesRegex(
@@ -321,7 +350,7 @@ class StageOrderingTests(unittest.TestCase):
         document = desired_document()
 
         with (
-            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
             mock.patch.object(
                 prod_manage,
@@ -347,7 +376,7 @@ class StageOrderingTests(unittest.TestCase):
             return self.clean_git(*args, capture=capture)
 
         with (
-            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "git", side_effect=fake_git),
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
@@ -397,7 +426,7 @@ class ReconcileCommandTests(unittest.TestCase):
             mock.patch.object(
                 prod_manage, "load_release_document", return_value=desired_document()
             ),
-            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "assert_remote_idle"),
             mock.patch.object(
                 prod_manage,
@@ -434,7 +463,7 @@ class ReconcileCommandTests(unittest.TestCase):
         )
         config = {"source_root": "/source", "artifact_root": "/artifacts"}
         with mock.patch.object(
-            prod_manage.deploy_prod, "run_ssh", return_value=completed
+            prod_manage.deployment, "run_ssh", return_value=completed
         ) as run_ssh:
             failures = prod_manage.remote_runtime_failures(
                 config, desired, releases.ObservedState.empty()
@@ -442,7 +471,7 @@ class ReconcileCommandTests(unittest.TestCase):
 
         self.assertEqual(failures, [])
         command = run_ssh.call_args.args[1]
-        self.assertIn(f"test -s {prod_manage.deploy_prod.DEPLOYED_REV_FILE}", command)
+        self.assertIn(f"test -s {prod_manage.deployment.DEPLOYED_REV_FILE}", command)
         self.assertNotIn("installed controller revision differs", command)
 
     def test_nonconverged_reconcile_deploys_then_verifies_convergence(self) -> None:
@@ -558,7 +587,7 @@ class PromoteCommandTests(unittest.TestCase):
                 "load_release_document",
                 return_value=desired_document(),
             ),
-            mock.patch.object(prod_manage.deploy_prod, "load_config") as load_config,
+            mock.patch.object(prod_manage.deployment, "load_config") as load_config,
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
         ):
             with self.assertRaisesRegex(
@@ -584,12 +613,13 @@ class PromoteCommandTests(unittest.TestCase):
             mock.patch.object(
                 prod_manage, "load_release_document", return_value=document
             ),
-            mock.patch.object(prod_manage.deploy_prod, "load_config", return_value={}),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage, "assert_staging_is_qualified"),
             mock.patch.object(prod_manage, "print_proposal"),
             mock.patch.object(prod_manage, "confirmed", return_value=True),
             mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(prod_manage, "activate_release_intent") as activate,
             mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
         ):
             result = prod_manage.promote(
@@ -611,6 +641,7 @@ class PromoteCommandTests(unittest.TestCase):
                 ("push", "origin", "main"),
             ],
         )
+        activate.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
         reconcile.assert_called_once_with(
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
         )

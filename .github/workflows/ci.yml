@@ -380,7 +380,7 @@ jobs:
           /usr/bin/python3 -m pytest \
             tools/test_admin_index.py \
             tools/test_chart_cutline_editor.py \
-            tools/test_deploy_prod.py \
+            tools/test_prod_deployment.py \
             tools/test_verify_acs_workload_report.py \
             tools/ci/test_build_e2e_package_fixture.py \
             tools/ci/test_build_nav_db_advance_fixture.py \

@@ -34,6 +34,8 @@ import release_reconciler as releases  # noqa: E402
 
 DEFAULT_CONFIG = REPO_ROOT / "deploy/aerobag-prod.json"
 DEFAULT_RELEASES = REPO_ROOT / "deploy/releases.json"
+PRODUCT_CONTRACT_SOURCE = "crates/product-contracts/src/lib.rs"
+LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
 
 
 class ManagementError(RuntimeError):
@@ -44,6 +46,12 @@ class ManagementError(RuntimeError):
 class RuntimeFailure:
     category: str
     message: str
+
+
+@dataclass(frozen=True)
+class ContractRequirement:
+    family: str
+    contract: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,6 +116,129 @@ def promotion_document(document: dict[str, Any]) -> tuple[dict[str, Any], str, s
     proposed["staging"] = None
     releases.parse_desired_releases(proposed)
     return proposed, old_production, candidate
+
+
+def git_file(ref: str, path: str) -> str:
+    try:
+        return git("show", f"{ref}:{path}")
+    except subprocess.CalledProcessError as error:
+        raise ManagementError(
+            f"cannot inspect release contract source {path} at {ref}"
+        ) from error
+
+
+def parse_product_contracts(source: str, *, ref: str) -> dict[str, str]:
+    constants = dict(
+        re.findall(
+            r'pub const ([A-Z][A-Z0-9_]*_CONTRACT_ID):\s*&str\s*=\s*"([^"]+)"\s*;',
+            source,
+        )
+    )
+    block_match = re.search(
+        r"pub const PRODUCT_CONTRACTS:\s*&\[ProductContract\]\s*=\s*&\[(.*?)\n\];",
+        source,
+        re.DOTALL,
+    )
+    if block_match is None:
+        raise ManagementError(f"cannot parse PRODUCT_CONTRACTS at release {ref}")
+    block = block_match.group(1)
+    entries = re.findall(
+        r"ProductContract\s*\{\s*"
+        r'family_id:\s*"([^"]+)"\s*,\s*'
+        r"contract_id:\s*([A-Z][A-Z0-9_]*)\s*,?\s*\}",
+        block,
+        re.DOTALL,
+    )
+    if not entries or len(entries) != block.count("ProductContract {"):
+        raise ManagementError(
+            f"cannot safely enumerate every PRODUCT_CONTRACTS entry at release {ref}"
+        )
+    contracts: dict[str, str] = {}
+    for family, constant in entries:
+        contract = constants.get(constant)
+        if contract is None:
+            raise ManagementError(
+                f"PRODUCT_CONTRACTS[{family!r}] uses unreadable {constant} at release {ref}"
+            )
+        if family in contracts:
+            raise ManagementError(
+                f"PRODUCT_CONTRACTS repeats family {family!r} at release {ref}"
+            )
+        contracts[family] = contract
+    return contracts
+
+
+def parse_live_feed_contract(source: str, *, ref: str) -> str:
+    matches = re.findall(
+        r'^LIVE_FEEDS_CONTRACT_PATH\s*=\s*"([^"]+)"\s*$',
+        source,
+        re.MULTILINE,
+    )
+    if len(matches) != 1:
+        raise ManagementError(
+            f"cannot parse LIVE_FEEDS_CONTRACT_PATH at release {ref}"
+        )
+    return matches[0]
+
+
+def release_contracts(ref: str) -> dict[str, str]:
+    contracts = parse_product_contracts(
+        git_file(ref, PRODUCT_CONTRACT_SOURCE), ref=ref
+    )
+    if "live-feeds" in contracts:
+        raise ManagementError(
+            f"release {ref} uses reserved product family name 'live-feeds'"
+        )
+    contracts["live-feeds"] = parse_live_feed_contract(
+        git_file(ref, LIVE_FEED_CONTRACT_SOURCE), ref=ref
+    )
+    return contracts
+
+
+def unsupported_contracts_after_promotion(
+    desired: releases.DesiredReleases,
+) -> tuple[ContractRequirement, ...]:
+    if desired.staging is None:
+        raise ManagementError("there is no staging release to inspect")
+    production_contracts = release_contracts(desired.production.tag)
+    candidate_contracts = release_contracts(desired.staging.tag)
+    sunset_contracts = [
+        release_contracts(binding.tag)
+        for binding in releases.effective_desired_releases(desired).sunset
+    ]
+    unsupported = []
+    for family, contract in sorted(production_contracts.items()):
+        if candidate_contracts.get(family) == contract:
+            continue
+        if any(contracts.get(family) == contract for contracts in sunset_contracts):
+            continue
+        unsupported.append(ContractRequirement(family, contract))
+    return tuple(unsupported)
+
+
+def promotion_contract_warning(
+    old_production: str,
+    unsupported: tuple[ContractRequirement, ...],
+) -> str | None:
+    if not unsupported:
+        return None
+    contracts = ", ".join(
+        f"{requirement.family} contract {requirement.contract}"
+        for requirement in unsupported
+    )
+    return (
+        f"WARNING: promotion will stop serving {contracts}, required by current "
+        f"production release {old_production}. Existing sunset releases do not cover "
+        f"these contracts. Suggest adding {old_production} to the sunset list before "
+        "promoting."
+    )
+
+
+def print_warning(message: str) -> None:
+    if "NO_COLOR" in os.environ:
+        print(message)
+    else:
+        print(f"\x1b[1;31m{message}\x1b[0m")
 
 
 def next_release_name(existing_tags: set[str], now: datetime | None = None) -> str:
@@ -512,10 +643,14 @@ def promote(config_path: Path, releases_path: Path) -> int:
             "promotion is complete"
         )
 
+    proposed, old_production, candidate = promotion_document(document)
+    contract_warning = promotion_contract_warning(
+        old_production,
+        unsupported_contracts_after_promotion(desired),
+    )
     config = deployment.load_config(config_path)
     assert_remote_idle(config)
     assert_staging_is_qualified(config, desired)
-    proposed, old_production, candidate = promotion_document(document)
     old_text = serialize_release_document(document)
     new_text = serialize_release_document(proposed)
     commands = [
@@ -535,6 +670,9 @@ def promote(config_path: Path, releases_path: Path) -> int:
             "promotion edit that includes its sunset deadline."
         ),
     )
+    if contract_warning is not None:
+        print_warning(contract_warning)
+        print()
     if not confirmed():
         print("aborted")
         return 1

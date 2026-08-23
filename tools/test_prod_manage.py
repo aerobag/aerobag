@@ -164,6 +164,92 @@ class DesiredStateBehaviorTests(unittest.TestCase):
             prod_manage.promotion_document(desired_document())
 
 
+class PromotionContractCompatibilityTests(unittest.TestCase):
+    def test_product_registry_parser_discovers_new_families_generically(self) -> None:
+        source = """
+pub const NAV_DB_CONTRACT_ID: &str = "NAV9";
+pub const NEW_THING_CONTRACT_ID: &str = "NEW1";
+pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
+    ProductContract {
+        family_id: "nav-db",
+        contract_id: NAV_DB_CONTRACT_ID,
+    },
+    ProductContract {
+        family_id: "new-thing",
+        contract_id: NEW_THING_CONTRACT_ID,
+    },
+];
+"""
+
+        self.assertEqual(
+            prod_manage.parse_product_contracts(source, ref="candidate"),
+            {"nav-db": "NAV9", "new-thing": "NEW1"},
+        )
+
+    def test_product_registry_parser_fails_closed_on_unknown_layout(self) -> None:
+        source = """
+pub const NAV_DB_CONTRACT_ID: &str = "NAV9";
+pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
+    ProductContract::new("nav-db", NAV_DB_CONTRACT_ID),
+];
+"""
+
+        with self.assertRaisesRegex(
+            prod_manage.ManagementError, "cannot safely enumerate every"
+        ):
+            prod_manage.parse_product_contracts(source, ref="candidate")
+
+    def test_changed_contracts_not_covered_by_sunset_are_reported(self) -> None:
+        document = desired_document(staging="2026-08-22.1")
+        document["sunset"][0]["until_utc"] = "2099-01-01T00:00:00Z"
+        desired = releases.parse_desired_releases(document)
+        contract_sets = {
+            "2026-08-20.1": {"nav-db": "NAV9", "live-feeds": "v2"},
+            "2026-08-22.1": {"nav-db": "NAV10", "live-feeds": "v3"},
+            "2026-08-01.1": {"nav-db": "NAV8", "live-feeds": "v1"},
+        }
+
+        with mock.patch.object(
+            prod_manage, "release_contracts", side_effect=contract_sets.__getitem__
+        ):
+            unsupported = prod_manage.unsupported_contracts_after_promotion(desired)
+
+        self.assertEqual(
+            unsupported,
+            (
+                prod_manage.ContractRequirement("live-feeds", "v2"),
+                prod_manage.ContractRequirement("nav-db", "NAV9"),
+            ),
+        )
+
+    def test_existing_sunset_contracts_cover_changed_production_contracts(self) -> None:
+        document = desired_document(staging="2026-08-22.1")
+        document["sunset"][0]["until_utc"] = "2099-01-01T00:00:00Z"
+        desired = releases.parse_desired_releases(document)
+        contract_sets = {
+            "2026-08-20.1": {"nav-db": "NAV9", "live-feeds": "v2"},
+            "2026-08-22.1": {"nav-db": "NAV10", "live-feeds": "v3"},
+            "2026-08-01.1": {"nav-db": "NAV9", "live-feeds": "v2"},
+        }
+
+        with mock.patch.object(
+            prod_manage, "release_contracts", side_effect=contract_sets.__getitem__
+        ):
+            unsupported = prod_manage.unsupported_contracts_after_promotion(desired)
+
+        self.assertEqual(unsupported, ())
+
+    def test_warning_recommends_retaining_current_production(self) -> None:
+        warning = prod_manage.promotion_contract_warning(
+            "2026-08-20.1",
+            (prod_manage.ContractRequirement("nav-db", "NAV9"),),
+        )
+
+        self.assertIsNotNone(warning)
+        self.assertIn("nav-db contract NAV9", warning or "")
+        self.assertIn("adding 2026-08-20.1 to the sunset list", warning or "")
+
+
 class PromotionGateTests(unittest.TestCase):
     def desired(self) -> releases.DesiredReleases:
         return releases.parse_desired_releases(
@@ -619,6 +705,12 @@ class PromoteCommandTests(unittest.TestCase):
             mock.patch.object(prod_manage, "print_proposal"),
             mock.patch.object(prod_manage, "confirmed", return_value=True),
             mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(
+                prod_manage,
+                "unsupported_contracts_after_promotion",
+                return_value=(prod_manage.ContractRequirement("nav-db", "NAV9"),),
+            ),
+            mock.patch.object(prod_manage, "print_warning") as print_warning,
             mock.patch.object(prod_manage, "activate_release_intent") as activate,
             mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
         ):
@@ -642,6 +734,7 @@ class PromoteCommandTests(unittest.TestCase):
             ],
         )
         activate.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+        self.assertIn("nav-db contract NAV9", print_warning.call_args.args[0])
         reconcile.assert_called_once_with(
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
         )

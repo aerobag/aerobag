@@ -79,9 +79,13 @@ the production pointer change, clears staging, pushes, synchronizes only the
 new release intent, and activates the qualified channel generation. It does not
 install host packages, refresh products, or synchronously run GC.
 With no staging assignment it exits locally without contacting production.
-It does not guess whether the previous production release should remain under
-`sunset`; use a complete manual desired-state edit when old installed clients
-need a stated retention deadline.
+Before confirmation it reads the canonical product and live-feed contract
+registries from the production, staging, and unexpired sunset Git tags. If
+promotion would leave a current-production contract unsupported, it prints a
+red recommendation to add the previous production tag to `sunset`. This check
+is source-only and fails closed when a registry cannot be parsed. The command
+does not edit `sunset` or guess its retention deadline; use a complete manual
+desired-state edit when old installed clients need compatibility service.
 
 `--reconcile` never edits, commits, tags, or pushes desired state. It first
 compares the checked-in assignments with observed state and the installed

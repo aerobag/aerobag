@@ -156,6 +156,16 @@ def maintenance_policy(
     return True, refresh_requested
 
 
+def write_progress(artifact_root: Path, message: str) -> None:
+    """Atomically expose one human-scale reconciliation status sentence."""
+
+    path = artifact_root / releases.RECONCILIATION_PROGRESS_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(" ".join(message.split()) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
 class Controller:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -187,6 +197,9 @@ class Controller:
 
     def save(self) -> None:
         releases.write_observed_state(self.args.observed, self.observed)
+
+    def progress(self, message: str) -> None:
+        write_progress(self.artifact_root, message)
 
     def stop_completed_drains(self) -> None:
         now = datetime.now(timezone.utc)
@@ -271,6 +284,7 @@ class Controller:
     def run_pending_gc(self) -> None:
         if not self.observed.gc_pending:
             return
+        self.progress("Garbage-collecting unreferenced release artifacts")
         _run(
             [
                 str(self.controller_preprocessor()),
@@ -360,8 +374,10 @@ class Controller:
     def build(self, tag: str) -> None:
         record = self.observed.releases[tag]
         try:
+            self.progress(f"Preparing cycle products for {tag}")
             manifest_path = self.build_product_manifest(tag, force=False)
 
+            self.progress(f"Building client and server artifacts for {tag}")
             worktree = self.artifact_root / "worktrees/releases" / f"{tag}-{record.commit[:12]}"
             if worktree.exists():
                 _run(
@@ -418,6 +434,7 @@ class Controller:
             record = self.observed.releases[tag]
             if record.build_status != "passed":
                 continue
+            self.progress(f"Refreshing cycle products for {tag}")
             try:
                 manifest = self.build_product_manifest(tag, force=True)
             except BaseException as error:
@@ -436,6 +453,7 @@ class Controller:
             self.save()
 
     def start_live_feeds(self, tag: str) -> None:
+        self.progress(f"Starting live feeds for {tag}")
         record = self.observed.releases[tag]
         if record.live_feed_endpoint is None:
             record.live_feed_endpoint = allocate_live_feed_endpoint(
@@ -516,6 +534,7 @@ class Controller:
         return self.args.controller_preprocessor.resolve()
 
     def activate(self) -> None:
+        self.progress("Switching release channels")
         production_tags = [
             self.desired.production.tag,
             *[binding.tag for binding in self.desired.sunset],
@@ -645,6 +664,7 @@ class Controller:
         self.save()
 
     def qualify(self, tag: str) -> None:
+        self.progress(f"Running staging checks for {tag}")
         if self.observed.staging != tag:
             raise RuntimeError(f"release {tag} must be active on staging before qualification")
         record = self.observed.releases[tag]
@@ -769,6 +789,8 @@ class Controller:
                 flush=True,
             )
             if plan_only or plan.converged:
+                if not plan_only:
+                    self.progress("Release reconciliation complete")
                 return 0
             if not plan.actions:
                 print(f"release reconciliation blocked: {plan.blocked_reason}", file=sys.stderr)

@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import tempfile
 import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from typing import Any, Callable
 from admin_index import admin_index_html
 from live_feed_contract import LIVE_FEEDS_CONTRACT_PATH
 from release_reconciler import (
+    RECONCILIATION_PROGRESS_RELATIVE_PATH,
     RELEASE_LIVE_FEEDS_STATE_ENV,
     load_desired_releases,
     render_live_feed_nginx_routes,
@@ -896,6 +898,11 @@ source /etc/aerobag/env
 export PATH CHROME_BIN CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
 
 mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/locks" "$ARTIFACT_ROOT/state" "$ARTIFACT_ROOT/scratch" "$ARTIFACT_ROOT/worktrees" "$ARTIFACT_ROOT/release-builds" "$ARTIFACT_ROOT/channel-generations" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
+
+PROGRESS_FILE="$ARTIFACT_ROOT/{RECONCILIATION_PROGRESS_RELATIVE_PATH}"
+progress_tmp="$PROGRESS_FILE.$$"
+printf '%s\n' 'Preparing release tooling' > "$progress_tmp"
+mv "$progress_tmp" "$PROGRESS_FILE"
 
 /usr/local/bin/aerobag-ensure-toolchain
 
@@ -1904,27 +1911,100 @@ def start_support_runtime(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, command, dry_run=dry_run)
 
 
-def start_reconciled_runtime(config: dict[str, Any], *, dry_run: bool) -> None:
-    command = textwrap.dedent(
+def run_release_reconciliation(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool,
+) -> None:
+    """Start the controller and relay only its human-scale progress marker."""
+
+    unit = "aerobag-build-product.service"
+    progress_path = (
+        Path(config["artifact_root"]) / RECONCILIATION_PROGRESS_RELATIVE_PATH
+    )
+    start_command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        rm -f {shell_quote(progress_path)}
+        systemctl reset-failed {unit} || true
+        systemctl start --no-block {unit}
+        """
+    ).strip()
+    run_ssh(config, start_command, dry_run=dry_run)
+    if dry_run:
+        return
+
+    last_progress = None
+    while True:
+        status_command = textwrap.dedent(
+            f"""
+            set -euo pipefail
+            active_state="$(systemctl show {unit} --property=ActiveState --value)"
+            result="$(systemctl show {unit} --property=Result --value)"
+            progress=''
+            if test -s {shell_quote(progress_path)}; then
+              progress="$(cat {shell_quote(progress_path)})"
+            fi
+            printf '%s\t%s\t%s\n' "$active_state" "$result" "$progress"
+            """
+        ).strip()
+        status = run_ssh(config, status_command, capture=True, dry_run=False)
+        try:
+            active_state, result, current_progress = status.stdout.rstrip("\n").split(
+                "\t", 2
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                f"invalid release reconciliation status: {status.stdout!r}"
+            ) from error
+        if current_progress and current_progress != last_progress:
+            _report(progress, current_progress)
+            last_progress = current_progress
+        if active_state in {"active", "activating", "reloading", "deactivating"}:
+            time.sleep(1)
+            continue
+        if active_state == "inactive" and result == "success":
+            return
+
+        failure_command = textwrap.dedent(
+            f"""
+            systemctl status {unit} --no-pager >&2 || true
+            journalctl -u {unit} -n 100 --no-pager >&2 || true
+            exit 1
+            """
+        ).strip()
+        run_ssh(config, failure_command, dry_run=False)
+        raise AssertionError("failed service diagnostics unexpectedly returned")
+
+
+def start_reconciled_runtime(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool,
+) -> None:
+    restart_command = textwrap.dedent(
         """
         set -euo pipefail
         systemctl restart aerobag-cloud-server.service
         systemctl restart aerobag-client-debug-log.service
         systemctl restart aerobag-build-watch.service
         systemctl restart aerobag-pipeline-health.service
-        if ! systemctl start aerobag-build-product.service; then
-          echo "release reconciliation failed" >&2
-          systemctl status aerobag-build-product.service --no-pager >&2 || true
-          journalctl -u aerobag-build-product.service -n 100 --no-pager >&2 || true
-          exit 1
-        fi
+        """
+    ).strip()
+    run_ssh(config, restart_command, dry_run=dry_run)
+    run_release_reconciliation(config, progress=progress, dry_run=dry_run)
+    finish_command = textwrap.dedent(
+        """
+        set -euo pipefail
         systemctl start aerobag-build-product.timer
         systemctl start aerobag-health.timer
         systemctl start aerobag-cloud-backup.timer
         systemctl start aerobag-health.service || true
         """
     ).strip()
-    run_ssh(config, command, dry_run=dry_run)
+    run_ssh(config, finish_command, dry_run=dry_run)
 
 
 def start_release_live_feeds(config: dict[str, Any], *, dry_run: bool) -> None:
@@ -2029,7 +2109,7 @@ def reconcile_host(
     stop_stale_units(config, dry_run=dry_run)
     reload_services(config, dry_run=dry_run)
     _report(progress, "Reconciling release artifacts and channel assignments")
-    start_reconciled_runtime(config, dry_run=dry_run)
+    start_reconciled_runtime(config, progress=progress, dry_run=dry_run)
 
 
 def activate_release_intent(
@@ -2047,18 +2127,7 @@ def activate_release_intent(
     try:
         sync_source_checkout(config, dry_run=dry_run)
         _report(progress, "Switching the production channel")
-        command = textwrap.dedent(
-            """
-            set -euo pipefail
-            if ! systemctl start aerobag-build-product.service; then
-              echo "release activation failed" >&2
-              systemctl status aerobag-build-product.service --no-pager >&2 || true
-              journalctl -u aerobag-build-product.service -n 100 --no-pager >&2 || true
-              exit 1
-            fi
-            """
-        ).strip()
-        run_ssh(config, command, dry_run=dry_run)
+        run_release_reconciliation(config, progress=progress, dry_run=dry_run)
     finally:
         run_ssh(
             config,

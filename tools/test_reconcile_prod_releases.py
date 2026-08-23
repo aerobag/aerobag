@@ -43,6 +43,17 @@ class MaintenancePolicyTests(unittest.TestCase):
         )
 
 
+class ProgressReportingTests(unittest.TestCase):
+    def test_progress_marker_contains_one_atomic_human_scale_sentence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            controller.write_progress(root, "  Building\n release   candidate  ")
+
+            path = root / releases.RECONCILIATION_PROGRESS_RELATIVE_PATH
+            self.assertEqual(path.read_text(encoding="utf-8"), "Building release candidate\n")
+            self.assertEqual(list(path.parent.glob(".*.tmp")), [])
+
+
 class LiveFeedAllocationTests(unittest.TestCase):
     def test_controller_creates_daemon_owned_release_namespace_parents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

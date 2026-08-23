@@ -99,6 +99,10 @@ class ProductPublicationTests(unittest.TestCase):
             script,
         )
         self.assertNotIn("build_multi_version_publication.py", script)
+        self.assertLess(
+            script.index("Preparing release tooling"),
+            script.index("/usr/local/bin/aerobag-ensure-toolchain"),
+        )
 
     def test_staging_qualification_browser_is_an_installed_dependency(self) -> None:
         packages = (deploy_prod.REPO_ROOT / deploy_prod.REPO_PACKAGE_MANIFEST).read_text(
@@ -211,15 +215,59 @@ class ProductPublicationTests(unittest.TestCase):
             "aerobag-live-feeds-release@2026-08-22.1.service", command
         )
 
-    def test_managed_release_deploy_waits_on_the_exact_systemd_start(self) -> None:
+    def test_managed_release_deploy_wraps_controller_with_runtime_services(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
-        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+        with (
+            mock.patch.object(deploy_prod, "run_ssh") as run_ssh,
+            mock.patch.object(
+                deploy_prod, "run_release_reconciliation"
+            ) as reconcile,
+        ):
             deploy_prod.start_reconciled_runtime(config, dry_run=False)
 
-        command = run_ssh.call_args.args[1]
-        self.assertIn("systemctl start aerobag-build-product.service", command)
-        self.assertNotIn("start --no-block aerobag-build-product.service", command)
-        self.assertIn("journalctl -u aerobag-build-product.service", command)
+        self.assertEqual(run_ssh.call_count, 2)
+        reconcile.assert_called_once_with(config, progress=None, dry_run=False)
+
+    def test_release_reconciliation_relays_changed_progress_only(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        completed = subprocess.CompletedProcess([], 0, "", None)
+        statuses = iter(
+            [
+                subprocess.CompletedProcess(
+                    [], 0, "activating\tsuccess\tPreparing release tooling\n", None
+                ),
+                subprocess.CompletedProcess(
+                    [], 0, "activating\tsuccess\tPreparing release tooling\n", None
+                ),
+                subprocess.CompletedProcess(
+                    [], 0, "active\tsuccess\tBuilding release 2026-08-23.1\n", None
+                ),
+                subprocess.CompletedProcess(
+                    [], 0, "inactive\tsuccess\tRelease reconciliation complete\n", None
+                ),
+            ]
+        )
+
+        def run_ssh(*_args, capture: bool = False, **_kwargs):
+            return next(statuses) if capture else completed
+
+        messages: list[str] = []
+        with (
+            mock.patch.object(deploy_prod, "run_ssh", side_effect=run_ssh),
+            mock.patch.object(deploy_prod.time, "sleep"),
+        ):
+            deploy_prod.run_release_reconciliation(
+                config, progress=messages.append, dry_run=False
+            )
+
+        self.assertEqual(
+            messages,
+            [
+                "Preparing release tooling",
+                "Building release 2026-08-23.1",
+                "Release reconciliation complete",
+            ],
+        )
 
     def test_promotion_only_syncs_intent_and_starts_release_controller(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
@@ -228,6 +276,9 @@ class ProductPublicationTests(unittest.TestCase):
             mock.patch.object(deploy_prod, "assert_clean_checkout"),
             mock.patch.object(deploy_prod, "quiesce_release_reconciliation") as quiesce,
             mock.patch.object(deploy_prod, "sync_source_checkout") as sync_source,
+            mock.patch.object(
+                deploy_prod, "run_release_reconciliation"
+            ) as reconcile,
             mock.patch.object(deploy_prod, "run_ssh") as run_ssh,
             mock.patch.object(deploy_prod, "install_repo_packages") as install_packages,
             mock.patch.object(deploy_prod, "run_android_sdk_setup") as setup_android,
@@ -236,11 +287,11 @@ class ProductPublicationTests(unittest.TestCase):
 
         quiesce.assert_called_once_with(config, dry_run=False)
         sync_source.assert_called_once_with(config, dry_run=False)
-        command = run_ssh.call_args_list[0].args[1]
-        self.assertIn("systemctl start aerobag-build-product.service", command)
-        self.assertEqual(
-            run_ssh.call_args_list[1].args[1],
+        reconcile.assert_called_once_with(config, progress=None, dry_run=False)
+        run_ssh.assert_called_once_with(
+            config,
             "systemctl start aerobag-build-product.timer",
+            dry_run=False,
         )
         install_packages.assert_not_called()
         setup_android.assert_not_called()

@@ -177,6 +177,14 @@ class ReconciliationCompletionTests(unittest.TestCase):
         self.assertEqual(summary, "remote command on root@aerobag-prod")
         self.assertNotIn("while", summary)
 
+    def test_runtime_repair_uses_config_only_deployment(self) -> None:
+        with mock.patch.object(prod_manage, "run") as run:
+            prod_manage.repair_runtime(prod_manage.DEFAULT_CONFIG)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[-1], "--runtime-config-only")
+        self.assertNotIn("--wait-for-reconciliation", command)
+
 
 class StageOrderingTests(unittest.TestCase):
     @staticmethod
@@ -347,6 +355,24 @@ class ReconcileCommandTests(unittest.TestCase):
         deploy.assert_not_called()
         self.assertIn("Production is reconciled", success.call_args.args[0])
 
+    def test_runtime_probe_does_not_require_latest_local_controller_commit(self) -> None:
+        desired = self.desired()
+        completed = subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="", stderr=""
+        )
+        config = {"source_root": "/source", "artifact_root": "/artifacts"}
+        with mock.patch.object(
+            prod_manage.deploy_prod, "run_ssh", return_value=completed
+        ) as run_ssh:
+            failures = prod_manage.remote_runtime_failures(
+                config, desired, releases.ObservedState.empty()
+            )
+
+        self.assertEqual(failures, [])
+        command = run_ssh.call_args.args[1]
+        self.assertIn(f"test -s {prod_manage.deploy_prod.DEPLOYED_REV_FILE}", command)
+        self.assertNotIn("installed controller revision differs", command)
+
     def test_nonconverged_reconcile_deploys_then_verifies_convergence(self) -> None:
         pending = releases.ReconciliationPlan(
             [releases.ReconcileAction("build_release", "2026-08-20.1")]
@@ -384,7 +410,14 @@ class ReconcileCommandTests(unittest.TestCase):
                 mock.patch.object(
                     prod_manage,
                     "remote_runtime_failures",
-                    side_effect=[["controller source is not installed"], []],
+                    side_effect=[
+                        [
+                            prod_manage.RuntimeFailure(
+                                "host", "controller source is not installed"
+                            )
+                        ],
+                        [],
+                    ],
                 )
             )
             stack.enter_context(
@@ -400,6 +433,44 @@ class ReconcileCommandTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         deploy.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+
+    def test_service_only_drift_uses_runtime_repair_without_full_deploy(self) -> None:
+        converged = releases.ReconciliationPlan([])
+        patches = self.common_patches(converged)
+        with ExitStack() as stack:
+            for patcher in patches[:-2]:
+                stack.enter_context(patcher)
+            stack.enter_context(
+                mock.patch.object(
+                    prod_manage,
+                    "remote_runtime_failures",
+                    side_effect=[
+                        [
+                            prod_manage.RuntimeFailure(
+                                "service", "aerobag-cloud-server.service is not active"
+                            )
+                        ],
+                        [],
+                    ],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    prod_manage, "reconciliation_plan", return_value=converged
+                )
+            )
+            deploy = stack.enter_context(mock.patch.object(prod_manage, "deploy"))
+            repair = stack.enter_context(
+                mock.patch.object(prod_manage, "repair_runtime")
+            )
+            stack.enter_context(mock.patch.object(prod_manage, "print_success"))
+            result = prod_manage.reconcile(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
+
+        self.assertEqual(result, 0)
+        deploy.assert_not_called()
+        repair.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
 
 
 class PromoteCommandTests(unittest.TestCase):

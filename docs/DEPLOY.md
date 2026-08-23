@@ -88,9 +88,17 @@ need a stated retention deadline.
 `--reconcile` never edits, commits, tags, or pushes desired state. It first
 compares the checked-in assignments with observed state and the installed
 runtime. A converged server produces a green success message without deployment;
-otherwise the command runs the idempotent full deployment and waits for verified
-convergence. Use it to resume interrupted staging, finish promotion, repair host
-drift, or recover a replaced container.
+service-only drift runs the runtime-config repair path without apt, toolchain, or
+binary installation. Missing host state, release artifacts, or channel state
+runs the idempotent full deployment. Both repair paths wait for verified
+convergence. Use `--reconcile` to resume interrupted staging, finish promotion,
+repair host drift, or recover a replaced container.
+
+Convergence is defined by release intent and runtime health, not by whether the
+deployment-owned source mirror equals the caller's latest unrelated `main`
+commit. Use `tools/deploy_prod.py` explicitly when the intended operation is to
+roll out controller, host-package, or systemd/nginx changes without changing a
+release assignment.
 
 All operations reject an active release reconciliation before making changes.
 The intent-changing commands repeat that check after confirmation.

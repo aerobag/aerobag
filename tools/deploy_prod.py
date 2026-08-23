@@ -707,12 +707,14 @@ def install_repo_from_bundle(
           rm -rf {shell_quote(source_root)}
           git clone {shell_quote(remote_bundle_path)} {shell_quote(source_root)}
         fi
-        git -C {shell_quote(source_root)} checkout --detach HEAD
+        # This is a deployment-owned mirror, never a place to preserve edits.
+        git -C {shell_quote(source_root)} reset --hard HEAD
+        git -C {shell_quote(source_root)} clean -fd
         git -C {shell_quote(source_root)} fetch --prune {shell_quote(remote_bundle_path)} \
           '+refs/heads/*:refs/heads/*' \
           '+refs/tags/*:refs/tags/*' \
           '+refs/remotes/*:refs/remotes/*'
-        git -C {shell_quote(source_root)} checkout --detach {shell_quote(checkout_ref)}
+        git -C {shell_quote(source_root)} checkout --detach --force {shell_quote(checkout_ref)}
         git -C {shell_quote(source_root)} reset --hard {shell_quote(checkout_ref)}
         git -C {shell_quote(source_root)} clean -fd
         git -C {shell_quote(source_root)} rev-parse HEAD > {shell_quote(DEPLOYED_REV_FILE)}
@@ -1923,6 +1925,17 @@ def start_runtime(
     run_ssh(config, command, dry_run=dry_run)
 
 
+def start_release_live_feeds(config: dict[str, Any], *, dry_run: bool) -> None:
+    units = [
+        f"aerobag-live-feeds-release@{tag}.service"
+        for tag in publication_refs(config)
+    ]
+    if not units:
+        return
+    command = "systemctl start " + " ".join(shell_quote(unit) for unit in units)
+    run_ssh(config, command, dry_run=dry_run)
+
+
 def run_initial_toolchain_build(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, "/usr/local/bin/aerobag-ensure-toolchain", dry_run=dry_run)
 
@@ -1972,6 +1985,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
             wait_for_reconciliation=False,
             dry_run=args.dry_run,
         )
+        start_release_live_feeds(config, dry_run=args.dry_run)
         return
 
     assert_local_refs_exist(config, dry_run=args.dry_run)
@@ -1980,7 +1994,6 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     install_bootstrap_packages(config, dry_run=args.dry_run)
     quiesce_release_reconciliation(config, dry_run=args.dry_run)
-    stop_stale_units(config, dry_run=args.dry_run)
     prepare_remote_paths(config, dry_run=args.dry_run)
     ensure_legacy_channel_view(config, dry_run=args.dry_run)
     migrate_cloud_storage_layout(config, dry_run=args.dry_run)
@@ -2012,6 +2025,9 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     write_remote_config(config, deployed_rev=deployed_rev, dry_run=args.dry_run)
     run_initial_toolchain_build(config, dry_run=args.dry_run)
     run_android_sdk_setup(config, dry_run=args.dry_run)
+    # Keep the old runtime serving until every fallible installation step has
+    # completed. Only the final service handoff needs these units stopped.
+    stop_stale_units(config, dry_run=args.dry_run)
     reload_services(config, dry_run=args.dry_run)
     start_runtime(
         config,

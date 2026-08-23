@@ -173,6 +173,44 @@ class ProductPublicationTests(unittest.TestCase):
         self.assertNotIn("aerobag-build-product.service", command)
         self.assertNotIn("aerobag-build-product.timer", command)
 
+    def test_managed_checkout_discards_local_edits_before_switching_refs(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:
+            deploy_prod.install_repo_from_bundle(
+                config, "/tmp/deployment.bundle", dry_run=False
+            )
+
+        command = run_ssh.call_args.args[1]
+        reset = f"git -C {config['source_root']} reset --hard HEAD"
+        fetch = f"git -C {config['source_root']} fetch --prune"
+        self.assertLess(command.index(reset), command.index(fetch))
+        self.assertIn(f"git -C {config['source_root']} clean -fd", command)
+        self.assertIn(
+            f"git -C {config['source_root']} checkout --detach --force main",
+            command,
+        )
+        self.assertNotIn("checkout --detach HEAD", command)
+
+    def test_runtime_repair_starts_every_desired_release_daemon(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with (
+            mock.patch.object(
+                deploy_prod,
+                "publication_refs",
+                return_value=["2026-08-20.1", "2026-08-22.1"],
+            ),
+            mock.patch.object(deploy_prod, "run_ssh") as run_ssh,
+        ):
+            deploy_prod.start_release_live_feeds(config, dry_run=False)
+
+        command = run_ssh.call_args.args[1]
+        self.assertIn(
+            "aerobag-live-feeds-release@2026-08-20.1.service", command
+        )
+        self.assertIn(
+            "aerobag-live-feeds-release@2026-08-22.1.service", command
+        )
+
     def test_managed_release_deploy_waits_on_the_exact_systemd_start(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         with mock.patch.object(deploy_prod, "run_ssh") as run_ssh:

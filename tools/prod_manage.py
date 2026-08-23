@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,12 @@ DEFAULT_RELEASES = REPO_ROOT / "deploy/releases.json"
 
 class ManagementError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class RuntimeFailure:
+    category: str
+    message: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -231,20 +238,21 @@ def remote_runtime_failures(
     config: dict[str, Any],
     desired: releases.DesiredReleases,
     observed: releases.ObservedState,
-    controller_commit: str,
-) -> list[str]:
+) -> list[RuntimeFailure]:
     checks = [
         (
             f"test -d {deploy_prod.shell_quote(config['source_root'] + '/.git')}",
+            "host",
             "controller source is not installed",
         ),
         (
-            f"test \"$(cat {deploy_prod.shell_quote(deploy_prod.DEPLOYED_REV_FILE)} "
-            f"2>/dev/null || true)\" = {deploy_prod.shell_quote(controller_commit)}",
-            "installed controller revision differs",
+            f"test -s {deploy_prod.shell_quote(deploy_prod.DEPLOYED_REV_FILE)}",
+            "host",
+            "installed controller revision is missing",
         ),
         (
             f"test -L {deploy_prod.shell_quote(config['artifact_root'] + '/channel-current')}",
+            "release",
             "active channel link is missing",
         ),
     ]
@@ -260,7 +268,11 @@ def remote_runtime_failures(
         *(f"aerobag-live-feeds-release@{tag}.service" for tag in desired.tags()),
     ]
     checks.extend(
-        (f"systemctl is-active --quiet {deploy_prod.shell_quote(unit)}", f"{unit} is not active")
+        (
+            f"systemctl is-active --quiet {deploy_prod.shell_quote(unit)}",
+            "service",
+            f"{unit} is not active",
+        )
         for unit in required_units
     )
     for tag in desired.tags():
@@ -274,12 +286,13 @@ def remote_runtime_failures(
         ):
             if path is not None:
                 checks.append(
-                    (f"test -e {deploy_prod.shell_quote(path)}", description)
+                    (f"test -e {deploy_prod.shell_quote(path)}", "release", description)
                 )
 
     lines = [
-        f"{command} || printf '%s\\n' {deploy_prod.shell_quote(description)}"
-        for command, description in checks
+        f"{command} || printf '%s\\t%s\\n' "
+        f"{deploy_prod.shell_quote(category)} {deploy_prod.shell_quote(description)}"
+        for command, category, description in checks
     ]
     result = deploy_prod.run_ssh(
         config,
@@ -287,7 +300,16 @@ def remote_runtime_failures(
         capture=True,
         dry_run=False,
     )
-    return [line for line in result.stdout.splitlines() if line]
+    failures = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        try:
+            category, message = line.split("\t", 1)
+        except ValueError as error:
+            raise ManagementError(f"invalid production runtime probe result: {line}") from error
+        failures.append(RuntimeFailure(category=category, message=message))
+    return failures
 
 
 def describe_assignments(desired: releases.DesiredReleases) -> str:
@@ -357,6 +379,18 @@ def deploy(config_path: Path) -> None:
             "--config",
             str(config_path),
             "--wait-for-reconciliation",
+        ],
+        capture=False,
+    )
+
+
+def repair_runtime(config_path: Path) -> None:
+    run(
+        [
+            str(TOOLS_DIR / "deploy_prod.py"),
+            "--config",
+            str(config_path),
+            "--runtime-config-only",
         ],
         capture=False,
     )
@@ -485,9 +519,8 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
     assert_remote_idle(config)
     observed = load_remote_observed(config)
     plan = reconciliation_plan(desired, observed)
-    controller_commit = git("rev-parse", "HEAD")
     runtime_failures = (
-        remote_runtime_failures(config, desired, observed, controller_commit)
+        remote_runtime_failures(config, desired, observed)
         if plan.converged
         else []
     )
@@ -503,16 +536,21 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
     detail = (
         actions
         or plan.blocked_reason
-        or "; ".join(runtime_failures)
+        or "; ".join(failure.message for failure in runtime_failures)
         or "deployment state differs"
     )
     print(f"Production needs reconciliation ({detail}): {assignments}")
-    deploy(config_path)
+    if plan.converged and all(
+        failure.category == "service" for failure in runtime_failures
+    ):
+        repair_runtime(config_path)
+    else:
+        deploy(config_path)
 
     observed = load_remote_observed(config)
     final_plan = reconciliation_plan(desired, observed)
     final_runtime_failures = (
-        remote_runtime_failures(config, desired, observed, controller_commit)
+        remote_runtime_failures(config, desired, observed)
         if final_plan.converged
         else []
     )
@@ -522,7 +560,9 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
             for action in final_plan.actions
         )
         if final_runtime_failures:
-            detail = "; ".join(final_runtime_failures)
+            detail = "; ".join(
+                failure.message for failure in final_runtime_failures
+            )
         raise ManagementError(
             f"deployment completed without converging release state: {detail}"
         )

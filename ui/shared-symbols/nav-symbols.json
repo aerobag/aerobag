@@ -39,13 +39,20 @@
     "action_direct_to_d": "M -11 -12 V 12 M -11 -12 H -7 C 9 -12 9 12 -7 12 H -11",
     "action_direct_to_shaft": "M -19 0 H 10",
     "action_direct_to_arrow": "M 10 -7 L 20 0 L 10 7 Z",
+    "action_undo_arc": "M -15.035 -4.472 C -18.058 3.831 -13.776 13.013 -5.472 16.035 C 2.831 19.058 12.013 14.776 15.035 6.472 C 18.058 -1.831 13.776 -11.013 5.472 -14.035 C 3.276 -14.835 0.933 -15.142 -1.395 -14.939 L -3.302 -14.338",
+    "action_undo_arrow": "M -8 -12.857 L -2.687 -19.04 L -0.101 -10.838 Z",
+    "action_redo_arc": "M 15.035 -4.472 C 18.058 3.831 13.776 13.013 5.472 16.035 C -2.831 19.058 -12.013 14.776 -15.035 6.472 C -18.058 -1.831 -13.776 -11.013 -5.472 -14.035 C -3.276 -14.835 -0.933 -15.142 1.395 -14.939 L 3.302 -14.338",
+    "action_redo_arrow": "M 8 -12.857 L 0.101 -10.838 L 2.687 -19.04 Z",
+    "action_next_shaft": "M 0 -18 V 7",
+    "action_next_arrow": "M -9 6 L 0 19 L 9 6 Z",
+    "action_pause_bars": "M -11 -17 H -3 V 17 H -11 Z M 3 -17 H 11 V 17 H 3 Z",
+    "action_cancel_slash": "M -19 -19 L 19 19",
     "action_row_below": "M -19 7 H 19 V 15 H -19 Z",
     "action_row_above": "M -19 -15 H 19 V -7 H -19 Z",
     "action_insert_before_plus": "M -7 -5 H 7 M 0 -12 V 2",
     "action_insert_after_plus": "M -7 5 H 7 M 0 -2 V 12",
-    "action_insert_rows": "M -19 -18 H 19 V -10 H -19 Z M -19 10 H 19 V 18 H -19 Z",
-    "action_insert_shaft": "M 14 0 H -8",
-    "action_insert_arrow": "M -8 -7 L -19 0 L -8 7 Z",
+    "action_insert_rows": "M -19 -20 H 19 V -12 H -19 Z M -19 12 H 19 V 20 H -19 Z",
+    "action_insert_plus": "M -7 0 H 7 M 0 -7 V 7",
     "action_move_up_shaft": "M 0 8 V -6",
     "action_move_up_arrow": "M -7 -6 L 0 -18 L 7 -6 Z",
     "action_move_down_shaft": "M 0 -8 V 6",
@@ -83,6 +90,32 @@
       { "path": "action_direct_to_shaft", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round" },
       { "path": "action_direct_to_arrow", "paint": "action_arrow", "fill": "button_icon" }
     ],
+    "action_undo": [
+      { "path": "action_undo_arc", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
+      { "path": "action_undo_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_redo": [
+      { "path": "action_redo_arc", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
+      { "path": "action_redo_arrow", "paint": "action_arrow", "fill": "button_icon" }
+    ],
+    "action_next": [
+      { "path": "action_next_shaft", "paint": "action_route", "fill": "none", "stroke": "flight_plan_guidance", "stroke_width": 3.2, "line_cap": "round" },
+      { "path": "action_next_arrow", "paint": "action_arrow", "fill": "flight_plan_guidance" }
+    ],
+    "action_stop_navigation": [
+      { "path": "action_activate_leg_route", "paint": "action_route", "fill": "none", "stroke": "flight_plan_guidance", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
+      { "path": "action_activate_leg_arrow", "paint": "action_arrow", "fill": "flight_plan_guidance" },
+      { "path": "action_cancel_slash", "paint": "action_cancel", "fill": "none", "stroke": "white", "stroke_width": 4, "line_cap": "round" }
+    ],
+    "action_suspend": [
+      { "path": "action_pause_bars", "paint": "action_glyph", "fill": "button_icon" }
+    ],
+    "action_restore_direct_to": [
+      { "path": "action_direct_to_d", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round", "line_join": "round" },
+      { "path": "action_direct_to_shaft", "paint": "action_route", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round" },
+      { "path": "action_direct_to_arrow", "paint": "action_arrow", "fill": "button_icon" },
+      { "path": "action_cancel_slash", "paint": "action_cancel", "fill": "none", "stroke": "white", "stroke_width": 4, "line_cap": "round" }
+    ],
     "action_insert_before": [
       { "path": "action_row_below", "paint": "action_row", "fill": "button_icon_secondary" },
       { "path": "action_insert_before_plus", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" }
@@ -98,8 +131,7 @@
     ],
     "action_insert": [
       { "path": "action_insert_rows", "paint": "action_rows", "fill": "button_icon_secondary" },
-      { "path": "action_insert_shaft", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" },
-      { "path": "action_insert_arrow", "paint": "action_arrow", "fill": "button_icon" }
+      { "path": "action_insert_plus", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" }
     ],
     "action_move_down": [
       { "path": "action_row_above", "paint": "action_row", "fill": "button_icon_secondary" },
@@ -289,6 +321,12 @@
     ]
   },
   "action_symbols": {
+    "undo": "action_undo",
+    "redo": "action_redo",
+    "activate_next_leg": "action_next",
+    "stop_navigation": "action_stop_navigation",
+    "toggle_sequencing_suspension": "action_suspend",
+    "restore_direct_to": "action_restore_direct_to",
     "activate_leg": "action_activate_leg",
     "direct_to": "action_direct_to",
     "insert_before": "action_insert_before",

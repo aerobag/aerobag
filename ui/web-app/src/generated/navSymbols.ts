@@ -28,8 +28,160 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type ActionSymbolId = "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
+export type ActionSymbolId = "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "toggle_sequencing_suspension" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
 export const actionSymbols = {
+  "undo": [
+    {
+      "path": "M -15.035 -4.472 C -18.058 3.831 -13.776 13.013 -5.472 16.035 C 2.831 19.058 12.013 14.776 15.035 6.472 C 18.058 -1.831 13.776 -11.013 5.472 -14.035 C 3.276 -14.835 0.933 -15.142 -1.395 -14.939 L -3.302 -14.338",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -8 -12.857 L -2.687 -19.04 L -0.101 -10.838 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "redo": [
+    {
+      "path": "M 15.035 -4.472 C 18.058 3.831 13.776 13.013 5.472 16.035 C -2.831 19.058 -12.013 14.776 -15.035 6.472 C -18.058 -1.831 -13.776 -11.013 -5.472 -14.035 C -3.276 -14.835 -0.933 -15.142 1.395 -14.939 L 3.302 -14.338",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 8 -12.857 L 0.101 -10.838 L 2.687 -19.04 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "activate_next_leg": [
+    {
+      "path": "M 0 -18 V 7",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "flight_plan_guidance",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -9 6 L 0 19 L 9 6 Z",
+      "paint": "action_arrow",
+      "fill": "flight_plan_guidance",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "stop_navigation": [
+    {
+      "path": "M 13 -17 H -11 V 10 H 9",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "flight_plan_guidance",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 9 3 L 20 10 L 9 17 Z",
+      "paint": "action_arrow",
+      "fill": "flight_plan_guidance",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -19 -19 L 19 19",
+      "paint": "action_cancel",
+      "fill": "none",
+      "stroke": "white",
+      "stroke_width": 4,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "toggle_sequencing_suspension": [
+    {
+      "path": "M -11 -17 H -3 V 17 H -11 Z M 3 -17 H 11 V 17 H 3 Z",
+      "paint": "action_glyph",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "restore_direct_to": [
+    {
+      "path": "M -11 -12 V 12 M -11 -12 H -7 C 9 -12 9 12 -7 12 H -11",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -19 0 H 10",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M 10 -7 L 20 0 L 10 7 Z",
+      "paint": "action_arrow",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    },
+    {
+      "path": "M -19 -19 L 19 19",
+      "paint": "action_cancel",
+      "fill": "none",
+      "stroke": "white",
+      "stroke_width": 4,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
   "activate_leg": [
     {
       "path": "M 13 -17 H -11 V 10 H 9",
@@ -466,7 +618,7 @@ export const actionSymbols = {
   ],
   "insert": [
     {
-      "path": "M -19 -18 H 19 V -10 H -19 Z M -19 10 H 19 V 18 H -19 Z",
+      "path": "M -19 -20 H 19 V -12 H -19 Z M -19 12 H 19 V 20 H -19 Z",
       "paint": "action_rows",
       "fill": "button_icon_secondary",
       "stroke": null,
@@ -476,22 +628,12 @@ export const actionSymbols = {
       "transform_degrees": null
     },
     {
-      "path": "M 14 0 H -8",
+      "path": "M -7 0 H 7 M 0 -7 V 7",
       "paint": "action_glyph",
       "fill": "none",
       "stroke": "button_icon",
       "stroke_width": 3.2,
       "line_cap": "round",
-      "line_join": null,
-      "transform_degrees": null
-    },
-    {
-      "path": "M -8 -7 L -19 0 L -8 7 Z",
-      "paint": "action_arrow",
-      "fill": "button_icon",
-      "stroke": null,
-      "stroke_width": null,
-      "line_cap": null,
       "line_join": null,
       "transform_degrees": null
     }

@@ -17,6 +17,12 @@ const theme = JSON.parse(
 const outputPath = path.resolve(process.argv[2] ?? "/tmp/action-icons-contact-sheet.svg");
 
 const labels = {
+  undo: "Undo",
+  redo: "Redo",
+  activate_next_leg: "Next",
+  stop_navigation: "Stop",
+  toggle_sequencing_suspension: "SUSP",
+  restore_direct_to: "Restore",
   activate_leg: "Activate Leg",
   direct_to: "Direct",
   insert_before: "Insert Before",
@@ -43,6 +49,7 @@ const labels = {
 
 const paintColors = {
   none: "none",
+  white: "#ffffff",
   button_icon: theme.controls.button_fg,
   button_icon_secondary: theme.controls.button_icon_secondary,
   flight_plan_guidance: theme.flight_plan_route.guidance_arrow,

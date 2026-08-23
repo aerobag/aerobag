@@ -2493,8 +2493,33 @@ button {
 }
 
 .planControlButton {
+  position: relative;
   white-space: pre-line;
   line-height: 1.02;
+  letter-spacing: 0;
+}
+
+.planControlButton > .actionIcon {
+  position: absolute;
+  top: calc(var(--thumb) * 0.03);
+  left: 50%;
+  width: calc(var(--thumb) * 0.68);
+  height: calc(var(--thumb) * 0.68);
+  transform: translateX(-50%);
+}
+
+.planControlButtonLabel {
+  position: absolute;
+  right: calc(var(--thumb) * 0.025);
+  bottom: calc(var(--thumb) * 0.035);
+  left: calc(var(--thumb) * 0.025);
+  text-align: center;
+}
+
+.planControlButton.isDisabled > .actionIcon,
+.planControlButton:disabled > .actionIcon {
+  opacity: var(--theme-button-disabled-icon-opacity);
+  filter: saturate(var(--theme-button-disabled-icon-saturation));
 }
 
 .trayButton.isDisabled,

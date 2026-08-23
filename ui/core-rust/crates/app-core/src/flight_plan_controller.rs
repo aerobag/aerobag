@@ -843,6 +843,7 @@ fn history_control(
 ) -> FlightPlanControlUiView {
     FlightPlanControlUiView {
         id,
+        symbol_id: crate::planning::flight_plan_control_symbol_id(id).to_string(),
         label: label.to_string(),
         enabled,
         selected: false,

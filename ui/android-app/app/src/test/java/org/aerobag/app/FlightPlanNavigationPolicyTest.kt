@@ -48,6 +48,18 @@ class FlightPlanNavigationPolicyTest {
         assertTrue(commonWidgetsSource.contains("Modifier.border(2.dp, uiTheme.controls.buttonFg, gapShape)"))
     }
 
+    @Test
+    fun flightPlanControlsRenderCoreProjectedSharedVectorSymbols() {
+        val pageSource = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
+        val commonWidgetsSource =
+            sourceFile("src/main/java/org/aerobag/app/DebugAndCommonWidgets.kt").readText()
+
+        assertTrue(pageSource.contains("actionSymbolId = control.symbolId"))
+        assertTrue(commonWidgetsSource.contains("actionSymbolId: String? = null"))
+        assertTrue(commonWidgetsSource.contains("ActionIcon("))
+        assertTrue(commonWidgetsSource.contains("actionId = actionSymbolId"))
+    }
+
     private fun sourceFile(path: String): File {
         val start = File(".").canonicalFile
         return generateSequence(start) { it.parentFile }

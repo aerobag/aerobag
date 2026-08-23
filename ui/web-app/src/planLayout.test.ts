@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
+import { actionSymbol } from "./generated/navSymbols";
 
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
@@ -51,6 +52,33 @@ describe("flight plan layout CSS", () => {
       .join("\n");
     expect(selectedControlStyles).toContain("var(--theme-button-checked)");
     expect(selectedControlStyles).toContain("var(--theme-button-fg)");
+  });
+
+  it("renders every flight-plan control through its core-projected shared vector symbol", () => {
+    expect(appSource).toContain("actionSymbol(control.symbol_id)");
+    expect(appSource).toContain("<ActionIcon layers={symbol} />");
+
+    const controlSymbols = [
+      "undo",
+      "redo",
+      "activate_next_leg",
+      "stop_navigation",
+      "toggle_sequencing_suspension",
+      "restore_direct_to",
+    ];
+    for (const symbolId of controlSymbols) {
+      expect(actionSymbol(symbolId)).toBeTruthy();
+    }
+
+    const activate = actionSymbol("activate_leg")!;
+    const stop = actionSymbol("stop_navigation")!;
+    expect(stop.slice(0, activate.length)).toEqual(activate);
+    expect(stop.at(-1)).toMatchObject({ stroke: "white" });
+
+    const directTo = actionSymbol("direct_to")!;
+    const restore = actionSymbol("restore_direct_to")!;
+    expect(restore.slice(0, directTo.length)).toEqual(directTo);
+    expect(restore.at(-1)).toMatchObject({ stroke: "white" });
   });
 
   it("overlays core-projected weather on the existing waypoint symbol cell", () => {

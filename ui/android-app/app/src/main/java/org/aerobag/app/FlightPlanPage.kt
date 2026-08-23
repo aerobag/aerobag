@@ -946,6 +946,7 @@ internal fun FlightPlanPage(
                             maxLines = 2,
                             enabled = control.enabled,
                             selected = control.selected,
+                            actionSymbolId = control.symbolId,
                             testTag = "parity:plan-control:${control.id.name}",
                             onDisabledClick = control.disabledReason?.let { reason ->
                                 { showDisabledActionToast(context, reason) }

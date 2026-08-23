@@ -10075,6 +10075,7 @@ function FlightPlanPage(props: {
         {planControls.map((control) => {
           const disabledReason = disabledReasonText(control.disabled_reason);
           const disabled = !control.enabled;
+          const symbol = actionSymbol(control.symbol_id);
           return (
             <button
               key={control.id}
@@ -10096,7 +10097,8 @@ function FlightPlanPage(props: {
                 void props.onPerformFlightPlanControl(control.id);
               }}
             >
-              {control.label}
+              {symbol ? <ActionIcon layers={symbol} /> : null}
+              <span className="planControlButtonLabel">{control.label}</span>
             </button>
           );
         })}

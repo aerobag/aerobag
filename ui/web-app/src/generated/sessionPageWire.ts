@@ -28,6 +28,7 @@ export type FlightPlanControlUiView = {
   id: FlightPlanControlId;
   label: string;
   selected: boolean;
+  symbol_id: string;
 };
 
 export type FlightDataCellTone = "planned" | "passed" | "active";

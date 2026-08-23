@@ -55,6 +55,7 @@ pub enum FlightPlanControlId {
 #[serde(deny_unknown_fields)]
 pub struct FlightPlanControlUiView {
     pub id: FlightPlanControlId,
+    pub symbol_id: String,
     pub label: String,
     pub enabled: bool,
     pub selected: bool,

@@ -619,6 +619,7 @@ internal fun CompactSquareButton(
     selectedColor: Color? = null,
     accentColor: Color? = null,
     @DrawableRes iconResId: Int? = null,
+    actionSymbolId: String? = null,
     showLabel: Boolean = true,
     wide: Boolean = false,
     centered: Boolean = true,
@@ -682,15 +683,25 @@ internal fun CompactSquareButton(
                         .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
                 )
             }
-            if (iconResId != null) {
-                IconFrame(
-                    iconResId = iconResId,
-                    saturation = if (enabled) 1f else uiTheme.controls.buttonDisabledIconSaturation,
-                    opacity = if (enabled) 1f else uiTheme.controls.buttonDisabledIconOpacity,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(8.dp),
-                )
+            if (iconResId != null || actionSymbolId != null) {
+                if (actionSymbolId != null) {
+                    ActionIcon(
+                        actionId = actionSymbolId,
+                        enabled = enabled,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(8.dp),
+                    )
+                } else if (iconResId != null) {
+                    IconFrame(
+                        iconResId = iconResId,
+                        saturation = if (enabled) 1f else uiTheme.controls.buttonDisabledIconSaturation,
+                        opacity = if (enabled) 1f else uiTheme.controls.buttonDisabledIconOpacity,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(8.dp),
+                    )
+                }
                 if (showLabel) {
                     OutlinedButtonLabel(
                         text = renderedLabel,

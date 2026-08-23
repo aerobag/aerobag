@@ -2090,10 +2090,22 @@ fn flight_plan_control(
 ) -> FlightPlanControlUiView {
     FlightPlanControlUiView {
         id,
+        symbol_id: flight_plan_control_symbol_id(id).to_string(),
         label: label.to_string(),
         enabled,
         selected,
         disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
+    }
+}
+
+pub(crate) fn flight_plan_control_symbol_id(id: FlightPlanControlId) -> &'static str {
+    match id {
+        FlightPlanControlId::ActivateNextLeg => "activate_next_leg",
+        FlightPlanControlId::Redo => "redo",
+        FlightPlanControlId::RestoreDirectTo => "restore_direct_to",
+        FlightPlanControlId::StopNavigation => "stop_navigation",
+        FlightPlanControlId::ToggleSequencingSuspension => "toggle_sequencing_suspension",
+        FlightPlanControlId::Undo => "undo",
     }
 }
 
@@ -2119,14 +2131,14 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
     vec![
         flight_plan_control(
             FlightPlanControlId::ActivateNextLeg,
-            "Next\nLeg",
+            "NEXT",
             can_activate_next_leg,
             false,
             "No next leg is available.",
         ),
         flight_plan_control(
             FlightPlanControlId::StopNavigation,
-            "STOP\nNAV",
+            "STOP",
             has_guidance,
             false,
             "No active guidance is available to stop.",
@@ -2140,7 +2152,7 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
         ),
         flight_plan_control(
             FlightPlanControlId::RestoreDirectTo,
-            "Restore\nFP",
+            "RESTOR",
             can_restore_direct_to,
             false,
             "No off-plan Direct-To is active.",
@@ -10556,7 +10568,7 @@ mod tests {
             .iter()
             .find(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo))
             .expect("restore direct-to control");
-        assert_eq!(restore_control.label, "Restore\nFP");
+        assert_eq!(restore_control.label, "RESTOR");
         assert!(restore_control.enabled);
         assert_eq!(restore_control.disabled_reason, None);
         assert!(ui
@@ -10574,7 +10586,19 @@ mod tests {
                 .iter()
                 .map(|control| control.label.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Next\nLeg", "STOP\nNAV", "SUSP", "Restore\nFP"]
+            vec!["NEXT", "STOP", "SUSP", "RESTOR"]
+        );
+        assert_eq!(
+            ui.controls
+                .iter()
+                .map(|control| control.symbol_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "activate_next_leg",
+                "stop_navigation",
+                "toggle_sequencing_suspension",
+                "restore_direct_to",
+            ]
         );
     }
 
@@ -10648,7 +10672,7 @@ mod tests {
             .iter()
             .find(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo))
             .expect("restore direct-to control");
-        assert_eq!(restore_control.label, "Restore\nFP");
+        assert_eq!(restore_control.label, "RESTOR");
         assert!(!restore_control.enabled);
         assert_eq!(
             restore_control.disabled_reason.as_deref(),
@@ -10688,7 +10712,7 @@ mod tests {
             .iter()
             .find(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo))
             .expect("restore direct-to control");
-        assert_eq!(restore_control.label, "Restore\nFP");
+        assert_eq!(restore_control.label, "RESTOR");
         assert!(!restore_control.enabled);
         assert_eq!(
             restore_control.disabled_reason.as_deref(),

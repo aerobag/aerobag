@@ -170,10 +170,14 @@
         },
         "selected": {
           "type": "boolean"
+        },
+        "symbol_id": {
+          "type": "string"
         }
       },
       "required": [
         "id",
+        "symbol_id",
         "label",
         "enabled",
         "selected"

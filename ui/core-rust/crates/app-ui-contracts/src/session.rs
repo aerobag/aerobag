@@ -223,6 +223,8 @@ pub struct UiStatusActionDecision {
 pub struct UiDataStatusPageFact {
     pub label: String,
     pub value: String,
+    #[serde(default)]
+    pub full_width: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

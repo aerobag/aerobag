@@ -582,6 +582,10 @@
             "null"
           ]
         },
+        "full_width": {
+          "default": false,
+          "type": "boolean"
+        },
         "label": {
           "type": "string"
         },

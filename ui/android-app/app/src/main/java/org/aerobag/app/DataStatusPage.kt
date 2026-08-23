@@ -482,20 +482,22 @@ private fun DataStatusPageRowCard(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Text(
-            text = row.detail,
-            style = MaterialTheme.typography.bodyLarge.copy(
-                fontSize = DataStatusPageDetailTextSize,
-                lineHeight = DataStatusPageDetailTextSize * 1.25f,
-                fontWeight = FontWeight.Bold,
-            ),
-            color = Color(0xFF101820),
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
+        if (row.detail.isNotEmpty()) {
+            Text(
+                text = row.detail,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = DataStatusPageDetailTextSize,
+                    lineHeight = DataStatusPageDetailTextSize * 1.25f,
+                    fontWeight = FontWeight.Bold,
+                ),
+                color = Color(0xFF101820),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         if (row.facts.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.1f)) {
-                row.facts.chunked(2).forEach { factRow ->
+                dataStatusFactRows(row.facts).forEach { factRow ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.18f),
@@ -507,7 +509,7 @@ private fun DataStatusPageRowCard(
                                 modifier = Modifier.weight(1f),
                             )
                         }
-                        if (factRow.size == 1) {
+                        if (factRow.size == 1 && !factRow.single().fullWidth) {
                             Box(modifier = Modifier.weight(1f))
                         }
                     }
@@ -516,6 +518,27 @@ private fun DataStatusPageRowCard(
         }
     }
 }
+
+internal fun dataStatusFactRows(facts: List<UiDataStatusPageFact>): List<List<UiDataStatusPageFact>> =
+    buildList {
+        val pending = mutableListOf<UiDataStatusPageFact>()
+        fun flushPending() {
+            if (pending.isNotEmpty()) {
+                add(pending.toList())
+                pending.clear()
+            }
+        }
+        facts.forEach { fact ->
+            if (fact.fullWidth) {
+                flushPending()
+                add(listOf(fact))
+            } else {
+                pending.add(fact)
+                if (pending.size == 2) flushPending()
+            }
+        }
+        flushPending()
+    }
 
 
 @Composable

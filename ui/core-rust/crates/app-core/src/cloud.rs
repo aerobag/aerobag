@@ -150,6 +150,8 @@ pub struct CloudStatusFact {
     pub label: String,
     pub value: String,
     pub time_epoch_ms: Option<i64>,
+    pub link_url: Option<String>,
+    pub full_width: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2245,82 +2247,93 @@ impl CloudEngine {
     }
 
     pub fn status_summary(&self, _now_epoch_ms: i64) -> CloudStatusSummary {
-        let linked = self
-            .persistent
-            .account
-            .as_ref()
-            .is_some_and(|account| account.tip.is_some());
+        let linked = self.has_linked_account();
+        if !linked {
+            return CloudStatusSummary {
+                label: "UNLINKED".to_string(),
+                severity: UiStatusSeverity::Info,
+                detail: String::new(),
+                facts: Vec::new(),
+            };
+        }
+
         let provider = self.current_provider().ok();
         let mut facts = Vec::new();
         if let Some(provider) = provider {
             facts.push(CloudStatusFact {
-                label: "Provider".to_string(),
+                label: "Provider type".to_string(),
                 value: provider.label().to_string(),
                 time_epoch_ms: None,
+                link_url: None,
+                full_width: false,
             });
         }
-        facts.push(CloudStatusFact {
-            label: "Sync Account".to_string(),
-            value: if linked { "Linked" } else { "Not linked" }.to_string(),
-            time_epoch_ms: None,
-        });
+        if let Some(provider_url) = self
+            .persistent
+            .account
+            .as_ref()
+            .and_then(|account| account.acs.as_ref())
+            .map(|acs| acs.base_url.clone())
+            .or_else(|| self.acs_default_base_url.clone())
+        {
+            facts.push(CloudStatusFact {
+                label: "Provider URL".to_string(),
+                value: provider_url.clone(),
+                time_epoch_ms: None,
+                link_url: Some(provider_url),
+                full_width: true,
+            });
+        }
         if let Some(account) = self.persistent.account.as_ref() {
             if let Some(tip) = account.tip.as_ref() {
                 facts.push(CloudStatusFact {
                     label: "Generation".to_string(),
                     value: tip.generation.to_string(),
                     time_epoch_ms: None,
+                    link_url: None,
+                    full_width: false,
                 });
             }
         }
         facts.push(CloudStatusFact {
-            label: "Pending local records".to_string(),
+            label: "Records awaiting upload".to_string(),
             value: self.persistent.records.pending_keys.len().to_string(),
             time_epoch_ms: None,
+            link_url: None,
+            full_width: false,
         });
         if let Some(last_success) = self.persistent.last_success_epoch_ms {
             facts.push(CloudStatusFact {
                 label: "Last provider success".to_string(),
                 value: format_epoch_ms_utc(last_success),
                 time_epoch_ms: Some(last_success),
+                link_url: None,
+                full_width: false,
             });
         }
 
-        if linked {
-            if let Some(failure) = self.persistent.last_provider_failure.as_ref() {
-                return CloudStatusSummary {
-                    label: if failure.kind == CloudProviderErrorKind::Transient {
-                        "OFFLINE"
-                    } else {
-                        "FAILED"
-                    }
-                    .to_string(),
-                    severity: if failure.kind == CloudProviderErrorKind::Transient {
-                        UiStatusSeverity::Info
-                    } else {
-                        UiStatusSeverity::Caution
-                    },
-                    detail: failure.detail.clone(),
-                    facts,
-                };
-            }
+        if let Some(failure) = self.persistent.last_provider_failure.as_ref() {
             return CloudStatusSummary {
-                label: "OK".to_string(),
-                severity: UiStatusSeverity::Ok,
-                detail: if !self.persistent.records.pending_keys.is_empty() {
-                    "Local changes are waiting to sync."
+                label: if failure.kind == CloudProviderErrorKind::Transient {
+                    "OFFLINE"
                 } else {
-                    "Sync Account is up to date."
+                    "ERROR"
                 }
                 .to_string(),
+                severity: if failure.kind == CloudProviderErrorKind::Transient {
+                    UiStatusSeverity::Info
+                } else {
+                    UiStatusSeverity::Caution
+                },
+                detail: failure.detail.clone(),
                 facts,
             };
         }
 
         CloudStatusSummary {
-            label: "NOT SET UP".to_string(),
-            severity: UiStatusSeverity::Info,
-            detail: "This device is not linked to a Sync Account.".to_string(),
+            label: "LINKED".to_string(),
+            severity: UiStatusSeverity::Ok,
+            detail: String::new(),
             facts,
         }
     }
@@ -2452,7 +2465,7 @@ impl CloudEngine {
         Some(DataStatusRecord::new(
             CLOUD_STATUS_ID,
             "CLOUD",
-            Some(if transient { "OFFLINE" } else { "FAILED" }.to_string()),
+            Some(if transient { "OFFLINE" } else { "ERROR" }.to_string()),
             if transient {
                 UiStatusSeverity::Info
             } else {
@@ -3178,6 +3191,16 @@ mod tests {
         engine
     }
 
+    #[test]
+    fn unlinked_status_omits_linked_account_facts() {
+        let engine = configured_engine();
+
+        let status = engine.status_summary(1_000);
+
+        assert_eq!(status.label, "UNLINKED");
+        assert!(status.facts.is_empty());
+    }
+
     fn read_page_workflow(purpose: ReadPurpose) -> CloudWorkflow {
         let stale_page_id = "stale-page".to_string();
         CloudWorkflow::AcsReadPage {
@@ -3254,6 +3277,24 @@ mod tests {
         let setup_code = create_account(&mut source, &mut provider, &initial, 1_000);
 
         assert!(source.has_linked_account());
+        let status = source.status_summary(1_000);
+        assert_eq!(status.label, "LINKED");
+        assert!(status.detail.is_empty());
+        assert!(status
+            .facts
+            .iter()
+            .any(|fact| { fact.label == "Provider type" && fact.value == "Aerobag Cloud" }));
+        assert!(status.facts.iter().any(|fact| {
+            fact.label == "Provider URL"
+                && fact.value == "https://cloud.example/cloud/"
+                && fact.link_url.as_deref() == Some("https://cloud.example/cloud/")
+                && fact.full_width
+        }));
+        assert!(status
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Records awaiting upload"));
+        assert!(!status.facts.iter().any(|fact| fact.label == "Sync Account"));
         assert_eq!(
             source
                 .account()
@@ -3635,14 +3676,14 @@ mod tests {
             })
         );
         let summary = engine.status_summary(2_001);
-        assert_eq!(summary.label, "FAILED");
+        assert_eq!(summary.label, "ERROR");
         assert_eq!(summary.severity, UiStatusSeverity::Caution);
         assert_eq!(
             summary.detail,
             "Aerobag Cloud state page stale-page is missing"
         );
         let record = engine.status_record(2_001).expect("visible failure");
-        assert_eq!(record.value.as_deref(), Some("FAILED"));
+        assert_eq!(record.value.as_deref(), Some("ERROR"));
         assert_eq!(record.severity, UiStatusSeverity::Caution);
         assert!(record.drives_caution);
         assert!(engine.take_provider_request(3_000).unwrap().is_none());

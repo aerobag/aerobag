@@ -20150,9 +20150,9 @@ mod tests {
             .find(|row| row.id == "live_feed:tafs")
             .expect("TAF data-status row");
         assert_eq!(data_status.label, "TAFs");
-        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.value, "LOADED");
         assert_eq!(data_status.severity, UiStatusSeverity::Ok);
-        assert_eq!(data_status.detail, "TAFs is loaded.");
+        assert!(data_status.detail.is_empty());
         assert_eq!(
             data_status
                 .facts
@@ -20843,9 +20843,9 @@ mod tests {
             .find(|row| row.id == "live_feed:tafs")
             .expect("TAF data-status row");
         assert_eq!(data_status.label, "TAFs");
-        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.value, "LOADED");
         assert_eq!(data_status.severity, UiStatusSeverity::Ok);
-        assert_eq!(data_status.detail, "TAFs is loaded.");
+        assert!(data_status.detail.is_empty());
         assert_eq!(
             data_status
                 .facts
@@ -20989,7 +20989,7 @@ mod tests {
             .iter()
             .find(|row| row.id == "live_feed:tafs")
             .expect("TAF data-status row");
-        assert_eq!(tafs.value, "OK");
+        assert_eq!(tafs.value, "LOADED");
         assert_eq!(
             tafs.facts
                 .iter()
@@ -21001,7 +21001,7 @@ mod tests {
             .iter()
             .find(|row| row.id == "live_feed:tfrs")
             .expect("TFR data-status row");
-        assert_eq!(tfrs.value, "OK");
+        assert_eq!(tfrs.value, "LOADED");
         assert_eq!(
             tfrs.facts
                 .iter()
@@ -22149,7 +22149,7 @@ mod tests {
             .iter()
             .find(|row| row.id == "live_feed:winds-aloft")
             .expect("winds-aloft status row");
-        assert_eq!(winds_status.value, "OK");
+        assert_eq!(winds_status.value, "LOADED");
         let failed = report_session_resource_failure_in_session(
             init.handle,
             &format!("live_nav_kv/winds-aloft/{version}/page/0000"),
@@ -24338,8 +24338,9 @@ mod tests {
             .iter()
             .find(|row| row.id == "live_feed:metars")
             .expect("METAR data-status row");
-        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.value, "LOADED");
         assert_eq!(data_status.severity, UiStatusSeverity::Ok);
+        assert!(data_status.detail.is_empty());
     }
 
     #[test]
@@ -24379,8 +24380,9 @@ mod tests {
             .iter()
             .find(|row| row.id == "live_feed:metars")
             .expect("METAR data-status row");
-        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.value, "LOADED");
         assert_eq!(data_status.severity, UiStatusSeverity::Ok);
+        assert!(data_status.detail.is_empty());
     }
 
     #[test]
@@ -24726,7 +24728,7 @@ mod tests {
             .expect("charts row");
         assert_eq!(row.value, "OK");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("valid until 2026-05-24 12:00 UTC"));
+        assert!(row.detail.is_empty());
         assert!(row
             .facts
             .iter()
@@ -24795,7 +24797,7 @@ mod tests {
             .find(|row| row.id == "cycle:airport_docs")
             .expect("airport docs row");
         assert_eq!(docs.value, "OK");
-        assert!(docs.detail.contains("TPP, CSup airport docs valid"));
+        assert!(docs.detail.is_empty());
         let static_data = snapshot
             .data_status_page_state
             .rows
@@ -24803,9 +24805,11 @@ mod tests {
             .find(|row| row.id == "static:base_data")
             .expect("static data row");
         assert_eq!(static_data.value, "OK");
+        assert!(static_data.detail.is_empty());
         assert!(static_data
-            .detail
-            .contains("source data dates back to 2025-01-01 00:00 UTC"));
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Terrain" && fact.value == "2025-01-01 00:00 UTC"));
     }
 
     #[test]
@@ -24836,8 +24840,11 @@ mod tests {
             .find(|row| row.id == "cycle:airport_docs")
             .expect("airport docs row");
         assert_eq!(docs.value, "OK");
-        assert!(docs.detail.contains("TPP, CSup airport docs valid"));
-        assert!(!docs.detail.contains("not valid yet"));
+        assert!(docs.detail.is_empty());
+        assert!(docs
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Expires" && fact.value == "2026-06-11 00:00 UTC"));
     }
 
     #[test]
@@ -24862,8 +24869,7 @@ mod tests {
             .expect("charts row");
         assert_eq!(row.value, "OK");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
-        assert!(!row.detail.contains("not valid yet"));
+        assert!(row.detail.is_empty());
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
@@ -24902,7 +24908,7 @@ mod tests {
             .find(|row| row.id == "cycle:charts")
             .expect("charts row");
         assert_eq!(row.value, "OK");
-        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
+        assert!(row.detail.is_empty());
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
@@ -24937,8 +24943,7 @@ mod tests {
             .expect("airport docs row");
         assert_eq!(row.value, "OK");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
-        assert!(!row.detail.contains("not valid yet"));
+        assert!(row.detail.is_empty());
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
@@ -24977,7 +24982,7 @@ mod tests {
             .find(|row| row.id == "cycle:airport_docs")
             .expect("airport docs row");
         assert_eq!(row.value, "OK");
-        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
+        assert!(row.detail.is_empty());
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Next effective"
                 && fact.value == "2026-06-11 00:00 UTC"
@@ -25024,10 +25029,8 @@ mod tests {
             .iter()
             .find(|row| row.id == "publication:current_artifacts")
             .expect("package library row");
-        assert_eq!(
-            row.detail,
-            "current_artifacts.json checked at 2026-05-20 12:00 UTC."
-        );
+        assert_eq!(row.label, "Package catalog");
+        assert!(row.detail.is_empty());
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Checked"
                 && fact.value == "2026-05-20 12:00 UTC"
@@ -25065,10 +25068,8 @@ mod tests {
             .find(|row| row.id == "publication:current_artifacts")
             .expect("package library row");
         assert_eq!(row.value, "OK");
-        assert_eq!(
-            row.detail,
-            "current_artifacts.json checked at 2026-05-20 12:00 UTC."
-        );
+        assert_eq!(row.label, "Package catalog");
+        assert!(row.detail.is_empty());
     }
 
     #[test]
@@ -25108,9 +25109,10 @@ mod tests {
             .expect("connection row");
         assert_eq!(row.value, "CONNECTED");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row
-            .detail
-            .contains("Last server event was at 2026-05-20 12:03 UTC"));
+        assert!(row.detail.is_empty());
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Last server event" && fact.value == "2026-05-20 12:03 UTC"
+        }));
         let server = row
             .facts
             .iter()
@@ -25354,7 +25356,7 @@ mod tests {
         assert_eq!(row.label, "Client");
         assert_eq!(row.value, "0.1.202606201031+a04240eb.dirty");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
-        assert!(row.detail.contains("dirty worktree"));
+        assert!(row.detail.is_empty());
         assert_eq!(
             row.facts
                 .iter()
@@ -25369,20 +25371,14 @@ mod tests {
                 .map(|fact| fact.value.as_str()),
             Some("2026-06-20 10:31 UTC")
         );
-        assert_eq!(
-            row.facts
-                .iter()
-                .find(|fact| fact.label == "Commit")
-                .map(|fact| fact.value.as_str()),
-            Some("a04240ebcafefeed")
-        );
-        assert_eq!(
-            row.facts
-                .iter()
-                .find(|fact| fact.label == "Worktree")
-                .map(|fact| fact.value.as_str()),
-            Some("dirty")
-        );
+        let commit = row
+            .facts
+            .iter()
+            .find(|fact| fact.label == "Commit")
+            .expect("commit fact");
+        assert_eq!(commit.value, "a04240ebcafefeed");
+        assert!(commit.full_width);
+        assert!(!row.facts.iter().any(|fact| fact.label == "Worktree"));
     }
 
     #[test]
@@ -25403,7 +25399,6 @@ mod tests {
             vec![
                 "client",
                 "publication:current_artifacts",
-                "contracts:expected",
                 "nav_db",
                 "cycle:charts",
                 "cycle:airport_docs",
@@ -25417,6 +25412,7 @@ mod tests {
                 "live_feed:nexrad",
                 "live_feed:obstacles",
                 "live_feed:winds-aloft",
+                "contracts:expected",
             ]
         );
     }
@@ -25437,10 +25433,11 @@ mod tests {
             .expect("nav-db page row");
         assert_eq!(row.value, "OK");
         assert_eq!(row.severity, UiStatusSeverity::Ok);
+        assert!(row.detail.is_empty());
         assert!(row
-            .detail
-            .contains("NAV DB valid until 2026-06-18 00:00 UTC"));
-        assert!(!row.detail.contains("contains no nav-db package rows"));
+            .facts
+            .iter()
+            .any(|fact| { fact.label == "Expires" && fact.value == "2026-06-18 00:00 UTC" }));
     }
 
     #[test]

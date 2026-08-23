@@ -4193,6 +4193,10 @@ button {
   min-width: 0;
 }
 
+.dataStatusPageFact.isFullWidth {
+  grid-column: 1 / -1;
+}
+
 .dataStatusPageFact dt {
   color: rgba(16, 24, 32, 0.64);
   font-size: calc(var(--thumb) * 0.22);
@@ -4202,12 +4206,11 @@ button {
 
 .dataStatusPageFact dd {
   margin: 0;
-  overflow: hidden;
   color: #101820;
   font-size: calc(var(--thumb) * 0.22);
   font-weight: 800;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .dataStatusPageFact dd a {
@@ -4223,9 +4226,8 @@ button {
 .dataStatusPageFactValuePrimary,
 .dataStatusPageFactValueRelative {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .planScrollViewport {

@@ -13360,11 +13360,14 @@ function DataStatusPageRowArticle(props: {
         <span className="dataStatusPageRowLabel">{row.label}</span>
         <span className="dataStatusPageRowValue">{row.value}</span>
       </div>
-      <div className="dataStatusPageRowDetail">{row.detail}</div>
+      {row.detail ? <div className="dataStatusPageRowDetail">{row.detail}</div> : null}
       {row.facts.length > 0 ? (
         <dl className="dataStatusPageFacts">
           {row.facts.map((fact) => (
-            <div key={`${row.id}:${fact.label}`} className="dataStatusPageFact">
+            <div
+              key={`${row.id}:${fact.label}`}
+              className={`dataStatusPageFact${fact.full_width ? " isFullWidth" : ""}`}
+            >
               <dt>{fact.label}</dt>
               <dd
                 className={fact.action_id ? "isActionable" : undefined}

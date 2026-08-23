@@ -436,14 +436,18 @@ fn project_data_status_page_state(
     records: &BTreeMap<String, DataStatusRecord>,
     input: &DataStatusPageInput,
 ) -> UiDataStatusPageState {
-    let mut rows = Vec::new();
+    let mut rows = vec![client_build_status_page_row(
+        input.client_build.as_ref(),
+        input,
+    )];
     if let Some(data_sources) = input.data_sources.as_ref() {
         rows.push(data_sources_status_page_row(data_sources));
     }
+    rows.push(publication_status_page_row(input));
+    if let Some(cloud) = input.cloud.as_ref() {
+        rows.push(cloud_status_page_row(cloud, input));
+    }
     rows.extend([
-        client_build_status_page_row(input.client_build.as_ref(), input),
-        publication_status_page_row(input),
-        expected_contract_versions_status_page_row(),
         nav_db_status_page_row(input),
         cycle_package_group_status_page_row(
             input,
@@ -492,10 +496,8 @@ fn project_data_status_page_state(
                 _ => live_feed_product_status_page_row(input, policy),
             }),
     );
-    if let Some(cloud) = input.cloud.as_ref() {
-        rows.insert(3, cloud_status_page_row(cloud, input));
-    }
     rows.extend(package_warning_status_page_rows(records));
+    rows.push(expected_contract_versions_status_page_row());
     UiDataStatusPageState {
         title: "Status".to_string(),
         summary: data_status_page_summary(&rows),
@@ -505,36 +507,26 @@ fn project_data_status_page_state(
 
 fn data_sources_status_page_row(input: &DataStatusSourcesInput) -> UiDataStatusPageRow {
     let mut facts = vec![
-        UiDataStatusPageFact {
-            label: "Cycle Data".to_string(),
-            value: input.cycle_data_base_url.clone(),
-            action_id: None,
-            link_url: Some(input.cycle_data_base_url.clone()),
-            relative_value: None,
-        },
-        UiDataStatusPageFact {
-            label: "Live Feeds".to_string(),
-            value: input.live_feeds_base_url.clone(),
-            action_id: None,
-            link_url: Some(input.live_feeds_base_url.clone()),
-            relative_value: None,
-        },
+        status_link_fact(
+            "Cycle Data",
+            input.cycle_data_base_url.clone(),
+            input.cycle_data_base_url.clone(),
+        ),
+        status_link_fact(
+            "Live Feeds",
+            input.live_feeds_base_url.clone(),
+            input.live_feeds_base_url.clone(),
+        ),
     ];
     if let Some(url) = input.debug_log_sink_url.as_ref() {
-        facts.push(UiDataStatusPageFact {
-            label: "Debug log sink".to_string(),
-            value: url.clone(),
-            action_id: None,
-            link_url: Some(url.clone()),
-            relative_value: None,
-        });
+        facts.push(status_link_fact("Debug log sink", url.clone(), url.clone()));
     }
     UiDataStatusPageRow {
         id: "data_sources".to_string(),
         label: "Data Sources".to_string(),
         value: "Config".to_string(),
         severity: UiStatusSeverity::Info,
-        detail: "Base URLs used for remote aviation data.".to_string(),
+        detail: String::new(),
         facts,
     }
 }
@@ -553,7 +545,7 @@ fn cloud_status_page_row(
             .facts
             .iter()
             .map(|fact| {
-                fact.time_epoch_ms.map_or_else(
+                let mut projected = fact.time_epoch_ms.map_or_else(
                     || status_fact(fact.label.clone(), fact.value.clone()),
                     |epoch_ms| {
                         status_time_fact(
@@ -563,7 +555,10 @@ fn cloud_status_page_row(
                             input,
                         )
                     },
-                )
+                );
+                projected.link_url.clone_from(&fact.link_url);
+                projected.full_width = fact.full_width;
+                projected
             })
             .collect(),
     )
@@ -699,28 +694,14 @@ fn client_build_status_page_row(
         }
     }
     if let Some(commit) = build.commit.as_deref().filter(|commit| !commit.is_empty()) {
-        facts.push(status_fact("Commit", commit.to_string()));
+        facts.push(status_full_width_fact("Commit", commit.to_string()));
     }
-    if build.dirty {
-        facts.push(status_fact("Worktree", "dirty"));
-    }
-    let detail = if build.dirty {
-        format!(
-            "Running the {} client build {} from a dirty worktree.",
-            build.platform, build.version
-        )
-    } else {
-        format!(
-            "Running the {} client build {}.",
-            build.platform, build.version
-        )
-    };
     status_page_row(
         "client",
         "Client",
         build.version.clone(),
         UiStatusSeverity::Ok,
-        detail,
+        "",
         facts,
     )
 }
@@ -750,17 +731,17 @@ fn publication_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageR
     let Some(publication) = publication else {
         return status_page_row(
             "publication:current_artifacts",
-            "Package library",
+            "Package catalog",
             "NEVER",
             UiStatusSeverity::Info,
-            "current_artifacts.json has not been checked in this session.",
+            "No package catalog has been checked in this session.",
             Vec::new(),
         );
     };
     let mut facts = vec![
-        status_fact("Bundles", publication.bundle_count.to_string()),
+        status_fact("Available bundles", publication.bundle_count.to_string()),
         status_fact(
-            "Loaded manifests",
+            "Loaded bundles",
             publication.loaded_manifest_count.to_string(),
         ),
     ];
@@ -782,22 +763,19 @@ fn publication_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageR
         ));
         return status_page_row(
             "publication:current_artifacts",
-            "Package library",
+            "Package catalog",
             "OK",
             UiStatusSeverity::Ok,
-            format!(
-                "current_artifacts.json checked at {}.",
-                format_status_time(checked_utc, input),
-            ),
+            "",
             facts,
         );
     }
     status_page_row(
         "publication:current_artifacts",
-        "Package library",
+        "Package catalog",
         "LOADED",
         UiStatusSeverity::Ok,
-        "current_artifacts.json is loaded; check time was not recorded.",
+        "Package catalog is loaded, but its check time was not recorded.",
         facts,
     )
 }
@@ -889,20 +867,7 @@ fn live_feed_connection_status_page_row(input: &DataStatusPageInput) -> UiDataSt
                 "The live-feed event stream is connecting.".to_string(),
             ),
             DataStatusLiveFeedConnectionMode::Connected => {
-                let heard = connection
-                    .last_heard_epoch_ms
-                    .map(|epoch| {
-                        format!(
-                            " Last server event was at {}.",
-                            format_status_time(utc_from_epoch_ms(epoch), input),
-                        )
-                    })
-                    .unwrap_or_default();
-                (
-                    "CONNECTED",
-                    UiStatusSeverity::Ok,
-                    format!("The live-feed event stream is connected.{heard}"),
-                )
+                ("CONNECTED", UiStatusSeverity::Ok, String::new())
             }
             DataStatusLiveFeedConnectionMode::Error => (
                 "ERROR",
@@ -1035,9 +1000,9 @@ fn live_feed_product_status_page_row(
     status_page_row(
         format!("live_feed:{product_key}"),
         label,
-        "OK",
+        "LOADED",
         UiStatusSeverity::Ok,
-        format!("{label} is loaded."),
+        "",
         facts,
     )
 }
@@ -1129,9 +1094,9 @@ fn winds_aloft_status_page_row(
         return status_page_row(
             "live_feed:winds-aloft",
             "Winds aloft",
-            "OK",
+            "LOADED",
             UiStatusSeverity::Ok,
-            "NOAA forecast atmosphere is loaded.",
+            "",
             facts,
         );
     }
@@ -1447,17 +1412,7 @@ fn cycle_package_group_status_page_row(
             input,
         ));
         push_next_cycle_window_facts(&mut facts, next_cycle_window, input);
-        return status_page_row(
-            id,
-            label,
-            "OK",
-            UiStatusSeverity::Ok,
-            format!(
-                "{family_list} {noun} valid until {}.",
-                format_status_time(expiration, input),
-            ),
-            facts,
-        );
+        return status_page_row(id, label, "OK", UiStatusSeverity::Ok, "", facts);
     }
     if !missing_expiration_families.is_empty() {
         facts.push(status_fact(
@@ -1682,22 +1637,7 @@ fn static_package_group_status_page_row(
             facts,
         );
     }
-    let oldest = newest_by_family
-        .values()
-        .map(|(_, effective)| *effective)
-        .min()
-        .unwrap_or_else(|| utc_from_epoch_ms(input.now_epoch_ms));
-    status_page_row(
-        id,
-        label,
-        "OK",
-        UiStatusSeverity::Ok,
-        format!(
-            "{family_list} source data dates back to {}.",
-            format_status_time(oldest, input),
-        ),
-        facts,
-    )
+    status_page_row(id, label, "OK", UiStatusSeverity::Ok, "", facts)
 }
 
 fn package_group_packages<'a>(
@@ -1748,18 +1688,16 @@ fn nav_db_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
     let not_yet_effective = latest_effective.is_some_and(|effective| now_utc < effective);
     let expired =
         earliest_expiration.is_some_and(|expiration| cycle_product_is_expired(expiration, now_utc));
-    let mut facts = vec![
-        status_fact("Package", artifact.package_id.clone()),
-        status_fact("File", artifact.filename.clone()),
-    ];
+    let mut facts = vec![status_fact("Package", artifact.package_id.clone())];
+    if let Some(contract) = artifact.contract_id.as_ref() {
+        facts.push(status_fact("Contract", contract.clone()));
+    }
+    facts.push(status_full_width_fact("File", artifact.filename.clone()));
     if let Some(cycle) = artifact.cycle.as_ref() {
         facts.push(status_fact("Cycle", cycle.clone()));
     }
     if let Some(version) = artifact.cycle_version.as_ref() {
         facts.push(status_fact("Cycle version", version.clone()));
-    }
-    if let Some(contract) = artifact.contract_id.as_ref() {
-        facts.push(status_fact("Contract", contract.clone()));
     }
     if let Some(effective) = latest_effective {
         facts.push(status_time_fact(
@@ -1797,18 +1735,8 @@ fn nav_db_status_page_row(input: &DataStatusPageInput) -> UiDataStatusPageRow {
             facts,
         );
     }
-    if let Some(earliest_expiration) = earliest_expiration {
-        return status_page_row(
-            "nav_db",
-            "NAV DB",
-            "OK",
-            UiStatusSeverity::Ok,
-            format!(
-                "NAV DB valid until {}.",
-                format_status_time(earliest_expiration, input),
-            ),
-            facts,
-        );
+    if earliest_expiration.is_some() {
+        return status_page_row("nav_db", "NAV DB", "OK", UiStatusSeverity::Ok, "", facts);
     }
     status_page_row(
         "nav_db",
@@ -1878,9 +1806,20 @@ fn status_fact(label: impl Into<String>, value: impl Into<String>) -> UiDataStat
     UiDataStatusPageFact {
         label: label.into(),
         value: value.into(),
+        full_width: false,
         action_id: None,
         link_url: None,
         relative_value: None,
+    }
+}
+
+fn status_full_width_fact(
+    label: impl Into<String>,
+    value: impl Into<String>,
+) -> UiDataStatusPageFact {
+    UiDataStatusPageFact {
+        full_width: true,
+        ..status_fact(label, value)
     }
 }
 
@@ -1892,6 +1831,7 @@ fn status_link_fact(
     UiDataStatusPageFact {
         label: label.into(),
         value: value.into(),
+        full_width: true,
         action_id: None,
         link_url: Some(link_url.into()),
         relative_value: None,
@@ -1912,6 +1852,7 @@ fn status_time_fact(
             input.local_time_zone,
             crate::DatedTimeStyle::IsoMinute,
         ),
+        full_width: false,
         action_id: Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
         link_url: None,
         relative_value: Some(crate::time_display::format_relative_time(
@@ -1951,15 +1892,6 @@ fn status_family_list<'a>(families: impl IntoIterator<Item = (u8, &'a str)>) -> 
 
 fn utc_from_epoch_ms(epoch_ms: i64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
-}
-
-fn format_status_time(instant: DateTime<Utc>, input: &DataStatusPageInput) -> String {
-    crate::format_dated_time(
-        instant.timestamp_millis(),
-        input.time_display_mode,
-        input.local_time_zone,
-        crate::DatedTimeStyle::IsoMinute,
-    )
 }
 
 fn plural_s(count: usize) -> &'static str {
@@ -2046,15 +1978,59 @@ mod tests {
         });
 
         let page = DataStatusController::default().project_page(input).state;
-        let row = page.rows.first().expect("data sources row");
+        let row = page
+            .rows
+            .iter()
+            .find(|row| row.id == "data_sources")
+            .expect("data sources row");
         assert_eq!(row.id, "data_sources");
+        assert_eq!(page.rows.first().map(|row| row.id.as_str()), Some("client"));
         assert_eq!(row.facts[0].value, "https://cycle.example/packages");
+        assert!(row.facts.iter().all(|fact| fact.full_width));
         assert_eq!(row.facts[1].value, "https://feeds.example/live-feeds");
         assert_eq!(
             row.facts[1].link_url.as_deref(),
             Some("https://feeds.example/live-feeds")
         );
         assert_eq!(row.facts[2].value, "https://debug.example/logs");
+    }
+
+    #[test]
+    fn nav_db_row_projects_scan_order_and_full_width_file() {
+        let mut input = page_input();
+        input.now_epoch_ms = parse_utc_instant("2026-08-23T00:00:00Z")
+            .expect("test time")
+            .timestamp_millis();
+        input.active_nav_db = Some(DataStatusNavDbArtifactInput {
+            package_id: "NAV_DB_2608".to_string(),
+            filename: "nav_db_2608_a_very_long_content_hash.zip".to_string(),
+            cycle: Some("2608".to_string()),
+            cycle_version: Some("3".to_string()),
+            contract_id: Some("NAV19".to_string()),
+            effective_date: Some("2026-08-06T00:00:00Z".to_string()),
+            expiration_date: Some("2026-09-03T00:00:00Z".to_string()),
+        });
+
+        let page = DataStatusController::default().project_page(input).state;
+        let row = page
+            .rows
+            .iter()
+            .find(|row| row.id == "nav_db")
+            .expect("nav-db row");
+        assert_eq!(
+            row.facts
+                .iter()
+                .take(5)
+                .map(|fact| fact.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Package", "Contract", "File", "Cycle", "Cycle version"]
+        );
+        assert!(row
+            .facts
+            .iter()
+            .find(|fact| fact.label == "File")
+            .is_some_and(|fact| fact.full_width));
+        assert!(row.detail.is_empty());
     }
 
     #[test]

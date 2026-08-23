@@ -3020,6 +3020,7 @@ data class UiSurfaceStatusState(
 data class UiDataStatusPageFact(
     val label: String,
     val value: String,
+    val fullWidth: Boolean,
     val actionId: String?,
     val linkUrl: String?,
     val relativeValue: String?,
@@ -3294,6 +3295,7 @@ private fun WireUiSurfaceStatusState.toUi() = UiSurfaceStatusState(
 private fun WireUiDataStatusPageFact.toUi() = UiDataStatusPageFact(
     label = label,
     value = value,
+    fullWidth = fullWidth,
     actionId = actionId,
     linkUrl = linkUrl,
     relativeValue = relativeValue,

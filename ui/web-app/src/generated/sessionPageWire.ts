@@ -102,6 +102,7 @@ export type UiStatusActionDecision = {
 
 export type UiDataStatusPageFact = {
   action_id?: string | null;
+  full_width: boolean;
   label: string;
   link_url?: string | null;
   relative_value?: string | null;

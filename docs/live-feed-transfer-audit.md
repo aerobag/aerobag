@@ -4,6 +4,8 @@ Baseline measured: 2026-08-20
 
 Implementation status updated: 2026-08-23
 
+Audit status: **Complete**
+
 ## Bottom line
 
 Yes: Aerobag constructs deltas first, serializes them, and then XZ-compresses the
@@ -28,10 +30,11 @@ Android's NEXRAD rate now depends on time spent shown, hidden, and asleep plus t
 selected coverage and offline detail. There is therefore no honest single current
 daily number until those mode times are specified or measured.
 
-There is still no evidence that a naive NEXRAD or winds delta would help; both
-need product-specific work. Winds no longer transfers automatically on Android,
-so its codec is now a per-download optimization rather than a standing daily
-cost. The completed and open work is tracked at the end of this document.
+There is still no evidence that a naive NEXRAD or winds delta would help. The
+NEXRAD temporal-codec investigation is closed after prior experiments lost on
+nonempty, noise-like tiles. Winds no longer transfers automatically on Android,
+so its spatial predictor is an optional per-download optimization rather than a
+standing daily-cost issue. The closeout ledger is at the end of this document.
 
 A repeatable corpus analyzer now closes the accounting loop for policies whose
 requests are determined by the feed metadata. Under an explicit representative
@@ -47,6 +50,53 @@ We do not need to leave an app running for a day. We do need to observe the
 producer for a day once if we want a faithful, replayable corpus of changes that
 have not happened yet. After that, the existing simulation mode can replay the
 captured corpus at arbitrary speed.
+
+## Before and after closeout
+
+The original warm-Android estimate and the current representative policy answer
+slightly different questions, so both comparisons matter. The original baseline
+used the old all-resolution NEXRAD package and unconditional winds downloads. The
+current scenario assumes 4 hours shown, 4 hours hidden, and 16 hours asleep, with
+NEXRAD fetched every update while shown, every 30 minutes while hidden, and never
+while asleep. Winds downloads are user initiated and are excluded from recurring
+bytes.
+
+| Client/scenario                         | Before          | After          | Reduction |
+| --------------------------------------- | --------------: | -------------: | --------: |
+| Android, full offline NEXRAD            | 365.1 MiB/day   | 58.29 MiB/day  |     84.0% |
+| Android, reduced offline NEXRAD         | 365.1 MiB/day   | 26.63 MiB/day  |     92.7% |
+| Web, fixed continuously-subscribed data | 36.5 MiB/day    | ~13.98 MiB/day |     61.7% |
+
+One explicit winds download adds about 12.2 MiB. If the Android user downloads
+one forecast per day, the full and reduced totals become about 70.49 MiB/day and
+38.83 MiB/day, still 80.7% and 89.4% below the original baseline. Viewport-only
+NEXRAD and web's route/viewport-driven products are excluded because their bytes
+depend on actual interaction. Web's 60-minute idle stop can reduce its fixed
+daily total further.
+
+The retained corpus also supports a stricter apples-to-apples comparison that
+holds the newer single-base-resolution NEXRAD publication format constant. Its
+reference is 310.66 MiB/day; the current full and reduced on-demand-winds
+scenarios are 58.29 and 26.63 MiB/day, reductions of 81.2% and 91.4%. The gap
+between 365.1 and 310.66 MiB/day is primarily the old all-resolution NEXRAD ZIP,
+which the corpus cannot reconstruct after it was replaced.
+
+The major components moved as follows:
+
+| Component                 | Before                         | After                                      |
+| ------------------------- | -----------------------------: | -----------------------------------------: |
+| Control plane             | 12.91 MiB/day                  | 2.69 MiB/day (79.2% lower)                 |
+| NEXRAD                     | 279.84 MiB/day                 | 44.31 MiB/day full; 12.65 MiB/day reduced |
+| Winds aloft               | 48.75 MiB/day automatically     | 0 recurring; ~12.2 MiB per explicit fetch |
+| TFR payload               | Full state on every change     | 92.7% lower in the fully current window    |
+| Reconnect catalog         | Two equivalent bootstrap paths | SSE catalog only                           |
+| Immutable resource reload | Retransmission possible        | One-year immutable HTTP caching            |
+
+This is a policy replay over a real 24-hour producer corpus, not a direct
+post-change packet capture. A clean post-change capture would be useful as a
+regression calibration, but it is not required to close the audit: the remaining
+unknowns are usage-dependent telemetry, transport overhead, and deliberately
+deferred optional experiments rather than unimplemented data-saving work.
 
 ## What is on the wire
 
@@ -276,7 +326,7 @@ The obstacle percentage is large because binary values serialize as very large
 pretty-printed number arrays, but obstacle changes are rare. This is a cheap and
 safe cleanup, not a leading daily-byte win.
 
-### 6. NEXRAD dominated Android — acquisition controls implemented; temporal encoding open
+### 6. NEXRAD dominated Android — acquisition controls implemented; temporal encoding closed
 
 The Android client intentionally installs a complete CONUS frame so it has a
 durable offline animation window. The observed producer emitted 256 changes in
@@ -345,8 +395,9 @@ the current tiled PNG package.
 The two immediate representation/policy ideas are implemented: offline packages
 transfer one base level and deterministically derive coarser levels, and Android's
 visible-area-only option trades the complete-CONUS offline guarantee for the JIT
-viewport path. A purpose-built temporal codec remains open and should be revisited
-only after measuring actual residence-weighted usage under the new policies.
+viewport path. A purpose-built temporal codec is not an outstanding audit item;
+revisit it only if a materially different representation or new measurements
+justify reopening the experiment.
 
 ### 7. Winds needed an acquisition policy more than a generic delta — implemented
 
@@ -559,7 +610,7 @@ intentionally not assigned fabricated totals.
 | Current/SSE bootstrap deduplication      | Done   | Saves about 52 KiB per connection in the historical form          |
 | NEXRAD temporal codec                    | Closed | Prior experiments lost on nonempty, noise-like radar tiles        |
 
-## Recommended next burn order
+## Optional future investigations
 
 1. Consider the measured winds spatial predictor only if explicit download size
    proves painful. It saved 29.4%, but no longer reduces an automatic daily cost.

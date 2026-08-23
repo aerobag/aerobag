@@ -20,13 +20,14 @@ export type UiNavigationPageState = {
   options: UiNavigationPageOption[];
 };
 
-export type FlightPlanControlId = "activate_next_leg" | "redo" | "restore_direct_to" | "sequence_active_leg" | "stop_navigation" | "suspend_sequencing" | "undo" | "unsuspend_sequencing";
+export type FlightPlanControlId = "activate_next_leg" | "redo" | "restore_direct_to" | "stop_navigation" | "toggle_sequencing_suspension" | "undo";
 
 export type FlightPlanControlUiView = {
   disabled_reason?: string | null;
   enabled: boolean;
   id: FlightPlanControlId;
   label: string;
+  selected: boolean;
 };
 
 export type FlightDataCellTone = "planned" | "passed" | "active";

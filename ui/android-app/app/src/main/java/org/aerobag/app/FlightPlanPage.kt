@@ -936,17 +936,23 @@ internal fun FlightPlanPage(
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
                 planControls.forEach { control ->
-                    CompactSquareButton(
-                        label = control.label,
-                        modifier = Modifier.size(ThumbSize),
-                        maxLines = 2,
-                        enabled = control.enabled,
-                        testTag = "parity:plan-control:${control.id.name}",
-                        onDisabledClick = control.disabledReason?.let { reason ->
-                            { showDisabledActionToast(context, reason) }
-                        },
-                        onClick = { performFlightPlanControl(control.id) },
-                    )
+                    SelectedControlHighlightFrame(
+                        selected = control.selected,
+                        modifier = Modifier.size(ThumbSize + 8.dp),
+                    ) {
+                        CompactSquareButton(
+                            label = control.label,
+                            modifier = Modifier.fillMaxSize(),
+                            maxLines = 2,
+                            enabled = control.enabled,
+                            selected = control.selected,
+                            testTag = "parity:plan-control:${control.id.name}",
+                            onDisabledClick = control.disabledReason?.let { reason ->
+                                { showDisabledActionToast(context, reason) }
+                            },
+                            onClick = { performFlightPlanControl(control.id) },
+                        )
+                    }
                 }
                 Surface(
                     modifier = Modifier

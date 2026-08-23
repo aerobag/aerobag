@@ -4151,11 +4151,11 @@ fn perform_flight_plan_control_in_session(
         crate::FlightPlanControlId::ActivateNextLeg => activate_next_leg_in_session(handle),
         crate::FlightPlanControlId::Redo => redo_flight_plan_edit_in_session(handle),
         crate::FlightPlanControlId::RestoreDirectTo => restore_direct_to_in_session(handle),
-        crate::FlightPlanControlId::SequenceActiveLeg => sequence_active_leg_in_session(handle),
         crate::FlightPlanControlId::StopNavigation => stop_navigation_in_session(handle),
-        crate::FlightPlanControlId::SuspendSequencing => suspend_sequencing_in_session(handle),
+        crate::FlightPlanControlId::ToggleSequencingSuspension => {
+            toggle_sequencing_suspension_in_session(handle)
+        }
         crate::FlightPlanControlId::Undo => undo_flight_plan_edit_in_session(handle),
-        crate::FlightPlanControlId::UnsuspendSequencing => unsuspend_sequencing_in_session(handle),
     }
 }
 
@@ -4635,21 +4635,11 @@ pub(crate) fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationO
     })
 }
 
-pub(crate) fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub(crate) fn toggle_sequencing_suspension_in_session(
+    handle: u32,
+) -> AppResult<HadOperationOutcome> {
     mutate_session_navigation_controller(handle, |controller| {
-        controller.plan_after_suspend_sequencing()
-    })
-}
-
-pub(crate) fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_navigation_controller(handle, |controller| {
-        controller.plan_after_unsuspend_sequencing()
-    })
-}
-
-pub(crate) fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_navigation_controller(handle, |controller| {
-        controller.plan_after_manual_sequence()
+        controller.plan_after_toggle_sequencing_suspension()
     })
 }
 
@@ -16418,6 +16408,16 @@ mod tests {
         serde_json::from_value(result).expect("session snapshot")
     }
 
+    fn manually_sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+        mutate_session_navigation_controller(handle, |controller| {
+            crate::sequence_active_leg(
+                controller
+                    .active_plan()
+                    .expect("manual sequence test requires an active plan"),
+            )
+        })
+    }
+
     fn configure_test_live_feed_policy(handle: u32, policy: LiveFeedAcquisitionPolicy) {
         configure_platform_capabilities_in_session(
             handle,
@@ -16523,7 +16523,6 @@ mod tests {
     snapshot_wrapper!(tick_playback_in_session(handle: u32, now_epoch_ms: f64));
     snapshot_wrapper!(set_situation_in_session(handle: u32, situation: Situation));
     snapshot_wrapper!(tick_bad_autopilot_in_session(handle: u32, now_epoch_ms: f64));
-    snapshot_wrapper!(unsuspend_sequencing_in_session(handle: u32));
     snapshot_wrapper!(replace_flight_plan_in_session(
         handle: u32,
         plan: FlightPlan,
@@ -27591,7 +27590,7 @@ mod tests {
             ]
         );
 
-        let outcome = super::sequence_active_leg_in_session(init.handle)
+        let outcome = manually_sequence_active_leg_in_session(init.handle)
             .expect("sequence active flight-plan leg");
         let HadOperationOutcome::Complete {
             result,
@@ -27669,7 +27668,7 @@ mod tests {
             .clone()
             .expect("initial active plan");
 
-        let outcome = super::sequence_active_leg_in_session(init.handle)
+        let outcome = manually_sequence_active_leg_in_session(init.handle)
             .expect("sequence active flight-plan leg");
         let HadOperationOutcome::Complete {
             result,
@@ -31372,7 +31371,7 @@ mod tests {
         assert!(guidance.active_detail_index.unwrap_or(0) >= 2);
         assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
 
-        unsuspend_sequencing_in_session(init.handle).expect("unsuspend hold");
+        toggle_sequencing_suspension_in_session(init.handle).expect("unsuspend hold");
         for second in 9..=30 {
             let now_epoch_ms = f64::from(second) * 1000.0;
             snapshot = tick_bad_autopilot_in_session(init.handle, now_epoch_ms)
@@ -31718,6 +31717,88 @@ mod tests {
                 .map(|plan| plan.name.as_str()),
             Some("edited")
         );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn session_suspension_control_toggles_core_behavior_and_selected_state() {
+        let init = create_ui_session(short_lat_lon_preview_plan(), &[], None, None)
+            .expect("create session");
+        let control_id = crate::FlightPlanControlId::ToggleSequencingSuspension;
+
+        let initial = get_session_snapshot(init.handle).expect("initial snapshot");
+        let initial_control = initial
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("plan UI")
+            .controls
+            .iter()
+            .find(|control| control.id == control_id)
+            .expect("suspension control");
+        assert!(initial_control.enabled);
+        assert!(!initial_control.selected);
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformControl { control_id },
+            1_000,
+        )
+        .expect("suspend command");
+        let suspended = get_session_snapshot(init.handle).expect("suspended snapshot");
+        assert_eq!(
+            suspended
+                .app_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.guidance.as_ref())
+                .map(|guidance| &guidance.sequencing_mode),
+            Some(&SequencingMode::Suspended)
+        );
+        assert!(
+            suspended
+                .app_ui_state
+                .active_plan
+                .as_ref()
+                .expect("suspended plan UI")
+                .controls
+                .iter()
+                .find(|control| control.id == control_id)
+                .expect("suspended control")
+                .selected
+        );
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformControl { control_id },
+            2_000,
+        )
+        .expect("resume command");
+        let resumed = get_session_snapshot(init.handle).expect("resumed snapshot");
+        assert_eq!(
+            resumed
+                .app_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.guidance.as_ref())
+                .map(|guidance| &guidance.sequencing_mode),
+            Some(&SequencingMode::FollowPlan)
+        );
+        assert!(
+            !resumed
+                .app_ui_state
+                .active_plan
+                .as_ref()
+                .expect("resumed plan UI")
+                .controls
+                .iter()
+                .find(|control| {
+                    control.id == crate::FlightPlanControlId::ToggleSequencingSuspension
+                })
+                .expect("resumed control")
+                .selected
+        );
+
         destroy_session(init.handle);
     }
 }

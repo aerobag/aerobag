@@ -564,9 +564,7 @@ fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
     for function in [
         "activate_next_leg_in_session",
         "stop_navigation_in_session",
-        "suspend_sequencing_in_session",
-        "unsuspend_sequencing_in_session",
-        "sequence_active_leg_in_session",
+        "toggle_sequencing_suspension_in_session",
     ] {
         let body = function_body(source, function);
         if !body.contains("mutate_session_navigation_controller") {

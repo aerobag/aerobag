@@ -143,11 +143,9 @@
         "activate_next_leg",
         "redo",
         "restore_direct_to",
-        "sequence_active_leg",
         "stop_navigation",
-        "suspend_sequencing",
-        "undo",
-        "unsuspend_sequencing"
+        "toggle_sequencing_suspension",
+        "undo"
       ],
       "title": "FlightPlanControlId",
       "type": "string"
@@ -169,12 +167,16 @@
         },
         "label": {
           "type": "string"
+        },
+        "selected": {
+          "type": "boolean"
         }
       },
       "required": [
         "id",
         "label",
-        "enabled"
+        "enabled",
+        "selected"
       ],
       "title": "FlightPlanControlUiView",
       "type": "object"

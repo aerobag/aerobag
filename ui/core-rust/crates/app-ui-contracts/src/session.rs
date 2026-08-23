@@ -45,11 +45,9 @@ pub enum FlightPlanControlId {
     ActivateNextLeg,
     Redo,
     RestoreDirectTo,
-    SequenceActiveLeg,
     StopNavigation,
-    SuspendSequencing,
+    ToggleSequencingSuspension,
     Undo,
-    UnsuspendSequencing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +57,7 @@ pub struct FlightPlanControlUiView {
     pub id: FlightPlanControlId,
     pub label: String,
     pub enabled: bool,
+    pub selected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
 }

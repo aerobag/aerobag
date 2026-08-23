@@ -424,16 +424,8 @@ impl FlightPlanController {
         crate::stop_navigation(self.required_plan("stop navigation")?)
     }
 
-    pub fn plan_after_suspend_sequencing(&self) -> AppResult<FlightPlan> {
-        crate::suspend_sequencing(self.required_plan("suspend sequencing")?)
-    }
-
-    pub fn plan_after_unsuspend_sequencing(&self) -> AppResult<FlightPlan> {
-        crate::unsuspend_sequencing(self.required_plan("unsuspend sequencing")?)
-    }
-
-    pub fn plan_after_manual_sequence(&self) -> AppResult<FlightPlan> {
-        crate::sequence_active_leg(self.required_plan("sequence active leg")?)
+    pub fn plan_after_toggle_sequencing_suspension(&self) -> AppResult<FlightPlan> {
+        crate::toggle_sequencing_suspension(self.required_plan("toggle sequencing suspension")?)
     }
 
     pub fn plan_after_set_cruise_altitude(&self, altitude_ft: i32) -> AppResult<FlightPlan> {
@@ -853,6 +845,7 @@ fn history_control(
         id,
         label: label.to_string(),
         enabled,
+        selected: false,
         disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
     }
 }

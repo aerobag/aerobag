@@ -95,8 +95,9 @@ describe("map interaction boundaries", () => {
     const selectedItemBlocks = [...styles.matchAll(/\.selectedControlHighlight\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");
-    expect(selectedItemBlocks).toContain("0 0 0 2px white");
+    expect(selectedItemBlocks).toContain("0 0 0 2px var(--theme-button-fg)");
     expect(selectedItemBlocks).toContain("0 0 0 4px var(--theme-button-checked)");
+    expect(appSource).toContain('mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}');
 
     const itemBlocks = [...styles.matchAll(/\.mapSelectionItem\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")

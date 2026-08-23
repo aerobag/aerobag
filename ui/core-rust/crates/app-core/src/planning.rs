@@ -1792,6 +1792,21 @@ pub fn unsuspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
     })
 }
 
+pub fn toggle_sequencing_suspension(plan: &FlightPlan) -> AppResult<FlightPlan> {
+    match plan
+        .guidance
+        .as_ref()
+        .map(|guidance| &guidance.sequencing_mode)
+    {
+        Some(SequencingMode::Suspended) => unsuspend_sequencing(plan),
+        Some(SequencingMode::FollowPlan | SequencingMode::DirectTo) => suspend_sequencing(plan),
+        None => Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "cannot toggle sequencing suspension without guidance state".to_string(),
+        }),
+    }
+}
+
 pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
     let guidance = plan.guidance.clone().ok_or_else(|| AppError {
@@ -2070,25 +2085,20 @@ fn flight_plan_control(
     id: FlightPlanControlId,
     label: &str,
     enabled: bool,
+    selected: bool,
     disabled_reason: &'static str,
 ) -> FlightPlanControlUiView {
     FlightPlanControlUiView {
         id,
         label: label.to_string(),
         enabled,
+        selected,
         disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
     }
 }
 
 fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiView> {
-    let (
-        can_activate_next_leg,
-        can_restore_direct_to,
-        can_sequence_active_leg,
-        can_stop_navigation,
-        can_suspend,
-        can_unsuspend,
-    ) = plan
+    let (can_activate_next_leg, can_restore_direct_to, has_guidance, sequencing_suspended) = plan
         .guidance
         .as_ref()
         .map(|guidance| {
@@ -2097,75 +2107,42 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
                     .direct_to
                     .as_ref()
                     .is_some_and(|direct_to| !direct_to.target_row.is_planned());
-            let can_sequence_active_leg = match guidance.sequencing_mode {
-                SequencingMode::DirectTo => guidance.direct_to.is_some(),
-                SequencingMode::FollowPlan => !plan.resolved_legs.is_empty(),
-                SequencingMode::Suspended => false,
-            };
             (
                 guidance.active_leg_index + 1 < plan.resolved_legs.len(),
                 can_restore_direct_to,
-                can_sequence_active_leg,
                 true,
-                guidance.sequencing_mode != SequencingMode::Suspended,
                 guidance.sequencing_mode == SequencingMode::Suspended,
             )
         })
-        .unwrap_or((false, false, false, false, false, false));
+        .unwrap_or((false, false, false, false));
 
     vec![
         flight_plan_control(
             FlightPlanControlId::ActivateNextLeg,
             "Next\nLeg",
             can_activate_next_leg,
+            false,
             "No next leg is available.",
-        ),
-        flight_plan_control(
-            FlightPlanControlId::SequenceActiveLeg,
-            "SQNC",
-            can_sequence_active_leg,
-            if plan
-                .guidance
-                .as_ref()
-                .is_some_and(|guidance| guidance.sequencing_mode == SequencingMode::Suspended)
-            {
-                "Unsuspend sequencing before sequencing the active leg."
-            } else {
-                "No active leg is available to sequence."
-            },
         ),
         flight_plan_control(
             FlightPlanControlId::StopNavigation,
             "STOP\nNAV",
-            can_stop_navigation,
+            has_guidance,
+            false,
             "No active guidance is available to stop.",
         ),
         flight_plan_control(
-            FlightPlanControlId::SuspendSequencing,
+            FlightPlanControlId::ToggleSequencingSuspension,
             "SUSP",
-            can_suspend,
-            if plan.guidance.is_none() {
-                "No active guidance is available to suspend."
-            } else if plan
-                .guidance
-                .as_ref()
-                .is_some_and(|guidance| guidance.sequencing_mode == SequencingMode::Suspended)
-            {
-                "Sequencing is already suspended."
-            } else {
-                "Sequencing cannot be suspended now."
-            },
-        ),
-        flight_plan_control(
-            FlightPlanControlId::UnsuspendSequencing,
-            "Unsusp",
-            can_unsuspend,
-            "Sequencing is not suspended.",
+            has_guidance,
+            sequencing_suspended,
+            "No active guidance is available to suspend.",
         ),
         flight_plan_control(
             FlightPlanControlId::RestoreDirectTo,
             "Restore\nFP",
             can_restore_direct_to,
+            false,
             "No off-plan Direct-To is active.",
         ),
     ]
@@ -9023,6 +9000,28 @@ mod tests {
     }
 
     #[test]
+    fn toggle_sequencing_suspension_round_trips_through_core() {
+        let plan = sample_guided_waypoint_plan();
+
+        let suspended = toggle_sequencing_suspension(&plan).expect("suspend sequencing");
+        assert_eq!(
+            suspended.guidance.as_ref().unwrap().sequencing_mode,
+            SequencingMode::Suspended
+        );
+        assert_eq!(
+            suspended.guidance.as_ref().unwrap().suspend_reason,
+            Some(SuspendReason::Manual)
+        );
+
+        let resumed = toggle_sequencing_suspension(&suspended).expect("resume sequencing");
+        assert_eq!(
+            resumed.guidance.as_ref().unwrap().sequencing_mode,
+            SequencingMode::FollowPlan
+        );
+        assert_eq!(resumed.guidance.as_ref().unwrap().suspend_reason, None);
+    }
+
+    #[test]
     fn unsuspend_sequencing_at_terminal_discontinuous_boundary_activates_next_leg() {
         let inserted = insert_procedure_between_waypoints(
             &sample_waypoint_only_plan(),
@@ -10575,15 +10574,33 @@ mod tests {
                 .iter()
                 .map(|control| control.label.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "Next\nLeg",
-                "SQNC",
-                "STOP\nNAV",
-                "SUSP",
-                "Unsusp",
-                "Restore\nFP"
-            ]
+            vec!["Next\nLeg", "STOP\nNAV", "SUSP", "Restore\nFP"]
         );
+    }
+
+    #[test]
+    fn suspension_control_projects_core_owned_selected_state() {
+        let active = project_ui_state(&sample_guided_waypoint_plan());
+        let suspended_plan = toggle_sequencing_suspension(&sample_guided_waypoint_plan()).unwrap();
+        let suspended = project_ui_state(&suspended_plan);
+
+        let active_control = active
+            .controls
+            .iter()
+            .find(|control| control.id == FlightPlanControlId::ToggleSequencingSuspension)
+            .unwrap();
+        let suspended_control = suspended
+            .controls
+            .iter()
+            .find(|control| control.id == FlightPlanControlId::ToggleSequencingSuspension)
+            .unwrap();
+        assert!(!active_control.selected);
+        assert!(suspended_control.selected);
+        assert!(suspended_control.enabled);
+        assert!(active
+            .controls
+            .iter()
+            .all(|control| control.label != "SQNC"));
     }
 
     #[test]

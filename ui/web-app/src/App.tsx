@@ -10079,10 +10079,11 @@ function FlightPlanPage(props: {
             <button
               key={control.id}
               type="button"
-              className={`trayButton trayButtonSquare planControlButton${disabled ? " isDisabled" : ""}`}
+              className={`trayButton trayButtonSquare planControlButton${control.selected ? " selectedControlHighlight" : ""}${disabled ? " isDisabled" : ""}`}
               data-testid={`plan-control-${control.id}`}
               disabled={disabled && !disabledReason}
               aria-disabled={disabled ? "true" : undefined}
+              aria-pressed={control.selected}
               aria-keyshortcuts={flightPlanHistoryAriaKeyShortcuts(control.id)}
               title={disabledReason ?? undefined}
               onClick={() => {

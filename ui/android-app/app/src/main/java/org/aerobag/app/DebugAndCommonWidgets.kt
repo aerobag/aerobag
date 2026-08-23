@@ -385,7 +385,7 @@ internal fun SelectedControlHighlightFrame(
                 else Modifier,
             )
             .padding(2.dp)
-            .then(if (selected) Modifier.border(2.dp, Color.White, gapShape) else Modifier)
+            .then(if (selected) Modifier.border(2.dp, uiTheme.controls.buttonFg, gapShape) else Modifier)
             .padding(2.dp),
     ) {
         content()
@@ -661,6 +661,7 @@ internal fun CompactSquareButton(
                 if (!enabled) {
                     disabled()
                 }
+                this.selected = selected
             },
         shape = iconShape,
         color = resolvedContainerColor,

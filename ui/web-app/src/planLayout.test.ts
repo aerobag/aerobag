@@ -42,6 +42,17 @@ describe("flight plan layout CSS", () => {
     expect(flightPlanWaypointUsesFullWidthLabel(false, true)).toBe(false);
   });
 
+  it("renders core-selected flight-plan controls with the checked theme", () => {
+    expect(appSource).toContain('control.selected ? " selectedControlHighlight" : ""');
+    expect(appSource).toContain("aria-pressed={control.selected}");
+
+    const selectedControlStyles = [...styles.matchAll(/\.selectedControlHighlight\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(selectedControlStyles).toContain("var(--theme-button-checked)");
+    expect(selectedControlStyles).toContain("var(--theme-button-fg)");
+  });
+
   it("overlays core-projected weather on the existing waypoint symbol cell", () => {
     expect(appSource).toContain("weatherBadge: row.weather_badge ?? null");
     expect(appSource).toContain("weatherBadge={row.weatherBadge}");

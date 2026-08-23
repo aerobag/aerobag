@@ -1437,10 +1437,6 @@ button {
   overflow: hidden;
 }
 
-.mapSelectionItem.isSelected {
-  background: var(--theme-button-checked);
-}
-
 .mapSelectionItemLabel {
   position: absolute;
   z-index: 2;
@@ -3222,8 +3218,9 @@ button {
 
 .selectedControlHighlight {
   border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
+  background: var(--theme-button-checked);
   box-shadow:
-    0 0 0 2px white,
+    0 0 0 2px var(--theme-button-fg),
     0 0 0 4px var(--theme-button-checked),
     var(--shadow);
 }

@@ -33,6 +33,21 @@ class FlightPlanNavigationPolicyTest {
         )
     }
 
+    @Test
+    fun flightPlanControlsRenderCoreSelectedState() {
+        val pageSource = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
+        val inspectorSource = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val commonWidgetsSource =
+            sourceFile("src/main/java/org/aerobag/app/DebugAndCommonWidgets.kt").readText()
+
+        assertTrue(pageSource.contains("selected = control.selected"))
+        assertTrue(pageSource.contains("SelectedControlHighlightFrame("))
+        assertTrue(inspectorSource.contains("SelectedControlHighlightFrame("))
+        assertTrue(commonWidgetsSource.contains("selected -> selectedColor ?: uiTheme.controls.buttonChecked"))
+        assertTrue(commonWidgetsSource.contains("Modifier.border(2.dp, uiTheme.controls.buttonChecked, outerShape)"))
+        assertTrue(commonWidgetsSource.contains("Modifier.border(2.dp, uiTheme.controls.buttonFg, gapShape)"))
+    }
+
     private fun sourceFile(path: String): File {
         val start = File(".").canonicalFile
         return generateSequence(start) { it.parentFile }

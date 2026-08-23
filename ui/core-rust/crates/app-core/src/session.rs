@@ -11,6 +11,11 @@ use std::{
     },
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Key, Nonce,
+};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
@@ -447,12 +452,16 @@ impl WindsAloftAcquisitionPhase {
 struct SessionRuntime {
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     adsb: crate::adsb::AdsbSessionState,
-    map_selection_actions: BTreeMap<String, RegisteredMapSelectionAction>,
-    next_map_selection_action_uid: u64,
+    map_selection_action_key: Option<[u8; 32]>,
+    map_selection_action_nonce: u64,
     flight_plan_row_actions: BTreeMap<String, RegisteredFlightPlanRowAction>,
 }
 
-#[derive(Clone)]
+const MAP_SELECTION_ACTION_TOKEN_PREFIX: &str = "map-selection-v1:";
+const MAP_SELECTION_ACTION_TOKEN_MAX_LENGTH: usize = 1024 * 1024;
+const MAP_SELECTION_ACTION_NONCE_BYTES: usize = 12;
+
+#[derive(Clone, Serialize, Deserialize)]
 enum RegisteredMapSelectionAction {
     ShowWeather(WeatherDetailUiView),
     LoadAirportInfo(String),
@@ -4698,7 +4707,13 @@ pub fn map_selection_action_decision_in_session(
     action_uid: String,
 ) -> AppResult<MapSelectionActionDecision> {
     let action = registered_map_selection_action_for_session(handle, &action_uid)?;
-    Ok(match action {
+    Ok(map_selection_action_decision(action))
+}
+
+fn map_selection_action_decision(
+    action: RegisteredMapSelectionAction,
+) -> MapSelectionActionDecision {
+    match action {
         RegisteredMapSelectionAction::ShowWeather(detail) => MapSelectionActionDecision {
             perform_session_mutation: false,
             dismiss_selection: false,
@@ -4750,7 +4765,7 @@ pub fn map_selection_action_decision_in_session(
             dismiss_selection: true,
             effect: None,
         },
-    })
+    }
 }
 
 pub fn perform_map_selection_ui_action_in_session(
@@ -4780,15 +4795,7 @@ fn registered_map_selection_action_for_session(
 ) -> AppResult<RegisteredMapSelectionAction> {
     let slot = session_slot(handle)?;
     let session = slot.lock_running()?;
-    session
-        .runtime
-        .map_selection_actions
-        .get(action_uid)
-        .cloned()
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!("unknown or stale map-selection action: {action_uid}"),
-        })
+    decode_map_selection_action_token(&session, action_uid)
 }
 
 fn perform_map_selection_session_action(
@@ -9736,12 +9743,14 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
     let session = &mut *session_guard;
     advance_session_wall_clock(session, epoch_ms);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
-    let selection = match materialize_map_selection_in_session(session, &metrics, click, None)? {
+    let mut selection = match materialize_map_selection_in_session(session, &metrics, click, None)?
+    {
         MapSelectionMaterialization::Complete(selection) => selection,
         MapSelectionMaterialization::NeedResources(resources) => {
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
     };
+    finalize_map_selection_actions(session, &mut selection)?;
     drop(session_guard);
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(selection).map_err(|err| AppError {
@@ -9817,7 +9826,7 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
     };
     let metrics =
         MapSurfaceMetrics::new(selection_viewport, width_px, height_px, point_display_scale);
-    let selection = match materialize_map_selection_in_session(
+    let mut selection = match materialize_map_selection_in_session(
         session,
         &metrics,
         position,
@@ -9828,6 +9837,7 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
     };
+    finalize_map_selection_actions(session, &mut selection)?;
     let selected_item_id = crate::selected_map_selection_item_id_for_nav_ref(&selection, &nav_ref);
     Ok(HadOperationOutcome::complete(
         serde_json::to_value(MapSelectionForNavRefResult {
@@ -10016,7 +10026,6 @@ fn materialize_map_selection_in_session(
         }
         selection.categories.push(traffic);
     }
-    finalize_map_selection_actions(session, &mut selection)?;
     Ok(MapSelectionMaterialization::Complete(selection))
 }
 
@@ -10024,40 +10033,118 @@ fn finalize_map_selection_actions(
     session: &mut UiSession,
     selection: &mut MapSelectionQueryResult,
 ) -> AppResult<()> {
-    let mut registered = BTreeMap::new();
-    let mut next_uid = session.runtime.next_map_selection_action_uid;
-    for item in selection
-        .categories
-        .iter_mut()
-        .flat_map(|category| category.items.iter_mut())
-    {
-        let action_slot_count = if item.detail_text.is_some() { 3 } else { 6 };
-        item.actions.truncate(action_slot_count);
-        item.automatic_action_uid = None;
-        for action in &mut item.actions {
-            action.action_uid = None;
-            action.placeholder = false;
-            let Some(command) = registered_map_selection_action(action)? else {
-                continue;
-            };
-            next_uid = next_uid.wrapping_add(1);
-            let action_uid = format!("map-selection:{next_uid}");
-            if item.metar_feature.is_some()
-                && matches!(&command, RegisteredMapSelectionAction::ShowWeather(_))
-            {
-                item.automatic_action_uid = Some(action_uid.clone());
+    let mut action_locators = HashSet::new();
+    for category in &mut selection.categories {
+        let category_id = category.id.clone();
+        for item in &mut category.items {
+            let item_id = item.id.clone();
+            let action_slot_count = if item.detail_text.is_some() { 3 } else { 6 };
+            item.actions.truncate(action_slot_count);
+            item.automatic_action_uid = None;
+            for action in &mut item.actions {
+                action.action_uid = None;
+                action.placeholder = false;
+                let Some(command) = registered_map_selection_action(action)? else {
+                    continue;
+                };
+                let locator = (category_id.clone(), item_id.clone(), action.id.clone());
+                if !action_locators.insert(locator) {
+                    return Err(AppError {
+                        kind: AppErrorKind::Internal,
+                        message: format!(
+                            "duplicate map-selection action locator: {category_id}/{item_id}/{}",
+                            action.id
+                        ),
+                    });
+                }
+                let action_uid = encode_map_selection_action_token(session, &command)?;
+                if item.metar_feature.is_some()
+                    && matches!(&command, RegisteredMapSelectionAction::ShowWeather(_))
+                {
+                    item.automatic_action_uid = Some(action_uid.clone());
+                }
+                action.action_uid = Some(action_uid);
             }
-            action.action_uid = Some(action_uid.clone());
-            registered.insert(action_uid, command);
-        }
-        while item.actions.len() < action_slot_count {
-            item.actions
-                .push(map_selection_placeholder_action(item.actions.len()));
+            while item.actions.len() < action_slot_count {
+                item.actions
+                    .push(map_selection_placeholder_action(item.actions.len()));
+            }
         }
     }
-    session.runtime.map_selection_actions = registered;
-    session.runtime.next_map_selection_action_uid = next_uid;
     Ok(())
+}
+
+fn encode_map_selection_action_token(
+    session: &mut UiSession,
+    action: &RegisteredMapSelectionAction,
+) -> AppResult<String> {
+    let plaintext = serde_json::to_vec(action).map_err(|err| AppError {
+        kind: AppErrorKind::Internal,
+        message: format!("failed to encode map-selection action token: {err}"),
+    })?;
+    let key = match session.runtime.map_selection_action_key {
+        Some(key) => key,
+        None => {
+            let key = crate::cloud::random_bytes::<32>()?;
+            session.runtime.map_selection_action_key = Some(key);
+            key
+        }
+    };
+    let nonce_counter = session.runtime.map_selection_action_nonce;
+    session.runtime.map_selection_action_nonce =
+        nonce_counter.checked_add(1).ok_or_else(|| AppError {
+            kind: AppErrorKind::Internal,
+            message: "map-selection action token nonce exhausted".to_string(),
+        })?;
+    let mut nonce_bytes = [0_u8; MAP_SELECTION_ACTION_NONCE_BYTES];
+    nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
+    let ciphertext = ChaCha20Poly1305::new(Key::from_slice(&key))
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .map_err(|_| AppError {
+            kind: AppErrorKind::Internal,
+            message: "failed to seal map-selection action token".to_string(),
+        })?;
+    let mut token = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+    token.extend_from_slice(&nonce_bytes);
+    token.extend_from_slice(&ciphertext);
+    Ok(format!(
+        "{MAP_SELECTION_ACTION_TOKEN_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(token)
+    ))
+}
+
+fn decode_map_selection_action_token(
+    session: &UiSession,
+    action_uid: &str,
+) -> AppResult<RegisteredMapSelectionAction> {
+    let encoded = action_uid
+        .strip_prefix(MAP_SELECTION_ACTION_TOKEN_PREFIX)
+        .filter(|encoded| {
+            !encoded.is_empty() && encoded.len() <= MAP_SELECTION_ACTION_TOKEN_MAX_LENGTH
+        })
+        .ok_or_else(invalid_map_selection_action_token)?;
+    let token = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| invalid_map_selection_action_token())?;
+    if token.len() <= MAP_SELECTION_ACTION_NONCE_BYTES {
+        return Err(invalid_map_selection_action_token());
+    }
+    let key = session
+        .runtime
+        .map_selection_action_key
+        .ok_or_else(invalid_map_selection_action_token)?;
+    let (nonce_bytes, ciphertext) = token.split_at(MAP_SELECTION_ACTION_NONCE_BYTES);
+    let plaintext = ChaCha20Poly1305::new(Key::from_slice(&key))
+        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .map_err(|_| invalid_map_selection_action_token())?;
+    serde_json::from_slice(&plaintext).map_err(|_| invalid_map_selection_action_token())
+}
+
+fn invalid_map_selection_action_token() -> AppError {
+    AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "invalid map-selection action token".to_string(),
+    }
 }
 
 fn registered_map_selection_action(
@@ -27708,7 +27795,7 @@ mod tests {
     }
 
     #[test]
-    fn map_selection_actions_are_registered_projected_and_expire_together() {
+    fn map_selection_action_tokens_survive_intervening_selection_queries() {
         let weather = WeatherDetailUiView {
             station_id: "KPAE".to_string(),
             title: "WX KPAE".to_string(),
@@ -27803,15 +27890,20 @@ mod tests {
                 .expect("finalize selection actions");
         }
 
+        let decision_for = |action_uid: &str| {
+            map_selection_action_decision_in_session(init.handle, action_uid.to_string())
+                .expect("resolve action token")
+        };
+
         let weather_item = &selection.categories[0].items[0];
         let weather_uid = weather_item
             .automatic_action_uid
-            .as_deref()
+            .clone()
             .expect("METAR selection should name its automatic action");
         assert_eq!(weather_item.actions.len(), 6);
         assert_eq!(
             weather_item.actions[0].action_uid.as_deref(),
-            Some(weather_uid)
+            Some(weather_uid.as_str())
         );
         assert!(weather_item.actions[1..]
             .iter()
@@ -27820,9 +27912,7 @@ mod tests {
         assert!(projected_action.get("weather_detail").is_none());
         assert!(projected_action.get("session_action").is_none());
         assert_eq!(
-            map_selection_action_decision_in_session(init.handle, weather_uid.to_string())
-                .expect("weather decision")
-                .effect,
+            decision_for(&weather_uid).effect,
             Some(MapSelectionActionEffect::ShowWeather { detail: weather })
         );
 
@@ -27830,28 +27920,21 @@ mod tests {
         assert_eq!(detail_item.actions.len(), 3);
         let detail_uid = detail_item.actions[0]
             .action_uid
-            .as_deref()
+            .clone()
             .expect("detail UID");
         assert!(matches!(
-            map_selection_action_decision_in_session(init.handle, detail_uid.to_string())
-                .expect("detail decision")
-                .effect,
+            decision_for(&detail_uid).effect,
             Some(MapSelectionActionEffect::ShowDetail { .. })
         ));
 
         let camera_action = &selection.categories[0].items[2].actions[0];
-        let camera_uid = camera_action
-            .action_uid
-            .as_deref()
-            .expect("camera action UID");
+        let camera_uid = camera_action.action_uid.clone().expect("camera action UID");
         assert!(serde_json::to_value(camera_action)
             .expect("camera action JSON")
             .get("external_url")
             .is_none());
         assert_eq!(
-            map_selection_action_decision_in_session(init.handle, camera_uid.to_string())
-                .expect("camera decision")
-                .effect,
+            decision_for(&camera_uid).effect,
             Some(MapSelectionActionEffect::OpenExternalUrl { url: camera_url })
         );
 
@@ -27862,11 +27945,17 @@ mod tests {
                 &mut session,
                 &mut test_map_selection_with_items(Vec::new()),
             )
-            .expect("replace selection actions");
+            .expect("finalize unrelated selection");
         }
-        assert!(
-            map_selection_action_decision_in_session(init.handle, weather_uid.to_string()).is_err()
-        );
+        assert!(matches!(
+            decision_for(&weather_uid).effect,
+            Some(MapSelectionActionEffect::ShowWeather { .. })
+        ));
+
+        let mut tampered_uid = weather_uid;
+        let last = tampered_uid.pop().expect("token suffix");
+        tampered_uid.push(if last == 'A' { 'B' } else { 'A' });
+        assert!(map_selection_action_decision_in_session(init.handle, tampered_uid).is_err());
     }
 
     #[test]

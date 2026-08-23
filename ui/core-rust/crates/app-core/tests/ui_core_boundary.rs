@@ -2200,14 +2200,54 @@ fn map_selection_action_policy_is_core_owned() {
         .nth(1)
         .and_then(|source| source.split("private fun RasterImageLayers(").next())
         .expect("Android MapExplorerPage source");
+    let action_resolver = core
+        .split("fn registered_map_selection_action_for_session(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("fn perform_map_selection_session_action(")
+                .next()
+        })
+        .expect("map-selection action resolver source");
+    let action_decoder = core
+        .split("fn decode_map_selection_action_token(")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("fn invalid_map_selection_action_token(")
+                .next()
+        })
+        .expect("map-selection action decoder source");
 
     assert!(
         model.contains("pub action_uid: Option<String>")
             && model.contains("pub enum MapSelectionActionEffect")
             && core.contains("fn finalize_map_selection_actions")
+            && core.contains("map_selection_action_key: Option<[u8; 32]>")
+            && core.contains("fn encode_map_selection_action_token")
+            && core.contains("fn decode_map_selection_action_token")
+            && !core.contains("map_selection_actions:")
             && core.contains("map_selection_action_decision_in_session")
             && core.contains("perform_map_selection_ui_action_in_session"),
-        "core must register opaque map-selection actions and return typed decisions"
+        "core must issue authenticated self-contained map-selection actions and return typed decisions"
+    );
+    for forbidden in [
+        "materialize_map_selection",
+        "query_map_selection",
+        "session_nav_kv_store",
+        "CoreResourceRequest",
+        "NeedResources",
+        "fetch",
+    ] {
+        assert!(
+            !action_resolver.contains(forbidden) && !action_decoder.contains(forbidden),
+            "bounded map-selection action decisions must not perform {forbidden} work"
+        );
+    }
+    assert!(
+        action_decoder.contains("ChaCha20Poly1305")
+            && action_decoder.contains("serde_json::from_slice"),
+        "bounded map-selection action decisions must only authenticate and decode core-issued commands"
     );
     assert!(
         web_map.contains("uiSession.mapSelectionActionDecision(action.action_uid)")

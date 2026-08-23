@@ -1362,7 +1362,7 @@ impl LiveFeedsState {
                 if let Some(delta) =
                     entry.durable_applicable_delta(product, installed_by_product.get(product))
                 {
-                    if durable_delta_is_preferred(delta, full_ref) {
+                    if delta_is_preferred(delta, full_ref) {
                         requests.push(LiveFeedCacheRequest {
                             id: format!(
                                 "live_feeds/delta/{}/{}/{}",
@@ -1681,7 +1681,10 @@ impl LiveFeedsState {
                 }
                 continue;
             }
-            if let Some(delta) = entry.applicable_delta(product) {
+            if let Some(delta) = entry
+                .applicable_delta(product)
+                .filter(|delta| delta_is_preferred(delta, entry.state_ref.as_ref()))
+            {
                 resources.push(self.public_live_feed_resource(
                     format!(
                         "live_feeds/delta/{}/{}/{}",
@@ -2039,10 +2042,7 @@ fn append_durable_nexrad_request(
     }
 }
 
-fn durable_delta_is_preferred(
-    delta: &LiveFeedDeltaRef,
-    full_ref: Option<&LiveFeedPayloadRef>,
-) -> bool {
+fn delta_is_preferred(delta: &LiveFeedDeltaRef, full_ref: Option<&LiveFeedPayloadRef>) -> bool {
     let Some(full_ref) = full_ref else {
         return true;
     };
@@ -3265,14 +3265,18 @@ mod tests {
         assert_eq!(state.product_state_manifest("tafs"), None);
     }
 
-    fn assert_record_delta_sync_installs_product(
+    fn assert_record_sync_installs_product(
         product: &str,
         v1: Value,
         v2: Value,
         delta: Value,
+        full_advertised_bytes: u64,
+        delta_advertised_bytes: u64,
     ) {
         let v1_bytes =
             nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&v1).unwrap()).unwrap();
+        let v2_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&v2).unwrap()).unwrap();
         let delta_bytes =
             nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
                 .unwrap();
@@ -3357,7 +3361,7 @@ mod tests {
                     "state": {{
                         "kind": "json_xz",
                         "url": "states/{product}/v2.json.xz",
-                        "bytes": 1,
+                        "bytes": {full_advertised_bytes},
                         "blob_sha256": "unused",
                         "state_sha256": "{}"
                     }},
@@ -3368,7 +3372,7 @@ mod tests {
                         "to_version": "v2",
                         "to_state_sha256": "{}",
                         "url": "deltas/{product}/v1__v2.json.xz",
-                        "bytes": 1,
+                        "bytes": {delta_advertised_bytes},
                         "blob_sha256": "{}"
                     }}
                 }}"#,
@@ -3381,19 +3385,33 @@ mod tests {
             )
             .unwrap();
         let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
-            panic!("expected delta request");
+            panic!("expected update request");
+        };
+        let use_delta = delta_advertised_bytes <= full_advertised_bytes;
+        let resource_id = if use_delta {
+            format!("live_feeds/delta/{product}/v1/v2")
+        } else {
+            format!("live_feeds/state/{product}/v2")
+        };
+        let source_path = if use_delta {
+            format!("deltas/{product}/v1__v2.json.xz")
+        } else {
+            format!("states/{product}/v2.json.xz")
         };
         assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].id, format!("live_feeds/delta/{product}/v1/v2"));
+        assert_eq!(resources[0].id, resource_id);
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: test_live_feed_url(&format!("deltas/{product}/v1__v2.json.xz")),
+                url: test_live_feed_url(&source_path),
             }
         );
 
         state
-            .ingest_resource(&format!("live_feeds/delta/{product}/v1/v2"), &delta_bytes)
+            .ingest_resource(
+                &resource_id,
+                if use_delta { &delta_bytes } else { &v2_bytes },
+            )
             .unwrap();
         assert_eq!(state.product_state_manifest(product), Some(&v2));
         let outcome = state.sync_outcome_with_invalidations();
@@ -4154,11 +4172,11 @@ mod tests {
             ],
         );
         let delta = metar_delta(&v1, &v2);
-        assert_record_delta_sync_installs_product("metars", v1, v2, delta);
+        assert_record_sync_installs_product("metars", v1, v2, delta, 2, 1);
     }
 
     #[test]
-    fn taf_live_feed_prefers_applicable_delta_and_invalidates_overlay() {
+    fn taf_live_feed_prefers_smaller_full_state_and_invalidates_overlay() {
         let v1 = taf_state("v1", &[("KSEA", "TAF KSEA 010000Z OLD")]);
         let v2 = taf_state(
             "v2",
@@ -4168,6 +4186,6 @@ mod tests {
             ],
         );
         let delta = taf_delta(&v1, &v2);
-        assert_record_delta_sync_installs_product("tafs", v1, v2, delta);
+        assert_record_sync_installs_product("tafs", v1, v2, delta, 1, 2);
     }
 }

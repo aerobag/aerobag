@@ -408,13 +408,12 @@ selected `FORECAST` versus `NO WIND` planning model. Web retains its existing JI
 NavKv page acquisition. The Data Status page reports an uninstalled Android
 forecast as informational `ON DEMAND`, not as a false unavailable-data alert.
 
-### 8. Small protocol safeguards and startup duplication — open
+### 8. Small protocol safeguards and startup duplication — partially implemented
 
-- The durable client compares advertised delta bytes with full bytes and chooses
-  full when the delta is larger. The just-in-time web path does not make the same
-  comparison. None of the 256-sample record deltas was larger than its full state,
-  so this caused no observed waste, but the shared selection rule should protect
-  both acquisition modes.
+- Core now applies the same advertised delta-versus-full byte comparison to both
+  durable and just-in-time acquisition. None of the 256-sample record deltas was
+  larger than its full state, so this is a defensive guard rather than a measured
+  saving.
 - A new connection fetches `current.json` and also receives an initial SSE frame
   containing the same current catalog. That is about 52 KiB uncompressed today.
   It does not duplicate payload downloads and is low priority, but one of the two
@@ -550,20 +549,17 @@ intentionally not assigned fabricated totals.
 | Completed day capture corpus             | Done   | Preserves the original evidence and source material               |
 | Repeatable corpus policy analyzer        | Done   | Exact replay plus explicit 4/4/16-hour daily policy projections   |
 | Compact JSON before XZ                   | Done   | 1-3% for active record deltas; 25.8% for rare obstacle deltas     |
-| JIT delta-versus-full size guard         | Open   | No waste observed in the baseline; defensive correctness          |
+| JIT delta-versus-full size guard         | Done   | No waste observed in the baseline; defensive correctness          |
 | Winds on-demand immutable lazy package    | Done   | Removes 48.6 MiB/day baseline and avoids page expansion/repacking |
 | Current/SSE bootstrap deduplication      | Open   | About 52 KiB per connection in the historical uncompressed form   |
 | NEXRAD temporal codec                    | Open   | Potentially material, but new policy-weighted usage is unmeasured |
 
 ## Recommended next burn order
 
-1. Apply the delta-versus-full size rule to the JIT path. This did not waste bytes
-   in the baseline sample, so treat it as a protocol safeguard rather than a major
-   rate reduction.
-2. Reconsider a NEXRAD temporal codec only after actual mode-residence accounting
+1. Reconsider a NEXRAD temporal codec only after actual mode-residence accounting
    shows that full-offline acquisition remains dominant. The naive tile XOR
    experiment remains a loss; any follow-up needs a domain-specific format.
-3. Consider the measured winds spatial predictor only if explicit download size
+2. Consider the measured winds spatial predictor only if explicit download size
    proves painful. It saved 29.4%, but no longer reduces an automatic daily cost.
-4. Leave current/SSE bootstrap deduplication and possible SSE compression until
+3. Leave current/SSE bootstrap deduplication and possible SSE compression until
    the larger work is measured. They are control-plane polish, not leading wins.

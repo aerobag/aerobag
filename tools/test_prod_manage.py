@@ -7,11 +7,15 @@
 from __future__ import annotations
 
 import os
+import io
 import subprocess
 import sys
+import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -47,6 +51,74 @@ class DesiredStateMutationTests(unittest.TestCase):
             args = prod_manage.parse_args()
         self.assertTrue(args.reconcile)
 
+
+class OperationLogTests(unittest.TestCase):
+    @staticmethod
+    def reconcile_args() -> SimpleNamespace:
+        return SimpleNamespace(stage=False, promote=False, reconcile=True)
+
+    def test_success_discards_quiet_operation_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "operation.log"
+
+            def successful_reconcile(*_args: object) -> int:
+                prod_manage.deploy_prod.append_command_log("hidden shell fluff")
+                return 0
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(
+                    prod_manage, "parse_args", return_value=self.reconcile_args()
+                ),
+                mock.patch.object(
+                    prod_manage, "create_operation_log", return_value=log_path
+                ),
+                mock.patch.object(
+                    prod_manage, "reconcile", side_effect=successful_reconcile
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                result = prod_manage.main()
+
+            self.assertEqual(result, 0)
+            self.assertFalse(log_path.exists())
+            self.assertNotIn("shell fluff", stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_failure_retains_log_and_reports_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "operation.log"
+
+            def failed_reconcile(*_args: object) -> int:
+                prod_manage.deploy_prod.append_command_log("subprocess details")
+                raise prod_manage.ManagementError("reconciliation failed")
+
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(
+                    prod_manage, "parse_args", return_value=self.reconcile_args()
+                ),
+                mock.patch.object(
+                    prod_manage, "create_operation_log", return_value=log_path
+                ),
+                mock.patch.object(
+                    prod_manage, "reconcile", side_effect=failed_reconcile
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = prod_manage.main()
+
+            self.assertEqual(result, 2)
+            log = log_path.read_text(encoding="utf-8")
+            self.assertIn("subprocess details", log)
+            self.assertIn("reconciliation failed", log)
+            self.assertIn("reconciliation failed", stderr.getvalue())
+            self.assertIn(str(log_path), stderr.getvalue())
+
+
+class DesiredStateBehaviorTests(unittest.TestCase):
     def test_next_release_name_increments_only_the_current_utc_day(self) -> None:
         self.assertEqual(
             prod_manage.next_release_name(

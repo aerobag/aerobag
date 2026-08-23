@@ -73,6 +73,7 @@ GOOGLE_CHROME_APT_SOURCE = (
     "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] "
     "https://dl.google.com/linux/chrome/deb/ stable main"
 )
+COMMAND_LOG_ENV = "AEROBAG_COMMAND_LOG"
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,6 +129,70 @@ def shell_quote(value: str | os.PathLike[str]) -> str:
     return shlex.quote(os.fspath(value))
 
 
+def append_command_log(text: str) -> None:
+    path = os.environ.get(COMMAND_LOG_ENV)
+    if path is None or not text:
+        return
+    with open(path, "a", encoding="utf-8") as stream:
+        stream.write(text)
+        if not text.endswith("\n"):
+            stream.write("\n")
+
+
+def run_command(
+    args: list[str],
+    *,
+    trace: str,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    capture: bool = False,
+    dry_run: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command_log = os.environ.get(COMMAND_LOG_ENV)
+    if command_log is None:
+        print(trace, flush=True)
+    else:
+        append_command_log(trace)
+    if dry_run:
+        return subprocess.CompletedProcess(args, 0, "")
+
+    if capture:
+        try:
+            result = subprocess.run(
+                args,
+                cwd=cwd,
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+        except subprocess.CalledProcessError as error:
+            append_command_log(error.stdout or "")
+            raise
+        append_command_log(result.stdout or "")
+        return result
+
+    if command_log is not None:
+        with open(command_log, "a", encoding="utf-8") as stream:
+            return subprocess.run(
+                args,
+                cwd=cwd,
+                input=input_text,
+                text=True,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        input=input_text,
+        text=True,
+        check=True,
+    )
+
+
 def run_local(
     args: list[str | os.PathLike[str]],
     *,
@@ -136,17 +201,14 @@ def run_local(
     capture: bool = False,
     dry_run: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    print(f"+ cd {cwd} && {sh_join(args)}", flush=True)
-    if dry_run:
-        return subprocess.CompletedProcess([os.fspath(arg) for arg in args], 0, "")
-    return subprocess.run(
-        [os.fspath(arg) for arg in args],
+    command = [os.fspath(arg) for arg in args]
+    return run_command(
+        command,
+        trace=f"+ cd {cwd} && {sh_join(args)}",
         cwd=cwd,
-        input=input_text,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None,
-        check=True,
+        input_text=input_text,
+        capture=capture,
+        dry_run=dry_run,
     )
 
 
@@ -163,16 +225,12 @@ def run_ssh(
     dry_run: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     args = ["ssh", "-o", "BatchMode=yes", ssh_target(config), command]
-    print(f"+ {sh_join(args)}", flush=True)
-    if dry_run:
-        return subprocess.CompletedProcess(args, 0, "")
-    return subprocess.run(
+    return run_command(
         args,
-        input=input_text,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None,
-        check=True,
+        trace=f"+ {sh_join(args)}",
+        input_text=input_text,
+        capture=capture,
+        dry_run=dry_run,
     )
 
 

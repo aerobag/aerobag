@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,13 +62,10 @@ def run(
     capture: bool = False,
     cwd: Path = REPO_ROOT,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return deploy_prod.run_local(
         command,
         cwd=cwd,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
+        capture=capture,
     )
 
 
@@ -325,6 +323,27 @@ def print_success(message: str) -> None:
         print(f"\x1b[32m{message}\x1b[0m")
 
 
+def create_operation_log() -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix="aerobag-prod-manage-", suffix=".log"
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def set_operation_log(path: Path) -> str | None:
+    previous = os.environ.get(deploy_prod.COMMAND_LOG_ENV)
+    os.environ[deploy_prod.COMMAND_LOG_ENV] = str(path)
+    return previous
+
+
+def restore_operation_log(previous: str | None) -> None:
+    if previous is None:
+        os.environ.pop(deploy_prod.COMMAND_LOG_ENV, None)
+    else:
+        os.environ[deploy_prod.COMMAND_LOG_ENV] = previous
+
+
 def assert_staging_is_qualified(
     config: dict[str, Any], desired: releases.DesiredReleases
 ) -> None:
@@ -572,22 +591,48 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
 
 def main() -> int:
     args = parse_args()
+    operation_log = create_operation_log()
+    previous_log = set_operation_log(operation_log)
+    result = 2
     try:
-        if args.stage:
-            return stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
-        if args.promote:
-            return promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
-        return reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
-    except (ManagementError, releases.ReleaseConfigError) as error:
-        print(f"prod_manage: {error}", file=sys.stderr)
-        return 2
-    except subprocess.CalledProcessError as error:
-        print(
-            f"prod_manage: command failed with exit {error.returncode}: "
-            f"{failed_command_summary(error.cmd)}",
-            file=sys.stderr,
-        )
-        return 2
+        try:
+            if args.stage:
+                result = stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
+            elif args.promote:
+                result = promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
+            else:
+                result = reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
+        except (ManagementError, releases.ReleaseConfigError) as error:
+            deploy_prod.append_command_log(f"prod_manage: {error}")
+            print(f"prod_manage: {error}", file=sys.stderr)
+            result = 2
+        except subprocess.CalledProcessError as error:
+            summary = failed_command_summary(error.cmd)
+            deploy_prod.append_command_log(
+                f"prod_manage: command failed with exit {error.returncode}: {summary}"
+            )
+            print(
+                f"prod_manage: command failed with exit {error.returncode}: "
+                f"{summary}",
+                file=sys.stderr,
+            )
+            result = 2
+        except KeyboardInterrupt:
+            deploy_prod.append_command_log("prod_manage interrupted by operator")
+            print("prod_manage: interrupted", file=sys.stderr)
+            result = 130
+        except Exception:  # noqa: BLE001 - preserve unexpected details in the log.
+            deploy_prod.append_command_log(traceback.format_exc())
+            print("prod_manage: unexpected internal failure", file=sys.stderr)
+            result = 2
+    finally:
+        restore_operation_log(previous_log)
+
+    if result in {0, 1}:
+        operation_log.unlink(missing_ok=True)
+    else:
+        print(f"prod_manage: detailed log retained at {operation_log}", file=sys.stderr)
+    return result
 
 
 if __name__ == "__main__":

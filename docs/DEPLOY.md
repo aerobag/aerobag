@@ -100,6 +100,11 @@ commit. Use `tools/deploy_prod.py` explicitly when the intended operation is to
 roll out controller, host-package, or systemd/nginx changes without changing a
 release assignment.
 
+`prod_manage` captures subprocess command traces and output in a private
+per-invocation file under `/tmp`. Successful and operator-aborted invocations
+delete that file. A failure retains it and prints the path, keeping routine
+output concise while preserving complete diagnostics for inspection or handoff.
+
 All operations reject an active release reconciliation before making changes.
 The intent-changing commands repeat that check after confirmation.
 `deploy_prod.py` independently closes the systemd-timer race and rejects a held

@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,30 @@ import deploy_prod  # noqa: E402
 
 
 class ProductPublicationTests(unittest.TestCase):
+    def test_command_log_hides_captured_ssh_trace_and_records_output(self) -> None:
+        config = {"ssh_user": "root", "ssh_host": "prod"}
+        completed = subprocess.CompletedProcess(
+            args=["ssh"], returncode=0, stdout="captured output\n", stderr=None
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "commands.log"
+            stdout = io.StringIO()
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {deploy_prod.COMMAND_LOG_ENV: str(log_path)},
+                ),
+                mock.patch.object(subprocess, "run", return_value=completed),
+                redirect_stdout(stdout),
+            ):
+                deploy_prod.run_ssh(config, "printf secret", capture=True)
+
+            log = log_path.read_text(encoding="utf-8")
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("ssh -o BatchMode=yes root@prod", log)
+            self.assertIn("printf secret", log)
+            self.assertIn("captured output", log)
+
     def test_remote_failure_is_reported_without_a_secondary_error(self) -> None:
         failure = subprocess.CalledProcessError(
             1,

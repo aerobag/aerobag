@@ -34,11 +34,12 @@ already have it with you on your flight.</li>
   <li>Efficient live weather feed protocol (if your hotspot works in the cockpit)</li>
   <li>Rich vector layer with airports and airspaces</li>
   <li>Click to inspect features on the map</li>
-  <li>Airways and approaches</li>
+  <li>Airways, approaches, STARs and SIDs</li>
   <li>Terrain warning layer</li>
   <li>Better-organized plates and CSup pages</li>
   <li>TACs paint over Sectionals so you don't have to switch between them</li>
   <li>Warnings about stale data</li>
+  <li>Aircraft profiles and altitude/wind planning.</li>
 </ul>
 
 <h1>Missing features</h1>
@@ -47,14 +48,11 @@ already have it with you on your flight.</li>
   <li>No supported ADS-B traffic or live remote-aircraft ownship modes</li>
   <li>No 3D mode</li>
 </ul>
-<p>...</p>
 
 <h1>Future ambitions</h1>
 
 <ul>
-  <li>Aircraft profiles and altitude planning.</li>
   <li>Capture and save flight logs</li>
-  <li>STARs and SIDs</li>
   <li>Better airway selection and flight plan manipulation</li>
 </ul>
 <p>...</p>
@@ -67,11 +65,41 @@ by private equity and have already sold your middle initial.</p>
 <p>That said, when you visit aerobag.org on the web, data is fetched on demand, which
 means the server traffic reveals what part of the world you're looking at.
 The Android client preloads packages, which reveals much coarser information, but
-its live-feed data stream may similarly reveal location information.</p>
+its live-feed data stream may similarly reveal location information.
+aerobag.org also learns your IP addresses.</p>
 
+Aerobag writes your preferences to the device you're using (Android or browser
+localStorage). Preferences include things like your flight plan, knobs on the
+Settings page, which Offline Packages you want to fetch and store.
+
+<h2>Aerobag Cloud</h2>
+
+If you use multiple devices, you can synchronize your preferences among them
+by linking each device to the same Aerobag Cloud Sync Account. Each Sync Account has an
+Device Setup Code with an *encryption key* that only the devices know, and some
+cloud *provider* that stores the data (but cannot read it).
+
+If you use the default aerobag.org Cloud provider, it sees your usage patterns
+and IP addresses, but never has access to your unencrypted data.
+
+It is important to understand that, if you do not save the Device Setup Code,
+you will <b>not be able to recover your account data</b>, even if it's stored in
+your own server or Google Drive.
+
+<h2>Self-host for ultimate privacy</h2>
 <p>If you want to guard your privacy more closely, note that all of aerobag is open
 source. You can run your own server instance, which will fetch data from government
-sources.</p>
+sources. You can run your own Cloud instance, which will store your Cloud data locally.</p>
+
+<h1>Permissions</h1>
+
+<ul>
+<li><b>Location</b> is used to plot your position on the map.
+
+<li><b>Notification permission</b> is used to keep the GPS active and to keep background downloads running when you change apps or the tablet display sleeps.
+
+<li><b>Camera permission</b> is used to scan a QR code when you link devices' Cloud sync accounts.
+</ul>
 
 <h1>Feedback</h1>
 

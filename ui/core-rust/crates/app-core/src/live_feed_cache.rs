@@ -109,6 +109,58 @@ pub struct PreparedLiveFeedResourceRestoration {
     persisted_notam_prepared: Option<Vec<u8>>,
 }
 
+pub fn prepare_persisted_notam_resource_descriptor(
+    manifest: LiveFeedResourceManifest,
+    prepared: Vec<u8>,
+) -> AppResult<PreparedLiveFeedResourceRestoration> {
+    validate_resource_manifest(&manifest)?;
+    if manifest.summary.product != "notams" {
+        return Err(cache_error(format!(
+            "resource descriptor is for {}, not notams",
+            manifest.summary.product
+        )));
+    }
+    let prepared_ref = manifest
+        .resources
+        .iter()
+        .find(|resource| resource.kind == "notam_prepared_projection")
+        .ok_or_else(|| cache_error("persisted NOTAM projection is missing".to_string()))?;
+    if prepared_ref.bytes != prepared.len() as u64 {
+        return Err(cache_error(format!(
+            "persisted NOTAM projection has {} bytes, expected {}",
+            prepared.len(),
+            prepared_ref.bytes
+        )));
+    }
+    verify_blob_sha256(
+        "persisted NOTAM projection",
+        &prepared,
+        &prepared_ref.blob_sha256,
+    )?;
+    let summary = &manifest.summary;
+    let installed = LiveFeedInstalledState {
+        product: summary.product.clone(),
+        version: summary.version.clone(),
+        state_sha256: summary.state_sha256.clone(),
+        collected_at_utc: summary.collected_at_utc.clone(),
+        payload: LiveFeedInstalledPayload::NotamResourceDescriptor {
+            resources: manifest
+                .resources
+                .iter()
+                .filter(|resource| resource.kind != "notam_prepared_projection")
+                .cloned()
+                .collect(),
+        },
+    };
+    validate_restored_notam_prepared(&installed, &prepared)?;
+    Ok(PreparedLiveFeedResourceRestoration {
+        installed,
+        notam_preparer: None,
+        pending_notam_prepared: Some(prepared.clone()),
+        persisted_notam_prepared: Some(prepared),
+    })
+}
+
 impl LiveFeedResourceRestorationPlan {
     pub fn prepare(
         self,
@@ -136,6 +188,22 @@ impl LiveFeedResourceRestorationPlan {
             pending_notam_prepared,
             persisted_notam_prepared,
         })
+    }
+
+    pub fn prepare_notam_hydration(
+        self,
+        registry: &LiveFeedProductRegistry,
+    ) -> AppResult<(LiveFeedInstalledState, NotamProjectionPreparer)> {
+        if self.restoring.manifest.summary.product != "notams" {
+            return Err(cache_error(
+                "only NOTAM resource descriptors can be hydrated".to_string(),
+            ));
+        }
+        let installed = registry
+            .required_driver("notams")?
+            .install_persisted_resources(&self.restoring)?;
+        let preparer = restore_notam_preparer(&installed)?;
+        Ok((installed, preparer))
     }
 }
 
@@ -166,6 +234,9 @@ pub enum LiveFeedInstalledPayload {
     NotamResources {
         checkpoint: Arc<Vec<u8>>,
         deltas: Vec<Arc<Vec<u8>>>,
+    },
+    NotamResourceDescriptor {
+        resources: Vec<LiveFeedResourceRef>,
     },
 }
 
@@ -435,6 +506,15 @@ impl LiveFeedCache {
         Ok(())
     }
 
+    pub fn finish_hydrating_notam_resources(
+        &mut self,
+        registry: &LiveFeedProductRegistry,
+    ) -> AppResult<()> {
+        let plan = self.take_resource_restoration_plan("notams")?;
+        let (installed, preparer) = plan.prepare_notam_hydration(registry)?;
+        self.commit_notam_resource_hydration(installed, preparer)
+    }
+
     pub fn take_resource_restoration_plan(
         &mut self,
         product: &str,
@@ -459,6 +539,31 @@ impl LiveFeedCache {
             self.persisted_notam_prepared = Some(payload);
         }
         self.stage_or_remember_installed_state(prepared.installed);
+    }
+
+    pub fn commit_notam_resource_hydration(
+        &mut self,
+        installed: LiveFeedInstalledState,
+        preparer: NotamProjectionPreparer,
+    ) -> AppResult<()> {
+        let current = self.installed("notams").ok_or_else(|| {
+            cache_error("cannot hydrate NOTAM resources without installed state".to_string())
+        })?;
+        if current.version != installed.version
+            || current.state_sha256 != installed.state_sha256
+            || !matches!(
+                current.payload,
+                LiveFeedInstalledPayload::NotamResourceDescriptor { .. }
+            )
+        {
+            return Err(cache_error(format!(
+                "NOTAM resource hydration for {}/{} does not match installed {}/{}",
+                installed.version, installed.state_sha256, current.version, current.state_sha256
+            )));
+        }
+        self.notam_preparer = preparer;
+        self.remember_installed_state(installed);
+        Ok(())
     }
 
     pub fn install_candidate(&self, product: &str) -> Option<&LiveFeedInstalledState> {
@@ -588,6 +693,32 @@ impl LiveFeedCache {
             .install_persisted_nav_kv_package_descriptor(summary, manifest, root)?;
         self.ingest_prepared_installed_state(installed);
         Ok(())
+    }
+
+    pub fn ingest_persisted_notam_resource_descriptor(
+        &mut self,
+        manifest: LiveFeedResourceManifest,
+        prepared: Vec<u8>,
+    ) -> AppResult<()> {
+        let descriptor = prepare_persisted_notam_resource_descriptor(manifest, prepared)?;
+        self.commit_prepared_resource_restoration(descriptor);
+        Ok(())
+    }
+
+    pub fn notam_resources_require_hydration(&self, version: &str) -> AppResult<bool> {
+        let installed = self.installed("notams").ok_or_else(|| {
+            cache_error("cannot query NOTAM hydration without installed state".to_string())
+        })?;
+        if installed.version != version {
+            return Err(cache_error(format!(
+                "installed NOTAM version {} does not match hydration source {version}",
+                installed.version
+            )));
+        }
+        Ok(matches!(
+            installed.payload,
+            LiveFeedInstalledPayload::NotamResourceDescriptor { .. }
+        ))
     }
 
     pub fn ingest_prepared_installed_state(&mut self, installed: LiveFeedInstalledState) {
@@ -1252,23 +1383,28 @@ impl LiveFeedInstalledState {
                 root,
                 pages,
             } => write_nav_kv_zip_bytes(manifest, root, pages),
-            LiveFeedInstalledPayload::NotamResources { .. } => Err(cache_error(
+            LiveFeedInstalledPayload::NotamResources { .. }
+            | LiveFeedInstalledPayload::NotamResourceDescriptor { .. } => Err(cache_error(
                 "NOTAM resources must be persisted as immutable blobs".to_string(),
             )),
         }
     }
 
     fn resource_manifest(&self) -> Option<LiveFeedResourceManifest> {
-        let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &self.payload else {
-            return None;
+        let resources = match &self.payload {
+            LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } => {
+                let mut resources = Vec::with_capacity(1 + deltas.len());
+                resources.push(resource_ref("notam_checkpoint_xz", checkpoint));
+                resources.extend(
+                    deltas
+                        .iter()
+                        .map(|delta| resource_ref("notam_ordered_delta_xz", delta)),
+                );
+                resources
+            }
+            LiveFeedInstalledPayload::NotamResourceDescriptor { resources } => resources.clone(),
+            _ => return None,
         };
-        let mut resources = Vec::with_capacity(1 + deltas.len());
-        resources.push(resource_ref("notam_checkpoint_xz", checkpoint));
-        resources.extend(
-            deltas
-                .iter()
-                .map(|delta| resource_ref("notam_ordered_delta_xz", delta)),
-        );
         Some(LiveFeedResourceManifest {
             summary: self.summary(),
             resources,
@@ -1276,16 +1412,18 @@ impl LiveFeedInstalledState {
     }
 
     fn resource_bytes(&self, blob_sha256: &str) -> Option<Vec<u8>> {
-        let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &self.payload else {
-            return None;
-        };
-        if sha256_hex(checkpoint) == blob_sha256 {
-            return Some(checkpoint.as_ref().clone());
+        match &self.payload {
+            LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } => {
+                if sha256_hex(checkpoint) == blob_sha256 {
+                    return Some(checkpoint.as_ref().clone());
+                }
+                deltas
+                    .iter()
+                    .find(|delta| sha256_hex(delta) == blob_sha256)
+                    .map(|delta| delta.as_ref().clone())
+            }
+            _ => None,
         }
-        deltas
-            .iter()
-            .find(|delta| sha256_hex(delta) == blob_sha256)
-            .map(|delta| delta.as_ref().clone())
     }
 }
 
@@ -1357,7 +1495,8 @@ fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Va
             render_manifest,
             ..
         } => serde_json::from_slice(render_manifest.as_ref().unwrap_or(manifest)).ok(),
-        LiveFeedInstalledPayload::NotamResources { .. } => None,
+        LiveFeedInstalledPayload::NotamResources { .. }
+        | LiveFeedInstalledPayload::NotamResourceDescriptor { .. } => None,
     }
 }
 
@@ -1367,7 +1506,7 @@ impl LiveFeedInstalledPayload {
             Self::Json { .. } => "json",
             Self::NavKv { .. } | Self::NavKvPackage { .. } => "nav_kv_package",
             Self::NexradPackage { .. } => "nexrad_package",
-            Self::NotamResources { .. } => "notam_resources",
+            Self::NotamResources { .. } | Self::NotamResourceDescriptor { .. } => "notam_resources",
         }
     }
 }
@@ -3602,19 +3741,16 @@ mod tests {
             .acknowledge_install_candidate("notams", &head_id)
             .unwrap();
         let mut restored_cache = live_feed_cache();
-        restored_cache
-            .begin_restoring_resources(manifest.clone())
+        let prepared_ref = manifest
+            .resources
+            .iter()
+            .find(|resource| resource.kind == "notam_prepared_projection")
             .unwrap();
-        for resource in &manifest.resources {
-            let bytes = cache
-                .resource_bytes("notams", &resource.blob_sha256)
-                .unwrap();
-            restored_cache
-                .restore_resource_bytes("notams", &resource.blob_sha256, &bytes)
-                .unwrap();
-        }
+        let prepared_bytes = cache
+            .resource_bytes("notams", &prepared_ref.blob_sha256)
+            .unwrap();
         restored_cache
-            .finish_restoring_resources(&registry, "notams")
+            .ingest_persisted_notam_resource_descriptor(manifest.clone(), prepared_bytes)
             .unwrap();
         assert_eq!(
             restored_cache.notam_preparer.state_id(),
@@ -3624,6 +3760,10 @@ mod tests {
         let restored = restored_cache.install_candidate("notams").unwrap();
         assert_eq!(restored.version, head_id);
         assert_eq!(restored.state_sha256, source.state_id());
+        assert!(matches!(
+            restored.payload,
+            LiveFeedInstalledPayload::NotamResourceDescriptor { .. }
+        ));
         let restored_prepared = restored_cache
             .prepared_install_candidate("notams", &head_id)
             .unwrap()
@@ -3637,6 +3777,34 @@ mod tests {
         restored_cache
             .acknowledge_install_candidate("notams", &head_id)
             .unwrap();
+        assert!(restored_cache
+            .notam_resources_require_hydration(&head_id)
+            .unwrap());
+        restored_cache
+            .begin_restoring_resources(manifest.clone())
+            .unwrap();
+        for resource in manifest
+            .resources
+            .iter()
+            .filter(|resource| resource.kind != "notam_prepared_projection")
+        {
+            let bytes = cache
+                .resource_bytes("notams", &resource.blob_sha256)
+                .unwrap();
+            restored_cache
+                .restore_resource_bytes("notams", &resource.blob_sha256, &bytes)
+                .unwrap();
+        }
+        restored_cache
+            .finish_hydrating_notam_resources(&registry)
+            .unwrap();
+        assert!(!restored_cache
+            .notam_resources_require_hydration(&head_id)
+            .unwrap());
+        assert_eq!(
+            restored_cache.notam_preparer.state_id(),
+            Some(head_id.as_str())
+        );
         let next_mutation = notam_state::NotamMutation::Upsert {
             record: notam_record("N0099", "later"),
         };

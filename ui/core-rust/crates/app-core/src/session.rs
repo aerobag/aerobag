@@ -7316,7 +7316,8 @@ fn installed_live_feed_state_manifest(
             render_manifest,
             ..
         } => serde_json::from_slice(render_manifest.as_ref().unwrap_or(manifest)).ok(),
-        crate::LiveFeedInstalledPayload::NotamResources { .. } => None,
+        crate::LiveFeedInstalledPayload::NotamResources { .. }
+        | crate::LiveFeedInstalledPayload::NotamResourceDescriptor { .. } => None,
     }
 }
 

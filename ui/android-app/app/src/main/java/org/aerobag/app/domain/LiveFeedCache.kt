@@ -259,6 +259,21 @@ class LiveFeedCache(
         )
     }
 
+    fun ingestPersistedNotamResourceDescriptor(
+        manifest: LiveFeedResourceManifest,
+        preparedBytes: ByteArray,
+    ) = withOpenHandleConcurrent { handle ->
+        bridge.liveFeedCacheIngestPersistedNotamResourceDescriptor(
+            handle,
+            json.encodeToString(manifest),
+            preparedBytes,
+        )
+    }
+
+    fun notamResourcesRequireHydration(version: String): Boolean = withOpenHandle { handle ->
+        bridge.liveFeedCacheNotamResourcesRequireHydration(handle, version)
+    }
+
     fun installedPayloadBytes(product: String, version: String): ByteArray = withOpenHandle { handle ->
         bridge.liveFeedCacheInstalledPayloadBytes(handle, product, version)
     }
@@ -290,6 +305,30 @@ class LiveFeedCache(
         } catch (error: Throwable) {
             runCatching {
                 bridge.liveFeedCacheAbortRestoringResources(handle, product)
+            }.onFailure(error::addSuppressed)
+            throw error
+        }
+    }
+
+    fun hydratePersistedNotamResources(
+        manifest: LiveFeedResourceManifest,
+        readResource: (LiveFeedResourceRef) -> ByteArray,
+    ) = withOpenHandleConcurrent { handle ->
+        bridge.liveFeedCacheBeginRestoringResources(handle, json.encodeToString(manifest))
+        try {
+            for (resource in manifest.resources) {
+                if (resource.kind == "notam_prepared_projection") continue
+                bridge.liveFeedCacheRestoreResourceBytes(
+                    handle,
+                    "notams",
+                    resource.blobSha256,
+                    readResource(resource),
+                )
+            }
+            bridge.liveFeedCacheFinishHydratingNotamResources(handle)
+        } catch (error: Throwable) {
+            runCatching {
+                bridge.liveFeedCacheAbortRestoringResources(handle, "notams")
             }.onFailure(error::addSuppressed)
             throw error
         }
@@ -606,6 +645,17 @@ class AndroidLiveFeedClient(
                                     fromVersion,
                                     installed.blobSha256,
                                 ),
+                            )
+                        }
+                        if (
+                            product == "notams" &&
+                            installed?.version == fromVersion &&
+                            cache.notamResourcesRequireHydration(fromVersion)
+                        ) {
+                            LiveFeedCacheStore.hydratePersistedNotamResources(
+                                context,
+                                cache,
+                                fromVersion,
                             )
                         }
                     }
@@ -1033,8 +1083,21 @@ object LiveFeedCacheStore {
     ): Boolean {
         val startedAtMs = SystemClock.elapsedRealtime()
         return runCatching {
-            cache.restoreInstalledResources(stored.manifest) { resource ->
-                stored.resourceFile(resource).readBytes()
+            val preparedNotam = stored.manifest.resources
+                .singleOrNull { it.kind == "notam_prepared_projection" }
+            val restoreMode = if (
+                stored.manifest.summary.product == "notams" && preparedNotam != null
+            ) {
+                cache.ingestPersistedNotamResourceDescriptor(
+                    stored.manifest,
+                    stored.resourceFile(preparedNotam).readBytes(),
+                )
+                "descriptor"
+            } else {
+                cache.restoreInstalledResources(stored.manifest) { resource ->
+                    stored.resourceFile(resource).readBytes()
+                }
+                "resources"
             }
             cache.resourceManifest(stored.manifest.summary.product)
                 ?.takeIf { restored -> restored.resources != stored.manifest.resources }
@@ -1048,6 +1111,7 @@ object LiveFeedCacheStore {
                 LiveFeedLogTag,
                 "restored persisted product=${stored.manifest.summary.product} " +
                     "version=${stored.manifest.summary.version} " +
+                    "mode=$restoreMode " +
                     "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
             )
             true
@@ -1160,6 +1224,28 @@ object LiveFeedCacheStore {
             .listFiles()
             ?.filter { it.isDirectory && it.name != "resources" }
             ?.forEach { it.deleteRecursively() }
+    }
+
+    fun hydratePersistedNotamResources(
+        context: Context,
+        cache: LiveFeedCache,
+        version: String,
+    ) {
+        val startedAtMs = SystemClock.elapsedRealtime()
+        val stored = listInstalledResourceManifests(context)
+            .singleOrNull {
+                it.manifest.summary.product == "notams" &&
+                    it.manifest.summary.version == version
+            }
+            ?: error("persisted NOTAM resources for $version are unavailable")
+        cache.hydratePersistedNotamResources(stored.manifest) { resource ->
+            stored.resourceFile(resource).readBytes()
+        }
+        Log.i(
+            LiveFeedLogTag,
+            "hydrated persisted product=notams version=$version " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+        )
     }
 
     private fun listInstalledResourceManifests(context: Context): List<LiveFeedStoredResources> =

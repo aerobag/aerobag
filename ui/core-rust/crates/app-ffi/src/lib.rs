@@ -4,8 +4,8 @@
 
 pub use app_core::*;
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
-use jni::sys::jbyteArray;
 use jni::sys::jstring;
+use jni::sys::{jboolean, jbyteArray};
 use jni::{JNIEnv, JavaVM};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1808,6 +1808,44 @@ pub fn live_feed_cache_ingest_persisted_nav_kv_package_descriptor(
         .map_err(|error| error.to_string())
 }
 
+pub fn live_feed_cache_ingest_persisted_notam_resource_descriptor(
+    handle: u64,
+    manifest_json: &str,
+    prepared: Vec<u8>,
+) -> Result<(), String> {
+    let manifest: app_core::LiveFeedResourceManifest =
+        serde_json::from_str(manifest_json).map_err(|err| err.to_string())?;
+    prepare_then_with_live_feed_caches(
+        || {
+            app_core::live_feed_cache::prepare_persisted_notam_resource_descriptor(
+                manifest, prepared,
+            )
+            .map_err(|error| error.to_string())
+        },
+        |caches, descriptor| {
+            caches
+                .get_mut(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                .commit_prepared_resource_restoration(descriptor);
+            Ok(())
+        },
+    )
+}
+
+pub fn live_feed_cache_notam_resources_require_hydration(
+    handle: u64,
+    version: &str,
+) -> Result<bool, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+        .notam_resources_require_hydration(version)
+        .map_err(|error| error.to_string())
+}
+
 pub fn live_feed_cache_installed_payload_bytes(
     handle: u64,
     product: &str,
@@ -1928,6 +1966,32 @@ pub fn live_feed_cache_finish_restoring_resources(
                 .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
                 .commit_prepared_resource_restoration(prepared);
             Ok(())
+        },
+    )
+}
+
+pub fn live_feed_cache_finish_hydrating_notam_resources(handle: u64) -> Result<(), String> {
+    let plan = {
+        let mut caches = live_feed_caches()
+            .lock()
+            .map_err(|_| "live feed cache store poisoned".to_string())?;
+        caches
+            .get_mut(&(handle as u32))
+            .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+            .take_resource_restoration_plan("notams")
+            .map_err(|error| error.to_string())?
+    };
+    prepare_then_with_live_feed_caches(
+        || {
+            plan.prepare_notam_hydration(&app_core::live_feed_product_registry())
+                .map_err(|error| error.to_string())
+        },
+        |caches, (installed, preparer)| {
+            caches
+                .get_mut(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                .commit_notam_resource_hydration(installed, preparer)
+                .map_err(|error| error.to_string())
         },
     )
 }
@@ -3253,6 +3317,47 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheIngestPersistedNotamResourceDescriptor(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    manifest_json: JString,
+    prepared_bytes: JByteArray,
+) {
+    let result = (|| {
+        let manifest = get_java_string(&mut env, manifest_json)?;
+        let prepared = get_java_byte_array(&mut env, prepared_bytes)?;
+        live_feed_cache_ingest_persisted_notam_resource_descriptor(
+            handle as u64,
+            &manifest,
+            prepared,
+        )
+    })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheNotamResourcesRequireHydration(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    version: JString,
+) -> jboolean {
+    let result = get_java_string(&mut env, version).and_then(|version| {
+        live_feed_cache_notam_resources_require_hydration(handle as u64, &version)
+    });
+    match result {
+        Ok(required) => u8::from(required),
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheInstalledPayloadBytes(
     mut env: JNIEnv,
     _class: JClass,
@@ -3355,6 +3460,17 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheF
     let result = get_java_string(&mut env, product)
         .and_then(|product| live_feed_cache_finish_restoring_resources(handle as u64, &product));
     if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheFinishHydratingNotamResources(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    if let Err(message) = live_feed_cache_finish_hydrating_notam_resources(handle as u64) {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
 }

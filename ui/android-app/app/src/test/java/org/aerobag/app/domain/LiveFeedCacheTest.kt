@@ -347,6 +347,33 @@ class LiveFeedCacheTest {
         cache.close()
     }
 
+    @Test
+    fun notamHydrationReadsCanonicalResourcesButNotPreparedProjection() {
+        val readKinds = mutableListOf<String>()
+        val finishCount = AtomicInteger(0)
+        val bridge = liveFeedBridge(
+            finishHydratingNotamResources = { finishCount.incrementAndGet() },
+        )
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
+        val manifest = resourceManifest().copy(
+            resources = resourceManifest().resources +
+                LiveFeedResourceRef(
+                    kind = "notam_prepared_projection",
+                    blobSha256 = "b".repeat(64),
+                    bytes = 2,
+                ),
+        )
+
+        cache.hydratePersistedNotamResources(manifest) { resource ->
+            readKinds += resource.kind
+            ByteArray(resource.bytes.toInt())
+        }
+
+        assertEquals(listOf("notam_checkpoint_xz"), readKinds)
+        assertEquals(1, finishCount.get())
+        cache.close()
+    }
+
     private fun liveFeedBridge(
         missingRequestsJson: () -> String = { "[]" },
         destroyLiveFeedCache: () -> Unit = {},
@@ -354,6 +381,7 @@ class LiveFeedCacheTest {
         restoreResourceBytes: () -> Unit = {},
         abortRestoringResources: () -> Unit = {},
         finishRestoringResources: () -> Unit = {},
+        finishHydratingNotamResources: () -> Unit = {},
         ingestInstalledPayload: () -> Unit = {},
     ): NativeBridge =
         Proxy.newProxyInstance(
@@ -370,6 +398,7 @@ class LiveFeedCacheTest {
                 "liveFeedCacheRestoreResourceBytes" -> restoreResourceBytes()
                 "liveFeedCacheAbortRestoringResources" -> abortRestoringResources()
                 "liveFeedCacheFinishRestoringResources" -> finishRestoringResources()
+                "liveFeedCacheFinishHydratingNotamResources" -> finishHydratingNotamResources()
                 "liveFeedCacheIngestInstalledPayloadBytes" -> ingestInstalledPayload()
                 "destroyLiveFeedCache" -> {
                     destroyLiveFeedCache()

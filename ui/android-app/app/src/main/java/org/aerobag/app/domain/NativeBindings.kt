@@ -98,6 +98,14 @@ interface NativeBridge {
         rootBytes: ByteArray,
     )
 
+    fun liveFeedCacheIngestPersistedNotamResourceDescriptor(
+        handle: Long,
+        manifestJson: String,
+        preparedBytes: ByteArray,
+    )
+
+    fun liveFeedCacheNotamResourcesRequireHydration(handle: Long, version: String): Boolean
+
     fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String, version: String): ByteArray
 
     fun liveFeedCacheResourceManifestJson(handle: Long, product: String): String
@@ -116,6 +124,8 @@ interface NativeBridge {
     fun liveFeedCacheAbortRestoringResources(handle: Long, product: String)
 
     fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
+
+    fun liveFeedCacheFinishHydratingNotamResources(handle: Long)
 
     fun liveFeedCacheInstallProductInSessionJson(
         handle: Long,
@@ -748,6 +758,17 @@ object NativeBindings : NativeBridge {
         rootBytes: ByteArray,
     )
 
+    external override fun liveFeedCacheIngestPersistedNotamResourceDescriptor(
+        handle: Long,
+        manifestJson: String,
+        preparedBytes: ByteArray,
+    )
+
+    external override fun liveFeedCacheNotamResourcesRequireHydration(
+        handle: Long,
+        version: String,
+    ): Boolean
+
     external override fun liveFeedCacheInstalledPayloadBytes(
         handle: Long,
         product: String,
@@ -774,6 +795,8 @@ object NativeBindings : NativeBridge {
     external override fun liveFeedCacheAbortRestoringResources(handle: Long, product: String)
 
     external override fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
+
+    external override fun liveFeedCacheFinishHydratingNotamResources(handle: Long)
 
     external override fun liveFeedCacheInstallProductInSessionJson(
         handle: Long,

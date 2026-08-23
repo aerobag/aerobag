@@ -199,7 +199,7 @@ pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
         ):
             prod_manage.parse_product_contracts(source, ref="candidate")
 
-    def test_changed_contracts_not_covered_by_sunset_are_reported(self) -> None:
+    def test_changed_production_contracts_are_reported(self) -> None:
         document = desired_document(staging="2026-08-22.1")
         document["sunset"][0]["until_utc"] = "2099-01-01T00:00:00Z"
         desired = releases.parse_desired_releases(document)
@@ -212,17 +212,17 @@ pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
         with mock.patch.object(
             prod_manage, "release_contracts", side_effect=contract_sets.__getitem__
         ):
-            unsupported = prod_manage.unsupported_contracts_after_promotion(desired)
+            changed = prod_manage.changed_contracts_after_promotion(desired)
 
         self.assertEqual(
-            unsupported,
+            changed,
             (
                 prod_manage.ContractRequirement("live-feeds", "v2"),
                 prod_manage.ContractRequirement("nav-db", "NAV9"),
             ),
         )
 
-    def test_existing_sunset_contracts_cover_changed_production_contracts(self) -> None:
+    def test_existing_sunset_does_not_hide_changed_production_contracts(self) -> None:
         document = desired_document(staging="2026-08-22.1")
         document["sunset"][0]["until_utc"] = "2099-01-01T00:00:00Z"
         desired = releases.parse_desired_releases(document)
@@ -235,19 +235,31 @@ pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
         with mock.patch.object(
             prod_manage, "release_contracts", side_effect=contract_sets.__getitem__
         ):
-            unsupported = prod_manage.unsupported_contracts_after_promotion(desired)
+            changed = prod_manage.changed_contracts_after_promotion(desired)
 
-        self.assertEqual(unsupported, ())
+        self.assertEqual(
+            changed,
+            (
+                prod_manage.ContractRequirement("live-feeds", "v2"),
+                prod_manage.ContractRequirement("nav-db", "NAV9"),
+            ),
+        )
 
     def test_warning_recommends_retaining_current_production(self) -> None:
-        warning = prod_manage.promotion_contract_warning(
+        warning = prod_manage.promotion_compatibility_warning(
             "2026-08-20.1",
             (prod_manage.ContractRequirement("nav-db", "NAV9"),),
         )
 
-        self.assertIsNotNone(warning)
-        self.assertIn("nav-db contract NAV9", warning or "")
-        self.assertIn("adding 2026-08-20.1 to the sunset list", warning or "")
+        self.assertIn("release-scoped package and live-feed endpoints", warning)
+        self.assertIn("nav-db contract NAV9", warning)
+        self.assertIn("adding 2026-08-20.1 to the sunset list", warning)
+
+    def test_unchanged_contracts_still_warn_about_release_scoped_urls(self) -> None:
+        warning = prod_manage.promotion_compatibility_warning("2026-08-20.1", ())
+
+        self.assertIn("release-scoped package and live-feed endpoints", warning)
+        self.assertIn("adding 2026-08-20.1 to the sunset list", warning)
 
 
 class PromotionGateTests(unittest.TestCase):
@@ -707,7 +719,7 @@ class PromoteCommandTests(unittest.TestCase):
             mock.patch.object(prod_manage, "write_atomic"),
             mock.patch.object(
                 prod_manage,
-                "unsupported_contracts_after_promotion",
+                "changed_contracts_after_promotion",
                 return_value=(prod_manage.ContractRequirement("nav-db", "NAV9"),),
             ),
             mock.patch.object(prod_manage, "print_warning") as print_warning,

@@ -195,41 +195,37 @@ def release_contracts(ref: str) -> dict[str, str]:
     return contracts
 
 
-def unsupported_contracts_after_promotion(
+def changed_contracts_after_promotion(
     desired: releases.DesiredReleases,
 ) -> tuple[ContractRequirement, ...]:
     if desired.staging is None:
         raise ManagementError("there is no staging release to inspect")
     production_contracts = release_contracts(desired.production.tag)
     candidate_contracts = release_contracts(desired.staging.tag)
-    sunset_contracts = [
-        release_contracts(binding.tag)
-        for binding in releases.effective_desired_releases(desired).sunset
-    ]
-    unsupported = []
+    changed = []
     for family, contract in sorted(production_contracts.items()):
         if candidate_contracts.get(family) == contract:
             continue
-        if any(contracts.get(family) == contract for contracts in sunset_contracts):
-            continue
-        unsupported.append(ContractRequirement(family, contract))
-    return tuple(unsupported)
+        changed.append(ContractRequirement(family, contract))
+    return tuple(changed)
 
 
-def promotion_contract_warning(
+def promotion_compatibility_warning(
     old_production: str,
-    unsupported: tuple[ContractRequirement, ...],
-) -> str | None:
-    if not unsupported:
-        return None
-    contracts = ", ".join(
-        f"{requirement.family} contract {requirement.contract}"
-        for requirement in unsupported
+    changed: tuple[ContractRequirement, ...],
+) -> str:
+    warning = (
+        "WARNING: promotion will remove the release-scoped package and live-feed "
+        f"endpoints required by installed {old_production} clients."
     )
+    if changed:
+        contracts = ", ".join(
+            f"{requirement.family} contract {requirement.contract}"
+            for requirement in changed
+        )
+        warning += f" The staged release also replaces {contracts}."
     return (
-        f"WARNING: promotion will stop serving {contracts}, required by current "
-        f"production release {old_production}. Existing sunset releases do not cover "
-        f"these contracts. Suggest adding {old_production} to the sunset list before "
+        f"{warning} Suggest adding {old_production} to the sunset list before "
         "promoting."
     )
 
@@ -644,9 +640,9 @@ def promote(config_path: Path, releases_path: Path) -> int:
         )
 
     proposed, old_production, candidate = promotion_document(document)
-    contract_warning = promotion_contract_warning(
+    compatibility_warning = promotion_compatibility_warning(
         old_production,
-        unsupported_contracts_after_promotion(desired),
+        changed_contracts_after_promotion(desired),
     )
     config = deployment.load_config(config_path)
     assert_remote_idle(config)
@@ -665,14 +661,12 @@ def promote(config_path: Path, releases_path: Path) -> int:
         commands,
         color_diff(releases_path, old_text, new_text),
         note=(
-            f"This does not retain production release {old_production} as a sunset release. "
-            "If installed clients still need it, abort and perform a complete desired-state "
-            "promotion edit that includes its sunset deadline."
+            "Promotion does not choose or add a sunset retention deadline. The "
+            "compatibility warning below describes the required manual edit."
         ),
     )
-    if contract_warning is not None:
-        print_warning(contract_warning)
-        print()
+    print_warning(compatibility_warning)
+    print()
     if not confirmed():
         print("aborted")
         return 1

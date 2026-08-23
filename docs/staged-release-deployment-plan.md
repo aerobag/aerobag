@@ -363,11 +363,12 @@ Promotion is expressed by changing desired state, normally in one commit:
 - add the previous production tag to `sunset` when compatibility service is
   still required.
 
-Promotion preflight compares the canonical package and live-feed contract
-registries directly across those immutable Git tags. It warns when the staged
-release drops a current-production contract that no unexpired sunset release
-provides, but leaves the retention deadline and desired-state edit to the
-operator.
+Promotion preflight always recommends retaining previous production because
+installed clients use that release's tag-scoped package and live-feed URLs. It
+also compares the canonical package and live-feed contract registries directly
+across the production and staging Git tags so changed contracts are called out
+explicitly. The retention deadline and desired-state edit remain operator
+decisions.
 
 The reconciler recognizes that the desired production release is already built,
 qualified, published, and running. It constructs a new channel generation and

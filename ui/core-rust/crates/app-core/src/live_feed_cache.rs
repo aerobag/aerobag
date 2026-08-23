@@ -44,6 +44,7 @@ pub struct LiveFeedCache {
     restoring_resources: BTreeMap<String, RestoringLiveFeedResources>,
     notam_preparer: NotamProjectionPreparer,
     pending_notam_prepared: Option<Vec<u8>>,
+    persisted_notam_prepared: Option<Vec<u8>>,
     nexrad_acquisition: NexradAcquisitionDirective,
     nexrad_request_clock_epoch_ms: i64,
     last_nexrad_install_epoch_ms: Option<i64>,
@@ -105,6 +106,7 @@ pub struct PreparedLiveFeedResourceRestoration {
     installed: LiveFeedInstalledState,
     notam_preparer: Option<NotamProjectionPreparer>,
     pending_notam_prepared: Option<Vec<u8>>,
+    persisted_notam_prepared: Option<Vec<u8>>,
 }
 
 impl LiveFeedResourceRestorationPlan {
@@ -116,16 +118,23 @@ impl LiveFeedResourceRestorationPlan {
         let installed = registry
             .required_driver(product)?
             .install_persisted_resources(&self.restoring)?;
-        let (notam_preparer, pending_notam_prepared) = if product == "notams" {
-            let (preparer, prepared) = prepare_restored_notam_candidate(&installed)?;
-            (Some(preparer), Some(prepared))
-        } else {
-            (None, None)
-        };
+        let (notam_preparer, pending_notam_prepared, persisted_notam_prepared) =
+            if product == "notams" {
+                if let Some(prepared) = restored_notam_prepared_bytes(&self.restoring) {
+                    validate_restored_notam_prepared(&installed, &prepared)?;
+                    (None, Some(prepared.clone()), Some(prepared))
+                } else {
+                    let (preparer, prepared) = prepare_restored_notam_candidate(&installed)?;
+                    (Some(preparer), Some(prepared.clone()), Some(prepared))
+                }
+            } else {
+                (None, None, None)
+            };
         Ok(PreparedLiveFeedResourceRestoration {
             installed,
             notam_preparer,
             pending_notam_prepared,
+            persisted_notam_prepared,
         })
     }
 }
@@ -304,6 +313,9 @@ impl LiveFeedCache {
             }
             _ => {}
         }
+        if product == "notams" {
+            self.persisted_notam_prepared = None;
+        }
         Ok(())
     }
 
@@ -321,16 +333,35 @@ impl LiveFeedCache {
         let installed = self
             .install_candidate(product)
             .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
-        Ok(installed.resource_manifest())
+        let mut manifest = installed.resource_manifest();
+        if product == "notams" {
+            if let (Some(manifest), Some(prepared)) =
+                (manifest.as_mut(), self.persisted_notam_prepared.as_ref())
+            {
+                manifest
+                    .resources
+                    .push(resource_ref("notam_prepared_projection", prepared));
+            }
+        }
+        Ok(manifest)
     }
 
     pub fn resource_bytes(&self, product: &str, blob_sha256: &str) -> AppResult<Vec<u8>> {
         let installed = self
             .install_candidate(product)
             .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
-        installed.resource_bytes(blob_sha256).ok_or_else(|| {
-            cache_error(format!("{product} has no immutable resource {blob_sha256}"))
-        })
+        installed
+            .resource_bytes(blob_sha256)
+            .or_else(|| {
+                (product == "notams")
+                    .then_some(self.persisted_notam_prepared.as_ref())
+                    .flatten()
+                    .filter(|prepared| sha256_hex(prepared) == blob_sha256)
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                cache_error(format!("{product} has no immutable resource {blob_sha256}"))
+            })
     }
 
     pub fn begin_restoring_resources(
@@ -423,6 +454,9 @@ impl LiveFeedCache {
         }
         if let Some(payload) = prepared.pending_notam_prepared {
             self.pending_notam_prepared = Some(payload);
+        }
+        if let Some(payload) = prepared.persisted_notam_prepared {
+            self.persisted_notam_prepared = Some(payload);
         }
         self.stage_or_remember_installed_state(prepared.installed);
     }
@@ -524,6 +558,7 @@ impl LiveFeedCache {
         self.pending_installed.remove(product);
         if product == "notams" {
             self.pending_notam_prepared = None;
+            self.persisted_notam_prepared = None;
             self.notam_preparer.reset();
             self.installed.remove(product);
             self.live_feeds.mark_product_no_state(product);
@@ -926,13 +961,15 @@ impl LiveFeedCache {
             .install_checkpoint(checkpoint, &mut NotamApplyWork::default())
             .map_err(|error| cache_error(format!("invalid NOTAM checkpoint: {error}")))?;
         self.require_prepared_notam_target(installed)?;
-        self.pending_notam_prepared = Some(encode_cached_notam_envelope(
+        let prepared = encode_cached_notam_envelope(
             format!("live_feeds/state/notams/{}", installed.version),
             installed,
             None,
             None,
             payload,
-        )?);
+        )?;
+        self.pending_notam_prepared = Some(prepared.clone());
+        self.persisted_notam_prepared = Some(prepared);
         Ok(())
     }
 
@@ -943,6 +980,17 @@ impl LiveFeedCache {
     ) -> AppResult<()> {
         let delta = decode_notam_delta(Some("notam_ordered_delta_xz"), delta_bytes)?;
         let from_version = delta.from_state_id.clone();
+        if self.notam_preparer.state_id() != Some(from_version.as_str()) {
+            let current = self.installed("notams").cloned().ok_or_else(|| {
+                cache_error("cannot hydrate NOTAM worker without installed state".to_string())
+            })?;
+            self.notam_preparer = restore_notam_preparer(&current)?;
+            if self.notam_preparer.state_id() != Some(from_version.as_str()) {
+                return Err(cache_error(format!(
+                    "hydrated NOTAM worker does not match delta source {from_version}"
+                )));
+            }
+        }
         let payload = self
             .notam_preparer
             .apply_delta(delta, &mut NotamApplyWork::default())
@@ -957,6 +1005,16 @@ impl LiveFeedCache {
             Some(from_version.clone()),
             Some(from_version),
             payload,
+        )?);
+        let checkpoint = self.notam_preparer.projection_checkpoint().ok_or_else(|| {
+            cache_error("updated NOTAM projection checkpoint is unavailable".to_string())
+        })?;
+        self.persisted_notam_prepared = Some(encode_cached_notam_envelope(
+            format!("live_feeds/state/notams/{}", installed.version),
+            installed,
+            None,
+            None,
+            PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
         )?);
         Ok(())
     }
@@ -988,6 +1046,23 @@ pub fn prepare_installed_payload_bytes(
 fn prepare_restored_notam_candidate(
     installed: &LiveFeedInstalledState,
 ) -> AppResult<(NotamProjectionPreparer, Vec<u8>)> {
+    let preparer = restore_notam_preparer(installed)?;
+    let checkpoint = preparer
+        .projection_checkpoint()
+        .ok_or_else(|| cache_error("restored NOTAM projection is unavailable".to_string()))?;
+    let prepared = encode_cached_notam_envelope(
+        format!("live_feeds/state/notams/{}", installed.version),
+        installed,
+        None,
+        None,
+        PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
+    )?;
+    Ok((preparer, prepared))
+}
+
+fn restore_notam_preparer(
+    installed: &LiveFeedInstalledState,
+) -> AppResult<NotamProjectionPreparer> {
     let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &installed.payload else {
         return Err(cache_error(
             "restored NOTAM candidate is not an immutable resource chain".to_string(),
@@ -1013,17 +1088,45 @@ fn prepare_restored_notam_candidate(
             installed.version, installed.state_sha256
         )));
     }
-    let checkpoint = preparer
-        .projection_checkpoint()
-        .ok_or_else(|| cache_error("restored NOTAM projection is unavailable".to_string()))?;
-    let prepared = encode_cached_notam_envelope(
-        format!("live_feeds/state/notams/{}", installed.version),
-        installed,
-        None,
-        None,
-        PreparedNotamPayload::InstallDisplayCheckpoint(checkpoint),
-    )?;
-    Ok((preparer, prepared))
+    Ok(preparer)
+}
+
+fn restored_notam_prepared_bytes(restoring: &RestoringLiveFeedResources) -> Option<Vec<u8>> {
+    let resource = restoring
+        .manifest
+        .resources
+        .iter()
+        .find(|resource| resource.kind == "notam_prepared_projection")?;
+    restoring.resources.get(&resource.blob_sha256).cloned()
+}
+
+fn validate_restored_notam_prepared(
+    installed: &LiveFeedInstalledState,
+    prepared: &[u8],
+) -> AppResult<()> {
+    let envelope = crate::decode_prepared_live_feed(prepared)?;
+    if envelope.product != installed.product
+        || envelope.version != installed.version
+        || envelope.state_sha256 != installed.state_sha256
+    {
+        return Err(cache_error(format!(
+            "persisted NOTAM projection {}/{}/{} does not match {}/{}/{}",
+            envelope.product,
+            envelope.version,
+            envelope.state_sha256,
+            installed.product,
+            installed.version,
+            installed.state_sha256
+        )));
+    }
+    match envelope.payload {
+        PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(
+            checkpoint,
+        )) if checkpoint.state_id == installed.version => Ok(()),
+        _ => Err(cache_error(
+            "persisted NOTAM projection is not a matching display checkpoint".to_string(),
+        )),
+    }
 }
 
 fn encode_cached_notam_envelope(
@@ -1211,12 +1314,22 @@ fn validate_resource_manifest(manifest: &LiveFeedResourceManifest) -> AppResult<
             "immutable NOTAM resources must begin with a checkpoint".to_string(),
         ));
     }
-    if manifest.resources[1..]
+    if manifest.resources[1..].iter().any(|resource| {
+        resource.kind != "notam_ordered_delta_xz" && resource.kind != "notam_prepared_projection"
+    }) {
+        return Err(cache_error(
+            "immutable NOTAM resources contain an unsupported resource kind".to_string(),
+        ));
+    }
+    if manifest
+        .resources
         .iter()
-        .any(|resource| resource.kind != "notam_ordered_delta_xz")
+        .filter(|resource| resource.kind == "notam_prepared_projection")
+        .count()
+        > 1
     {
         return Err(cache_error(
-            "immutable NOTAM resources contain an unsupported delta kind".to_string(),
+            "immutable NOTAM resources contain multiple prepared projections".to_string(),
         ));
     }
     let mut hashes = std::collections::BTreeSet::new();
@@ -1555,16 +1668,26 @@ impl LiveFeedProductDriver {
                     blob_sha256: sha256_hex(bytes),
                     state_sha256: summary.state_sha256.clone(),
                 };
-                let mut installed = verify_nav_kv_state(
+                verify_nav_kv_state(
                     product,
                     &summary.version,
                     &payload_ref,
-                    manifest,
-                    root,
+                    manifest.clone(),
+                    root.clone(),
                     pages,
                 )?;
-                installed.collected_at_utc = summary.collected_at_utc.clone();
-                Ok(installed)
+                Ok(LiveFeedInstalledState {
+                    product: product.clone(),
+                    version: summary.version.clone(),
+                    state_sha256: summary.state_sha256.clone(),
+                    collected_at_utc: summary.collected_at_utc.clone(),
+                    payload: LiveFeedInstalledPayload::NavKvPackage {
+                        manifest,
+                        root,
+                        package_blob_sha256: payload_ref.blob_sha256,
+                        package_bytes: Some(Arc::new(bytes.to_vec())),
+                    },
+                })
             }
             Self::NexradPackage { product } => {
                 if summary.product != *product || summary.payload_kind != "nexrad_package" {
@@ -1669,26 +1792,32 @@ impl LiveFeedProductDriver {
                 restoring.manifest.summary.product
             )));
         }
-        let ordered = restoring
+        let resource_bytes = |resource: &LiveFeedResourceRef| {
+            restoring
+                .resources
+                .get(&resource.blob_sha256)
+                .cloned()
+                .ok_or_else(|| {
+                    cache_error(format!(
+                        "missing persisted {product} resource {}",
+                        resource.blob_sha256
+                    ))
+                })
+        };
+        let checkpoint_ref = restoring
             .manifest
             .resources
             .iter()
-            .map(|resource| {
-                restoring
-                    .resources
-                    .get(&resource.blob_sha256)
-                    .cloned()
-                    .ok_or_else(|| {
-                        cache_error(format!(
-                            "missing persisted {product} resource {}",
-                            resource.blob_sha256
-                        ))
-                    })
-            })
+            .find(|resource| resource.kind == "notam_checkpoint_xz")
+            .ok_or_else(|| cache_error("immutable NOTAM checkpoint is missing".to_string()))?;
+        let checkpoint = resource_bytes(checkpoint_ref)?;
+        let deltas = restoring
+            .manifest
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == "notam_ordered_delta_xz")
+            .map(resource_bytes)
             .collect::<AppResult<Vec<_>>>()?;
-        let (checkpoint, deltas) = ordered
-            .split_first()
-            .ok_or_else(|| cache_error("immutable resource manifest is empty".to_string()))?;
         let summary = &restoring.manifest.summary;
         Ok(LiveFeedInstalledState {
             product: product.clone(),
@@ -1696,8 +1825,8 @@ impl LiveFeedProductDriver {
             state_sha256: summary.state_sha256.clone(),
             collected_at_utc: summary.collected_at_utc.clone(),
             payload: LiveFeedInstalledPayload::NotamResources {
-                checkpoint: Arc::new(checkpoint.clone()),
-                deltas: deltas.iter().cloned().map(Arc::new).collect(),
+                checkpoint: Arc::new(checkpoint),
+                deltas: deltas.into_iter().map(Arc::new).collect(),
             },
         })
     }
@@ -3460,9 +3589,10 @@ mod tests {
         assert_eq!(delta.to_state_id, head_id);
         assert_eq!(delta.mutations.len(), 1);
         let manifest = cache.resource_manifest("notams").unwrap().unwrap();
-        assert_eq!(manifest.resources.len(), 2);
+        assert_eq!(manifest.resources.len(), 3);
         assert_eq!(manifest.resources[0].kind, "notam_checkpoint_xz");
         assert_eq!(manifest.resources[1].kind, "notam_ordered_delta_xz");
+        assert_eq!(manifest.resources[2].kind, "notam_prepared_projection");
         let persisted_delta = cache
             .resource_bytes("notams", &manifest.resources[1].blob_sha256)
             .unwrap();
@@ -3486,6 +3616,11 @@ mod tests {
         restored_cache
             .finish_restoring_resources(&registry, "notams")
             .unwrap();
+        assert_eq!(
+            restored_cache.notam_preparer.state_id(),
+            None,
+            "persisted display projection must avoid rebuilding canonical NOTAM state at startup"
+        );
         let restored = restored_cache.install_candidate("notams").unwrap();
         assert_eq!(restored.version, head_id);
         assert_eq!(restored.state_sha256, source.state_id());
@@ -3498,6 +3633,52 @@ mod tests {
             restored_envelope.payload,
             PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallDisplayCheckpoint(_))
         ));
+
+        restored_cache
+            .acknowledge_install_candidate("notams", &head_id)
+            .unwrap();
+        let next_mutation = notam_state::NotamMutation::Upsert {
+            record: notam_record("N0099", "later"),
+        };
+        source
+            .apply_mutation(next_mutation.clone(), &mut NotamApplyWork::default())
+            .unwrap();
+        let next_head_id = source.state_id().to_string();
+        let next_delta = NotamDelta::new(
+            head_id.clone(),
+            next_head_id.clone(),
+            source.counters(),
+            vec![next_mutation],
+        );
+        let next_delta_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&next_delta).unwrap())
+                .unwrap();
+        let next_delta_ref = LiveFeedDeltaRef {
+            kind: Some("notam_ordered_delta_xz".to_string()),
+            from_version: head_id.clone(),
+            from_state_sha256: head_id.clone(),
+            to_version: next_head_id.clone(),
+            to_state_sha256: next_head_id.clone(),
+            url: format!("deltas/notams/{head_id}__{next_head_id}.json.xz"),
+            bytes: next_delta_bytes.len() as u64,
+            blob_sha256: sha256_hex(&next_delta_bytes),
+            mutation_count: Some(1),
+        };
+        let next_installed = driver
+            .apply_delta(
+                restored_cache.installed("notams").unwrap(),
+                &next_delta_ref,
+                &next_delta_bytes,
+            )
+            .unwrap();
+        restored_cache
+            .prepare_notam_delta_candidate(&next_installed, &next_delta_bytes)
+            .unwrap();
+        assert_eq!(
+            restored_cache.notam_preparer.state_id(),
+            Some(next_head_id.as_str()),
+            "the canonical NOTAM worker should hydrate only when a later delta needs it"
+        );
     }
 
     #[test]
@@ -4528,7 +4709,7 @@ mod tests {
         assert_eq!(manifest["product_id"], "obstacles");
         assert_eq!(manifest["version_label"], "v2");
         assert_eq!(manifest["state_sha256"], second_sha);
-        let root = NavKvRoot::parse(root).unwrap();
+        let root = NavKvRoot::parse(&root).unwrap();
         let pairs = root
             .pairs(|page| pages.get(page as usize).cloned())
             .unwrap();
@@ -4539,14 +4720,20 @@ mod tests {
             .ingest_installed_payload_bytes(&registry, &summary, &persisted)
             .unwrap();
         let reinstalled = reloaded.installed("obstacles").unwrap();
-        let LiveFeedInstalledPayload::NavKv { root, pages, .. } = &reinstalled.payload else {
-            panic!("expected reloaded nav_kv payload");
+        let LiveFeedInstalledPayload::NavKvPackage {
+            package_bytes: Some(package_bytes),
+            ..
+        } = &reinstalled.payload
+        else {
+            panic!("expected legacy nav_kv payload to migrate to an immutable package");
         };
-        let root = NavKvRoot::parse(root).unwrap();
+        let (_, root, pages) = read_nav_kv_members_from_zip("obstacles", package_bytes).unwrap();
+        let root = NavKvRoot::parse(&root).unwrap();
         let reloaded_pairs = root
             .pairs(|page| pages.get(page as usize).cloned())
             .unwrap();
         assert_eq!(reloaded_pairs, second_pairs);
+        assert!(reinstalled.summary().blob_sha256.is_some());
     }
 
     #[test]

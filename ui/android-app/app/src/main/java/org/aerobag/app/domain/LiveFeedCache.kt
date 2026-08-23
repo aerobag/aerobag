@@ -851,12 +851,18 @@ internal suspend fun restorePersistedProductsInPriorityOrder(
     onRestored: suspend (LiveFeedInstalledSummary) -> Unit,
 ): List<LiveFeedInstalledSummary> {
     val ordered = installed.sortedWith(
-        compareBy<LiveFeedInstalledSummary> { if (it.product == "winds-aloft") 0 else 1 }
+        compareBy<LiveFeedInstalledSummary> {
+            when (it.product) {
+                "winds-aloft" -> 0
+                "metars" -> 1
+                else -> 2
+            }
+        }
             .thenBy { it.product }
             .thenBy { it.version },
     )
-    val priority = ordered.filter { it.product == "winds-aloft" }
-    val remaining = ordered.filterNot { it.product == "winds-aloft" }
+    val priority = ordered.filter { it.product == "winds-aloft" || it.product == "metars" }
+    val remaining = ordered.filterNot { it.product == "winds-aloft" || it.product == "metars" }
     val completed = mutableListOf<LiveFeedInstalledSummary>()
 
     for (summary in priority) {
@@ -993,10 +999,10 @@ object LiveFeedCacheStore {
                 withContext(Dispatchers.IO) {
                     val id = summary.product to summary.version
                     resourcesById[id]?.let { stored ->
-                        return@withContext restoreStoredResources(cache, stored)
+                        return@withContext restoreStoredResources(context, cache, stored)
                     }
                     payloadsById[id]?.let { stored ->
-                        return@withContext restoreStoredPayload(cache, stored)
+                        return@withContext restoreStoredPayload(context, cache, stored)
                     }
                     Log.w(
                         LiveFeedLogTag,
@@ -1009,13 +1015,19 @@ object LiveFeedCacheStore {
             restored = restorePersistedProductsInPriorityOrder(
                 installed = installed,
                 restoreOne = ::restoreOne,
-                onRestored = onRestored,
+                onRestored = { summary ->
+                    onRestored(summary)
+                    withContext(Dispatchers.IO) {
+                        cache.releasePersistedPayloadBytes(summary.product, summary.version)
+                    }
+                },
             )
         }
         return if (didRestore) restored else installed
     }
 
     private fun restoreStoredResources(
+        context: Context,
         cache: LiveFeedCache,
         stored: LiveFeedStoredResources,
     ): Boolean {
@@ -1024,6 +1036,14 @@ object LiveFeedCacheStore {
             cache.restoreInstalledResources(stored.manifest) { resource ->
                 stored.resourceFile(resource).readBytes()
             }
+            cache.resourceManifest(stored.manifest.summary.product)
+                ?.takeIf { restored -> restored.resources != stored.manifest.resources }
+                ?.let { upgraded ->
+                    stageResources(context, upgraded) { resource ->
+                        cache.resourceBytes(upgraded.summary.product, resource.blobSha256)
+                    }
+                    commitResourceManifest(context, upgraded)
+                }
             Log.i(
                 LiveFeedLogTag,
                 "restored persisted product=${stored.manifest.summary.product} " +
@@ -1045,6 +1065,7 @@ object LiveFeedCacheStore {
     }
 
     private fun restoreStoredPayload(
+        context: Context,
         cache: LiveFeedCache,
         entry: LiveFeedStoredPayload,
     ): Boolean {
@@ -1067,6 +1088,17 @@ object LiveFeedCacheStore {
             } else {
                 cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
             }
+            cache.installedSummary(entry.summary.product)
+                ?.takeIf { restored ->
+                    entry.summary.blobSha256 == null && restored.blobSha256 != null
+                }
+                ?.let { upgraded ->
+                    persist(
+                        context,
+                        upgraded,
+                        cache.installedPayloadBytes(upgraded.product, upgraded.version),
+                    )
+                }
             cache.releasePersistedPayloadBytes(entry.summary.product, entry.summary.version)
             Log.i(
                 LiveFeedLogTag,

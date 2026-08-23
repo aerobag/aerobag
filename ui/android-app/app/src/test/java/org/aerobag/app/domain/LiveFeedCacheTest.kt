@@ -246,7 +246,7 @@ class LiveFeedCacheTest {
     }
 
     @Test
-    fun persistedWindIsReadyBeforeOtherProductsRestoreInParallel() = runBlocking {
+    fun persistedWindAndMetarsAreReadyBeforeOtherProductsRestoreInParallel() = runBlocking {
         val events = java.util.concurrent.CopyOnWriteArrayList<String>()
         val bulkStarts = AtomicInteger(0)
         val twoBulkRestoresStarted = CompletableDeferred<Unit>()
@@ -254,13 +254,14 @@ class LiveFeedCacheTest {
         val wind = summary("winds-aloft")
         val metars = summary("metars")
         val nexrad = summary("nexrad")
+        val tfrs = summary("tfrs")
 
         val restore = async {
             restorePersistedProductsInPriorityOrder(
-                installed = listOf(metars, nexrad, wind),
+                installed = listOf(metars, nexrad, wind, tfrs),
                 restoreOne = { item ->
                     events += "restore:${item.product}"
-                    if (item.product != "winds-aloft") {
+                    if (item.product != "winds-aloft" && item.product != "metars") {
                         if (bulkStarts.incrementAndGet() == 2) {
                             twoBulkRestoresStarted.complete(Unit)
                         }
@@ -274,13 +275,19 @@ class LiveFeedCacheTest {
 
         twoBulkRestoresStarted.await()
         assertEquals(
-            listOf("restore:winds-aloft", "promote:winds-aloft"),
-            events.take(2),
+            listOf(
+                "restore:winds-aloft",
+                "promote:winds-aloft",
+                "restore:metars",
+                "promote:metars",
+            ),
+            events.take(4),
         )
         releaseBulkRestores.complete(Unit)
         val restored = restore.await()
         assertEquals(wind, restored.first())
-        assertEquals(setOf(metars, nexrad), restored.drop(1).toSet())
+        assertEquals(metars, restored[1])
+        assertEquals(setOf(nexrad, tfrs), restored.drop(2).toSet())
     }
 
     @Test

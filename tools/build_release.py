@@ -48,6 +48,8 @@ def release_environment(
     origin = public_origin.rstrip("/")
     release_url = f"{origin}/releases/{tag}"
     return {
+        "AEROBAG_VERSION_NAME": tag,
+        "ANDROID_VERSION_NAME": tag,
         "AEROBAG_WEB_DIST": str(web_dist),
         "AEROBAG_WEB_PUBLIC_BASE_URL": f"/releases/{tag}/web/",
         "AEROBAG_PACKAGE_SOURCE_BASE_URL": f"{release_url}/packages/",

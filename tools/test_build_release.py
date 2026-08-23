@@ -35,6 +35,8 @@ class ReleaseBuildTests(unittest.TestCase):
             ui_target_root=Path("/ui-target"),
         )
         release = "https://aerobag.org/releases/2026-08-22.1"
+        self.assertEqual(values["AEROBAG_VERSION_NAME"], "2026-08-22.1")
+        self.assertEqual(values["ANDROID_VERSION_NAME"], "2026-08-22.1")
         self.assertEqual(
             values["AEROBAG_PACKAGE_SOURCE_BASE_URL"], f"{release}/packages/"
         )

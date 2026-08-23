@@ -120,7 +120,7 @@ describe("flight plan layout CSS", () => {
     const selectedWindActionStyles = [...styles.matchAll(/\.selectedControlHighlight\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");
-    expect(selectedWindActionStyles).toContain("0 0 0 2px white");
+    expect(selectedWindActionStyles).toContain("0 0 0 2px var(--theme-button-fg)");
     expect(selectedWindActionStyles).toContain("0 0 0 4px var(--theme-button-checked)");
     expect(plannerPage).toContain("panel?.advisories");
     expect(plannerPage).not.toMatch(/onPerformAltitudePlannerAction\(actionUid\)[\s\S]*?\.then\(reload\)/);

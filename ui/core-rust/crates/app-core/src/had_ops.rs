@@ -1305,27 +1305,27 @@ static NO_WIND_ATMOSPHERE: crate::NoWindIsaAtmosphere = crate::NoWindIsaAtmosphe
 #[derive(Clone, Copy)]
 pub(crate) struct PlannerAtmosphereSelection<'a> {
     model: Option<&'a dyn crate::AtmosphereModel>,
+    // Only populated when the forecast is the selected calculation model.
     manifest: Option<&'a product_contracts::AtmosphereManifest>,
+    // Populated whenever a forecast is ready to select, including in no-wind mode.
+    ready_forecast_manifest: Option<&'a product_contracts::AtmosphereManifest>,
     label: &'static str,
     forecast_selected: bool,
-    alternate_available: bool,
-    action_uid: Option<&'static str>,
-}
-
-impl PlannerAtmosphereSelection<'static> {
-    pub(crate) fn no_wind(forecast_available: bool) -> Self {
-        Self {
-            model: Some(&NO_WIND_ATMOSPHERE),
-            manifest: None,
-            label: "NO WIND",
-            forecast_selected: false,
-            alternate_available: forecast_available,
-            action_uid: forecast_available.then_some(SELECT_GFS_WIND_ACTION_UID),
-        }
-    }
 }
 
 impl<'a> PlannerAtmosphereSelection<'a> {
+    pub(crate) fn no_wind(
+        available_forecast_manifest: Option<&'a product_contracts::AtmosphereManifest>,
+    ) -> Self {
+        Self {
+            model: Some(&NO_WIND_ATMOSPHERE),
+            manifest: None,
+            ready_forecast_manifest: available_forecast_manifest,
+            label: "NO WIND",
+            forecast_selected: false,
+        }
+    }
+
     pub(crate) fn gfs(
         model: Option<&'a dyn crate::AtmosphereModel>,
         manifest: Option<&'a product_contracts::AtmosphereManifest>,
@@ -1333,11 +1333,9 @@ impl<'a> PlannerAtmosphereSelection<'a> {
         Self {
             model,
             manifest,
+            ready_forecast_manifest: manifest,
             label: "FORECAST",
             forecast_selected: true,
-            // Even an unavailable selected model must allow returning to no-wind.
-            alternate_available: true,
-            action_uid: Some(SELECT_NO_WIND_ACTION_UID),
         }
     }
 }
@@ -1821,65 +1819,146 @@ fn planner_forecast_ui(
     now_epoch_ms: i64,
     time_display_mode: crate::TimeDisplayMode,
     local_time_zone: chrono_tz::Tz,
-) -> Option<crate::AltitudePlannerForecastUiView> {
-    let manifest = atmosphere.manifest?;
-    Some(crate::AltitudePlannerForecastUiView {
-        summary: planner_forecast_summary(
-            manifest,
-            now_epoch_ms,
-            time_display_mode,
-            local_time_zone,
-        )?,
-        action: None,
-    })
+) -> crate::AltitudePlannerForecastUiView {
+    let ready = atmosphere.ready_forecast_manifest.and_then(|manifest| {
+        planner_forecast_description(manifest, now_epoch_ms, time_display_mode, local_time_zone)
+    });
+    let latest = if ready.is_some() {
+        "Same as ready".to_string()
+    } else {
+        "None".to_string()
+    };
+    let ready_available = ready.is_some();
+    planner_wind_model_ui(
+        atmosphere.forecast_selected,
+        ready.unwrap_or_else(|| "None".to_string()),
+        ready_available,
+        latest,
+        None,
+    )
 }
 
-pub(crate) fn planner_forecast_summary(
+pub(crate) fn planner_wind_model_ui(
+    forecast_selected: bool,
+    ready_description: String,
+    ready_available: bool,
+    latest_description: String,
+    latest_action: Option<crate::AltitudePlannerForecastActionUiView>,
+) -> crate::AltitudePlannerForecastUiView {
+    crate::AltitudePlannerForecastUiView {
+        rows: vec![
+            crate::AltitudePlannerForecastRowUiView {
+                id: crate::AltitudePlannerForecastRowId::NoWind,
+                label: "No-wind model".to_string(),
+                description: String::new(),
+                selected: !forecast_selected,
+                action: Some(use_wind_model_action(
+                    !forecast_selected,
+                    true,
+                    SELECT_NO_WIND_ACTION_UID,
+                    "The no-wind model is already in use.",
+                    "The no-wind model is unavailable.",
+                )),
+            },
+            crate::AltitudePlannerForecastRowUiView {
+                id: crate::AltitudePlannerForecastRowId::ReadyForecast,
+                label: "Ready forecast".to_string(),
+                description: ready_description,
+                selected: forecast_selected,
+                action: Some(use_wind_model_action(
+                    forecast_selected,
+                    ready_available,
+                    SELECT_GFS_WIND_ACTION_UID,
+                    "The ready forecast is already in use.",
+                    "No forecast is ready to use.",
+                )),
+            },
+            crate::AltitudePlannerForecastRowUiView {
+                id: crate::AltitudePlannerForecastRowId::LatestForecast,
+                label: "Latest forecast".to_string(),
+                description: latest_description,
+                selected: false,
+                action: latest_action,
+            },
+        ],
+    }
+}
+
+fn use_wind_model_action(
+    selected: bool,
+    available: bool,
+    action_uid: &str,
+    selected_reason: &str,
+    unavailable_reason: &str,
+) -> crate::AltitudePlannerForecastActionUiView {
+    crate::AltitudePlannerForecastActionUiView {
+        label: "USE MODEL".to_string(),
+        enabled: available && !selected,
+        action_uid: (available && !selected).then(|| action_uid.to_string()),
+        disabled_reason: (!available)
+            .then(|| unavailable_reason.to_string())
+            .or_else(|| selected.then(|| selected_reason.to_string())),
+    }
+}
+
+pub(crate) fn planner_forecast_description(
     manifest: &product_contracts::AtmosphereManifest,
     now_epoch_ms: i64,
     time_display_mode: crate::TimeDisplayMode,
     local_time_zone: chrono_tz::Tz,
 ) -> Option<String> {
-    let cycle = DateTime::<Utc>::from_timestamp_millis(manifest.cycle_time_epoch_ms)?;
-    let valid_from = manifest
-        .valid_times_epoch_ms
-        .first()
-        .and_then(|epoch_ms| DateTime::<Utc>::from_timestamp_millis(*epoch_ms))?;
-    let valid_through = manifest
-        .valid_times_epoch_ms
-        .last()
-        .and_then(|epoch_ms| DateTime::<Utc>::from_timestamp_millis(*epoch_ms))?;
-    let age_ms = now_epoch_ms
-        .saturating_sub(manifest.cycle_time_epoch_ms)
-        .max(0);
-    let age_hours = age_ms as f64 / 3_600_000.0;
-    let age = if age_hours < 1.0 {
-        format!("{}m old", (age_ms / 60_000).max(0))
+    let valid_through_epoch_ms = *manifest.valid_times_epoch_ms.last()?;
+    planner_forecast_temporal_description(
+        manifest.cycle_time_epoch_ms,
+        valid_through_epoch_ms,
+        now_epoch_ms,
+        time_display_mode,
+        local_time_zone,
+    )
+}
+
+pub(crate) fn planner_forecast_temporal_description(
+    reference_time_epoch_ms: i64,
+    valid_through_epoch_ms: i64,
+    now_epoch_ms: i64,
+    time_display_mode: crate::TimeDisplayMode,
+    local_time_zone: chrono_tz::Tz,
+) -> Option<String> {
+    DateTime::<Utc>::from_timestamp_millis(reference_time_epoch_ms)?;
+    DateTime::<Utc>::from_timestamp_millis(valid_through_epoch_ms)?;
+    let age_ms = now_epoch_ms.saturating_sub(reference_time_epoch_ms).max(0);
+    let age = if age_ms < 3_600_000 {
+        format!("{}m ago", age_ms / 60_000)
     } else {
-        format!("{age_hours:.1}h old")
+        format!("{:.1}h ago", age_ms as f64 / 3_600_000.0)
     };
-    Some(format!(
-        "NOAA {} cycle {} ({age}); valid {} through {}.",
-        manifest.model_id.to_uppercase(),
-        crate::format_dated_time(
-            cycle.timestamp_millis(),
-            time_display_mode,
-            local_time_zone,
-            crate::DatedTimeStyle::MonthDayMinute,
-        ),
-        crate::format_dated_time(
-            valid_from.timestamp_millis(),
-            time_display_mode,
-            local_time_zone,
-            crate::DatedTimeStyle::MonthDayMinute,
-        ),
-        crate::format_dated_time(
-            valid_through.timestamp_millis(),
-            time_display_mode,
-            local_time_zone,
-            crate::DatedTimeStyle::MonthDayMinute,
-        ),
-    ))
+    let valid_through = crate::format_time_of_day(
+        valid_through_epoch_ms,
+        time_display_mode,
+        local_time_zone,
+        crate::TimeOfDayStyle::Colon,
+    )
+    .with_basis();
+    let remaining_ms = valid_through_epoch_ms.saturating_sub(now_epoch_ms);
+    if remaining_ms >= 0 {
+        Some(format!(
+            "Forecast from {age}, extends {} from now to {valid_through}",
+            format_forecast_remaining(remaining_ms as u64),
+        ))
+    } else {
+        Some(format!(
+            "Forecast from {age}, ended {} ago at {valid_through}",
+            format_forecast_remaining(remaining_ms.unsigned_abs()),
+        ))
+    }
+}
+
+fn format_forecast_remaining(duration_ms: u64) -> String {
+    if duration_ms < 3_600_000 {
+        format!("{}m", duration_ms / 60_000)
+    } else {
+        format!("{}h", duration_ms.saturating_add(3_600_000 - 1) / 3_600_000)
+    }
 }
 
 struct AltitudeComparisonInput<'a> {
@@ -2129,8 +2208,6 @@ pub(crate) fn flight_plan_ui_projection(
         wind_model_label: atmosphere.label.to_string(),
         wind_model_selected: atmosphere.forecast_selected,
         wind_model_available,
-        wind_model_selectable: atmosphere.alternate_available,
-        wind_model_action_uid: atmosphere.action_uid.map(str::to_string),
         modeled_prediction_error,
         estimate_basis,
         departure_time_epoch_ms: plan.planned_departure_time_epoch_ms,
@@ -2138,12 +2215,12 @@ pub(crate) fn flight_plan_ui_projection(
         now_epoch_ms,
         time_display_mode: live_data.time_display_mode,
         local_time_zone: live_data.local_time_zone,
-        forecast: planner_forecast_ui(
+        forecast: Some(planner_forecast_ui(
             atmosphere,
             now_epoch_ms,
             live_data.time_display_mode,
             live_data.local_time_zone,
-        ),
+        )),
         wind_fallback: modeled_prediction.as_ref().and_then(|prediction| {
             planner_wind_fallback(prediction, atmosphere, departure_epoch_ms)
         }),
@@ -5047,7 +5124,7 @@ mod tests {
             current_ui_state,
             computer,
             live_data,
-            PlannerAtmosphereSelection::no_wind(false),
+            PlannerAtmosphereSelection::no_wind(None),
         )?
         .ui_state)
     }
@@ -5910,13 +5987,29 @@ mod tests {
         }
     }
 
-    fn wind_control(state: &FlightPlanUiState) -> &crate::AltitudePlannerControlUiView {
-        state
-            .altitude_planner
-            .controls
+    fn wind_model_row(
+        state: &FlightPlanUiState,
+        id: crate::AltitudePlannerForecastRowId,
+    ) -> &crate::AltitudePlannerForecastRowUiView {
+        forecast_panel_row(
+            state
+                .altitude_planner
+                .forecast
+                .as_ref()
+                .expect("wind-model panel"),
+            id,
+        )
+    }
+
+    fn forecast_panel_row(
+        panel: &crate::AltitudePlannerForecastUiView,
+        id: crate::AltitudePlannerForecastRowId,
+    ) -> &crate::AltitudePlannerForecastRowUiView {
+        panel
+            .rows
             .iter()
-            .find(|control| control.id == crate::AltitudePlannerControlId::WindModel)
-            .expect("wind-model control")
+            .find(|row| row.id == id)
+            .expect("wind-model row")
     }
 
     fn airport_info_value(id: &str, position: LatLon, elevation_msl_ft: f64) -> serde_json::Value {
@@ -6168,7 +6261,7 @@ mod tests {
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
                 ..FlightPlanLiveData::default()
             },
-            PlannerAtmosphereSelection::no_wind(false),
+            PlannerAtmosphereSelection::no_wind(None),
         )
         .expect("altitude comparison panel");
         assert_eq!(panel.columns, crate::altitude_comparison_columns());
@@ -6342,7 +6435,7 @@ mod tests {
                     now_epoch_ms: Some(12 * 60 * 60 * 1000),
                     ..FlightPlanLiveData::default()
                 },
-                PlannerAtmosphereSelection::no_wind(false),
+                PlannerAtmosphereSelection::no_wind(None),
             )
             .expect("altitude comparison panel");
             let selected = panel
@@ -6425,21 +6518,31 @@ mod tests {
             .ui_state
         };
 
-        let no_wind = project(PlannerAtmosphereSelection::no_wind(true));
-        assert_eq!(wind_control(&no_wind).label, "WIND\nNO WIND");
-        assert!(wind_control(&no_wind).enabled);
+        let (manifest, _, _, _) = crate::forecast_atmosphere::tests::test_forecast_payload();
+        let no_wind = project(PlannerAtmosphereSelection::no_wind(Some(&manifest)));
+        assert_eq!(no_wind.altitude_planner.controls.len(), 2);
+        assert!(wind_model_row(&no_wind, crate::AltitudePlannerForecastRowId::NoWind,).selected);
+        let ready = wind_model_row(&no_wind, crate::AltitudePlannerForecastRowId::ReadyForecast);
+        assert!(!ready.selected);
+        assert!(ready.action.as_ref().expect("Use model action").enabled);
         assert_eq!(
-            wind_control(&no_wind).action_uid.as_deref(),
+            ready
+                .action
+                .as_ref()
+                .and_then(|action| action.action_uid.as_deref()),
             Some(SELECT_GFS_WIND_ACTION_UID)
         );
 
         let gfs = project(PlannerAtmosphereSelection::gfs(
             Some(&ConstantForecastAtmosphere),
-            None,
+            Some(&manifest),
         ));
-        assert_eq!(wind_control(&gfs).label, "WIND\nFORECAST");
+        assert!(wind_model_row(&gfs, crate::AltitudePlannerForecastRowId::ReadyForecast,).selected);
         assert_eq!(
-            wind_control(&gfs).action_uid.as_deref(),
+            wind_model_row(&gfs, crate::AltitudePlannerForecastRowId::NoWind)
+                .action
+                .as_ref()
+                .and_then(|action| action.action_uid.as_deref()),
             Some(SELECT_NO_WIND_ACTION_UID)
         );
         let total_ete = |state: &FlightPlanUiState| {
@@ -6519,9 +6622,11 @@ mod tests {
             message.contains("forecast product is unavailable")
                 && message.contains("showing no-wind/ISA estimates")
         }));
-        assert!(wind_control(&state).enabled);
         assert_eq!(
-            wind_control(&state).action_uid.as_deref(),
+            wind_model_row(&state, crate::AltitudePlannerForecastRowId::NoWind)
+                .action
+                .as_ref()
+                .and_then(|action| action.action_uid.as_deref()),
             Some(SELECT_NO_WIND_ACTION_UID)
         );
     }
@@ -6562,15 +6667,16 @@ mod tests {
             state.altitude_planner.estimate_summary.label,
             "Estimate basis:\nNo-wind fallback\n12,000 cruise"
         );
-        assert!(state.altitude_planner.advisories.is_empty());
-        let forecast_status = state
+        let coverage_advisory = state
             .altitude_planner
-            .forecast
-            .expect("coverage fallback status");
-        assert!(forecast_status.summary.starts_with(
+            .advisories
+            .iter()
+            .find(|message| message.contains("Using NO-WIND model"))
+            .expect("coverage fallback advisory");
+        assert!(coverage_advisory.starts_with(
             "Currently available forecast product valid until 0000Z, flight extends until "
         ));
-        assert!(forecast_status.summary.ends_with(". Using NO-WIND model."));
+        assert!(coverage_advisory.ends_with(". Using NO-WIND model."));
 
         let panel = altitude_comparison_panel(
             &store,
@@ -6627,34 +6733,65 @@ mod tests {
 
         assert_eq!(state.altitude_planner.departure.when_value, "−5h");
         assert!(state.altitude_planner.departure.when_is_past);
-        assert_eq!(
-            state
-                .altitude_planner
-                .forecast
-                .expect("coverage fallback status")
-                .summary,
-            "Currently available forecast product valid from 1200Z, flight starts at 0600Z. Using NO-WIND model."
-        );
+        assert!(state.altitude_planner.advisories.iter().any(|message| message
+            == "Currently available forecast product valid from 1200Z, flight starts at 0600Z. Using NO-WIND model."));
     }
 
     #[test]
-    fn forecast_provenance_reports_cycle_age_and_valid_window() {
+    fn forecast_status_reports_age_and_remaining_window_without_model_jargon() {
         let (mut manifest, _, _, _) = crate::forecast_atmosphere::tests::test_forecast_payload();
         manifest.model_id = "gfs-0p25".to_string();
-        manifest.cycle_time_epoch_ms = 3_600_000;
-        manifest.valid_times_epoch_ms = vec![3_600_000, 7_200_000];
+        let cycle = DateTime::parse_from_rfc3339("2026-08-22T18:00:00Z")
+            .expect("cycle time")
+            .timestamp_millis();
+        let valid_through = DateTime::parse_from_rfc3339("2026-08-23T18:00:00Z")
+            .expect("valid-through time")
+            .timestamp_millis();
+        let now = DateTime::parse_from_rfc3339("2026-08-22T23:48:00Z")
+            .expect("current time")
+            .timestamp_millis();
+        manifest.cycle_time_epoch_ms = cycle;
+        manifest.valid_times_epoch_ms = vec![cycle, valid_through];
 
-        let view = planner_forecast_ui(
+        let local_view = planner_forecast_ui(
             PlannerAtmosphereSelection::gfs(Some(&ConstantForecastAtmosphere), Some(&manifest)),
-            5_400_000,
-            crate::TimeDisplayMode::Utc,
-            chrono_tz::UTC,
-        )
-        .expect("forecast provenance");
+            now,
+            crate::TimeDisplayMode::Local,
+            chrono_tz::America::Los_Angeles,
+        );
 
+        let local_ready = forecast_panel_row(
+            &local_view,
+            crate::AltitudePlannerForecastRowId::ReadyForecast,
+        );
         assert_eq!(
-            view.summary,
-            "NOAA GFS-0P25 cycle 01/01 01:00Z (30m old); valid 01/01 01:00Z through 01/01 02:00Z."
+            local_ready.description,
+            "Forecast from 5.8h ago, extends 19h from now to 11:00 PDT"
+        );
+        assert!(!local_ready.description.contains("GFS"));
+        assert!(!local_ready.description.contains("cycle"));
+        assert_eq!(
+            forecast_panel_row(
+                &local_view,
+                crate::AltitudePlannerForecastRowId::LatestForecast,
+            )
+            .description,
+            "Same as ready",
+        );
+
+        let utc_view = planner_forecast_ui(
+            PlannerAtmosphereSelection::gfs(Some(&ConstantForecastAtmosphere), Some(&manifest)),
+            now,
+            crate::TimeDisplayMode::Utc,
+            chrono_tz::America::Los_Angeles,
+        );
+        assert_eq!(
+            forecast_panel_row(
+                &utc_view,
+                crate::AltitudePlannerForecastRowId::ReadyForecast,
+            )
+            .description,
+            "Forecast from 5.8h ago, extends 19h from now to 18:00Z"
         );
     }
 
@@ -7279,7 +7416,7 @@ mod tests {
             &test_aircraft_definitions(),
             inactive_plan,
             FlightPlanLiveData::default(),
-            PlannerAtmosphereSelection::no_wind(false),
+            PlannerAtmosphereSelection::no_wind(None),
         )
         .expect("inactive comparison");
         let active = altitude_comparison_panel(
@@ -7292,7 +7429,7 @@ mod tests {
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
                 ..FlightPlanLiveData::default()
             },
-            PlannerAtmosphereSelection::no_wind(false),
+            PlannerAtmosphereSelection::no_wind(None),
         )
         .expect("active comparison");
 
@@ -7731,7 +7868,7 @@ mod tests {
             crate::project_ui_state(&mutation),
             crate::FlightDataComputer::default(),
             FlightPlanLiveData::default(),
-            PlannerAtmosphereSelection::no_wind(false),
+            PlannerAtmosphereSelection::no_wind(None),
         )
         .expect("project flight plan ui state")
         .ui_state;

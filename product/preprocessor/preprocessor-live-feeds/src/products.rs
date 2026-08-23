@@ -25,7 +25,7 @@ use crate::{
     engine::{
         canonical_json_sha256, read_json_value, sha256_hex, write_json_pretty_file,
         BuiltLiveFeedState, DeltaPolicy, LiveFeedStatePayload, LiveFeedStatusTimestamps,
-        ProductBuilder, UpstreamEvent,
+        LiveFeedTemporalCoverage, ProductBuilder, UpstreamEvent,
     },
     load_tfr_notam_ids, metar_content_fingerprint,
     notam_store::{NotamPersistentStore, NotamStateReader},
@@ -97,6 +97,7 @@ pub fn json_live_feed_state(
         state_sha256: None,
         state_payload_kind: None,
         status_timestamps: Default::default(),
+        temporal_coverage: None,
         delta_policy,
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -185,6 +186,7 @@ impl ProductBuilder for NotamLiveFeedBuilder {
                 state_sha256: None,
                 state_payload_kind: None,
                 status_timestamps: Default::default(),
+                temporal_coverage: None,
                 delta_policy: DeltaPolicy::None,
                 precomputed_delta: None,
                 changed_count_if_no_delta: 0,
@@ -229,6 +231,7 @@ pub fn directory_live_feed_state(
         state_sha256: None,
         state_payload_kind: None,
         status_timestamps: Default::default(),
+        temporal_coverage: None,
         delta_policy: DeltaPolicy::None,
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -268,6 +271,7 @@ pub fn nav_kv_live_feed_state(input: NavKvLiveFeedStateInput) -> BuiltLiveFeedSt
         state_sha256: Some(state_sha256),
         state_payload_kind: Some("nav_kv".to_string()),
         status_timestamps: Default::default(),
+        temporal_coverage: None,
         delta_policy: DeltaPolicy::NavKv { pairs },
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -297,6 +301,7 @@ pub fn nav_kv_snapshot_live_feed_state(
         state_sha256: Some(state_sha256),
         state_payload_kind: Some("nav_kv".to_string()),
         status_timestamps: Default::default(),
+        temporal_coverage: None,
         delta_policy: DeltaPolicy::None,
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -974,7 +979,20 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
             forecast_hours: WINDS_ALOFT_FORECAST_HOURS.to_vec(),
             pressure_levels_mb: WINDS_ALOFT_PRESSURE_LEVELS_MB.to_vec(),
         })?;
-        Ok(nav_kv_snapshot_live_feed_state(
+        let temporal_coverage = LiveFeedTemporalCoverage {
+            reference_time_epoch_ms: built.manifest.cycle_time_epoch_ms,
+            valid_from_epoch_ms: *built
+                .manifest
+                .valid_times_epoch_ms
+                .first()
+                .context("winds-aloft manifest has no first valid time")?,
+            valid_through_epoch_ms: *built
+                .manifest
+                .valid_times_epoch_ms
+                .last()
+                .context("winds-aloft manifest has no last valid time")?,
+        };
+        let mut state = nav_kv_snapshot_live_feed_state(
             "winds-aloft",
             version,
             built.state_dir,
@@ -982,7 +1000,9 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
             serde_json::to_value(&built.manifest)?,
             built.state_sha256,
             built.tile_count,
-        ))
+        );
+        state.temporal_coverage = Some(temporal_coverage);
+        Ok(state)
     }
 }
 

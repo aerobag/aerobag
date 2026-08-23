@@ -61,6 +61,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.AltitudeComparisonPanelUiView
 import org.aerobag.app.domain.AltitudePlannerDepartureEditorUiView
+import org.aerobag.app.domain.AltitudePlannerForecastRowUiView
 import org.aerobag.app.domain.AltitudePlannerUiView
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavElementUiView
@@ -298,18 +299,10 @@ internal fun AltitudePlannerPage(
             }
 
             planner.forecast?.let { forecast ->
-                PlannerMessagePanel(
-                    messages = listOf(forecast.summary),
-                    foreground = uiTheme.controls.panelFg,
-                    background = uiTheme.controls.panelBg,
-                    actionLabel = forecast.action?.label,
-                    actionEnabled = forecast.action?.enabled ?: false,
-                    onAction = forecast.action?.actionUid?.let { actionUid ->
-                        { performAction(actionUid) }
-                    },
-                    onDisabledAction = forecast.action?.disabledReason?.let { reason ->
-                        { showDisabledActionToast(context, reason) }
-                    },
+                PlannerWindModelPanel(
+                    rows = forecast.rows,
+                    onAction = ::performAction,
+                    onDisabledAction = { reason -> showDisabledActionToast(context, reason) },
                 )
             }
             if (planner.unavailableReasons.isNotEmpty()) {
@@ -581,6 +574,70 @@ private val DepartureInputTextStyle = TextStyle(
     fontSize = 12.sp,
     fontWeight = FontWeight.Bold,
 )
+
+@Composable
+private fun PlannerWindModelPanel(
+    rows: List<AltitudePlannerForecastRowUiView>,
+    onAction: (String) -> Unit,
+    onDisabledAction: (String) -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
+            .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
+            .padding(ThumbSize * 0.12f),
+        verticalArrangement = Arrangement.spacedBy(ThumbGap),
+    ) {
+        rows.forEach { row ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ThumbSize * 0.66f + 8.dp)
+                    .testTag("parity:altitude-planner-wind-row:${row.id}"),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = row.label,
+                    modifier = Modifier.width(ThumbSize * 2.25f),
+                    color = uiTheme.controls.panelFg,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    maxLines = 2,
+                )
+                Text(
+                    text = row.description,
+                    modifier = Modifier.weight(1f),
+                    color = uiTheme.controls.panelFg,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                )
+                SelectedControlHighlightFrame(
+                    selected = row.selected,
+                    modifier = Modifier
+                        .width(ThumbSize * 3f + 8.dp)
+                        .height(ThumbSize * 0.66f + 8.dp),
+                ) {
+                    row.action?.let { action ->
+                        CompactSquareButton(
+                            label = action.label,
+                            modifier = Modifier.fillMaxSize(),
+                            enabled = action.enabled || row.selected,
+                            selected = row.selected,
+                            maxLines = 2,
+                            testTag = "parity:altitude-planner-wind-action:${row.id}",
+                            onDisabledClick = action.disabledReason?.let { reason ->
+                                { onDisabledAction(reason) }
+                            },
+                            onClick = { action.actionUid?.let(onAction) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun PlannerMessagePanel(

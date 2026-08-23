@@ -32,15 +32,20 @@ internal fun interface InitialLiveFeedPromotionGate {
 }
 
 internal suspend fun runLiveFeedStartup(
-    restoreInstalled: suspend () -> List<LiveFeedInstalledSummary>,
+    listInstalled: suspend () -> List<LiveFeedInstalledSummary>,
     awaitInitialPromotion: suspend (List<LiveFeedInstalledSummary>) -> Unit,
+    restoreInstalled: suspend (
+        List<LiveFeedInstalledSummary>,
+        suspend (LiveFeedInstalledSummary) -> Unit,
+    ) -> List<LiveFeedInstalledSummary>,
     promote: suspend (LiveFeedInstalledSummary) -> Boolean,
     onInitialPromotionComplete: (List<LiveFeedInstalledSummary>) -> Unit,
+    enablePolicyPumps: () -> Unit,
     startNetwork: suspend () -> Unit,
     reportFailure: (String, Throwable) -> Unit,
 ) {
     val installed = try {
-        restoreInstalled()
+        listInstalled()
     } catch (error: CancellationException) {
         throw error
     } catch (error: Throwable) {
@@ -56,7 +61,7 @@ internal suspend fun runLiveFeedStartup(
         reportFailure("initial promotion gate", error)
     }
 
-    for (summary in installed) {
+    suspend fun promoteRestored(summary: LiveFeedInstalledSummary) {
         try {
             check(promote(summary)) {
                 "failed to promote ${summary.product}/${summary.version}"
@@ -67,7 +72,16 @@ internal suspend fun runLiveFeedStartup(
             reportFailure("cached ${summary.product}/${summary.version} promotion", error)
         }
     }
-    onInitialPromotionComplete(installed)
+    val restored = try {
+        restoreInstalled(installed, ::promoteRestored)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        reportFailure("persisted cache restore", error)
+        emptyList()
+    }
+    onInitialPromotionComplete(restored)
+    enablePolicyPumps()
     startNetwork()
 }
 
@@ -98,6 +112,7 @@ internal class RetainedLiveFeedRuntime(
         },
     )
     private var started = false
+    private var policyPumpsEnabled = false
     private var closed = false
     private var generation = 0
     private var generationListener: ((Int) -> Unit)? = null
@@ -109,7 +124,7 @@ internal class RetainedLiveFeedRuntime(
             UiSessionUpdateGroup.FlightPlan,
         ),
     ) {
-        val shouldPump = synchronized(lock) { started && !closed }
+        val shouldPump = synchronized(lock) { started && policyPumpsEnabled && !closed }
         if (shouldPump) {
             scope.launch {
                 client.pumpUntilSettled(
@@ -134,30 +149,43 @@ internal class RetainedLiveFeedRuntime(
             try {
                 var promotionStartedAtMs = 0L
                 runLiveFeedStartup(
-                    restoreInstalled = {
-                        val restoreStartedAtMs = SystemClock.elapsedRealtime()
-                        val installed = withContext(Dispatchers.IO) {
-                            LiveFeedCacheStore.restore(appContext, cache)
-                            LiveFeedCacheStore.listInstalledSummaries(appContext)
-                        }
-                        startupPerfTrace?.mark(
-                            "live_feed_cache_restored",
-                            restoreStartedAtMs,
-                            "products=${installed.size}",
-                        )
-                        installed
-                    },
+                    listInstalled = ::listPersistedProducts,
                     awaitInitialPromotion = { installed ->
                         promotionStartedAtMs = SystemClock.elapsedRealtime()
                         initialPromotionGate.awaitPromotion(installed)
                     },
-                    promote = ::promote,
+                    restoreInstalled = { installed, onRestored ->
+                        val restoreStartedAtMs = SystemClock.elapsedRealtime()
+                        val restored = restoreInstalledProducts(installed, onRestored)
+                        startupPerfTrace?.mark(
+                            "live_feed_cache_restored",
+                            restoreStartedAtMs,
+                            "products=${restored.size}",
+                        )
+                        restored
+                    },
+                    promote = { summary ->
+                        if (summary.product != "winds-aloft") {
+                            promote(summary)
+                        } else {
+                            try {
+                                promote(summary)
+                            } finally {
+                                reportWindsAcquisitionPhase("idle")
+                            }
+                        }
+                    },
                     onInitialPromotionComplete = { installed ->
                         startupPerfTrace?.mark(
                             "live_feed_products_promoted",
                             promotionStartedAtMs,
                             "products=${installed.size}",
                         )
+                    },
+                    enablePolicyPumps = {
+                        synchronized(lock) {
+                            if (!closed) policyPumpsEnabled = true
+                        }
                     },
                     startNetwork = {
                         startupPerfTrace?.mark("live_feed_connection_started")
@@ -227,6 +255,46 @@ internal class RetainedLiveFeedRuntime(
         }
         if (promoted) publishNextGeneration(summary)
         return promoted
+    }
+
+    private suspend fun listPersistedProducts(): List<LiveFeedInstalledSummary> {
+        val installed = withContext(Dispatchers.IO) {
+            LiveFeedCacheStore.listInstalledSummaries(appContext)
+        }
+        if (installed.any { it.product == "winds-aloft" }) {
+            reportWindsAcquisitionPhase("installing")
+        }
+        return installed
+    }
+
+    private suspend fun restoreInstalledProducts(
+        installed: List<LiveFeedInstalledSummary>,
+        onRestored: suspend (LiveFeedInstalledSummary) -> Unit,
+    ): List<LiveFeedInstalledSummary> {
+        val restoringWinds = installed.any { it.product == "winds-aloft" }
+        return try {
+            val restored = LiveFeedCacheStore.restore(
+                context = appContext,
+                cache = cache,
+                installed = installed,
+                onRestored = onRestored,
+            )
+            if (restoringWinds && restored.none { it.product == "winds-aloft" }) {
+                reportWindsAcquisitionPhase("idle")
+            }
+            restored
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (restoringWinds) reportWindsAcquisitionPhase("idle")
+            throw error
+        }
+    }
+
+    private suspend fun reportWindsAcquisitionPhase(phase: String) {
+        runSessionCommand("reportRestoredWindsAcquisitionPhase") {
+            uiSession.reportLiveFeedAcquisitionPhase("winds-aloft", phase)
+        }
     }
 
     private suspend fun reportConnection(event: LiveFeedConnectionEvent) {

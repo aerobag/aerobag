@@ -41,7 +41,6 @@ pub struct AltitudePlannerUnavailableReason {
 pub enum AltitudePlannerControlId {
     Aircraft,
     AircraftProfile,
-    WindModel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +111,23 @@ pub struct AltitudeComparisonPanelUiView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AltitudePlannerForecastUiView {
-    pub summary: String,
+    pub rows: Vec<AltitudePlannerForecastRowUiView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AltitudePlannerForecastRowId {
+    NoWind,
+    ReadyForecast,
+    LatestForecast,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudePlannerForecastRowUiView {
+    pub id: AltitudePlannerForecastRowId,
+    pub label: String,
+    pub description: String,
+    pub selected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AltitudePlannerForecastActionUiView>,
 }
@@ -176,8 +191,6 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_label: String,
     pub wind_model_selected: bool,
     pub wind_model_available: bool,
-    pub wind_model_selectable: bool,
-    pub wind_model_action_uid: Option<String>,
     pub modeled_prediction_error: Option<String>,
     pub estimate_basis: FlightPlanEstimateBasis,
     pub departure_time_epoch_ms: Option<i64>,
@@ -218,8 +231,6 @@ impl Default for AltitudePlannerUiInput {
             wind_model_label: "NO WIND".to_string(),
             wind_model_selected: false,
             wind_model_available: true,
-            wind_model_selectable: false,
-            wind_model_action_uid: None,
             modeled_prediction_error: None,
             estimate_basis: FlightPlanEstimateBasis::Unavailable,
             departure_time_epoch_ms: None,
@@ -315,15 +326,14 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         }
         FlightPlanEstimateBasis::Unavailable => "Estimate basis:\nUnavailable".to_string(),
     };
-    let forecast = match input.wind_fallback.as_ref() {
+    let coverage_advisory = match input.wind_fallback.as_ref() {
         Some(AltitudePlannerWindFallback::ForecastCoverage {
             valid_from_epoch_ms,
             valid_through_epoch_ms,
             flight_start_epoch_ms,
             flight_end_epoch_ms,
-        }) => Some(AltitudePlannerForecastUiView {
-            summary: if flight_start_epoch_ms < valid_from_epoch_ms {
-                format!(
+        }) => Some(if flight_start_epoch_ms < valid_from_epoch_ms {
+            format!(
                     "Currently available forecast product valid from {}, flight starts at {}. Using NO-WIND model.",
                     format_planner_clock(
                         *valid_from_epoch_ms,
@@ -336,8 +346,8 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                         input.local_time_zone,
                     ),
                 )
-            } else {
-                format!(
+        } else {
+            format!(
                     "Currently available forecast product valid until {}, flight extends until {}. Using NO-WIND model.",
                     format_planner_clock(
                         *valid_through_epoch_ms,
@@ -350,10 +360,8 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                         input.local_time_zone,
                     ),
                 )
-            },
-            action: None,
         }),
-        _ => input.forecast,
+        _ => None,
     };
     let mut advisories = match input.wind_fallback.as_ref() {
         Some(AltitudePlannerWindFallback::Other { reason }) => {
@@ -363,6 +371,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         }
         _ => Vec::new(),
     };
+    advisories.extend(coverage_advisory);
     advisories.extend(input.aircraft_advisory);
     AltitudePlannerUiView {
         title: "Altitude Planner".to_string(),
@@ -394,18 +403,9 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     .then(|| "No alternate performance profiles are available.".to_string()),
                 options: input.aircraft_profile_options,
             },
-            AltitudePlannerControlUiView {
-                id: AltitudePlannerControlId::WindModel,
-                label: format!("WIND\n{}", input.wind_model_label),
-                enabled: input.wind_model_selectable,
-                action_uid: input.wind_model_action_uid,
-                disabled_reason: (!input.wind_model_selectable)
-                    .then(|| "No alternate wind models are available.".to_string()),
-                options: Vec::new(),
-            },
         ],
         departure,
-        forecast,
+        forecast: input.forecast,
         advisories,
         unavailable_reasons: reasons,
     }
@@ -1553,7 +1553,10 @@ mod tests {
         const HOUR_MS: i64 = 60 * MINUTE_MS;
         const DAY_MS: i64 = 24 * HOUR_MS;
 
-        assert_eq!(format_departure_offset(5 * HOUR_MS + 59 * MINUTE_MS), "5h 59m");
+        assert_eq!(
+            format_departure_offset(5 * HOUR_MS + 59 * MINUTE_MS),
+            "5h 59m"
+        );
         assert_eq!(format_departure_offset(6 * HOUR_MS + MINUTE_MS), "6h");
         assert_eq!(format_departure_offset(DAY_MS + 12 * HOUR_MS), "1d 12h");
         assert_eq!(format_departure_offset(7 * DAY_MS + 23 * HOUR_MS), "7d 23h");
@@ -1832,7 +1835,7 @@ mod tests {
     }
 
     #[test]
-    fn forecast_coverage_fallback_replaces_provenance_with_zulu_status() {
+    fn forecast_coverage_fallback_keeps_model_controls_and_adds_zulu_advisory() {
         let view = project_altitude_planner_ui(AltitudePlannerUiInput {
             aircraft_profile_label: Some("65% ECONOMY".to_string()),
             cruise_altitude_ft: Some(12_000),
@@ -1841,10 +1844,7 @@ mod tests {
             wind_model_label: "FORECAST".to_string(),
             wind_model_selected: true,
             time_display_mode: TimeDisplayMode::Utc,
-            forecast: Some(AltitudePlannerForecastUiView {
-                summary: "ordinary provenance".to_string(),
-                action: None,
-            }),
+            forecast: Some(AltitudePlannerForecastUiView { rows: Vec::new() }),
             wind_fallback: Some(AltitudePlannerWindFallback::ForecastCoverage {
                 valid_from_epoch_ms: 0,
                 valid_through_epoch_ms: 12 * 60 * 60 * 1_000,
@@ -1854,11 +1854,11 @@ mod tests {
             ..AltitudePlannerUiInput::default()
         });
 
+        assert!(view.forecast.expect("wind controls").rows.is_empty());
         assert_eq!(
-            view.forecast.expect("fallback status").summary,
-            "Currently available forecast product valid until 1200Z, flight extends until 1535Z. Using NO-WIND model."
+            view.advisories,
+            ["Currently available forecast product valid until 1200Z, flight extends until 1535Z. Using NO-WIND model."]
         );
-        assert!(view.advisories.is_empty());
     }
 
     #[test]

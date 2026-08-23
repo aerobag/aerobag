@@ -1285,7 +1285,15 @@ data class WireAltitudeComparisonPanelUiView(
 
 @Serializable
 data class WireAltitudePlannerForecastUiView(
-    val summary: String,
+    val rows: List<WireAltitudePlannerForecastRowUiView>,
+)
+
+@Serializable
+data class WireAltitudePlannerForecastRowUiView(
+    val id: String,
+    val label: String,
+    val description: String,
+    val selected: Boolean,
     val action: WireAltitudePlannerForecastActionUiView? = null,
 )
 

@@ -4240,13 +4240,20 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
     ),
     forecast = forecast?.let { forecast ->
         AltitudePlannerForecastUiView(
-            summary = forecast.summary,
-            action = forecast.action?.let { action ->
-                AltitudePlannerForecastActionUiView(
-                    label = action.label,
-                    enabled = action.enabled,
-                    actionUid = action.action_uid,
-                    disabledReason = action.disabled_reason,
+            rows = forecast.rows.map { row ->
+                AltitudePlannerForecastRowUiView(
+                    id = row.id,
+                    label = row.label,
+                    description = row.description,
+                    selected = row.selected,
+                    action = row.action?.let { action ->
+                        AltitudePlannerForecastActionUiView(
+                            label = action.label,
+                            enabled = action.enabled,
+                            actionUid = action.action_uid,
+                            disabledReason = action.disabled_reason,
+                        )
+                    },
                 )
             },
         )
@@ -4316,13 +4323,20 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
     ),
     forecast = forecast?.let { forecast ->
         WireAltitudePlannerForecastUiView(
-            summary = forecast.summary,
-            action = forecast.action?.let { action ->
-                WireAltitudePlannerForecastActionUiView(
-                    label = action.label,
-                    enabled = action.enabled,
-                    action_uid = action.actionUid,
-                    disabled_reason = action.disabledReason,
+            rows = forecast.rows.map { row ->
+                WireAltitudePlannerForecastRowUiView(
+                    id = row.id,
+                    label = row.label,
+                    description = row.description,
+                    selected = row.selected,
+                    action = row.action?.let { action ->
+                        WireAltitudePlannerForecastActionUiView(
+                            label = action.label,
+                            enabled = action.enabled,
+                            action_uid = action.actionUid,
+                            disabled_reason = action.disabledReason,
+                        )
+                    },
                 )
             },
         )

@@ -4372,7 +4372,11 @@ fn planner_atmosphere_for_selection(
     match selection {
         AltitudePlannerWindSelection::NoWind => {
             crate::had_ops::PlannerAtmosphereSelection::no_wind(
-                weather.runtime().forecast_atmosphere.is_some(),
+                weather
+                    .runtime()
+                    .forecast_atmosphere
+                    .as_ref()
+                    .map(crate::InstalledForecastAtmosphere::manifest),
             )
         }
         AltitudePlannerWindSelection::Gfs => {
@@ -6756,6 +6760,21 @@ pub fn install_live_feed_installed_state_in_session(
     )
 }
 
+/// Installs state that already crossed the live-feed cache's validation boundary.
+///
+/// Cache ingestion verifies package hashes and NavKv canonical state. Avoid repeating
+/// the expensive canonical traversal when the same validated value moves into a session.
+pub fn install_validated_live_feed_installed_state_in_session(
+    handle: u32,
+    installed: &crate::LiveFeedInstalledState,
+) -> AppResult<HadOperationOutcome> {
+    install_live_feed_installed_state_with_preparer(
+        handle,
+        installed,
+        prepare_validated_durable_live_feed_install,
+    )
+}
+
 fn install_live_feed_installed_state_with_preparer<F>(
     handle: u32,
     installed: &crate::LiveFeedInstalledState,
@@ -6857,6 +6876,19 @@ enum PreparedDurableLiveFeedPayload {
 fn prepare_durable_live_feed_install(
     installed: &crate::LiveFeedInstalledState,
 ) -> AppResult<PreparedDurableLiveFeedInstall> {
+    prepare_durable_live_feed_install_inner(installed, true)
+}
+
+fn prepare_validated_durable_live_feed_install(
+    installed: &crate::LiveFeedInstalledState,
+) -> AppResult<PreparedDurableLiveFeedInstall> {
+    prepare_durable_live_feed_install_inner(installed, false)
+}
+
+fn prepare_durable_live_feed_install_inner(
+    installed: &crate::LiveFeedInstalledState,
+    verify_nav_kv_state: bool,
+) -> AppResult<PreparedDurableLiveFeedInstall> {
     match (&*installed.product, &installed.payload) {
         (
             product @ ("metars" | "pireps" | "tafs" | "tfrs"),
@@ -6893,13 +6925,17 @@ fn prepare_durable_live_feed_install(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed obstacle live feed: {error}"),
                 })?;
-            let store = nav_kv_store_from_installed_live_feed(
-                "obstacles",
-                &installed.version,
-                &installed.state_sha256,
-                root,
-                pages,
-            )?;
+            let store = if verify_nav_kv_state {
+                nav_kv_store_from_installed_live_feed(
+                    "obstacles",
+                    &installed.version,
+                    &installed.state_sha256,
+                    root,
+                    pages,
+                )?
+            } else {
+                nav_kv_store_from_validated_installed_live_feed("obstacles", root, pages)?
+            };
             Ok(PreparedDurableLiveFeedInstall {
                 state_manifest: Some(manifest.clone()),
                 payload: PreparedDurableLiveFeedPayload::Obstacles { manifest, store },
@@ -6958,13 +6994,17 @@ fn prepare_durable_live_feed_install(
                     ),
                 });
             }
-            let store = nav_kv_store_from_installed_live_feed(
-                "winds-aloft",
-                &installed.version,
-                &installed.state_sha256,
-                root,
-                pages,
-            )?;
+            let store = if verify_nav_kv_state {
+                nav_kv_store_from_installed_live_feed(
+                    "winds-aloft",
+                    &installed.version,
+                    &installed.state_sha256,
+                    root,
+                    pages,
+                )?
+            } else {
+                nav_kv_store_from_validated_installed_live_feed("winds-aloft", root, pages)?
+            };
             let atmosphere =
                 crate::InstalledForecastAtmosphere::new(manifest, store).map_err(|message| {
                     AppError {
@@ -8224,6 +8264,32 @@ fn nav_kv_store_from_installed_live_feed(
             kind: AppErrorKind::InvalidManifest,
             message: format!(
                 "installed {product} HAD {version} hash mismatch: expected {state_sha256}, got {actual}"
+            ),
+        });
+    }
+    let mut store = NavKvStore::new(root);
+    for (page_index, page) in pages.iter().enumerate() {
+        store.insert_page(page_index as u32, page.clone());
+    }
+    Ok(store)
+}
+
+fn nav_kv_store_from_validated_installed_live_feed(
+    product: &str,
+    root: &[u8],
+    pages: &[Vec<u8>],
+) -> AppResult<NavKvStore> {
+    let root = NavKvRoot::parse(root).map_err(|message| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("failed to parse validated {product} HAD root: {message}"),
+    })?;
+    if root.page_count() as usize != pages.len() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "validated {product} HAD root page_count {} did not match payload page_count {}",
+                root.page_count(),
+                pages.len()
             ),
         });
     }
@@ -12845,6 +12911,10 @@ fn project_session_app_ui_state(
             now_epoch_ms: session.coordinator.wall_clock_epoch_ms,
             nav_data_generation: session.nav_data.generation(),
             weather_revision,
+            wind_forecast_selected: matches!(
+                session.coordinator.altitude_planner_wind_selection,
+                AltitudePlannerWindSelection::Gfs
+            ),
             aircraft_library_digest,
             local_time_zone,
             time_display_mode: session.coordinator.time_display_mode,
@@ -12920,11 +12990,6 @@ fn enrich_altitude_planner_winds_acquisition(
     session: &UiSession,
     active_plan: &mut FlightPlanUiState,
 ) {
-    if !uses_durable_live_feed_states(session) {
-        return;
-    }
-    let live_feeds = session.weather.live_feeds();
-    let current_version = live_feeds.current_product_version("winds-aloft");
     let installed_manifest = session
         .weather
         .runtime()
@@ -12932,81 +12997,107 @@ fn enrich_altitude_planner_winds_acquisition(
         .as_ref()
         .map(crate::InstalledForecastAtmosphere::manifest);
     let installed_version = installed_manifest.map(|manifest| manifest.version_label.as_str());
-    if current_version.is_none() && installed_manifest.is_none() {
-        return;
-    }
 
     let local_time_zone = session_local_time_zone(session).unwrap_or(chrono_tz::UTC);
     let now_epoch_ms = session.coordinator.wall_clock_epoch_ms;
     let time_display_mode = session.coordinator.time_display_mode;
-    let projected_summary = active_plan
-        .altitude_planner
-        .forecast
-        .take()
-        .map(|forecast| forecast.summary);
-    let installed_summary = projected_summary.or_else(|| {
-        installed_manifest.and_then(|manifest| {
-            crate::had_ops::planner_forecast_summary(
-                manifest,
-                now_epoch_ms,
-                time_display_mode,
-                local_time_zone,
-            )
-            .map(|summary| format!("Downloaded {summary}"))
-        })
-    });
-
-    let update_available = current_version != installed_version;
-    let available_manifest = live_feeds
-        .current_product_catalog_state_manifest("winds-aloft")
-        .and_then(|value| {
-            serde_json::from_value::<product_contracts::AtmosphereManifest>(value.clone()).ok()
-        });
-    let available_summary = available_manifest.as_ref().and_then(|manifest| {
-        crate::had_ops::planner_forecast_summary(
+    let installed_description = installed_manifest.and_then(|manifest| {
+        crate::had_ops::planner_forecast_description(
             manifest,
             now_epoch_ms,
             time_display_mode,
             local_time_zone,
         )
     });
+    let forecast_selected =
+        session.coordinator.altitude_planner_wind_selection == AltitudePlannerWindSelection::Gfs;
+
+    if !uses_durable_live_feed_states(session) {
+        let ready_available = installed_description.is_some();
+        let latest_description = if installed_description.is_some() {
+            "Same as ready".to_string()
+        } else {
+            "None".to_string()
+        };
+        active_plan.altitude_planner.forecast = Some(crate::had_ops::planner_wind_model_ui(
+            forecast_selected,
+            installed_description.unwrap_or_else(|| "None".to_string()),
+            ready_available,
+            latest_description,
+            None,
+        ));
+        return;
+    }
+
+    let live_feeds = session.weather.live_feeds();
+    let current_version = live_feeds.current_product_version("winds-aloft");
+
+    let update_available = current_version.is_some() && current_version != installed_version;
+    let available_manifest = live_feeds
+        .current_product_catalog_state_manifest("winds-aloft")
+        .and_then(|value| {
+            serde_json::from_value::<product_contracts::AtmosphereManifest>(value.clone()).ok()
+        });
+    let temporal_coverage = live_feeds.current_product_temporal_coverage("winds-aloft");
+    let available_description = update_available
+        .then(|| {
+            available_manifest
+                .as_ref()
+                .and_then(|manifest| {
+                    crate::had_ops::planner_forecast_description(
+                        manifest,
+                        now_epoch_ms,
+                        time_display_mode,
+                        local_time_zone,
+                    )
+                })
+                .or_else(|| {
+                    temporal_coverage.as_ref().and_then(|coverage| {
+                        crate::had_ops::planner_forecast_temporal_description(
+                            coverage.reference_time_epoch_ms,
+                            coverage.valid_through_epoch_ms,
+                            now_epoch_ms,
+                            time_display_mode,
+                            local_time_zone,
+                        )
+                    })
+                })
+        })
+        .flatten();
     let download_size = live_feeds
         .current_product_install_bytes("winds-aloft")
         .map(format_winds_download_size);
-
-    let summary = if update_available {
-        let current = available_summary
-            .map(|summary| format!("Available {summary}"))
-            .unwrap_or_else(|| "Current forecast metadata is loading.".to_string());
-        match installed_summary {
-            Some(installed) => format!("{installed}\n{current}"),
-            None => format!("No winds forecast is downloaded.\n{current}"),
-        }
-    } else {
-        installed_summary
-            .or(available_summary)
-            .unwrap_or_else(|| "The current winds forecast is downloaded.".to_string())
-    };
-
-    let action = update_available.then(|| {
-        let phase = session.coordinator.winds_aloft_acquisition_phase;
-        let pending = phase.is_active();
-        let verb = if installed_version.is_some() {
-            "UPDATE WINDS"
+    let phase = session.coordinator.winds_aloft_acquisition_phase;
+    let ready_available = installed_description.is_some();
+    let ready_description = installed_description.unwrap_or_else(|| {
+        if phase == WindsAloftAcquisitionPhase::Installing {
+            "Installing downloaded forecast…".to_string()
         } else {
-            "DOWNLOAD WINDS"
-        };
+            "None".to_string()
+        }
+    });
+    let available_metadata_loaded = available_description.is_some();
+
+    let latest_description = if current_version.is_some() && current_version == installed_version {
+        "Same as ready".to_string()
+    } else if current_version.is_some() && available_description.is_none() {
+        "Metadata loading…".to_string()
+    } else {
+        available_description.unwrap_or_else(|| "None".to_string())
+    };
+    let latest_action = (update_available && available_metadata_loaded).then(|| {
+        let pending = phase.is_active();
         crate::AltitudePlannerForecastActionUiView {
             label: if phase == WindsAloftAcquisitionPhase::Requested {
-                "DOWNLOAD REQUESTED".to_string()
+                "FETCH REQUESTED".to_string()
             } else if phase == WindsAloftAcquisitionPhase::Downloading {
-                "DOWNLOADING WINDS".to_string()
+                "FETCHING MODEL".to_string()
             } else if phase == WindsAloftAcquisitionPhase::Installing {
-                "INSTALLING WINDS".to_string()
+                "INSTALLING MODEL".to_string()
             } else if let Some(size) = download_size {
-                format!("{verb} · {size}")
+                format!("FETCH MODEL · {size}")
             } else {
-                verb.to_string()
+                "FETCH MODEL".to_string()
             },
             enabled: !pending,
             action_uid: (!pending)
@@ -13027,26 +13118,13 @@ fn enrich_altitude_planner_winds_acquisition(
             }),
         }
     });
-    if installed_manifest.is_none() {
-        let phase = session.coordinator.winds_aloft_acquisition_phase;
-        if let Some(wind_control) = active_plan
-            .altitude_planner
-            .controls
-            .iter_mut()
-            .find(|control| control.id == crate::AltitudePlannerControlId::WindModel)
-        {
-            wind_control.disabled_reason = Some(if phase.is_active() {
-                "The wind forecast is being acquired; Forecast will become available after installation."
-                    .to_string()
-            } else if action.is_some() {
-                "Download the available forecast below before selecting Forecast.".to_string()
-            } else {
-                "No downloaded wind forecast is available.".to_string()
-            });
-        }
-    }
-    active_plan.altitude_planner.forecast =
-        Some(crate::AltitudePlannerForecastUiView { summary, action });
+    active_plan.altitude_planner.forecast = Some(crate::had_ops::planner_wind_model_ui(
+        forecast_selected,
+        ready_description,
+        ready_available,
+        latest_description,
+        latest_action,
+    ));
 }
 
 fn format_winds_download_size(bytes: u64) -> String {
@@ -14604,6 +14682,20 @@ mod tests {
         NEXT_TEST_NAV_KV_STORE_ID.fetch_add(1, Ordering::Relaxed)
     }
 
+    fn planner_wind_row(
+        plan: &FlightPlanUiState,
+        id: crate::AltitudePlannerForecastRowId,
+    ) -> &crate::AltitudePlannerForecastRowUiView {
+        plan.altitude_planner
+            .forecast
+            .as_ref()
+            .expect("wind-model panel")
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .expect("wind-model row")
+    }
+
     fn install_prepared_live_feed_for_test(
         session: &mut UiSession,
         payload: crate::PreparedLiveFeedPayload,
@@ -14653,6 +14745,7 @@ mod tests {
             product: product.to_string(),
             version: version.to_string(),
             previous: None,
+            temporal_coverage: None,
             state: product_contracts::live_feeds::v3::PayloadRef {
                 kind: Some(kind.to_string()),
                 url: state_url.to_string(),
@@ -22080,6 +22173,20 @@ mod tests {
             format!("live_nav_kv/winds-aloft/{version}/page/0000")
         );
         let snapshot = get_session_snapshot(init.handle).expect("snapshot with atmosphere root");
+        let plan = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("active plan");
+        let ready = planner_wind_row(plan, crate::AltitudePlannerForecastRowId::ReadyForecast);
+        assert!(ready.description.starts_with("Forecast from "));
+        assert!(ready.action.as_ref().is_some_and(|action| action.enabled));
+        let latest = planner_wind_row(plan, crate::AltitudePlannerForecastRowId::LatestForecast);
+        assert_eq!(latest.description, "Same as ready");
+        assert!(
+            latest.action.is_none(),
+            "web must not expose a package fetch"
+        );
         let winds_status = snapshot
             .data_status_page_state
             .rows
@@ -22148,15 +22255,16 @@ mod tests {
             .expect("No Wind update must replace the active plan");
         let active_plan: Option<FlightPlanUiState> =
             serde_json::from_value(active_plan_assignment.value.clone()).expect("active plan");
-        assert_eq!(
-            active_plan
-                .expect("active plan")
-                .altitude_planner
-                .controls
-                .iter()
-                .find(|control| control.id == crate::AltitudePlannerControlId::WindModel)
-                .map(|control| control.label.as_str()),
-            Some("WIND\nNO WIND")
+        let active_plan = active_plan.expect("active plan");
+        assert!(
+            planner_wind_row(&active_plan, crate::AltitudePlannerForecastRowId::NoWind,).selected
+        );
+        assert!(
+            !planner_wind_row(
+                &active_plan,
+                crate::AltitudePlannerForecastRowId::ReadyForecast,
+            )
+            .selected
         );
         outcome = perform_altitude_planner_action_in_session(
             init.handle,
@@ -22469,6 +22577,27 @@ mod tests {
         configure_live_feed_source_in_session(init.handle, "https://feeds.example.test")
             .expect("configure live-feed source");
 
+        let empty = get_session_snapshot(init.handle).expect("snapshot before feed metadata");
+        let empty_plan = empty
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("empty active plan");
+        assert_eq!(
+            planner_wind_row(
+                empty_plan,
+                crate::AltitudePlannerForecastRowId::ReadyForecast,
+            )
+            .description,
+            "None",
+        );
+        let empty_latest = planner_wind_row(
+            empty_plan,
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        );
+        assert_eq!(empty_latest.description, "None");
+        assert!(empty_latest.action.is_none());
+
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
@@ -22493,6 +22622,18 @@ mod tests {
                 &state_sha256,
             ))
             .expect("version manifest fixture");
+        version_manifest.temporal_coverage =
+            Some(product_contracts::live_feeds::v3::TemporalCoverage {
+                reference_time_epoch_ms: manifest.cycle_time_epoch_ms,
+                valid_from_epoch_ms: *manifest
+                    .valid_times_epoch_ms
+                    .first()
+                    .expect("first forecast valid time"),
+                valid_through_epoch_ms: *manifest
+                    .valid_times_epoch_ms
+                    .last()
+                    .expect("last forecast valid time"),
+            });
         version_manifest.install_state = Some(product_contracts::live_feeds::v3::PayloadRef {
             kind: Some("nav_kv_package".to_string()),
             url: format!("packages/winds-aloft/{version}.zip"),
@@ -22506,6 +22647,33 @@ mod tests {
             &serde_json::to_vec(&version_manifest).expect("version manifest json"),
         )
         .expect("version manifest");
+
+        let version_metadata = get_session_snapshot(init.handle).expect("version metadata");
+        let version_metadata_plan = version_metadata
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("version-metadata active plan");
+        let version_metadata_latest = planner_wind_row(
+            version_metadata_plan,
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        );
+        assert!(version_metadata_latest
+            .description
+            .starts_with("Forecast from "));
+        let version_metadata_action = version_metadata_latest
+            .action
+            .as_ref()
+            .expect("version metadata should make the informed fetch action available");
+        assert!(version_metadata_action.enabled);
+        assert!(version_metadata_action.label.contains("12.2 MiB"));
+        assert!(
+            !live_feed_cache_acquisition_directive_in_session(init.handle)
+                .expect("cache directive before explicit action")
+                .winds_aloft_download_requested,
+            "descriptive version metadata must not request the package"
+        );
+
         ingest_resource_in_session(
             init.handle,
             &format!("live_feeds/state/winds-aloft/{version}"),
@@ -22514,35 +22682,37 @@ mod tests {
         .expect("forecast metadata");
 
         let before = get_session_snapshot(init.handle).expect("snapshot before download");
-        let forecast = before
+        let active_plan = before
             .app_ui_state
             .active_plan
             .as_ref()
-            .and_then(|plan| plan.altitude_planner.forecast.as_ref())
-            .expect("on-demand forecast panel");
-        assert!(forecast.summary.contains("No winds forecast is downloaded"));
-        let wind_control = before
-            .app_ui_state
-            .active_plan
-            .as_ref()
-            .expect("active plan")
-            .altitude_planner
-            .controls
-            .iter()
-            .find(|control| control.id == crate::AltitudePlannerControlId::WindModel)
-            .expect("wind control");
-        assert!(!wind_control.enabled);
-        assert!(wind_control
-            .disabled_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("Download the available forecast")));
-        let action = forecast.action.as_ref().expect("download action");
+            .expect("active plan");
+        let ready = planner_wind_row(
+            active_plan,
+            crate::AltitudePlannerForecastRowId::ReadyForecast,
+        );
+        assert_eq!(ready.description, "None");
+        assert!(!ready.selected);
+        assert!(!ready.action.as_ref().expect("Use model action").enabled);
+        let latest = planner_wind_row(
+            active_plan,
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        );
+        assert!(latest.description.starts_with("Forecast from "));
+        let action = latest.action.as_ref().expect("fetch action");
         assert!(action.enabled);
         assert_eq!(
             action.action_uid.as_deref(),
             Some(crate::had_ops::DOWNLOAD_CURRENT_WINDS_ACTION_UID)
         );
+        assert!(action.label.contains("FETCH MODEL"));
         assert!(action.label.contains("12.2 MiB"));
+        assert!(ready
+            .action
+            .as_ref()
+            .and_then(|action| action.disabled_reason.as_deref())
+            .as_deref()
+            .is_some_and(|reason| reason.contains("No forecast is ready")));
         let winds_status = before
             .data_status_page_state
             .rows
@@ -22589,15 +22759,20 @@ mod tests {
                 .map(|row| row.value.as_str()),
             Some("DOWNLOADING")
         );
+        let downloading_plan = downloading
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("downloading active plan");
         assert_eq!(
-            downloading
-                .app_ui_state
-                .active_plan
-                .as_ref()
-                .and_then(|plan| plan.altitude_planner.forecast.as_ref())
-                .and_then(|forecast| forecast.action.as_ref())
-                .map(|action| action.label.as_str()),
-            Some("DOWNLOADING WINDS")
+            planner_wind_row(
+                downloading_plan,
+                crate::AltitudePlannerForecastRowId::LatestForecast,
+            )
+            .action
+            .as_ref()
+            .map(|action| action.label.as_str()),
+            Some("FETCHING MODEL"),
         );
 
         report_live_feed_acquisition_phase_in_session(
@@ -22616,15 +22791,28 @@ mod tests {
                 .map(|row| row.value.as_str()),
             Some("INSTALLING")
         );
+        let installing_plan = installing
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("installing active plan");
         assert_eq!(
-            installing
-                .app_ui_state
-                .active_plan
-                .as_ref()
-                .and_then(|plan| plan.altitude_planner.forecast.as_ref())
-                .and_then(|forecast| forecast.action.as_ref())
-                .map(|action| action.label.as_str()),
-            Some("INSTALLING WINDS")
+            planner_wind_row(
+                installing_plan,
+                crate::AltitudePlannerForecastRowId::ReadyForecast,
+            )
+            .description,
+            "Installing downloaded forecast…",
+        );
+        assert_eq!(
+            planner_wind_row(
+                installing_plan,
+                crate::AltitudePlannerForecastRowId::LatestForecast,
+            )
+            .action
+            .as_ref()
+            .map(|action| action.label.as_str()),
+            Some("INSTALLING MODEL"),
         );
 
         install_live_feed_installed_state_in_session(
@@ -22648,14 +22836,23 @@ mod tests {
                 .winds_aloft_download_requested
         );
         let after = get_session_snapshot(init.handle).expect("snapshot after download");
-        let forecast = after
+        let installed_plan = after
             .app_ui_state
             .active_plan
             .as_ref()
-            .and_then(|plan| plan.altitude_planner.forecast.as_ref())
-            .expect("installed forecast panel");
-        assert!(forecast.summary.contains("Downloaded NOAA"));
-        assert!(forecast.action.is_none());
+            .expect("installed active plan");
+        assert!(planner_wind_row(
+            installed_plan,
+            crate::AltitudePlannerForecastRowId::ReadyForecast,
+        )
+        .description
+        .starts_with("Forecast from "));
+        let installed_latest = planner_wind_row(
+            installed_plan,
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        );
+        assert_eq!(installed_latest.description, "Same as ready");
+        assert!(installed_latest.action.is_none());
     }
 
     #[test]
@@ -22716,18 +22913,23 @@ mod tests {
         drop(session);
         drop(sessions);
         let snapshot = get_session_snapshot(init.handle).expect("stale forecast snapshot");
-        let forecast = snapshot
+        let active_plan = snapshot
             .app_ui_state
             .active_plan
             .as_ref()
-            .and_then(|plan| plan.altitude_planner.forecast.as_ref())
-            .expect("update panel");
-        assert!(forecast.summary.contains("Downloaded NOAA"));
-        assert!(forecast.summary.contains("metadata is loading"));
-        assert!(forecast
-            .action
-            .as_ref()
-            .is_some_and(|action| action.enabled));
+            .expect("update active plan");
+        assert!(planner_wind_row(
+            active_plan,
+            crate::AltitudePlannerForecastRowId::ReadyForecast,
+        )
+        .description
+        .starts_with("Forecast from "));
+        let latest = planner_wind_row(
+            active_plan,
+            crate::AltitudePlannerForecastRowId::LatestForecast,
+        );
+        assert_eq!(latest.description, "Metadata loading…");
+        assert!(latest.action.is_none());
     }
 
     #[test]

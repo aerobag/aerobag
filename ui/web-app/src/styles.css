@@ -1438,12 +1438,7 @@ button {
 }
 
 .mapSelectionItem.isSelected {
-  border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
   background: var(--theme-button-checked);
-  box-shadow:
-    0 0 0 2px white,
-    0 0 0 4px var(--theme-button-checked),
-    var(--shadow);
 }
 
 .mapSelectionItemLabel {
@@ -3197,19 +3192,40 @@ button {
 }
 
 .altitudePlannerProvenance {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
   gap: calc(var(--thumb) * 0.2);
   background: color-mix(in srgb, var(--theme-panel-bg) 82%, white);
-  white-space: pre-line;
+}
+
+.altitudePlannerWindModelRow {
+  display: grid;
+  grid-template-columns: calc(var(--thumb) * 2.25) minmax(0, 1fr) calc(var(--thumb) * 3);
+  align-items: center;
+  min-height: calc(var(--thumb) * 0.72);
+  gap: var(--thumb-gap);
+}
+
+.altitudePlannerWindModelRow > strong,
+.altitudePlannerWindModelRow > span {
+  line-height: 1.2;
+}
+
+.altitudePlannerWindModelActionSlot {
+  width: calc(var(--thumb) * 3);
 }
 
 .altitudePlannerForecastAction {
-  flex: 0 0 auto;
-  min-width: calc(var(--thumb) * 2.5);
-  min-height: calc(var(--thumb) * 0.72);
+  width: 100%;
+  min-height: calc(var(--thumb) * 0.66);
   font-size: calc(var(--thumb) * 0.2);
+}
+
+.selectedControlHighlight {
+  border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
+  box-shadow:
+    0 0 0 2px white,
+    0 0 0 4px var(--theme-button-checked),
+    var(--shadow);
 }
 
 .altitudePlannerAdvisories {

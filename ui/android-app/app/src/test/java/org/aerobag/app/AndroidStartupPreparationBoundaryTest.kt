@@ -38,6 +38,22 @@ class AndroidStartupPreparationBoundaryTest {
         assertTrue(retainedSource.contains("generation != startupGeneration"))
     }
 
+    @Test
+    fun expensiveChartProjectionIsDeferredAndNeverRunsOnTheUiThread() {
+        val projection = sourceBetween(
+            activitySource,
+            "LaunchedEffect(\n        uiSession,\n        page,\n        sessionPlanUiState.planId,",
+            "    LaunchedEffect(uiSession) {",
+        )
+        assertTrue(projection.contains("if (page != AppPage.Charts) return@LaunchedEffect"))
+        assertTrue(
+            projection.contains(
+                "derivedChartPageState = withContext(Dispatchers.IO) {\n" +
+                    "            uiSession.deriveChartPageState()",
+            ),
+        )
+    }
+
     private fun sourceBetween(source: String, start: String, end: String): String {
         val startIndex = source.indexOf(start)
         check(startIndex >= 0) { "could not find $start" }

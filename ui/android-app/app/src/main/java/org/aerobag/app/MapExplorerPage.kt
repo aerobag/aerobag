@@ -5246,18 +5246,9 @@ internal fun MapSelectionItemButton(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val containerColor = if (selected) uiTheme.controls.buttonChecked else uiTheme.controls.buttonUnchecked
-    val outerShape = RoundedCornerShape(ThumbRadius + 4.dp)
-    val gapShape = RoundedCornerShape(ThumbRadius + 2.dp)
-    Box(
-        modifier = Modifier
-            .size(ThumbSize + 8.dp)
-            .then(
-                if (selected) Modifier.border(2.dp, uiTheme.controls.buttonChecked, outerShape)
-                else Modifier,
-            )
-            .padding(2.dp)
-            .then(if (selected) Modifier.border(2.dp, Color.White, gapShape) else Modifier)
-            .padding(2.dp),
+    SelectedControlHighlightFrame(
+        selected = selected,
+        modifier = Modifier.size(ThumbSize + 8.dp),
     ) {
         Surface(
             modifier = Modifier

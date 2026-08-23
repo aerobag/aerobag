@@ -73,10 +73,16 @@ describe("flight plan layout CSS", () => {
     expect(plannerPage).not.toContain("altitudePlannerControlOptions");
     expect(plannerPage).not.toContain('type="datetime-local"');
     expect(plannerPage).not.toContain("new Date(");
-    expect(plannerPage).toContain("planner.forecast.summary");
-    expect(plannerPage).toContain("planner.forecast.action.label");
-    expect(plannerPage).toContain('data-testid="altitude-planner-forecast-action"');
+    expect(plannerPage).toContain("planner.forecast.rows.map");
+    expect(plannerPage).toContain("row.selected");
+    expect(plannerPage).toContain("altitude-planner-wind-action-${row.id}");
     expect(plannerPage).toContain("performAction(action.action_uid)");
+    expect(plannerPage).toContain('" isActive selectedControlHighlight"');
+    const selectedWindActionStyles = [...styles.matchAll(/\.selectedControlHighlight\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(selectedWindActionStyles).toContain("0 0 0 2px white");
+    expect(selectedWindActionStyles).toContain("0 0 0 4px var(--theme-button-checked)");
     expect(plannerPage).toContain("panel?.advisories");
     expect(plannerPage).not.toMatch(/onPerformAltitudePlannerAction\(actionUid\)[\s\S]*?\.then\(reload\)/);
     expect(plannerPage).toContain("panel.columns.map");

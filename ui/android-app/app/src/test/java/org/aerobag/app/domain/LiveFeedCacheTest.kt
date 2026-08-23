@@ -11,6 +11,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -214,19 +217,19 @@ class LiveFeedCacheTest {
     }
 
     @Test
-    fun persistedRestoreRunsOnlyOnceForRetainedCache() {
+    fun persistedRestoreRunsOnlyOnceForRetainedCache() = runBlocking {
         val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = liveFeedBridge())
         val restoreCount = AtomicInteger(0)
 
-        cache.restorePersistedOnce { restoreCount.incrementAndGet() }
-        cache.restorePersistedOnce { restoreCount.incrementAndGet() }
+        assertTrue(cache.restorePersistedOnce { restoreCount.incrementAndGet() })
+        assertFalse(cache.restorePersistedOnce { restoreCount.incrementAndGet() })
 
         assertEquals(1, restoreCount.get())
         cache.close()
     }
 
     @Test
-    fun failedPersistedRestoreCanBeRetried() {
+    fun failedPersistedRestoreCanBeRetried() = runBlocking {
         val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = liveFeedBridge())
         val restoreCount = AtomicInteger(0)
 
@@ -240,6 +243,44 @@ class LiveFeedCacheTest {
 
         assertEquals(2, restoreCount.get())
         cache.close()
+    }
+
+    @Test
+    fun persistedWindIsReadyBeforeOtherProductsRestoreInParallel() = runBlocking {
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val bulkStarts = AtomicInteger(0)
+        val twoBulkRestoresStarted = CompletableDeferred<Unit>()
+        val releaseBulkRestores = CompletableDeferred<Unit>()
+        val wind = summary("winds-aloft")
+        val metars = summary("metars")
+        val nexrad = summary("nexrad")
+
+        val restore = async {
+            restorePersistedProductsInPriorityOrder(
+                installed = listOf(metars, nexrad, wind),
+                restoreOne = { item ->
+                    events += "restore:${item.product}"
+                    if (item.product != "winds-aloft") {
+                        if (bulkStarts.incrementAndGet() == 2) {
+                            twoBulkRestoresStarted.complete(Unit)
+                        }
+                        releaseBulkRestores.await()
+                    }
+                    true
+                },
+                onRestored = { item -> events += "promote:${item.product}" },
+            )
+        }
+
+        twoBulkRestoresStarted.await()
+        assertEquals(
+            listOf("restore:winds-aloft", "promote:winds-aloft"),
+            events.take(2),
+        )
+        releaseBulkRestores.complete(Unit)
+        val restored = restore.await()
+        assertEquals(wind, restored.first())
+        assertEquals(setOf(metars, nexrad), restored.drop(1).toSet())
     }
 
     @Test
@@ -348,6 +389,13 @@ class LiveFeedCacheTest {
                 bytes = 3,
             ),
         ),
+    )
+
+    private fun summary(product: String) = LiveFeedInstalledSummary(
+        product = product,
+        version = "version",
+        stateSha256 = "state",
+        payloadKind = "json",
     )
 
     private fun runtimeDecision(command: LiveFeedRuntimeCommand) = LiveFeedRuntimeDecision(

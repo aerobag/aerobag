@@ -369,6 +369,29 @@ internal fun ToolbarButton(label: String, modifier: Modifier = Modifier, onClick
     CompactSquareButton(label = label, modifier = modifier.size(ThumbSize), onClick = onClick)
 }
 
+@Composable
+internal fun SelectedControlHighlightFrame(
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val outerShape = RoundedCornerShape(ThumbRadius + 4.dp)
+    val gapShape = RoundedCornerShape(ThumbRadius + 2.dp)
+    Box(
+        modifier = modifier
+            .then(
+                if (selected) Modifier.border(2.dp, uiTheme.controls.buttonChecked, outerShape)
+                else Modifier,
+            )
+            .padding(2.dp)
+            .then(if (selected) Modifier.border(2.dp, Color.White, gapShape) else Modifier)
+            .padding(2.dp),
+    ) {
+        content()
+    }
+}
+
 internal fun buttonContainerColor(
     uiTheme: UiTheme,
     enabled: Boolean,

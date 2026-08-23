@@ -4,6 +4,7 @@
 
 package org.aerobag.app
 
+import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.junit.Assert.assertEquals
@@ -12,23 +13,49 @@ import org.junit.Test
 
 class RetainedLiveFeedRuntimeTest {
     @Test
+    fun persistedWindsAreReportedAsInstallingBeforeTheirPackageIsRead() {
+        val source = sourceFile("src/main/java/org/aerobag/app/RetainedLiveFeedRuntime.kt").readText()
+        val list = source.substringAfter("private suspend fun listPersistedProducts()")
+            .substringBefore("private suspend fun reportWindsAcquisitionPhase")
+
+        assertTrue(
+            list.indexOf("listInstalledSummaries(appContext)") <
+                list.indexOf("reportWindsAcquisitionPhase(\"installing\")"),
+        )
+        assertTrue(
+            source.indexOf("reportWindsAcquisitionPhase(\"installing\")") <
+                source.indexOf("LiveFeedCacheStore.restore("),
+        )
+        assertTrue(source.contains("finally {\n                                reportWindsAcquisitionPhase(\"idle\")"))
+    }
+
+    @Test
     fun failedCachedProductDoesNotBlockOtherProductsOrNetworkRefresh() = runBlocking {
         val first = summary("metars")
         val second = summary("tafs")
         val promoted = mutableListOf<String>()
         val failures = mutableListOf<String>()
+        var policyPumpsEnabled = false
         var networkStarted = false
 
         runLiveFeedStartup(
-            restoreInstalled = { listOf(first, second) },
+            listInstalled = { listOf(first, second) },
             awaitInitialPromotion = {},
+            restoreInstalled = { installed, onRestored ->
+                installed.forEach { onRestored(it) }
+                installed
+            },
             promote = { summary ->
                 promoted += summary.product
                 if (summary.product == "metars") error("corrupt cache")
                 true
             },
             onInitialPromotionComplete = {},
-            startNetwork = { networkStarted = true },
+            enablePolicyPumps = { policyPumpsEnabled = true },
+            startNetwork = {
+                assertTrue(policyPumpsEnabled)
+                networkStarted = true
+            },
             reportFailure = { phase, _ -> failures += phase },
         )
 
@@ -40,19 +67,65 @@ class RetainedLiveFeedRuntimeTest {
     @Test
     fun failedPersistedCacheEnumerationStillStartsNetworkRefresh() = runBlocking {
         var networkStarted = false
+        var policyPumpsEnabled = false
         val failures = mutableListOf<String>()
 
         runLiveFeedStartup(
-            restoreInstalled = { error("unreadable cache directory") },
+            listInstalled = { error("unreadable cache directory") },
             awaitInitialPromotion = {},
+            restoreInstalled = { installed, _ -> installed },
             promote = { error("no cached products should be promoted") },
             onInitialPromotionComplete = {},
-            startNetwork = { networkStarted = true },
+            enablePolicyPumps = { policyPumpsEnabled = true },
+            startNetwork = {
+                assertTrue(policyPumpsEnabled)
+                networkStarted = true
+            },
             reportFailure = { phase, _ -> failures += phase },
         )
 
         assertEquals(listOf("persisted cache restore"), failures)
         assertTrue(networkStarted)
+    }
+
+    @Test
+    fun policyPumpsStayDisabledUntilEveryPersistedProductIsPromoted() = runBlocking {
+        val events = mutableListOf<String>()
+
+        runLiveFeedStartup(
+            listInstalled = {
+                events += "restore"
+                listOf(summary("winds-aloft"), summary("nexrad"))
+            },
+            awaitInitialPromotion = { events += "gate" },
+            restoreInstalled = { installed, onRestored ->
+                installed.forEach { onRestored(it) }
+                installed
+            },
+            promote = { summary ->
+                events += "promote:${summary.product}"
+                true
+            },
+            onInitialPromotionComplete = { events += "promotion-complete" },
+            enablePolicyPumps = { events += "policy-pumps-enabled" },
+            startNetwork = { events += "network" },
+            reportFailure = { phase, cause ->
+                throw AssertionError("unexpected $phase failure", cause)
+            },
+        )
+
+        assertEquals(
+            listOf(
+                "restore",
+                "gate",
+                "promote:winds-aloft",
+                "promote:nexrad",
+                "promotion-complete",
+                "policy-pumps-enabled",
+                "network",
+            ),
+            events,
+        )
     }
 
     private fun summary(product: String) = LiveFeedInstalledSummary(
@@ -61,4 +134,12 @@ class RetainedLiveFeedRuntimeTest {
         stateSha256 = "state",
         payloadKind = "json",
     )
+
+    private fun sourceFile(path: String): File {
+        val start = File(".").canonicalFile
+        return generateSequence(start) { it.parentFile }
+            .map { File(it, path) }
+            .firstOrNull { it.isFile }
+            ?: error("could not locate source file $path from $start")
+    }
 }

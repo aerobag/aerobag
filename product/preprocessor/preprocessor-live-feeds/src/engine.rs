@@ -30,7 +30,8 @@ pub use product_contracts::live_feeds::v3::{
     CurrentManifest as LiveFeedsCurrentManifest, CurrentProduct as LiveFeedCurrentEntry,
     DeltaRef as LiveDeltaRef, NavKvDelta as LiveFeedNavKvDelta,
     NavKvDeltaEntry as LiveFeedNavKvDeltaEntry, PayloadRef as LivePayloadRef,
-    RecordDelta as LiveFeedRecordDelta, VersionManifest as LiveFeedVersionManifest,
+    RecordDelta as LiveFeedRecordDelta, TemporalCoverage as LiveFeedTemporalCoverage,
+    VersionManifest as LiveFeedVersionManifest,
 };
 use product_contracts::{
     live_feed_product_policy,
@@ -237,6 +238,7 @@ pub struct BuiltLiveFeedState {
     pub state_sha256: Option<String>,
     pub state_payload_kind: Option<String>,
     pub status_timestamps: LiveFeedStatusTimestamps,
+    pub temporal_coverage: Option<LiveFeedTemporalCoverage>,
     pub delta_policy: DeltaPolicy,
     pub precomputed_delta: Option<LiveFeedRecordDelta>,
     pub changed_count_if_no_delta: usize,
@@ -976,6 +978,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
             state_sha256,
             state_payload_kind,
             status_timestamps,
+            temporal_coverage,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -989,6 +992,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                     state_sha256,
                     state_payload_kind,
                     status_timestamps,
+                    temporal_coverage,
                     delta_policy,
                     precomputed_delta,
                     changed_count_if_no_delta,
@@ -1008,12 +1012,16 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                     state_sha256,
                     state_payload_kind,
                     status_timestamps,
+                    temporal_coverage,
                     delta_policy,
                     precomputed_delta,
                     changed_count_if_no_delta,
                 },
             ),
             LiveFeedStatePayload::NotamIncremental { state_root } => {
+                if temporal_coverage.is_some() {
+                    bail!("incremental NOTAM publication does not support temporal coverage");
+                }
                 self.publish_notam_incremental(product, version, state_root, status_timestamps)
             }
         }
@@ -1058,6 +1066,7 @@ struct PublishStateRequest {
     state_sha256: Option<String>,
     state_payload_kind: Option<String>,
     status_timestamps: LiveFeedStatusTimestamps,
+    temporal_coverage: Option<LiveFeedTemporalCoverage>,
     delta_policy: DeltaPolicy,
     precomputed_delta: Option<LiveFeedRecordDelta>,
     changed_count_if_no_delta: usize,
@@ -1125,10 +1134,17 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             state_sha256,
             state_payload_kind,
             status_timestamps,
+            temporal_coverage,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
         } = request;
+        if temporal_coverage
+            .as_ref()
+            .is_some_and(|coverage| coverage.valid_from_epoch_ms > coverage.valid_through_epoch_ms)
+        {
+            bail!("{product} temporal coverage ends before it begins");
+        }
         let state_bytes = fs::read(&state_path)
             .with_context(|| format!("failed to read {}", state_path.display()))?;
         let state_blob_sha256 = sha256_hex(&state_bytes);
@@ -1458,6 +1474,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 product: product.clone(),
                 version: version.clone(),
                 previous: previous_version,
+                temporal_coverage,
                 state: state_ref,
                 install_state: install_state_ref,
                 install_profiles,
@@ -1754,6 +1771,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             product: NOTAM_PRODUCT_ID.to_string(),
             version: snapshot.current_state_id.clone(),
             previous: previous_version,
+            temporal_coverage: None,
             state: state_ref.clone(),
             install_state: None,
             install_profiles: BTreeMap::new(),
@@ -1988,6 +2006,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             product: NOTAM_PRODUCT_ID.to_string(),
             version: request.state_id.clone(),
             previous: previous_manifest.previous,
+            temporal_coverage: None,
             state: state_ref.clone(),
             install_state: None,
             install_profiles: BTreeMap::new(),
@@ -3463,9 +3482,7 @@ fn zip_members_for_nexrad_resolution(
         .iter()
         .any(|member| member.member_name.starts_with(&wanted_prefix))
     {
-        anyhow::bail!(
-            "NEXRAD offline profile has no tiles at advertised resolution {resolution}"
-        );
+        anyhow::bail!("NEXRAD offline profile has no tiles at advertised resolution {resolution}");
     }
     Ok(members)
 }
@@ -3732,6 +3749,7 @@ mod tests {
             state_sha256: None,
             state_payload_kind: None,
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::None,
             precomputed_delta: None,
             changed_count_if_no_delta: 0,
@@ -3774,6 +3792,7 @@ mod tests {
                 state_sha256: None,
                 state_payload_kind: None,
                 status_timestamps: Default::default(),
+                temporal_coverage: None,
                 delta_policy: DeltaPolicy::None,
                 precomputed_delta: None,
                 changed_count_if_no_delta: 0,
@@ -3884,6 +3903,7 @@ mod tests {
                 state_sha256: None,
                 state_payload_kind: None,
                 status_timestamps: Default::default(),
+                temporal_coverage: None,
                 delta_policy,
                 precomputed_delta: None,
                 changed_count_if_no_delta: 1,
@@ -4029,6 +4049,11 @@ mod tests {
             "areas": []
         });
         write_json_pretty_file(&state_path, &state_value)?;
+        let temporal_coverage = LiveFeedTemporalCoverage {
+            reference_time_epoch_ms: 1_747_441_600_000,
+            valid_from_epoch_ms: 1_747_441_600_000,
+            valid_through_epoch_ms: 1_747_528_000_000,
+        };
 
         let result = publisher.publish(BuiltLiveFeedState {
             product: "tfrs".to_string(),
@@ -4040,6 +4065,7 @@ mod tests {
             state_sha256: None,
             state_payload_kind: None,
             status_timestamps: Default::default(),
+            temporal_coverage: Some(temporal_coverage.clone()),
             delta_policy: DeltaPolicy::None,
             precomputed_delta: None,
             changed_count_if_no_delta: 1,
@@ -4062,6 +4088,7 @@ mod tests {
         assert_eq!(version_manifest.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
         assert_eq!(version_manifest.product, "tfrs");
         assert_eq!(version_manifest.previous, None);
+        assert_eq!(version_manifest.temporal_coverage, Some(temporal_coverage));
         assert_eq!(version_manifest.state.kind.as_deref(), Some("json_xz"));
         assert!(version_manifest.delta_from_previous.is_none());
         Ok(())
@@ -4106,6 +4133,7 @@ mod tests {
             state_sha256: None,
             state_payload_kind: None,
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::None,
             precomputed_delta: None,
             changed_count_if_no_delta: 1,
@@ -4209,6 +4237,7 @@ mod tests {
             state_sha256: Some(first.state_sha256),
             state_payload_kind: Some("nav_kv".to_string()),
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::NavKv {
                 pairs: first_pairs.clone(),
             },
@@ -4226,6 +4255,7 @@ mod tests {
             state_sha256: Some(second.state_sha256.clone()),
             state_payload_kind: Some("nav_kv".to_string()),
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::NavKv {
                 pairs: second_pairs.clone(),
             },
@@ -4323,6 +4353,7 @@ mod tests {
             state_sha256: None,
             state_payload_kind: None,
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
@@ -4358,6 +4389,7 @@ mod tests {
             state_sha256: None,
             state_payload_kind: None,
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
@@ -4398,6 +4430,7 @@ mod tests {
                 state_sha256: None,
                 state_payload_kind: None,
                 status_timestamps: Default::default(),
+                temporal_coverage: None,
                 delta_policy: DeltaPolicy::KeyedRecords {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
@@ -4427,6 +4460,7 @@ mod tests {
                 state_sha256: None,
                 state_payload_kind: None,
                 status_timestamps: Default::default(),
+                temporal_coverage: None,
                 delta_policy: DeltaPolicy::KeyedRecords {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
@@ -5427,6 +5461,7 @@ mod tests {
             state_sha256: None,
             state_payload_kind: None,
             status_timestamps: Default::default(),
+            temporal_coverage: None,
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: records_key.to_string(),
                 count_key: Some(count_key.to_string()),

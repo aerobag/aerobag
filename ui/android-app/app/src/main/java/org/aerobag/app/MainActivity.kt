@@ -3054,6 +3054,7 @@ internal fun AerobagApp(
     }
     LaunchedEffect(
         uiSession,
+        page,
         sessionPlanUiState.planId,
         sessionPlanUiState.planVersion,
         sessionSnapshot.notamDisplayStateId,
@@ -3064,7 +3065,10 @@ internal fun AerobagApp(
         sessionSnapshot.chartPageState.selectedChartId,
         sessionSnapshot.chartPageState.suggestedChartIds,
     ) {
-        derivedChartPageState = uiSession.deriveChartPageState()
+        if (page != AppPage.Charts) return@LaunchedEffect
+        derivedChartPageState = withContext(Dispatchers.IO) {
+            uiSession.deriveChartPageState()
+        }
     }
     LaunchedEffect(uiSession) {
         applyBackgroundSessionCommand("registerOwnshipSource", "AerobagOwnship") {

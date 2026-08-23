@@ -512,6 +512,13 @@ impl LiveFeedsState {
                     manifest.product, manifest.version
                 )));
             }
+            if manifest.temporal_coverage.as_ref().is_some_and(|coverage| {
+                coverage.valid_from_epoch_ms > coverage.valid_through_epoch_ms
+            }) {
+                return Err(invalid_live_feed(format!(
+                    "version resource {resource_id} temporal coverage ends before it begins"
+                )));
+            }
             if manifest.state.kind.is_none() {
                 return Err(invalid_live_feed(format!(
                     "version resource {resource_id} state missing kind"
@@ -928,6 +935,14 @@ impl LiveFeedsState {
 
     pub fn current_product_catalog_state_manifest(&self, product: &str) -> Option<&Value> {
         self.products.get(product)?.catalog_state_manifest.as_ref()
+    }
+
+    pub fn current_product_temporal_coverage(
+        &self,
+        product: &str,
+    ) -> Option<live_feeds_v3::TemporalCoverage> {
+        let manifest = self.products.get(product)?.version_manifest.as_ref()?;
+        serde_json::from_value(manifest.get("temporal_coverage")?.clone()).ok()
     }
 
     pub fn current_product_install_bytes(&self, product: &str) -> Option<u64> {
@@ -2877,6 +2892,7 @@ mod tests {
             product: "notams".to_string(),
             version: "s2".to_string(),
             previous: None,
+            temporal_coverage: None,
             install_state: None,
             install_profiles: std::collections::BTreeMap::new(),
             delta_from_previous: Some(latest.clone()),

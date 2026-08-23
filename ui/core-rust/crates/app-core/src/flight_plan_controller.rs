@@ -177,6 +177,7 @@ pub(crate) struct FlightPlanProjectionInputs {
     pub now_epoch_ms: i64,
     pub nav_data_generation: u64,
     pub weather_revision: u64,
+    pub wind_forecast_selected: bool,
     pub aircraft_library_digest: [u8; 32],
     pub local_time_zone: chrono_tz::Tz,
     pub time_display_mode: crate::TimeDisplayMode,
@@ -1153,6 +1154,7 @@ mod tests {
             nav_data_generation: 0,
             aircraft_library_digest: [0; 32],
             weather_revision: 0,
+            wind_forecast_selected: false,
             local_time_zone: chrono_tz::UTC,
             time_display_mode: crate::TimeDisplayMode::Local,
             ete_scope: crate::FlightPlanEteScope::Cumulative,
@@ -1160,7 +1162,7 @@ mod tests {
     }
 
     fn atmosphere() -> crate::had_ops::PlannerAtmosphereSelection<'static> {
-        crate::had_ops::PlannerAtmosphereSelection::no_wind(false)
+        crate::had_ops::PlannerAtmosphereSelection::no_wind(None)
     }
 
     fn direct_to_plan() -> FlightPlan {

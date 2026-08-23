@@ -1925,7 +1925,7 @@ pub fn live_feed_cache_install_product_in_session_json(
             .install_candidate_for_main(product, version)
             .map_err(|err| err.to_string())?
     };
-    let snapshot = match app_core::install_live_feed_installed_state_in_session(
+    let snapshot = match app_core::install_validated_live_feed_installed_state_in_session(
         session_handle as u32,
         &installed,
     ) {

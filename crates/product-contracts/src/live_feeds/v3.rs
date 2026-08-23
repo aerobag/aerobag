@@ -52,6 +52,10 @@ pub struct VersionManifest {
     pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
+    /// Small, product-neutral timing summary that can be inspected before
+    /// downloading the state or install payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_coverage: Option<TemporalCoverage>,
     pub state: PayloadRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_state: Option<PayloadRef>,
@@ -61,6 +65,16 @@ pub struct VersionManifest {
     pub delta_from_previous: Option<DeltaRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_deltas: Vec<DeltaRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalCoverage {
+    /// Product-specific reference time used to describe the age of this data
+    /// (for example, the forecast model cycle time).
+    pub reference_time_epoch_ms: i64,
+    pub valid_from_epoch_ms: i64,
+    pub valid_through_epoch_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

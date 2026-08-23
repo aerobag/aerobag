@@ -91,7 +91,8 @@ describe("map interaction boundaries", () => {
   });
 
   it("draws the selected inspector item outside its existing shape", () => {
-    const selectedItemBlocks = [...styles.matchAll(/\.mapSelectionItem\.isSelected\s*\{([^}]*)\}/g)]
+    expect(appSource).toContain('" isSelected selectedControlHighlight"');
+    const selectedItemBlocks = [...styles.matchAll(/\.selectedControlHighlight\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");
     expect(selectedItemBlocks).toContain("0 0 0 2px white");

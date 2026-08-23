@@ -459,6 +459,12 @@ fn bulk_notam_state_cannot_cross_into_the_ui_session() {
     );
     let promote = balanced_block_after_marker(&android_runtime, "private suspend fun promote(");
     let restore = balanced_block_after_marker(&android_runtime, "fun start()");
+    let restore_products = balanced_block_after_marker(
+        &android_runtime,
+        "private suspend fun restoreInstalledProducts(",
+    );
+    let android_cache =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/LiveFeedCache.kt");
 
     assert!(
         !session.contains("NotamState::from_checkpoint")
@@ -476,9 +482,29 @@ fn bulk_notam_state_cannot_cross_into_the_ui_session() {
         "Android must prepare durable NOTAM state off main before installing its projection"
     );
     assert!(
-        restore.contains("withContext(Dispatchers.IO)")
-            && restore.contains("LiveFeedCacheStore.restore"),
+        restore.contains("restoreInstalledProducts(installed, onRestored)")
+            && restore_products.contains("LiveFeedCacheStore.restore")
+            && android_cache.contains("launch(Dispatchers.IO)"),
         "Android must rebuild durable NOTAM state off main during startup"
+    );
+}
+
+#[test]
+fn android_cache_promotion_does_not_revalidate_already_validated_packages() {
+    let ffi = read_repo_file("ui/core-rust/crates/app-ffi/src/lib.rs");
+    let install = balanced_block_after_marker(
+        &ffi,
+        "pub fn live_feed_cache_install_product_in_session_json(",
+    );
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+
+    assert!(
+        install.contains("install_validated_live_feed_installed_state_in_session"),
+        "the cache-to-session path must not repeat package and canonical-state validation"
+    );
+    assert!(
+        session.contains("prepare_durable_live_feed_install_inner(installed, false)"),
+        "validated cache promotion must select the no-repeat-validation preparation path"
     );
 }
 

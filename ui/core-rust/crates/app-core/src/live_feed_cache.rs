@@ -594,7 +594,13 @@ impl LiveFeedCache {
             );
         let winds_metadata_request = self
             .live_feeds
-            .current_state_manifest_cache_request("winds-aloft");
+            .current_product_temporal_coverage("winds-aloft")
+            .is_none()
+            .then(|| {
+                self.live_feeds
+                    .current_state_manifest_cache_request("winds-aloft")
+            })
+            .flatten();
         let nexrad_due = self.nexrad_acquisition.cadence != NexradUpdateCadence::Never
             && self
                 .last_nexrad_install_epoch_ms
@@ -3528,7 +3534,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_winds_fetches_metadata_until_core_requests_the_package() {
+    fn durable_winds_version_summary_defers_all_heavy_bytes_until_core_requests_package() {
         let mut cache = live_feed_cache();
         let version = "winds-v2";
         let state_sha256 = "winds-state-v2";
@@ -3539,6 +3545,11 @@ mod tests {
             "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "winds-aloft",
             "version": version,
+            "temporal_coverage": {
+                "reference_time_epoch_ms": 1_747_441_600_000_i64,
+                "valid_from_epoch_ms": 1_747_441_600_000_i64,
+                "valid_through_epoch_ms": 1_747_528_000_000_i64
+            },
             "state": {
                 "kind": "nav_kv",
                 "url": format!("states/winds-aloft/{version}/manifest.json"),
@@ -3559,28 +3570,7 @@ mod tests {
             .ingest_version_manifest("winds-aloft", version, &version_manifest)
             .unwrap();
 
-        let metadata_request = cache.missing_requests_at_epoch_ms(1_000);
-        assert_eq!(metadata_request.len(), 1);
-        assert!(matches!(
-            &metadata_request[0].kind,
-            LiveFeedCacheRequestKind::State { product, version: requested }
-                if product == "winds-aloft" && requested == version
-        ));
-        let metadata = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
-            "product_id": "winds-aloft",
-            "version_label": version,
-            "state_sha256": state_sha256
-        }))
-        .unwrap();
-        cache
-            .install_fetched_payload(
-                &live_feed_product_registry(),
-                &metadata_request[0],
-                LiveFeedFetchedPayload::Bytes(metadata),
-            )
-            .unwrap();
-        assert!(cache.missing_requests_at_epoch_ms(2_000).is_empty());
+        assert!(cache.missing_requests_at_epoch_ms(1_000).is_empty());
 
         cache.apply_acquisition_directive(LiveFeedCacheAcquisitionDirective {
             nexrad: NexradAcquisitionDirective::default(),
@@ -3591,6 +3581,50 @@ mod tests {
         assert!(matches!(
             &package_request[0].kind,
             LiveFeedCacheRequestKind::Full { product, version: requested, .. }
+                if product == "winds-aloft" && requested == version
+        ));
+    }
+
+    #[test]
+    fn durable_winds_legacy_manifest_fetches_state_metadata_before_core_request() {
+        let mut cache = live_feed_cache();
+        let version = "winds-v2";
+        let state_sha256 = "winds-state-v2";
+        cache
+            .ingest_current(&current_manifest("winds-aloft", version, state_sha256))
+            .unwrap();
+        cache
+            .ingest_version_manifest(
+                "winds-aloft",
+                version,
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                    "product": "winds-aloft",
+                    "version": version,
+                    "state": {
+                        "kind": "nav_kv",
+                        "url": format!("states/winds-aloft/{version}/manifest.json"),
+                        "bytes": 256,
+                        "blob_sha256": "state-blob",
+                        "state_sha256": state_sha256
+                    },
+                    "install_state": {
+                        "kind": "nav_kv_package",
+                        "url": format!("packages/winds-aloft/{version}.zip"),
+                        "bytes": 12_000_000,
+                        "blob_sha256": "package-blob",
+                        "state_sha256": state_sha256
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let requests = cache.missing_requests_at_epoch_ms(1_000);
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(
+            &requests[0].kind,
+            LiveFeedCacheRequestKind::State { product, version: requested }
                 if product == "winds-aloft" && requested == version
         ));
     }

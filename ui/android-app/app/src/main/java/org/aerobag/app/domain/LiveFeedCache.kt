@@ -172,7 +172,7 @@ class LiveFeedCache(
     private val handle = bridge.createLiveFeedCache(sourceRootUrl, installedStatesJson)
     private val lifecycleLock = Any()
     private val operationLock = Any()
-    private val persistedRestoreLock = Any()
+    private val persistedRestoreLock = Mutex()
     private var activeCalls = 0
     private var destroyed = false
     private var persistedRestoreComplete = false
@@ -333,11 +333,18 @@ class LiveFeedCache(
         return installs
     }
 
-    internal fun restorePersistedOnce(restore: () -> Unit) {
-        synchronized(persistedRestoreLock) {
-            if (persistedRestoreComplete) return
-            restore()
-            persistedRestoreComplete = true
+    internal suspend fun restorePersistedOnce(restore: suspend () -> Unit): Boolean {
+        persistedRestoreLock.lock()
+        return try {
+            if (persistedRestoreComplete) {
+                false
+            } else {
+                restore()
+                persistedRestoreComplete = true
+                true
+            }
+        } finally {
+            persistedRestoreLock.unlock()
         }
     }
 
@@ -799,6 +806,46 @@ internal fun reconnectDelayMs(decision: LiveFeedRuntimeDecision): Long? =
 internal fun retryResourcesDelayMs(decision: LiveFeedRuntimeDecision): Long? =
     decision.commands.firstOrNull { it.kind == "retry_resources" }?.delayMs
 
+internal suspend fun restorePersistedProductsInPriorityOrder(
+    installed: List<LiveFeedInstalledSummary>,
+    restoreOne: suspend (LiveFeedInstalledSummary) -> Boolean,
+    onRestored: suspend (LiveFeedInstalledSummary) -> Unit,
+): List<LiveFeedInstalledSummary> {
+    val ordered = installed.sortedWith(
+        compareBy<LiveFeedInstalledSummary> { if (it.product == "winds-aloft") 0 else 1 }
+            .thenBy { it.product }
+            .thenBy { it.version },
+    )
+    val priority = ordered.filter { it.product == "winds-aloft" }
+    val remaining = ordered.filterNot { it.product == "winds-aloft" }
+    val completed = mutableListOf<LiveFeedInstalledSummary>()
+
+    for (summary in priority) {
+        if (restoreOne(summary)) {
+            completed += summary
+            onRestored(summary)
+        }
+    }
+
+    coroutineScope {
+        val results = Channel<Pair<LiveFeedInstalledSummary, Boolean>>(Channel.UNLIMITED)
+        for (summary in remaining) {
+            launch(Dispatchers.IO) {
+                results.send(summary to restoreOne(summary))
+            }
+        }
+        repeat(remaining.size) {
+            val (summary, succeeded) = results.receive()
+            if (succeeded) {
+                completed += summary
+                onRestored(summary)
+            }
+        }
+        results.close()
+    }
+    return completed
+}
+
 internal fun readLiveFeedBytesBounded(
     input: InputStream,
     maxBytes: Long,
@@ -891,45 +938,98 @@ object LiveFeedCacheStore {
     ): LiveFeedCache =
         LiveFeedCache(sourceRootUrl = sourceRootUrl, bridge = bridge, json = json)
 
-    fun restore(
+    suspend fun restore(
         context: Context,
         cache: LiveFeedCache,
-    ) {
-        cache.restorePersistedOnce {
-            for (stored in listInstalledResourceManifests(context)) {
-                runCatching {
-                    cache.restoreInstalledResources(stored.manifest) { resource ->
-                        stored.resourceFile(resource).readBytes()
+        installed: List<LiveFeedInstalledSummary> = listInstalledSummaries(context),
+        onRestored: suspend (LiveFeedInstalledSummary) -> Unit = {},
+    ): List<LiveFeedInstalledSummary> {
+        var restored = emptyList<LiveFeedInstalledSummary>()
+        val didRestore = cache.restorePersistedOnce {
+            val resourcesById = listInstalledResourceManifests(context)
+                .associateBy { it.manifest.summary.product to it.manifest.summary.version }
+            val payloadsById = listInstalled(context)
+                .associateBy { it.summary.product to it.summary.version }
+            suspend fun restoreOne(summary: LiveFeedInstalledSummary): Boolean =
+                withContext(Dispatchers.IO) {
+                    val id = summary.product to summary.version
+                    resourcesById[id]?.let { stored ->
+                        return@withContext restoreStoredResources(cache, stored)
                     }
-                }.onFailure { error ->
-                    if (error is CancellationException) throw error
+                    payloadsById[id]?.let { stored ->
+                        return@withContext restoreStoredPayload(cache, stored)
+                    }
                     Log.w(
                         LiveFeedLogTag,
-                        "discarding failed persisted resource restore " +
-                            "${stored.manifest.summary.product}/${stored.manifest.summary.version}",
-                        error,
+                        "persisted live-feed product disappeared before restore " +
+                            "${summary.product}/${summary.version}",
                     )
-                    stored.manifestFile.delete()
+                    false
                 }
+
+            restored = restorePersistedProductsInPriorityOrder(
+                installed = installed,
+                restoreOne = ::restoreOne,
+                onRestored = onRestored,
+            )
+        }
+        return if (didRestore) restored else installed
+    }
+
+    private fun restoreStoredResources(
+        cache: LiveFeedCache,
+        stored: LiveFeedStoredResources,
+    ): Boolean {
+        val startedAtMs = SystemClock.elapsedRealtime()
+        return runCatching {
+            cache.restoreInstalledResources(stored.manifest) { resource ->
+                stored.resourceFile(resource).readBytes()
             }
-            for (entry in listInstalled(context)) {
-                runCatching {
-                    cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
-                    cache.releasePersistedPayloadBytes(
-                        entry.summary.product,
-                        entry.summary.version,
-                    )
-                }.onFailure { error ->
-                    if (error is CancellationException) throw error
-                    Log.w(
-                        LiveFeedLogTag,
-                        "discarding failed legacy payload restore " +
-                            "${entry.summary.product}/${entry.summary.version}",
-                        error,
-                    )
-                    entry.payloadFile.parentFile?.deleteRecursively()
-                }
-            }
+            Log.i(
+                LiveFeedLogTag,
+                "restored persisted product=${stored.manifest.summary.product} " +
+                    "version=${stored.manifest.summary.version} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+            )
+            true
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            Log.w(
+                LiveFeedLogTag,
+                "discarding failed persisted resource restore " +
+                    "${stored.manifest.summary.product}/${stored.manifest.summary.version}",
+                error,
+            )
+            stored.manifestFile.delete()
+            false
+        }
+    }
+
+    private fun restoreStoredPayload(
+        cache: LiveFeedCache,
+        entry: LiveFeedStoredPayload,
+    ): Boolean {
+        val startedAtMs = SystemClock.elapsedRealtime()
+        return runCatching {
+            cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
+            cache.releasePersistedPayloadBytes(entry.summary.product, entry.summary.version)
+            Log.i(
+                LiveFeedLogTag,
+                "restored persisted product=${entry.summary.product} " +
+                    "version=${entry.summary.version} bytes=${entry.payloadFile.length()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+            )
+            true
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            Log.w(
+                LiveFeedLogTag,
+                "discarding failed legacy payload restore " +
+                    "${entry.summary.product}/${entry.summary.version}",
+                error,
+            )
+            entry.payloadFile.parentFile?.deleteRecursively()
+            false
         }
     }
 

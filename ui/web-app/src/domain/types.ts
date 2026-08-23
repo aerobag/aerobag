@@ -237,7 +237,7 @@ export type FlightPlanUiState = {
 };
 
 export type AltitudePlannerControlUiView = {
-  id: "aircraft" | "aircraft_profile" | "wind_model";
+  id: "aircraft" | "aircraft_profile";
   label: string;
   enabled: boolean;
   action_uid?: string | null;
@@ -306,13 +306,18 @@ export type AltitudePlannerUiView = {
   controls: AltitudePlannerControlUiView[];
   departure: AltitudePlannerDepartureEditorUiView;
   forecast?: {
-    summary: string;
-    action?: {
+    rows: Array<{
+      id: "no_wind" | "ready_forecast" | "latest_forecast";
       label: string;
-      enabled: boolean;
-      action_uid?: string | null;
-      disabled_reason?: string | null;
-    } | null;
+      description: string;
+      selected: boolean;
+      action?: {
+        label: string;
+        enabled: boolean;
+        action_uid?: string | null;
+        disabled_reason?: string | null;
+      } | null;
+    }>;
   } | null;
   advisories?: string[];
   unavailable_reasons?: AltitudePlannerUnavailableReason[];

@@ -285,7 +285,14 @@ data class AltitudeComparisonPanelUiView(
 )
 
 data class AltitudePlannerForecastUiView(
-    val summary: String,
+    val rows: List<AltitudePlannerForecastRowUiView>,
+)
+
+data class AltitudePlannerForecastRowUiView(
+    val id: String,
+    val label: String,
+    val description: String,
+    val selected: Boolean,
     val action: AltitudePlannerForecastActionUiView?,
 )
 

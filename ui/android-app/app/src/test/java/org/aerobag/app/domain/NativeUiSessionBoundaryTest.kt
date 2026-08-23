@@ -309,7 +309,7 @@ class NativeUiSessionBoundaryTest {
         assertTrue(
             "The retained live-feed runtime must own one idempotent restore and connection pipeline.",
             retainedLiveFeeds.contains("if (started) return") &&
-                retainedLiveFeeds.contains("LiveFeedCacheStore.restore(appContext, cache)") &&
+                retainedLiveFeeds.contains("LiveFeedCacheStore.restore(") &&
                 retainedLiveFeeds.contains("client.bootstrapAndRun("),
         )
         assertFalse(

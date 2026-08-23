@@ -9101,26 +9101,40 @@ function AltitudePlannerPage(props: {
       <div className="altitudePlannerPageBody">
         {planner.forecast ? (
           <div className="altitudePlannerProvenance">
-            <span>{planner.forecast.summary}</span>
-            {planner.forecast.action ? (
-              <button
-                type="button"
-                className={`trayButton altitudePlannerForecastAction${planner.forecast.action.enabled ? "" : " isDisabled"}`}
-                data-testid="altitude-planner-forecast-action"
-                aria-disabled={planner.forecast.action.enabled ? undefined : "true"}
-                title={planner.forecast.action.disabled_reason ?? undefined}
-                onClick={() => {
-                  const action = planner.forecast?.action;
-                  if (action?.enabled && action.action_uid) {
-                    performAction(action.action_uid);
-                  } else if (action?.disabled_reason) {
-                    showDisabledAction(action.disabled_reason);
-                  }
-                }}
-              >
-                {planner.forecast.action.label}
-              </button>
-            ) : null}
+            {planner.forecast.rows.map((row) => {
+              const action = row.action;
+              return (
+                <div
+                  className={`altitudePlannerWindModelRow${row.selected ? " isSelected" : ""}`}
+                  data-testid={`altitude-planner-wind-row-${row.id}`}
+                  key={row.id}
+                >
+                  <strong>{row.label}</strong>
+                  <span>{row.description}</span>
+                  <div className="altitudePlannerWindModelActionSlot">
+                    {action ? (
+                      <button
+                        type="button"
+                        className={`trayButton altitudePlannerForecastAction${row.selected ? " isActive selectedControlHighlight" : ""}${action.enabled || row.selected ? "" : " isDisabled"}`}
+                        data-testid={`altitude-planner-wind-action-${row.id}`}
+                        aria-pressed={row.selected}
+                        aria-disabled={action.enabled || row.selected ? undefined : "true"}
+                        title={action.disabled_reason ?? undefined}
+                        onClick={() => {
+                          if (action.enabled && action.action_uid) {
+                            performAction(action.action_uid);
+                          } else if (!row.selected && action.disabled_reason) {
+                            showDisabledAction(action.disabled_reason);
+                          }
+                        }}
+                      >
+                        {action.label}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : null}
         {(planner.unavailable_reasons ?? []).length > 0 ? (
@@ -11072,7 +11086,7 @@ function MapSelectionTray(props: {
               <button
                 key={item.id}
                 type="button"
-                className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected" : ""}`}
+                className={`mapSelectionItem${selectedItem?.id === item.id ? " isSelected selectedControlHighlight" : ""}`}
                 data-testid={`map-selection-item-${category.id}-${item.label}`}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}

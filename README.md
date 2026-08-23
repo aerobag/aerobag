@@ -32,8 +32,14 @@ Third-party software and source data retain their respective license and
 provenance terms. See [Third-Party Notices](THIRD_PARTY_NOTICES.md).
 
 File licensing metadata follows the
-[REUSE specification](https://reuse.software/). Install the `reuse` tool with
-`pipx install reuse`, then validate the tree with:
+[REUSE specification](https://reuse.software/). Install the repository's pinned
+`reuse` version with:
+
+```sh
+pipx install "reuse==$(cat .reuse-tool-version)"
+```
+
+Then run the same check used by CI:
 
 ```sh
 ./scripts/check-licenses.sh

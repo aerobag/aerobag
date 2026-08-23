@@ -2,7 +2,7 @@
 
 Baseline measured: 2026-08-20
 
-Implementation status updated: 2026-08-22
+Implementation status updated: 2026-08-23
 
 ## Bottom line
 
@@ -60,7 +60,7 @@ normalized state
   -> XZ level 6, one thread, CRC64
   -> immutable delta artifact
   -> small plain-JSON version manifest
-  -> uncompressed SSE invalidation
+  -> uncompressed SSE catalog / invalidation
 ```
 
 The producer now uses dense JSON serialization before XZ and for its plain JSON
@@ -408,16 +408,21 @@ selected `FORECAST` versus `NO WIND` planning model. Web retains its existing JI
 NavKv page acquisition. The Data Status page reports an uninstalled Android
 forecast as informational `ON DEMAND`, not as a false unavailable-data alert.
 
-### 8. Small protocol safeguards and startup duplication — partially implemented
+### 8. Small protocol safeguards and startup duplication — implemented
 
 - Core now applies the same advertised delta-versus-full byte comparison to both
   durable and just-in-time acquisition. None of the 256-sample record deltas was
   larger than its full state, so this is a defensive guard rather than a measured
   saving.
-- A new connection fetches `current.json` and also receives an initial SSE frame
-  containing the same current catalog. That is about 52 KiB uncompressed today.
-  It does not duplicate payload downloads and is low priority, but one of the two
-  control snapshots can eventually become authoritative for bootstrap.
+- The SSE stream is now the sole application protocol for discovery: each
+  connection begins with one authoritative `live-feed-catalog` event, followed
+  by incremental `live-feed-current` product events. Core installs the catalog
+  atomically and neither web nor Android fetches `current.json`. The daemon keeps
+  `current.json` as its durable publication ledger and an operations endpoint;
+  it subscribes to publication notifications before reading the ledger so a
+  concurrent publication cannot fall between the bootstrap and update streams.
+  This removes about 52 KiB of duplicate uncompressed control data per
+  connection in the historical form.
 
 ## The 24-hour capture
 
@@ -550,16 +555,14 @@ intentionally not assigned fabricated totals.
 | Repeatable corpus policy analyzer        | Done   | Exact replay plus explicit 4/4/16-hour daily policy projections   |
 | Compact JSON before XZ                   | Done   | 1-3% for active record deltas; 25.8% for rare obstacle deltas     |
 | JIT delta-versus-full size guard         | Done   | No waste observed in the baseline; defensive correctness          |
-| Winds on-demand immutable lazy package    | Done   | Removes 48.6 MiB/day baseline and avoids page expansion/repacking |
-| Current/SSE bootstrap deduplication      | Open   | About 52 KiB per connection in the historical uncompressed form   |
-| NEXRAD temporal codec                    | Open   | Potentially material, but new policy-weighted usage is unmeasured |
+| Winds on-demand immutable lazy package   | Done   | Removes 48.6 MiB/day baseline and avoids page expansion/repacking |
+| Current/SSE bootstrap deduplication      | Done   | Saves about 52 KiB per connection in the historical form          |
+| NEXRAD temporal codec                    | Closed | Prior experiments lost on nonempty, noise-like radar tiles        |
 
 ## Recommended next burn order
 
-1. Reconsider a NEXRAD temporal codec only after actual mode-residence accounting
-   shows that full-offline acquisition remains dominant. The naive tile XOR
-   experiment remains a loss; any follow-up needs a domain-specific format.
-2. Consider the measured winds spatial predictor only if explicit download size
+1. Consider the measured winds spatial predictor only if explicit download size
    proves painful. It saved 29.4%, but no longer reduces an automatic daily cost.
-3. Leave current/SSE bootstrap deduplication and possible SSE compression until
-   the larger work is measured. They are control-plane polish, not leading wins.
+2. Measure real viewport-only NEXRAD request traces if that mode becomes common;
+   its transfer depends on route, zoom, and interaction and cannot be inferred
+   honestly from the producer corpus alone.

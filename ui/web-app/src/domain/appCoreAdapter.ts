@@ -1115,7 +1115,6 @@ type WasmModule = {
   live_feed_events_url(sourceRootUrl: string): Promise<string> | string;
   live_feed_status_url(sourceRootUrl: string): Promise<string> | string;
   live_feed_runtime_decision_in_session(handle: number, inputJson: string): Promise<string> | string;
-  refresh_live_feed_current_in_session(handle: number): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<SessionResultOperationJson> | SessionResultOperationJson;
   report_live_feed_connection_event_in_session(handle: number, eventJson: string): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
@@ -1447,7 +1446,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       liveFeedResourceRetryTimer = globalThis.setTimeout(() => {
         liveFeedResourceRetryTimer = null;
         liveFeedResourceRetryDueMs = null;
-        void refreshLiveFeedCurrentAndSync().catch((error: unknown) => {
+        void syncLiveFeeds().catch((error: unknown) => {
           debugLog("live_feeds.resource_retry.failed", {
             message: error instanceof Error ? error.message : String(error),
           });
@@ -1489,17 +1488,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         "live_feeds.sync",
       );
     };
-    const refreshLiveFeedCurrent = async () => {
-      await runSessionResult<unknown>(
-        () => this.module.refresh_live_feed_current_in_session(handle),
-        (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
-        "live_feeds.current_refresh",
-      );
-    };
-    const refreshLiveFeedCurrentAndSync = async () => {
-      await refreshLiveFeedCurrent();
-      await syncLiveFeeds();
-    };
     const handleLiveFeedRuntimeEvent = async (input: LiveFeedRuntimeInput): Promise<LiveFeedRuntimeDecision> => {
       const sourceUrl = await configureLiveFeedSource();
       const statusUrl = await this.module.live_feed_status_url(sourceUrl);
@@ -1518,12 +1506,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         publishInvalidations(["session_snapshot"]);
       }
-      const refreshCurrent = decision.commands.some((command) => command.kind === "refresh_current");
-      if (refreshCurrent) {
-        await refreshLiveFeedCurrentAndSync();
-      } else {
-        scheduleLiveFeedResourceRetry(decision);
-      }
+      scheduleLiveFeedResourceRetry(decision);
       return decision;
     };
     liveFeedSubscriptionOwner = new SerializedSubscriptionOwner(
@@ -2504,7 +2487,6 @@ async function loadBestAvailableAdapterUncached(
     "live_feed_events_url",
     "live_feed_status_url",
     "live_feed_runtime_decision_in_session",
-    "refresh_live_feed_current_in_session",
     "ingest_live_feed_sse_event_in_session",
     "ingest_live_feed_sse_events_in_session",
     "report_live_feed_connection_event_in_session",
@@ -2558,7 +2540,6 @@ type LiveFeedRuntimeInput = {
 };
 
 type LiveFeedRuntimeCommand =
-  | { kind: "refresh_current" }
   | { kind: "reconnect"; delay_ms: number }
   | { kind: "retry_resources"; delay_ms: number };
 
@@ -2776,7 +2757,7 @@ export function createLiveFeedSubscription(
         () => handleTimeout("error", "EventSource connect timeout"),
         transportPolicy.connect_timeout_ms,
       ) as unknown as number;
-      nextEvents.addEventListener("live-feed-current", (event) => {
+      const queueLiveFeedEvent = (eventName: "live-feed-catalog" | "live-feed-current") => (event: Event) => {
         if (!isCurrent()) {
           return;
         }
@@ -2788,11 +2769,13 @@ export function createLiveFeedSubscription(
         reportEvent({ kind: "message" });
         queuedEvents.push({
           id: message.lastEventId || null,
-          event: "live-feed-current",
+          event: eventName,
           data: message.data,
         });
         scheduleFlush();
-      });
+      };
+      nextEvents.addEventListener("live-feed-catalog", queueLiveFeedEvent("live-feed-catalog"));
+      nextEvents.addEventListener("live-feed-current", queueLiveFeedEvent("live-feed-current"));
       nextEvents.onopen = () => {
         if (!isCurrent()) {
           return;

@@ -12,7 +12,7 @@ import {
 } from "./live-feed-contract-paths.mjs";
 import { ScriptedLiveFeedServer } from "./run-android-chrome-livefeed-e2e.mjs";
 
-test("scripted current manifest supplies the complete v3 envelope", () => {
+test("scripted SSE catalog supplies the complete v3 envelope", () => {
   const manifest = new ScriptedLiveFeedServer().currentManifest();
 
   assert.equal(manifest.schema_version, LIVE_FEED_SCHEMA_VERSION);
@@ -32,13 +32,13 @@ test("scripted current manifest supplies the complete v3 envelope", () => {
 });
 
 test("relative manifest URLs resolve to paths served by the scripted server", () => {
-  const currentUrl = new URL(`http://127.0.0.1${liveFeedPath("current.json")}`);
+  const eventsUrl = new URL(`http://127.0.0.1${liveFeedPath("events")}`);
 
   for (const [kind, relativePath] of [
     ["versions", "versions/metars/v1.json"],
     ["states", "states/metars/v1.json"],
   ]) {
-    const pathname = new URL(relativePath, currentUrl).pathname;
+    const pathname = new URL(relativePath, eventsUrl).pathname;
     assert.equal(pathname, `${LIVE_FEED_ROOT}/${relativePath}`);
     assert.equal(metarVersionFromPath(pathname, kind), "v1");
   }

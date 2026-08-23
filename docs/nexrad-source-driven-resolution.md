@@ -11,7 +11,6 @@ opaque resources and draw the core-provided image geometry.
 Each upstream NEXRAD frame publishes one immutable state:
 
 ```text
-/live-feeds/v3/current.json
 /live-feeds/v3/states/nexrad/<state-id>/manifest.json
 /live-feeds/v3/states/nexrad/<state-id>/tiles/res0/<tile-x>/<tile-y>.png
 /live-feeds/v3/states/nexrad/<state-id>/tiles/res1/<tile-x>/<tile-y>.png
@@ -20,8 +19,9 @@ Each upstream NEXRAD frame publishes one immutable state:
 /live-feeds/v3/versions/nexrad/<state-id>.json
 ```
 
-`current.json` names the current NEXRAD state and points at that state's
-manifest. State paths are content/version addressed and immutable.
+The full SSE catalog and later product events name the current NEXRAD state and
+point at that state's manifest. State paths are content/version addressed and
+immutable.
 
 ## Resolution Levels
 

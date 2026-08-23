@@ -279,16 +279,12 @@ describe("loadBestAvailableAdapter", () => {
       configure_live_feed_source_in_session: async () => {},
       live_feed_events_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/v3/events`,
       live_feed_status_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/status.html`,
-      refresh_live_feed_current_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       live_feed_runtime_decision_in_session: async (_handle: number, inputJson: string) => {
         const input = JSON.parse(inputJson) as { kind: string };
         return JSON.stringify({
           transport_policy: TEST_SSE_TRANSPORT_POLICY,
           connection_event: input.kind === "start" || input.kind === "online" ? null : input,
           commands: [
-            ...(input.kind === "connected" || input.kind === "network_status" || input.kind === "online"
-              ? [{ kind: "refresh_current" as const }]
-              : []),
             ...(input.kind === "error" ? [{ kind: "reconnect" as const, delay_ms: 5000 }] : []),
           ],
         });
@@ -412,8 +408,16 @@ describe("createLiveFeedSubscription", () => {
     }
 
     emitCurrent(id: string, data: string): void {
+      this.emitLiveFeedEvent("live-feed-current", id, data);
+    }
+
+    emitCatalog(id: string, data: string): void {
+      this.emitLiveFeedEvent("live-feed-catalog", id, data);
+    }
+
+    private emitLiveFeedEvent(eventName: string, id: string, data: string): void {
       const event = { lastEventId: id, data } as MessageEvent<string>;
-      for (const listener of this.listeners.get("live-feed-current") ?? []) {
+      for (const listener of this.listeners.get(eventName) ?? []) {
         if (typeof listener === "function") {
           listener(event);
         } else {
@@ -467,7 +471,7 @@ describe("createLiveFeedSubscription", () => {
           commands: input.kind === "error"
             ? [{ kind: "reconnect", delay_ms: 5000 }]
             : input.kind === "online"
-              ? [{ kind: "refresh_current" }, { kind: "reconnect", delay_ms: 0 }]
+              ? [{ kind: "reconnect", delay_ms: 0 }]
               : [],
         };
       },
@@ -505,7 +509,7 @@ describe("createLiveFeedSubscription", () => {
       async (input) => ({
         transport_policy: TEST_SSE_TRANSPORT_POLICY,
         commands: input.kind === "online"
-          ? [{ kind: "refresh_current" }, { kind: "reconnect", delay_ms: 0 }]
+          ? [{ kind: "reconnect", delay_ms: 0 }]
           : [],
       }),
       async () => {},
@@ -616,6 +620,28 @@ describe("createLiveFeedSubscription", () => {
 
     expect(ingested).toHaveLength(2);
     expect(ingested[1]).toEqual(ingested[0]);
+    subscription.close();
+  });
+
+  it("forwards the full catalog event that bootstraps the client", async () => {
+    vi.useFakeTimers();
+    const global = globalThis as unknown as TestGlobal;
+    global.EventSource = FakeEventSource;
+    const ingested: unknown[][] = [];
+    const subscription = createLiveFeedSubscription(
+      () => "https://feeds.example.test/live-feeds/v3/events",
+      async () => ({ transport_policy: TEST_SSE_TRANSPORT_POLICY, commands: [] }),
+      async (events) => { ingested.push(events); },
+      () => {},
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    FakeEventSource.instances[0].emitCatalog("catalog:17", "catalog-payload");
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(ingested).toEqual([[
+      { id: "catalog:17", event: "live-feed-catalog", data: "catalog-payload" },
+    ]]);
     subscription.close();
   });
 });

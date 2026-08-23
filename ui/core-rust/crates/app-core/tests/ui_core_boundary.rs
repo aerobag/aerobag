@@ -717,7 +717,6 @@ fn weather_state_runtime_and_projection_are_owned_by_weather_controller() {
     for field in [
         "live_feeds",
         "live_feed_connection",
-        "live_feed_current_refresh",
         "metar_payload",
         "taf_payload",
         "notam_display_index",
@@ -2121,6 +2120,39 @@ fn platform_sse_transports_do_not_define_timing_policy() {
             && !daemon.contains("recv_timeout(Duration::from_secs(30))"),
         "the live-feed daemon heartbeat must consume the shared SSE policy"
     );
+}
+
+#[test]
+fn application_live_feed_clients_bootstrap_only_from_sse() {
+    for path in [
+        "ui/core-rust/crates/app-core/src/live_feeds.rs",
+        "ui/core-rust/crates/app-core/src/live_feed_cache.rs",
+        "ui/core-rust/crates/app-core/src/live_feed_runtime.rs",
+        "ui/core-rust/crates/app-core/src/session.rs",
+        "ui/core-rust/crates/app-wasm/src/lib.rs",
+        "ui/core-rust/crates/app-ffi/src/lib.rs",
+        "ui/web-app/src/domain/appCoreAdapter.ts",
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/LiveFeedCache.kt",
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeBindings.kt",
+    ] {
+        let source_text = read_repo_file(path);
+        let source = if path.ends_with(".rs") {
+            strip_rust_tests(&source_text)
+        } else {
+            source_text.as_str()
+        };
+        for forbidden in [
+            "current.json",
+            "live_feeds/current",
+            "refresh_live_feed_current",
+            "refresh_current",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} exposes the daemon-owned current ledger to an application client: {forbidden}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -396,7 +396,7 @@ current client is never forced to download an old segment.
 
 Publication GC traces the current head manifest, checkpoint, and advertised
 deltas. It also keeps superseded manifests/blobs for a short publication grace
-period so a client that fetched the previous `current.json` can finish its
+period so a client that received the previous SSE catalog can finish its
 requests. After grace, unreferenced checkpoints, deltas, and manifests are
 deleted.
 

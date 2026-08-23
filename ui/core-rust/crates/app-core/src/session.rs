@@ -132,9 +132,9 @@ use crate::{
         nexrad_animation_for_frames,
         nexrad_frame_age_summary as controller_nexrad_frame_age_summary, nexrad_frame_candidates,
         nexrad_freshest_frame_observed_at_utc as controller_nexrad_freshest_frame_observed_at_utc,
-        LiveFeedConnectionMode, LiveFeedCurrentRefreshState, LiveForecastAtmosphereState,
-        LiveNavKvSource, LiveNexradInstalledState, LiveObstacleHadState, WeatherController,
-        WeatherModelCheckpoint, WeatherProjection, WeatherProjectionInput,
+        LiveFeedConnectionMode, LiveForecastAtmosphereState, LiveNavKvSource,
+        LiveNexradInstalledState, LiveObstacleHadState, WeatherController, WeatherModelCheckpoint,
+        WeatherProjection, WeatherProjectionInput,
     },
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
@@ -925,7 +925,7 @@ fn data_status_page_input(
     cloud_projection: &CloudProjection,
 ) -> DataStatusPageInput {
     let live_feeds = session.weather.live_feeds();
-    let index_loaded = live_feeds.current_loaded();
+    let index_loaded = live_feeds.catalog_loaded();
     let product =
         |product_id: &str,
          loaded: bool,
@@ -1622,9 +1622,6 @@ fn live_feed_product_from_resource_id(resource_id: &str) -> Option<&str> {
 }
 
 fn live_feed_resource_failure_detail(resource_id: &str, message: &str) -> String {
-    if resource_id == "live_feeds/current" {
-        return format!("Live feed index unavailable: {message}");
-    }
     if let Some(product) = live_feed_product_from_resource_id(resource_id) {
         return format!(
             "{} live feed unavailable: {message}",
@@ -1649,34 +1646,6 @@ fn record_live_feed_fetch_failure(
     resource_id: &str,
     message: &str,
 ) -> bool {
-    if resource_id == "live_feeds/current" {
-        let detail = live_feed_resource_failure_detail(resource_id, message);
-        let mut changed = false;
-        if session.map.layer_state().metars.visible {
-            changed |= upsert_data_status_record(
-                session,
-                live_feed_unavailable_status_record("metars", detail.clone()),
-            );
-        }
-        if session.map.layer_state().nexrad.visible {
-            changed |= upsert_data_status_record(
-                session,
-                live_feed_unavailable_status_record("nexrad", detail.clone()),
-            );
-        }
-        if session.map.layer_state().vectors.visible {
-            changed |= upsert_data_status_record(
-                session,
-                live_feed_unavailable_status_record("tfrs", detail.clone()),
-            );
-            changed |= upsert_data_status_record(
-                session,
-                live_feed_unavailable_status_record("obstacles", detail),
-            );
-        }
-        return changed;
-    }
-
     let Some(product) = live_feed_product_from_resource_id(resource_id) else {
         return false;
     };
@@ -6300,30 +6269,6 @@ pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome>
         .sync_outcome_with_invalidations_at_epoch_ms(session.coordinator.wall_clock_epoch_ms))
 }
 
-pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
-    if session.weather.current_refresh() == LiveFeedCurrentRefreshState::Ingested {
-        session
-            .weather
-            .set_current_refresh(LiveFeedCurrentRefreshState::Idle);
-        return Ok(session
-            .weather
-            .live_feeds()
-            .complete_outcome_with_invalidations());
-    }
-    session
-        .weather
-        .set_current_refresh(LiveFeedCurrentRefreshState::Requested);
-    Ok(session
-        .weather
-        .live_feeds()
-        .refresh_current_outcome_with_invalidations_at_epoch_ms(
-            session.coordinator.wall_clock_epoch_ms,
-        ))
-}
-
 pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str) -> AppResult<()> {
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
@@ -6371,24 +6316,11 @@ pub fn ingest_live_feed_sse_event_in_session_at_epoch_ms(
     event: &LiveFeedSseEvent,
     epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
-    let slot = session_slot(handle)?;
-    let mut session_guard = slot.lock_running()?;
-    let session = &mut *session_guard;
-    record_live_feed_connection_event(
-        session,
-        LiveFeedConnectionEvent {
-            kind: LiveFeedConnectionEventKind::Message,
-            message: None,
-            source_url: None,
-            status_url: None,
-            network_status: None,
-        },
+    ingest_live_feed_sse_events_in_session_at_epoch_ms(
+        handle,
+        std::slice::from_ref(event),
         epoch_ms,
-    );
-    session
-        .weather
-        .live_feeds_mut()
-        .ingest_sse_event(event.clone())
+    )
 }
 
 pub fn ingest_live_feed_sse_events_in_session(
@@ -6438,20 +6370,12 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
                 ));
         }
     };
+    install_live_feed_payloads(session)?;
+    sync_live_feed_overlay_status_records(session);
     Ok(session
         .weather
         .live_feeds()
         .sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
-}
-
-fn mark_live_feed_current_refresh_ingested(session: &mut UiSession, resource_id: &str) {
-    if resource_id == "live_feeds/current"
-        && session.weather.current_refresh() == LiveFeedCurrentRefreshState::Requested
-    {
-        session
-            .weather
-            .set_current_refresh(LiveFeedCurrentRefreshState::Ingested);
-    }
 }
 
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
@@ -6530,25 +6454,11 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let slot = session_slot(handle)?;
         let mut session_guard = slot.lock_running()?;
         let session = &mut *session_guard;
-        if resource_id == "live_feeds/current" {
-            record_live_feed_connection_event(
-                session,
-                LiveFeedConnectionEvent {
-                    kind: LiveFeedConnectionEventKind::Message,
-                    message: None,
-                    source_url: None,
-                    status_url: None,
-                    network_status: None,
-                },
-                epoch_ms,
-            );
-        }
         if let Err(err) = session
             .weather
             .live_feeds_mut()
             .ingest_resource(resource_id, bytes)
         {
-            mark_live_feed_current_refresh_ingested(session, resource_id);
             let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
             session
                 .weather
@@ -6561,7 +6471,6 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             return Ok(());
         }
         if let Err(err) = install_live_feed_payloads(session) {
-            mark_live_feed_current_refresh_ingested(session, resource_id);
             let wall_clock_epoch_ms = session.coordinator.wall_clock_epoch_ms;
             session
                 .weather
@@ -6573,7 +6482,6 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             sync_live_feed_overlay_status_records(session);
             return Ok(());
         }
-        mark_live_feed_current_refresh_ingested(session, resource_id);
         clear_live_feed_resource_error(session);
         return Ok(());
     }
@@ -6657,7 +6565,20 @@ pub fn report_live_feed_connection_event_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    let stream_failed = event.kind == LiveFeedConnectionEventKind::Error;
     record_live_feed_connection_event(session, event, epoch_ms);
+    if stream_failed
+        && session.map.layer_state().nexrad.visible
+        && nexrad_status_manifest(session).is_none()
+    {
+        upsert_data_status_record(
+            session,
+            live_feed_unavailable_status_record(
+                "nexrad",
+                "NEXRAD live feed unavailable: No live NEXRAD data is loaded".to_string(),
+            ),
+        );
+    }
     changed_session_update_outcome(session)
 }
 
@@ -7742,7 +7663,7 @@ fn ingest_live_forecast_atmosphere_resource(
 }
 
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
-    if session.weather.live_feeds().current_loaded() {
+    if session.weather.live_feeds().catalog_loaded() {
         if !session
             .weather
             .live_feeds()
@@ -9370,7 +9291,7 @@ fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreR
         .forecast_atmosphere_state
         .is_none()
     {
-        if !session.weather.live_feeds().current_loaded()
+        if !session.weather.live_feeds().catalog_loaded()
             || !session
                 .weather
                 .live_feeds()
@@ -14762,7 +14683,7 @@ mod tests {
         commit_prepared_live_feed(session, prepared)
     }
 
-    fn live_current_manifest_for_test(
+    fn live_feed_catalog_for_test(
         products: BTreeMap<String, product_contracts::live_feeds::v3::CurrentProduct>,
     ) -> Vec<u8> {
         serde_json::to_vec(&product_contracts::live_feeds::v3::CurrentManifest {
@@ -14770,7 +14691,21 @@ mod tests {
             generated_at_utc: "2026-05-20T12:00:00Z".to_string(),
             products,
         })
-        .expect("current live-feed manifest")
+        .expect("live-feed catalog")
+    }
+
+    fn ingest_live_feed_catalog_for_test(
+        handle: u32,
+        catalog: &[u8],
+    ) -> AppResult<HadOperationOutcome> {
+        ingest_live_feed_sse_event_in_session(
+            handle,
+            &LiveFeedSseEvent {
+                id: Some("catalog:test".to_string()),
+                event: Some(product_contracts::live_feeds::v3::CATALOG_EVENT_NAME.to_string()),
+                data: String::from_utf8(catalog.to_vec()).expect("UTF-8 live-feed catalog"),
+            },
+        )
     }
 
     fn live_current_product_for_test(
@@ -15853,7 +15788,7 @@ mod tests {
                 .insert_installed_package_id("must-roll-back".to_string());
             session
                 .weather
-                .set_current_refresh(LiveFeedCurrentRefreshState::Requested);
+                .record_resource_error(42, "must-roll-back".to_string());
             session.situation.plan_preview_mut().pointer = Some(PlanPreviewPointer {
                 row_uid: "must-roll-back".to_string(),
                 offset_nm: 4.0,
@@ -15876,8 +15811,8 @@ mod tests {
             .installed_package_ids()
             .contains("must-roll-back"));
         assert_eq!(
-            session.weather.current_refresh(),
-            LiveFeedCurrentRefreshState::Idle
+            session.weather.connection().last_resource_error_message,
+            None
         );
         assert_eq!(session.weather.revision(), 0);
         assert_eq!(session.situation.revision(), 0);
@@ -18000,10 +17935,9 @@ mod tests {
 
     fn ingest_test_live_obstacle_state(handle: u32, version: &str, obstacle_had: &TestObstacleHad) {
         let state_url = format!("states/obstacles/{version}/manifest.json");
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "obstacles".to_string(),
                 live_current_product_for_test(
                     "obstacles",
@@ -19648,8 +19582,7 @@ mod tests {
             session
                 .weather
                 .live_feeds_mut()
-                .ingest_resource(
-                    "live_feeds/current",
+                .ingest_catalog_bytes(
                     br#"{
                         "schema_version": 3,
                         "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -19669,7 +19602,7 @@ mod tests {
                         }
                     }"#,
                 )
-                .expect("current manifest");
+                .expect("stream catalog");
         }
         let mut overlay = empty_map_overlay_query();
         overlay.needed_metars = true;
@@ -19688,23 +19621,14 @@ mod tests {
     }
 
     #[test]
-    fn live_feed_current_refresh_completes_after_current_resource_ingest() {
+    fn live_feed_stream_catalog_bootstraps_version_requests() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_live_feed_source_in_session(init.handle, "http://feeds.example.test")
             .expect("configure live-feed source");
 
-        let HadOperationOutcome::NeedResources { resources } =
-            refresh_live_feed_current_in_session(init.handle).expect("refresh current")
-        else {
-            panic!("expected current manifest request");
-        };
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].id, "live_feeds/current");
-
-        ingest_resource_in_session(
+        let HadOperationOutcome::NeedResources { resources } = ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
             br#"{
                 "schema_version": 3,
                 "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -19718,18 +19642,7 @@ mod tests {
                 }
             }"#,
         )
-        .expect("ingest current manifest");
-
-        let HadOperationOutcome::Complete { invalidations, .. } =
-            refresh_live_feed_current_in_session(init.handle).expect("finish refresh current")
-        else {
-            panic!("current refresh should complete after current manifest ingest");
-        };
-        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
-
-        let HadOperationOutcome::NeedResources { resources } =
-            sync_live_feeds_in_session(init.handle).expect("sync live feeds")
-        else {
+        .expect("ingest stream catalog") else {
             panic!("expected version manifest request");
         };
         assert_eq!(resources.len(), 1);
@@ -19879,8 +19792,7 @@ mod tests {
             session
                 .weather
                 .live_feeds_mut()
-                .ingest_resource(
-                    "live_feeds/current",
+                .ingest_catalog_bytes(
                     format!(
                         r#"{{
                             "schema_version": 3,
@@ -19996,8 +19908,7 @@ mod tests {
             session
                 .weather
                 .live_feeds_mut()
-                .ingest_resource(
-                    "live_feeds/current",
+                .ingest_catalog_bytes(
                     format!(
                         r#"{{
                             "schema_version": 3,
@@ -20083,9 +19994,8 @@ mod tests {
             let (_, prepared_bytes) =
                 crate::prepare_live_feed_state_resource(&resource_id, &encoded).unwrap();
             let envelope = crate::decode_prepared_live_feed(&prepared_bytes).unwrap();
-            ingest_resource_in_session(
+            ingest_live_feed_catalog_for_test(
                 init.handle,
-                "live_feeds/current",
                 format!(
                     r#"{{
                         "schema_version": 3,
@@ -20170,9 +20080,8 @@ mod tests {
         let state_bytes = serde_json::to_vec(&state).expect("state bytes");
         let state_sha256 = format!("{:x}", Sha256::digest(&state_bytes));
 
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
             format!(
                 r#"{{
                     "schema_version": 3,
@@ -20190,7 +20099,7 @@ mod tests {
             )
             .as_bytes(),
         )
-        .expect("current manifest");
+        .expect("stream catalog");
         ingest_resource_in_session(
             init.handle,
             "live_feeds/version/tafs/v1",
@@ -20445,8 +20354,7 @@ mod tests {
             session
                 .weather
                 .live_feeds_mut()
-                .ingest_resource(
-                    "live_feeds/current",
+                .ingest_catalog_bytes(
                     &serde_json::to_vec(&serde_json::json!({
                         "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
                         "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -20638,8 +20546,7 @@ mod tests {
             session
                 .weather
                 .live_feeds_mut()
-                .ingest_resource(
-                    "live_feeds/current",
+                .ingest_catalog_bytes(
                     serde_json::to_string(&serde_json::json!({
                         "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
                         "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -20892,9 +20799,8 @@ mod tests {
         let state_bytes = serde_json::to_vec(&state).expect("state bytes");
         let state_sha256 = format!("{:x}", Sha256::digest(&state_bytes));
 
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
             format!(
                 r#"{{
                     "schema_version": 3,
@@ -20912,7 +20818,7 @@ mod tests {
             )
             .as_bytes(),
         )
-        .expect("current manifest");
+        .expect("stream catalog");
 
         install_live_feed_installed_state_in_session(
             init.handle,
@@ -21050,8 +20956,7 @@ mod tests {
         let mut cache_catalog = crate::LiveFeedsState::default();
         let live_feeds_schema_version = crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION;
         cache_catalog
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 format!(
                     r#"{{
                         "schema_version": {live_feeds_schema_version},
@@ -21801,20 +21706,17 @@ mod tests {
         session
             .weather
             .live_feeds_mut()
-            .ingest_resource(
-                "live_feeds/current",
-                &live_current_manifest_for_test(BTreeMap::from([(
-                    "tfrs".to_string(),
-                    live_current_product_for_test(
-                        "tfrs",
-                        "bad",
-                        "states/tfrs/bad.json",
-                        &bad_tfr_state_sha,
-                        Vec::new(),
-                    ),
-                )])),
-            )
-            .expect("current manifest");
+            .ingest_catalog_bytes(&live_feed_catalog_for_test(BTreeMap::from([(
+                "tfrs".to_string(),
+                live_current_product_for_test(
+                    "tfrs",
+                    "bad",
+                    "states/tfrs/bad.json",
+                    &bad_tfr_state_sha,
+                    Vec::new(),
+                ),
+            )])))
+            .expect("stream catalog");
         session
             .weather
             .live_feeds_mut()
@@ -21946,10 +21848,9 @@ mod tests {
                 .expect("vector manifest");
             session.map.set_layer_visibility(MapLayerId::Vectors, true);
         }
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "obstacles".to_string(),
                 live_current_product_for_test(
                     "obstacles",
@@ -22080,10 +21981,9 @@ mod tests {
         let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
         assert!(feature_ids.iter().any(|id| id == "obstacle:old"));
 
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "obstacles".to_string(),
                 live_current_product_for_test(
                     "obstacles",
@@ -22125,10 +22025,9 @@ mod tests {
         configure_live_feed_source_in_session(init.handle, "https://feeds.example.test")
             .expect("configure live-feed source");
 
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "winds-aloft".to_string(),
                 live_current_product_for_test(
                     "winds-aloft",
@@ -22656,10 +22555,9 @@ mod tests {
         assert_eq!(empty_latest.description, "None");
         assert!(empty_latest.action.is_none());
 
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "winds-aloft".to_string(),
                 live_current_product_for_test(
                     "winds-aloft",
@@ -22941,10 +22839,9 @@ mod tests {
         .expect("install initial winds");
 
         let available_version = "newer-winds";
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "winds-aloft".to_string(),
                 live_current_product_for_test(
                     "winds-aloft",
@@ -23210,7 +23107,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_live_feed_current_records_nexrad_caution_when_nexrad_layer_visible() {
+    fn failed_live_feed_stream_records_nexrad_caution_when_nexrad_layer_visible() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_test_live_feed_policy(
@@ -23220,10 +23117,16 @@ mod tests {
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
 
-        let snapshot = report_session_resource_failure_in_session(
+        let snapshot = report_live_feed_connection_event_in_session(
             init.handle,
-            "live_feeds/current",
-            "failed to fetch /live-feeds/v3/current.json: 404",
+            LiveFeedConnectionEvent {
+                kind: LiveFeedConnectionEventKind::Error,
+                message: Some("live-feed stream unavailable".to_string()),
+                source_url: Some("https://feeds.example.test".to_string()),
+                status_url: None,
+                network_status: Some(LiveFeedNetworkStatus::NoActiveNetwork),
+            },
+            0,
         )
         .expect("report failure");
 
@@ -23235,7 +23138,7 @@ mod tests {
             .expect("nexrad caution");
         assert_eq!(nexrad.label, "NEXRAD");
         assert!(nexrad.drives_caution);
-        assert!(nexrad.detail.contains("Live feed index unavailable"));
+        assert!(nexrad.detail.contains("No live NEXRAD data is loaded"));
     }
 
     #[test]
@@ -23368,8 +23271,18 @@ mod tests {
         );
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
-        report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
-            .expect("report failure");
+        report_live_feed_connection_event_in_session(
+            init.handle,
+            LiveFeedConnectionEvent {
+                kind: LiveFeedConnectionEventKind::Error,
+                message: Some("live-feed stream unavailable".to_string()),
+                source_url: Some("https://feeds.example.test".to_string()),
+                status_url: None,
+                network_status: Some(LiveFeedNetworkStatus::NoActiveNetwork),
+            },
+            0,
+        )
+        .expect("report failure");
 
         let snapshot = set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, false)
             .expect("hide nexrad");
@@ -23713,7 +23626,7 @@ mod tests {
         let current_manifest = manifests.last().expect("current NEXRAD manifest").1.clone();
         let current_state_sha256 =
             canonical_json_sha256_value(&current_manifest).expect("current state hash");
-        let current = live_current_manifest_for_test(BTreeMap::from([(
+        let current = live_feed_catalog_for_test(BTreeMap::from([(
             "nexrad".to_string(),
             live_current_product_for_test(
                 "nexrad",
@@ -23723,8 +23636,7 @@ mod tests {
                 history,
             ),
         )]));
-        ingest_resource_in_session(init.handle, "live_feeds/current", &current)
-            .expect("ingest current");
+        ingest_live_feed_catalog_for_test(init.handle, &current).expect("ingest current");
         for (version, manifest) in &manifests {
             ingest_nexrad_live_test_state(init.handle, version, manifest);
         }
@@ -24046,7 +23958,7 @@ mod tests {
         let current_state_sha256 =
             canonical_json_sha256_value(&manifests.last().expect("current NEXRAD manifest").1)
                 .expect("current state hash");
-        let current = live_current_manifest_for_test(BTreeMap::from([(
+        let current = live_feed_catalog_for_test(BTreeMap::from([(
             "nexrad".to_string(),
             live_current_product_for_test(
                 "nexrad",
@@ -24056,8 +23968,7 @@ mod tests {
                 history,
             ),
         )]));
-        ingest_resource_in_session(init.handle, "live_feeds/current", &current)
-            .expect("ingest current");
+        ingest_live_feed_catalog_for_test(init.handle, &current).expect("ingest current");
         for (version, manifest) in &manifests {
             ingest_nexrad_live_test_state(init.handle, version, manifest);
         }
@@ -24197,10 +24108,9 @@ mod tests {
         configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::new()),
+            &live_feed_catalog_for_test(BTreeMap::new()),
         )
         .expect("ingest empty current manifest");
 
@@ -24578,10 +24488,9 @@ mod tests {
         let built =
             had_nav_kv::build_nav_kv_sorted(pairs.clone(), 1024).expect("build empty obstacle HAD");
         let state_sha256 = had_nav_kv::nav_kv_canonical_sha256_from_pairs(&pairs);
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "obstacles".to_string(),
                 live_current_product_for_test(
                     "obstacles",
@@ -24653,10 +24562,9 @@ mod tests {
         let version = "nexrad-old";
         let manifest = nexrad_live_test_manifest(version, "2020-01-01T00:00:00Z");
         let state_sha256 = canonical_json_sha256_value(&manifest).expect("state hash");
-        ingest_resource_in_session(
+        ingest_live_feed_catalog_for_test(
             init.handle,
-            "live_feeds/current",
-            &live_current_manifest_for_test(BTreeMap::from([(
+            &live_feed_catalog_for_test(BTreeMap::from([(
                 "nexrad".to_string(),
                 live_current_product_for_test(
                     "nexrad",
@@ -25343,13 +25251,13 @@ mod tests {
     #[test]
     fn data_status_page_open_live_feed_connection_reports_resource_error() {
         let init = create_current_test_session();
-        ingest_resource_in_session_at_epoch_ms(
+        ingest_live_feed_sse_event_in_session_at_epoch_ms(
             init.handle,
-            "live_feeds/current",
-            br#"{
-                "schema_version": 1,
-                "products": {}
-            }"#,
+            &LiveFeedSseEvent {
+                id: Some("catalog:bad".to_string()),
+                event: Some(product_contracts::live_feeds::v3::CATALOG_EVENT_NAME.to_string()),
+                data: r#"{"schema_version":1,"products":{}}"#.to_string(),
+            },
             utc("2026-05-20T12:01:00Z").timestamp_millis(),
         )
         .expect("unsupported live-feed resource should be captured as status");
@@ -25381,12 +25289,12 @@ mod tests {
             "The live-feed event stream is connected, but live-feed data is unavailable"
         ));
         assert!(row.detail.contains(
-            "live-feed current manifest offers schema version 1; client requires schema version 3"
+            "live-feed SSE catalog offers schema version 1; client requires schema version 3"
         ));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Error"
                 && fact.value.contains(
-                    "live-feed current manifest offers schema version 1; client requires schema version 3",
+                    "live-feed SSE catalog offers schema version 1; client requires schema version 3",
                 )
         }));
     }
@@ -31634,7 +31542,7 @@ mod tests {
             "tile_path_template": "tiles/res{res}/{x}/{y}.png",
         });
         let state_sha256 = canonical_json_sha256_value(&manifest).expect("state hash");
-        let current = live_current_manifest_for_test(BTreeMap::from([(
+        let current = live_feed_catalog_for_test(BTreeMap::from([(
             "nexrad".to_string(),
             live_current_product_for_test(
                 "nexrad",
@@ -31644,8 +31552,7 @@ mod tests {
                 Vec::new(),
             ),
         )]));
-        ingest_resource_in_session(init.handle, "live_feeds/current", &current)
-            .expect("ingest current");
+        ingest_live_feed_catalog_for_test(init.handle, &current).expect("ingest current");
         ingest_nexrad_live_test_state(init.handle, version, &manifest);
 
         let now = utc(observed).timestamp_millis();

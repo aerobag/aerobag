@@ -725,20 +725,21 @@ impl LiveFeedCache {
         self.stage_or_remember_installed_state(installed);
     }
 
-    pub fn ingest_current(&mut self, bytes: &[u8]) -> AppResult<()> {
-        self.live_feeds
-            .ingest_resource("live_feeds/current", bytes)?;
+    pub fn ingest_catalog(&mut self, bytes: &[u8]) -> AppResult<()> {
+        self.live_feeds.ingest_catalog_bytes(bytes)?;
         self.prune_nexrad_to_catalog();
         Ok(())
     }
 
     pub fn ingest_sse_event(&mut self, event: &crate::LiveFeedSseEvent) -> AppResult<bool> {
+        let is_catalog =
+            event.event.as_deref() == Some(product_contracts::live_feeds::v3::CATALOG_EVENT_NAME);
         let changed = !self
             .live_feeds
             .ingest_sse_events(std::iter::once(event.clone()))?
             .is_empty();
         self.prune_nexrad_to_catalog();
-        Ok(changed)
+        Ok(is_catalog || changed)
     }
 
     pub fn ingest_version_manifest(
@@ -843,11 +844,6 @@ impl LiveFeedCache {
         self.winds_aloft_download_requested = directive.winds_aloft_download_requested;
     }
 
-    pub fn current_refresh_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
-        self.live_feeds
-            .durable_current_refresh_requests_at_epoch_ms(epoch_ms)
-    }
-
     pub fn record_request_failure(&mut self, request_id: &str, epoch_ms: i64) {
         self.live_feeds
             .record_resource_failure(request_id, epoch_ms);
@@ -871,14 +867,6 @@ impl LiveFeedCache {
         payload: LiveFeedFetchedPayload,
     ) -> AppResult<Option<LiveFeedInstalledState>> {
         match &request.kind {
-            LiveFeedCacheRequestKind::Current => {
-                let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
-                    return Err(cache_error("current manifest must be bytes".to_string()));
-                };
-                self.live_feeds
-                    .ingest_durable_request_resource(request, &bytes)?;
-                Ok(None)
-            }
             LiveFeedCacheRequestKind::Version { product, version } => {
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error("version manifest must be bytes".to_string()));
@@ -1057,7 +1045,7 @@ impl LiveFeedCache {
     }
 
     fn prune_nexrad_to_catalog(&mut self) {
-        if !self.live_feeds.current_loaded() {
+        if !self.live_feeds.catalog_loaded() {
             return;
         }
         let retained = self
@@ -2867,11 +2855,11 @@ mod tests {
         })
     }
 
-    fn current_manifest(product: &str, version: &str, state_sha256: &str) -> Vec<u8> {
-        current_manifest_at(product, version, state_sha256, None)
+    fn catalog_manifest(product: &str, version: &str, state_sha256: &str) -> Vec<u8> {
+        catalog_manifest_at(product, version, state_sha256, None)
     }
 
-    fn current_manifest_at(
+    fn catalog_manifest_at(
         product: &str,
         version: &str,
         state_sha256: &str,
@@ -2893,7 +2881,7 @@ mod tests {
         .unwrap()
     }
 
-    fn nexrad_current_manifest(current: &str, history: &[&str]) -> Vec<u8> {
+    fn nexrad_catalog_manifest(current: &str, history: &[&str]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -3028,7 +3016,7 @@ mod tests {
         let history = ["v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7"];
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&nexrad_current_manifest("v8", &history))
+            .ingest_catalog(&nexrad_catalog_manifest("v8", &history))
             .unwrap();
         let mut payloads = BTreeMap::new();
         for (index, version) in history.into_iter().chain(std::iter::once("v8")).enumerate() {
@@ -3242,7 +3230,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 let epoch_ms = index as i64 * 5 * 60_000;
                 cache
-                    .ingest_current(&nexrad_current_manifest(version, &history))
+                    .ingest_catalog(&nexrad_catalog_manifest(version, &history))
                     .unwrap();
 
                 let version_requests = cache.missing_requests_at_epoch_ms(epoch_ms);
@@ -3414,7 +3402,7 @@ mod tests {
             ..NexradAcquisitionDirective::default()
         });
         cache
-            .ingest_current(&nexrad_current_manifest("v1", &[]))
+            .ingest_catalog(&nexrad_catalog_manifest("v1", &[]))
             .unwrap();
         let (v1_manifest, v1_package) = nexrad_version_manifest("v1");
         let version_request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
@@ -3444,7 +3432,7 @@ mod tests {
         });
 
         cache
-            .ingest_current(&nexrad_current_manifest("v2", &["v1"]))
+            .ingest_catalog(&nexrad_catalog_manifest("v2", &["v1"]))
             .unwrap();
         let (v2_manifest, _) = nexrad_version_manifest("v2");
         let version_request = cache.missing_requests_at_epoch_ms(10 * 60_000).remove(0);
@@ -3479,7 +3467,7 @@ mod tests {
             ..NexradAcquisitionDirective::default()
         });
         cache
-            .ingest_current(&nexrad_current_manifest("v1", &[]))
+            .ingest_catalog(&nexrad_catalog_manifest("v1", &[]))
             .unwrap();
         let (version_manifest, _) = nexrad_version_manifest("v1");
         let version_request = cache.missing_requests_at_epoch_ms(1_000).remove(0);
@@ -3963,16 +3951,24 @@ mod tests {
     }
 
     #[test]
-    fn durable_reconnect_refresh_requests_current_after_catalog_loaded() {
+    fn empty_sse_catalog_is_still_a_client_visible_change() {
         let mut cache = live_feed_cache();
-        cache
-            .ingest_current(&current_manifest("metars", "v1", "abc"))
+        let changed = cache
+            .ingest_sse_event(&crate::LiveFeedSseEvent {
+                id: Some("catalog:empty".to_string()),
+                event: Some(product_contracts::live_feeds::v3::CATALOG_EVENT_NAME.to_string()),
+                data: serde_json::json!({
+                    "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                    "generated_at_utc": "2026-08-23T00:00:00Z",
+                    "products": {},
+                })
+                .to_string(),
+            })
             .unwrap();
 
-        let requests = cache.current_refresh_requests_at_epoch_ms(1_000);
-
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].id, "live_feeds/current");
+        assert!(changed);
+        assert!(cache.live_feeds.catalog_loaded());
+        assert!(cache.missing_requests().is_empty());
     }
 
     #[test]
@@ -3981,7 +3977,7 @@ mod tests {
         let version = "winds-v2";
         let state_sha256 = "winds-state-v2";
         cache
-            .ingest_current(&current_manifest("winds-aloft", version, state_sha256))
+            .ingest_catalog(&catalog_manifest("winds-aloft", version, state_sha256))
             .unwrap();
         let version_manifest = serde_json::to_vec(&serde_json::json!({
             "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
@@ -4033,7 +4029,7 @@ mod tests {
         let version = "winds-v2";
         let state_sha256 = "winds-state-v2";
         cache
-            .ingest_current(&current_manifest("winds-aloft", version, state_sha256))
+            .ingest_catalog(&catalog_manifest("winds-aloft", version, state_sha256))
             .unwrap();
         cache
             .ingest_version_manifest(
@@ -4140,7 +4136,7 @@ mod tests {
         let published_versions = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"];
         let retained_versions = ["v3", "v4", "v5", "v6", "v7", "v8", "v9"];
         cache
-            .ingest_current(&nexrad_current_manifest("v9", &published_versions[..8]))
+            .ingest_catalog(&nexrad_catalog_manifest("v9", &published_versions[..8]))
             .unwrap();
 
         let version_requests = cache.missing_requests();
@@ -4190,7 +4186,7 @@ mod tests {
         );
 
         cache
-            .ingest_current(&nexrad_current_manifest(
+            .ingest_catalog(&nexrad_catalog_manifest(
                 "v10",
                 &["v4", "v5", "v6", "v7", "v8", "v9"],
             ))
@@ -4256,7 +4252,10 @@ mod tests {
     #[test]
     fn durable_request_failures_are_retry_gated_in_core() {
         let mut cache = live_feed_cache();
-        cache.record_request_failure("live_feeds/current", 1_000);
+        cache
+            .ingest_catalog(&catalog_manifest("metars", "v1", "abc"))
+            .unwrap();
+        cache.record_request_failure("live_feeds/version/metars/v1", 1_000);
 
         let decision = cache.runtime_decision(crate::LiveFeedRuntimeInput {
             kind: crate::LiveFeedRuntimeEventKind::Start,
@@ -4273,10 +4272,10 @@ mod tests {
             }]
         );
 
-        assert!(cache.current_refresh_requests_at_epoch_ms(1_001).is_empty());
+        assert!(cache.missing_requests_at_epoch_ms(1_001).is_empty());
         assert_eq!(
-            cache.current_refresh_requests_at_epoch_ms(301_000)[0].id,
-            "live_feeds/current"
+            cache.missing_requests_at_epoch_ms(301_000)[0].id,
+            "live_feeds/version/metars/v1"
         );
     }
 
@@ -4333,7 +4332,7 @@ mod tests {
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("metars", "v1", &v1, None);
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest("metars", "v1", &v1_sha))
+            .ingest_catalog(&catalog_manifest("metars", "v1", &v1_sha))
             .unwrap();
         assert_eq!(
             cache.missing_requests()[0].kind,
@@ -4383,7 +4382,7 @@ mod tests {
         let v2_manifest =
             version_manifest_with_state_bytes(&v2_manifest, delta_bytes.len() as u64 + 1024);
         cache
-            .ingest_current(&current_manifest("metars", "v2", &v2_sha))
+            .ingest_catalog(&catalog_manifest("metars", "v2", &v2_sha))
             .unwrap();
         cache
             .ingest_version_manifest("metars", "v2", &v2_manifest)
@@ -4426,7 +4425,7 @@ mod tests {
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("tfrs", "v1", &v1, None);
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest("tfrs", "v1", &v1_sha))
+            .ingest_catalog(&catalog_manifest("tfrs", "v1", &v1_sha))
             .unwrap();
         cache
             .ingest_version_manifest("tfrs", "v1", &v1_manifest)
@@ -4476,7 +4475,7 @@ mod tests {
         let v2_manifest =
             version_manifest_with_state_bytes(&v2_manifest, delta_bytes.len() as u64 + 1024);
         cache
-            .ingest_current(&current_manifest("tfrs", "v2", &v2_sha))
+            .ingest_catalog(&catalog_manifest("tfrs", "v2", &v2_sha))
             .unwrap();
         cache
             .ingest_version_manifest("tfrs", "v2", &v2_manifest)
@@ -4513,7 +4512,7 @@ mod tests {
             json_version_manifest("metars", "v1", &state, None);
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest_at(
+            .ingest_catalog(&catalog_manifest_at(
                 "metars",
                 "v1",
                 &state_sha256,
@@ -4557,7 +4556,7 @@ mod tests {
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("metars", "v1", &v1, None);
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest("metars", "v1", &v1_sha))
+            .ingest_catalog(&catalog_manifest("metars", "v1", &v1_sha))
             .unwrap();
         cache
             .ingest_version_manifest("metars", "v1", &v1_manifest)
@@ -4596,7 +4595,7 @@ mod tests {
         let (v2_manifest, _, _) =
             json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
         cache
-            .ingest_current(&current_manifest("metars", "v2", &v2_sha))
+            .ingest_catalog(&catalog_manifest("metars", "v2", &v2_sha))
             .unwrap();
         cache
             .ingest_version_manifest("metars", "v2", &v2_manifest)
@@ -4627,7 +4626,7 @@ mod tests {
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("tafs", "v1", &v1, None);
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest("tafs", "v1", &v1_sha))
+            .ingest_catalog(&catalog_manifest("tafs", "v1", &v1_sha))
             .unwrap();
         cache
             .ingest_version_manifest("tafs", "v1", &v1_manifest)
@@ -4673,7 +4672,7 @@ mod tests {
         let v2_manifest =
             version_manifest_with_state_bytes(&v2_manifest, delta_bytes.len() as u64 + 1024);
         cache
-            .ingest_current(&current_manifest("tafs", "v2", &v2_sha))
+            .ingest_catalog(&catalog_manifest("tafs", "v2", &v2_sha))
             .unwrap();
         cache
             .ingest_version_manifest("tafs", "v2", &v2_manifest)
@@ -4756,7 +4755,7 @@ mod tests {
         .unwrap();
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest("obstacles", "v1", &first_sha))
+            .ingest_catalog(&catalog_manifest("obstacles", "v1", &first_sha))
             .unwrap();
         cache
             .ingest_version_manifest("obstacles", "v1", &version_manifest)
@@ -4831,7 +4830,7 @@ mod tests {
         }))
         .unwrap();
         cache
-            .ingest_current(&current_manifest("obstacles", "v2", &second_sha))
+            .ingest_catalog(&catalog_manifest("obstacles", "v2", &second_sha))
             .unwrap();
         cache
             .ingest_version_manifest("obstacles", "v2", &second_manifest)
@@ -5015,7 +5014,7 @@ mod tests {
         .unwrap();
         let mut cache = live_feed_cache();
         cache
-            .ingest_current(&current_manifest("obstacles", "v1", &first_sha))
+            .ingest_catalog(&catalog_manifest("obstacles", "v1", &first_sha))
             .unwrap();
         cache
             .ingest_version_manifest("obstacles", "v1", &version_manifest)
@@ -5082,7 +5081,7 @@ mod tests {
         }))
         .unwrap();
         cache
-            .ingest_current(&current_manifest("obstacles", "v2", &second_sha))
+            .ingest_catalog(&catalog_manifest("obstacles", "v2", &second_sha))
             .unwrap();
         cache
             .ingest_version_manifest("obstacles", "v2", &second_manifest)

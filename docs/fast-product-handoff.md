@@ -6,11 +6,11 @@ rolling products from the static artifact snapshot.
 That is no longer the current contract. Rolling products now use the live-feed
 contract:
 
-- discovery: `/live-feeds/v3/current.json`
+- discovery and invalidation: `/live-feeds/v3/events`
 - immutable version metadata: `/live-feeds/v3/versions/<product>/<version>.json`
 - full states: `/live-feeds/v3/states/<product>/<version>/...`
 - deltas, when supported: `/live-feeds/v3/deltas/<product>/...`
-- invalidation: `/live-feeds/v3/events`
+- daemon publication ledger: `current.json` (not an application-client API)
 
 Current implementation notes live in:
 

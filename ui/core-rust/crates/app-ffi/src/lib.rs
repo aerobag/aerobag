@@ -914,12 +914,6 @@ pub fn configure_data_sources_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn refresh_live_feed_current_in_session_json(handle: u64) -> Result<String, String> {
-    let outcome = app_core::refresh_live_feed_current_in_session(handle as u32)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
 pub fn ingest_live_feed_sse_events_in_session_json(
     handle: u64,
     events_json: &str,
@@ -1607,20 +1601,6 @@ pub fn live_feed_cache_apply_session_policy(
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
     cache.apply_acquisition_directive(directive);
     Ok(())
-}
-
-pub fn live_feed_cache_current_refresh_requests_at_epoch_ms_json(
-    handle: u64,
-    epoch_ms: i64,
-) -> Result<String, String> {
-    let caches = live_feed_caches()
-        .lock()
-        .map_err(|_| "live feed cache store poisoned".to_string())?;
-    let cache = caches
-        .get(&(handle as u32))
-        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
-    serde_json::to_string(&cache.current_refresh_requests_at_epoch_ms(epoch_ms))
-        .map_err(|err| err.to_string())
 }
 
 pub fn live_feed_cache_record_request_failure(
@@ -3163,19 +3143,6 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheM
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-    epoch_ms: i64,
-) -> jstring {
-    return_string(
-        &mut env,
-        live_feed_cache_current_refresh_requests_at_epoch_ms_json(handle as u64, epoch_ms),
-    )
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheRuntimeDecisionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -4541,16 +4508,6 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncLiveFeedsI
     handle: i64,
 ) -> jstring {
     let result = sync_live_feeds_in_session_json(handle as u64);
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_refreshLiveFeedCurrentInSessionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-) -> jstring {
-    let result = refresh_live_feed_current_in_session_json(handle as u64);
     return_string(&mut env, result)
 }
 

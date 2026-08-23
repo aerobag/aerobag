@@ -77,7 +77,6 @@ pub struct LiveFeedRuntimeDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveFeedRuntimeCommand {
-    RefreshCurrent,
     Reconnect { delay_ms: i64 },
     RetryResources { delay_ms: i64 },
 }
@@ -128,14 +127,10 @@ pub fn live_feed_runtime_decision(
     LiveFeedRuntimeDecision {
         transport_policy: AEROBAG_SSE_TRANSPORT_POLICY,
         connection_event,
-        commands: matches!(
-            input.kind,
-            RuntimeKind::Connected | RuntimeKind::NetworkStatus | RuntimeKind::Online
-        )
-        .then_some(LiveFeedRuntimeCommand::RefreshCurrent)
-        .into_iter()
-        .chain(reconnect_delay_ms.map(|delay_ms| LiveFeedRuntimeCommand::Reconnect { delay_ms }))
-        .collect(),
+        commands: reconnect_delay_ms
+            .map(|delay_ms| LiveFeedRuntimeCommand::Reconnect { delay_ms })
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -148,7 +143,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connected_refreshes_current_catalog() {
+    fn connected_waits_for_stream_catalog() {
         let mut state = LiveFeedRuntimeState::default();
         let decision = live_feed_runtime_decision(
             &mut state,
@@ -162,10 +157,7 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            decision.commands,
-            vec![LiveFeedRuntimeCommand::RefreshCurrent]
-        );
+        assert!(decision.commands.is_empty());
         let event = decision.connection_event.unwrap();
         assert_eq!(event.kind, LiveFeedConnectionEventKind::Connected);
         assert_eq!(event.source_url.as_deref(), Some("http://example.test"));

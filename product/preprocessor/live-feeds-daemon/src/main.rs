@@ -50,8 +50,12 @@ use preprocessor_live_feeds::{
     tfr_detail_backfill::TfrDetailBackfillStore,
 };
 use product_contracts::{
-    live_feed_product_policy, live_feeds::v3::CurrentEvent as LiveFeedCurrentEvent, versioned_json,
-    LiveFeedProductPolicy, AEROBAG_SSE_TRANSPORT_POLICY, LIVE_FEED_PRODUCT_POLICIES,
+    live_feed_product_policy,
+    live_feeds::v3::{
+        CurrentEvent as LiveFeedCurrentEvent, CATALOG_EVENT_NAME, PRODUCT_EVENT_NAME,
+    },
+    versioned_json, LiveFeedProductPolicy, AEROBAG_SSE_TRANSPORT_POLICY,
+    LIVE_FEED_PRODUCT_POLICIES,
 };
 use serde::Serialize;
 
@@ -2058,26 +2062,21 @@ fn write_sse_stream(
     writeln!(writer, ": aerobag live-feed root {}\n", live_root.display())
         .context("failed to write SSE banner")?;
     let receiver = broker.subscribe();
-    let frames = list_live_feed_event_frames(live_root)?;
     let mut sent_events = 0_usize;
-    if frames.is_empty() {
+    if let Some(catalog) = read_live_feed_catalog(live_root)? {
+        write_sse_catalog_event(writer, &catalog)?;
+        sent_events += 1;
+        writer.flush().context("failed to flush SSE catalog")?;
+        if event_limit.is_some_and(|limit| sent_events >= limit) {
+            return Ok(());
+        }
+        thread::sleep(interval);
+    } else {
         write_sse_heartbeat(writer).context("failed to write empty SSE heartbeat")?;
         writer.flush().context("failed to flush SSE heartbeat")?;
         if event_limit == Some(0) {
             return Ok(());
         }
-    }
-    for frame in frames {
-        for event in frame {
-            write_sse_event(writer, &event)?;
-            sent_events += 1;
-            if event_limit.is_some_and(|limit| sent_events >= limit) {
-                writer.flush().context("failed to flush SSE frame")?;
-                return Ok(());
-            }
-        }
-        writer.flush().context("failed to flush SSE frame")?;
-        thread::sleep(interval);
     }
     loop {
         match receiver.recv_timeout(Duration::from_millis(
@@ -2136,7 +2135,7 @@ fn write_sse_frame(writer: &mut impl Write, frame: &[LiveFeedSseEvent]) -> anyho
 
 fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow::Result<()> {
     writeln!(writer, "id: {}", event.id).context("failed to write SSE id")?;
-    writeln!(writer, "event: live-feed-current").context("failed to write SSE event")?;
+    writeln!(writer, "event: {PRODUCT_EVENT_NAME}").context("failed to write SSE event")?;
     let mut payload = event.payload.clone();
     let history_limit = live_feed_product_policy(&payload.product)
         .map(|policy| policy.client_history_entries)
@@ -2151,6 +2150,21 @@ fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow:
         serde_json::to_string(&payload).context("failed to encode SSE payload")?
     )
     .context("failed to write SSE data")
+}
+
+fn write_sse_catalog_event(
+    writer: &mut impl Write,
+    catalog: &LiveFeedsCurrentManifest,
+) -> anyhow::Result<()> {
+    writeln!(writer, "id: catalog:{}", catalog.generated_at_utc)
+        .context("failed to write SSE catalog id")?;
+    writeln!(writer, "event: {CATALOG_EVENT_NAME}").context("failed to write SSE catalog event")?;
+    writeln!(
+        writer,
+        "data: {}\n",
+        serde_json::to_string(catalog).context("failed to encode SSE catalog")?
+    )
+    .context("failed to write SSE catalog data")
 }
 
 fn live_feed_sse_event_from_invalidation(invalidation: LiveFeedInvalidation) -> LiveFeedSseEvent {
@@ -2367,10 +2381,10 @@ impl Drop for BrokerSubscription {
     }
 }
 
-fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSseEvent>>> {
+fn read_live_feed_catalog(root: &Path) -> anyhow::Result<Option<LiveFeedsCurrentManifest>> {
     let current = root.join("current.json");
     if !current.is_file() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let current_bytes =
         fs::read(&current).with_context(|| format!("failed to read {}", current.display()))?;
@@ -2380,26 +2394,7 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
         LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", current.display()))?;
-    let mut events = current
-        .products
-        .into_iter()
-        .map(|(product, entry)| LiveFeedSseEvent {
-            id: format!("{product}:{}", entry.current),
-            payload: LiveFeedCurrentEvent {
-                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
-                product,
-                version: entry.current,
-                version_manifest_url: entry.version_manifest_url,
-                state_url: entry.state_url,
-                state_sha256: entry.state_sha256,
-                published_at_utc: entry.published_at_utc,
-                collected_at_utc: entry.collected_at_utc,
-                history: entry.history,
-            },
-        })
-        .collect::<Vec<_>>();
-    events.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok((!events.is_empty()).then_some(events).into_iter().collect())
+    Ok(Some(current))
 }
 
 fn serve_status_json(
@@ -3095,26 +3090,28 @@ mod tests {
     }
 
     #[test]
-    fn event_frames_snapshot_current_products_only() -> anyhow::Result<()> {
+    fn catalog_snapshot_contains_current_products_only() -> anyhow::Result<()> {
         let temp = tempdir()?;
         publish_json_version(temp.path(), "metars", "m1")?;
         publish_json_version(temp.path(), "metars", "m2")?;
         publish_json_version(temp.path(), "nexrad", "n1")?;
 
-        let frames = list_live_feed_event_frames(temp.path())?;
-        assert_eq!(frames.len(), 1);
+        let catalog = read_live_feed_catalog(temp.path())?.expect("catalog");
         assert_eq!(
-            frames[0]
+            catalog
+                .products
                 .iter()
-                .map(|event| event.id.as_str())
+                .map(|(product, entry)| format!("{product}:{}", entry.current))
                 .collect::<Vec<_>>(),
             vec!["metars:m2", "nexrad:n1"]
         );
-        let metars = frames[0]
-            .iter()
-            .find(|event| event.id == "metars:m2")
-            .expect("metars event");
-        assert!(metars.payload.history.is_empty());
+        assert!(catalog.products["metars"].history.is_empty());
+
+        let mut bytes = Vec::new();
+        write_sse_catalog_event(&mut bytes, &catalog)?;
+        let text = String::from_utf8(bytes)?;
+        assert!(text.contains("event: live-feed-catalog\n"));
+        assert!(text.contains("\"products\":{\"metars\""), "{text}");
         Ok(())
     }
 
@@ -3432,9 +3429,9 @@ mod tests {
             response.contains("Access-Control-Allow-Origin: *"),
             "{response}"
         );
-        assert!(response.contains("event: live-feed-current"), "{response}");
+        assert!(response.contains("event: live-feed-catalog"), "{response}");
         assert!(response.contains("\"schema_version\":3"), "{response}");
-        assert!(response.contains("\"product\":\"metars\""), "{response}");
+        assert!(response.contains("\"products\":{\"metars\""), "{response}");
         Ok(())
     }
 

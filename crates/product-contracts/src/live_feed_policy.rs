@@ -93,7 +93,7 @@ pub struct LiveFeedProductPolicy {
     pub status_order: u8,
     pub producer: LiveFeedProducerPolicy,
     pub retention_seconds: u64,
-    /// Prior versions advertised to clients in `current.json` and SSE events.
+    /// Prior versions advertised to clients in the SSE catalog and product events.
     /// Server-side publication retention is independent of this client window.
     pub client_history_entries: usize,
     pub cache: LiveFeedCachePolicy,

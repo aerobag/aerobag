@@ -81,21 +81,15 @@ be newer than the version installed locally. Core then decides whether to fetch 
 state, or nothing. Platform layers only provide the transport for the SSE stream and payload fetches;
 they do not know product names, schemas, delta rules, cadence, or publication contract details.
 
-For recovery and startup, also publish a small current-state document:
+For recovery and startup, each SSE connection begins with a full catalog. Core
+atomically reconciles local product versions from that catalog before consuming
+later per-product events. `current.json` remains the daemon's durable publication
+ledger, but it is not part of the application-client protocol.
 
-```text
-/live-feeds/v3/current.json
-```
-
-`current.json` is the durable source of truth for the latest version of each product. On startup,
-or after an SSE disconnect where `Last-Event-ID` cannot bridge the gap, core fetches `current.json`
-and reconciles local product versions. The SSE stream is the low-latency wakeup path; `current.json`
-is the correctness and recovery path.
-
-The intended scaling shape is: one tiny live notification fanout, followed by clients independently
-fetching immutable state/delta payloads from static storage or a CDN. A static-only service can
-host `current.json` and all payloads, but true low-latency invalidation still needs a live push
-mechanism somewhere, such as SSE fanout.
+The intended scaling shape is: one live catalog/invalidation fanout, followed by
+clients independently fetching immutable state/delta payloads from static
+storage or a CDN. The SSE service is required for discovery and reconnect
+recovery as well as low-latency invalidation.
 
 ## deltas and payload verification
 

@@ -195,10 +195,6 @@ class LiveFeedCache(
         bridge.liveFeedCacheApplySessionPolicy(handle, sessionHandle)
     }
 
-    fun currentRefreshRequestsAtEpochMs(epochMs: Long): List<LiveFeedCacheRequest> = withOpenHandle { handle ->
-        json.decodeFromString(bridge.liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle, epochMs))
-    }
-
     fun recordRequestFailure(requestId: String, epochMs: Long) = withOpenHandle { handle ->
         bridge.liveFeedCacheRecordRequestFailure(handle, requestId, epochMs)
     }
@@ -506,7 +502,7 @@ class AndroidLiveFeedClient(
         val resourceRetryPump = launch {
             for (delayMs in resourceRetryWakeups) {
                 delay(delayMs)
-                refreshCurrentAndPump(promote, onChanged)
+                pumpUntilSettled(promote, onChanged)
             }
         }
         try {
@@ -578,12 +574,7 @@ class AndroidLiveFeedClient(
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
     ) {
         decision.connectionEvent?.let { onConnectionEvent(it) }
-        val refreshCurrent = decision.commands.any { it.kind == "refresh_current" }
-        if (refreshCurrent) {
-            refreshCurrentAndPump(promote, onChanged)
-        } else {
-            retryResourcesDelayMs(decision)?.let(resourceRetryWakeups::trySend)
-        }
+        retryResourcesDelayMs(decision)?.let(resourceRetryWakeups::trySend)
     }
 
     suspend fun pumpUntilSettled(
@@ -606,15 +597,6 @@ class AndroidLiveFeedClient(
         }
         return installs
     }
-
-    private suspend fun refreshCurrentAndPump(
-        promote: suspend (LiveFeedInstalledSummary) -> Unit,
-        onChanged: suspend () -> Unit,
-    ): Int = pumpMutex.withLock {
-        val nowMs = SystemClock.elapsedRealtime()
-        val result = pumpRequestsOnce(cache.currentRefreshRequestsAtEpochMs(nowMs), promote, onChanged)
-        result.installs
-    } + pumpUntilSettled(promote, onChanged)
 
     private suspend fun pumpRequestsOnce(
         requests: List<LiveFeedCacheRequest>,
@@ -799,6 +781,7 @@ class AndroidLiveFeedClient(
                         onConnectionEvent = onConnectionEvent,
                     )
                     if (!cache.ingestSseEvent(event)) return
+                    onChanged()
                     pumpUntilSettled(promote, onChanged)
                 }
                 while (kotlin.coroutines.coroutineContext.isActive) {

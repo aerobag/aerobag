@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
 use product_contracts::{
-    live_feeds::v3 as live_feeds_v3, versioned_json, LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS,
+    live_feeds::v3::{self as live_feeds_v3, CATALOG_EVENT_NAME, PRODUCT_EVENT_NAME},
+    versioned_json, LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,11 +21,9 @@ use crate::{
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
 
-const CURRENT_RESOURCE_ID: &str = "live_feeds/current";
 pub use product_contracts::LIVE_FEEDS_SCHEMA_VERSION;
 pub const LIVE_FEEDS_BASE_PATH: &str = "/live-feeds/v3";
 pub const LIVE_FEEDS_EVENTS_PATH: &str = "/live-feeds/v3/events";
-const CURRENT_ADDRESS: &str = "/live-feeds/v3/current.json";
 const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v3/";
 const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
 pub const LIVE_FEED_HISTORY_MAX_ENTRIES: usize = 12;
@@ -34,7 +33,7 @@ pub const NEXRAD_FRAME_WINDOW_SIZE: usize = product_contracts::NEXRAD_CLIENT_HIS
 pub struct LiveFeedsState {
     source_root_url: Option<String>,
     products: HashMap<String, LiveFeedProductState>,
-    current_loaded: bool,
+    catalog_loaded: bool,
     resource_failure_retry_after_epoch_ms: HashMap<String, i64>,
 }
 
@@ -112,6 +111,7 @@ struct CurrentProductHistoryEntry {
     collected_at_utc: Option<String>,
 }
 
+#[derive(Clone)]
 struct ProductRegistration {
     product: String,
     version: String,
@@ -144,7 +144,6 @@ pub struct LiveFeedCacheRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveFeedCacheRequestKind {
-    Current,
     Version {
         product: String,
         version: String,
@@ -335,14 +334,6 @@ impl LiveFeedsState {
         self.outcome_for_resources(resources)
     }
 
-    pub fn refresh_current_outcome_with_invalidations_at_epoch_ms(
-        &self,
-        epoch_ms: i64,
-    ) -> HadOperationOutcome {
-        let resources = self.retryable_resources(vec![self.current_resource_request()], epoch_ms);
-        self.outcome_for_resources_with_invalidations(resources)
-    }
-
     pub fn complete_outcome_with_invalidations(&self) -> HadOperationOutcome {
         self.outcome_for_resources_with_invalidations(Vec::new())
     }
@@ -352,7 +343,7 @@ impl LiveFeedsState {
         product: &str,
         epoch_ms: i64,
     ) -> HadOperationOutcome {
-        let resources = if self.current_loaded {
+        let resources = if self.catalog_loaded {
             self.missing_resources_for_products(std::iter::once(product))
         } else {
             self.missing_resources()
@@ -371,7 +362,7 @@ impl LiveFeedsState {
     }
 
     pub fn sync_product_outcome(&self, product: &str) -> HadOperationOutcome {
-        let resources = if self.current_loaded {
+        let resources = if self.catalog_loaded {
             self.missing_resources_for_products(std::iter::once(product))
         } else {
             self.missing_resources()
@@ -416,7 +407,7 @@ impl LiveFeedsState {
         &self,
         products: impl IntoIterator<Item = &'a str>,
     ) -> HadOperationOutcome {
-        let resources = if self.current_loaded {
+        let resources = if self.catalog_loaded {
             self.missing_resources_for_products(products)
         } else {
             self.missing_resources()
@@ -440,63 +431,78 @@ impl LiveFeedsState {
         &mut self,
         events: impl IntoIterator<Item = LiveFeedSseEvent>,
     ) -> AppResult<Vec<String>> {
-        let mut latest_current_by_product = HashMap::new();
+        let mut catalog = None;
+        let mut latest_products = HashMap::new();
         for event in events {
-            if let Some(payload) = parse_sse_current_event(event)? {
-                latest_current_by_product.insert(payload.product.clone(), payload);
+            match parse_live_feed_sse_event(event)? {
+                Some(ParsedLiveFeedSseEvent::Catalog(catalog_event)) => {
+                    latest_products.clear();
+                    catalog = Some(catalog_event);
+                }
+                Some(ParsedLiveFeedSseEvent::Product(payload)) => {
+                    latest_products.insert(payload.product.clone(), payload);
+                }
+                None => {}
             }
         }
-        let mut affected = latest_current_by_product
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        affected.sort();
-        for product in &affected {
-            let payload = latest_current_by_product
-                .remove(product)
-                .expect("affected product came from latest_current_by_product");
-            self.register_product(ProductRegistration {
-                product: payload.product,
-                version: payload.version,
-                version_manifest_url: payload.version_manifest_url,
-                state_url: payload.state_url,
-                state_sha256: payload.state_sha256,
-                published_at_utc: payload.published_at_utc,
-                collected_at_utc: payload.collected_at_utc,
-                history: project_current_history(payload.history),
-            })?;
+
+        let catalog_registrations = catalog.map(validated_catalog_registrations).transpose()?;
+        let mut product_registrations = latest_products
+            .into_values()
+            .map(product_registration_from_event)
+            .map(validate_product_registration)
+            .collect::<AppResult<Vec<_>>>()?;
+        product_registrations.sort_by(|left, right| left.product.cmp(&right.product));
+
+        let mut affected = Vec::new();
+        if let Some(registrations) = catalog_registrations {
+            affected.extend(self.install_validated_catalog(registrations));
         }
+        for registration in product_registrations {
+            affected.push(registration.product.clone());
+            self.register_validated_product(registration);
+        }
+        affected.sort();
+        affected.dedup();
         Ok(affected)
     }
 
-    pub fn ingest_resource(&mut self, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
-        if resource_id == CURRENT_RESOURCE_ID {
-            let current = versioned_json::decode_exact::<live_feeds_v3::CurrentManifest>(
-                "live-feed current manifest",
-                bytes,
-                LIVE_FEEDS_SCHEMA_VERSION,
-            )
-            .map_err(|error| invalid_live_feed(error.to_string()))?;
-            self.current_loaded = true;
-            self.resource_failure_retry_after_epoch_ms
-                .remove(resource_id);
-            let products = current.products;
-            self.products
-                .retain(|product, _| products.contains_key(product));
-            for (product, entry) in products {
-                self.register_product(ProductRegistration {
-                    product,
-                    version: entry.current,
-                    version_manifest_url: entry.version_manifest_url,
-                    state_url: entry.state_url,
-                    state_sha256: entry.state_sha256,
-                    published_at_utc: entry.published_at_utc,
-                    collected_at_utc: entry.collected_at_utc,
-                    history: project_current_history(entry.history),
-                })?;
-            }
-            return Ok(());
+    pub(crate) fn ingest_catalog_bytes(&mut self, bytes: &[u8]) -> AppResult<Vec<String>> {
+        let catalog = versioned_json::decode_exact::<live_feeds_v3::Catalog>(
+            "live-feed catalog",
+            bytes,
+            LIVE_FEEDS_SCHEMA_VERSION,
+        )
+        .map_err(|error| invalid_live_feed(error.to_string()))?;
+        self.install_catalog(catalog)
+    }
+
+    fn install_catalog(&mut self, catalog: live_feeds_v3::Catalog) -> AppResult<Vec<String>> {
+        Ok(self.install_validated_catalog(validated_catalog_registrations(catalog)?))
+    }
+
+    fn install_validated_catalog(
+        &mut self,
+        registrations: Vec<ProductRegistration>,
+    ) -> Vec<String> {
+        self.catalog_loaded = true;
+        let mut affected = self.products.keys().cloned().collect::<Vec<_>>();
+        let products = registrations
+            .iter()
+            .map(|registration| registration.product.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        self.products
+            .retain(|product, _| products.contains(product.as_str()));
+        for registration in registrations {
+            affected.push(registration.product.clone());
+            self.register_validated_product(registration);
         }
+        affected.sort();
+        affected.dedup();
+        affected
+    }
+
+    pub fn ingest_resource(&mut self, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
         if let Some(rest) = resource_id.strip_prefix("live_feeds/version/") {
             let (product, version) = split_product_version(resource_id, rest)?;
             let manifest = versioned_json::decode_exact::<live_feeds_v3::VersionManifest>(
@@ -911,8 +917,7 @@ impl LiveFeedsState {
     }
 
     pub fn handles_resource(resource_id: &str) -> bool {
-        resource_id == CURRENT_RESOURCE_ID
-            || resource_id.starts_with("live_feeds/version/")
+        resource_id.starts_with("live_feeds/version/")
             || resource_id.starts_with("live_feeds/state/")
             || resource_id.starts_with("live_feeds/delta/")
     }
@@ -1032,8 +1037,8 @@ impl LiveFeedsState {
         self.products.get(product)?.current_version.as_deref()
     }
 
-    pub fn current_loaded(&self) -> bool {
-        self.current_loaded
+    pub fn catalog_loaded(&self) -> bool {
+        self.catalog_loaded
     }
 
     pub fn client_retained_versions(&self, product: &str) -> Vec<String> {
@@ -1095,7 +1100,7 @@ impl LiveFeedsState {
         self.retryable_resources(resources, epoch_ms)
     }
 
-    fn register_product(&mut self, registration: ProductRegistration) -> AppResult<()> {
+    fn register_validated_product(&mut self, registration: ProductRegistration) {
         let ProductRegistration {
             product,
             version,
@@ -1106,9 +1111,6 @@ impl LiveFeedsState {
             collected_at_utc,
             history,
         } = registration;
-        validate_relative_url(&version_manifest_url)?;
-        validate_relative_url(&state_url)?;
-        let history = normalize_product_history(&product, history)?;
         let entry = self.products.entry(product).or_default();
         if entry.current_version.as_deref() == Some(version.as_str()) {
             entry.version_manifest_url = Some(version_manifest_url);
@@ -1120,7 +1122,7 @@ impl LiveFeedsState {
             if entry.loaded_version.as_deref() == Some(version.as_str()) {
                 entry.loaded_version = Some(version);
             }
-            return Ok(());
+            return;
         }
         entry.current_version = Some(version);
         entry.version_manifest_url = Some(version_manifest_url);
@@ -1137,7 +1139,6 @@ impl LiveFeedsState {
         entry.version_manifest = None;
         entry.catalog_state_manifest = None;
         entry.sync_history(history);
-        Ok(())
     }
 
     pub fn mark_durable_product_loaded(
@@ -1152,10 +1153,10 @@ impl LiveFeedsState {
         if entry.current_version.is_none() {
             entry.current_version = Some(version.clone());
         }
-        if self.current_loaded && entry.current_version.as_deref() != Some(version.as_str()) {
+        if self.catalog_loaded && entry.current_version.as_deref() != Some(version.as_str()) {
             return;
         }
-        if self.current_loaded
+        if self.catalog_loaded
             && entry
                 .expected_state_sha256
                 .as_deref()
@@ -1184,8 +1185,8 @@ impl LiveFeedsState {
     }
 
     pub fn merge_catalog_from(&mut self, source: &Self) {
-        if source.current_loaded {
-            self.current_loaded = true;
+        if source.catalog_loaded {
+            self.catalog_loaded = true;
             self.products
                 .retain(|product, _| source.products.contains_key(product));
         }
@@ -1225,8 +1226,8 @@ impl LiveFeedsState {
         installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
         nexrad_profile: &str,
     ) -> Vec<LiveFeedCacheRequest> {
-        if !self.current_loaded {
-            return vec![self.durable_current_request()];
+        if !self.catalog_loaded {
+            return Vec::new();
         }
 
         let installed = installed.into_iter().collect::<Vec<_>>();
@@ -1407,26 +1408,6 @@ impl LiveFeedsState {
         self.retryable_cache_requests(requests, epoch_ms)
     }
 
-    fn durable_current_refresh_requests(&self) -> Vec<LiveFeedCacheRequest> {
-        vec![self.durable_current_request()]
-    }
-
-    pub fn durable_current_refresh_requests_at_epoch_ms(
-        &self,
-        epoch_ms: i64,
-    ) -> Vec<LiveFeedCacheRequest> {
-        let requests = self.durable_current_refresh_requests();
-        self.retryable_cache_requests(requests, epoch_ms)
-    }
-
-    fn durable_current_request(&self) -> LiveFeedCacheRequest {
-        LiveFeedCacheRequest {
-            id: CURRENT_RESOURCE_ID.to_string(),
-            url: self.required_live_feed_url(CURRENT_ADDRESS),
-            kind: LiveFeedCacheRequestKind::Current,
-        }
-    }
-
     pub(crate) fn retryable_cache_requests(
         &self,
         requests: Vec<LiveFeedCacheRequest>,
@@ -1449,7 +1430,6 @@ impl LiveFeedsState {
         bytes: &[u8],
     ) -> AppResult<()> {
         match &request.kind {
-            LiveFeedCacheRequestKind::Current => self.ingest_resource(CURRENT_RESOURCE_ID, bytes),
             LiveFeedCacheRequestKind::Version { product, version } => {
                 self.ingest_resource(&format!("live_feeds/version/{product}/{version}"), bytes)
             }
@@ -1592,15 +1572,11 @@ impl LiveFeedsState {
     }
 
     fn missing_resources(&self) -> Vec<CoreResourceRequest> {
-        if !self.current_loaded {
-            return vec![self.current_resource_request()];
+        if !self.catalog_loaded {
+            return Vec::new();
         }
         let products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
         self.missing_resources_for_products(products)
-    }
-
-    fn current_resource_request(&self) -> CoreResourceRequest {
-        self.public_live_feed_resource(CURRENT_RESOURCE_ID, CURRENT_ADDRESS, false)
     }
 
     pub(crate) fn public_live_feed_resource(
@@ -1772,7 +1748,7 @@ impl LiveFeedsState {
 
     fn invalidations(&self) -> Vec<UiInvalidation> {
         let mut invalidations = Vec::new();
-        if self.current_loaded {
+        if self.catalog_loaded {
             invalidations.push(UiInvalidation::SessionSnapshot);
             invalidations.push(UiInvalidation::MapOverlay);
             invalidations.push(UiInvalidation::NexradOverlay);
@@ -2140,19 +2116,74 @@ fn project_current_history(
         .collect()
 }
 
-fn parse_sse_current_event(
-    event: LiveFeedSseEvent,
-) -> AppResult<Option<live_feeds_v3::CurrentEvent>> {
+fn product_registration_from_event(payload: live_feeds_v3::CurrentEvent) -> ProductRegistration {
+    ProductRegistration {
+        product: payload.product,
+        version: payload.version,
+        version_manifest_url: payload.version_manifest_url,
+        state_url: payload.state_url,
+        state_sha256: payload.state_sha256,
+        published_at_utc: payload.published_at_utc,
+        collected_at_utc: payload.collected_at_utc,
+        history: project_current_history(payload.history),
+    }
+}
+
+fn validated_catalog_registrations(
+    catalog: live_feeds_v3::Catalog,
+) -> AppResult<Vec<ProductRegistration>> {
+    catalog
+        .products
+        .into_iter()
+        .map(|(product, entry)| {
+            validate_product_registration(ProductRegistration {
+                product,
+                version: entry.current,
+                version_manifest_url: entry.version_manifest_url,
+                state_url: entry.state_url,
+                state_sha256: entry.state_sha256,
+                published_at_utc: entry.published_at_utc,
+                collected_at_utc: entry.collected_at_utc,
+                history: project_current_history(entry.history),
+            })
+        })
+        .collect()
+}
+
+fn validate_product_registration(
+    mut registration: ProductRegistration,
+) -> AppResult<ProductRegistration> {
+    validate_relative_url(&registration.version_manifest_url)?;
+    validate_relative_url(&registration.state_url)?;
+    registration.history = normalize_product_history(&registration.product, registration.history)?;
+    Ok(registration)
+}
+
+enum ParsedLiveFeedSseEvent {
+    Catalog(live_feeds_v3::Catalog),
+    Product(live_feeds_v3::CurrentEvent),
+}
+
+fn parse_live_feed_sse_event(event: LiveFeedSseEvent) -> AppResult<Option<ParsedLiveFeedSseEvent>> {
     let event_name = event.event.as_deref().unwrap_or("message");
     match event_name {
-        "live-feed-current" | "message" => {
+        CATALOG_EVENT_NAME => {
+            let catalog = versioned_json::decode_exact::<live_feeds_v3::Catalog>(
+                "live-feed SSE catalog",
+                event.data.as_bytes(),
+                LIVE_FEEDS_SCHEMA_VERSION,
+            )
+            .map_err(|error| invalid_live_feed(error.to_string()))?;
+            Ok(Some(ParsedLiveFeedSseEvent::Catalog(catalog)))
+        }
+        PRODUCT_EVENT_NAME | "message" => {
             let payload = versioned_json::decode_exact::<live_feeds_v3::CurrentEvent>(
                 "live-feed SSE event",
                 event.data.as_bytes(),
                 LIVE_FEEDS_SCHEMA_VERSION,
             )
             .map_err(|error| invalid_live_feed(error.to_string()))?;
-            Ok(Some(payload))
+            Ok(Some(ParsedLiveFeedSseEvent::Product(payload)))
         }
         _ => Ok(None),
     }
@@ -2177,7 +2208,6 @@ fn decode_live_feed_payload<'a>(
 pub fn normalize_live_feed_source_root_url(source_root_url: &str) -> AppResult<String> {
     let mut normalized = source_root_url.trim().trim_end_matches('/').to_string();
     for suffix in [
-        "/live-feeds/v3/current.json",
         "/live-feeds/v3/events",
         "/live-feeds/v3",
         "/live-feeds/status.html",
@@ -2881,7 +2911,6 @@ mod tests {
         assert!(!should_prepare_live_feed_resource(
             "live_feeds/state/obstacles/v1"
         ));
-        assert!(!should_prepare_live_feed_resource("live_feeds/current"));
     }
 
     #[test]
@@ -3032,8 +3061,7 @@ mod tests {
 
         let mut feeds = live_feeds_state();
         feeds
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 &serde_json::to_vec(&serde_json::json!({
                     "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -3180,8 +3208,7 @@ mod tests {
         let delta_envelope = decode_prepared_live_feed(&delta_prepared).unwrap();
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 format!(
                     r#"{{
                         "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
@@ -3282,8 +3309,7 @@ mod tests {
                 .unwrap();
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 format!(
                     r#"{{
                     "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
@@ -3447,69 +3473,22 @@ mod tests {
     }
 
     #[test]
-    fn sync_requests_current_manifest_first() {
+    fn sync_waits_for_stream_catalog_without_requesting_a_resource() {
         let state = live_feeds_state();
-        let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
-            panic!("expected current manifest request");
-        };
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].id, "live_feeds/current");
-        assert_eq!(
-            resources[0].source,
-            crate::CoreResourceSource::PublicUrl {
-                url: test_live_feed_url(CURRENT_ADDRESS),
-            }
-        );
+        assert!(matches!(
+            state.sync_outcome(),
+            HadOperationOutcome::Complete { .. }
+        ));
     }
 
     #[test]
-    fn reconnect_refresh_requests_current_manifest_even_after_catalog_loaded() {
+    fn stream_catalog_drives_version_then_state_requests() {
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
-                br#"{
-                    "schema_version": 3,
-                    "generated_at_utc": "2026-08-04T00:00:00Z",
-                    "products": {}
-                }"#,
-            )
-            .unwrap();
-
-        let HadOperationOutcome::NeedResources { resources } =
-            state.refresh_current_outcome_with_invalidations_at_epoch_ms(1_000)
-        else {
-            panic!("expected reconnect current manifest request");
-        };
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].id, "live_feeds/current");
-    }
-
-    #[test]
-    fn failed_current_manifest_fetch_is_retry_gated() {
-        let mut state = live_feeds_state();
-        state.record_resource_failure("live_feeds/current", 1_000);
-
-        let HadOperationOutcome::Complete { .. } = state.sync_outcome_at_epoch_ms(1_001) else {
-            panic!("current manifest retry should be suppressed before retry deadline");
-        };
-
-        let HadOperationOutcome::NeedResources { resources } =
-            state.sync_outcome_at_epoch_ms(1_000 + LIVE_FEED_FAILED_RESOURCE_RETRY_DELAY_MS)
-        else {
-            panic!("current manifest retry should resume at retry deadline");
-        };
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].id, "live_feeds/current");
-    }
-
-    #[test]
-    fn current_manifest_drives_version_then_state_requests() {
-        let mut state = live_feeds_state();
-        state
-            .ingest_resource(
-                "live_feeds/current",
-                br#"{
+            .ingest_sse_event(LiveFeedSseEvent {
+                id: Some("catalog:2026-08-04T00:00:00Z".to_string()),
+                event: Some(CATALOG_EVENT_NAME.to_string()),
+                data: r#"{
                     "schema_version": 3,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
@@ -3520,8 +3499,9 @@ mod tests {
                             "state_sha256": "unused"
                         }
                     }
-                }"#,
-            )
+                }"#
+                .to_string(),
+            })
             .unwrap();
         let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
             panic!("expected version request");
@@ -3536,7 +3516,7 @@ mod tests {
     }
 
     #[test]
-    fn current_manifest_history_is_bounded_and_loaded_separately() {
+    fn stream_catalog_history_is_bounded_and_loaded_separately() {
         let mut state = live_feeds_state();
         let history_manifest = serde_json::json!({
             "product": "nexrad",
@@ -3549,8 +3529,7 @@ mod tests {
         });
         let history_sha = canonical_json_sha256(&history_manifest).expect("history hash");
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 format!(
                     r#"{{
                     "schema_version": 3,
@@ -3573,7 +3552,7 @@ mod tests {
                 )
                 .as_bytes(),
             )
-            .expect("ingest current manifest");
+            .expect("ingest stream catalog");
 
         let resources = state.missing_history_resources_for_product_at_epoch_ms("nexrad", 0);
         assert_eq!(resources.len(), 1);
@@ -3618,7 +3597,7 @@ mod tests {
     }
 
     #[test]
-    fn current_manifest_rejects_unbounded_history() {
+    fn stream_catalog_rejects_unbounded_history() {
         let mut state = live_feeds_state();
         let history = (0..=LIVE_FEED_HISTORY_MAX_ENTRIES)
             .map(|index| {
@@ -3632,8 +3611,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         let err = state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 format!(
                     r#"{{
                     "schema_version": 3,
@@ -3656,11 +3634,10 @@ mod tests {
     }
 
     #[test]
-    fn current_manifest_is_authoritative_for_product_membership() {
+    fn stream_catalog_is_authoritative_for_product_membership() {
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 br#"{
                     "schema_version": 3,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -3685,8 +3662,7 @@ mod tests {
         assert!(state.has_product_current_version("obstacles"));
 
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 br#"{
                     "schema_version": 3,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -3707,11 +3683,105 @@ mod tests {
     }
 
     #[test]
+    fn invalid_stream_catalog_does_not_partially_replace_the_previous_catalog() {
+        let mut state = live_feeds_state();
+        state
+            .ingest_catalog_bytes(
+                br#"{
+                    "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
+                    "products": {
+                        "metars": {
+                            "current": "v1",
+                            "version_manifest_url": "versions/metars/v1.json",
+                            "state_url": "states/metars/v1.json",
+                            "state_sha256": "v1"
+                        }
+                    }
+                }"#,
+            )
+            .unwrap();
+
+        let error = state
+            .ingest_sse_event(LiveFeedSseEvent {
+                id: Some("catalog:bad".to_string()),
+                event: Some(CATALOG_EVENT_NAME.to_string()),
+                data: r#"{
+                    "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:01:00Z",
+                    "products": {
+                        "metars": {
+                            "current": "v2",
+                            "version_manifest_url": "versions/metars/v2.json",
+                            "state_url": "states/metars/v2.json",
+                            "state_sha256": "v2"
+                        },
+                        "obstacles": {
+                            "current": "bad",
+                            "version_manifest_url": "https://wrong.example/bad.json",
+                            "state_url": "states/obstacles/bad.json",
+                            "state_sha256": "bad"
+                        }
+                    }
+                }"#
+                .to_string(),
+            })
+            .expect_err("invalid catalog");
+
+        assert!(error.message.contains("relative"));
+        assert_eq!(state.current_product_version("metars"), Some("v1"));
+        assert!(!state.has_product_current_version("obstacles"));
+    }
+
+    #[test]
+    fn reconnect_catalog_supersedes_old_queued_events_before_later_updates() {
+        let mut state = LiveFeedsState {
+            catalog_loaded: true,
+            ..live_feeds_state()
+        };
+        let event = |version: &str| LiveFeedSseEvent {
+            id: Some(format!("metars:{version}")),
+            event: Some(PRODUCT_EVENT_NAME.to_string()),
+            data: serde_json::json!({
+                "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                "product": "metars",
+                "version": version,
+                "version_manifest_url": format!("versions/metars/{version}.json"),
+                "state_url": format!("states/metars/{version}.json"),
+                "state_sha256": version,
+            })
+            .to_string(),
+        };
+        let catalog = LiveFeedSseEvent {
+            id: Some("catalog:v3".to_string()),
+            event: Some(CATALOG_EVENT_NAME.to_string()),
+            data: serde_json::json!({
+                "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                "generated_at_utc": "2026-08-04T00:03:00Z",
+                "products": {
+                    "metars": {
+                        "current": "v3",
+                        "version_manifest_url": "versions/metars/v3.json",
+                        "state_url": "states/metars/v3.json",
+                        "state_sha256": "v3",
+                    }
+                },
+            })
+            .to_string(),
+        };
+
+        state
+            .ingest_sse_events([event("v2"), catalog, event("v4")])
+            .unwrap();
+
+        assert_eq!(state.current_product_version("metars"), Some("v4"));
+    }
+
+    #[test]
     fn durable_loaded_product_cannot_override_current_state_hash() {
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 br#"{
                     "schema_version": 3,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -3725,7 +3795,7 @@ mod tests {
                     }
                 }"#,
             )
-            .expect("current manifest");
+            .expect("stream catalog");
 
         state.mark_durable_product_loaded(
             "tafs".to_string(),
@@ -3743,8 +3813,7 @@ mod tests {
     fn loaded_current_without_overlay_products_still_invalidates_overlays() {
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 br#"{
                     "schema_version": 3,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -3776,8 +3845,7 @@ mod tests {
         let state_sha256 = canonical_json_sha256(&tfrs).unwrap();
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 format!(
                     r#"{{
                     "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
@@ -3948,8 +4016,7 @@ mod tests {
     fn nav_kv_state_manifest_validates_embedded_state_hash() {
         let mut state = live_feeds_state();
         state
-            .ingest_resource(
-                "live_feeds/current",
+            .ingest_catalog_bytes(
                 br#"{
                     "schema_version": 3,
                     "generated_at_utc": "2026-08-04T00:00:00Z",
@@ -4005,7 +4072,7 @@ mod tests {
     #[test]
     fn sse_event_updates_product_without_platform_contract_logic() {
         let mut state = LiveFeedsState {
-            current_loaded: true,
+            catalog_loaded: true,
             ..live_feeds_state()
         };
         let outcome = state
@@ -4032,7 +4099,7 @@ mod tests {
     #[test]
     fn batched_sse_events_fetch_only_the_latest_version_per_product() {
         let mut state = LiveFeedsState {
-            current_loaded: true,
+            catalog_loaded: true,
             ..live_feeds_state()
         };
         let affected = state
@@ -4100,7 +4167,7 @@ mod tests {
     #[test]
     fn replayed_batched_sse_events_do_not_forget_loaded_version_manifest() {
         let mut state = LiveFeedsState {
-            current_loaded: true,
+            catalog_loaded: true,
             ..live_feeds_state()
         };
         let events = vec![

@@ -51,14 +51,6 @@ pub(crate) struct LiveFeedConnectionState {
     pub network_status: Option<LiveFeedNetworkStatus>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum LiveFeedCurrentRefreshState {
-    #[default]
-    Idle,
-    Requested,
-    Ingested,
-}
-
 #[derive(Clone)]
 pub(crate) struct LiveNexradInstalledState {
     pub version: String,
@@ -94,7 +86,6 @@ pub(crate) struct LiveForecastAtmosphereState {
 struct WeatherModel {
     live_feeds: Arc<LiveFeedsState>,
     connection: LiveFeedConnectionState,
-    current_refresh: LiveFeedCurrentRefreshState,
     revision: u64,
 }
 
@@ -302,17 +293,6 @@ impl WeatherController {
             LiveFeedConnectionEventKind::NetworkStatus => {}
         }
         self.note_change();
-    }
-
-    pub fn current_refresh(&self) -> LiveFeedCurrentRefreshState {
-        self.model.current_refresh
-    }
-
-    pub fn set_current_refresh(&mut self, state: LiveFeedCurrentRefreshState) {
-        if self.model.current_refresh != state {
-            self.model.current_refresh = state;
-            self.note_change();
-        }
     }
 
     pub fn invalidate_nav_data(&mut self) {
@@ -573,14 +553,11 @@ mod tests {
         let runtime_address = controller.runtime.nexrad_tile_cache["seed"].as_ptr();
         let checkpoint = controller.checkpoint_model();
 
-        controller.set_current_refresh(LiveFeedCurrentRefreshState::Requested);
+        controller.record_resource_error(42, "failed".to_string());
         assert_eq!(controller.revision(), 1);
         controller.rollback_model(checkpoint);
 
-        assert_eq!(
-            controller.current_refresh(),
-            LiveFeedCurrentRefreshState::Idle
-        );
+        assert_eq!(controller.connection().last_resource_error_message, None);
         assert_eq!(controller.revision(), 0);
         assert_eq!(
             controller.runtime.nexrad_tile_cache["seed"].as_ptr(),
@@ -611,7 +588,7 @@ mod tests {
             "inop"
         );
 
-        controller.set_current_refresh(LiveFeedCurrentRefreshState::Requested);
+        controller.record_resource_error(42, "failed".to_string());
         assert!(controller.project(visible).rebuilt);
         assert!(!controller.project(visible).rebuilt);
         assert!(

@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 3;
+pub const CATALOG_EVENT_NAME: &str = "live-feed-catalog";
+pub const PRODUCT_EVENT_NAME: &str = "live-feed-current";
 pub const NEXRAD_OFFLINE_PROFILE_0: &str = "offline_0";
 pub const NEXRAD_OFFLINE_PROFILE_LOW1: &str = "offline_low1";
 
@@ -17,6 +19,12 @@ pub struct CurrentManifest {
     pub generated_at_utc: String,
     pub products: BTreeMap<String, CurrentProduct>,
 }
+
+/// Authoritative application bootstrap sent by the live-feed SSE stream.
+///
+/// Its wire shape deliberately matches the daemon's durable current ledger so
+/// publication can serialize one validated snapshot without translating it.
+pub type Catalog = CurrentManifest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

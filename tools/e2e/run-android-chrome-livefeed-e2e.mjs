@@ -261,6 +261,10 @@ export class ScriptedLiveFeedServer {
       });
       res.write("retry: 60000\n");
       res.write(": ready\n\n");
+      const catalog = this.currentManifest();
+      res.write(`id: catalog:${catalog.generated_at_utc}\n`);
+      res.write("event: live-feed-catalog\n");
+      res.write(`data: ${JSON.stringify(catalog)}\n\n`);
       this.clients.add(res);
       req.on("close", () => {
         this.clients.delete(res);
@@ -864,7 +868,7 @@ async function run(args) {
       cdp,
       (status) => status?.product_versions?.metars === "v3",
       30000,
-      "live-feed current refresh after online did not advance METARs to v3",
+      "live-feed SSE catalog after online did not advance METARs to v3",
       500,
     );
     const finalStatus = await liveFeedStatus(cdp);
@@ -872,6 +876,9 @@ async function run(args) {
     result.checks.active_event_sources = finalStatus?.adapter?.active_event_sources ?? null;
     result.checks.current_manifest_requests = liveFeed.requestCounts.current;
     result.checks.event_stream_requests = liveFeed.requestCounts.events;
+    if (liveFeed.requestCounts.current !== 0) {
+      throw new Error(`application client unexpectedly fetched current.json ${liveFeed.requestCounts.current} time(s)`);
+    }
     if (finalStatus?.adapter && (finalStatus.adapter.active_event_sources ?? 0) > 1) {
       throw new Error(`expected at most one active EventSource, got ${finalStatus.adapter.active_event_sources}`);
     }
@@ -916,7 +923,7 @@ if (path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
     } else {
       console.log(`PASS ${result.test}`);
       console.log(`  METAR versions: ${result.checks.initial_metar_version} -> ${result.checks.sse_metar_version} -> ${result.checks.recovered_metar_version}`);
-      console.log(`  current.json requests: ${result.checks.current_manifest_requests}`);
+      console.log(`  client current.json requests: ${result.checks.current_manifest_requests}`);
       console.log(`  event streams opened: ${result.checks.event_stream_requests}`);
     }
   }).catch((error) => {

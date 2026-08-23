@@ -3660,7 +3660,7 @@ fn normalize_geo_number_string(raw: &str) -> anyhow::Result<String> {
 fn write_json_pretty(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     fs::write(
         path,
-        serde_json::to_vec_pretty(value).context("failed to encode json")?,
+        serde_json::to_vec(value).context("failed to encode json")?,
     )
     .with_context(|| format!("failed to write {}", path.display()))
 }

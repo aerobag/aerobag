@@ -63,8 +63,9 @@ normalized state
   -> uncompressed SSE invalidation
 ```
 
-The implementation uses `serde_json::to_vec_pretty` before XZ. That formatting is
-not free, but XZ removes most of it.
+The producer now uses dense JSON serialization before XZ and for its plain JSON
+artifacts. The retained baseline below predates that change and therefore still
+measures the former pretty-JSON representation.
 
 Historical baseline product transport shapes:
 
@@ -258,10 +259,10 @@ It avoids needless retransfers across web reloads, route revisits, and
 reconnect/recovery paths. The Android durable cache already provides stronger
 application-level persistence for installed products.
 
-### 5. Pretty JSON before XZ leaves a small amount on the table — open
+### 5. Pretty JSON before XZ left a small amount on the table — implemented
 
-Across all currently retained deltas, compact JSON before the same XZ settings
-would save:
+Across all deltas retained in the original corpus, compact JSON before the same
+XZ settings saves:
 
 | Product   | Saving |
 | --------- | -----: |
@@ -548,7 +549,7 @@ intentionally not assigned fabricated totals.
 | Core-owned NEXRAD acquisition policies   | Done   | Replaces one 279 MiB/day behavior with mode-dependent rates       |
 | Completed day capture corpus             | Done   | Preserves the original evidence and source material               |
 | Repeatable corpus policy analyzer        | Done   | Exact replay plus explicit 4/4/16-hour daily policy projections   |
-| Compact JSON before XZ                   | Open   | 1-3% for active record deltas; 25.8% for rare obstacle deltas     |
+| Compact JSON before XZ                   | Done   | 1-3% for active record deltas; 25.8% for rare obstacle deltas     |
 | JIT delta-versus-full size guard         | Open   | No waste observed in the baseline; defensive correctness          |
 | Winds on-demand immutable lazy package    | Done   | Removes 48.6 MiB/day baseline and avoids page expansion/repacking |
 | Current/SSE bootstrap deduplication      | Open   | About 52 KiB per connection in the historical uncompressed form   |
@@ -556,16 +557,13 @@ intentionally not assigned fabricated totals.
 
 ## Recommended next burn order
 
-1. Switch XZ JSON inputs from pretty to compact serialization. It is a contained,
-   low-risk cleanup with modest recurring savings and a large percentage win on
-   rare obstacle deltas.
-2. Apply the delta-versus-full size rule to the JIT path. This did not waste bytes
+1. Apply the delta-versus-full size rule to the JIT path. This did not waste bytes
    in the baseline sample, so treat it as a protocol safeguard rather than a major
    rate reduction.
-3. Reconsider a NEXRAD temporal codec only after actual mode-residence accounting
+2. Reconsider a NEXRAD temporal codec only after actual mode-residence accounting
    shows that full-offline acquisition remains dominant. The naive tile XOR
    experiment remains a loss; any follow-up needs a domain-specific format.
-4. Consider the measured winds spatial predictor only if explicit download size
+3. Consider the measured winds spatial predictor only if explicit download size
    proves painful. It saved 29.4%, but no longer reduces an automatic daily cost.
-5. Leave current/SSE bootstrap deduplication and possible SSE compression until
+4. Leave current/SSE bootstrap deduplication and possible SSE compression until
    the larger work is measured. They are control-plane polish, not leading wins.

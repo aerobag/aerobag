@@ -159,7 +159,7 @@ pub(crate) fn build_atmosphere_dataset(
         .validate(&format!("had-nav-kv-v{}", had_nav_kv::VERSION))
         .map_err(anyhow::Error::msg)?;
     let manifest_path = request.output_dir.join("manifest.json");
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+    fs::write(&manifest_path, serde_json::to_vec(&manifest)?)
         .context("failed to write atmosphere manifest")?;
     Ok(BuildAtmosphereDatasetResult {
         state_dir: request.output_dir.clone(),

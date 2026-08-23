@@ -3182,12 +3182,12 @@ pub fn read_json_value(path: &Path) -> anyhow::Result<Value> {
 }
 
 pub fn write_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).context("failed to encode JSON")?;
+    let bytes = serde_json::to_vec(value).context("failed to encode JSON")?;
     atomic_write_bytes(path, &bytes)
 }
 
 fn write_immutable_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).context("failed to encode immutable JSON")?;
+    let bytes = serde_json::to_vec(value).context("failed to encode immutable JSON")?;
     if path.is_file() {
         let existing = fs::read(path)
             .with_context(|| format!("failed to read immutable {}", path.display()))?;
@@ -3201,7 +3201,7 @@ fn write_immutable_json_pretty_file(path: &Path, value: &impl Serialize) -> anyh
 }
 
 pub fn write_xz_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).context("failed to encode JSON")?;
+    let bytes = serde_json::to_vec(value).context("failed to encode JSON")?;
     let encoded = producer_xz_compress_bytes(&bytes)
         .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", path.display()))?;
     atomic_write_bytes(path, &encoded)
@@ -3211,7 +3211,7 @@ pub fn write_immutable_xz_json_pretty_file(
     path: &Path,
     value: &impl Serialize,
 ) -> anyhow::Result<Vec<u8>> {
-    let json = serde_json::to_vec_pretty(value).context("failed to encode immutable JSON")?;
+    let json = serde_json::to_vec(value).context("failed to encode immutable JSON")?;
     let encoded = producer_xz_compress_bytes(&json)
         .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", path.display()))?;
     if path.is_file() {
@@ -3626,6 +3626,17 @@ mod tests {
     use zip::{
         write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
     };
+
+    #[test]
+    fn compressed_json_is_dense() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let path = temp.path().join("state.json.xz");
+        let dense =
+            write_immutable_xz_json_pretty_file(&path, &serde_json::json!({"records": [1, 2, 3]}))?;
+        let decoded = nav_kv_package::decode_xz_if_needed(&dense).map_err(anyhow::Error::msg)?;
+        assert_eq!(decoded.as_ref(), br#"{"records":[1,2,3]}"#);
+        Ok(())
+    }
 
     fn notam_delta_ref(from: &str, to: &str, mutation_count: u64) -> LiveDeltaRef {
         LiveDeltaRef {

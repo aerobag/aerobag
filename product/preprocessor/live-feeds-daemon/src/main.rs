@@ -2407,8 +2407,7 @@ fn serve_status_json(
     method: &str,
     status: &DaemonStatus,
 ) -> anyhow::Result<()> {
-    let body =
-        serde_json::to_string_pretty(&status.snapshot()).context("failed to encode status")?;
+    let body = serde_json::to_string(&status.snapshot()).context("failed to encode status")?;
     write_response(
         stream,
         method,

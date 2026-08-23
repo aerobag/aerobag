@@ -541,6 +541,20 @@ impl LiveFeedCache {
         Ok(())
     }
 
+    pub fn ingest_persisted_nav_kv_package_descriptor(
+        &mut self,
+        registry: &LiveFeedProductRegistry,
+        summary: &LiveFeedInstalledSummary,
+        manifest: Vec<u8>,
+        root: Vec<u8>,
+    ) -> AppResult<()> {
+        let installed = registry
+            .required_driver(&summary.product)?
+            .install_persisted_nav_kv_package_descriptor(summary, manifest, root)?;
+        self.ingest_prepared_installed_state(installed);
+        Ok(())
+    }
+
     pub fn ingest_prepared_installed_state(&mut self, installed: LiveFeedInstalledState) {
         self.stage_or_remember_installed_state(installed);
     }
@@ -814,9 +828,11 @@ impl LiveFeedCache {
         if installed.product != *product
             || installed.version != *version
             || installed.state_sha256 != current_ref.state_sha256
-            || (product == "winds-aloft"
-                && installed.summary().blob_sha256.as_deref()
-                    != Some(current_ref.blob_sha256.as_str()))
+            || installed
+                .summary()
+                .blob_sha256
+                .as_deref()
+                .is_some_and(|blob_sha256| blob_sha256 != current_ref.blob_sha256)
         {
             return Err(cache_error(format!(
                 "prepared {product}/{version} full install no longer matches the catalog"
@@ -1400,10 +1416,7 @@ impl LiveFeedProductDriver {
                             &bytes,
                             required_blob_sha256("nav_kv full package", product, payload_ref)?,
                         )?;
-                        if product == "winds-aloft" {
-                            return verify_nav_kv_package(product, version, payload_ref, bytes);
-                        }
-                        read_nav_kv_members_from_zip(product, &bytes)?
+                        return verify_nav_kv_package(product, version, payload_ref, bytes);
                     }
                 };
                 verify_nav_kv_state(product, version, payload_ref, manifest, root, pages)
@@ -1516,17 +1529,8 @@ impl LiveFeedProductDriver {
                         "{product} persisted payload metadata is not nav_kv"
                     )));
                 }
-                if product == "winds-aloft" {
-                    let expected_blob_sha256 = summary.blob_sha256.as_deref().ok_or_else(|| {
-                        cache_error(
-                            "persisted winds-aloft package metadata has no blob hash".to_string(),
-                        )
-                    })?;
-                    verify_blob_sha256(
-                        "persisted winds-aloft package",
-                        bytes,
-                        expected_blob_sha256,
-                    )?;
+                if let Some(expected_blob_sha256) = summary.blob_sha256.as_deref() {
+                    verify_blob_sha256("persisted nav_kv package", bytes, expected_blob_sha256)?;
                     let payload_ref = LiveFeedPayloadRef {
                         kind: Some("nav_kv_package".to_string()),
                         url: String::new(),
@@ -1606,6 +1610,47 @@ impl LiveFeedProductDriver {
                 ))
             }
         }
+    }
+
+    fn install_persisted_nav_kv_package_descriptor(
+        &self,
+        summary: &LiveFeedInstalledSummary,
+        manifest: Vec<u8>,
+        root: Vec<u8>,
+    ) -> AppResult<LiveFeedInstalledState> {
+        let Self::NavKv { product } = self else {
+            return Err(cache_error(format!(
+                "{} does not support nav_kv package descriptors",
+                self.product()
+            )));
+        };
+        if summary.product != *product || summary.payload_kind != "nav_kv_package" {
+            return Err(cache_error(format!(
+                "{product} persisted payload metadata is not nav_kv"
+            )));
+        }
+        let package_blob_sha256 = summary.blob_sha256.clone().ok_or_else(|| {
+            cache_error(format!(
+                "persisted {product} package descriptor has no blob hash"
+            ))
+        })?;
+        let payload_ref = LiveFeedPayloadRef {
+            kind: Some("nav_kv_package".to_string()),
+            url: String::new(),
+            bytes: 0,
+            blob_sha256: package_blob_sha256,
+            state_sha256: summary.state_sha256.clone(),
+        };
+        let mut installed = verify_nav_kv_package_descriptor(
+            product,
+            &summary.version,
+            &payload_ref,
+            manifest,
+            root,
+            None,
+        )?;
+        installed.collected_at_utc = summary.collected_at_utc.clone();
+        Ok(installed)
     }
 
     fn install_persisted_resources(
@@ -1727,17 +1772,35 @@ impl LiveFeedProductDriver {
                         "{product} installed state does not match delta source"
                     )));
                 }
-                let LiveFeedInstalledPayload::NavKv {
-                    manifest,
-                    root,
-                    pages,
-                } = &installed.payload
-                else {
-                    return Err(cache_error(format!(
-                        "{product} installed state is not nav_kv"
-                    )));
+                let (manifest, root_bytes, pages, preserve_package) = match &installed.payload {
+                    LiveFeedInstalledPayload::NavKv {
+                        manifest,
+                        root,
+                        pages,
+                    } => (manifest.clone(), root.clone(), pages.clone(), false),
+                    LiveFeedInstalledPayload::NavKvPackage {
+                        package_bytes: Some(package_bytes),
+                        ..
+                    } => {
+                        let (manifest, root, pages) =
+                            read_nav_kv_members_from_zip(product, package_bytes)?;
+                        (manifest, root, pages, true)
+                    }
+                    LiveFeedInstalledPayload::NavKvPackage {
+                        package_bytes: None,
+                        ..
+                    } => {
+                        return Err(cache_error(format!(
+                            "{product} delta requires its persisted base package to be hydrated"
+                        )))
+                    }
+                    _ => {
+                        return Err(cache_error(format!(
+                            "{product} installed state is not nav_kv"
+                        )))
+                    }
                 };
-                let root = NavKvRoot::parse(root)
+                let root = NavKvRoot::parse(&root_bytes)
                     .map_err(|err| cache_error(format!("failed to parse {product} root: {err}")))?;
                 let current_pairs = root
                     .pairs(|page| pages.get(page as usize).cloned())
@@ -1786,21 +1849,33 @@ impl LiveFeedProductDriver {
                 let manifest = updated_nav_kv_manifest_bytes(
                     product,
                     &delta_ref.to_version,
-                    manifest,
+                    &manifest,
                     &built.root_bytes,
                     &built.pages,
                     &next_sha256,
                 )?;
+                let payload = if preserve_package {
+                    let package_bytes =
+                        write_nav_kv_zip_bytes(&manifest, &built.root_bytes, &built.pages)?;
+                    LiveFeedInstalledPayload::NavKvPackage {
+                        manifest,
+                        root: built.root_bytes,
+                        package_blob_sha256: sha256_hex(&package_bytes),
+                        package_bytes: Some(Arc::new(package_bytes)),
+                    }
+                } else {
+                    LiveFeedInstalledPayload::NavKv {
+                        manifest,
+                        root: built.root_bytes,
+                        pages: built.pages,
+                    }
+                };
                 Ok(LiveFeedInstalledState {
                     product: product.clone(),
                     version: delta_ref.to_version.clone(),
                     state_sha256: next_sha256,
                     collected_at_utc: None,
-                    payload: LiveFeedInstalledPayload::NavKv {
-                        manifest,
-                        root: built.root_bytes,
-                        pages: built.pages,
-                    },
+                    payload,
                 })
             }
             Self::Notam { product } => {
@@ -2172,6 +2247,24 @@ fn verify_nav_kv_package(
 ) -> AppResult<LiveFeedInstalledState> {
     let manifest = read_required_zip_member(product, &bytes, "manifest.json")?;
     let root = read_required_zip_member(product, &bytes, "root")?;
+    verify_nav_kv_package_descriptor(
+        product,
+        version,
+        payload_ref,
+        manifest,
+        root,
+        Some(Arc::new(bytes)),
+    )
+}
+
+fn verify_nav_kv_package_descriptor(
+    product: &str,
+    version: &str,
+    payload_ref: &LiveFeedPayloadRef,
+    manifest: Vec<u8>,
+    root: Vec<u8>,
+    package_bytes: Option<Arc<Vec<u8>>>,
+) -> AppResult<LiveFeedInstalledState> {
     let parsed_manifest: NavKvInstallManifest =
         serde_json::from_slice(&manifest).map_err(cache_json_error)?;
     if parsed_manifest.product_id != product || parsed_manifest.version_label != version {
@@ -2211,7 +2304,7 @@ fn verify_nav_kv_package(
             manifest,
             root,
             package_blob_sha256: payload_ref.blob_sha256.clone(),
-            package_bytes: Some(Arc::new(bytes)),
+            package_bytes,
         },
     })
 }
@@ -4454,6 +4547,77 @@ mod tests {
             .pairs(|page| pages.get(page as usize).cloned())
             .unwrap();
         assert_eq!(reloaded_pairs, second_pairs);
+    }
+
+    #[test]
+    fn nav_kv_package_descriptor_restores_without_loading_or_expanding_pages() {
+        let registry = live_feed_product_registry();
+        let driver = registry.required_driver("obstacles").unwrap();
+        let pairs = vec![NavKvPair {
+            key: "obstacle/tile/z01/x000001/y000001".to_string(),
+            value: b"obstacle".to_vec(),
+        }];
+        let built = build_nav_kv_strict(pairs.clone(), 1024).unwrap();
+        let state_sha256 = nav_kv_canonical_sha256_from_pairs(&pairs);
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": "v1",
+            "encoding": format!("had-nav-kv-v{NAV_KV_VERSION}"),
+            "root": "root",
+            "page_path_template": "page_{page:04}",
+            "page_count": built.pages.len(),
+            "state_sha256": state_sha256,
+        }))
+        .unwrap();
+        let package = write_nav_kv_zip_bytes(&manifest, &built.root_bytes, &built.pages).unwrap();
+        let package_sha256 = sha256_hex(&package);
+        let payload_ref = LiveFeedPayloadRef {
+            kind: Some("nav_kv_package".to_string()),
+            url: "packages/obstacles/v1.zip".to_string(),
+            bytes: package.len() as u64,
+            blob_sha256: package_sha256.clone(),
+            state_sha256: state_sha256.clone(),
+        };
+        let installed = driver
+            .install_full(
+                "obstacles",
+                "v1",
+                &payload_ref,
+                None,
+                LiveFeedFetchedPayload::Bytes(package),
+            )
+            .unwrap();
+        assert!(matches!(
+            installed.payload,
+            LiveFeedInstalledPayload::NavKvPackage {
+                package_bytes: Some(_),
+                ..
+            }
+        ));
+
+        let summary = installed.summary();
+        assert_eq!(
+            summary.blob_sha256.as_deref(),
+            Some(package_sha256.as_str())
+        );
+        let mut restored = live_feed_cache();
+        restored
+            .ingest_persisted_nav_kv_package_descriptor(
+                &registry,
+                &summary,
+                manifest,
+                built.root_bytes,
+            )
+            .unwrap();
+        assert!(matches!(
+            &restored.installed("obstacles").unwrap().payload,
+            LiveFeedInstalledPayload::NavKvPackage {
+                package_blob_sha256,
+                package_bytes: None,
+                ..
+            } if package_blob_sha256 == &package_sha256
+        ));
     }
 
     #[test]

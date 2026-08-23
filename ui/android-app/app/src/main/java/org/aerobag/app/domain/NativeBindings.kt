@@ -91,6 +91,13 @@ interface NativeBridge {
         payloadBytes: ByteArray,
     )
 
+    fun liveFeedCacheIngestPersistedNavKvPackageDescriptor(
+        handle: Long,
+        summaryJson: String,
+        manifestBytes: ByteArray,
+        rootBytes: ByteArray,
+    )
+
     fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String, version: String): ByteArray
 
     fun liveFeedCacheResourceManifestJson(handle: Long, product: String): String
@@ -732,6 +739,13 @@ object NativeBindings : NativeBridge {
         handle: Long,
         summaryJson: String,
         payloadBytes: ByteArray,
+    )
+
+    external override fun liveFeedCacheIngestPersistedNavKvPackageDescriptor(
+        handle: Long,
+        summaryJson: String,
+        manifestBytes: ByteArray,
+        rootBytes: ByteArray,
     )
 
     external override fun liveFeedCacheInstalledPayloadBytes(

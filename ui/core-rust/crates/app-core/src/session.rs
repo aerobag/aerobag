@@ -6865,6 +6865,7 @@ enum PreparedDurableLiveFeedPayload {
     Obstacles {
         manifest: serde_json::Value,
         store: NavKvStore,
+        package_blob_sha256: Option<String>,
     },
     Nexrad(LiveNexradInstalledState),
     WindsAloft {
@@ -6938,7 +6939,53 @@ fn prepare_durable_live_feed_install_inner(
             };
             Ok(PreparedDurableLiveFeedInstall {
                 state_manifest: Some(manifest.clone()),
-                payload: PreparedDurableLiveFeedPayload::Obstacles { manifest, store },
+                payload: PreparedDurableLiveFeedPayload::Obstacles {
+                    manifest,
+                    store,
+                    package_blob_sha256: None,
+                },
+            })
+        }
+        (
+            "obstacles",
+            crate::LiveFeedInstalledPayload::NavKvPackage {
+                manifest,
+                root,
+                package_blob_sha256,
+                ..
+            },
+        ) => {
+            let manifest_value: serde_json::Value =
+                serde_json::from_slice(manifest).map_err(|error| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed obstacle live feed: {error}"),
+                })?;
+            let parsed_manifest: LiveObstacleHadManifest =
+                serde_json::from_value(manifest_value.clone()).map_err(|error| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed obstacle live feed: {error}"),
+                })?;
+            let parsed_root = NavKvRoot::parse(root).map_err(|message| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to parse installed obstacles root: {message}"),
+            })?;
+            if parsed_root.page_count() != parsed_manifest.page_count {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!(
+                        "installed obstacles root page_count {} did not match manifest {}",
+                        parsed_root.page_count(),
+                        parsed_manifest.page_count
+                    ),
+                });
+            }
+            Ok(PreparedDurableLiveFeedInstall {
+                state_manifest: Some(manifest_value.clone()),
+                payload: PreparedDurableLiveFeedPayload::Obstacles {
+                    manifest: manifest_value,
+                    store: NavKvStore::new(parsed_root),
+                    package_blob_sha256: Some(package_blob_sha256.clone()),
+                },
             })
         }
         (
@@ -7119,7 +7166,11 @@ fn commit_durable_live_feed_install(
         PreparedDurableLiveFeedPayload::Projection(payload) => {
             commit_prepared_live_feed(session, payload)?;
         }
-        PreparedDurableLiveFeedPayload::Obstacles { manifest, store } => {
+        PreparedDurableLiveFeedPayload::Obstacles {
+            manifest,
+            store,
+            package_blob_sha256,
+        } => {
             install_live_obstacle_had_with_store(
                 session,
                 manifest,
@@ -7129,6 +7180,7 @@ fn commit_durable_live_feed_install(
                     installed.version
                 ),
                 Some(store),
+                package_blob_sha256,
             )?;
         }
         PreparedDurableLiveFeedPayload::Nexrad(installed) => {
@@ -8114,6 +8166,7 @@ fn install_live_obstacle_had(
         version,
         state_url,
         None,
+        None,
     )
 }
 
@@ -8123,6 +8176,7 @@ fn install_live_obstacle_had_with_store(
     version: String,
     state_url: String,
     store: Option<NavKvStore>,
+    package_blob_sha256: Option<String>,
 ) -> AppResult<()> {
     let manifest: LiveObstacleHadManifest = serde_json::from_value(manifest_value.clone())
         .map_err(|err| AppError {
@@ -8136,6 +8190,7 @@ fn install_live_obstacle_had_with_store(
         version,
         state_url,
         store,
+        package_blob_sha256,
     )
 }
 
@@ -8146,6 +8201,7 @@ fn install_live_obstacle_had_with_parsed_manifest(
     version: String,
     state_url: String,
     store: Option<NavKvStore>,
+    package_blob_sha256: Option<String>,
 ) -> AppResult<()> {
     if manifest.schema_version != 1 {
         return Err(AppError {
@@ -8192,7 +8248,7 @@ fn install_live_obstacle_had_with_parsed_manifest(
         page_path_template: manifest.page_path_template,
         page_count: manifest.page_count,
         state_sha256: manifest.state_sha256,
-        package_blob_sha256: None,
+        package_blob_sha256,
     };
     let same_state = session
         .weather
@@ -8207,6 +8263,7 @@ fn install_live_obstacle_had_with_parsed_manifest(
                 && existing.source.page_path_template == source.page_path_template
                 && existing.source.page_count == source.page_count
                 && existing.source.state_sha256 == source.state_sha256
+                && existing.source.package_blob_sha256 == source.package_blob_sha256
         });
     let preserve_store = store.or_else(|| {
         if same_state {
@@ -23079,6 +23136,76 @@ mod tests {
             .visible_features
             .iter()
             .any(|feature| feature.id == "obstacle:installed"));
+    }
+
+    #[test]
+    fn installed_live_obstacle_package_keeps_pages_lazy() {
+        let pairs = vec![had_nav_kv::NavKvPair {
+            key: "obstacle/tile/z08/x000000/y000000".to_string(),
+            value: b"{}".to_vec(),
+        }];
+        let built =
+            had_nav_kv::build_nav_kv_sorted(pairs.clone(), 1024).expect("build obstacle HAD");
+        let state_sha256 = had_nav_kv::nav_kv_canonical_sha256_from_pairs(&pairs);
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": "installed-v1",
+            "encoding": format!("had-nav-kv-v{}", had_nav_kv::VERSION),
+            "root": "root",
+            "page_path_template": "page_{page:04}",
+            "page_count": built.pages.len(),
+            "page_size": built.page_size,
+            "state_sha256": state_sha256,
+            "point_layers": {
+                "obstacle": {
+                    "min_zoom": 8,
+                    "max_zoom": 8,
+                    "available_zooms": [8],
+                    "zoom_levels": [{
+                        "zoom": 8,
+                        "filtered": false,
+                        "min_agl_ft": 0
+                    }]
+                }
+            }
+        });
+        let package_blob_sha256 = "b".repeat(64);
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        install_validated_live_feed_installed_state_in_session(
+            init.handle,
+            &crate::LiveFeedInstalledState {
+                product: "obstacles".to_string(),
+                version: "installed-v1".to_string(),
+                state_sha256,
+                collected_at_utc: None,
+                payload: crate::LiveFeedInstalledPayload::NavKvPackage {
+                    manifest: serde_json::to_vec(&manifest).expect("manifest json"),
+                    root: built.root_bytes,
+                    package_blob_sha256: package_blob_sha256.clone(),
+                    package_bytes: None,
+                },
+            },
+        )
+        .expect("install lazy obstacle package");
+
+        let sessions = lock_sessions();
+        let session = session_ref(&sessions, init.handle).expect("session");
+        let had = session
+            .weather
+            .runtime()
+            .obstacle_had
+            .as_ref()
+            .expect("obstacle HAD");
+        assert_eq!(
+            had.source.package_blob_sha256.as_deref(),
+            Some(package_blob_sha256.as_str())
+        );
+        assert!(
+            had.store.is_some(),
+            "root is ready without loading any page"
+        );
     }
 
     #[test]

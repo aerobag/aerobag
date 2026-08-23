@@ -1785,6 +1785,29 @@ pub fn live_feed_cache_ingest_installed_payload_bytes(
     )
 }
 
+pub fn live_feed_cache_ingest_persisted_nav_kv_package_descriptor(
+    handle: u64,
+    summary_json: &str,
+    manifest: Vec<u8>,
+    root: Vec<u8>,
+) -> Result<(), String> {
+    let summary: app_core::LiveFeedInstalledSummary =
+        serde_json::from_str(summary_json).map_err(|err| err.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+        .ingest_persisted_nav_kv_package_descriptor(
+            &app_core::live_feed_product_registry(),
+            &summary,
+            manifest,
+            root,
+        )
+        .map_err(|error| error.to_string())
+}
+
 pub fn live_feed_cache_installed_payload_bytes(
     handle: u64,
     product: &str,
@@ -3198,6 +3221,31 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
         let summary = get_java_string(&mut env, summary_json)?;
         let bytes = get_java_byte_array(&mut env, payload_bytes)?;
         live_feed_cache_ingest_installed_payload_bytes(handle as u64, &summary, &bytes)
+    })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheIngestPersistedNavKvPackageDescriptor(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    summary_json: JString,
+    manifest_bytes: JByteArray,
+    root_bytes: JByteArray,
+) {
+    let result = (|| {
+        let summary = get_java_string(&mut env, summary_json)?;
+        let manifest = get_java_byte_array(&mut env, manifest_bytes)?;
+        let root = get_java_byte_array(&mut env, root_bytes)?;
+        live_feed_cache_ingest_persisted_nav_kv_package_descriptor(
+            handle as u64,
+            &summary,
+            manifest,
+            root,
+        )
     })();
     if let Err(message) = result {
         let _ = env.throw_new("java/lang/RuntimeException", message);

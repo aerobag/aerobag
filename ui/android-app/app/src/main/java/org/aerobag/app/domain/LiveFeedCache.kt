@@ -38,6 +38,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -242,6 +243,19 @@ class LiveFeedCache(
             handle,
             json.encodeToString(summary),
             payloadBytes,
+        )
+    }
+
+    fun ingestPersistedNavKvPackageDescriptor(
+        summary: LiveFeedInstalledSummary,
+        manifestBytes: ByteArray,
+        rootBytes: ByteArray,
+    ) = withOpenHandleConcurrent { handle ->
+        bridge.liveFeedCacheIngestPersistedNavKvPackageDescriptor(
+            handle,
+            json.encodeToString(summary),
+            manifestBytes,
+            rootBytes,
         )
     }
 
@@ -577,6 +591,24 @@ class AndroidLiveFeedClient(
                 val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
                 acquisitionProduct?.let { reportAcquisitionPhase(it, "installing") }
                 val summary = withContext(Dispatchers.IO) {
+                    request.deltaBase()?.let { (product, fromVersion) ->
+                        val installed = cache.installedSummary(product)
+                        if (
+                            installed?.version == fromVersion &&
+                            installed.payloadKind == "nav_kv_package" &&
+                            installed.blobSha256 != null
+                        ) {
+                            cache.ingestInstalledPayload(
+                                installed,
+                                LiveFeedCacheStore.readPackagePayload(
+                                    context,
+                                    product,
+                                    fromVersion,
+                                    installed.blobSha256,
+                                ),
+                            )
+                        }
+                    }
                     cache.installFetchedBytes(request, bytes)
                 }
                 if (summary == null) {
@@ -645,6 +677,13 @@ class AndroidLiveFeedClient(
         return product.takeIf {
             it == "winds-aloft" && (requestKind == "full" || requestKind == "delta")
         }
+    }
+
+    private fun LiveFeedCacheRequest.deltaBase(): Pair<String, String>? {
+        if (kind["kind"]?.jsonPrimitive?.content != "delta") return null
+        val product = kind["product"]?.jsonPrimitive?.content ?: return null
+        val fromVersion = kind["from_version"]?.jsonPrimitive?.content ?: return null
+        return product to fromVersion
     }
 
     private suspend fun readSseLoop(
@@ -1011,7 +1050,23 @@ object LiveFeedCacheStore {
     ): Boolean {
         val startedAtMs = SystemClock.elapsedRealtime()
         return runCatching {
-            cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
+            if (
+                entry.summary.payloadKind == "nav_kv_package" &&
+                entry.summary.blobSha256 != null
+            ) {
+                val manifest = PackageZipStore.readEntryBytes(entry.payloadFile, "manifest.json")
+                    ?: error("persisted nav_kv package has no manifest.json")
+                val rootMemberPath = json.parseToJsonElement(manifest.decodeToString())
+                    .jsonObject["root"]
+                    ?.jsonPrimitive
+                    ?.content
+                    ?: "root"
+                val root = PackageZipStore.readEntryBytes(entry.payloadFile, rootMemberPath)
+                    ?: error("persisted nav_kv package has no $rootMemberPath")
+                cache.ingestPersistedNavKvPackageDescriptor(entry.summary, manifest, root)
+            } else {
+                cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
+            }
             cache.releasePersistedPayloadBytes(entry.summary.product, entry.summary.version)
             Log.i(
                 LiveFeedLogTag,
@@ -1155,6 +1210,36 @@ object LiveFeedCacheStore {
         }
         return PackageZipStore.readEntryBytes(payloadFile, memberPath)
             ?: error("live-feed package $product/$version has no member $memberPath")
+    }
+
+    fun readPackagePayload(
+        context: Context,
+        product: String,
+        version: String,
+        blobSha256: String,
+    ): ByteArray {
+        val versionDir = File(
+            File(rootDir(context), safePathComponent(product)),
+            safePathComponent(version),
+        )
+        val metadataFile = File(versionDir, "metadata.json")
+        val payloadFile = File(versionDir, "payload.bin")
+        val summary = runCatching {
+            json.decodeFromString<LiveFeedInstalledSummary>(metadataFile.readText())
+        }.getOrElse {
+            error("live-feed package $product/$version metadata is unavailable")
+        }
+        require(
+            summary.product == product &&
+                summary.version == version &&
+                summary.blobSha256 == blobSha256,
+        ) {
+            "live-feed package $product/$version does not match blob $blobSha256"
+        }
+        require(payloadFile.isFile) {
+            "live-feed package $product/$version payload is unavailable"
+        }
+        return payloadFile.readBytes()
     }
 
     fun persist(

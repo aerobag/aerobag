@@ -426,7 +426,7 @@ case "$command" in
       fi
       started="1"
       echo "=== $journey (android) ==="
-      run_android_test "$journey"
+      run_android_test "$journey" || exit $?
     done < <(implemented_journeys android "$priority")
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
@@ -444,7 +444,7 @@ case "$command" in
       fi
       started="1"
       echo "=== $journey (android) ==="
-      run_android_test "$journey"
+      run_android_test "$journey" || exit $?
     done < <(implemented_journeys android "$priority")
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
@@ -526,7 +526,7 @@ JS
     cd "$ROOT"
     while IFS= read -r journey; do
       echo "=== $journey (web) ==="
-      run_web_test "$journey"
+      run_web_test "$journey" || exit $?
     done < <(implemented_journeys web "$priority")
     ;;
   web-dist-suite)
@@ -536,7 +536,7 @@ JS
     SERVE_WEB_DIST=1
     while IFS= read -r journey; do
       echo "=== $journey (web dist) ==="
-      AEROBAG_E2E_URL="$(fixture_origin)" run_web_test "$journey"
+      AEROBAG_E2E_URL="$(fixture_origin)" run_web_test "$journey" || exit $?
     done < <(implemented_journeys web "$priority")
     ;;
   -h|--help|help)

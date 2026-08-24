@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import {
@@ -29,7 +32,7 @@ import {
   androidZoomKeyCode, findTagOrPrefix, SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
   validateSemanticDriver, WebSemanticJourneyDriver,
 } from "./semantic-journey-driver.mjs";
-import { advancingVirtualClockScript } from "./web-semantic-transport.mjs";
+import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 
 test("release journey registry owns every assertion exactly once", () => {
   const index = validateJourneyRegistry();
@@ -73,6 +76,44 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   assert.match(workflow, /tags:\n\s+- "20\*"/);
   assert.match(workflow, /Release qualification \{0\}/);
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"/);
+  assert.doesNotMatch(workflow, /ANDROID_SERIAL:\s*emulator-/);
+  assert.equal(workflow.match(/Install browser harness dependencies/g)?.length, 2);
+});
+
+test("release journey suites propagate a failed journey process", () => {
+  const temp = mkdtempSync(join(tmpdir(), "aerobag-release-suite-failure-"));
+  try {
+    const fixture = join(temp, "fixture.json");
+    const fakeBin = join(temp, "bin");
+    writeFileSync(fixture, "{}\n");
+    mkdirSync(fakeBin);
+    const node = join(fakeBin, "node");
+    writeFileSync(node, `#!/usr/bin/env bash
+if [[ "$1" == *run-release-journey.mjs ]]; then exit 37; fi
+if [[ "$#" == "5" ]]; then echo fake.journey; else echo fresh; fi
+`);
+    chmodSync(node, 0o755);
+    const curl = join(fakeBin, "curl");
+    writeFileSync(curl, `#!/usr/bin/env bash
+echo '{"live_feed_profile":"fresh","serves_web_app":false}'
+`);
+    chmodSync(curl, 0o755);
+    const result = spawnSync("bash", [
+      new URL("./release_journey_lab.sh", import.meta.url).pathname,
+      "web-suite",
+      "p0",
+    ], {
+      cwd: new URL("../..", import.meta.url).pathname,
+      env: {
+        ...process.env,
+        AEROBAG_RELEASE_JOURNEY_FIXTURE: fixture,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
+    });
+    assert.equal(result.status, 37, result.stderr.toString());
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test("local lab and immutable app builds agree on fixed service ports", () => {

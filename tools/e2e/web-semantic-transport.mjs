@@ -9,23 +9,6 @@ function expressionArgument(value) {
   return JSON.stringify(value);
 }
 
-export function advancingVirtualClockScript(referenceEpochMs) {
-  if (!Number.isFinite(referenceEpochMs)) throw new Error("virtual clock requires a finite epoch");
-  return `(() => {
-    const RealDate = globalThis.Date;
-    const referenceEpochMs = ${JSON.stringify(referenceEpochMs)};
-    const startedAt = performance.now();
-    const virtualNow = () => Math.trunc(referenceEpochMs + (performance.now() - startedAt));
-    class AerobagE2EDate extends RealDate {
-      constructor(...args) {
-        super(...(args.length ? args : [virtualNow()]));
-      }
-      static now() { return virtualNow(); }
-    }
-    globalThis.Date = AerobagE2EDate;
-  })()`;
-}
-
 export class WebSemanticTransport {
   constructor(page, { url, origin = new URL(url).origin } = {}) {
     this.page = page;

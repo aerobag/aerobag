@@ -9,7 +9,8 @@ import {
   connectToBrowser, launchChrome, stopProcess, waitFor,
 } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
-import { advancingVirtualClockScript, WebSemanticTransport } from "./web-semantic-transport.mjs";
+import { advancingVirtualClockScript } from "./virtual-clock.mjs";
+import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 
 export async function launchCloudJourneyPeer({ url, referenceEpochMs }) {
   const userDataDir = await mkdtemp(join(tmpdir(), "aerobag-cloud-journey-peer-"));

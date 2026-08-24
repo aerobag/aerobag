@@ -15,7 +15,8 @@ import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import { releaseJourneyImplementation } from "./release-journey-implementations.mjs";
 import { executeReleaseJourney } from "./release-journey-runtime.mjs";
 import { WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
-import { advancingVirtualClockScript, WebSemanticTransport } from "./web-semantic-transport.mjs";
+import { advancingVirtualClockScript } from "./virtual-clock.mjs";
+import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 
 function parseArgs(values) {
   const result = {

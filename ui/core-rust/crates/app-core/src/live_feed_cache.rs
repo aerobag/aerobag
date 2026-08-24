@@ -982,11 +982,12 @@ impl LiveFeedCache {
         if installed.product != *product
             || installed.version != *version
             || installed.state_sha256 != current_ref.state_sha256
-            || installed
-                .summary()
-                .blob_sha256
-                .as_deref()
-                .is_some_and(|blob_sha256| blob_sha256 != current_ref.blob_sha256)
+            || (product != "nexrad"
+                && installed
+                    .summary()
+                    .blob_sha256
+                    .as_deref()
+                    .is_some_and(|blob_sha256| blob_sha256 != current_ref.blob_sha256))
         {
             return Err(cache_error(format!(
                 "prepared {product}/{version} full install no longer matches the catalog"
@@ -2909,8 +2910,11 @@ mod tests {
             "source_grid": {
                 "geo_transform": [-123.0, 0.01, 0.0, 48.0, 0.0, -0.01]
             },
-            "levels": [],
-            "tile_size": 256,
+            "levels": [
+                {"res": 0, "width": 1, "height": 1, "tile_cols": 1, "tile_rows": 1},
+                {"res": 1, "width": 1, "height": 1, "tile_cols": 1, "tile_rows": 1}
+            ],
+            "tile_size": 1,
             "tile_path_template": "tiles/res{res}/{x}/{y}.png"
         })
     }
@@ -2928,6 +2932,10 @@ mod tests {
             .last_modified_time(zip::DateTime::default());
         writer.start_file("manifest.json", options).unwrap();
         writer.write_all(&state_manifest_bytes).unwrap();
+        writer.start_file("tiles/res0/0/0.png", options).unwrap();
+        writer.write_all(&solid_png(1, 1, [20, 40, 60, 255])).unwrap();
+        writer.start_file("tiles/res1/0/0.png", options).unwrap();
+        writer.write_all(&solid_png(1, 1, [20, 40, 60, 255])).unwrap();
         let package = writer.finish().unwrap().into_inner();
         let state_sha256 = canonical_json_sha256(&state_manifest).unwrap();
         let manifest = serde_json::json!({
@@ -3229,6 +3237,7 @@ mod tests {
                 cadence,
                 ..NexradAcquisitionDirective::default()
             });
+            let expected_profile = NexradOfflineProfile::OfflineLow1.id();
             let mut downloaded_urls = Vec::new();
             let mut downloaded_bytes = 0;
 
@@ -3277,12 +3286,15 @@ mod tests {
                         LiveFeedCacheRequestKind::Full {
                             product,
                             version: request_version,
+                            install_profile: Some(profile),
                             ..
-                        } if product == "nexrad" && request_version == version
+                        } if product == "nexrad"
+                            && request_version == version
+                            && profile == expected_profile
                     ));
                     assert_eq!(
                         request.url,
-                        format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/install/nexrad/{version}.zip")
+                        format!("{TEST_LIVE_FEED_ROOT}/live-feeds/v3/packages/nexrad/{version}.{expected_profile}.zip")
                     );
                     let package = fixtures[version].1.clone();
                     downloaded_urls.push(request.url.clone());
@@ -3314,7 +3326,7 @@ mod tests {
                 expected_downloaded_versions
                     .iter()
                     .map(|version| format!(
-                        "{TEST_LIVE_FEED_ROOT}/live-feeds/v3/install/nexrad/{version}.zip"
+                        "{TEST_LIVE_FEED_ROOT}/live-feeds/v3/packages/nexrad/{version}.{expected_profile}.zip"
                     ))
                     .collect::<Vec<_>>()
             );

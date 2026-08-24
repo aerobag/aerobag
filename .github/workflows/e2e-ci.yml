@@ -172,6 +172,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web-app/package-lock.json
+      - name: Install browser harness dependencies
+        run: npm ci --prefix ui/web-app
       - name: Download immutable apps
         uses: actions/download-artifact@v5
         with:
@@ -230,7 +234,6 @@ jobs:
       PACKAGE_SOURCE_PORT: 18093
       AEROBAG_E2E_CLOUD_PORT: 18094
       AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
-      ANDROID_SERIAL: emulator-5564
       VNC_PORT: 5900
     steps:
       - uses: actions/checkout@v5
@@ -241,6 +244,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web-app/package-lock.json
+      - name: Install browser harness dependencies
+        run: npm ci --prefix ui/web-app
       - name: Download immutable apps
         uses: actions/download-artifact@v5
         with:

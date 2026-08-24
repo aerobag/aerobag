@@ -65,12 +65,10 @@ class DesiredReleaseTests(unittest.TestCase):
             repo = Path(temp_dir) / "repo"
             repo.mkdir()
             self.git(repo, "init", "--quiet")
+            self.git(repo, "config", "user.name", "Aerobag Test")
+            self.git(repo, "config", "user.email", "test@aerobag.invalid")
             self.git(
                 repo,
-                "-c",
-                "user.name=Aerobag Test",
-                "-c",
-                "user.email=test@aerobag.invalid",
                 "commit",
                 "--quiet",
                 "--allow-empty",

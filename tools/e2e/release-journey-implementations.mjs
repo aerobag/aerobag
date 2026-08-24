@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { launchCloudJourneyPeer } from "./cloud-journey-peer.mjs";
-
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
 }
@@ -2156,6 +2154,7 @@ async function cloudCrossfill(runtime) {
   runtime.check("cloud.close-detail", Boolean(closeBackup?.enabled && closeAddDevice?.enabled));
 
   try {
+    const { launchCloudJourneyPeer } = await import("./cloud-journey-peer.mjs");
     peer = await launchCloudJourneyPeer({
       url: peerUrl,
       referenceEpochMs: null,

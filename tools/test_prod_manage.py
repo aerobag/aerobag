@@ -559,7 +559,12 @@ class ReconcileCommandTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(
             args=["ssh"], returncode=0, stdout="", stderr=""
         )
-        config = {"source_root": "/source", "artifact_root": "/artifacts"}
+        config = {
+            "source_root": "/source",
+            "artifact_root": "/artifacts",
+            "cargo_target_dir": "/data/build-cache/cargo-target",
+            "cargo_target_max_bytes": 32 * 1024**3,
+        }
         with mock.patch.object(
             prod_manage.deployment, "run_ssh", return_value=completed
         ) as run_ssh:
@@ -571,6 +576,15 @@ class ReconcileCommandTests(unittest.TestCase):
         command = run_ssh.call_args.args[1]
         self.assertIn(f"test -s {prod_manage.deployment.DEPLOYED_REV_FILE}", command)
         self.assertNotIn("installed controller revision differs", command)
+        self.assertIn(
+            "CARGO_TARGET_DIR=/data/build-cache/cargo-target",
+            command,
+        )
+        self.assertIn(
+            "AEROBAG_CARGO_TARGET_MAX_BYTES=34359738368",
+            command,
+        )
+        self.assertIn(prod_manage.deployment.CARGO_TARGET_PRUNE_SCRIPT, command)
 
     def test_nonconverged_reconcile_deploys_then_verifies_convergence(self) -> None:
         pending = releases.ReconciliationPlan(

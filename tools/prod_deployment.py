@@ -15,7 +15,7 @@ import tempfile
 import textwrap
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from admin_index import admin_index_html
@@ -43,6 +43,7 @@ NGINX_ENABLED_SITE = "/etc/nginx/sites-enabled/aerobag.conf"
 ENV_FILE = "/etc/aerobag/env"
 DEPLOYED_REV_FILE = "/etc/aerobag/deployed-rev"
 DEPLOY_CONFIG_FILE = "/etc/aerobag/deploy-config.json"
+CARGO_TARGET_PRUNE_SCRIPT = "/usr/local/bin/aerobag-prune-cargo-target"
 REPO_PACKAGE_MANIFEST = "deploy/prod-packages.txt"
 BOOTSTRAP_PACKAGES = ["ca-certificates", "curl", "git", "rsync"]
 CLIENT_DEBUG_LISTEN = "127.0.0.1:8096"
@@ -227,6 +228,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "artifact_root",
         "ui_target_root",
         "cargo_target_dir",
+        "cargo_target_max_bytes",
         "web_dist",
         "checkout_ref",
         "live_feeds_listen",
@@ -267,6 +269,7 @@ def load_config(path: Path) -> dict[str, Any]:
         os.fspath(DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE),
     )
     config.setdefault("nms_notams_prod_config", DEFAULT_NMS_NOTAMS_PROD_CONFIG)
+    validate_build_cache_config(config)
     validate_cloud_deploy_config(config)
     return config
 
@@ -285,6 +288,25 @@ def cloud_policy(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(policy, dict) or policy.get("schema_version") != 3:
         raise SystemExit(f"ACS runtime policy {path} must use schema_version 3")
     return policy
+
+
+def validate_build_cache_config(config: dict[str, Any]) -> None:
+    data_root = PurePosixPath(config["data_root"])
+    cargo_target = PurePosixPath(config["cargo_target_dir"])
+    if (
+        not data_root.is_absolute()
+        or not cargo_target.is_absolute()
+        or cargo_target == data_root
+        or data_root not in cargo_target.parents
+    ):
+        raise SystemExit("cargo_target_dir must be a child of data_root")
+    maximum = config["cargo_target_max_bytes"]
+    if (
+        not isinstance(maximum, int)
+        or isinstance(maximum, bool)
+        or maximum < 1024**3
+    ):
+        raise SystemExit("cargo_target_max_bytes must be an integer of at least 1 GiB")
 
 
 def validate_cloud_deploy_config(config: dict[str, Any]) -> None:
@@ -750,6 +772,8 @@ def deploy_config_json(config: dict[str, Any], deployed_rev: str) -> str:
                 "deployed_rev": deployed_rev,
                 "checkout_ref": config["checkout_ref"],
                 "publication_refs": publication_refs(config),
+                "cargo_target_dir": config["cargo_target_dir"],
+                "cargo_target_max_bytes": config["cargo_target_max_bytes"],
             },
             indent=2,
             sort_keys=True,
@@ -766,6 +790,7 @@ def env_file(config: dict[str, Any]) -> str:
         "ARTIFACT_ROOT": artifact_root,
         "AEROBAG_UI_TARGET_ROOT": config["ui_target_root"],
         "CARGO_TARGET_DIR": config["cargo_target_dir"],
+        "AEROBAG_CARGO_TARGET_MAX_BYTES": str(config["cargo_target_max_bytes"]),
         "AEROBAG_ARTIFACT_WRITE_PATH": artifact_root,
         "AEROBAG_ARTIFACT_READ_PATH": f"{artifact_root}/published",
         "AEROBAG_WEB_DIST": config["web_dist"],
@@ -856,6 +881,55 @@ fi
 """
 
 
+def prune_cargo_target_script() -> str:
+    return r"""#!/usr/bin/env bash
+set -euo pipefail
+source /etc/aerobag/env
+
+: "${DATA_ROOT:?missing DATA_ROOT}"
+: "${CARGO_TARGET_DIR:?missing CARGO_TARGET_DIR}"
+: "${AEROBAG_CARGO_TARGET_MAX_BYTES:?missing AEROBAG_CARGO_TARGET_MAX_BYTES}"
+
+data_root="$(realpath -m -- "$DATA_ROOT")"
+target="$(realpath -m -- "$CARGO_TARGET_DIR")"
+case "$target" in
+  "$data_root"/*) ;;
+  *)
+    echo "refusing to prune Cargo target outside DATA_ROOT: $target" >&2
+    exit 1
+    ;;
+esac
+
+if ! [[ "$AEROBAG_CARGO_TARGET_MAX_BYTES" =~ ^[0-9]+$ ]]; then
+  echo "invalid AEROBAG_CARGO_TARGET_MAX_BYTES: $AEROBAG_CARGO_TARGET_MAX_BYTES" >&2
+  exit 1
+fi
+if [ ! -d "$target" ]; then
+  exit 0
+fi
+
+before="$(du -sx --block-size=1 -- "$target" | awk '{print $1}')"
+if [ "$before" -le "$AEROBAG_CARGO_TARGET_MAX_BYTES" ]; then
+  exit 0
+fi
+
+echo "Cargo target uses $before bytes; pruning reusable compiler artifacts"
+for profile in debug release; do
+  for component in .fingerprint build deps incremental; do
+    rm -rf -- "$target/$profile/$component"
+  done
+done
+rm -rf -- "$target/multi-version-binaries"
+
+after="$(du -sx --block-size=1 -- "$target" | awk '{print $1}')"
+echo "Cargo target prune complete: $before -> $after bytes"
+if [ "$after" -gt "$AEROBAG_CARGO_TARGET_MAX_BYTES" ]; then
+  echo "Cargo target remains above its configured limit after pruning" >&2
+  exit 1
+fi
+"""
+
+
 def ensure_android_sdk_script() -> str:
     return f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -924,6 +998,8 @@ install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" "$CONTROLLER_TOOL_R
   --live-port-base {config['release_live_port_base']} \\
   --legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev" \\
   --refresh-products
+
+{CARGO_TARGET_PRUNE_SCRIPT}
 
 /usr/local/bin/aerobag-write-health
 """
@@ -1677,6 +1753,13 @@ def write_remote_config(
             config,
             "/usr/local/bin/aerobag-ensure-toolchain",
             ensure_toolchain_script(),
+            mode="0755",
+            dry_run=dry_run,
+        )
+        write_remote_file(
+            config,
+            CARGO_TARGET_PRUNE_SCRIPT,
+            prune_cargo_target_script(),
             mode="0755",
             dry_run=dry_run,
         )

@@ -35,7 +35,12 @@ Important fields:
   `live-feeds/`, `published/`, `logs/`, `locks/`, `state/`, `scratch/`, and
   `worktrees/`.
 - `ui_target_root`: persistent web build workspace and final static output.
-- `cargo_target_dir`: persistent Rust target dir shared across deploys.
+- `cargo_target_dir`: persistent Rust target dir shared across deploys. It must
+  be a child of `data_root`, not the small container root filesystem.
+- `cargo_target_max_bytes`: maximum retained Cargo target size after a
+  successful release reconciliation. Above this threshold the deployment
+  prunes reusable compiler artifacts while preserving runnable top-level
+  binaries.
 - `cloud_server_listen`: localhost ACS listener. Production uses `127.0.0.1:8099`
   because `8096` is already the client-debug receiver.
 - `cloud_server_storage_root`: persistent ACS storage, outside published
@@ -247,7 +252,8 @@ ARTIFACT_ROOT=/mnt/aerobag-data/artifacts
 AEROBAG_ARTIFACT_WRITE_PATH=/mnt/aerobag-data/artifacts
 AEROBAG_ARTIFACT_READ_PATH=/mnt/aerobag-data/artifacts/published
 AEROBAG_UI_TARGET_ROOT=/mnt/aerobag-data/ui-target
-CARGO_TARGET_DIR=/var/cache/aerobag-build/target
+CARGO_TARGET_DIR=/mnt/aerobag-data/build-cache/cargo-target
+AEROBAG_CARGO_TARGET_MAX_BYTES=34359738368
 AEROBAG_WEB_DIST=/mnt/aerobag-data/ui-target/web/dist
 ANDROID_HOME=/usr/lib/android-sdk
 ANDROID_SDK_ROOT=/usr/lib/android-sdk
@@ -274,7 +280,7 @@ The prod container uses:
 /mnt/aerobag-data/artifacts/state                operational manifests and markers
 /mnt/aerobag-data/artifacts/worktrees            multi-version build worktrees
 /mnt/aerobag-data/ui-target                       shared UI build cache
-/var/cache/aerobag-build/target                  Rust build cache
+/mnt/aerobag-data/build-cache/cargo-target       bounded Rust build cache
 /etc/aerobag/deployed-rev                        deployed checkout commit
 /etc/aerobag/deploy-config.json                  deployed ref summary
 ```
@@ -314,6 +320,13 @@ The deploy installs these systemd units:
 - `aerobag-health.service` and `aerobag-health.timer`: refresh machine-readable
   health status every minute.
 - `nginx.service`: public HTTP server on port 80.
+
+After a successful product/release reconciliation, the controller measures the
+shared Cargo target. If it exceeds `cargo_target_max_bytes`, it removes Cargo's
+reusable `deps`, `build`, `.fingerprint`, and `incremental` trees for the debug
+and release profiles. Runtime binaries at the profile root remain in place, so
+running services and later service restarts remain safe; the next changed build
+recompiles whatever was pruned.
 
 Each generated release live-feed unit uses its immutable binary and isolated
 mutable roots while sharing only the fetch cache:
@@ -365,7 +378,7 @@ The timer invokes the desired-state controller:
   --observed /mnt/aerobag-data/artifacts/state/releases-observed.json \
   --source-root /opt/aerobag \
   --artifact-root /mnt/aerobag-data/artifacts \
-  --cargo-target-dir /var/cache/aerobag-build/target \
+  --cargo-target-dir /mnt/aerobag-data/build-cache/cargo-target \
   --refresh-products
 ```
 

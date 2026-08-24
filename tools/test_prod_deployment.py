@@ -103,6 +103,70 @@ class ProductPublicationTests(unittest.TestCase):
             script.index("Preparing release tooling"),
             script.index("/usr/local/bin/aerobag-ensure-toolchain"),
         )
+        self.assertLess(
+            script.index('"$SOURCE_ROOT/tools/reconcile_prod_releases.py"'),
+            script.index(deploy_prod.CARGO_TARGET_PRUNE_SCRIPT),
+        )
+        self.assertLess(
+            script.index(deploy_prod.CARGO_TARGET_PRUNE_SCRIPT),
+            script.index("/usr/local/bin/aerobag-write-health"),
+        )
+
+    def test_cargo_target_is_bounded_on_the_data_volume(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+
+        self.assertEqual(
+            config["cargo_target_dir"],
+            "/mnt/aerobag-data/build-cache/cargo-target",
+        )
+        self.assertEqual(config["cargo_target_max_bytes"], 32 * 1024**3)
+        env = deploy_prod.env_file(config)
+        self.assertIn(
+            "CARGO_TARGET_DIR=/mnt/aerobag-data/build-cache/cargo-target\n",
+            env,
+        )
+        self.assertIn(
+            "AEROBAG_CARGO_TARGET_MAX_BYTES=34359738368\n",
+            env,
+        )
+
+    def test_cargo_target_must_be_below_data_root(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        config["cargo_target_dir"] = "/var/cache/aerobag-build/target"
+
+        with self.assertRaisesRegex(SystemExit, "child of data_root"):
+            deploy_prod.validate_build_cache_config(config)
+
+    def test_cargo_target_prune_preserves_profile_binaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_root = Path(temp_dir) / "data"
+            target = data_root / "build-cache/cargo-target"
+            deps = target / "release/deps"
+            deps.mkdir(parents=True)
+            dependency = deps / "libold-hash.rlib"
+            dependency.write_bytes(b"dependency")
+            binary = target / "release/preprocessor-cli"
+            binary.write_bytes(b"binary")
+            env_path = Path(temp_dir) / "env"
+            env_path.write_text(
+                "".join(
+                    (
+                        f"DATA_ROOT={deploy_prod.shell_quote(str(data_root))}\n",
+                        f"CARGO_TARGET_DIR={deploy_prod.shell_quote(str(target))}\n",
+                        "AEROBAG_CARGO_TARGET_MAX_BYTES=16384\n",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            script = deploy_prod.prune_cargo_target_script().replace(
+                "source /etc/aerobag/env",
+                f"source {deploy_prod.shell_quote(str(env_path))}",
+            )
+
+            subprocess.run(["bash"], input=script, text=True, check=True)
+
+            self.assertFalse(dependency.exists())
+            self.assertTrue(binary.is_file())
 
     def test_staging_qualification_browser_is_an_installed_dependency(self) -> None:
         packages = (deploy_prod.REPO_ROOT / deploy_prod.REPO_PACKAGE_MANIFEST).read_text(

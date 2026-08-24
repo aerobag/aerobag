@@ -365,6 +365,14 @@ def remote_runtime_failures(
     desired: releases.DesiredReleases,
     observed: releases.ObservedState,
 ) -> list[RuntimeFailure]:
+    cargo_target_assignment = (
+        "CARGO_TARGET_DIR="
+        + deployment.shell_quote(str(config["cargo_target_dir"]))
+    )
+    cargo_limit_assignment = (
+        "AEROBAG_CARGO_TARGET_MAX_BYTES="
+        + deployment.shell_quote(str(config["cargo_target_max_bytes"]))
+    )
     checks = [
         (
             f"test -d {deployment.shell_quote(config['source_root'] + '/.git')}",
@@ -375,6 +383,25 @@ def remote_runtime_failures(
             f"test -s {deployment.shell_quote(deployment.DEPLOYED_REV_FILE)}",
             "host",
             "installed controller revision is missing",
+        ),
+        (
+            "grep -Fqx -- "
+            f"{deployment.shell_quote(cargo_target_assignment)} "
+            f"{deployment.shell_quote(deployment.ENV_FILE)}",
+            "host",
+            "configured Cargo target differs from production intent",
+        ),
+        (
+            "grep -Fqx -- "
+            f"{deployment.shell_quote(cargo_limit_assignment)} "
+            f"{deployment.shell_quote(deployment.ENV_FILE)}",
+            "host",
+            "configured Cargo target limit differs from production intent",
+        ),
+        (
+            f"test -x {deployment.shell_quote(deployment.CARGO_TARGET_PRUNE_SCRIPT)}",
+            "host",
+            "Cargo target pruning command is not installed",
         ),
         (
             f"test -L {deployment.shell_quote(config['artifact_root'] + '/channel-current')}",

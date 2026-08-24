@@ -19,6 +19,9 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
   return journeyId === "shared.cloud-crossfill" ? hostEpochMs : fixtureEpochMs;
 }
 
+const ADB_TIMEOUT_MS = 20000;
+const UI_DUMP_TIMEOUT_MS = 60000;
+
 export function adbArgs(serial, args) {
   return serial ? ["-s", serial, ...args] : args;
 }
@@ -26,7 +29,7 @@ export function adbArgs(serial, args) {
 export function adb(serial, args, options = {}) {
   const res = spawnSync("adb", adbArgs(serial, args), {
     encoding: "utf8",
-    timeout: 20000,
+    timeout: ADB_TIMEOUT_MS,
     ...options,
   });
   if (res.status !== 0) {
@@ -39,7 +42,7 @@ export function adb(serial, args, options = {}) {
 export function adbBestEffort(serial, args, options = {}) {
   return spawnSync("adb", adbArgs(serial, args), {
     encoding: "utf8",
-    timeout: 20000,
+    timeout: ADB_TIMEOUT_MS,
     ...options,
   });
 }
@@ -47,7 +50,7 @@ export function adbBestEffort(serial, args, options = {}) {
 export function adbBuffer(serial, args, options = {}) {
   const res = spawnSync("adb", adbArgs(serial, args), {
     encoding: null,
-    timeout: 20000,
+    timeout: ADB_TIMEOUT_MS,
     ...options,
   });
   if (res.status !== 0) {
@@ -75,7 +78,9 @@ export function dumpAndroid(serial, dumpPath = `/sdcard/aerobag-e2e-${process.pi
     try {
       adbBestEffort(serial, ["shell", "rm", "-f", dumpPath], { timeout: 3000 });
       const modeArgs = modes[attempt] === "compressed" ? ["--compressed"] : [];
-      adb(serial, ["shell", "uiautomator", "dump", ...modeArgs, dumpPath], { timeout: 10000 });
+      adb(serial, ["shell", "uiautomator", "dump", ...modeArgs, dumpPath], {
+        timeout: UI_DUMP_TIMEOUT_MS,
+      });
       return adb(serial, ["exec-out", "cat", dumpPath]);
     } catch (error) {
       lastError = error;
@@ -530,11 +535,14 @@ export function verticalScrollGesture(bounds, direction) {
   const systemGestureInset = Math.max(inset, 180);
   const safeTop = Math.min(bounds.bottom - 1, bounds.top + systemGestureInset);
   const safeBottom = Math.max(safeTop + 1, bounds.bottom - systemGestureInset);
-  return {
-    x: Math.round((bounds.left + bounds.right) / 2),
-    startY: Math.round(direction === "down" ? safeBottom : safeTop),
-    endY: Math.round(direction === "down" ? safeTop : safeBottom),
-  };
+  const midpoint = (safeTop + safeBottom) / 2;
+  const travel = (safeBottom - safeTop) * 0.55;
+  const upperY = Math.round(midpoint - travel / 2);
+  const lowerY = Math.round(midpoint + travel / 2);
+  const x = Math.round((bounds.left + bounds.right) / 2);
+  if (direction === "down") return { x, startY: lowerY, endY: upperY };
+  if (direction === "up") return { x, startY: upperY, endY: lowerY };
+  throw new Error(`unsupported scroll direction: ${direction}`);
 }
 
 async function recoverObscuredAndroidApp(serial, xml) {
@@ -544,6 +552,27 @@ async function recoverObscuredAndroidApp(serial, xml) {
   adbBestEffort(serial, ["shell", "cmd", "statusbar", "collapse"], { timeout: 3000 });
   await delay(250);
   return dumpAndroid(serial);
+}
+
+export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
+  let xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+  let found = findNode(xml, predicate);
+  if (found) return found;
+  for (const direction of ["down", "up"]) {
+    for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+      const scrollSurface =
+        findVerticalScrollSurface(xml) ??
+        findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
+      const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
+      const { x, startY, endY } = verticalScrollGesture(bounds, direction);
+      swipe(serial, x, startY, x, endY, 450);
+      await delay(350);
+      xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+      found = findNode(xml, predicate);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 async function scrollUntilTagPrefixInDirection(

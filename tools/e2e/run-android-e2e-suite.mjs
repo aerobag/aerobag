@@ -29,6 +29,7 @@ import {
   destinationCenterEvidence,
   dumpAndroid,
   findNode,
+  findNodeByScrolling,
   findNodes,
   hasAndroidTag,
   hasAndroidText,
@@ -631,23 +632,15 @@ function findMapFollowProbe(xml) {
 async function waitForMapFollowProbe(serial, predicate, timeoutMs, message) {
   let probe = null;
   let lastError = null;
-  let deadline = Date.now() + timeoutMs;
-  let adbTimeoutRetryAvailable = true;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const attemptStarted = Date.now();
     try {
       probe = findMapFollowProbe(dumpAndroid(serial));
       if (probe !== null && predicate(probe)) return probe;
     } catch (error) {
       lastError = error;
-      if (adbTimeoutRetryAvailable && /spawnSync adb ETIMEDOUT/.test(error.message)) {
-        // A single uiautomator dump can consume adb's entire 20-second timeout.
-        // Preserve the caller's probe budget after that hosted-runner stall.
-        deadline += Date.now() - attemptStarted;
-        adbTimeoutRetryAvailable = false;
-      }
     }
-    await delay(250);
+    await delay(1000);
   }
   throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
 }
@@ -1164,30 +1157,13 @@ function logcatMarkerCount(serial, marker) {
 }
 
 async function verifyNotamsLoadedInUi(serial, result) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  let statusPageVisible = false;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     const xml = dumpAndroid(serial);
-    const loadedNode = findNode(xml, (node) => {
-      const tag = androidTag(node);
-      return tag.startsWith("parity:data-status-row:live_feed:notams:") && !tag.endsWith(":MISSING");
-    });
-    if (loadedNode) {
-      recordStep(result, "persisted NOTAM visible in core status UI", androidTag(loadedNode));
-      return;
-    }
     const statusRows = findNodes(xml, (node) => androidTag(node).startsWith("parity:data-status-row:"));
     if (statusRows.length > 0) {
-      const scrollSurface = findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE);
-      const bounds = rectOfBounds(scrollSurface?.bounds ?? "[20,180][1060,2100]");
-      swipe(
-        serial,
-        Math.round((bounds.left + bounds.right) / 2),
-        Math.round(bounds.bottom - 100),
-        Math.round((bounds.left + bounds.right) / 2),
-        Math.round(bounds.top + 100),
-        450,
-      );
-      await delay(350);
-      continue;
+      statusPageVisible = true;
+      break;
     }
     if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:DataStatus"))) {
       await tapTag(serial, "parity:home-button:DataStatus", 10000);
@@ -1202,7 +1178,33 @@ async function verifyNotamsLoadedInUi(serial, result) {
     pressKey(serial, "KEYCODE_BACK");
     await delay(400);
   }
-  throwWithUi(serial, "persisted NOTAM did not appear loaded in Data Status");
+  if (!statusPageVisible) {
+    throwWithUi(serial, "Data Status page did not become visible for persisted NOTAM verification");
+  }
+
+  const anyNotamNode = await findNodeByScrolling(
+    serial,
+    (node) => androidTag(node).startsWith("parity:data-status-row:live_feed:notams:"),
+    12,
+  );
+  if (!anyNotamNode) {
+    throwWithUi(serial, "persisted NOTAM row is absent from Data Status");
+  }
+
+  let loadedNode = null;
+  try {
+    await waitFor(() => {
+      const xml = dumpAndroid(serial);
+      loadedNode = findNode(xml, (node) => {
+        const tag = androidTag(node);
+        return tag.startsWith("parity:data-status-row:live_feed:notams:") && !tag.endsWith(":MISSING");
+      });
+      return loadedNode !== null;
+    }, 45000, "persisted NOTAM loaded row", 1000);
+  } catch (_error) {
+    throwWithUi(serial, "persisted NOTAM did not appear loaded in Data Status");
+  }
+  recordStep(result, "persisted NOTAM visible in core status UI", androidTag(loadedNode));
 }
 
 async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature) {

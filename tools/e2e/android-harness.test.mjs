@@ -97,7 +97,7 @@ test("distinguishes the offline package bootstrap from its navigable runtime pag
 test("vertical scrolling stays below Android's status-bar gesture zone", () => {
   assert.deepEqual(
     verticalScrollGesture({ left: 0, top: 0, right: 1080, bottom: 1200, width: 1080, height: 1200 }, "up"),
-    { x: 540, startY: 180, endY: 1020 },
+    { x: 540, startY: 369, endY: 831 },
   );
 });
 
@@ -228,4 +228,28 @@ test("maps core layer IDs to Android's exported parity tags", () => {
   assert.equal(layerToggleNode(xml, "terrain_warning")?.checked, "true");
   assert.equal(layerToggleNode(xml, "nexrad")?.checked, "false");
   assert.throws(() => layerToggleTag("unknown"), /unsupported E2E map layer/);
+});
+
+test("scroll searches retain enough viewport overlap to avoid skipping rows", () => {
+  const bounds = {
+    left: 56,
+    top: 261,
+    right: 1024,
+    bottom: 2120,
+    width: 968,
+    height: 1859,
+  };
+  const down = verticalScrollGesture(bounds, "down");
+  const up = verticalScrollGesture(bounds, "up");
+  const viewportHeight = bounds.height;
+  const travel = Math.abs(down.startY - down.endY);
+
+  assert.ok(down.startY > down.endY);
+  assert.deepEqual(up, {
+    x: down.x,
+    startY: down.endY,
+    endY: down.startY,
+  });
+  assert.ok(travel <= viewportHeight * 0.60, `${travel}px scroll exceeded overlap budget`);
+  assert.ok(travel >= viewportHeight * 0.40, `${travel}px scroll made too little progress`);
 });

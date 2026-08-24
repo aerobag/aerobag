@@ -158,22 +158,11 @@ export function liveFeedEventsFromCurrent(current) {
   if (current?.schema_version !== LIVE_FEED_SCHEMA_VERSION) {
     throw new Error(`fixture live-feed schema is ${current?.schema_version}; expected ${LIVE_FEED_SCHEMA_VERSION}`);
   }
-  return Object.entries(current.products ?? {})
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([product, entry]) => ({
-      id: `${product}:${entry.current}`,
-      payload: {
-        schema_version: LIVE_FEED_SCHEMA_VERSION,
-        product,
-        version: entry.current,
-        version_manifest_url: entry.version_manifest_url,
-        state_url: entry.state_url,
-        state_sha256: entry.state_sha256,
-        published_at_utc: entry.published_at_utc ?? null,
-        collected_at_utc: entry.collected_at_utc ?? null,
-        history: entry.history ?? [],
-      },
-    }));
+  return [{
+    id: `catalog:${current.generated_at_utc}`,
+    event: "live-feed-catalog",
+    payload: current,
+  }];
 }
 
 export function fixtureServerConfiguration(args) {
@@ -272,7 +261,7 @@ export function createReleaseJourneyFixtureServer(args) {
         fixture: config.fixture.fixture,
         live_feed_profile: args.liveFeedProfile,
         serves_web_app: Boolean(config.webDist),
-        product_count: config.events.length,
+        product_count: Object.keys(config.current.products ?? {}).length,
         control,
         updated_artifact_filename: config.publicationVariants.updatedArtifactFilename,
       }));
@@ -298,7 +287,7 @@ export function createReleaseJourneyFixtureServer(args) {
       response.write(": aerobag deterministic release fixture\n\n");
       for (const event of config.events) {
         response.write(`id: ${event.id}\n`);
-        response.write("event: live-feed-current\n");
+        response.write(`event: ${event.event}\n`);
         response.write(`data: ${JSON.stringify(event.payload)}\n\n`);
       }
       const heartbeat = setInterval(() => {

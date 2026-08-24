@@ -70,6 +70,20 @@ The NMS NOTAM trace is intentionally run optimized because it parses roughly
 plus the Chrome-on-Android live-feed recovery journey and the headless web
 NAVDB rollover journey. See [End-to-End Tests](e2e-tests.md).
 
+The release-journey registry in
+`tools/e2e/release-journey-registry.mjs` is the canonical list of pilot-facing
+journeys. Ordinary pushes and pull requests run P0 journeys; nightly, manual,
+and release-tag runs execute P0, P1, and P2. Release tags use the workflow run
+title `Release qualification <tag>` and finish through one
+`Release qualification` aggregate job. `tools/prod_manage.py --promote`
+requires that exact-tag run and ordinary CI for the same commit.
+
+Python CI discovers every `test_*.py` under `tools/` and
+`product/preprocessor/scripts/` instead of maintaining a hand-copied file
+list. JavaScript journey/foundation tests are likewise discovered through
+`tools/e2e/*.test.mjs`; adding a test under either convention automatically
+places it in ordinary CI.
+
 ## Local Commands
 
 Install `cargo-nextest`, then run individual Rust workspaces from their roots:

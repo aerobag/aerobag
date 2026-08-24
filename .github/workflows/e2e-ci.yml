@@ -3,11 +3,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 name: End-to-end CI
+run-name: ${{ github.ref_type == 'tag' && format('Release qualification {0}', github.ref_name) || format('E2E {0}', github.ref_name) }}
 
 on:
   push:
     branches:
       - main
+    tags:
+      - "20??-??-??.*"
   pull_request:
   workflow_dispatch:
   schedule:
@@ -120,11 +123,12 @@ jobs:
         name: Select journey priorities
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           case "$EVENT_NAME" in
-            schedule) value='["p2"]' ;;
-            workflow_dispatch) value='["p0","p1","p2"]' ;;
-            *) value='["p0","p1"]' ;;
+            schedule|workflow_dispatch) value='["p0","p1","p2"]' ;;
+            push) [[ "$REF_TYPE" == "tag" ]] && value='["p0","p1","p2"]' || value='["p0"]' ;;
+            *) value='["p0"]' ;;
           esac
           echo "value=$value" >> "$GITHUB_OUTPUT"
       - name: Fetch and verify release-journey publication
@@ -560,3 +564,38 @@ jobs:
           path: test-results/nav-db-rollover
           if-no-files-found: ignore
           retention-days: 14
+
+  qualification-result:
+    name: ${{ github.ref_type == 'tag' && 'Release qualification' || 'E2E aggregate' }}
+    if: ${{ always() }}
+    needs:
+      - build-release-apps
+      - release-journey-fixture
+      - release-journey-web
+      - release-journey-android
+      - android-native
+      - android-chrome-live-feed
+      - web-nav-db-rollover
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every E2E lane
+        env:
+          BUILD_RELEASE_APPS: ${{ needs.build-release-apps.result }}
+          RELEASE_JOURNEY_FIXTURE: ${{ needs.release-journey-fixture.result }}
+          RELEASE_JOURNEY_WEB: ${{ needs.release-journey-web.result }}
+          RELEASE_JOURNEY_ANDROID: ${{ needs.release-journey-android.result }}
+          ANDROID_NATIVE: ${{ needs.android-native.result }}
+          ANDROID_CHROME_LIVE_FEED: ${{ needs.android-chrome-live-feed.result }}
+          WEB_NAV_DB_ROLLOVER: ${{ needs.web-nav-db-rollover.result }}
+        run: |
+          failed=0
+          for name in \
+            BUILD_RELEASE_APPS RELEASE_JOURNEY_FIXTURE RELEASE_JOURNEY_WEB \
+            RELEASE_JOURNEY_ANDROID ANDROID_NATIVE ANDROID_CHROME_LIVE_FEED \
+            WEB_NAV_DB_ROLLOVER
+          do
+            result="${!name}"
+            printf '%-32s %s\n' "$name" "$result"
+            [[ "$result" == "success" ]] || failed=1
+          done
+          exit "$failed"

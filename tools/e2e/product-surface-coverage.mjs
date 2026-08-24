@@ -81,6 +81,10 @@ export function sourceProductSurfaces() {
       read("ui/core-rust/crates/app-core/src/altitude_planner.rs"),
       "AltitudePlannerControlId",
     ),
+    altitude_planner_forecast_rows: rustEnumVariants(
+      read("ui/core-rust/crates/app-core/src/altitude_planner.rs"),
+      "AltitudePlannerForecastRowId",
+    ),
     cloud_actions: rustEnumVariants(
       read("ui/core-rust/crates/app-ui-contracts/src/cloud.rs"),
       "CloudUiActionId",

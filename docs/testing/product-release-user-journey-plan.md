@@ -1,6 +1,6 @@
 # Product Release User-Journey Plan
 
-Status: implemented locally; hosted CI awaits publication of the pinned fixture
+Status: implemented; hosted CI awaits publication of the pinned fixture
 Audited revision: `927d274aa230`
 Audit date: 2026-08-20
 
@@ -17,8 +17,10 @@ The release harness now provides:
   `8940c4d7f3cb8e42410c2f64f454fe5839791109`;
 - one optimized web build, one release-like Android APK, and one Cloud test
   server built per candidate commit and shared by all journey jobs; and
-- P0/P1 web and Android matrices on pushes and pull requests, with P2 nightly
-  and all priorities available through manual dispatch.
+- P0 web and Android matrices on pushes and pull requests, with the full
+  P0/P1/P2 set nightly, on release tags, and through manual dispatch;
+- one aggregate release-qualification result, checked by `prod_manage` before
+  promotion alongside ordinary exact-commit CI.
 
 The fixture commit is present in the shared local test-artifacts mirror. This
 machine's GitHub deploy key can read but cannot push that repository, so hosted

@@ -286,10 +286,8 @@ const ANDROID_PLAN_CONTROL_IDS = Object.freeze({
   undo: "Undo",
   redo: "Redo",
   activate_next_leg: "ActivateNextLeg",
-  sequence_active_leg: "SequenceActiveLeg",
   stop_navigation: "StopNavigation",
-  suspend_sequencing: "SuspendSequencing",
-  unsuspend_sequencing: "UnsuspendSequencing",
+  toggle_sequencing_suspension: "ToggleSequencingSuspension",
   restore_direct_to: "RestoreDirectTo",
 });
 

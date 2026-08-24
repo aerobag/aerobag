@@ -64,11 +64,13 @@ test("hosted CI pins and fans out immutable release inputs", () => {
     "release-journey-fixture:",
     "release-journey-web:",
     "release-journey-android:",
+    "qualification-result:",
   ]) {
     assert.match(workflow, new RegExp(`^  ${job}`, "m"));
   }
-  assert.match(workflow, /schedule\) value='\["p2"\]'/);
-  assert.match(workflow, /workflow_dispatch\) value='\["p0","p1","p2"\]'/);
+  assert.match(workflow, /schedule\|workflow_dispatch\) value='\["p0","p1","p2"\]'/);
+  assert.match(workflow, /REF_TYPE" == "tag".*value='\["p0","p1","p2"\]'/);
+  assert.match(workflow, /Release qualification \{0\}/);
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"/);
 });
 
@@ -333,6 +335,10 @@ test("Android semantic aliases map shared flight-plan controls to core enum ids"
     androidSemanticTag("plan-control:restore_direct_to"),
     "parity:plan-control:RestoreDirectTo",
   );
+  assert.equal(
+    androidSemanticTag("plan-control:toggle_sequencing_suspension"),
+    "parity:plan-control:ToggleSequencingSuspension",
+  );
 });
 
 test("Android Cloud actions use their exact semantic selector without generic scroll probes", () => {
@@ -401,6 +407,7 @@ test("web virtual clock advances from the fixture epoch", () => {
 test("fixture server emits daemon-shaped live-feed events", () => {
   const events = liveFeedEventsFromCurrent({
     schema_version: 3,
+    generated_at_utc: "2026-08-20T00:00:00Z",
     products: {
       metars: {
         current: "wx-v1",
@@ -412,17 +419,20 @@ test("fixture server emits daemon-shaped live-feed events", () => {
     },
   });
   assert.deepEqual(events, [{
-    id: "metars:wx-v1",
+    id: "catalog:2026-08-20T00:00:00Z",
+    event: "live-feed-catalog",
     payload: {
       schema_version: 3,
-      product: "metars",
-      version: "wx-v1",
-      version_manifest_url: "versions/metars/wx-v1.json",
-      state_url: "states/metars/wx-v1.json.xz",
-      state_sha256: "abc",
-      published_at_utc: null,
-      collected_at_utc: "2026-08-20T00:00:00Z",
-      history: [],
+      generated_at_utc: "2026-08-20T00:00:00Z",
+      products: {
+        metars: {
+          current: "wx-v1",
+          version_manifest_url: "versions/metars/wx-v1.json",
+          state_url: "states/metars/wx-v1.json.xz",
+          state_sha256: "abc",
+          collected_at_utc: "2026-08-20T00:00:00Z",
+        },
+      },
     },
   }]);
 });

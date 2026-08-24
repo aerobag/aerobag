@@ -1,13 +1,22 @@
 # End-to-End Test Status
 
-Status as of 2026-07-26: native Android, Chrome-on-Android, and headless web
-journeys run in GitHub Actions as independently reported E2E jobs.
+Status as of 2026-08-24: native Android, Chrome-on-Android, and headless web
+journeys run in GitHub Actions as independently reported E2E jobs. The
+core-driven release-journey registry adds shared P0, P1, and P2 feature
+coverage across web and Android; release tags run the complete registry and
+publish one aggregate qualification result.
 
 Hosted-runner invariants and failure diagnostics are documented in
 [Hosted CI Invariants](testing/hosted-ci.md).
 
 ## What Exists
 
+- `tools/e2e/release-journey-registry.mjs` is the canonical inventory of
+  pilot-facing release journeys and their priorities.
+- `tools/e2e/release-journey-implementations.mjs` implements shared web/Android
+  journeys through platform semantic drivers.
+- `tools/e2e/release_journey_lab.sh` is the stable local entry point for
+  fixture, build, web, Android, and Cloud journey operations.
 - `tools/e2e/android-harness.mjs` provides the shared adb/uiautomator helpers.
 - `tools/e2e/run-android-e2e-suite.mjs` runs the Android suite.
 - `tools/e2e/run-android-chrome-livefeed-e2e.mjs` runs the web live-feed
@@ -144,9 +153,11 @@ does not contact a live-feed server.
 
 ## Known Gaps
 
-- General web UI parity journeys beyond NAVDB rollover still need to be added.
 - Emulator system image installation dominates cold-run setup time; Gradle and
   Rust outputs are cached, while the Android state itself starts clean.
+- The release-journey fixture commit pinned by `test-artifacts.lock.json` must
+  be present in the GitHub `aerobag/test-artifacts` mirror before hosted release
+  qualification can run.
 
 ## Local Reproduction
 
@@ -154,6 +165,14 @@ Run:
 
 ```sh
 ./ui/android-app/scripts/run_e2e_ci.sh --with-vnc
+```
+
+For the registry-driven release lab, use:
+
+```sh
+./tools/e2e/release_journey_lab.sh foundation
+./tools/e2e/release_journey_lab.sh web-dist-suite p0
+./tools/e2e/release_journey_lab.sh android-suite p0
 ```
 
 Use `--headless` to reproduce the hosted-runner display mode.

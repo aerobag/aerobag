@@ -42,7 +42,7 @@ class DesiredStateMutationTests(unittest.TestCase):
         self.assertFalse((Path(TOOLS_DIR) / "deploy_prod").exists())
         self.assertFalse((Path(TOOLS_DIR) / "deploy_prod.py").exists())
 
-    def test_public_cli_exposes_stage_promote_and_reconcile(self) -> None:
+    def test_public_cli_exposes_release_operations(self) -> None:
         with mock.patch.object(sys, "argv", ["prod_manage.py", "--stage"]):
             args = prod_manage.parse_args()
         self.assertTrue(args.stage)
@@ -55,11 +55,22 @@ class DesiredStateMutationTests(unittest.TestCase):
             args = prod_manage.parse_args()
         self.assertTrue(args.reconcile)
 
+        with mock.patch.object(
+            sys, "argv", ["prod_manage.py", "--qualification-status"]
+        ):
+            args = prod_manage.parse_args()
+        self.assertTrue(args.qualification_status)
+
 
 class OperationLogTests(unittest.TestCase):
     @staticmethod
     def reconcile_args() -> SimpleNamespace:
-        return SimpleNamespace(stage=False, promote=False, reconcile=True)
+        return SimpleNamespace(
+            stage=False,
+            promote=False,
+            reconcile=True,
+            qualification_status=False,
+        )
 
     def test_success_discards_quiet_operation_log(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -120,6 +131,32 @@ class OperationLogTests(unittest.TestCase):
             self.assertIn("reconciliation failed", log)
             self.assertIn("reconciliation failed", stderr.getvalue())
             self.assertIn(str(log_path), stderr.getvalue())
+
+    def test_github_status_failure_is_reported_without_internal_error_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "operation.log"
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(
+                    prod_manage, "parse_args", return_value=self.reconcile_args()
+                ),
+                mock.patch.object(
+                    prod_manage, "create_operation_log", return_value=log_path
+                ),
+                mock.patch.object(
+                    prod_manage,
+                    "reconcile",
+                    side_effect=prod_manage.release_ci.ReleaseCiError(
+                        "GitHub qualification unavailable"
+                    ),
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = prod_manage.main()
+
+            self.assertEqual(result, 2)
+            self.assertIn("GitHub qualification unavailable", stderr.getvalue())
+            self.assertNotIn("unexpected internal failure", stderr.getvalue())
 
 
 class DesiredStateBehaviorTests(unittest.TestCase):
@@ -291,8 +328,36 @@ class PromotionGateTests(unittest.TestCase):
                 "reconciliation_plan",
                 return_value=releases.ReconciliationPlan([]),
             ),
+            mock.patch.object(
+                prod_manage.release_ci,
+                "release_qualification",
+                return_value=SimpleNamespace(passed=True),
+            ),
         ):
             prod_manage.assert_staging_is_qualified({}, self.desired())
+
+    def test_failed_exact_commit_ci_blocks_promotion(self) -> None:
+        failed = SimpleNamespace(
+            passed=False,
+            failure_summary=lambda: "release journeys: failure",
+        )
+        with (
+            mock.patch.object(
+                prod_manage, "load_remote_observed", return_value=self.observed()
+            ),
+            mock.patch.object(
+                prod_manage,
+                "reconciliation_plan",
+                return_value=releases.ReconciliationPlan([]),
+            ),
+            mock.patch.object(
+                prod_manage.release_ci,
+                "release_qualification",
+                return_value=failed,
+            ),
+        ):
+            with self.assertRaisesRegex(prod_manage.ManagementError, "exact-commit CI"):
+                prod_manage.assert_staging_is_qualified({}, self.desired())
 
     def test_qualified_but_nonconverged_staging_requires_reconciliation(self) -> None:
         pending = releases.ReconciliationPlan(

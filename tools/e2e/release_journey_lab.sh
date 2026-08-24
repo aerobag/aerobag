@@ -249,7 +249,7 @@ run_web_test() {
   if [[ "$journey" == "shared.cloud-crossfill" ]]; then
     cloud_start
   fi
-  AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-http://127.0.0.1:8085/}" \
+  AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-${AEROBAG_E2E_URL:-http://127.0.0.1:8085/}}" \
   node "$ROOT/tools/e2e/run-release-journey.mjs" \
     --platform web \
     --journey "$journey" \

@@ -44,11 +44,9 @@
       "activate_next_leg": "plan.activate-next-leg",
       "redo": "plan.redo",
       "restore_direct_to": "plan.restore-direct-to",
-      "sequence_active_leg": "plan.sequence-active-leg",
       "stop_navigation": "plan.stop-navigation",
-      "suspend_sequencing": "plan.suspend-sequencing",
-      "undo": "plan.undo",
-      "unsuspend_sequencing": "plan.unsuspend-sequencing"
+      "toggle_sequencing_suspension": "plan.suspend-sequencing",
+      "undo": "plan.undo"
     },
     "flight_plan_row_actions": {
       "activate_leg": "plan.activate-leg",
@@ -117,8 +115,12 @@
     },
     "altitude_planner_controls": {
       "aircraft": "altitude.aircraft",
-      "aircraft_profile": "altitude.aircraft-profile",
-      "wind_model": "altitude.wind-model"
+      "aircraft_profile": "altitude.aircraft-profile"
+    },
+    "altitude_planner_forecast_rows": {
+      "no_wind": "altitude.wind-model",
+      "ready_forecast": "altitude.wind-model",
+      "latest_forecast": "altitude.wind-model"
     },
     "cloud_actions": {
       "begin_setup": "cloud.begin-setup",

@@ -29,6 +29,7 @@ REPO_ROOT = TOOLS_DIR.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 import prod_deployment as deployment  # noqa: E402
+import release_ci  # noqa: E402
 import release_reconciler as releases  # noqa: E402
 
 
@@ -62,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     operation.add_argument("--stage", action="store_true")
     operation.add_argument("--promote", action="store_true")
     operation.add_argument("--reconcile", action="store_true")
+    operation.add_argument("--qualification-status", action="store_true")
     return parser.parse_args()
 
 
@@ -527,6 +529,47 @@ def assert_staging_is_qualified(
             f"staging release {desired.staging.tag} has not fully converged; "
             "use --reconcile before promoting"
         )
+    ci = release_ci.release_qualification(
+        config.get("github_repository", release_ci.DEFAULT_GITHUB_REPOSITORY),
+        desired.staging.tag,
+        record.commit,
+    )
+    if not ci.passed:
+        raise ManagementError(
+            f"staging release {desired.staging.tag} has not passed exact-commit CI; "
+            f"{ci.failure_summary()}. Use --qualification-status for details"
+        )
+
+
+def qualification_status(config_path: Path, releases_path: Path) -> int:
+    document = load_release_document(releases_path)
+    desired = releases.parse_desired_releases(document)
+    if desired.staging is None:
+        raise ManagementError("there is no staging release to qualify")
+    config = deployment.load_config(config_path)
+    identity = releases.resolve_release_tag(REPO_ROOT, desired.staging.tag)
+    observed = load_remote_observed(config)
+    record = observed.releases.get(desired.staging.tag)
+    deployed = (
+        observed.staging == desired.staging.tag
+        and record is not None
+        and record.commit == identity.commit
+        and record.qualification_status == "passed"
+    )
+    ci = release_ci.release_qualification(
+        config.get("github_repository", release_ci.DEFAULT_GITHUB_REPOSITORY),
+        desired.staging.tag,
+        identity.commit,
+    )
+    print(f"Release: {desired.staging.tag} ({identity.commit})")
+    print(f"Deployed staging checks: {'passed' if deployed else 'pending or failed'}")
+    for check in (ci.ordinary_ci, ci.release_journeys):
+        suffix = f" ({check.url})" if check.url else ""
+        print(f"{check.label}: {check.state} - {check.detail}{suffix}")
+    if deployed and ci.passed:
+        print_success("Staging qualification passed")
+        return 0
+    return 1
 
 
 def print_proposal(title: str, commands: list[str], diff: str, note: str | None = None) -> None:
@@ -650,7 +693,13 @@ def stage(config_path: Path, releases_path: Path) -> int:
     git("commit", "-m", f"Stage {tag}", capture=False)
     git("tag", "-a", tag, "-m", f"Aerobag {tag}", capture=False)
     git("push", "--atomic", "origin", "main", tag, capture=False)
-    return reconcile(config_path, releases_path)
+    result = reconcile(config_path, releases_path)
+    if result == 0:
+        print(
+            "Staging deployment checks passed. Full exact-tag journey qualification "
+            "runs in GitHub; inspect it with tools/prod_manage.py --qualification-status."
+        )
+    return result
 
 
 def promote(config_path: Path, releases_path: Path) -> int:
@@ -782,9 +831,15 @@ def main() -> int:
                 result = stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
             elif args.promote:
                 result = promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
-            else:
+            elif args.reconcile:
                 result = reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
-        except (ManagementError, releases.ReleaseConfigError) as error:
+            else:
+                result = qualification_status(DEFAULT_CONFIG, DEFAULT_RELEASES)
+        except (
+            ManagementError,
+            release_ci.ReleaseCiError,
+            releases.ReleaseConfigError,
+        ) as error:
             deployment.append_command_log(f"prod_manage: {error}")
             print(f"prod_manage: {error}", file=sys.stderr)
             result = 2

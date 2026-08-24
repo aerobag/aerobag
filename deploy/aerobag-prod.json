@@ -9,6 +9,7 @@
   "cargo_target_max_bytes": 34359738368,
   "web_dist": "/mnt/aerobag-data/ui-target/web/dist",
   "checkout_ref": "main",
+  "github_repository": "aerobag/aerobag",
   "live_feeds_listen": "127.0.0.1:8095",
   "release_desired_state": "deploy/releases.json",
   "release_live_port_base": 8100,

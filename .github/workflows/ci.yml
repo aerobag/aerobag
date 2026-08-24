@@ -377,20 +377,8 @@ jobs:
       - name: Run Python tests
         run: |
           mkdir -p test-results/python
-          /usr/bin/python3 -m pytest \
-            tools/test_admin_index.py \
-            tools/test_chart_cutline_editor.py \
-            tools/test_prod_deployment.py \
-            tools/test_verify_acs_workload_report.py \
-            tools/ci/test_build_e2e_package_fixture.py \
-            tools/ci/test_build_nav_db_advance_fixture.py \
-            tools/ci/test_fetch_test_artifacts.py \
-            tools/ci/test_junit_summary.py \
-            tools/ci/test_verify_nav_db_fixture_contracts.py \
-            product/preprocessor/scripts/test_build_multi_version_publication.py \
-            product/preprocessor/scripts/test_pipeline_health.py \
-            product/preprocessor/scripts/test_watch_build_log.py \
-            --junitxml=test-results/python/junit.xml
+          mapfile -t tests < <(find tools product/preprocessor/scripts -type f -name 'test_*.py' -print | sort)
+          /usr/bin/python3 -m pytest "${tests[@]}" --junitxml=test-results/python/junit.xml
       - name: Report individual tests
         if: ${{ always() }}
         run: python3 tools/ci/junit_summary.py --title "Python tool tests" "test-results/python/junit.xml"

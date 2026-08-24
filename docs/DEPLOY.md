@@ -65,6 +65,7 @@ the exact commands and a colored config diff, and asks before changing anything:
 
 ```bash
 tools/prod_manage.py --stage
+tools/prod_manage.py --qualification-status
 tools/prod_manage.py --promote
 tools/prod_manage.py --reconcile
 ```
@@ -78,8 +79,19 @@ is qualified at `https://aerobag.org/staging/`. If the current commit is already
 the assigned staging release, the command exits and directs the operator to
 `--reconcile`.
 
+Staging qualification has two independent parts. The production reconciler
+checks the bytes and routes actually exposed under `/staging/`. A release-tag
+run of `.github/workflows/e2e-ci.yml` builds immutable web and Android clients
+for that exact tag and runs every P0, P1, and P2 journey. The ordinary `CI`
+workflow must also pass for the same commit. `--qualification-status` reports
+both deployed-staging and GitHub results, including links to the matching runs.
+The release tag must therefore reach the `aerobag/aerobag` GitHub repository;
+an ordinary main-branch E2E run is intentionally not accepted as a substitute
+for the full tag run.
+
 `--promote` requires a clean `main` synchronized with `origin/main`, and checks
-that the configured candidate is active and qualified on staging. It commits
+that the configured candidate is active and qualified on staging and that both
+exact-commit GitHub workflows passed. It commits
 the production pointer change, clears staging, pushes, synchronizes only the
 new release intent, and activates the qualified channel generation. It does not
 install host packages, refresh products, or synchronously run GC.

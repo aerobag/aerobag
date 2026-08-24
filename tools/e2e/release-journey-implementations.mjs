@@ -490,18 +490,20 @@ async function flightPlanEditAndNavigate(runtime) {
   const activeAfterNext = await enabledPlanControl(runtime, "stop_navigation");
   runtime.check("plan.activate-next-leg", Boolean(activeAfterNext));
 
-  await enabledPlanControl(runtime, "suspend_sequencing");
-  await runtime.driver.performAction("suspend_sequencing");
-  await enabledPlanControl(runtime, "unsuspend_sequencing");
-  runtime.check("plan.suspend-sequencing", true);
-  await runtime.driver.performAction("unsuspend_sequencing");
-  await enabledPlanControl(runtime, "suspend_sequencing");
-  runtime.check("plan.unsuspend-sequencing", true);
-
-  await enabledPlanControl(runtime, "sequence_active_leg");
-  await runtime.driver.performAction("sequence_active_leg");
-  const stateAfterSequence = await enabledPlanControl(runtime, "stop_navigation");
-  runtime.check("plan.sequence-active-leg", Boolean(stateAfterSequence));
+  const suspensionControl = "toggle_sequencing_suspension";
+  await enabledPlanControl(runtime, suspensionControl);
+  await runtime.driver.performAction(suspensionControl);
+  const suspended = await runtime.eventually("sequencing suspended", async () => {
+    const control = await planControl(runtime, suspensionControl);
+    return control?.pressed === "true" || control?.selected === true ? control : null;
+  });
+  runtime.check("plan.suspend-sequencing", Boolean(suspended), suspended?.text);
+  await runtime.driver.performAction(suspensionControl);
+  const resumed = await runtime.eventually("sequencing resumed", async () => {
+    const control = await planControl(runtime, suspensionControl);
+    return control && control.pressed !== "true" && control.selected !== true ? control : null;
+  });
+  runtime.check("plan.unsuspend-sequencing", Boolean(resumed), resumed?.text);
 
   await runtime.driver.openPage("map");
   await runtime.driver.enterText("chart-search-input", "S50");
@@ -1391,11 +1393,15 @@ async function mapModesAndOverlays(runtime) {
   await runtime.driver.openPage("map");
   await runtime.driver.chooseOption("chart-family-button", "tac");
   await runtime.driver.performAction("chart-family-button");
-  const reference = await runtime.driver.readElement(
-    runtime.platform === "web" ? "tray-option-accessory-tac" : "chart-reference-button",
+  const referenceAction = runtime.platform === "web"
+    ? "tray-option-accessory-tac"
+    : "chart-reference-button";
+  const reference = await runtime.eventually(
+    "TAC chart reference accessory",
+    () => runtime.driver.readElement(referenceAction),
   );
   if (reference) await runtime.driver.performAction(
-    runtime.platform === "web" ? "tray-option-accessory-tac" : "chart-reference-button",
+    referenceAction,
   );
   const plate = reference ? await waitForPage(runtime, "plate") : null;
   runtime.check("map.chart-reference", Boolean(reference && plate));
@@ -1572,6 +1578,8 @@ async function flightPlanAirwayEstimates(runtime) {
   await runtime.eventually(`${airway.airway} airway suggestion`, () =>
     runtime.driver.readElement(`plan-airway-suggestion:${airway.airway}`));
   await runtime.driver.performAction(`plan-airway-suggestion:${airway.airway}`);
+  await runtime.eventually(`${airway.entry} airway entry`, () =>
+    runtime.driver.readElement(`plan-airway-entry:${airway.entry}`));
   await runtime.driver.performAction(`plan-airway-entry:${airway.entry}`);
   await runtime.eventually("airway exits", async () => {
     const entries = await runtime.driver.readProjection("parity:plan-airway-exit:");
@@ -1675,6 +1683,45 @@ async function chooseDifferentAltitudeOption(runtime, controlId) {
   return { before, option, after };
 }
 
+function altitudeWindActionId(runtime, rowId) {
+  return runtime.platform === "web"
+    ? `altitude-planner-wind-action-${rowId}`
+    : `altitude-planner-wind-action:${rowId}`;
+}
+
+function selectedSemantic(element) {
+  return element?.pressed === "true" || element?.selected === true || element?.checked === true;
+}
+
+async function chooseForecastWindModel(runtime) {
+  const noWindId = altitudeWindActionId(runtime, "no_wind");
+  const readyId = altitudeWindActionId(runtime, "ready_forecast");
+  const latestId = altitudeWindActionId(runtime, "latest_forecast");
+  const noWind = await runtime.eventually("no-wind model row", () => runtime.driver.readElement(noWindId));
+  let ready = await runtime.driver.readElement(readyId);
+  let downloaded = false;
+
+  if (!ready || ready.enabled === false) {
+    const latest = await runtime.eventually("latest forecast download", async () => {
+      const value = await runtime.driver.readElement(latestId);
+      return value && value.enabled !== false ? value : null;
+    });
+    await runtime.driver.performAction(latestId);
+    downloaded = true;
+    ready = await runtime.eventually("downloaded forecast is ready", async () => {
+      const value = await runtime.driver.readElement(readyId);
+      return value && value.enabled !== false ? value : null;
+    }, 90_000);
+  }
+
+  await runtime.driver.performAction(readyId);
+  const selected = await runtime.eventually("ready forecast selected", async () => {
+    const value = await runtime.driver.readElement(readyId);
+    return selectedSemantic(value) ? value : null;
+  }, 45_000);
+  return { noWind, ready, selected, downloaded };
+}
+
 async function altitudePlanner(runtime) {
   await runtime.step("app.reset", () => runtime.driver.reset());
   await acceptDisclaimer(runtime);
@@ -1701,13 +1748,17 @@ async function altitudePlanner(runtime) {
   const profile = await chooseDifferentAltitudeOption(runtime, "aircraft_profile");
   runtime.check("altitude.aircraft-profile", Boolean(profile.after), `${profile.before?.text} -> ${profile.after?.text}`);
 
-  const wind = await chooseDifferentAltitudeOption(runtime, "wind_model");
-  runtime.check("altitude.wind-model", Boolean(wind.after), `${wind.before?.text} -> ${wind.after?.text}`);
+  const wind = await chooseForecastWindModel(runtime);
+  runtime.check(
+    "altitude.wind-model",
+    selectedSemantic(wind.noWind) && Boolean(wind.selected),
+    `downloaded=${wind.downloaded}; ${wind.noWind?.text} -> ${wind.selected?.text}`,
+  );
   const forecast = await runtime.driver.readElement("altitude-planner-forecast");
   runtime.check(
     "altitude.forecast-fallback",
-    Boolean(forecast?.text || wind.after?.text),
-    forecast?.text ?? wind.after?.text,
+    Boolean(forecast?.text || wind.selected?.text),
+    forecast?.text ?? wind.selected?.text,
   );
 
   const basisBefore = await runtime.driver.readElement("altitude-planner-departure-basis");
@@ -1922,17 +1973,17 @@ async function windsAloftNavKv(runtime) {
   await runtime.driver.openPage("flight_plan");
   await appendRoute(runtime, "KSEA KPAE");
   await runtime.driver.openPage("altitude_planner");
-  const wind = await chooseDifferentAltitudeOption(runtime, "wind_model");
+  const wind = await chooseForecastWindModel(runtime);
   const forecast = await runtime.eventually("forecast-backed altitude comparison", async () => {
     const value = await runtime.driver.readElement("altitude-planner-forecast");
-    return value?.text && !/(unavailable|no.wind|ISA)/i.test(value.text) ? value : null;
+    return value?.text && /(forecast from|extends|valid through)/i.test(value.text) ? value : null;
   }, 90_000);
   const comparison = await runtime.eventually("wind-backed altitude rows", () =>
     runtime.driver.readElement("altitude-comparison-panel"), 60_000);
   runtime.check(
     "livefeed.winds-aloft-navkv",
     Boolean(forecast && comparison?.text),
-    `${wind.before?.text} -> ${wind.after?.text}; ${forecast.text} ${comparison.text.slice(0, 200)}`,
+    `${wind.noWind?.text} -> ${wind.selected?.text}; ${forecast.text} ${comparison.text.slice(0, 200)}`,
   );
 }
 

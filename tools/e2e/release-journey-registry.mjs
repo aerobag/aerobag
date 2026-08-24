@@ -24,7 +24,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "plan.route-valid", "plan.route-invalid", "plan.insert-before", "plan.insert-after",
     "plan.move-up", "plan.move-down", "plan.remove", "plan.remove-all-above",
     "plan.activate-leg", "plan.direct-to", "plan.activate-next-leg",
-    "plan.sequence-active-leg", "plan.stop-navigation", "plan.suspend-sequencing",
+    "plan.stop-navigation", "plan.suspend-sequencing",
     "plan.unsuspend-sequencing", "plan.restore-direct-to", "plan.route-paint",
   ]),
   journey("shared.procedure-departure", "p0", shared, [

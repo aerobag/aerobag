@@ -155,9 +155,6 @@ does not contact a live-feed server.
 
 - Emulator system image installation dominates cold-run setup time; Gradle and
   Rust outputs are cached, while the Android state itself starts clean.
-- The release-journey fixture commit pinned by `test-artifacts.lock.json` must
-  be present in the GitHub `aerobag/test-artifacts` mirror before hosted release
-  qualification can run.
 
 ## Local Reproduction
 

@@ -1,6 +1,6 @@
 # Product Release User-Journey Plan
 
-Status: implemented; hosted CI awaits publication of the pinned fixture
+Status: implemented; hosted CI enabled
 Audited revision: `927d274aa230`
 Audit date: 2026-08-20
 
@@ -22,9 +22,9 @@ The release harness now provides:
 - one aggregate release-qualification result, checked by `prod_manage` before
   promotion alongside ordinary exact-commit CI.
 
-The fixture commit is present in the shared local test-artifacts mirror. This
-machine's GitHub deploy key can read but cannot push that repository, so hosted
-CI remains blocked until the same commit is published to the GitHub mirror.
+The fixture commit is present in both the shared local test-artifacts repository
+and its GitHub mirror, so hosted jobs resolve the same pinned input used by the
+local release lab.
 
 Local verification on 2026-08-23 completed with:
 

@@ -70,6 +70,7 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   }
   assert.match(workflow, /schedule\|workflow_dispatch\) value='\["p0","p1","p2"\]'/);
   assert.match(workflow, /REF_TYPE" == "tag".*value='\["p0","p1","p2"\]'/);
+  assert.match(workflow, /tags:\n\s+- "20\*"/);
   assert.match(workflow, /Release qualification \{0\}/);
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"/);
 });

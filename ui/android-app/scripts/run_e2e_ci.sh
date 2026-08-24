@@ -14,13 +14,13 @@ PACKAGE_SERVER_ARTIFACT_ROOT=""
 
 usage() {
   cat <<'EOF'
-usage: run_e2e_ci.sh [--route "KRNT KPWT"] [--test TEST_ID] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
+usage: run_e2e_ci.sh [--apk PATH] [--route "KRNT KPWT"] [--test TEST_ID] [--release-fixture fixture.json] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
 
 Starts a CI-suitable Android E2E environment:
   1. ensures the configured Android emulator system image is installed
   2. ensures /packages/current_artifacts.json is served locally
   3. boots the repo's emulator stack
-  4. builds/installs the APK and runs the Android E2E suite
+  4. installs a supplied immutable APK, or builds one locally, and runs the Android E2E suite
 
 The offline package sync is driven through the app UI on a clean emulator.
 When AEROBAG_TEST_ARTIFACTS_ROOT is set, the package server uses the pinned
@@ -32,6 +32,8 @@ EOF
 
 ROUTE="KRNT KPWT"
 TEST_ID=""
+RELEASE_FIXTURE="${AEROBAG_RELEASE_JOURNEY_FIXTURE:-}"
+APK_PATH="${AEROBAG_E2E_APK:-}"
 START_PACKAGE_SERVER="${START_PACKAGE_SERVER:-auto}"
 INSTALL_ANDROID_SYSTEM_IMAGE="${INSTALL_ANDROID_SYSTEM_IMAGE:-1}"
 if [[ -z "${KEEP_EMULATOR+x}" ]]; then
@@ -51,12 +53,20 @@ fi
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
+    --apk)
+      APK_PATH="${2:-}"
+      shift
+      ;;
     --route)
       ROUTE="${2:-}"
       shift
       ;;
     --test)
       TEST_ID="${2:-}"
+      shift
+      ;;
+    --release-fixture)
+      RELEASE_FIXTURE="${2:-}"
       shift
       ;;
     --keep-emulator)
@@ -191,15 +201,26 @@ EMULATOR_HEADLESS="$EMULATOR_HEADLESS" "$APP_DIR/scripts/start_emulator_stack.sh
 
 echo "[3/4] run Android E2E"
 RUN_E2E_ARGS=(--clear-app-data --route "$ROUTE")
-if [[ -n "$PACKAGE_ARTIFACT_ROOT" ]]; then
+if [[ -n "$APK_PATH" ]]; then
+  RUN_E2E_ARGS+=(--apk "$APK_PATH")
+fi
+if [[ -n "$PACKAGE_ARTIFACT_ROOT" || -n "$RELEASE_FIXTURE" ]]; then
   RUN_E2E_ARGS+=(--sync-all-available-packages)
 fi
 if [[ -n "$TEST_ID" ]]; then
   RUN_E2E_ARGS+=(--test "$TEST_ID")
 fi
+if [[ -n "$RELEASE_FIXTURE" ]]; then
+  RUN_E2E_ARGS+=(--release-fixture "$RELEASE_FIXTURE")
+fi
+if [[ -n "$RELEASE_FIXTURE" ]]; then
+  E2E_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PACKAGE_SOURCE_PORT}/live-feeds/"
+else
+  E2E_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/"
+fi
 PACKAGE_SOURCE_PORT="$PACKAGE_SOURCE_PORT" \
   ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/" \
-  ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/" \
+  ANDROID_LIVE_FEED_SOURCE_BASE_URL="$E2E_LIVE_FEED_SOURCE_BASE_URL" \
   "$APP_DIR/scripts/run_e2e.sh" "${RUN_E2E_ARGS[@]}"
 
 echo "[4/4] Android E2E CI run passed"

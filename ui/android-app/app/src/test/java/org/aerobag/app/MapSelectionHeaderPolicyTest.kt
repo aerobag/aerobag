@@ -50,6 +50,25 @@ class MapSelectionHeaderPolicyTest {
     }
 
     @Test
+    fun airportInfoPopupExportsItsSemanticIdentity() {
+        val source = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val modalBody = balancedBlockAfterMarker(source, "internal fun AirportInfoModal")
+
+        assertTrue(
+            "Popup content must export its test tag from the popup's separate semantics tree.",
+            modalBody.contains(".testTag(\"parity:airport-info-modal:") &&
+                modalBody.contains(".semantics { testTagsAsResourceId = true }"),
+        )
+        assertTrue(
+            "The scroll probe must be attached to the scrollable node, not a prunable spacer.",
+            modalBody.contains(
+                ".testTag(\"parity:airport-info-scroll:${'$'}{scrollState.value}\")\n" +
+                    "                .verticalScroll(scrollState)",
+            ),
+        )
+    }
+
+    @Test
     fun rawMapClickUsesCoresInitialPointSelection() {
         val source = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
         val requestBody = balancedBlockAfterMarker(source, "fun requestMapSelection")

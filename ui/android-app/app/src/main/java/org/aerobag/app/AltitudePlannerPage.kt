@@ -44,6 +44,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -189,6 +191,7 @@ internal fun AltitudePlannerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("parity:page:altitude_planner")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         Column(
@@ -303,11 +306,13 @@ internal fun AltitudePlannerPage(
                     rows = forecast.rows,
                     onAction = ::performAction,
                     onDisabledAction = { reason -> showDisabledActionToast(context, reason) },
+                    modifier = Modifier.testTag("parity:altitude-planner-forecast"),
                 )
             }
             if (planner.unavailableReasons.isNotEmpty()) {
                 PlannerMessagePanel(
                     messages = planner.unavailableReasons.map { it.message },
+                    modifier = Modifier.testTag("parity:altitude-planner-status"),
                     foreground = uiTheme.controls.panelFg,
                     background = uiTheme.controls.panelBg,
                 )
@@ -362,6 +367,8 @@ internal fun AltitudePlannerPage(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(ThumbSize * 0.68f)
+                                        .testTag("parity:altitude-comparison-row:${row.actionUid ?: "disabled"}")
+                                        .semantics { selected = row.selected }
                                         .clickable {
                                             val actionUid = row.actionUid
                                             if (row.enabled && actionUid != null) {
@@ -477,6 +484,7 @@ private fun DepartureEditorRow(
             DepartureLabel(departure.timeLabel)
             DepartureTextField(
                 value = timeValue,
+                testTag = "parity:altitude-planner-departure-time",
                 enabled = departure.enabled,
                 onValueChange = onTimeValueChange,
                 onFocusChange = onTimeFocusChange,
@@ -488,12 +496,14 @@ private fun DepartureEditorRow(
                     .width(ThumbSize * 1.45f)
                     .height(ThumbSize * 0.58f),
                 maxLines = 1,
+                testTag = "parity:altitude-planner-departure-basis",
                 onClick = onToggleBasis,
             )
             DepartureLabel(departure.whenLabel)
             DepartureTextField(
                 value = whenValue,
                 width = DepartureWhenFieldWidth,
+                testTag = "parity:altitude-planner-departure-when",
                 enabled = departure.enabled,
                 warning = departure.whenIsPast,
                 onValueChange = onWhenValueChange,
@@ -525,6 +535,7 @@ private fun DepartureLabel(label: String) {
 private fun DepartureTextField(
     value: String,
     width: Dp = ThumbSize * 0.9f,
+    testTag: String,
     enabled: Boolean,
     warning: Boolean = false,
     onValueChange: (String) -> Unit,
@@ -549,6 +560,7 @@ private fun DepartureTextField(
             onValueChange = onValueChange,
             modifier = Modifier
                 .fillMaxSize()
+                .testTag(testTag)
                 .onFocusChanged { onFocusChange(it.isFocused) }
                 .padding(horizontal = ThumbSize * 0.1f),
             enabled = enabled,
@@ -580,10 +592,11 @@ private fun PlannerWindModelPanel(
     rows: List<AltitudePlannerForecastRowUiView>,
     onAction: (String) -> Unit,
     onDisabledAction: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
             .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
@@ -642,6 +655,7 @@ private fun PlannerWindModelPanel(
 @Composable
 private fun PlannerMessagePanel(
     messages: List<String>,
+    modifier: Modifier = Modifier,
     foreground: Color,
     background: Color,
     actionLabel: String? = null,
@@ -650,7 +664,7 @@ private fun PlannerMessagePanel(
     onDisabledAction: (() -> Unit)? = null,
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(background, RoundedCornerShape(ThumbRadius))
             .border(1.dp, LocalAerobagUiTheme.current.controls.panelBorder, RoundedCornerShape(ThumbRadius))

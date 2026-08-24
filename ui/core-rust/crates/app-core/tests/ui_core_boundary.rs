@@ -97,6 +97,18 @@ fn production_session_snapshot_apis_are_always_paged() {
 }
 
 #[test]
+fn wasm_offline_preference_mutation_preserves_the_incremental_update_contract() {
+    let wasm = read_repo_file("ui/core-rust/crates/app-wasm/src/lib.rs");
+    let body = function_body(&wasm, "record_offline_package_preferences_in_session");
+    assert!(
+        body.contains("let outcome = app_core::record_offline_package_preferences_in_session")
+            && body.contains("serde_json::to_string(&outcome)")
+            && !body.contains("get_session_snapshot"),
+        "the WASM offline-preference mutation must return its update outcome, not a full snapshot"
+    );
+}
+
+#[test]
 fn ui_session_exposes_coordinator_state_explicitly() {
     let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let session = strip_rust_tests(&session_text);

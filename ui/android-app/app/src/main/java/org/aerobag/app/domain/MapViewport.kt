@@ -384,3 +384,6 @@ fun renderTileKey(tile: RenderTile): RenderTileKey =
         x = tile.x,
         yTms = tile.yTms,
     )
+
+fun distinctRenderTileCount(tiles: List<RenderTile>): Int =
+    tiles.asSequence().map(::renderTileKey).distinct().count()

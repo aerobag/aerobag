@@ -1,8 +1,44 @@
 # Product Release User-Journey Plan
 
-Status: proposed implementation plan
+Status: implemented locally; hosted CI awaits publication of the pinned fixture
 Audited revision: `927d274aa230`
 Audit date: 2026-08-20
+
+## Implementation Snapshot
+
+The release harness now provides:
+
+- a machine-validated journey registry and product-surface coverage manifest;
+- shared semantic web/Android drivers and structured result transcripts;
+- complete shared P0, P1, and P2 journey implementations, plus the existing
+  platform resilience tests;
+- a capability-addressed compact publication fixture committed in
+  `aerobag/test-artifacts` as
+  `8940c4d7f3cb8e42410c2f64f454fe5839791109`;
+- one optimized web build, one release-like Android APK, and one Cloud test
+  server built per candidate commit and shared by all journey jobs; and
+- P0/P1 web and Android matrices on pushes and pull requests, with P2 nightly
+  and all priorities available through manual dispatch.
+
+The fixture commit is present in the shared local test-artifacts mirror. This
+machine's GitHub deploy key can read but cannot push that repository, so hosted
+CI remains blocked until the same commit is published to the GitHub mirror.
+
+Local verification on 2026-08-23 completed with:
+
+- 53 release-journey foundation tests passing;
+- 108 product branches covered across 13 machine-checked categories;
+- every implemented shared P0/P1/P2 journey passing on the optimized web
+  bundle;
+- every implemented shared P0/P1/P2 journey passing on the immutable Android
+  APK, including package maintenance and contract-failure coverage; and
+- platform-specific web pointer behavior and Android package maintenance
+  passing.
+
+The stable local entry point is `tools/e2e/release_journey_lab.sh`. Build,
+fixture, emulator, Cloud, web, and Android operations are subcommands of that
+single wrapper so one narrowly scoped persistent command approval covers lab
+iteration without approving changing low-level commands individually.
 
 ## Goal
 
@@ -629,8 +665,9 @@ growing one monolithic parity script.
 9. `shared.cloud-crossfill`: create/link web and Android, crossfill plan and
    package preferences, reconnect, and unlink.
 10. Split live-feed tests by distinct ingestion/rendering path:
-    `prepared-metar-taf-pirep-notam`, `nexrad-frames`, `obstacles-navkv`,
-    `winds-aloft-navkv`, and `tfr-map-detail`.
+    `shared.prepared-live-feeds`, `shared.nexrad-frames`,
+    `shared.obstacles-navkv`, `shared.winds-aloft-navkv`, and
+    `shared.tfr-map-detail`.
 
 ### P2 extended release gate
 
@@ -685,6 +722,19 @@ fixture contains only the cooked outputs needed by the UI.
 7. Record a structured transcript containing action IDs, before/after core
    projection summaries, timings, console/logcat exceptions, and artifact
    paths.
+
+### Findings to follow up
+
+- Waypoint search must rank an exact normalized identifier ahead of prefix or
+  substring matches regardless of distance. Add a core regression proving a
+  query for `27W` selects `27W`, not `27WA`.
+- Platform drivers must resolve actionable semantic IDs exactly. Prefix
+  matching is reserved for state-bearing projection IDs whose suffix is part
+  of the assertion; otherwise an action for `27W` can silently target `27WA`.
+- Android raster loading can settle at `17/18` cache slots with `failed:0`
+  after rapid chart-family changes even though the visible viewport is fully
+  painted. The release journey gates on painted coverage, but the unaccounted
+  planner/loader slot should be diagnosed separately.
 
 ## Preventing Coverage Drift
 

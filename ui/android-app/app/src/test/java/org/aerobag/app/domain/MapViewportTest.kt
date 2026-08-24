@@ -19,6 +19,38 @@ class MapViewportTest {
     private val maxZoom = 10.8
 
     @Test
+    fun plannedRasterCountUsesTheSameIdentityAsTheBitmapCache() {
+        fun tile(path: String, x: Int = 41) = RenderTile(
+            x = x,
+            yTms = 90,
+            leftPx = 0f,
+            topPx = 0f,
+            sizePx = 256f,
+            zoom = 10,
+            mapViewId = "enr-h:nw",
+            sources = listOf(
+                RenderTileSource(
+                    mapViewId = "enr-h:nw",
+                    packageName = "enr-h-nw",
+                    storageKind = TileStorageKind.StaticProduct,
+                    path = path,
+                ),
+            ),
+        )
+
+        assertEquals(
+            2,
+            distinctRenderTileCount(
+                listOf(
+                    tile("first-source.png"),
+                    tile("overlapping-source.png"),
+                    tile("neighbor.png", x = 42),
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun zoomAroundPointKeepsAnchorStable() {
         val viewport = createInitialViewport(initialViewport, minZoom, maxZoom)
         val anchor = ScreenPoint(320f, 280f)

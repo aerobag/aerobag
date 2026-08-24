@@ -85,6 +85,19 @@ let nextSessionId = 1;
 const sessions = new Map<number, UiSession>();
 const pendingCalls = new Map<number, PendingWorkerCall>();
 let workerDebugForwardingEnabled = false;
+let workerClockOffsetMs = 0;
+let workerClockAligned = false;
+
+function workerClockEpochMs(): number {
+  return Math.trunc(Date.now() + workerClockOffsetMs);
+}
+
+function alignWorkerClock(epochMs: number): void {
+  if (!workerClockAligned && Number.isFinite(epochMs)) {
+    workerClockOffsetMs = epochMs - Date.now();
+    workerClockAligned = true;
+  }
+}
 
 ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
   const message = event.data;
@@ -95,6 +108,7 @@ ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
 });
 
 async function handleCall(message: WorkerCallRequest): Promise<void> {
+  alignWorkerClock(message.sentAtEpochMs);
   setBrowserInstanceId(message.browserInstanceId);
   if (message.debugLogEnabled) {
     enableWorkerDebugForwarding();
@@ -118,7 +132,7 @@ async function handleCall(message: WorkerCallRequest): Promise<void> {
       id: message.id,
       ok: true,
       result,
-      workerPostedAtEpochMs: Date.now(),
+      workerPostedAtEpochMs: workerClockEpochMs(),
       workerPostedAtMs: nowEpochishMs(),
     });
   } catch (error) {
@@ -133,7 +147,7 @@ async function handleCall(message: WorkerCallRequest): Promise<void> {
       id: message.id,
       ok: false,
       error: serializeError(error),
-      workerPostedAtEpochMs: Date.now(),
+      workerPostedAtEpochMs: workerClockEpochMs(),
       workerPostedAtMs: nowEpochishMs(),
     });
   } finally {
@@ -143,7 +157,7 @@ async function handleCall(message: WorkerCallRequest): Promise<void> {
 
 function logWorkerCallDone(message: WorkerCallRequest, startedAt: number, error?: unknown): void {
   const elapsedMs = performance.now() - startedAt;
-  const queueWaitMs = Date.now() - message.sentAtEpochMs - elapsedMs;
+  const queueWaitMs = workerClockEpochMs() - message.sentAtEpochMs - elapsedMs;
   const important =
     message.method === "queryRasterTilePlan"
     || message.method === "queryMapOverlay"
@@ -187,6 +201,7 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
       request.recentAirportIds,
       request.selectedAirportId,
       request.selectedChartId,
+      request.nowEpochMs,
     );
     const sessionId = nextSessionId++;
     sessions.set(sessionId, session);
@@ -235,7 +250,7 @@ async function callSessionMethod(
 async function ensureAdapter(): Promise<AppCoreAdapter> {
   if (!adapterPromise) {
     debugLog("app_core.worker.adapter_load.start");
-    adapterPromise = loadWasmAdapterOnThisThread().then(
+    adapterPromise = loadWasmAdapterOnThisThread(undefined, workerClockEpochMs).then(
       (loaded) => {
         debugLog("app_core.worker.adapter_load.done", { backend: loaded.backend });
         return loaded.adapter;

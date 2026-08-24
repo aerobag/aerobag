@@ -187,4 +187,47 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("state_sha256"), "{error}");
     }
+
+    #[test]
+    fn version_manifest_accepts_named_install_profiles() {
+        let manifest = decode_exact::<VersionManifest>(
+            "live-feed version manifest",
+            br#"{
+                "schema_version":3,
+                "product":"nexrad",
+                "version":"frame-v1",
+                "state":{
+                    "kind":"json",
+                    "url":"states/nexrad/frame-v1/manifest.json",
+                    "bytes":2397,
+                    "blob_sha256":"state-blob",
+                    "state_sha256":"state"
+                },
+                "install_profiles":{
+                    "offline_0":{
+                        "kind":"directory_package",
+                        "url":"packages/nexrad/frame-v1.offline_0.zip",
+                        "bytes":1171940,
+                        "blob_sha256":"offline-blob",
+                        "state_sha256":"state"
+                    },
+                    "offline_low1":{
+                        "kind":"directory_package",
+                        "url":"packages/nexrad/frame-v1.offline_low1.zip",
+                        "bytes":336276,
+                        "blob_sha256":"low-blob",
+                        "state_sha256":"state"
+                    }
+                }
+            }"#,
+            SCHEMA_VERSION,
+        )
+        .expect("schema-3 NEXRAD install profiles should decode");
+
+        assert_eq!(manifest.install_profiles.len(), 2);
+        assert_eq!(
+            manifest.install_profiles["offline_0"].kind.as_deref(),
+            Some("directory_package")
+        );
+    }
 }

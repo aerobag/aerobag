@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -46,6 +47,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -68,9 +71,11 @@ import org.aerobag.app.domain.UiStatusSeverity
 import kotlin.math.roundToInt
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun DataStatusBadge(
     dataStatusState: UiDataStatusState,
     modifier: Modifier = Modifier,
+    testTagPrefix: String = "data-status",
     open: Boolean,
     onToggle: () -> Unit,
     onAction: (String) -> Unit = {},
@@ -99,6 +104,7 @@ internal fun DataStatusBadge(
             open = open,
             badgeSize = launcherSize,
             modifier = Modifier
+                .testTag("parity:$testTagPrefix-launcher")
                 .clickable(
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() },
@@ -113,6 +119,8 @@ internal fun DataStatusBadge(
             ) {
                 Surface(
                     modifier = Modifier
+                        .testTag("parity:$testTagPrefix-panel")
+                        .semantics { testTagsAsResourceId = true }
                         .width(panelWidth)
                         .heightIn(max = ThumbSize * 7.2f),
                     shape = RoundedCornerShape(ThumbRadius),
@@ -355,6 +363,7 @@ internal fun DataStatusPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("parity:page:data_status")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         PrimaryNavigationDock(
@@ -441,7 +450,7 @@ private fun DataStatusPageRowCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("parity:data-status-row:${row.id}:${row.value}")
+            .testTag("parity:data-status-row:${row.id}:severity:${row.severity.name.lowercase()}")
             .clip(RoundedCornerShape(ThumbRadius))
             .background(Color.White.copy(alpha = 0.90f))
             .border(

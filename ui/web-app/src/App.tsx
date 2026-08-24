@@ -678,7 +678,13 @@ function startupErrorFromUnknown(
 
 function StartupFatalErrorModal({ error }: { error: StartupFatalError }) {
   return (
-    <div className="startupErrorScrim" role="alertdialog" aria-modal="true" aria-labelledby="startup-error-title">
+    <div
+      className="startupErrorScrim"
+      data-testid="startup-fatal-error"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="startup-error-title"
+    >
       <section className="startupErrorModal">
         <h1 id="startup-error-title">Startup failed</h1>
         <p>{error.message}</p>
@@ -1986,7 +1992,12 @@ function PlanWaypointSymbol(props: {
     return null;
   }
   return (
-    <svg className="planWaypointSymbol" viewBox="-20 -20 40 40" aria-hidden="true">
+    <svg
+      className="planWaypointSymbol"
+      viewBox="-20 -20 40 40"
+      aria-hidden="true"
+      data-testid={weatherBadge ? `parity:plan-weather-badge:${weatherBadge.flight_category}` : undefined}
+    >
       <VectorPointSymbol feature={feature} showLabel={false} />
       {weatherBadge ? (
         <g className="planWaypointWeatherBadge" transform="translate(10 10) scale(1)">
@@ -7294,7 +7305,7 @@ function MapPage(props: {
   });
 
   return (
-    <section className="pageSurface">
+    <section className="pageSurface" data-testid="parity:page:map">
       <Profiler id="MapSurface" onRender={logReactProfilerRender}>
         <div
           ref={containerRef}
@@ -7309,6 +7320,21 @@ function MapPage(props: {
           onWheel={handleWheel}
           onDoubleClick={handleDoubleClick}
         >
+        <span
+          hidden
+          data-testid={`parity:viewport:center-x:${viewport.centerWorldX.toFixed(3)}:center-y:${viewport.centerWorldY.toFixed(3)}:zoom:${viewport.zoom.toFixed(3)}:up:${plannedMapUpDeg.toFixed(1)}`}
+        />
+        <span hidden data-testid={`parity:map-family:${selectedFamily?.id ?? "none"}:map:${selectedMap.selected_map_id}`} />
+        {mapLayerState.options.map((option) => {
+          const state = mapLayerToggleState(mapLayerState, option.layer_id);
+          return (
+            <span
+              key={`layer-probe:${option.layer_id}`}
+              hidden
+              data-testid={`parity:map-layer:${option.layer_id}:visible:${state.visible}:enabled:${state.enabled}`}
+            />
+          );
+        })}
         <div className="mapBackdrop" />
         <RenderDependencyBoundary
           dependencies={[
@@ -7403,10 +7429,25 @@ function MapPage(props: {
           />
         ) : null}
         {disabledActionToast ? (
-          <div className="mapSelectionToast" role="status" aria-live="polite">
+          <div className="mapSelectionToast" data-testid="disabled-action-toast" role="status" aria-live="polite">
             {disabledActionToast.message}
           </div>
         ) : null}
+        <div
+          data-testid={`parity:ownship-state:mode:${ownship.mode}:draw:${ownship.draw_aircraft}:position:${ownship.position ? `${ownship.position.lat.toFixed(5)},${ownship.position.lon.toFixed(5)}` : "none"}:track:${ownship.track_deg_true == null ? "none" : ownship.track_deg_true.toFixed(1)}`}
+          aria-hidden="true"
+          style={{ display: "none" }}
+        />
+        <div
+          data-testid={`parity:live-overlay:metars:${mapOverlay.visible_metars.length}:pireps:${mapOverlay.visible_pireps.length}:obstacles:${mapOverlay.visible_features.filter((feature) => feature.symbol_kind === "obstacle").length}:tfrs:${mapOverlay.tfr_paths.length}`}
+          aria-hidden="true"
+          style={{ display: "none" }}
+        />
+        <div
+          data-testid={`parity:nexrad-state:tiles:${nexradOverlay.tiles.length}:frame:${nexradOverlay.animation.selected_frame_index ?? "none"}:frames:${nexradOverlay.animation.frame_count}`}
+          aria-hidden="true"
+          style={{ display: "none" }}
+        />
         <div
           ref={mapBearingTransformRef}
           className="mapBearingTransform"
@@ -7419,6 +7460,7 @@ function MapPage(props: {
           <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
             <div
               className="rasterTileLayer"
+              data-testid={`parity:raster-state:planned:${tiles.length}`}
               aria-hidden="true"
               style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "0 0" } : undefined}
             >
@@ -7628,7 +7670,12 @@ function MapPage(props: {
               </>
               <>
                 {mapIsVisible && routeScreenSegments.length > 0 ? (
-                  <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
+                  <svg
+                    className="flightPlanOverlay"
+                    data-testid={`parity:flight-plan-route-overlay:segments:${routeScreenSegments.length}`}
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                  >
                     {routeScreenSegments.map((segment, segmentIndex) => (
                       <FlightPlanRoutePath
                         key={`contrast:${flightPlanRouteSegmentRenderKey(segment, segmentIndex)}`}
@@ -7722,6 +7769,7 @@ function MapPage(props: {
                 {mapIsVisible && mapOverlay.visible_features.length > 0 ? (
                   <svg
                     className="vectorOverlay"
+                    data-testid={`parity:vector-state:features:${mapOverlay.visible_features.length}`}
                     viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
                     preserveAspectRatio="none"
                     style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
@@ -7752,6 +7800,7 @@ function MapPage(props: {
                       <g
                         key={wrappedFeatureRenderKey(feature.station_id, feature.screen_x, feature.screen_y)}
                         className="metarHoverTarget"
+                        data-testid={`parity:metar-hover-target:${normalizedStationId(feature.station_id)}`}
                         transform={`translate(${feature.screen_x} ${feature.screen_y})`}
                         onPointerEnter={(event) => handleMetarHoverEnter(event, feature)}
                         onPointerLeave={() => handleMetarHoverLeave(feature)}
@@ -8158,6 +8207,7 @@ function MapPage(props: {
           <button
             type="button"
             className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}${centerHereDisabled ? " isDisabled" : ""}`}
+            data-testid="center-here-button"
             disabled={centerHereDisabled && !centerHereDisabledReason}
             aria-disabled={centerHereDisabled ? "true" : undefined}
             aria-pressed={mapFollowUiState.following}
@@ -8685,6 +8735,7 @@ function PlaybackWidget(props: {
   return (
     <section
       className={`playbackWidget${dock === "left" ? " isLeftDocked" : ""}`}
+      data-testid={`parity:playback-widget:status:${playbackUiState.status}:cursor:${committedCursorSeconds.toFixed(3)}:duration:${durationSeconds.toFixed(3)}:rate:${playbackUiState.rate.toFixed(2)}:gaps:${playbackUiState.gap_spans.length}`}
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}
@@ -8698,6 +8749,7 @@ function PlaybackWidget(props: {
       <div className="playbackWidgetRow">
         <input
           className="playbackWidgetInput"
+          data-testid="playback-source-input"
           value={sourcePath}
           onChange={(event) => onSourcePathChange(event.target.value)}
           spellCheck={false}
@@ -8754,6 +8806,7 @@ function PlaybackWidget(props: {
           SPD
           <input
             className="playbackWidgetRate"
+            data-testid="playback-rate-input"
             type="range"
             min={0.25}
             max={11}
@@ -8775,6 +8828,7 @@ function PlaybackWidget(props: {
       <div
         ref={scrubRef}
         className="playbackWidgetOverview"
+        data-testid="playback-overview"
         onPointerDown={(event) => {
           stopPointer(event);
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -8979,7 +9033,7 @@ function AltitudePlannerPage(props: {
   };
 
   return (
-    <section className="appPage altitudePlannerPage">
+    <section className="appPage altitudePlannerPage" data-testid="parity:page:altitude_planner">
       {openControlId ? (
         <TrayScrim ariaLabel="Close altitude planner menu" onClose={() => setOpenControlId(null)} />
       ) : null}
@@ -9043,6 +9097,7 @@ function AltitudePlannerPage(props: {
             <label>
               {planner.departure.time_label ? <span>{planner.departure.time_label}</span> : null}
               <input
+                data-testid="altitude-planner-departure-time"
                 type="text"
                 inputMode="text"
                 value={departureTimeInput}
@@ -9064,6 +9119,7 @@ function AltitudePlannerPage(props: {
               <button
                 type="button"
                 className="trayButton altitudePlannerDepartureBasis"
+                data-testid="altitude-planner-departure-basis"
                 onMouseDown={() => { suppressDepartureBlurSubmit.current = true; }}
                 onClick={toggleDepartureTimeBasis}
               >
@@ -9073,6 +9129,7 @@ function AltitudePlannerPage(props: {
             <label>
               <span>{planner.departure.when_label}</span>
               <input
+                data-testid="altitude-planner-departure-when"
                 className={`altitudePlannerDepartureWhen${planner.departure.when_is_past ? " isWarning" : ""}`}
                 type="text"
                 inputMode="text"
@@ -9100,7 +9157,7 @@ function AltitudePlannerPage(props: {
 
       <div className="altitudePlannerPageBody">
         {planner.forecast ? (
-          <div className="altitudePlannerProvenance">
+          <div className="altitudePlannerProvenance" data-testid="altitude-planner-forecast">
             {planner.forecast.rows.map((row) => {
               const action = row.action;
               return (
@@ -9161,6 +9218,8 @@ function AltitudePlannerPage(props: {
                   key={row.action_uid ?? `disabled-${index}`}
                   type="button"
                   className={`altitudeComparisonRow${row.selected ? " isSelected" : ""}${row.enabled ? "" : " isDisabled"}`}
+                  data-testid={`altitude-comparison-row-${index}`}
+                  aria-selected={row.selected ? "true" : "false"}
                   aria-disabled={row.enabled ? undefined : "true"}
                   title={row.disabled_reason ?? undefined}
                   onClick={() => {
@@ -9194,7 +9253,7 @@ function AltitudePlannerPage(props: {
         onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
       />
       {disabledActionToast ? (
-        <div className="mapSelectionToast" role="status" aria-live="polite">
+        <div className="mapSelectionToast" data-testid="disabled-action-toast" role="status" aria-live="polite">
           {disabledActionToast.message}
         </div>
       ) : null}
@@ -9840,7 +9899,11 @@ function FlightPlanPage(props: {
   ]);
 
   return (
-    <section className="appPage planPage" ref={pageRef}>
+    <section className="appPage planPage" ref={pageRef} data-testid="parity:page:flight_plan">
+      <span
+        data-testid={`parity:plan-state:rows:${planUiState.display_rows.length}:active:${planUiState.display_rows.filter((row) => row.active).map((row) => row.uid).join(",") || "none"}:from:${guidance?.active_from_row_uid ?? "none"}:to:${guidance?.active_to_row_uid ?? "none"}`}
+        aria-hidden="true"
+      />
       <div className="planScrollViewport" ref={planScrollViewportRef}>
         <div className="planScrollContent" ref={planScrollContentRef}>
           {structuredArrow ? (
@@ -9865,6 +9928,7 @@ function FlightPlanPage(props: {
                 {planDataColumns.map((column) => (
                   <div
                     key={column.id}
+                    data-testid={`parity:plan-column:${column.id}:${column.label}`}
                     className={`planHeader${column.action_id ? " isActionable" : ""}`}
                     role={column.action_id ? "button" : undefined}
                     tabIndex={column.action_id ? 0 : undefined}
@@ -9953,6 +10017,12 @@ function FlightPlanPage(props: {
                             setProcedurePicker(null);
                           }}
                         >
+                          {row.rowKind === "group" && row.procedureId ? (
+                            <span
+                              data-testid={`parity:plan-procedure-row:${row.procedureId}:uid:${row.rowUid}`}
+                              aria-hidden="true"
+                            />
+                          ) : null}
                           <WaypointButtonContent
                             label={row.label}
                             symbolFeature={row.symbolFeature}
@@ -9965,6 +10035,7 @@ function FlightPlanPage(props: {
                       {row.dataCells.map((cell, cellIndex) => (
                         <div
                           key={`${row.id}:data:${planDataColumns[cellIndex]?.id ?? cellIndex}`}
+                          data-testid={`parity:plan-data:${row.rowUid}:${planDataColumns[cellIndex]?.id ?? cellIndex}:${cell.value ?? "none"}`}
                           className={[
                             "planCell",
                             cell.action_id ? "isActionable" : "",
@@ -10168,6 +10239,7 @@ function FlightPlanPage(props: {
                 <div className="airportInsertInputRow">
                   <input
                     className="chartSearchInput airportInsertInput"
+                    data-testid="plan-insert-airport-input"
                     autoFocus
                     value={airportInsert.airportId}
                     placeholder={airportInsert.before ? "INSERT BEFORE" : "INSERT AFTER"}
@@ -10192,6 +10264,7 @@ function FlightPlanPage(props: {
                         key={`${suggestion.kind}:${suggestion.identifier}`}
                         type="button"
                         className="trayButton airwayChoiceButton planWaypointButton airportInsertSuggestion"
+                        data-testid={`plan-insert-suggestion-${suggestion.identifier}`}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
@@ -10367,7 +10440,7 @@ function FlightPlanPage(props: {
                 ) : null}
               </div>
             ) : airwayPicker ? (
-              <div className="waypointActionTray">
+              <div className="waypointActionTray" data-testid="plan-airway-picker">
                 <div className="planGuidanceSummary">
                   {airwayPicker.header}
                 </div>
@@ -10384,6 +10457,7 @@ function FlightPlanPage(props: {
                           key={`${suggestion.airway_name}:${suggestion.nearest_branch_key ?? ""}`}
                           type="button"
                           className="trayButton trayButtonSquare airwaySuggestionButton"
+                          data-testid={`parity:plan-airway-suggestion:${suggestion.airway_name}`}
                           onPointerDown={stopPointer}
                           onPointerUp={stopPointer}
                           onClick={async () => {
@@ -10423,6 +10497,7 @@ function FlightPlanPage(props: {
                         key={point.uid}
                         type="button"
                         className={`trayButton airwayChoiceButton${point.uid === airwayPicker.presentation?.suggested_entry_uid ? " isSuggested" : ""}`}
+                        data-testid={`parity:plan-airway-entry:${point.label}`}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={() => {
@@ -10459,6 +10534,7 @@ function FlightPlanPage(props: {
                         key={exit.uid}
                         type="button"
                         className={`trayButton airwayChoiceButton${exit.uid === airwayPicker.presentation?.suggested_exit_uid && !isEntry ? " isSuggested" : ""}${isEntry ? " isDisabled" : ""}`}
+                        data-testid={`parity:plan-airway-exit:${exit.label}`}
                         aria-disabled={isEntry ? "true" : undefined}
                         title={isEntry ? exit.same_point_exit_disabled_reason : undefined}
                         onPointerDown={stopPointer}
@@ -10561,7 +10637,7 @@ function FlightPlanPage(props: {
         </>
       ) : null}
       {disabledActionToast ? (
-        <div className="mapSelectionToast" role="status" aria-live="polite">
+        <div className="mapSelectionToast" data-testid="disabled-action-toast" role="status" aria-live="polite">
           {disabledActionToast.message}
         </div>
       ) : null}
@@ -10871,6 +10947,7 @@ function TrayDock(props: {
                       data-testid={`tray-option-${option.id}`}
                       disabled={optionDisabled && !optionDisabledReason}
                       aria-disabled={optionDisabled ? "true" : undefined}
+                      aria-pressed={option.active ? "true" : "false"}
                       title={optionDisabledReason ?? undefined}
                       style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
                       onPointerDown={stopPointer}
@@ -11105,7 +11182,10 @@ function MapSelectionTray(props: {
         </div>
       ))}
       <div className="mapSelectionActions">
-        <div className="mapSelectionActionTitle">
+        <div
+          className="mapSelectionActionTitle"
+          data-testid={`parity:map-selection-selected:${selectedItem?.label ?? "none"}`}
+        >
           <div className="mapSelectionActionTitlePrimary">
             {selectedItem ? (
               <>
@@ -11188,6 +11268,7 @@ function MapSelectionDetailModal(props: {
   return (
     <section
       className="mapSelectionDetailModal weatherDetailModal"
+      data-testid={`map-selection-detail-modal:${props.title}`}
       aria-label={props.title}
       onPointerDown={stopPointer}
       onPointerMove={stopPointer}
@@ -11308,9 +11389,12 @@ function AirportInfoModal(props: {
   onTimeDisplayAction: (actionId: string) => void | Promise<void>;
 }) {
   const { detail } = props;
+  const [scrollTop, setScrollTop] = useState(0);
   return (
     <section
       className="mapSelectionDetailModal airportInfoModal"
+      data-testid={`airport-info-modal:${detail.airport_id}`}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       aria-label={`Airport info ${detail.airport_id}`}
       onPointerDown={stopPointer}
       onPointerMove={stopPointer}
@@ -11320,6 +11404,7 @@ function AirportInfoModal(props: {
       onClick={stopClick}
       onDoubleClick={stopDoubleClick}
     >
+      <span hidden data-testid={`parity:airport-info-scroll:${Math.round(scrollTop)}`} />
       <header className="airportInfoHeader">
         <div className="mapSelectionDetailTitle">{detail.airport_id}</div>
         <div className="airportInfoName">{detail.name}</div>
@@ -11332,15 +11417,19 @@ function AirportInfoModal(props: {
           {section.title ? <h2>{section.title}</h2> : null}
           <div className="airportInfoFacts">
             {section.facts.map((fact, index) => (
-              <AirportInfoFact
+              <div
                 key={`${fact.label}:${fact.value}:${index}`}
-                label={fact.label}
-                value={fact.link_url ? <a href={fact.link_url}>{fact.value}</a> : fact.value}
-                nextIn={fact.next_in_label}
-                onClick={fact.action_id
-                  ? () => props.onTimeDisplayAction(fact.action_id!)
-                  : undefined}
-              />
+                data-testid={`airport-info-fact:${fact.label}:${fact.value}`}
+              >
+                <AirportInfoFact
+                  label={fact.label}
+                  value={fact.link_url ? <a href={fact.link_url}>{fact.value}</a> : fact.value}
+                  nextIn={fact.next_in_label}
+                  onClick={fact.action_id
+                    ? () => props.onTimeDisplayAction(fact.action_id!)
+                    : undefined}
+                />
+              </div>
             ))}
           </div>
         </section>
@@ -11348,9 +11437,16 @@ function AirportInfoModal(props: {
       {detail.runways.length > 0 ? (
         <section className="airportInfoSection">
           <h2>{detail.runways_section_title}</h2>
-          <div className="airportRunwayList">
+          <div
+            className="airportRunwayList"
+            data-testid={`airport-info-runways:complex:${detail.runway_diagram_complex}:count:${detail.runways.length}`}
+          >
             {detail.runways.map((runway, index) => (
-              <article className="airportRunwayRow" key={`${runway.end_a_label}:${runway.end_b_label}:${index}`}>
+              <article
+                className="airportRunwayRow"
+                data-testid={`airport-info-runway:${runway.end_a_label}:${runway.end_b_label}`}
+                key={`${runway.end_a_label}:${runway.end_b_label}:${index}`}
+              >
                 <RunwayDiagram
                   runways={detail.runways}
                   activeRunwayIndex={index}
@@ -11382,6 +11478,7 @@ function AirportInfoFact(props: {
       <div className="airportInfoFactLabel">{props.label}</div>
       <div
         className={`airportInfoFactValue${props.onClick ? " isActionable" : ""}`}
+        data-testid={props.onClick ? "airport-info-time-toggle" : undefined}
         role={props.onClick ? "button" : undefined}
         tabIndex={props.onClick ? 0 : undefined}
         onClick={props.onClick}
@@ -11541,6 +11638,7 @@ function PlateProcedureNotamBadgeButton(props: {
     <button
       type="button"
       className={`plateProcedureNotamBadge plateProcedureNotamBadge-${props.placement}`}
+      data-testid={`plate-notam:${props.badge.action_id}`}
       aria-label={props.badge.accessibility_label}
       title={props.badge.accessibility_label}
       data-action-id={props.badge.action_id}
@@ -12270,10 +12368,11 @@ function ChartsPage(props: {
   }
 
   return (
-    <section className="pageSurface">
+    <section className="pageSurface" data-testid="parity:page:plate">
       <div
         ref={containerRef}
         className="mapSurface chartSurface"
+        data-testid="plate-surface"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerRelease}
@@ -12282,6 +12381,16 @@ function ChartsPage(props: {
         onWheel={handleWheel}
         onDoubleClick={handleDoubleClick}
       >
+        {effectiveViewport && selectedChart ? (
+          <span
+            data-testid={`parity:plate-viewport:chart:${selectedChart.id}:zoom:${effectiveViewport.zoom.toFixed(3)}:left:${effectiveViewport.left.toFixed(1)}:top:${effectiveViewport.top.toFixed(1)}`}
+            aria-hidden="true"
+          />
+        ) : null}
+        <span
+          data-testid={`parity:plate-ownship-input:draw:${ownship.draw_aircraft}:position:${ownship.position ? `${ownship.position.lat.toFixed(5)},${ownship.position.lon.toFixed(5)}` : "none"}:georef:${selectedChart?.georef ? "yes" : "no"}:image-point:${ownship.position && selectedChart?.georef ? (() => { const point = plateImagePoint(ownship.position!, selectedChart.georef!); return point ? `${point.x.toFixed(1)},${point.y.toFixed(1)}` : "none"; })() : "none"}:image-size:${selectedImageSize ? `${selectedImageSize.width},${selectedImageSize.height}` : "none"}`}
+          aria-hidden="true"
+        />
         <div className="mapBackdrop" />
         <StatusControlDock
           controls={ownshipControls}
@@ -12335,6 +12444,7 @@ function ChartsPage(props: {
                   <button
                     type="button"
                     className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}${suggestedChartIds.includes(chart.id) ? " isSuggested" : ""}`}
+                    data-testid={`plate-folder-tile:${chart.id}`}
                     onPointerDown={stopPointer}
                     onPointerUp={stopPointer}
                     onDoubleClick={stopDoubleClick}
@@ -12431,11 +12541,13 @@ function ChartsPage(props: {
               </svg>
             ) : null}
             {plateOwnshipOverlay ? (
-              <SituationAircraft
-                pathData={aircraftPlanViewPath}
-                point={plateOwnshipOverlay.point}
-                headingDeg={plateOwnshipOverlay.headingDeg}
-              />
+              <div data-testid="plate-ownship-overlay">
+                <SituationAircraft
+                  pathData={aircraftPlanViewPath}
+                  point={plateOwnshipOverlay.point}
+                  headingDeg={plateOwnshipOverlay.headingDeg}
+                />
+              </div>
             ) : null}
           </>
         ) : null}
@@ -12585,7 +12697,7 @@ function ChartsPage(props: {
           />
         ) : null}
         {disabledActionToast ? (
-          <div className="mapSelectionToast" role="status" aria-live="polite">
+          <div className="mapSelectionToast" data-testid="disabled-action-toast" role="status" aria-live="polite">
             {disabledActionToast.message}
           </div>
         ) : null}
@@ -12609,6 +12721,7 @@ function HomePage(props: {
   return (
     <section
       className="appPage homePage"
+      data-testid="parity:page:home"
       style={{ "--home-page-backdrop": `url(${HOME_PAGE_BACKDROP_SRC})` } as CSSProperties}
     >
       <div
@@ -12661,7 +12774,7 @@ function HomePage(props: {
         onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
       />
       {disabledActionToast ? (
-        <div className="mapSelectionToast" role="status" aria-live="polite">
+        <div className="mapSelectionToast" data-testid="disabled-action-toast" role="status" aria-live="polite">
           {disabledActionToast.message}
         </div>
       ) : null}
@@ -12723,7 +12836,7 @@ function AboutPage() {
     ? "Checking Android download metadata..."
     : `Android APK is not published in this static tree${metadataError ? `: ${metadataError}` : "."}`;
   return (
-    <section className="appPage aboutPage">
+    <section className="appPage aboutPage" data-testid="parity:page:about">
       <div className="aboutPagePanel">
         <div className="aboutActionRow">
           <div className="aboutActionColumn">
@@ -12903,6 +13016,7 @@ function CloudPage(props: {
           />
           <button
             type="button"
+            data-testid={`cloud-action-${control.copy_action.id}`}
             onClick={() => void invoke(control.copy_action)}
           >
             {control.copy_action.label}
@@ -12936,7 +13050,7 @@ function CloudPage(props: {
   };
 
   return (
-    <section className="appPage cloudPage" data-testid="cloud-page">
+    <section className="appPage cloudPage" data-testid="parity:page:cloud">
       <PrimaryNavigationDock
         page={props.page}
         navElement={props.navElement}
@@ -12986,7 +13100,7 @@ function SettingsPage(props: {
 }) {
   const { toast: settingsHelpToast, show: showSettingsHelp } = useDisabledActionToast();
   return (
-    <section className="appPage settingsPage">
+    <section className="appPage settingsPage" data-testid="parity:page:settings">
       <PrimaryNavigationDock
         page={props.page}
         navElement={props.navElement}
@@ -13231,6 +13345,7 @@ function SettingsPageRowView(props: {
             <button
               key={item.cell.id}
               type="button"
+              data-testid={`settings-choice-${row.id}-${item.cell.id}`}
               className={`flightDataCell settingsFlightDataCell${item.enabled ? "" : " isDisabled"}`}
               aria-pressed={item.enabled}
               onClick={() => props.onSettingsAction(row.action_id, item.cell.id)}
@@ -13246,6 +13361,7 @@ function SettingsPageRowView(props: {
             <button
               key={stop.id}
               type="button"
+              data-testid={`settings-choice-${row.id}-${stop.id}`}
               className={stop.id === row.value_id ? "isActive" : ""}
               aria-pressed={stop.id === row.value_id}
               onClick={() => props.onSettingsAction(row.action_id, stop.id)}
@@ -13320,7 +13436,7 @@ function DataStatusPage(props: {
   onTimeDisplayAction: (actionId: string) => void | Promise<void>;
 }) {
   return (
-    <section className="appPage dataStatusPage">
+    <section className="appPage dataStatusPage" data-testid="parity:page:data_status">
       <PrimaryNavigationDock
         page={props.page}
         navElement={props.navElement}
@@ -13355,7 +13471,10 @@ function DataStatusPageRowArticle(props: {
 }) {
   const { row } = props;
   return (
-    <article className={`dataStatusPageRow statusSeverity-${row.severity}`}>
+    <article
+      className={`dataStatusPageRow statusSeverity-${row.severity}`}
+      data-testid={`parity:data-status-row:${row.id}:severity:${row.severity}`}
+    >
       <div className="dataStatusPageRowHeader">
         <span className="dataStatusPageRowLabel">{row.label}</span>
         <span className="dataStatusPageRowValue">{row.value}</span>

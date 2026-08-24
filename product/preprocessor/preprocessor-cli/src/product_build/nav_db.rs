@@ -3298,7 +3298,7 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
     let mut stmt = connection.prepare(
         "
         SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
-               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes), trim(ARPElevation)
+               trim(FacilityName), trim(Type), trim(ATCT), trim(FuelTypes)
         FROM airports
         WHERE trim(LocationID) <> ''
         ",
@@ -3312,7 +3312,6 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
-            row.get::<_, String>(7)?,
         ))
     })?;
     let runway_info = airport_runway_symbol_info_by_airport(connection)?;
@@ -3320,7 +3319,7 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
     let mut important_metar_station_ids = BTreeSet::new();
     let mut airport_ids = BTreeSet::new();
     for row in rows {
-        let (id, lat, lon, facility_name, kind, atct, fuel_types, elevation) = row?;
+        let (id, lat, lon, facility_name, kind, atct, fuel_types) = row?;
         let key_id = had_upper_key_component(&id);
         let station_id = id.trim().to_ascii_uppercase();
         airport_ids.insert(station_id.clone());
@@ -3349,7 +3348,6 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
                 "has_water_runway": has_water_runway,
                 "runway_length_ratio": runway_length_ratio(info.map(|info| info.length_ft)),
                 "longest_runway_heading_true_deg": info.map(|info| info.heading_true_deg),
-                "elevation_msl_ft": parse_optional_float(&elevation),
             }),
             "navref airport symbol",
         )?);
@@ -7430,6 +7428,8 @@ mod tests {
             assert!(value.get("kind").is_some(), "{key}");
             assert!(value.get("label").is_some(), "{key}");
             assert!(value.get("style_class").is_some(), "{key}");
+            serde_json::from_slice::<app_ui_contracts::nav_query::NavSymbolFeature>(&pair.value)
+                .unwrap_or_else(|error| panic!("{key} violates NavSymbolFeature: {error}"));
         }
         let airport_symbol = pairs
             .iter()

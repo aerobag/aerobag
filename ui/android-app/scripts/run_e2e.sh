@@ -11,19 +11,22 @@ APP_DIR="$ROOT/ui/android-app"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 SKIP_INSTALL=0
+APK_PATH=""
 CLEAR_APP_DATA=0
 SYNC_OFFLINE_PACKAGES=1
 SYNC_ALL_AVAILABLE_PACKAGES=0
 TEST_ID=""
+RELEASE_FIXTURE="${AEROBAG_RELEASE_JOURNEY_FIXTURE:-}"
 
 usage() {
   cat <<'EOF'
-usage: run_e2e.sh [--skip-install] [--clear-app-data] [--serial SERIAL] [--route "KRNT KPWT"] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID]
+usage: run_e2e.sh [--apk PATH|--skip-install] [--clear-app-data] [--serial SERIAL] [--route "KRNT KPWT"] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID]
 
 Builds and installs the Android app, then runs Android end-to-end UI tests.
 Installed package data is preserved; the test runner clears only volatile UI
-state before launch. Pass --clear-app-data for a clean-device package sync, or
---skip-install to run against an already-installed app.
+state before launch. Pass --clear-app-data for a clean-device package sync,
+--apk to install an immutable APK built by an earlier job, or --skip-install
+to run against an already-installed app.
 If a clean device starts on Offline Packages, the runner syncs the NW package
 set unless --no-sync-offline-packages is supplied.
 EOF
@@ -36,11 +39,17 @@ ENV_ANDROID_PACKAGE_SOURCE_BASE_URL_SET="${ANDROID_PACKAGE_SOURCE_BASE_URL+x}"
 ENV_ANDROID_PACKAGE_SOURCE_BASE_URL_VALUE="${ANDROID_PACKAGE_SOURCE_BASE_URL-}"
 ENV_ANDROID_LIVE_FEED_SOURCE_BASE_URL_SET="${ANDROID_LIVE_FEED_SOURCE_BASE_URL+x}"
 ENV_ANDROID_LIVE_FEED_SOURCE_BASE_URL_VALUE="${ANDROID_LIVE_FEED_SOURCE_BASE_URL-}"
+ENV_ANDROID_CLOUD_SERVER_BASE_URL_SET="${ANDROID_CLOUD_SERVER_BASE_URL+x}"
+ENV_ANDROID_CLOUD_SERVER_BASE_URL_VALUE="${ANDROID_CLOUD_SERVER_BASE_URL-}"
 ENV_PACKAGE_SOURCE_PORT_SET="${PACKAGE_SOURCE_PORT+x}"
 ENV_PACKAGE_SOURCE_PORT_VALUE="${PACKAGE_SOURCE_PORT-}"
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
+    --apk)
+      APK_PATH="${2:-}"
+      shift
+      ;;
     --skip-install)
       SKIP_INSTALL=1
       ;;
@@ -63,6 +72,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --test)
       TEST_ID="${2:-}"
+      shift
+      ;;
+    --release-fixture)
+      RELEASE_FIXTURE="${2:-}"
       shift
       ;;
     -h|--help)
@@ -89,6 +102,9 @@ if [[ -n "$ENV_ANDROID_PACKAGE_SOURCE_BASE_URL_SET" ]]; then
 fi
 if [[ -n "$ENV_ANDROID_LIVE_FEED_SOURCE_BASE_URL_SET" ]]; then
   ANDROID_LIVE_FEED_SOURCE_BASE_URL="$ENV_ANDROID_LIVE_FEED_SOURCE_BASE_URL_VALUE"
+fi
+if [[ -n "$ENV_ANDROID_CLOUD_SERVER_BASE_URL_SET" ]]; then
+  ANDROID_CLOUD_SERVER_BASE_URL="$ENV_ANDROID_CLOUD_SERVER_BASE_URL_VALUE"
 fi
 if [[ -n "$ENV_PACKAGE_SOURCE_PORT_SET" ]]; then
   PACKAGE_SOURCE_PORT="$ENV_PACKAGE_SOURCE_PORT_VALUE"
@@ -125,8 +141,10 @@ PY
 EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
 ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
 PACKAGE_SOURCE_PORT="${PACKAGE_SOURCE_PORT:-8083}"
+ANDROID_DEV_SERVER_BASE_URL="${ANDROID_DEV_SERVER_BASE_URL:-http://127.0.0.1:${PACKAGE_SOURCE_PORT}}"
 ANDROID_PACKAGE_SOURCE_BASE_URL="${ANDROID_PACKAGE_SOURCE_BASE_URL:-http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/}"
 ANDROID_LIVE_FEED_SOURCE_BASE_URL="${ANDROID_LIVE_FEED_SOURCE_BASE_URL:-}"
+ANDROID_CLOUD_SERVER_BASE_URL="${ANDROID_CLOUD_SERVER_BASE_URL:-}"
 AEROBAG_ANDROID_KEYSTORE="${AEROBAG_ANDROID_KEYSTORE:-/root/aerobag-credentials/android/aerobag-app.keystore}"
 AEROBAG_ANDROID_KEYSTORE_PASSWORD="${AEROBAG_ANDROID_KEYSTORE_PASSWORD:-android}"
 AEROBAG_ANDROID_KEY_ALIAS="${AEROBAG_ANDROID_KEY_ALIAS:-androiddebugkey}"
@@ -137,16 +155,25 @@ mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 echo "target=$ANDROID_SERIAL"
 echo "package_source=$ANDROID_PACKAGE_SOURCE_BASE_URL"
 echo "live_feed_source=${ANDROID_LIVE_FEED_SOURCE_BASE_URL:-<package-source-root>}"
+echo "cloud_server=${ANDROID_CLOUD_SERVER_BASE_URL:-<not-configured>}"
 echo "route=$ROUTE"
 
 adb -s "$ANDROID_SERIAL" wait-for-device
 adb -s "$ANDROID_SERIAL" reverse "tcp:${PACKAGE_SOURCE_PORT}" "tcp:${PACKAGE_SOURCE_PORT}" >/dev/null || true
 
-if [[ "$SKIP_INSTALL" -eq 0 ]]; then
-  if [[ "$CLEAR_APP_DATA" -eq 1 ]]; then
-    echo "remove installed app for clean E2E state"
-    adb -s "$ANDROID_SERIAL" uninstall org.aerobag.app >/dev/null 2>&1 || true
+if [[ "$CLEAR_APP_DATA" -eq 1 && "$SKIP_INSTALL" -eq 0 ]]; then
+  echo "remove installed app for clean E2E state"
+  adb -s "$ANDROID_SERIAL" uninstall org.aerobag.app >/dev/null 2>&1 || true
+fi
+
+if [[ -n "$APK_PATH" ]]; then
+  if [[ ! -f "$APK_PATH" ]]; then
+    echo "prebuilt APK is missing: $APK_PATH" >&2
+    exit 1
   fi
+  echo "[1/2] install prebuilt APK: $APK_PATH"
+  adb -s "$ANDROID_SERIAL" install -r "$APK_PATH" >/dev/null
+elif [[ "$SKIP_INSTALL" -eq 0 ]]; then
   echo "[1/2] installDebug"
   (
     cd "$ROOT"
@@ -155,9 +182,12 @@ if [[ "$SKIP_INSTALL" -eq 0 ]]; then
       ANDROID_HOME="$ANDROID_HOME" \
       ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
       AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" \
+      AEROBAG_E2E_ENABLED=1 \
       ANDROID_SERIAL="$ANDROID_SERIAL" \
+      ANDROID_DEV_SERVER_BASE_URL="$ANDROID_DEV_SERVER_BASE_URL" \
       ANDROID_PACKAGE_SOURCE_BASE_URL="$ANDROID_PACKAGE_SOURCE_BASE_URL" \
       ANDROID_LIVE_FEED_SOURCE_BASE_URL="$ANDROID_LIVE_FEED_SOURCE_BASE_URL" \
+      ANDROID_CLOUD_SERVER_BASE_URL="$ANDROID_CLOUD_SERVER_BASE_URL" \
       AEROBAG_ANDROID_KEYSTORE="$AEROBAG_ANDROID_KEYSTORE" \
       AEROBAG_ANDROID_KEYSTORE_PASSWORD="$AEROBAG_ANDROID_KEYSTORE_PASSWORD" \
       AEROBAG_ANDROID_KEY_ALIAS="$AEROBAG_ANDROID_KEY_ALIAS" \
@@ -187,5 +217,8 @@ if [[ "$SYNC_ALL_AVAILABLE_PACKAGES" -eq 1 ]]; then
 fi
 if [[ -n "$TEST_ID" ]]; then
   E2E_ARGS+=(--test "$TEST_ID")
+fi
+if [[ -n "$RELEASE_FIXTURE" ]]; then
+  E2E_ARGS+=(--release-fixture "$RELEASE_FIXTURE")
 fi
 node "$ROOT/tools/e2e/run-android-e2e-suite.mjs" "${E2E_ARGS[@]}"

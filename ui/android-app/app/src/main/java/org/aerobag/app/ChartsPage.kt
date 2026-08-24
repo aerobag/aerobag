@@ -575,6 +575,7 @@ internal fun ChartsPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("parity:page:plate")
             .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
             .focusRequester(focusRequester)
@@ -774,6 +775,18 @@ internal fun ChartsPage(
                     )
                 }
             }
+            if (currentViewport != null && selectedChart != null) {
+                Box(
+                    modifier = Modifier
+                        .size(1.dp)
+                        .testTag(
+                            "parity:plate-viewport:chart:${selectedChart.id}" +
+                                ":zoom:${"%.3f".format(currentViewport.zoom)}" +
+                                ":left:${"%.1f".format(currentViewport.leftPx)}" +
+                                ":top:${"%.1f".format(currentViewport.topPx)}",
+                        ),
+                )
+            }
             if (plateFlightPlanOverlay.isNotEmpty()) {
                 Canvas(
                     modifier = Modifier
@@ -835,6 +848,11 @@ internal fun ChartsPage(
             statusControls.controls.forEach { control ->
                 DataStatusBadge(
                     dataStatusState = control.state,
+                    testTagPrefix = if (control.id == UiSurfaceStatusControlId.ProcedureGeometry) {
+                        "procedure-status"
+                    } else {
+                        "data-status"
+                    },
                     open = openStatusControlId == control.id,
                     onToggle = {
                         openStatusControlId = control.id.takeUnless { it == openStatusControlId }

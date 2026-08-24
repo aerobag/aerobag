@@ -10,6 +10,14 @@ export const ANDROID_PACKAGE = "org.aerobag.app";
 export const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
 export const DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA =
   `${ANDROID_PACKAGE}.extra.DEBUG_ARM_LAYER_NAV_KV_FAULT`;
+export const DEBUG_CLEAR_CORE_SETTINGS_EXTRA =
+  `${ANDROID_PACKAGE}.extra.DEBUG_CLEAR_CORE_SETTINGS`;
+export const DEBUG_CLEAR_UI_PREFS_EXTRA =
+  `${ANDROID_PACKAGE}.extra.DEBUG_CLEAR_UI_PREFS`;
+
+export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = Date.now()) {
+  return journeyId === "shared.cloud-crossfill" ? hostEpochMs : fixtureEpochMs;
+}
 
 export function adbArgs(serial, args) {
   return serial ? ["-s", serial, ...args] : args;
@@ -58,9 +66,24 @@ export function screencapPng(serial) {
   });
 }
 
-export function dumpAndroid(serial, dumpPath = "/sdcard/aerobag-e2e.xml") {
-  adb(serial, ["shell", "uiautomator", "dump", dumpPath]);
-  return adb(serial, ["exec-out", "cat", dumpPath]);
+export function dumpAndroid(serial, dumpPath = `/sdcard/aerobag-e2e-${process.pid}.xml`) {
+  // Compose's outlined text creates many accessibility-only descendants.
+  // Compressed dumps retain the tagged semantic controls and omit that noise.
+  let lastError = null;
+  const modes = ["compressed", "compressed", "compressed", "full"];
+  for (let attempt = 0; attempt < modes.length; attempt += 1) {
+    try {
+      adbBestEffort(serial, ["shell", "rm", "-f", dumpPath], { timeout: 3000 });
+      const modeArgs = modes[attempt] === "compressed" ? ["--compressed"] : [];
+      adb(serial, ["shell", "uiautomator", "dump", ...modeArgs, dumpPath], { timeout: 10000 });
+      return adb(serial, ["exec-out", "cat", dumpPath]);
+    } catch (error) {
+      lastError = error;
+      adbBestEffort(serial, ["shell", "input", "keyevent", "KEYCODE_WAKEUP"], { timeout: 3000 });
+      spawnSync("sleep", [String(0.4 + attempt * 0.3)]);
+    }
+  }
+  throw lastError;
 }
 
 export function captureAndroidFailureDiagnostics(serial, artifactDir, label) {
@@ -110,8 +133,8 @@ export function findNodes(xml, predicate) {
   let match;
   while ((match = nodeRegex.exec(xml))) {
     const attrs = Object.fromEntries(
-      [...match[0].matchAll(/([a-zA-Z0-9_-]+)="([^"]*)"/g)]
-        .map((entry) => [entry[1], decodeXml(entry[2])]),
+      [...match[0].matchAll(/([a-zA-Z0-9_-]+)=(?:"([^"]*)"|'([^']*)')/g)]
+        .map((entry) => [entry[1], decodeXml(entry[2] ?? entry[3])]),
     );
     if (predicate(attrs)) nodes.push(attrs);
   }
@@ -168,6 +191,16 @@ export function hasAndroidTag(node, tag) {
     resourceId.endsWith(`/id/${tag}`) ||
     androidTag(node) === tag
   );
+}
+
+export function androidRuntimeUiVisible(xml) {
+  return findNode(xml, (node) =>
+    hasAndroidTag(node, "parity:primary-navigation") ||
+    hasAndroidTag(node, "parity:map-surface") ||
+    hasAndroidTag(node, "parity:plan-append-route-input") ||
+    hasAndroidTag(node, "parity:button:FLIGHT\nPLAN") ||
+    hasAndroidTag(node, "parity:button:CHART")
+  ) !== null;
 }
 
 const MAP_LAYER_PARITY_IDS = Object.freeze({
@@ -440,39 +473,218 @@ export async function tapFirstPresentTag(serial, tags, timeoutMs = 5000) {
   return androidTag(node);
 }
 
-export async function scrollUntilTag(serial, tag, maxSwipes = 8) {
-  if (await scrollUntilTagInDirection(serial, tag, "down", maxSwipes)) {
+export async function scrollUntilTag(serial, tag, maxSwipes = 8, requireReachable = false) {
+  if (await scrollUntilTagInDirection(serial, tag, "down", maxSwipes, requireReachable)) {
     return true;
   }
-  return scrollUntilTagInDirection(serial, tag, "up", maxSwipes);
+  return scrollUntilTagInDirection(serial, tag, "up", maxSwipes, requireReachable);
 }
 
-async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes) {
+export async function scrollUntilTagPrefix(serial, tagPrefix, maxSwipes = 8, requireReachable = false) {
+  if (await scrollUntilTagPrefixInDirection(
+    serial, tagPrefix, "down", maxSwipes, requireReachable,
+  )) return true;
+  return scrollUntilTagPrefixInDirection(serial, tagPrefix, "up", maxSwipes, requireReachable);
+}
+
+export function findVerticalScrollSurface(xml) {
+  return findNode(xml, (node) =>
+    node.scrollable === "true" &&
+    node.package === ANDROID_PACKAGE &&
+    node.class !== "android.widget.HorizontalScrollView");
+}
+
+export function findHorizontalScrollSurface(xml) {
+  return findNode(xml, (node) => hasAndroidTag(node, "parity:plan-controls")) ??
+    findNode(xml, (node) =>
+      node.scrollable === "true" &&
+      node.package === ANDROID_PACKAGE &&
+      node.class === "android.widget.HorizontalScrollView") ??
+    findNode(xml, (node) => {
+      if (node.scrollable !== "true" || node.package !== ANDROID_PACKAGE || !node.bounds) return false;
+      const bounds = rectOfBounds(node.bounds);
+      return bounds.width > bounds.height * 2 && bounds.top > 1200;
+    });
+}
+
+export function verticalScrollTargetIsReachable(xml, tag, { prefix = false } = {}) {
+  const target = findNode(xml, (node) => {
+    const nodeTag = androidTag(node);
+    return prefix ? nodeTag.startsWith(tag) : nodeTag === tag;
+  });
+  if (!target) return false;
+  const scrollSurface = findVerticalScrollSurface(xml);
+  if (!scrollSurface) return true;
+  const targetBounds = rectOfBounds(target.bounds);
+  const surfaceBounds = rectOfBounds(scrollSurface.bounds);
+  const centerX = targetBounds.left + targetBounds.width / 2;
+  const centerY = targetBounds.top + targetBounds.height / 2;
+  return centerX >= surfaceBounds.left && centerX <= surfaceBounds.right &&
+    centerY >= surfaceBounds.top && centerY <= surfaceBounds.bottom;
+}
+
+export function verticalScrollGesture(bounds, direction) {
+  const inset = Math.min(80, bounds.height / 5);
+  // Starting in Android's status or navigation gesture zones opens the shade
+  // or leaves the app instead of scrolling Compose content.
+  const systemGestureInset = Math.max(inset, 180);
+  const safeTop = Math.min(bounds.bottom - 1, bounds.top + systemGestureInset);
+  const safeBottom = Math.max(safeTop + 1, bounds.bottom - systemGestureInset);
+  return {
+    x: Math.round((bounds.left + bounds.right) / 2),
+    startY: Math.round(direction === "down" ? safeBottom : safeTop),
+    endY: Math.round(direction === "down" ? safeTop : safeBottom),
+  };
+}
+
+async function recoverObscuredAndroidApp(serial, xml) {
+  const aerobagVisible = findNode(xml, (node) => node.package === ANDROID_PACKAGE);
+  const systemUiVisible = findNode(xml, (node) => node.package === "com.android.systemui");
+  if (aerobagVisible || !systemUiVisible) return xml;
+  adbBestEffort(serial, ["shell", "cmd", "statusbar", "collapse"], { timeout: 3000 });
+  await delay(250);
+  return dumpAndroid(serial);
+}
+
+async function scrollUntilTagPrefixInDirection(
+  serial, tagPrefix, direction, maxSwipes, requireReachable,
+) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-    const xml = dumpAndroid(serial);
-    if (findNode(xml, (node) => hasAndroidTag(node, tag))) {
-      return true;
-    }
+    const xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+    if (requireReachable
+      ? verticalScrollTargetIsReachable(xml, tagPrefix, { prefix: true })
+      : findNode(xml, (node) => androidTag(node).startsWith(tagPrefix))) return true;
     const scrollSurface =
-      findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE) ??
+      findVerticalScrollSurface(xml) ??
       findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
     const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
-    const x = Math.round((bounds.left + bounds.right) / 2);
-    const inset = Math.min(80, bounds.height / 5);
-    const startY = direction === "down"
-      ? Math.round(bounds.bottom - inset)
-      : Math.round(bounds.top + inset);
-    const endY = direction === "down"
-      ? Math.round(bounds.top + inset)
-      : Math.round(bounds.bottom - inset);
-    adb(serial, ["shell", "input", "touchscreen", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
+    const { x, startY, endY } = verticalScrollGesture(bounds, direction);
+    swipe(serial, x, startY, x, endY, 450);
     await delay(250);
+  }
+  const xml = dumpAndroid(serial);
+  return requireReachable
+    ? verticalScrollTargetIsReachable(xml, tagPrefix, { prefix: true })
+    : findNode(xml, (node) => androidTag(node).startsWith(tagPrefix)) !== null;
+}
+
+export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
+  for (const direction of ["forward", "backward"]) {
+    for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+      const xml = dumpAndroid(serial);
+      if (findNode(xml, (node) => hasAndroidTag(node, tag))) return true;
+      const horizontalSurface = findHorizontalScrollSurface(xml);
+      if (!horizontalSurface) return false;
+      const bounds = rectOfBounds(horizontalSurface.bounds);
+      const inset = Math.min(80, bounds.width / 5);
+      const startX = direction === "forward" ? bounds.right - inset : bounds.left + inset;
+      const endX = direction === "forward" ? bounds.left + inset : bounds.right - inset;
+      const y = Math.round((bounds.top + bounds.bottom) / 2);
+      swipe(serial, startX, y, endX, y, 450);
+      await delay(250);
+    }
   }
   return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
 }
 
+async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requireReachable) {
+  for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
+    const xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+    if (requireReachable
+      ? verticalScrollTargetIsReachable(xml, tag)
+      : findNode(xml, (node) => hasAndroidTag(node, tag))) {
+      return true;
+    }
+    const scrollSurface =
+      findVerticalScrollSurface(xml) ??
+      findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
+    const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
+    const { x, startY, endY } = verticalScrollGesture(bounds, direction);
+    adb(serial, ["shell", "input", "touchscreen", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
+    await delay(250);
+  }
+  const xml = dumpAndroid(serial);
+  return requireReachable
+    ? verticalScrollTargetIsReachable(xml, tag)
+    : findNode(xml, (node) => hasAndroidTag(node, tag)) !== null;
+}
+
+const ANDROID_DIRECT_TEXT_KEYS = Object.freeze({
+  "/": "KEYCODE_SLASH",
+  "-": "KEYCODE_MINUS",
+  ".": "KEYCODE_PERIOD",
+  ",": "KEYCODE_COMMA",
+  "@": "KEYCODE_AT",
+  "=": "KEYCODE_EQUALS",
+  "[": "KEYCODE_LEFT_BRACKET",
+  "]": "KEYCODE_RIGHT_BRACKET",
+  "\\": "KEYCODE_BACKSLASH",
+  ";": "KEYCODE_SEMICOLON",
+  "'": "KEYCODE_APOSTROPHE",
+  "`": "KEYCODE_GRAVE",
+});
+
+const ANDROID_SHIFTED_TEXT_KEYS = Object.freeze({
+  ":": "KEYCODE_SEMICOLON",
+  "?": "KEYCODE_SLASH",
+  "_": "KEYCODE_MINUS",
+  "+": "KEYCODE_EQUALS",
+  "!": "KEYCODE_1",
+  "#": "KEYCODE_3",
+  "$": "KEYCODE_4",
+  "%": "KEYCODE_5",
+  "^": "KEYCODE_6",
+  "&": "KEYCODE_7",
+  "*": "KEYCODE_8",
+  "(": "KEYCODE_9",
+  ")": "KEYCODE_0",
+  "<": "KEYCODE_COMMA",
+  ">": "KEYCODE_PERIOD",
+  "\"": "KEYCODE_APOSTROPHE",
+  "{": "KEYCODE_LEFT_BRACKET",
+  "}": "KEYCODE_RIGHT_BRACKET",
+  "|": "KEYCODE_BACKSLASH",
+  "~": "KEYCODE_GRAVE",
+});
+
+export function androidTextInputCommands(text) {
+  const commands = [];
+  let plain = "";
+  const flushPlain = () => {
+    if (!plain) return;
+    commands.push(["shell", "input", "text", plain.replaceAll(" ", "%s")]);
+    plain = "";
+  };
+  for (const character of String(text)) {
+    if (/^[A-Za-z0-9 ]$/.test(character)) {
+      plain += character;
+      continue;
+    }
+    flushPlain();
+    const directKey = ANDROID_DIRECT_TEXT_KEYS[character];
+    if (directKey) {
+      commands.push(["shell", "input", "keyevent", directKey]);
+      continue;
+    }
+    const shiftedKey = ANDROID_SHIFTED_TEXT_KEYS[character];
+    if (shiftedKey) {
+      commands.push([
+        "shell", "input", "keycombination", "KEYCODE_SHIFT_LEFT", shiftedKey,
+      ]);
+      continue;
+    }
+    throw new Error(`Android E2E text injection does not support ${JSON.stringify(character)}`);
+  }
+  flushPlain();
+  return commands;
+}
+
 export function inputText(serial, text) {
-  adb(serial, ["shell", "input", "text", text.replaceAll(" ", "%s")]);
+  for (const command of androidTextInputCommands(text)) {
+    adb(serial, command);
+    spawnSync("sleep", ["0.075"]);
+  }
+  spawnSync("sleep", ["0.25"]);
 }
 
 export function pressKey(serial, keyCode) {
@@ -493,11 +705,19 @@ export function swipe(serial, startX, startY, endX, endY, durationMs = 450) {
   ]);
 }
 
+export function androidClearTextCommand(maxChars = 160) {
+  return [
+    "shell", "input", "keyevent", "KEYCODE_MOVE_END",
+    ...Array.from({ length: maxChars }, () => "KEYCODE_DEL"),
+  ];
+}
+
 export function clearFocusedText(serial, maxChars = 160) {
-  pressKey(serial, "KEYCODE_MOVE_END");
-  for (let i = 0; i < maxChars; i += 1) {
-    pressKey(serial, "KEYCODE_DEL");
-  }
+  adb(serial, androidClearTextCommand(maxChars));
+  spawnSync("sleep", ["0.25"]);
+  // Gboard can re-commit one composing character after the bulk key stream.
+  adb(serial, androidClearTextCommand(16));
+  spawnSync("sleep", ["0.25"]);
 }
 
 export function wakeAndUnlock(serial) {
@@ -525,13 +745,13 @@ export async function launchFreshAndroidApp(
   wakeAndUnlock(serial);
   grantAerobagRuntimePermissions(serial);
   adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
+  const startArgs = ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY];
   if (clearUiPrefs) {
-    adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "shared_prefs/aerobag_ui.xml"]);
+    startArgs.push("--ez", DEBUG_CLEAR_UI_PREFS_EXTRA, "true");
   }
   if (clearCoreSettings) {
-    adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "files/core-settings-v1.json"]);
+    startArgs.push("--ez", DEBUG_CLEAR_CORE_SETTINGS_EXTRA, "true");
   }
-  const startArgs = ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY];
   if (armLayerNavKvFault) {
     startArgs.push("--ez", DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA, "true");
   }
@@ -568,13 +788,20 @@ export async function acceptDisclaimerIfPresent(serial) {
 
 export function assertRuntimeIsAvailable(serial) {
   const xml = dumpAndroid(serial);
-  const offlineVisible = findNode(xml, (node) =>
+  if (androidOfflinePackagesVisible(xml)) {
+    throw new Error("offline packages page is visible; install a usable nav-db package before running Android E2E");
+  }
+}
+
+export function androidOfflinePackagesVisible(xml) {
+  return findNode(xml, (node) =>
     hasAndroidTag(node, "parity:offline-library-panel") ||
     hasAndroidTag(node, "parity:offline-packages-panel") ||
     hasAndroidTag(node, "parity:offline-refresh-button") ||
     hasAndroidTag(node, "parity:offline-sync-button")
-  );
-  if (offlineVisible) {
-    throw new Error("offline packages page is visible; install a usable nav-db package before running Android E2E");
-  }
+  ) !== null;
+}
+
+export function androidRuntimeReadyForJourney(xml) {
+  return androidRuntimeUiVisible(xml) && !androidOfflinePackagesVisible(xml);
 }

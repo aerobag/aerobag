@@ -35,4 +35,9 @@ internal class AndroidCoreSettingsStore(context: Context) : CoreSettingsStore {
             throw error
         }
     }
+
+    @Synchronized
+    fun clearSettings() {
+        atomicFile.delete()
+    }
 }

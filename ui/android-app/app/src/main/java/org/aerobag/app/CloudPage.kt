@@ -36,6 +36,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -129,6 +130,7 @@ internal fun CloudPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("parity:page:cloud")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         PrimaryNavigationDock(
@@ -249,6 +251,7 @@ private fun CloudPanelView(
     }
     Column(
         modifier = modifier
+            .testTag("parity:cloud-panel:${panel.id}:state:${panel.state.name.lowercase()}")
             .border(2.dp, accent, RoundedCornerShape(ThumbRadius))
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
             .padding(ThumbSize * 0.22f),
@@ -307,7 +310,8 @@ private fun CloudPanelView(
                 onValueChange = { fields[control.fieldId] = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(ThumbSize * 1.8f),
+                    .height(ThumbSize * 1.8f)
+                    .testTag("parity:cloud-setup-code-input"),
                 label = { Text(control.label) },
                 placeholder = { Text(control.placeholder) },
                 textStyle = MaterialTheme.typography.bodyMedium,
@@ -316,6 +320,7 @@ private fun CloudPanelView(
                 CloudQrCode(control.qrCode)
                 Text(
                     text = control.setupCode,
+                    modifier = Modifier.testTag("parity:cloud-setup-code-output"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = uiTheme.controls.panelFg,
                 )
@@ -382,9 +387,13 @@ private fun CloudActionButton(
         maxLines = 2,
         enabled = enabled,
         wide = true,
+        testTag = "parity:cloud-action:${action.id.semanticId()}",
         onDisabledClick = action.disabledReason?.let { reason ->
             { showDisabledActionToast(context, reason) }
         },
         onClick = { onInvoke(action) },
     )
 }
+
+private fun CloudUiActionId.semanticId(): String =
+    name.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").lowercase()

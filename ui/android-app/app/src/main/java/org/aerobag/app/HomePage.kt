@@ -689,6 +689,7 @@ internal fun HomePage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag(if (offlinePackagesRouted) "parity:page:offline_packages" else "parity:page:home")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         if (!offlinePackagesRouted) {

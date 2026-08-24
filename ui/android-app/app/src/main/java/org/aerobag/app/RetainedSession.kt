@@ -21,6 +21,7 @@ import org.aerobag.app.domain.ClientBuildInfo
 import org.aerobag.app.domain.AndroidRuntimeContent
 import org.aerobag.app.domain.LiveFeedCacheStore
 import org.aerobag.app.domain.MapViewportState
+import org.aerobag.app.domain.MapOrientationMemory
 import org.aerobag.app.domain.NativeAppCoreAdapter
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.RuntimeContent
@@ -73,6 +74,7 @@ internal class AerobagRetainedModel : ViewModel() {
     var page: AppPage? = null
     var pageHistory: List<AppViewSnapshot> = emptyList()
     var mapViewport: MapViewportState? = null
+    val mapOrientationMemory = MapOrientationMemory()
 
     fun resetRuntime() {
         val (preparation, session, runtime) = synchronized(startupLock) {

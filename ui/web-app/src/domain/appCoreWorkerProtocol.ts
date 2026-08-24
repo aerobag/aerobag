@@ -7,4 +7,5 @@ export type WorkerCreateUiSessionRequest = {
   selectedAirportId?: string;
   selectedChartId?: string;
   settingsJson: string | null;
+  nowEpochMs: number;
 };

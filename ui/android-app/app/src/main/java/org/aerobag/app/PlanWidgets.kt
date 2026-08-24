@@ -539,7 +539,19 @@ internal fun FlightPlanDataRow(
         dataScrollState = dataScrollState,
         modifier = modifier.then(rowBoundsModifier),
         waypointContent = {
-            Box(modifier = Modifier.width(PlanWaypointColumnWidth).height(cellHeight)) {
+            Box(
+                modifier =
+                    Modifier
+                        .width(PlanWaypointColumnWidth)
+                        .height(cellHeight)
+                        .then(
+                            if (row.rowKind == "group" && row.procedureId != null) {
+                                Modifier.testTag("parity:plan-procedure-row:${row.procedureId}:uid:${row.id}")
+                            } else {
+                                Modifier
+                            },
+                        ),
+            ) {
                 if (row.rowKind == "summary") {
                     PlanCell(
                         row.label,
@@ -591,6 +603,11 @@ internal fun FlightPlanDataRow(
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
                                 .padding(end = ThumbSize * 0.12f)
+                                .then(
+                                    row.weatherBadge?.let {
+                                        Modifier.testTag("parity:plan-weather-badge:${it.flightCategory}")
+                                    } ?: Modifier,
+                                )
                                 .alpha(1f),
                         )
                     }
@@ -603,6 +620,7 @@ internal fun FlightPlanDataRow(
                 cell.value ?: "—",
                 Modifier
                     .width(dataColumnWidth)
+                    .testTag("parity:plan-data:${row.id}:${cell.id}:${cell.value ?: "none"}")
                     .then(cell.actionId?.let { actionId ->
                         Modifier.clickable { onDataCellAction(actionId) }
                     } ?: Modifier),

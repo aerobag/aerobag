@@ -161,6 +161,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.text.TextStyle
@@ -295,6 +296,7 @@ import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.compassNeedleRotationDegrees
 import org.aerobag.app.domain.createInitialImageViewport
 import org.aerobag.app.domain.createPinchSnapshot
+import org.aerobag.app.domain.distinctRenderTileCount
 import org.aerobag.app.domain.dragImageViewport
 import org.aerobag.app.domain.dragViewport
 import org.aerobag.app.domain.imageDisplaySize
@@ -382,6 +384,8 @@ internal data class NexradOverlayFrame(
     val surfaceHeightPx: Float,
     val decodedImageCount: Int,
     val decodedBytes: Long,
+    val selectedFrameIndex: Int?,
+    val frameCount: Int,
 )
 
 private data class RasterPlanFrame(
@@ -676,6 +680,7 @@ internal fun MapExplorerPage(
     mapFamilyOptions: List<MapFamilyOption>,
     viewport: MapViewportState,
     mapOrientationMode: MapOrientationMode,
+    mapOrientationMemory: MapOrientationMemory,
     decodedTileBitmapCache: DecodedTileBitmapCache,
     debugState: UiDebugState,
     perfScenario: AndroidPerfScenario? = null,
@@ -899,7 +904,6 @@ internal fun MapExplorerPage(
     val currentViewport = viewportState.value
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
-    val mapOrientationMemory = remember { MapOrientationMemory() }
     val plannedMapUpDeg = mapOrientationMemory.resolve(mapOrientationMode, ownship.trackDegTrue)
     val displayViewport = currentViewport.copy(rotationDeg = plannedMapUpDeg)
     val planningDiameterPx = hypot(surfaceWidthPx, surfaceHeightPx)
@@ -2260,6 +2264,8 @@ internal fun MapExplorerPage(
                     surfaceHeightPx = latestSurfaceHeightPx,
                     decodedImageCount = decodedImagesBySrc.size,
                     decodedBytes = decodedImageBytes,
+                    selectedFrameIndex = overlay.animation.selectedFrameIndex,
+                    frameCount = overlay.animation.frameCount,
                 )
                 perfLogInfo(MapLayerLogTag) {
                     "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
@@ -2965,6 +2971,33 @@ internal fun MapExplorerPage(
                 }
             },
     ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .size(1.dp)
+                .testTag(
+                    "parity:viewport:center-x:${currentViewport.centerWorldX.roundToInt()}:center-y:${currentViewport.centerWorldY.roundToInt()}:zoom:${(currentViewport.zoom * 1000).roundToInt()}:up:${plannedMapUpDeg.roundToInt()}",
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 2.dp)
+                .size(1.dp)
+                .testTag("parity:map-family:$selectedFamilyId:map:$selectedMapId"),
+        )
+        mapLayerState.options.forEachIndexed { index, option ->
+            val state = mapLayerState.toggleState(option.layerId)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = (4 + index * 2).dp)
+                    .size(1.dp)
+                    .testTag(
+                        "parity:map-layer:${option.layerId.name}:visible:${state.visible}:enabled:${state.enabled}",
+                    ),
+            )
+        }
         RasterImageLayers(
             tiles = tiles,
             tileRects = tileRects,
@@ -2978,6 +3011,40 @@ internal fun MapExplorerPage(
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
             mapUpDeg = plannedMapUpDeg,
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 20.dp)
+                .size(1.dp)
+                .testTag(
+                    "parity:raster-state:planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 22.dp)
+                .size(1.dp)
+                .testTag("parity:vector-state:features:${displayedMapOverlay.visibleFeatures.size}"),
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 24.dp)
+                .size(1.dp)
+                .testTag(
+                    "parity:live-overlay:metars:${displayedMapOverlay.visibleMetars.size}:pireps:${displayedMapOverlay.visiblePireps.size}:obstacles:${displayedMapOverlay.visibleFeatures.count { it.symbolKind == "obstacle" }}:tfrs:${displayedMapOverlay.tfrPaths.size}",
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 26.dp)
+                .size(1.dp)
+                .testTag(
+                    "parity:nexrad-state:tiles:${nexradFrame?.images?.size ?: 0}:frame:${nexradFrame?.selectedFrameIndex ?: "none"}:frames:${nexradFrame?.frameCount ?: 0}",
+                ),
         )
         AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         MapFeatureOverlayLayer(
@@ -3053,6 +3120,19 @@ internal fun MapExplorerPage(
             labelStrokePaint = labelStrokePaint,
             labelFillPaint = labelFillPaint,
             aircraftPlanViewPath = aircraftPlanViewPath,
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 24.dp)
+                .size(1.dp)
+                .testTag(
+                    "parity:ownship-state:" +
+                        "mode:${ownship.mode.name.lowercase()}:" +
+                        "draw:${ownship.drawAircraft}:" +
+                        "position:${ownship.position?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "none"}:" +
+                        "track:${ownship.trackDegTrue?.let { "%.1f".format(it) } ?: "none"}",
+                ),
         )
         mapFollowProbeTag?.let { tag ->
             Box(
@@ -4619,6 +4699,7 @@ internal fun MapSelectionInlineDetailText(detail: String) {
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun MapSelectionDetailModal(
     title: String,
     text: String,
@@ -4629,6 +4710,8 @@ internal fun MapSelectionDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
+            .testTag("parity:map-selection-detail-modal:$title")
+            .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 9.5f)
             .heightIn(max = ThumbSize * 11.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
@@ -4753,6 +4836,7 @@ internal fun WeatherDetailModal(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun AirportInfoModal(
     detail: AirportInfoUiView,
     modifier: Modifier = Modifier,
@@ -4761,8 +4845,11 @@ internal fun AirportInfoModal(
     val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
     val airportIdentityStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+    val scrollState = rememberScrollState()
     Surface(
         modifier = modifier
+            .testTag("parity:airport-info-modal:${detail.airportId}")
+            .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
@@ -4773,7 +4860,8 @@ internal fun AirportInfoModal(
     ) {
         Column(
             modifier = Modifier
-                .verticalScroll(rememberScrollState())
+                .testTag("parity:airport-info-scroll:${scrollState.value}")
+                .verticalScroll(scrollState)
                 .padding(ThumbSize * 0.18f),
             verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
         ) {
@@ -4797,11 +4885,16 @@ internal fun AirportInfoModal(
             detail.factSections.forEach { section ->
                 section.title?.let { AirportInfoSectionTitle(it) }
                 section.facts.forEach { fact ->
-                    AirportInfoFact(
-                        label = fact.label,
-                        value = fact.value,
-                        nextInLabel = fact.nextInLabel,
-                        onClick = when {
+                    Box(
+                        modifier = Modifier.testTag(
+                            "parity:airport-info-fact:${fact.label}:${fact.value}",
+                        ),
+                    ) {
+                        AirportInfoFact(
+                            label = fact.label,
+                            value = fact.value,
+                            nextInLabel = fact.nextInLabel,
+                            onClick = when {
                             fact.actionId != null -> {
                                 { onTimeDisplayAction(fact.actionId) }
                             }
@@ -4817,15 +4910,26 @@ internal fun AirportInfoModal(
                             }
                             }
                             else -> null
-                        },
-                    )
+                            },
+                        )
+                    }
                 }
             }
             if (detail.runways.isNotEmpty()) {
                 AirportInfoSectionTitle(detail.runwaysSectionTitle)
+                Box(
+                    modifier = Modifier
+                        .size(1.dp)
+                        .testTag(
+                            "parity:airport-info-runways:complex:${detail.runwayDiagramComplex}:count:${detail.runways.size}",
+                        ),
+                )
                 detail.runways.forEachIndexed { index, runway ->
                     Row(
                         modifier = Modifier
+                            .testTag(
+                                "parity:airport-info-runway:${runway.endALabel}:${runway.endBLabel}",
+                            )
                             .fillMaxWidth()
                             .heightIn(min = ThumbSize * 2.25f),
                         horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.8f),
@@ -4895,6 +4999,7 @@ private fun AirportInfoFact(
                 } else {
                     Modifier
                         .weight(1f)
+                        .testTag("parity:airport-info-time-toggle")
                         .clickable(onClick = onClick)
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
@@ -5103,6 +5208,7 @@ internal fun AirportNotamSection(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun ProcedureNotamModal(
     detail: PlateProcedureNotamDetail,
     modifier: Modifier = Modifier,
@@ -5111,6 +5217,7 @@ internal fun ProcedureNotamModal(
     Surface(
         modifier = modifier
             .testTag("parity:procedure-notam-modal")
+            .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 10.5f)
             .heightIn(max = ThumbSize * 11.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
@@ -5428,6 +5535,7 @@ internal fun MapSelectionActionButton(
             .semantics {
                 if (!enabled) {
                     disabled()
+                    action.disabledReason?.let { stateDescription = it }
                 }
             }
             .then(if (acceptsTap) Modifier.clickable(onClick = onClick) else Modifier),
@@ -5535,6 +5643,7 @@ internal fun AirportInsertPanel(
                         ),
                     modifier =
                         Modifier
+                            .testTag("parity:plan-insert-airport-input")
                             .weight(1f)
                             .height(ThumbSize)
                             .focusRequester(focusRequester)
@@ -5572,6 +5681,7 @@ internal fun AirportInsertPanel(
                         },
                         active = false,
                         enabled = true,
+                        testTag = "parity:plan-insert-suggestion:${suggestion.identifier}",
                         width = ThumbSize * 3f,
                         onSelect = { onSuggestionClick(suggestion) },
                     )

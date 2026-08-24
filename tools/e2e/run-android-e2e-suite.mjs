@@ -15,6 +15,10 @@ import {
   adb,
   adbBestEffort,
   androidNodeLabel,
+  androidJourneyEpochMs,
+  androidOfflinePackagesVisible,
+  androidRuntimeReadyForJourney,
+  androidRuntimeUiVisible,
   androidTag,
   assertRuntimeIsAvailable,
   captureAndroidFailureDiagnostics,
@@ -52,6 +56,11 @@ import {
   waitForAndroidOrientation,
   waitForNode,
 } from "./android-harness.mjs";
+import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
+import { releaseJourneyImplementation } from "./release-journey-implementations.mjs";
+import { RELEASE_JOURNEYS } from "./release-journey-registry.mjs";
+import { executeReleaseJourney } from "./release-journey-runtime.mjs";
+import { AndroidSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
 
 const DEFAULT_ROUTE = "KRNT KPWT";
 const CTR_STRESS_ROUTE = "KRNT KPDX";
@@ -78,7 +87,7 @@ const LIVE_FEED_PROMOTION_PAUSE_MARKER = "E2E live-feed promotion paused";
 
 function usage() {
   console.log(`Usage:
-  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
+  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
 
 Runs Android end-to-end UI tests against an installed Aerobag app.
 When a clean emulator starts on Offline Packages, the runner syncs the NW
@@ -94,6 +103,7 @@ function parseArgs(argv) {
     packageSourcePort: DEFAULT_PACKAGE_SOURCE_PORT,
     syncOfflinePackages: true,
     syncAllAvailablePackages: false,
+    releaseFixture: process.env.AEROBAG_RELEASE_JOURNEY_FIXTURE ?? "",
     test: "",
     json: false,
   };
@@ -113,6 +123,8 @@ function parseArgs(argv) {
       args.syncAllAvailablePackages = true;
     } else if (arg === "--test") {
       args.test = argv[++i] ?? "";
+    } else if (arg === "--release-fixture") {
+      args.releaseFixture = argv[++i] ?? "";
     } else if (arg === "--json") {
       args.json = true;
     } else {
@@ -171,12 +183,7 @@ function hasAndroidTextContaining(xml, text) {
 }
 
 function offlinePackagesVisible(xml) {
-  return findNode(xml, (node) =>
-    hasAndroidTag(node, "parity:offline-library-panel") ||
-    hasAndroidTag(node, "parity:offline-packages-panel") ||
-    hasAndroidTag(node, "parity:offline-refresh-button") ||
-    hasAndroidTag(node, "parity:offline-sync-button")
-  ) !== null;
+  return androidOfflinePackagesVisible(xml);
 }
 
 function disclaimerVisible(xml) {
@@ -184,12 +191,7 @@ function disclaimerVisible(xml) {
 }
 
 function runtimeUiVisible(xml) {
-  return !offlinePackagesVisible(xml) && findNode(xml, (node) =>
-    hasAndroidTag(node, "parity:map-surface") ||
-    hasAndroidTag(node, "parity:plan-append-route-input") ||
-    hasAndroidTag(node, "parity:button:FLIGHT\nPLAN") ||
-    hasAndroidTag(node, "parity:button:CHART")
-  ) !== null;
+  return androidRuntimeUiVisible(xml);
 }
 
 function offlineSyncIsIdle(xml) {
@@ -225,7 +227,7 @@ async function ensureOfflinePackagesReady(
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  if (runtimeUiVisible(dumpAndroid(serial))) {
+  if (androidRuntimeReadyForJourney(dumpAndroid(serial))) {
     recordStep(result, "offline packages ready", "runtime already available");
     return;
   }
@@ -272,7 +274,7 @@ async function ensureOfflinePackagesReady(
       await delay(1000);
       await waitFor(() => {
         const nextXml = dumpAndroid(serial);
-        return runtimeUiVisible(nextXml) || offlineSyncIsIdle(nextXml);
+        return androidRuntimeReadyForJourney(nextXml) || offlineSyncIsIdle(nextXml);
       }, 600000, "offline package sync completion", 1000);
       recordStep(result, "offline package sync completed");
     }
@@ -282,7 +284,7 @@ async function ensureOfflinePackagesReady(
     if (await acceptDisclaimerIfPresent(serial)) {
       recordStep(result, "disclaimer accepted");
     }
-    if (runtimeUiVisible(dumpAndroid(serial))) {
+    if (androidRuntimeReadyForJourney(dumpAndroid(serial))) {
       recordStep(result, "offline packages ready", "runtime available");
       return;
     }
@@ -298,7 +300,7 @@ async function ensureOfflinePackagesReady(
     if (await acceptDisclaimerIfPresent(serial)) {
       recordStep(result, "disclaimer accepted");
     }
-    return runtimeUiVisible(dumpAndroid(serial));
+    return androidRuntimeReadyForJourney(dumpAndroid(serial));
   }, 45000, "runtime available after offline package sync");
   recordStep(result, "offline packages ready", "runtime available");
 }
@@ -385,7 +387,7 @@ async function fillRouteInput(serial, route) {
   throwWithUi(serial, `route input did not contain ${route}; last observed=${JSON.stringify(lastObserved)}`);
 }
 
-async function appendRoute(serial, result, route) {
+async function appendRoute(serial, result, route, assertionId = "flightPlan.routeCommitted") {
   await fillRouteInput(serial, route);
   await tapTag(serial, "parity:plan-append-route-input", 10000);
   pressKey(serial, "KEYCODE_ENTER");
@@ -403,7 +405,7 @@ async function appendRoute(serial, result, route) {
       );
   }, 45000, `route ${route} committed to flight plan`);
   recordStep(result, "route committed to flight plan", route);
-  recordCheck(result, "flightPlan.routeCommitted", true, route);
+  if (assertionId) recordCheck(result, assertionId, true, route);
   pressKey(serial, "KEYCODE_BACK");
   await delay(600);
 }
@@ -422,7 +424,13 @@ async function activateDestinationLeg(serial, result, route) {
     return rowNode !== null;
   }, 10000, `destination plan row visible for ${destination}`);
   await tapNode(serial, rowNode);
-  await tapTag(serial, "parity:plan-row-action:activate_leg", 10000);
+  const activate = await waitForNode(
+    serial,
+    (node) => androidTag(node).startsWith("parity:plan-row-action:activate_leg:enabled:true"),
+    10000,
+    "enabled activate-leg action",
+  );
+  await tapNode(serial, activate);
   await delay(1000);
   recordStep(result, "destination leg activated", destination);
 }
@@ -1395,6 +1403,151 @@ async function runPlateFirstRenderSmoke(args) {
   return result;
 }
 
+async function launchReleaseJourneyAndroidApp(args, fixture, options) {
+  adbBestEffort(args.serial, ["shell", "am", "force-stop", "com.android.chrome"]);
+  await launchFreshAndroidApp(args.serial, options);
+  const initialViewport = fixture.capabilities.initial_viewport;
+  if (args.serial?.startsWith("emulator-") && initialViewport) {
+    adbBestEffort(args.serial, [
+      "emu", "geo", "fix",
+      String(initialViewport.longitude ?? initialViewport.lon),
+      String(initialViewport.latitude ?? initialViewport.lat),
+    ]);
+    await delay(500);
+  }
+}
+
+function useAndroidFixtureClock(serial, epochMs) {
+  const previousAutoTime = adb(serial, ["shell", "settings", "get", "global", "auto_time"]).trim();
+  adb(serial, ["shell", "settings", "put", "global", "auto_time", "0"]);
+  adb(serial, ["shell", "cmd", "alarm", "set-time", String(epochMs)]);
+  return () => {
+    adbBestEffort(serial, [
+      "shell", "settings", "put", "global", "auto_time",
+      previousAutoTime === "0" ? "0" : "1",
+    ]);
+  };
+}
+
+async function runSharedReleaseJourney(args, journey) {
+  if (!args.releaseFixture) {
+    throw new Error(`${journey.id} requires --release-fixture`);
+  }
+  const fixture = loadReleaseJourneyFixture(args.releaseFixture);
+  const restoreClock = useAndroidFixtureClock(
+    args.serial,
+    androidJourneyEpochMs(journey.id, fixture.capabilities.reference_epoch_ms),
+  );
+  try {
+    const bootstrap = createTestResult(`${journey.id}.bootstrap`);
+    await launchReleaseJourneyAndroidApp(
+      args,
+      fixture,
+      { clearUiPrefs: true, clearCoreSettings: true },
+    );
+    await ensureOfflinePackagesReady(args.serial, bootstrap, args);
+    await waitForRuntime(args.serial, bootstrap);
+
+    const driver = new AndroidSemanticJourneyDriver(args.serial, {
+      resetApp: () => launchReleaseJourneyAndroidApp(
+        args,
+        fixture,
+        { clearUiPrefs: true, clearCoreSettings: true },
+      ),
+      resetApplicationData: async () => {
+        adb(args.serial, ["shell", "pm", "clear", "org.aerobag.app"]);
+        await launchReleaseJourneyAndroidApp(
+          args,
+          fixture,
+          { clearUiPrefs: false, clearCoreSettings: false },
+        );
+      },
+    });
+    const implementation = releaseJourneyImplementation(journey.id);
+    if (!implementation) throw new Error(`${journey.id} has no implemented release journey`);
+    return await executeReleaseJourney({
+      journey,
+      platform: "android",
+      driver,
+      fixture,
+      fixtureOrigin: `http://127.0.0.1:${args.packageSourcePort}`,
+      artifactDir: join(E2E_ARTIFACT_DIR, journey.id),
+    }, implementation);
+  } finally {
+    restoreClock();
+  }
+}
+
+async function runOfflineColdStart(args) {
+  if (!args.releaseFixture) throw new Error("android.offline-cold-start requires --release-fixture");
+  const fixture = loadReleaseJourneyFixture(args.releaseFixture);
+  const restoreClock = useAndroidFixtureClock(args.serial, fixture.capabilities.reference_epoch_ms);
+  const result = createTestResult("android.offline-cold-start");
+  try {
+    await launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: true });
+    await ensureOfflinePackagesReady(args.serial, result, args);
+    await waitForRuntime(args.serial, result);
+    recordCheck(result, "offline.select", result.steps.some((step) =>
+      step.name === "offline package sync requested" || step.name === "offline packages ready"));
+    recordCheck(result, "offline.sync", runtimeUiVisible(dumpAndroid(args.serial)));
+
+    const driver = new AndroidSemanticJourneyDriver(args.serial, {
+      resetApp: () => launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: false }),
+    });
+    const georef = fixture.capabilities.plate.georeferenced;
+    await driver.openPage("flight_plan");
+    await appendRoute(args.serial, result, `KRNT ${georef.airport_id}`, null);
+    await driver.openPage("home");
+    const offlineDestination = await driver.readElement("home-button:OfflinePackages");
+    recordCheck(result, "home.offline-packages", Boolean(offlineDestination?.enabled));
+    await driver.openPage("offline_packages");
+    recordCheck(result, "navigation.offline-packages", Boolean(
+      await driver.readElement("page:offline_packages"),
+    ));
+
+    adbBestEffort(args.serial, ["reverse", "--remove", `tcp:${args.packageSourcePort}`]);
+    adbBestEffort(args.serial, ["shell", "svc", "wifi", "disable"]);
+    adbBestEffort(args.serial, ["shell", "svc", "data", "disable"]);
+    try {
+      await driver.reload();
+      await waitFor(() => runtimeUiVisible(dumpAndroid(args.serial)), 45_000, "offline cold-start runtime");
+      recordCheck(result, "offline.cold-start", true);
+
+      await driver.openPage("map");
+      let raster = null;
+      await waitFor(() => {
+        const entry = findNode(dumpAndroid(args.serial), (node) =>
+          androidTag(node).startsWith("parity:raster-state:"));
+        raster = entry ? androidTag(entry) : null;
+        return raster && /planned:[1-9][0-9]*:loaded:[1-9][0-9]*/.test(raster);
+      }, 45_000, "offline chart raster");
+      recordCheck(result, "offline.chart", Boolean(raster), raster);
+
+      await driver.openPage("charts");
+      await driver.chooseOption("plate-airport-button", georef.airport_id);
+      const label = georef.label_contains.replace(/\s*\(GPS\)\s*/i, " ").replace(/\bRWY\s+/i, " ").replace(/\s+/g, " ").trim();
+      const choices = await driver.readProjection("parity:tray-option:");
+      if (!choices.length) await driver.performAction("plate-chart-button");
+      const option = (await driver.readProjection("parity:tray-option:"))
+        .find((entry) => entry.text.toUpperCase().includes(label.toUpperCase()));
+      if (!option) throw new Error(`offline plate ${label} is unavailable`);
+      await driver.performAction(`tray-option:${option.id.replace(/^parity:tray-option:/, "")}`);
+      const plate = await waitForNode(args.serial, (node) =>
+        androidTag(node).startsWith("parity:plate-viewport:chart:"), 45_000, "offline plate image");
+      recordCheck(result, "offline.plate", Boolean(plate), plate ? androidTag(plate) : undefined);
+    } finally {
+      adbBestEffort(args.serial, ["shell", "svc", "wifi", "enable"]);
+      adbBestEffort(args.serial, ["shell", "svc", "data", "enable"]);
+      adbBestEffort(args.serial, ["reverse", `tcp:${args.packageSourcePort}`, `tcp:${args.packageSourcePort}`]);
+    }
+    result.status = "pass";
+    result.finished_at = new Date().toISOString();
+    return result;
+  } finally {
+    restoreClock();
+  }
+}
+
 async function runRawMapInspectorTerrainSmoke(args) {
   const { serial } = args;
   const result = createTestResult("android.raw-map-inspector-terrain-smoke");
@@ -1440,6 +1593,16 @@ const tests = [
     id: "android.rotation-session-retention-regression",
     run: runRotationSessionRetentionRegression,
   },
+  {
+    id: "android.offline-cold-start",
+    run: runOfflineColdStart,
+  },
+  ...RELEASE_JOURNEYS
+    .filter((journey) => journey.platforms.includes("android") && releaseJourneyImplementation(journey.id))
+    .map((journey) => ({
+      id: journey.id,
+      run: (args) => runSharedReleaseJourney(args, journey),
+    })),
 ];
 
 async function main() {

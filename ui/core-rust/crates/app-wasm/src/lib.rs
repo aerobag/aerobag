@@ -886,14 +886,13 @@ pub fn record_offline_package_preferences_in_session(
     preferences_json: &str,
     now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
-    app_core::record_offline_package_preferences_in_session(
+    let outcome = app_core::record_offline_package_preferences_in_session(
         session_handle,
         preferences_json,
         now_epoch_ms,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    get_session_snapshot_at_epoch_ms_paged_json(session_handle, now_epoch_ms)
-        .map_err(|err| JsValue::from_str(&err))
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

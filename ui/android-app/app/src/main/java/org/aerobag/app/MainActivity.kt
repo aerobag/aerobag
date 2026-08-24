@@ -2063,6 +2063,10 @@ internal fun summarizeRuntimeLoadFailure(error: Throwable): String {
 
 private const val DebugArmLayerNavKvFaultExtra =
     "org.aerobag.app.extra.DEBUG_ARM_LAYER_NAV_KV_FAULT"
+private const val DebugClearCoreSettingsExtra =
+    "org.aerobag.app.extra.DEBUG_CLEAR_CORE_SETTINGS"
+private const val DebugClearUiPrefsExtra =
+    "org.aerobag.app.extra.DEBUG_CLEAR_UI_PREFS"
 
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
@@ -2212,6 +2216,24 @@ class MainActivity : ComponentActivity() {
         }.onFailure { error ->
             Log.w("AerobagGpsCapture", "failed to configure GPS capture log path", error)
         }
+        if (
+            BuildConfig.AEROBAG_E2E_ENABLED &&
+            intent?.getBooleanExtra(DebugClearUiPrefsExtra, false) == true
+        ) {
+            applicationContext
+                .getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .commit()
+        }
+        intent?.removeExtra(DebugClearUiPrefsExtra)
+        if (
+            BuildConfig.AEROBAG_E2E_ENABLED &&
+            intent?.getBooleanExtra(DebugClearCoreSettingsExtra, false) == true
+        ) {
+            AndroidCoreSettingsStore(applicationContext).clearSettings()
+        }
+        intent?.removeExtra(DebugClearCoreSettingsExtra)
         val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]
         routeGpsPowerIntent(intent)
         if (intent?.getBooleanExtra(OpenOfflinePackagesExtra, false) == true) {
@@ -3395,6 +3417,7 @@ internal fun AerobagApp(
                         mapFamilyOptions = rasterMapState.familyOptions,
                         viewport = mapViewport,
                         mapOrientationMode = mapOrientationMode,
+                        mapOrientationMemory = retainedModel.mapOrientationMemory,
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
                         perfScenario = perfScenario,

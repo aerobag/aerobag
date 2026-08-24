@@ -359,6 +359,7 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
         selectedAirportId,
         selectedChartId,
         settingsJson: readPersistedCoreSettingsJson(),
+        nowEpochMs: Date.now(),
       };
       const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [request]);
       return workerBackedSession(client, marker.__aerobagWorkerSessionId, marker.initialSnapshot);

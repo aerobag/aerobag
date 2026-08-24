@@ -2941,12 +2941,21 @@ mod tests {
                 "blob_sha256": sha256_hex(&state_manifest_bytes),
                 "state_sha256": state_sha256
             },
-            "install_state": {
-                "kind": "opaque",
-                "url": format!("install/nexrad/{version}.zip"),
-                "bytes": package.len(),
-                "blob_sha256": sha256_hex(&package),
-                "state_sha256": state_sha256
+            "install_profiles": {
+                "offline_0": {
+                    "kind": "directory_package",
+                    "url": format!("packages/nexrad/{version}.offline_0.zip"),
+                    "bytes": package.len(),
+                    "blob_sha256": sha256_hex(&package),
+                    "state_sha256": state_sha256
+                },
+                "offline_low1": {
+                    "kind": "directory_package",
+                    "url": format!("packages/nexrad/{version}.offline_low1.zip"),
+                    "bytes": package.len(),
+                    "blob_sha256": sha256_hex(&package),
+                    "state_sha256": state_sha256
+                }
             }
         });
         (serde_json::to_vec(&manifest).unwrap(), package)
@@ -4159,9 +4168,22 @@ mod tests {
         let package_requests = cache.missing_requests();
         assert_eq!(package_requests.len(), NEXRAD_FRAME_WINDOW_SIZE);
         for request in package_requests {
-            let LiveFeedCacheRequestKind::Full { version, .. } = &request.kind else {
+            let LiveFeedCacheRequestKind::Full {
+                version,
+                payload_kind,
+                ..
+            } = &request.kind
+            else {
                 panic!("expected complete NEXRAD package request");
             };
+            assert_eq!(payload_kind.as_deref(), Some("directory_package"));
+            assert!(
+                request
+                    .url
+                    .ends_with(&format!("/packages/nexrad/{version}.offline_0.zip")),
+                "{}",
+                request.url
+            );
             let (_, package) = nexrad_version_manifest(version);
             let installed = cache
                 .install_fetched_payload(

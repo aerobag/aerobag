@@ -45,6 +45,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -80,6 +82,7 @@ internal fun SettingsPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("parity:page:settings")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         PrimaryNavigationDock(
@@ -372,6 +375,7 @@ private fun SettingsPageSectionView(
                 )
                 .clickable { expanded = !expanded }
                 .testTag("parity:settings-section:${section.id}")
+                .semantics { selected = expanded }
                 .padding(horizontal = ThumbSize * 0.18f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -469,6 +473,9 @@ private fun SettingsGridChoicesRow(
                         items.forEach { item ->
                             FlightDataSettingsCell(
                                 item = item,
+                                modifier = Modifier.testTag(
+                                    "parity:settings-choice:${row.id}:${item.cell.id}",
+                                ),
                                 onClick = { onSettingsAction(row.actionId, item.cell.id) },
                             )
                         }
@@ -609,7 +616,9 @@ private fun SettingsSliderRow(
                             onSettingsAction(row.actionId, nextStop.id)
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("parity:settings-slider:${row.id}:${row.valueId}"),
                     valueRange = 0f..maxIndex.toFloat(),
                     steps = (row.stops.size - 2).coerceAtLeast(0),
                 )

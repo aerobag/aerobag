@@ -413,7 +413,9 @@ internal fun OfflinePackagesLibraryPanel(
         else -> null
     }
     Surface(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("parity:offline-library-panel"),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg,
         contentColor = uiTheme.controls.panelFg,
@@ -849,7 +851,11 @@ internal fun OfflinePackagePlanRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(ThumbSize * 1.32f)
-            .then(testTag?.let { Modifier.testTag(it) } ?: Modifier)
+            .then(
+                testTag?.let {
+                    Modifier.testTag("$it:selection:${row.selection.name.lowercase()}")
+                } ?: Modifier,
+            )
             .clip(RoundedCornerShape(ThumbRadius))
             .background(background)
             .drawBehind {

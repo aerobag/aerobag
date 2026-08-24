@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "https://github.com/aerobag/test-artifacts.git",
-  "commit": "0beca359cb77a3e74be23d7f4074bc7969b05523",
+  "commit": "8940c4d7f3cb8e42410c2f64f454fe5839791109",
   "fixtures": {
     "android-smoke-publication": {
       "path": "e2e/android-smoke-publication",
@@ -55,6 +55,19 @@
       "contract_version": 1,
       "required_globs": [
         "**/*.zip"
+      ]
+    },
+    "release-journey-publication": {
+      "path": "e2e/release-journey-publication",
+      "contract_version": 1,
+      "manifest": {
+        "path": "fixture.json",
+        "version_field": "schema_version"
+      },
+      "required_globs": [
+        "published/**/packaged/*.zip",
+        "live-feeds/fresh/current.json",
+        "replay/*.json"
       ]
     },
     "winds-aloft-cycle": {

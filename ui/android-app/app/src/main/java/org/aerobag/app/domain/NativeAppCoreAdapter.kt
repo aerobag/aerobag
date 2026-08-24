@@ -2692,10 +2692,11 @@ private data class WireUiSessionSnapshot(
 )
 
 @kotlinx.serialization.Serializable
-private data class WireNavDbAdvanceResult(
+internal data class WireNavDbAdvanceResult(
     val disposition: String,
     @kotlinx.serialization.SerialName("session_update")
     val sessionUpdate: JsonElement? = null,
+    val active_artifact_filename: String? = null,
     val retained_artifact_filenames: List<String> = emptyList(),
     val rejection_reason: String? = null,
 )

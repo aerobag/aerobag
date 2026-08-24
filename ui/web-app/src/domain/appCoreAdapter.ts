@@ -952,6 +952,7 @@ export interface AppCoreAdapter {
     recentAirportIds: string[],
     selectedAirportId?: string,
     selectedChartId?: string,
+    nowEpochMs?: number,
   ): Promise<UiSession>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
@@ -1121,7 +1122,10 @@ type WasmModule = {
 };
 
 export class WasmAppCoreAdapter implements AppCoreAdapter {
-  constructor(private readonly module: WasmModule) {}
+  constructor(
+    private readonly module: WasmModule,
+    private readonly clockEpochMs: () => number = Date.now,
+  ) {}
 
   async prewarm(): Promise<void> {}
 
@@ -1141,6 +1145,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     recentAirportIds: string[],
     selectedAirportId?: string,
     selectedChartId?: string,
+    sessionNowEpochMs?: number,
   ): Promise<UiSession> {
     const module = this.module;
     let invalidationListener: UiInvalidationListener | null = null;
@@ -1233,7 +1238,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const selectedAirportIdJson = JSON.stringify(nextSelectedAirportId ?? null);
       const selectedChartIdJson = JSON.stringify(nextSelectedChartId ?? null);
       const createUiSession = module.create_ui_session_profiled ?? module.create_ui_session;
-      const nowEpochMs = Date.now();
+      const nowEpochMs = sessionNowEpochMs ?? this.clockEpochMs();
       const createdJson = await debugTiming("startup.session.wasm_call", () => createUiSession(
         recentAirportIdsJson,
         selectedAirportIdJson,
@@ -1435,7 +1440,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       if (!retry) {
         return;
       }
-      const dueMs = Date.now() + retry.delay_ms;
+      const dueMs = this.clockEpochMs() + retry.delay_ms;
       if (liveFeedResourceRetryDueMs !== null && liveFeedResourceRetryDueMs <= dueMs) {
         return;
       }
@@ -1459,7 +1464,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           handle,
           resourceId,
           message,
-          Date.now(),
+          this.clockEpochMs(),
         ),
       );
       debugLog("core.ui.invalidations.source", {
@@ -1494,7 +1499,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       const decision = JSON.parse(await this.module.live_feed_runtime_decision_in_session(handle, JSON.stringify({
         source_url: sourceUrl,
         status_url: statusUrl,
-        now_ms: Date.now(),
+        now_ms: this.clockEpochMs(),
         ...input,
       }))) as LiveFeedRuntimeDecision;
       if (decision.connection_event) {
@@ -1547,7 +1552,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_flight_plan_command_in_session(
             handle,
             JSON.stringify(command),
-            BigInt(Date.now()),
+            BigInt(this.clockEpochMs()),
           ),
       );
     const queryFlightPlan = <T,>(query: Record<string, unknown>) =>
@@ -1587,7 +1592,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       initialSnapshot: () => snapshot,
       snapshot: async () => {
         const fullSnapshot = await runSessionSnapshot<unknown>(() =>
-          this.module.get_session_snapshot_at_epoch_ms_paged(handle, BigInt(Date.now())));
+          this.module.get_session_snapshot_at_epoch_ms_paged(handle, BigInt(this.clockEpochMs())));
         return installFullSnapshot(fullSnapshot);
       },
       maintainNavDb: async (nowEpochMs) => {
@@ -1658,7 +1663,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       deriveChartPageState: async () => {
         return queryFlightPlan<DerivedChartPageState>({ kind: "chart_page_state" });
       },
-      airportInfo: async (airportId, nowEpochMs = Date.now()) => {
+      airportInfo: async (airportId, nowEpochMs = this.clockEpochMs()) => {
         return queryFlightPlan<AirportInfoUiView>({
           kind: "airport_info",
           airport_id: airportId,
@@ -1674,7 +1679,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           () => this.module.perform_map_selection_ui_action_in_session(
             handle,
             actionUid,
-            BigInt(Date.now()),
+            BigInt(this.clockEpochMs()),
           ),
         );
       },
@@ -1872,7 +1877,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_settings_action_in_session(
             handle,
             JSON.stringify({ action_id: actionId, value_id: valueId }),
-            BigInt(Date.now()),
+            BigInt(this.clockEpochMs()),
           ),
         );
         return snapshot;
@@ -2102,7 +2107,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 JSON.stringify(coreViewportForMap(viewport)),
                 widthPx,
                 heightPx,
-                Date.now(),
+                this.clockEpochMs(),
               ),
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
             "map.overlay",
@@ -2117,7 +2122,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               widthPx,
               heightPx,
               JSON.stringify(click),
-              Date.now(),
+              this.clockEpochMs(),
             ),
           ),
         ),
@@ -2137,7 +2142,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               widthPx,
               heightPx,
               JSON.stringify(navRef),
-              Date.now(),
+              this.clockEpochMs(),
             ),
           ),
         ),
@@ -2152,7 +2157,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 heightPx,
                 JSON.stringify(decodedCacheKeys),
                 JSON.stringify(inFlightCacheKeys),
-                Date.now(),
+                this.clockEpochMs(),
               ),
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
@@ -2166,7 +2171,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
                 JSON.stringify(coreViewportForMap(viewport)),
                 widthPx,
                 heightPx,
-                Date.now(),
+                this.clockEpochMs(),
               ),
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
           ),
@@ -2183,7 +2188,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           widthPx,
           heightPx,
           devicePixelRatio,
-          Date.now(),
+          this.clockEpochMs(),
         );
         const wasmMs = performance.now() - wasmStartedAt;
         const parseStartedAt = performance.now();
@@ -2370,12 +2375,14 @@ function shouldUseWorkerAppCore(): boolean {
 
 export async function loadWasmAdapterOnThisThread(
   importer: () => Promise<unknown> = defaultWasmImporter,
+  clockEpochMs: () => number = Date.now,
 ): Promise<LoadedAdapter> {
-  return loadBestAvailableAdapterUncached(importer);
+  return loadBestAvailableAdapterUncached(importer, clockEpochMs);
 }
 
 async function loadBestAvailableAdapterUncached(
   importer: () => Promise<unknown>,
+  clockEpochMs: () => number = Date.now,
 ): Promise<LoadedAdapter> {
   const mod = (await debugTiming("wasm.import", importer)) as Partial<WasmModule>;
   installRustDebugLogBridge();
@@ -2510,7 +2517,7 @@ async function loadBestAvailableAdapterUncached(
   debugLog("wasm.exports.check.done");
 
   return {
-    adapter: new WasmAppCoreAdapter(mod as WasmModule),
+    adapter: new WasmAppCoreAdapter(mod as WasmModule, clockEpochMs),
     backend: "wasm",
     detail: "Using generated Rust WASM bindings.",
   };

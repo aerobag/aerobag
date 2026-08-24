@@ -1907,12 +1907,37 @@ impl LiveFeedProductState {
     }
 
     fn durable_full_payload_ref(&self, product: &str) -> Option<&LiveFeedPayloadRef> {
-        if product == "obstacles" || self.state_ref.as_ref()?.kind.as_deref() == Some("nav_kv") {
+        if product == "obstacles"
+            || product == "nexrad"
+            || self.state_ref.as_ref()?.kind.as_deref() == Some("nav_kv")
+        {
             self.install_state_ref.as_ref()
         } else {
             self.install_state_ref.as_ref().or(self.state_ref.as_ref())
         }
     }
+}
+
+fn durable_install_state_ref(
+    product: &str,
+    manifest: &VersionManifest,
+) -> AppResult<Option<LiveFeedPayloadRef>> {
+    if product != "nexrad" {
+        return Ok(manifest.install_state.clone());
+    }
+    let Some(profile) = manifest
+        .install_profiles
+        .get(NEXRAD_DURABLE_INSTALL_PROFILE)
+    else {
+        return Ok(manifest.install_state.clone());
+    };
+    if profile.kind.as_deref() != Some("directory_package") {
+        return Err(invalid_live_feed(format!(
+            "NEXRAD install profile {NEXRAD_DURABLE_INSTALL_PROFILE} has kind {:?}; expected directory_package",
+            profile.kind
+        )));
+    }
+    Ok(Some(profile.clone()))
 }
 
 struct DurableNexradRequest<'a> {

@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "surfaces": {
+    "home_destinations": {
+      "chart": "home.chart",
+      "plate": "home.plate",
+      "flight_plan": "home.flight-plan",
+      "altitude_planner": "home.altitude-planner",
+      "data_status": "home.data-status",
+      "settings": "home.settings",
+      "cloud": "home.cloud",
+      "offline_packages": "home.offline-packages",
+      "about": "home.about"
+    },
+    "navigation_pages": {
+      "map": "navigation.map",
+      "charts": "navigation.charts",
+      "flight_plan": "navigation.flight-plan",
+      "altitude_planner": "navigation.altitude-planner",
+      "data_status": "navigation.data-status",
+      "settings": "navigation.settings",
+      "home": "navigation.home",
+      "offline_packages": "navigation.offline-packages"
+    },
+    "raster_families": {
+      "none": "raster.none",
+      "sec": "raster.sec",
+      "tac": "raster.tac",
+      "flyway": "raster.flyway",
+      "enr-l": "raster.enr-l",
+      "enr-h": "raster.enr-h",
+      "shaded-relief": "raster.shaded-relief"
+    },
+    "map_layers": {
+      "world_basemap": "layer.world-basemap",
+      "vectors": "layer.vectors",
+      "metars": "layer.metars",
+      "nexrad": "layer.nexrad",
+      "traffic": "layer.traffic",
+      "terrain_warning": "layer.terrain-warning",
+      "offline_regions": "layer.offline-regions"
+    },
+    "flight_plan_controls": {
+      "activate_next_leg": "plan.activate-next-leg",
+      "redo": "plan.redo",
+      "restore_direct_to": "plan.restore-direct-to",
+      "sequence_active_leg": "plan.sequence-active-leg",
+      "stop_navigation": "plan.stop-navigation",
+      "suspend_sequencing": "plan.suspend-sequencing",
+      "undo": "plan.undo",
+      "unsuspend_sequencing": "plan.unsuspend-sequencing"
+    },
+    "flight_plan_row_actions": {
+      "activate_leg": "plan.activate-leg",
+      "direct_to": "plan.direct-to",
+      "remove": "plan.remove",
+      "remove_all_above": "plan.remove-all-above",
+      "insert_before": "plan.insert-before",
+      "insert_after": "plan.insert-after",
+      "move_up": "plan.move-up",
+      "move_down": "plan.move-down",
+      "waypoint_info": "plan.row-waypoint-info",
+      "weather": "plan.row-weather",
+      "add_airway": "plan.add-airway",
+      "select_departure": "procedure.sid.select",
+      "select_arrival": "procedure.star.select",
+      "select_approach": "procedure.approach.select",
+      "plates": "plan.row-plates",
+      "show_plate": "procedure.approach.show-plate",
+      "remove_procedure": "procedure.approach.remove"
+    },
+    "procedure_kinds": {
+      "sid": "procedure.sid.select",
+      "star": "procedure.star.select",
+      "approach": "procedure.approach.select"
+    },
+    "settings_rows": {
+      "display_dim_timeout": "settings.display-dim-timeout",
+      "inactivity_sleep_timeout": "settings.inactivity-sleep-timeout",
+      "flight_data_visibility": "settings.flight-data-visibility"
+    },
+    "debug_flags": {
+      "tile_labels": "settings.debug.tile-labels",
+      "nexrad_tile_labels": "settings.debug.nexrad-tile-labels",
+      "fast_tiles": "settings.debug.fast-tiles",
+      "offline_simulated_clock_buttons": "settings.debug.offline-clock",
+      "sequencing_finish_lines": "settings.debug.sequencing-finish-lines",
+      "plate_flight_plan": "settings.debug.plate-flight-plan",
+      "bad_autopilot": "settings.debug.bad-autopilot",
+      "internet_adsb": "settings.debug.internet-adsb",
+      "gps_capture": "settings.debug.gps-capture",
+      "debug_log_to_developer_server": "settings.debug.developer-log"
+    },
+    "status_rows": {
+      "client": "status.client",
+      "publication:current_artifacts": "status.publication",
+      "contracts:expected": "status.contracts",
+      "nav_db": "status.nav-db",
+      "cycle:charts": "status.cycle-charts",
+      "cycle:airport_docs": "status.cycle-airport-docs",
+      "static:base_data": "status.static-base-data",
+      "live_feed:connection": "status.live-feed-connection",
+      "live_feed:tfrs": "status.tfrs",
+      "live_feed:notams": "status.notams",
+      "live_feed:metars": "status.metars",
+      "live_feed:pireps": "status.pireps",
+      "live_feed:tafs": "status.tafs",
+      "live_feed:nexrad": "status.nexrad",
+      "live_feed:obstacles": "status.obstacles",
+      "live_feed:winds-aloft": "status.winds-aloft"
+    },
+    "plate_controls": {
+      "airport_selector": "plate.airport-selector",
+      "chart_selector": "plate.chart-selector",
+      "load_procedure": "plate.load-procedure",
+      "folder": "plate.folder"
+    },
+    "altitude_planner_controls": {
+      "aircraft": "altitude.aircraft",
+      "aircraft_profile": "altitude.aircraft-profile",
+      "wind_model": "altitude.wind-model"
+    },
+    "cloud_actions": {
+      "begin_setup": "cloud.begin-setup",
+      "begin_create": "cloud.begin-create",
+      "back_setup": "cloud.back-setup",
+      "scan_setup_code": "cloud.scan-code",
+      "accept_setup_code": "cloud.accept-code",
+      "create_account": "cloud.create-account",
+      "backup_setup_code": "cloud.backup-code",
+      "add_device": "cloud.add-device",
+      "close_linked_detail": "cloud.close-detail",
+      "begin_unlink": "cloud.begin-unlink",
+      "confirm_unlink": "cloud.confirm-unlink",
+      "sync_now": "cloud.sync-now",
+      "copy_setup_code": "cloud.copy-code"
+    }
+  }
+}

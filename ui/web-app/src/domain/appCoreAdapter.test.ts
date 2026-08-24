@@ -113,6 +113,7 @@ describe("loadBestAvailableAdapter", () => {
     vi.stubGlobal("location", { href: "http://app.example.test/" });
     let sessionRevision = 0;
     let resourcePolicyEstablished = false;
+    let createdAtEpochMs: number | null = null;
     const startupCalls: string[] = [];
     vi.spyOn(navKv, "runCoreHadSessionMutationOperation")
       .mockImplementation(async (_sessionHandle, operation) => {
@@ -148,7 +149,8 @@ describe("loadBestAvailableAdapter", () => {
     });
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
-      create_ui_session: async (_recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
+      create_ui_session: async (_recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, nowEpochMs: number) => {
+        createdAtEpochMs = nowEpochMs;
         return JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) });
       },
       maintain_nav_db_in_session_at_epoch_ms: async () => JSON.stringify({
@@ -296,7 +298,8 @@ describe("loadBestAvailableAdapter", () => {
 
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
-    const session = await loaded.adapter.createUiSession([]);
+    const session = await loaded.adapter.createUiSession([], undefined, undefined, 1_784_000_000_123);
+    expect(createdAtEpochMs).toBe(1_784_000_000_123);
     expect(startupCalls[0]).toBe("set-resource-policy");
     expect(startupCalls).toContain("attach-nav-kv");
     expect(startupCalls.indexOf("set-resource-policy"))

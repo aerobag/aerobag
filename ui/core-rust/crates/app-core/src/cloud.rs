@@ -2377,6 +2377,7 @@ impl CloudEngine {
                     "",
                 ),
                 cloud_action(CloudUiActionId::AddDevice, "Add another device", true, ""),
+                cloud_action(CloudUiActionId::SyncNow, "Sync now", true, ""),
                 cloud_action(CloudUiActionId::BeginUnlink, "Unlink this device", true, ""),
             ]
         } else {
@@ -3348,6 +3349,25 @@ mod tests {
             .perform_ui_action(CloudUiActionId::CreateAccount, &[], &initial, 1)
             .unwrap();
         assert_eq!(active_panel(&engine).state, UiCloudPanelState::Working);
+    }
+
+    #[test]
+    fn linked_account_ui_exposes_manual_sync() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut engine = configured_engine();
+        create_account(&mut engine, &mut provider, &initial, 10);
+
+        let linked = engine
+            .page_state(10)
+            .sync_account_panels
+            .into_iter()
+            .find(|panel| panel.id == "linked")
+            .unwrap();
+        assert!(linked
+            .actions
+            .iter()
+            .any(|action| action.id == CloudUiActionId::SyncNow && action.enabled));
     }
 
     #[test]

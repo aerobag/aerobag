@@ -1210,6 +1210,7 @@ name = "preprocessor-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-ui-contracts",
  "chrono",
  "crossbeam-channel",
  "geo",

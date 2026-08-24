@@ -346,6 +346,7 @@ internal fun PlanHeaderRow(
                 column.label,
                 Modifier
                     .width(dataColumnWidth)
+                    .testTag("parity:plan-column:${column.id}:${column.label}")
                     .then(column.actionId?.let { actionId ->
                         Modifier.clickable { onDataColumnAction(actionId) }
                     } ?: Modifier),

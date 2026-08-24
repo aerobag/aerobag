@@ -372,6 +372,14 @@ internal fun PlaybackWidget(
         modifier =
             modifier
                 .widthIn(min = ThumbSize * 4.2f, max = ThumbSize * 7.8f)
+                .testTag(
+                    "parity:playback-widget:" +
+                        "status:${playbackUiState.status.name.lowercase()}:" +
+                        "cursor:${String.format("%.3f", committedCursorSeconds)}:" +
+                        "duration:${String.format("%.3f", durationSeconds)}:" +
+                        "rate:${String.format("%.2f", playbackUiState.rate)}:" +
+                        "gaps:${playbackUiState.gapSpans.size}",
+                )
                 .consumePointerGestures(),
         shape = panelShape,
         color = Color(0xF0FCF8F1),
@@ -422,6 +430,7 @@ internal fun PlaybackWidget(
                         Modifier
                             .weight(1f)
                             .height(rowHeight)
+                            .testTag("parity:playback-source-input")
                             .clip(RoundedCornerShape(ThumbRadius * 0.55f))
                             .background(Color.White)
                             .border(1.dp, Color(0x24132129), RoundedCornerShape(ThumbRadius * 0.55f))
@@ -429,6 +438,7 @@ internal fun PlaybackWidget(
                 )
                 PlaybackSmallButton(
                     label = "LOAD",
+                    testTag = "parity:playback-load-button",
                     enabled = loadDisabledReason == null,
                     onDisabledClick = loadDisabledReason?.let { reason ->
                         { showDisabledActionToast(context, reason) }
@@ -466,6 +476,7 @@ internal fun PlaybackWidget(
             ) {
                 PlaybackSmallButton(
                     label = "",
+                    testTag = "parity:playback-play-toggle",
                     icon = if (playbackUiState.status == PlaybackStatus.Playing) PlaybackButtonIcon.Pause else PlaybackButtonIcon.Play,
                     enabled = playDisabledReason == null,
                     onDisabledClick = playDisabledReason?.let { reason ->
@@ -496,6 +507,7 @@ internal fun PlaybackWidget(
                         { showDisabledActionToast(context, reason) }
                     },
                     modifier = Modifier.weight(1f).height(rowHeight),
+                    testTag = "parity:playback-rate-input",
                     onValueChange = { nextRate ->
                         scope.launch {
                             applyPlaybackCommand("setPlaybackRate") {
@@ -509,6 +521,7 @@ internal fun PlaybackWidget(
                 playbackUiState = playbackUiState,
                 cursorSeconds = cursorSeconds,
                 durationSeconds = durationSeconds,
+                testTag = "parity:playback-overview",
                 onScrub = { nextCursorSeconds, finished ->
                     scrubCursorSeconds = nextCursorSeconds
                     seekJob?.cancel()
@@ -552,11 +565,13 @@ internal fun PlaybackSmallButton(
     icon: PlaybackButtonIcon? = null,
     height: Dp = ThumbSize * 0.63f,
     onDisabledClick: (() -> Unit)? = null,
+    testTag: String? = null,
 ) {
     Surface(
         modifier =
             Modifier
                 .height(height)
+                .then(if (testTag == null) Modifier else Modifier.testTag(testTag))
                 .then(if (icon == null) Modifier.widthIn(min = height * 2.05f) else Modifier.width(height))
                 .then(
                     if (enabled) {
@@ -667,6 +682,7 @@ internal fun PlaybackRateRail(
     enabled: Boolean,
     onDisabledClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    testTag: String? = null,
     onValueChange: (Float) -> Unit,
 ) {
     val shape = RoundedCornerShape(ThumbRadius * 0.55f)
@@ -680,6 +696,7 @@ internal fun PlaybackRateRail(
     Surface(
         modifier =
             modifier
+                .then(if (testTag == null) Modifier else Modifier.testTag(testTag))
                 .clip(shape)
                 .background(Color.White)
                 .border(1.dp, Color(0x24132129), shape)
@@ -756,6 +773,7 @@ internal fun PlaybackOverview(
     playbackUiState: PlaybackUiState,
     cursorSeconds: Double,
     durationSeconds: Double,
+    testTag: String? = null,
     onScrub: (Double, Boolean) -> Unit,
 ) {
     val shape = RoundedCornerShape(ThumbRadius * 0.45f)
@@ -764,6 +782,7 @@ internal fun PlaybackOverview(
         modifier =
             Modifier
                 .fillMaxWidth()
+                .then(if (testTag == null) Modifier else Modifier.testTag(testTag))
                 .height(ThumbSize * 0.84f)
                 .clip(shape)
                 .background(Color(0xD1FFFFFF))

@@ -10,6 +10,8 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
 
 permissions:
   contents: read
@@ -23,8 +25,286 @@ env:
   RUSTUP_TOOLCHAIN: 1.94.1
 
 jobs:
+  build-release-apps:
+    name: Build release E2E apps
+    runs-on: ubuntu-latest
+    env:
+      AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      ANDROID_TARGET_ABIS: x86_64
+      AEROBAG_ANDROID_KEYSTORE: ${{ github.workspace }}/.ci/android-ci.keystore
+      AEROBAG_ANDROID_KEYSTORE_PASSWORD: android
+      AEROBAG_ANDROID_KEY_ALIAS: androiddebugkey
+      AEROBAG_ANDROID_KEY_PASSWORD: android
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web-app/package-lock.json
+      - name: Install web dependencies
+        run: npm ci --prefix ui/web-app
+      - name: Install Rust targets
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup target add wasm32-unknown-unknown x86_64-linux-android --toolchain "$RUST_TOOLCHAIN"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Install Android build dependencies
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.3.11579264"
+      - name: Create CI signing key
+        run: |
+          mkdir -p .ci
+          keytool -genkeypair -keystore "$AEROBAG_ANDROID_KEYSTORE" \
+            -storepass "$AEROBAG_ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$AEROBAG_ANDROID_KEY_ALIAS" \
+            -keypass "$AEROBAG_ANDROID_KEY_PASSWORD" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Aerobag CI,OU=CI,O=Aerobag,C=US"
+      - name: Cache release app builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-bindgen
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci/ui-target/tools
+            .ci/ui-target/android/gradle-user-home/caches
+            .ci/ui-target/android/gradle-user-home/wrapper
+            .ci/ui-target/services
+            .ci/ui-target/shared/rust-target
+          key: release-e2e-apps-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/android-app/**/*.gradle*', 'ui/android-app/gradle/wrapper/gradle-wrapper.properties', 'ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json') }}
+      - name: Install matching wasm-bindgen CLI
+        run: |
+          version="$(python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          lock = tomllib.loads(Path("ui/core-rust/Cargo.lock").read_text())
+          print(next(package["version"] for package in lock["package"] if package["name"] == "wasm-bindgen"))
+          PY
+          )"
+          current="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
+          if [[ "$current" != "$version" ]]; then
+            cargo install wasm-bindgen-cli --version "$version" --locked --force
+          fi
+      - name: Install pinned Binaryen
+        run: ./ui/web-app/scripts/install-binaryen-wasm-opt.sh
+      - name: Build immutable web and Android apps
+        run: ./tools/ci/build_release_e2e_apps.sh "${{ github.workspace }}/.ci/release-e2e-apps"
+      - name: Upload immutable apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-e2e-apps-${{ github.sha }}
+          path: .ci/release-e2e-apps
+          if-no-files-found: error
+          retention-days: 14
+
+  release-journey-fixture:
+    name: Pin release-journey fixture
+    runs-on: ubuntu-latest
+    outputs:
+      priorities: ${{ steps.priorities.outputs.value }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: priorities
+        name: Select journey priorities
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            schedule) value='["p2"]' ;;
+            workflow_dispatch) value='["p0","p1","p2"]' ;;
+            *) value='["p0","p1"]' ;;
+          esac
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+      - name: Fetch and verify release-journey publication
+        run: >-
+          python3 tools/ci/fetch_test_artifacts.py
+          --fixture release-journey-publication
+          --destination "${{ github.workspace }}/.ci/release-journey-source"
+      - name: Upload immutable fixture
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-journey-fixture-${{ github.sha }}
+          path: .ci/release-journey-source/e2e/release-journey-publication
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+
+  release-journey-web:
+    name: release journeys / web / ${{ matrix.priority }}
+    needs:
+      - build-release-apps
+      - release-journey-fixture
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        priority: ${{ fromJSON(needs.release-journey-fixture.outputs.priorities) }}
+    env:
+      AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
+      AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
+      AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST: "1"
+      AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"
+      AEROBAG_E2E_URL: http://127.0.0.1:18093/
+      AEROBAG_E2E_PEER_URL: http://127.0.0.1:18093/
+      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-web-${{ matrix.priority }}
+      PACKAGE_SOURCE_PORT: 18093
+      AEROBAG_E2E_CLOUD_PORT: 18094
+      AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Download immutable apps
+        uses: actions/download-artifact@v5
+        with:
+          name: release-e2e-apps-${{ github.sha }}
+          path: .ci/release-e2e-apps
+      - name: Restore executable build artifact mode
+        run: chmod +x .ci/release-e2e-apps/aerobag-cloud-serverd
+      - name: Download release-journey fixture
+        uses: actions/download-artifact@v5
+        with:
+          name: release-journey-fixture-${{ github.sha }}
+          path: .ci/release-journey-source
+      - name: Materialize static publication
+        run: >-
+          python3 tools/ci/materialize_release_journey_fixture.py
+          --source "${{ github.workspace }}/.ci/release-journey-source"
+          --output "${{ github.workspace }}/.ci/release-journey-materialized"
+      - name: Start deterministic publication and web app
+        run: ./tools/e2e/release_journey_lab.sh fixture-start-web fresh
+      - name: Run web ${{ matrix.priority }} journeys
+        run: ./tools/e2e/release_journey_lab.sh web-suite "${{ matrix.priority }}"
+      - name: Stop journey services
+        if: ${{ always() }}
+        run: |
+          ./tools/e2e/release_journey_lab.sh fixture-stop
+          ./tools/e2e/release_journey_lab.sh cloud-stop
+      - name: Upload web journey diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-journey-web-${{ matrix.priority }}-results
+          path: test-results/release-journey-web-${{ matrix.priority }}
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
+
+  release-journey-android:
+    name: release journeys / android / ${{ matrix.priority }}
+    needs:
+      - build-release-apps
+      - release-journey-fixture
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        priority: ${{ fromJSON(needs.release-journey-fixture.outputs.priorities) }}
+    env:
+      AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
+      AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
+      AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST: "1"
+      AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"
+      AEROBAG_E2E_URL: http://127.0.0.1:18093/
+      AEROBAG_E2E_PEER_URL: http://127.0.0.1:18093/
+      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-android-${{ matrix.priority }}
+      PACKAGE_SOURCE_PORT: 18093
+      AEROBAG_E2E_CLOUD_PORT: 18094
+      AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
+      ANDROID_SERIAL: emulator-5564
+      VNC_PORT: 5900
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Download immutable apps
+        uses: actions/download-artifact@v5
+        with:
+          name: release-e2e-apps-${{ github.sha }}
+          path: .ci/release-e2e-apps
+      - name: Restore executable build artifact mode
+        run: chmod +x .ci/release-e2e-apps/aerobag-cloud-serverd
+      - name: Download release-journey fixture
+        uses: actions/download-artifact@v5
+        with:
+          name: release-journey-fixture-${{ github.sha }}
+          path: .ci/release-journey-source
+      - name: Materialize static publication
+        run: >-
+          python3 tools/ci/materialize_release_journey_fixture.py
+          --source "${{ github.workspace }}/.ci/release-journey-source"
+          --output "${{ github.workspace }}/.ci/release-journey-materialized"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Install emulator image
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "emulator" \
+            "platforms;android-34" \
+            "system-images;android-34;google_apis;x86_64"
+      - name: Enable KVM
+        run: sudo chmod 666 /dev/kvm
+      - name: Start deterministic publication and web peer
+        run: ./tools/e2e/release_journey_lab.sh fixture-start-web fresh
+      - name: Clean-install immutable APK and sync packages
+        env:
+          CI: "1"
+          KEEP_EMULATOR: "1"
+          EMULATOR_HEADLESS: "1"
+        run: >-
+          ./ui/android-app/scripts/run_e2e_ci.sh
+          --headless
+          --keep-emulator
+          --skip-system-image-install
+          --no-package-server
+          --apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
+          --release-fixture "$AEROBAG_RELEASE_JOURNEY_FIXTURE"
+          --test shared.startup-navigation
+      - name: Run Android ${{ matrix.priority }} journeys
+        run: ./tools/e2e/release_journey_lab.sh android-suite "${{ matrix.priority }}"
+      - name: Stop Android and journey services
+        if: ${{ always() }}
+        run: |
+          ./ui/android-app/scripts/stop_emulator_stack.sh
+          ./tools/e2e/release_journey_lab.sh fixture-stop
+          ./tools/e2e/release_journey_lab.sh cloud-stop
+      - name: Upload Android journey diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-journey-android-${{ matrix.priority }}-results
+          path: |
+            test-results/release-journey-android-${{ matrix.priority }}
+            .ci/ui-target/android/emulator-stack-5900
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
+
   android-native:
     name: ${{ matrix.test }}
+    needs: build-release-apps
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -47,6 +327,11 @@ jobs:
       VNC_PORT: 5900
     steps:
       - uses: actions/checkout@v5
+      - name: Download immutable apps
+        uses: actions/download-artifact@v5
+        with:
+          name: release-e2e-apps-${{ github.sha }}
+          path: .ci/release-e2e-apps
       - name: Fetch and verify compact package publication
         run: |
           fixtures=(--fixture android-smoke-publication)
@@ -117,6 +402,7 @@ jobs:
           EMULATOR_HEADLESS: "1"
           AEROBAG_ARTIFACT_READ_PATH: ${{ env.AEROBAG_TEST_ARTIFACTS_ROOT }}/e2e/android-smoke-publication/published
           AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/${{ matrix.test }}
+          AEROBAG_E2E_APK: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk
         run: >-
           ./ui/android-app/scripts/run_e2e_ci.sh
           --headless

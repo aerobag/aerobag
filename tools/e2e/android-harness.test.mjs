@@ -6,15 +6,53 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertNoAerobagAnr,
+  androidOfflinePackagesVisible,
+  androidClearTextCommand,
+  androidRuntimeReadyForJourney,
+  androidRuntimeUiVisible,
+  androidJourneyEpochMs,
+  androidTextInputCommands,
   classifyAerobagLogcat,
   displayBoundsFromXml,
   destinationCenterEvidence,
+  findHorizontalScrollSurface,
+  findVerticalScrollSurface,
+  findNode,
   findAerobagAnrDialog,
   findSystemUiAnrWaitButton,
   layerToggleNode,
   layerToggleTag,
   renderedFlightPlanSignature,
+  verticalScrollTargetIsReachable,
+  verticalScrollGesture,
 } from "./android-harness.mjs";
+
+test("plans Android input for a keyboard-safe encoded fixture path", () => {
+  assert.deepEqual(
+    androidTextInputCommands("/releasejourney/7265706c61792f747261636b2d6761702e6a736f6e"),
+    [
+      ["shell", "input", "keyevent", "KEYCODE_SLASH"],
+      ["shell", "input", "text", "releasejourney"],
+      ["shell", "input", "keyevent", "KEYCODE_SLASH"],
+      ["shell", "input", "text", "7265706c61792f747261636b2d6761702e6a736f6e"],
+    ],
+  );
+});
+
+test("cloud journeys use host time while deterministic data journeys use fixture time", () => {
+  assert.equal(androidJourneyEpochMs("shared.cloud-crossfill", 100, 200), 200);
+  assert.equal(androidJourneyEpochMs("shared.replay-track-up", 100, 200), 100);
+});
+
+test("clears focused Android text in one ordered keyevent stream", () => {
+  assert.deepEqual(
+    androidClearTextCommand(3),
+    [
+      "shell", "input", "keyevent", "KEYCODE_MOVE_END",
+      "KEYCODE_DEL", "KEYCODE_DEL", "KEYCODE_DEL",
+    ],
+  );
+});
 
 function anrDialogXml(title, { waitEnabled = true } = {}) {
   return `<hierarchy>
@@ -34,6 +72,64 @@ test("recognizes the hosted emulator System UI ANR wait action", () => {
       enabled: "true",
       bounds: "[70,1300][1010,1426]",
     },
+  );
+});
+
+test("parses UIAutomator single-quoted attributes containing JSON", () => {
+  const tag = 'parity:tray-option:{"procedure_id":"I32R","enroute_transition":"OVR"}';
+  const xml = `<hierarchy><node resource-id='${tag}' class="android.view.View" /></hierarchy>`;
+  assert.equal(findNode(xml, (node) => node["resource-id"] === tag)?.class, "android.view.View");
+});
+
+test("distinguishes the offline package bootstrap from its navigable runtime page", () => {
+  const packagePanel = '<node resource-id="parity:offline-packages-panel" />';
+  assert.equal(androidRuntimeUiVisible(`<hierarchy>${packagePanel}</hierarchy>`), false);
+  const runtimeBehindPackageGate =
+    `<hierarchy>${packagePanel}<node resource-id="parity:primary-navigation" /></hierarchy>`;
+  assert.equal(androidRuntimeUiVisible(runtimeBehindPackageGate), true);
+  assert.equal(androidOfflinePackagesVisible(runtimeBehindPackageGate), true);
+  assert.equal(androidRuntimeReadyForJourney(runtimeBehindPackageGate), false);
+  assert.equal(androidRuntimeReadyForJourney(
+    '<hierarchy><node resource-id="parity:primary-navigation" /></hierarchy>',
+  ), true);
+});
+
+test("vertical scrolling stays below Android's status-bar gesture zone", () => {
+  assert.deepEqual(
+    verticalScrollGesture({ left: 0, top: 0, right: 1080, bottom: 1200, width: 1080, height: 1200 }, "up"),
+    { x: 540, startY: 180, endY: 1020 },
+  );
+});
+
+test("vertical scrolling skips flight-plan horizontal scrollers", () => {
+  const xml = `<hierarchy>
+    <node class="android.widget.HorizontalScrollView" package="org.aerobag.app" scrollable="true" bounds="[388,143][1065,243]" />
+    <node resource-id="parity:plan-list" class="android.view.View" package="org.aerobag.app" scrollable="true" bounds="[89,248][1065,2014]" />
+  </hierarchy>`;
+  assert.equal(findVerticalScrollSurface(xml)?.["resource-id"], "parity:plan-list");
+});
+
+test("horizontal scrolling recognizes an untagged Altitude Planner control strip", () => {
+  const xml = `<hierarchy>
+    <node class="android.widget.HorizontalScrollView" package="org.aerobag.app" scrollable="true" bounds="[15,208][1065,355]" />
+    <node resource-id="parity:altitude-comparison-panel" class="android.view.View" package="org.aerobag.app" scrollable="true" bounds="[15,620][1065,1650]" />
+  </hierarchy>`;
+  assert.equal(findHorizontalScrollSurface(xml)?.class, "android.widget.HorizontalScrollView");
+});
+
+test("vertical scrolling rejects controls clipped beyond the list viewport", () => {
+  const xml = `<hierarchy>
+    <node class="android.view.View" package="org.aerobag.app" scrollable="true" bounds="[59,274][1021,2117]" />
+    <node resource-id="parity:settings-toggle:debug_tile_labels" package="org.aerobag.app" bounds="[59,2058][1021,2164]" />
+    <node resource-id="parity:settings-toggle:debug_nexrad_tile_labels" package="org.aerobag.app" bounds="[59,2164][1021,2180]" />
+  </hierarchy>`;
+  assert.equal(
+    verticalScrollTargetIsReachable(xml, "parity:settings-toggle:debug_tile_labels"),
+    true,
+  );
+  assert.equal(
+    verticalScrollTargetIsReachable(xml, "parity:settings-toggle:debug_nexrad_tile_labels"),
+    false,
   );
 });
 

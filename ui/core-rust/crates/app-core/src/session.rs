@@ -3905,7 +3905,11 @@ pub fn load_playback_trace_in_session(
         .situation
         .playback_mut()
         .load_trace_json(source_path.to_string(), trace_json)?;
-    let motion = apply_playback_state_to_ownship(session, playback_state, 0)?;
+    let motion = apply_playback_state_to_ownship(
+        session,
+        playback_state,
+        session.coordinator.wall_clock_epoch_ms,
+    )?;
     changed_session_update_outcome_for_ownship_motion(session, Some(motion))
 }
 
@@ -27231,6 +27235,59 @@ mod tests {
             "GPS, Plan Preview, and Replay should keep their relative menu order",
         );
         assert_enabled_situation_controls(&gps, &[]);
+    }
+
+    #[test]
+    fn adsb_replay_load_projects_initial_ownship_after_session_clock_advances() {
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
+        push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_800_000_000_000,
+                received_time_epoch_ms: 1_800_000_000_000,
+                position: Some(LatLon {
+                    lat: 47.5,
+                    lon: -122.2,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(100.0),
+                altitude_msl_ft: Some(1_000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("advance session clock");
+        select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select Replay");
+
+        let loaded = load_playback_trace_in_session(
+            init.handle,
+            "adsb.json",
+            r#"{"r":"N-RELEASE","trace":[[0.0,47.493,-122.216,1500,105,320],[5.0,47.513,-122.246,1750,105,300]]}"#,
+        )
+        .expect("load ADS-B replay");
+
+        let ownship = &loaded.app_ui_state.ownship.render;
+        assert_eq!(ownship.mode, crate::OwnshipMode::Replay);
+        assert!(ownship.draw_aircraft);
+        assert_eq!(
+            ownship.position,
+            Some(LatLon {
+                lat: 47.493,
+                lon: -122.216,
+            }),
+        );
     }
 
     #[test]

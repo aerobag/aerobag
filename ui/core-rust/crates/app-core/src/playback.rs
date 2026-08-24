@@ -854,7 +854,9 @@ fn interpolate_optional_angle(start: Option<f64>, end: Option<f64>, t: f64) -> O
             let delta = ((end - start + 540.0) % 360.0) - 180.0;
             Some((start + delta * t + 360.0) % 360.0)
         }
-        (Some(value), None) | (None, Some(value)) => Some(value),
+        (_, end) if t >= 1.0 => end,
+        (Some(value), None) => Some(value),
+        (None, Some(_)) => None,
         (None, None) => None,
     }
 }
@@ -880,6 +882,31 @@ mod tests {
         assert_eq!(situation.speed_kt, Some(150.0));
         assert!(
             matches!(situation.orientation_deg, Some(value) if !(1.0..=359.0).contains(&value))
+        );
+    }
+
+    #[test]
+    fn optional_track_interpolation_never_borrows_from_a_future_sample() {
+        let trace = parse_trace_json(
+            r#"{"r":"N-TRACK","t":"C172","trace":[[0.0,47.0,-122.0,1000,90,320],[1.0,47.1,-122.1,1000,90,null],[2.0,47.2,-122.2,1000,90,null],[3.0,47.3,-122.3,1000,90,300]]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            situation_at_cursor(&trace, 0.5).unwrap().orientation_deg,
+            Some(320.0)
+        );
+        assert_eq!(
+            situation_at_cursor(&trace, 1.0).unwrap().orientation_deg,
+            None
+        );
+        assert_eq!(
+            situation_at_cursor(&trace, 2.5).unwrap().orientation_deg,
+            None
+        );
+        assert_eq!(
+            situation_at_cursor(&trace, 3.0).unwrap().orientation_deg,
+            Some(300.0)
         );
     }
 

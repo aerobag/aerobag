@@ -176,6 +176,7 @@ val androidSigningKeyAlias = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_ALIAS"
 val androidSigningKeyPassword = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_PASSWORD")
 val androidBuildRustRelease = readBooleanBuildConfig("ANDROID_BUILD_RUST_RELEASE", false)
 val androidBuildNativeLibraries = readBooleanBuildConfig("ANDROID_BUILD_NATIVE_LIBRARIES", true)
+val androidE2eEnabled = readBooleanBuildConfig("AEROBAG_E2E_ENABLED", false)
 val androidRustProfileArgs = if (androidBuildRustRelease) listOf("--release") else emptyList()
 val androidRustProfileDir = if (androidBuildRustRelease) "release" else "debug"
 val androidRust16KbPageSizeRustFlags = listOf(
@@ -378,6 +379,7 @@ android {
         buildConfigField("String", "AEROBAG_BUILT_AT_UTC", buildConfigStringLiteral(androidBuiltAtUtc))
         buildConfigField("String", "AEROBAG_GIT_COMMIT", buildConfigStringLiteral(androidGitCommit))
         buildConfigField("boolean", "AEROBAG_BUILD_DIRTY", androidBuildDirty.toString())
+        buildConfigField("boolean", "AEROBAG_E2E_ENABLED", androidE2eEnabled.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

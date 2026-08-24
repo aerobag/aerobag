@@ -364,6 +364,7 @@ internal fun FlightPlanPage(
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
     val planDataScrollState = rememberScrollState()
+    val planControlScrollState = rememberScrollState()
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
@@ -738,6 +739,7 @@ internal fun FlightPlanPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("parity:page:flight_plan")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         Column(
@@ -932,7 +934,11 @@ internal fun FlightPlanPage(
                 .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap),
         ) {
             Row(
-                modifier = Modifier.align(Alignment.TopCenter),
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .horizontalScroll(planControlScrollState)
+                        .testTag("parity:plan-controls"),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
                 planControls.forEach { control ->
@@ -1068,6 +1074,7 @@ internal fun FlightPlanPage(
                 val picker = procedurePicker!!
                 MenuPanel(
                     modifier = Modifier
+                        .testTag("parity:plan-airway-picker")
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),
@@ -1094,6 +1101,7 @@ internal fun FlightPlanPage(
                                             accentColor = plateFolderColor(uiTheme, procedure.accentCategory),
                                             width = procedureChoiceButtonWidth,
                                             maxLines = 1,
+                                            testTag = "parity:plan-procedure:${procedure.procedureId}",
                                             onSelect = {
                                                 procedurePicker = picker.copy(loading = true, error = null)
                                                 runCatching {
@@ -1129,6 +1137,7 @@ internal fun FlightPlanPage(
                                 label = choice.label,
                                 active = false,
                                 enabled = true,
+                                testTag = "parity:plan-procedure-transition:${choice.enrouteTransition ?: "none"}",
                                 onSelect = {
                                     procedurePicker = picker.copy(loading = true, error = null)
                                     val snapshot = applySessionCommand("selectProcedureAtFlightPlanRow") {
@@ -1191,6 +1200,7 @@ internal fun FlightPlanPage(
                                     label = suggestion.airwayName,
                                     active = false,
                                     enabled = true,
+                                    testTag = "parity:plan-airway-suggestion:${suggestion.airwayName}",
                                     onSelect = {
                                         airwayPicker = picker.copy(loading = true, error = null)
                                         runCatching {
@@ -1227,6 +1237,7 @@ internal fun FlightPlanPage(
                                     label = point.label,
                                     active = point.uid == presentation.suggestedEntryUid,
                                     enabled = true,
+                                    testTag = "parity:plan-airway-entry:${point.label}",
                                     onSelect = {
                                         airwayPicker = picker.copy(selectedEntryUid = point.uid)
                                     },
@@ -1250,6 +1261,7 @@ internal fun FlightPlanPage(
                                     active = point.uid == presentation.suggestedExitUid,
                                     enabled = !isEntry,
                                     disabledReason = if (isEntry) point.samePointExitDisabledReason else null,
+                                    testTag = "parity:plan-airway-exit:${point.label}",
                                     onSelect = {
                                         if (isEntry) return@MenuPanelRow
                                         airwayPicker = picker.copy(loading = true, error = null)
@@ -1297,7 +1309,7 @@ internal fun FlightPlanPage(
                                     active = false,
                                     enabled = action.enabled,
                                     disabledReason = action.disabledReason,
-                                    testTag = "parity:plan-row-action:${action.id}",
+                                    testTag = "parity:plan-row-action:${action.id}:enabled:${action.enabled}",
                                     width = waypointActionButtonWidth,
                                     trailingContent = if (hasActionSymbol(action.id)) {
                                         {

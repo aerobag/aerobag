@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -53,6 +54,287 @@ def evaluate_health(
 
 
 class PipelineHealthTests(unittest.TestCase):
+    def test_release_channels_follow_one_active_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            channel_root = root / "channel-current"
+            channel_root.mkdir()
+            (channel_root / "generation.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "generation": 7,
+                        "production": "prod-tag",
+                        "staging": "stage-tag",
+                        "sunset": ["old-tag"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (channel_root / "live-feed-routes.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "production": "http://127.0.0.1:8101",
+                        "staging": "http://127.0.0.1:8102",
+                        "releases": {
+                            "prod-tag": "http://127.0.0.1:8101",
+                            "stage-tag": "http://127.0.0.1:8102",
+                            "old-tag": "http://127.0.0.1:8103",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = pipeline_health.MonitorConfig(
+                artifact_root=root,
+                data_root=root,
+                health_root=root / "health",
+                channel_root=channel_root,
+                standalone_current_artifacts_path=None,
+                standalone_live_feeds_status_url=None,
+                deploy_health_path=root / "health.json",
+                cloud_status_url="http://127.0.0.1:1/cloud/v1/status",
+                cloud_status_secret_path=root / "cloud.secret",
+                build_watch_url="http://127.0.0.1:1/api/state",
+                calendar_path=root / "calendar.json",
+                listen="127.0.0.1:0",
+                poll_seconds=60,
+            )
+
+            channels, status = pipeline_health.release_channel_sources(config)
+
+        self.assertIsNone(status["error"])
+        self.assertEqual(
+            [(channel["id"], channel["role"], channel["tag"]) for channel in channels],
+            [
+                ("production", "production", "prod-tag"),
+                ("staging", "staging", "stage-tag"),
+                ("release-old-tag", "sunset", "old-tag"),
+            ],
+        )
+        self.assertEqual(channels[1]["live_feeds_endpoint"], "http://127.0.0.1:8102")
+
+    def test_collect_facts_keeps_release_inputs_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            channel_root = root / "channel-current"
+            for relative in ["production/packages", "staging/packages"]:
+                (channel_root / relative).mkdir(parents=True)
+                (channel_root / relative / "current_artifacts.json").write_text(
+                    "[]\n", encoding="utf-8"
+                )
+            (channel_root / "generation.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "generation": 8,
+                        "production": "prod",
+                        "staging": "stage",
+                        "sunset": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (channel_root / "live-feed-routes.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "production": "http://127.0.0.1:8101",
+                        "staging": "http://127.0.0.1:8102",
+                        "releases": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "state").mkdir()
+            (root / "state/releases-observed.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "releases": {
+                            tag: {
+                                "tag": tag,
+                                "build_status": "passed",
+                                "qualification_status": qualification,
+                                "live_feed_status": "running",
+                            }
+                            for tag, qualification in [
+                                ("prod", "passed"),
+                                ("stage", "pending"),
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deploy_health = root / "deploy-health.json"
+            deploy_health.write_text("{}\n", encoding="utf-8")
+            calendar = root / "calendar.json"
+            calendar.write_text('{"cycles":[]}\n', encoding="utf-8")
+            cloud_secret = root / "cloud.secret"
+            cloud_secret.write_bytes(bytes(32))
+            config = pipeline_health.MonitorConfig(
+                artifact_root=root,
+                data_root=root,
+                health_root=root / "health",
+                channel_root=channel_root,
+                standalone_current_artifacts_path=None,
+                standalone_live_feeds_status_url=None,
+                deploy_health_path=deploy_health,
+                cloud_status_url="http://127.0.0.1:8104/cloud/v1/status",
+                cloud_status_secret_path=cloud_secret,
+                build_watch_url="http://127.0.0.1:8105/api/state",
+                calendar_path=calendar,
+                listen="127.0.0.1:0",
+                poll_seconds=60,
+            )
+
+            def fetch(url: str, **_kwargs: object) -> tuple[object, None]:
+                if url.startswith("http://127.0.0.1:8101/"):
+                    return {"marker": "production"}, None
+                if url.startswith("http://127.0.0.1:8102/"):
+                    return {"marker": "staging"}, None
+                return {}, None
+
+            with patch.object(pipeline_health, "fetch_json_url", side_effect=fetch):
+                facts = pipeline_health.collect_facts(
+                    config,
+                    datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+                )
+
+        self.assertEqual(
+            facts["channels"]["production"]["inputs"]["live_feeds_status"][
+                "payload"
+            ]["marker"],
+            "production",
+        )
+        self.assertEqual(
+            facts["channels"]["staging"]["inputs"]["live_feeds_status"][
+                "payload"
+            ]["marker"],
+            "staging",
+        )
+        self.assertEqual(
+            facts["channels"]["staging"]["release_state"][
+                "qualification_status"
+            ],
+            "pending",
+        )
+
+    def test_staging_failure_is_visible_without_declaring_production_down(self) -> None:
+        now = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
+        global_inputs = {
+            "release_channels": {"error": None},
+            "deploy_health": {"error": None, "payload": {}},
+            "build_watch": {"error": None, "payload": {"result": {"status": "pass"}}},
+            "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+        }
+
+        def channel(role: str, policy: object) -> dict:
+            return {
+                "role": role,
+                "tag": f"{role}-tag",
+                "inputs": {
+                    "current_artifacts": {"error": None, "payload": []},
+                    "product_facts": [],
+                    "live_feeds_status": {
+                        "error": None,
+                        "payload": {"products": {}, "product_policies": policy},
+                    },
+                },
+            }
+
+        evaluation = pipeline_health.evaluate_health(
+            {
+                "sampled_at_utc": pipeline_health.iso_utc(now),
+                "inputs": global_inputs,
+                "channels": {
+                    "production": channel("production", []),
+                    "staging": channel("staging", None),
+                },
+            },
+            [],
+            now,
+        )
+
+        self.assertEqual(evaluation["scopes"]["production"]["status"], "ok")
+        self.assertEqual(evaluation["scopes"]["staging"]["status"], "critical")
+        self.assertEqual(evaluation["top_line_status"], "ok")
+        self.assertEqual(evaluation["overall_status"], "critical")
+        self.assertTrue(
+            has_metric(
+                evaluation,
+                "channel.staging.live_feed.product_policy.present",
+            )
+        )
+
+    def test_supported_sunset_failure_affects_operational_status(self) -> None:
+        now = datetime(2026, 8, 24, 12, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "sampled_at_utc": pipeline_health.iso_utc(now),
+            "inputs": {
+                "release_channels": {"error": None},
+                "deploy_health": {"error": None, "payload": {}},
+                "build_watch": {"error": None, "payload": {"result": {"status": "pass"}}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+            },
+            "channels": {
+                "production": {
+                    "role": "production",
+                    "tag": "prod",
+                    "inputs": {
+                        "current_artifacts": {"error": None, "payload": []},
+                        "product_facts": [],
+                        "live_feeds_status": {
+                            "error": None,
+                            "payload": {"products": {}, "product_policies": []},
+                        },
+                    },
+                },
+                "release-old": {
+                    "role": "sunset",
+                    "tag": "old",
+                    "inputs": {
+                        "current_artifacts": {"error": None, "payload": []},
+                        "product_facts": [],
+                        "live_feeds_status": {
+                            "error": "connection refused",
+                            "payload": None,
+                        },
+                    },
+                },
+            },
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        self.assertEqual(evaluation["scopes"]["release-old"]["status"], "critical")
+        self.assertEqual(evaluation["top_line_status"], "critical")
+
+    def test_staging_qualification_state_is_scoped_and_visible(self) -> None:
+        metrics: list[dict] = []
+
+        pipeline_health.add_channel_release_metrics(
+            metrics,
+            {
+                "role": "staging",
+                "tag": "candidate",
+                "release_state": {
+                    "build_status": "passed",
+                    "qualification_status": "pending",
+                    "live_feed_status": "running",
+                },
+            },
+        )
+
+        by_id = {item["id"]: item for item in metrics}
+        self.assertEqual(by_id["release.build_status"]["severity"], "ok")
+        self.assertEqual(
+            by_id["release.qualification_status"]["severity"], "warning"
+        )
+        self.assertEqual(by_id["release.live_feed_status"]["severity"], "ok")
+
     def test_unknown_build_result_cannot_report_healthy(self) -> None:
         metrics: list[dict] = []
         facts = {
@@ -147,6 +429,8 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertIn("Plotly.react(row.plot", html)
         self.assertIn("mergeCurrentSample(current)", html)
         self.assertIn("severityTrace(points, severity)", html)
+        self.assertIn("function selectedScope()", html)
+        self.assertIn('id="scopeNav"', html)
         self.assertIn('warning:"#f0c85a"', html)
         self.assertIn('critical:"#ff6b6b"', html)
         self.assertIn("setTimeout(refreshLoop, 30000)", html)
@@ -940,6 +1224,27 @@ class PipelineHealthTests(unittest.TestCase):
         )
         self.assertNotIn("cycle_build.latest_result", record["metrics"])
         self.assertLess(len(encoded), 1_000)
+
+    def test_compact_history_keeps_product_baselines_separate_by_channel(self) -> None:
+        facts = {
+            "sampled_at_utc": "2026-08-24T12:00:00Z",
+            "inputs": {},
+            "channels": {
+                "production": {"inputs": {"product_facts": []}},
+                "staging": {"inputs": {"product_facts": []}},
+            },
+        }
+
+        record = pipeline_health.compact_history_record(
+            facts,
+            {"metrics": [], "alerts": [], "top_line_status": "ok"},
+        )
+
+        self.assertEqual(
+            set(record["channel_product_states"]), {"production", "staging"}
+        )
+        self.assertNotIn("product_facts_key", record)
+        self.assertNotIn("product_counts", record)
 
     def test_compact_metric_series_preserves_bucket_extrema_and_severity(self) -> None:
         now = datetime(2026, 6, 19, 12, 5, 0, tzinfo=timezone.utc)

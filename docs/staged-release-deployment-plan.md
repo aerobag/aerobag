@@ -411,6 +411,24 @@ Rollback is another desired-state commit assigning the prior tag to production.
 As long as its retained release view and compatible daemon remain available,
 the controller performs another pointer change rather than a build.
 
+## Operations And Monitoring
+
+The deployment has one operator entry point at `/admin/` and one Pipeline
+Health collector at `/pipeline-health/`. They cover global infrastructure plus
+production, staging, and every supported sunset release. Channel-prefixed
+admin or Pipeline Health applications would duplicate state and policy, so
+they are not deployed; admin links select the relevant scope in the shared
+Pipeline Health UI.
+
+Pipeline Health resolves `channel-current` once per sample and reads both the
+release assignments and live-feed endpoints from that generation. It then
+reads authoritative release lifecycle state from
+`state/releases-observed.json`. It must not use the legacy global
+`published/current_artifacts.json` or a fixed live-feed port. Production and
+sunset failures contribute to operational status. Staging failures remain
+prominent and block qualification or promotion, but do not claim that the
+production service is down.
+
 ## Garbage Collection
 
 The current GC derives important roots from one

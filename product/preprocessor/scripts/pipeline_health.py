@@ -25,8 +25,8 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 
-SCHEMA_VERSION = 1
-HISTORY_SCHEMA_VERSION = 2
+SCHEMA_VERSION = 2
+HISTORY_SCHEMA_VERSION = 3
 DEFAULT_LISTEN = "127.0.0.1:8098"
 DEFAULT_POLL_SECONDS = 60
 HISTORY_RECORD_LIMIT = 2 * 24 * 60 + 10
@@ -162,9 +162,10 @@ class MonitorConfig:
     artifact_root: Path
     data_root: Path
     health_root: Path
-    current_artifacts_path: Path
+    channel_root: Path
+    standalone_current_artifacts_path: Path | None
+    standalone_live_feeds_status_url: str | None
     deploy_health_path: Path
-    live_feeds_status_url: str
     cloud_status_url: str
     cloud_status_secret_path: Path
     build_watch_url: str
@@ -183,10 +184,6 @@ def default_config_from_env() -> MonitorConfig:
     )
     data_root = Path(os.environ.get("DATA_ROOT", env.get("DATA_ROOT", "/mnt/aerobag-data")))
     health_root = data_root / "health"
-    live_listen = os.environ.get(
-        "AEROBAG_LIVE_FEEDS_LISTEN",
-        env.get("AEROBAG_LIVE_FEEDS_LISTEN", "127.0.0.1:8095"),
-    )
     build_watch_listen = os.environ.get(
         "AEROBAG_BUILD_WATCH_LISTEN",
         env.get("AEROBAG_BUILD_WATCH_LISTEN", "127.0.0.1:8097"),
@@ -208,9 +205,10 @@ def default_config_from_env() -> MonitorConfig:
         artifact_root=artifact_root,
         data_root=data_root,
         health_root=health_root,
-        current_artifacts_path=artifact_root / "published" / "current_artifacts.json",
+        channel_root=artifact_root / "channel-current",
+        standalone_current_artifacts_path=None,
+        standalone_live_feeds_status_url=None,
         deploy_health_path=data_root / "health" / "status.json",
-        live_feeds_status_url=f"http://{live_listen}/live-feeds/status.json",
         cloud_status_url=f"http://{cloud_listen}/cloud/v1/status",
         cloud_status_secret_path=cloud_secret,
         build_watch_url=f"http://{build_watch_listen}/api/state",
@@ -228,11 +226,166 @@ def default_config_from_env() -> MonitorConfig:
     )
 
 
+def release_channel_sources(
+    config: MonitorConfig,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    try:
+        generation_root = config.channel_root.resolve(strict=True)
+    except OSError as error:
+        generation_root = config.channel_root
+        resolve_error = f"{config.channel_root}: {error}"
+    else:
+        resolve_error = None
+    metadata_path = generation_root / "generation.json"
+    routes_path = generation_root / "live-feed-routes.json"
+    metadata, metadata_error = read_json_file(metadata_path)
+    routes, routes_error = read_json_file(routes_path)
+    if metadata_error is None and routes_error is None:
+        if not isinstance(metadata, dict) or not isinstance(routes, dict):
+            return [], {
+                "path": str(config.channel_root),
+                "error": "channel generation metadata must be JSON objects",
+            }
+        production = metadata.get("production")
+        staging = metadata.get("staging")
+        sunset = metadata.get("sunset")
+        route_releases = routes.get("releases")
+        if (
+            not isinstance(production, str)
+            or (staging is not None and not isinstance(staging, str))
+            or not isinstance(sunset, list)
+            or not all(isinstance(tag, str) for tag in sunset)
+            or not isinstance(route_releases, dict)
+        ):
+            return [], {
+                "path": str(config.channel_root),
+                "error": "channel generation metadata has an invalid release assignment",
+            }
+        assignments = [
+            {
+                "id": "production",
+                "role": "production",
+                "tag": production,
+                "deployment_managed": True,
+                "current_artifacts_path": (
+                    generation_root / "production/packages/current_artifacts.json"
+                ),
+                "live_feeds_endpoint": routes.get("production"),
+            }
+        ]
+        if staging is not None:
+            assignments.append(
+                {
+                    "id": "staging",
+                    "role": "staging",
+                    "tag": staging,
+                    "deployment_managed": True,
+                    "current_artifacts_path": (
+                        generation_root / "staging/packages/current_artifacts.json"
+                    ),
+                    "live_feeds_endpoint": routes.get("staging"),
+                }
+            )
+        assignments.extend(
+            {
+                "id": f"release-{tag}",
+                "role": "sunset",
+                "tag": tag,
+                "deployment_managed": True,
+                "current_artifacts_path": (
+                    generation_root
+                    / "releases"
+                    / tag
+                    / "packages/current_artifacts.json"
+                ),
+                "live_feeds_endpoint": route_releases.get(tag),
+            }
+            for tag in sunset
+        )
+        return assignments, {
+            "path": str(generation_root),
+            "payload": metadata,
+            "error": None,
+            "deployment_managed": True,
+        }
+
+    if (
+        config.standalone_current_artifacts_path is not None
+        and config.standalone_live_feeds_status_url is not None
+    ):
+        return [
+            {
+                "id": "production",
+                "role": "production",
+                "tag": "standalone",
+                "deployment_managed": False,
+                "current_artifacts_path": config.standalone_current_artifacts_path,
+                "live_feeds_status_url": config.standalone_live_feeds_status_url,
+            }
+        ], {
+            "path": str(config.standalone_current_artifacts_path),
+            "payload": {"mode": "standalone"},
+            "error": None,
+            "deployment_managed": False,
+        }
+
+    errors = "; ".join(
+        error for error in [resolve_error, metadata_error, routes_error] if error
+    )
+    return [], {"path": str(config.channel_root), "error": errors}
+
+
+def collect_channel_facts(
+    config: MonitorConfig,
+    source: dict[str, Any],
+    release_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    current_path = source["current_artifacts_path"]
+    current_artifacts, current_error = read_json_file(current_path)
+    endpoint = source.get("live_feeds_endpoint")
+    status_url = source.get("live_feeds_status_url")
+    if status_url is None and isinstance(endpoint, str):
+        status_url = f"{endpoint.rstrip('/')}/live-feeds/status.json"
+    if not isinstance(status_url, str):
+        live_status, live_error = None, "release has no live-feed endpoint"
+        status_url = ""
+    else:
+        live_status, live_error = fetch_json_url(status_url)
+    return {
+        "id": source["id"],
+        "role": source["role"],
+        "tag": source["tag"],
+        "deployment_managed": source["deployment_managed"],
+        "release_state": release_record,
+        "inputs": {
+            "current_artifacts": {
+                "path": str(current_path),
+                "payload": current_artifacts,
+                "error": current_error,
+            },
+            "product_facts": collect_product_facts(
+                config.artifact_root, current_artifacts
+            ),
+            "live_feeds_status": {
+                "url": status_url,
+                "payload": live_status,
+                "error": live_error,
+            },
+        },
+    }
+
+
 def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
-    current_artifacts, current_error = read_json_file(config.current_artifacts_path)
-    product_facts = collect_product_facts(config.artifact_root, current_artifacts)
+    channel_sources, channel_source_status = release_channel_sources(config)
     deploy_health, deploy_health_error = read_json_file(config.deploy_health_path)
-    live_status, live_error = fetch_json_url(config.live_feeds_status_url)
+    release_state_path = config.artifact_root / "state/releases-observed.json"
+    if channel_source_status.get("deployment_managed") is True:
+        release_state, release_state_error = read_json_file(release_state_path)
+    else:
+        release_state, release_state_error = None, None
+    release_records = (
+        release_state.get("releases") if isinstance(release_state, dict) else None
+    )
     cloud_authorization, cloud_auth_error = cloud_status_authorization(
         config.cloud_status_secret_path
     )
@@ -252,22 +405,33 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "sampled_at_utc": iso_utc(now),
+        "channels": {
+            channel["id"]: channel
+            for source in channel_sources
+            for channel in [
+                collect_channel_facts(
+                    config,
+                    source,
+                    (
+                        release_records.get(source["tag"])
+                        if isinstance(release_records, dict)
+                        and isinstance(release_records.get(source["tag"]), dict)
+                        else None
+                    ),
+                )
+            ]
+        },
         "inputs": {
-            "current_artifacts": {
-                "path": str(config.current_artifacts_path),
-                "payload": current_artifacts,
-                "error": current_error,
+            "release_channels": channel_source_status,
+            "release_state": {
+                "path": str(release_state_path),
+                "payload": release_state,
+                "error": release_state_error,
             },
-            "product_facts": product_facts,
             "deploy_health": {
                 "path": str(config.deploy_health_path),
                 "payload": deploy_health,
                 "error": deploy_health_error,
-            },
-            "live_feeds_status": {
-                "url": config.live_feeds_status_url,
-                "payload": live_status,
-                "error": live_error,
             },
             "aerobag_cloud_status": {
                 "url": config.cloud_status_url,
@@ -328,10 +492,66 @@ def evaluate_health(
 
     add_input_metrics(metrics, facts)
     add_build_watch_metrics(metrics, facts)
-    add_live_feed_metrics(metrics, facts, now)
     add_aerobag_cloud_metrics(metrics, facts)
-    add_product_fact_metrics(metrics, facts, previous_records)
-    add_cycle_calendar_metrics(metrics, facts, now)
+    channels = facts.get("channels")
+    if isinstance(channels, dict):
+        production_facts = None
+        for channel_id, channel in channels.items():
+            if not isinstance(channel_id, str) or not isinstance(channel, dict):
+                continue
+            channel_inputs = channel.get("inputs")
+            if not isinstance(channel_inputs, dict):
+                continue
+            channel_facts = {"inputs": channel_inputs}
+            channel_metrics: list[dict[str, Any]] = []
+            if channel.get("deployment_managed") is True:
+                add_channel_release_metrics(channel_metrics, channel)
+            add_channel_input_metrics(channel_metrics, channel_facts)
+            add_live_feed_metrics(channel_metrics, channel_facts, now)
+            add_product_fact_metrics(
+                channel_metrics,
+                channel_facts,
+                previous_records,
+                history_scope=channel_id,
+            )
+            role = channel.get("role")
+            tag = channel.get("tag")
+            scope_label = (
+                f"Sunset {tag}"
+                if role == "sunset"
+                else str(role or channel_id).replace("_", " ").title()
+            )
+            for metric in channel_metrics:
+                metric["id"] = f"channel.{channel_id}.{metric['id']}"
+                metric["label"] = f"{scope_label}: {metric['label']}"
+                metric["message"] = f"{scope_label}: {metric['message']}"
+                metric["scope"] = channel_id
+                metric["scope_label"] = scope_label
+                metric["channel_role"] = role
+                metric["release_tag"] = tag
+            metrics.extend(channel_metrics)
+            if role == "production":
+                production_facts = channel_facts
+        if production_facts is not None:
+            calendar_facts = {
+                "inputs": {
+                    **facts.get("inputs", {}),
+                    "product_facts": production_facts["inputs"].get(
+                        "product_facts", []
+                    ),
+                }
+            }
+            add_cycle_calendar_metrics(metrics, calendar_facts, now)
+    else:
+        # Standalone evaluators, including the ACS workload verifier, expose one
+        # unscoped publication in the same metric pipeline.
+        add_live_feed_metrics(metrics, facts, now)
+        add_product_fact_metrics(metrics, facts, previous_records)
+        add_cycle_calendar_metrics(metrics, facts, now)
+
+    for metric in metrics:
+        metric.setdefault("scope", "global")
+        metric.setdefault("scope_label", "Global")
 
     for metric in metrics:
         severity = metric.get("severity", "ok")
@@ -341,10 +561,44 @@ def evaluate_health(
                     "severity": severity,
                     "metric_id": metric["id"],
                     "message": metric["message"],
+                    "scope": metric.get("scope", "global"),
+                    "scope_label": metric.get("scope_label", "Global"),
                 }
             )
+    scope_statuses: dict[str, dict[str, Any]] = {}
+    for metric in metrics:
+        scope = metric.get("scope", "global")
+        status = scope_statuses.setdefault(
+            scope,
+            {
+                "label": metric.get("scope_label", scope),
+                "status": "ok",
+                "role": metric.get("channel_role"),
+                "release_tag": metric.get("release_tag"),
+            },
+        )
+        severity = metric.get("severity", "ok")
+        if SEVERITY_RANK.get(severity, 0) > SEVERITY_RANK.get(status["status"], 0):
+            status["status"] = severity
+    operational_scopes = {
+        "global",
+        *(
+            scope
+            for scope, status in scope_statuses.items()
+            if status.get("role") in {"production", "sunset"}
+        ),
+    }
     top_line_status = max(
-        (metric.get("severity", "ok") for metric in metrics),
+        (
+            status["status"]
+            for scope, status in scope_statuses.items()
+            if scope in operational_scopes
+        ),
+        key=lambda severity: SEVERITY_RANK.get(severity, 0),
+        default="ok",
+    )
+    overall_status = max(
+        (status["status"] for status in scope_statuses.values()),
         key=lambda severity: SEVERITY_RANK.get(severity, 0),
         default="ok",
     )
@@ -352,6 +606,8 @@ def evaluate_health(
         "schema_version": SCHEMA_VERSION,
         "generated_at_utc": iso_utc(now),
         "top_line_status": top_line_status,
+        "overall_status": overall_status,
+        "scopes": scope_statuses,
         "metrics": metrics,
         "alerts": alerts,
     }
@@ -398,15 +654,26 @@ def threshold_severity(value: float, warning: float, critical: float) -> str:
 
 def add_input_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
     inputs = facts.get("inputs", {})
-    keys = [
-        "current_artifacts",
-        "deploy_health",
-        "live_feeds_status",
-        "build_watch",
-        "faa_cycle_calendar",
-    ]
+    keys = ["deploy_health", "build_watch", "faa_cycle_calendar"]
+    if isinstance(facts.get("channels"), dict):
+        keys.append("release_channels")
+        release_channels = inputs.get("release_channels")
+        if (
+            isinstance(release_channels, dict)
+            and release_channels.get("deployment_managed") is True
+        ):
+            keys.append("release_state")
+    else:
+        keys.extend(["current_artifacts", "live_feeds_status"])
     if "aerobag_cloud_status" in inputs:
         keys.append("aerobag_cloud_status")
+    add_source_availability_metrics(metrics, inputs, keys)
+    add_product_facts_availability_metric(metrics, inputs)
+
+
+def add_source_availability_metrics(
+    metrics: list[dict[str, Any]], inputs: dict[str, Any], keys: list[str]
+) -> None:
     for key in keys:
         source = inputs.get(key, {})
         error = source.get("error") if isinstance(source, dict) else "missing input source"
@@ -418,6 +685,11 @@ def add_input_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> N
             severity="ok" if error is None else "critical",
             message=f"{key} input ok" if error is None else str(error),
         )
+
+
+def add_product_facts_availability_metric(
+    metrics: list[dict[str, Any]], inputs: dict[str, Any]
+) -> None:
     product_facts = inputs.get("product_facts")
     if isinstance(product_facts, list):
         missing = [entry for entry in product_facts if entry.get("error")]
@@ -432,6 +704,54 @@ def add_input_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> N
                 if not missing
                 else f"{len(missing)} current publication(s) missing product-facts.json"
             ),
+        )
+
+
+def add_channel_input_metrics(
+    metrics: list[dict[str, Any]], facts: dict[str, Any]
+) -> None:
+    inputs = facts.get("inputs", {})
+    add_source_availability_metrics(
+        metrics, inputs, ["current_artifacts", "live_feeds_status"]
+    )
+    add_product_facts_availability_metric(metrics, inputs)
+
+
+def add_channel_release_metrics(
+    metrics: list[dict[str, Any]], channel: dict[str, Any]
+) -> None:
+    record = channel.get("release_state")
+    if not isinstance(record, dict):
+        add_metric(
+            metrics,
+            metric_id="release.state.present",
+            label="release state present",
+            value=False,
+            severity="critical",
+            message=f"release {channel.get('tag')} is absent from observed release state",
+        )
+        return
+    role = channel.get("role")
+    for field, label in [
+        ("build_status", "release build"),
+        ("qualification_status", "release qualification"),
+        ("live_feed_status", "release live-feed daemon"),
+    ]:
+        value = record.get(field)
+        expected = "running" if field == "live_feed_status" else "passed"
+        if value == expected:
+            severity = "ok"
+        elif role == "staging" and value in {"pending", "building", "qualifying"}:
+            severity = "warning"
+        else:
+            severity = "critical"
+        add_metric(
+            metrics,
+            metric_id=f"release.{field}",
+            label=label,
+            value=value,
+            severity=severity,
+            message=f"{label}: {value}",
         )
 
 
@@ -884,10 +1204,14 @@ def add_product_fact_metrics(
     metrics: list[dict[str, Any]],
     facts: dict[str, Any],
     previous_records: list[dict[str, Any]],
+    *,
+    history_scope: str | None = None,
 ) -> None:
     summary = product_count_summary(facts)
     counts = summary["counts"]
-    previous_counts = latest_distinct_product_counts(previous_records, facts)
+    previous_counts = latest_distinct_product_counts(
+        previous_records, facts, history_scope=history_scope
+    )
     for count_name, label in [
         ("error_count", "Cycle product errors per cycle"),
         ("warning_count", "Cycle product warnings per cycle"),
@@ -1005,14 +1329,42 @@ def record_product_counts(record: dict[str, Any]) -> dict[str, int] | None:
 
 
 def latest_distinct_product_counts(
-    previous_records: list[dict[str, Any]], current_facts: dict[str, Any]
+    previous_records: list[dict[str, Any]],
+    current_facts: dict[str, Any],
+    *,
+    history_scope: str | None = None,
 ) -> dict[str, int] | None:
     current_key = product_facts_publication_key(current_facts)
     for record in reversed(previous_records):
-        previous_key = record_product_facts_key(record)
+        if history_scope is None:
+            previous_key = record_product_facts_key(record)
+            counts = record_product_counts(record)
+        else:
+            channel_states = record.get("channel_product_states")
+            state = (
+                channel_states.get(history_scope)
+                if isinstance(channel_states, dict)
+                else None
+            )
+            if not isinstance(state, dict):
+                continue
+            key = state.get("product_facts_key")
+            previous_key = (
+                tuple(sorted(key))
+                if isinstance(key, list) and all(isinstance(item, str) for item in key)
+                else ()
+            )
+            raw_counts = state.get("product_counts")
+            counts = (
+                {
+                    "error_count": int(raw_counts.get("error_count") or 0),
+                    "warning_count": int(raw_counts.get("warning_count") or 0),
+                }
+                if isinstance(raw_counts, dict)
+                else None
+            )
         if current_key and previous_key == current_key:
             continue
-        counts = record_product_counts(record)
         if counts is None:
             continue
         if counts["error_count"] or counts["warning_count"] or previous_key:
@@ -1187,6 +1539,9 @@ def compact_existing_history_record(record: dict[str, Any]) -> dict[str, Any] | 
     product_counts = record.get("product_counts")
     if isinstance(product_counts, dict):
         compact["product_counts"] = product_counts
+    channel_product_states = record.get("channel_product_states")
+    if isinstance(channel_product_states, dict):
+        compact["channel_product_states"] = channel_product_states
     return compact
 
 
@@ -1337,26 +1692,53 @@ def compact_history_record(
     facts: dict[str, Any],
     evaluation: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
+    record = {
         "schema_version": SCHEMA_VERSION,
         "history_schema_version": HISTORY_SCHEMA_VERSION,
         "sampled_at_utc": facts["sampled_at_utc"],
         "metrics": compact_evaluation_metrics(evaluation),
-        "product_facts_key": list(product_facts_publication_key(facts)),
-        "product_counts": aggregate_product_counts(facts),
     }
+    channel_states = channel_product_states(facts)
+    if channel_states:
+        record["channel_product_states"] = channel_states
+    else:
+        record["product_facts_key"] = list(product_facts_publication_key(facts))
+        record["product_counts"] = aggregate_product_counts(facts)
+    return record
 
 
 def current_health_record(
     facts: dict[str, Any], evaluation: dict[str, Any]
 ) -> dict[str, Any]:
-    return {
+    record = {
         "schema_version": SCHEMA_VERSION,
         "sampled_at_utc": facts["sampled_at_utc"],
         "evaluation": evaluation,
-        "product_facts_key": list(product_facts_publication_key(facts)),
-        "product_counts": aggregate_product_counts(facts),
     }
+    channel_states = channel_product_states(facts)
+    if channel_states:
+        record["channel_product_states"] = channel_states
+    else:
+        record["product_facts_key"] = list(product_facts_publication_key(facts))
+        record["product_counts"] = aggregate_product_counts(facts)
+    return record
+
+
+def channel_product_states(facts: dict[str, Any]) -> dict[str, Any]:
+    channels = facts.get("channels")
+    if not isinstance(channels, dict):
+        return {}
+    states = {}
+    for channel_id, channel in channels.items():
+        inputs = channel.get("inputs") if isinstance(channel, dict) else None
+        if not isinstance(channel_id, str) or not isinstance(inputs, dict):
+            continue
+        channel_facts = {"inputs": inputs}
+        states[channel_id] = {
+            "product_facts_key": list(product_facts_publication_key(channel_facts)),
+            "product_counts": aggregate_product_counts(channel_facts),
+        }
+    return states
 
 
 def write_current(path: Path, record: dict[str, Any]) -> None:
@@ -1658,6 +2040,9 @@ def dashboard_html() -> str:
     th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
     th { color:var(--muted); font-weight:600; }
     .alerts { margin-bottom:12px; }
+    .scope-nav { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .scope-nav a { text-decoration:none; }
+    .scope-nav a.selected { background:var(--panel); box-shadow:inset 0 0 0 1px currentColor; }
     .metric-list { display:flex; flex-direction:column; gap:10px; }
     .metric-row { display:grid; grid-template-columns:minmax(280px, 360px) minmax(0, 1fr); gap:12px; align-items:stretch; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
     .metric-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
@@ -1692,6 +2077,7 @@ def dashboard_html() -> str:
     </div>
     <div id="topline" class="pill">...</div>
   </header>
+  <nav id="scopeNav" class="scope-nav" aria-label="Pipeline scope"></nav>
   <section class="alerts">
     <h2>Alerts</h2>
     <div id="alerts"></div>
@@ -1790,15 +2176,29 @@ function renderMetricDetails(metric) {
 function graphableMetrics(metrics) {
   return (metrics || []).filter((metric) => graphValue(metric.value) !== null);
 }
+function selectedScope() {
+  const value = decodeURIComponent(location.hash.replace(/^#/, ""));
+  return value || "all";
+}
+function renderScopes(evaln) {
+  const selected = selectedScope();
+  const scopes = evaln.scopes || { global:{label:"Global",status:evaln.top_line_status || "ok"} };
+  const items = [["all", "All", evaln.overall_status || evaln.top_line_status || "ok"], ...Object.entries(scopes).map(([id, value]) => [id, value.label || id, value.status || "ok"] )];
+  document.getElementById("scopeNav").innerHTML = items.map(([id, label, status]) =>
+    `<a class="tag ${cls(status)} ${selected === id ? "selected" : ""}" href="${id === "all" ? "#" : `#${encodeURIComponent(id)}`}">${esc(label)}: ${esc(status)}</a>`
+  ).join("");
+}
 function renderCurrent(record) {
   const evaln = record.evaluation;
   document.getElementById("sampleAge").textContent = `data age ${formatAge(record.sample_age_seconds)}`;
   document.getElementById("sampledAt").textContent = `sampled ${record.sampled_at_utc || evaln.generated_at_utc}`;
   document.getElementById("servedAt").textContent = `served ${record.served_at_utc || "unknown"}`;
   const top = document.getElementById("topline");
-  top.textContent = evaln.top_line_status;
+  top.textContent = `operational ${evaln.top_line_status}`;
   top.className = `pill ${cls(evaln.top_line_status)}`;
-  const alerts = evaln.alerts || [];
+  renderScopes(evaln);
+  const scope = selectedScope();
+  const alerts = (evaln.alerts || []).filter((alert) => scope === "all" || alert.scope === scope);
   document.getElementById("alerts").innerHTML = alerts.length
     ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td>${esc(a.metric_id)}</td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">No alerts.</div>`;
@@ -1869,7 +2269,10 @@ function buildMetricRows(metrics) {
   dashboard.rowOrder = metrics.map((metric) => metric.id);
 }
 function ensureMetricRows(current) {
-  const metrics = graphableMetrics(current.evaluation?.metrics || []);
+  const scope = selectedScope();
+  const metrics = graphableMetrics(current.evaluation?.metrics || []).filter(
+    (metric) => scope === "all" || metric.scope === scope
+  );
   const ids = metrics.map((metric) => metric.id).sort();
   const existingIds = [...dashboard.rowOrder].sort();
   const changed = ids.length !== existingIds.length || ids.some((id, index) => id !== existingIds[index]);
@@ -2061,6 +2464,12 @@ document.addEventListener("visibilitychange", () => {
   clearTimeout(dashboard.refreshTimer);
   void refreshLoop(true);
 });
+window.addEventListener("hashchange", () => {
+  if (!dashboard.current) return;
+  dashboard.rowOrder = [];
+  renderCurrent(dashboard.current);
+  ensureMetricRows(dashboard.current);
+});
 void refreshLoop(true);
 </script>
 </body>
@@ -2074,9 +2483,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-root", type=Path, default=defaults.artifact_root)
     parser.add_argument("--data-root", type=Path, default=defaults.data_root)
     parser.add_argument("--health-root", type=Path, default=defaults.health_root)
-    parser.add_argument("--current-artifacts", type=Path, default=defaults.current_artifacts_path)
+    parser.add_argument("--channel-root", type=Path, default=defaults.channel_root)
+    parser.add_argument("--standalone-current-artifacts", type=Path)
+    parser.add_argument("--standalone-live-feeds-status-url")
     parser.add_argument("--deploy-health", type=Path, default=defaults.deploy_health_path)
-    parser.add_argument("--live-feeds-status-url", default=defaults.live_feeds_status_url)
     parser.add_argument("--cloud-status-url", default=defaults.cloud_status_url)
     parser.add_argument(
         "--cloud-status-secret",
@@ -2096,9 +2506,10 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         artifact_root=args.artifact_root,
         data_root=args.data_root,
         health_root=args.health_root,
-        current_artifacts_path=args.current_artifacts,
+        channel_root=args.channel_root,
+        standalone_current_artifacts_path=args.standalone_current_artifacts,
+        standalone_live_feeds_status_url=args.standalone_live_feeds_status_url,
         deploy_health_path=args.deploy_health,
-        live_feeds_status_url=args.live_feeds_status_url,
         cloud_status_url=args.cloud_status_url,
         cloud_status_secret_path=args.cloud_status_secret,
         build_watch_url=args.build_watch_url,

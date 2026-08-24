@@ -2798,7 +2798,7 @@ function renderAuxiliaryWorkerPlot(product, data) {
   Plotly.react(node, traces, layout, { responsive: true, displaylogo: false });
 }
 async function render() {
-  const response = await fetch("/live-feeds/status.json", { cache: "no-store" });
+  const response = await fetch("status.json", { cache: "no-store" });
   const status = await response.json();
   const products = Object.entries(status.products).sort(([left], [right]) => left.localeCompare(right));
   statusEl.className = "";
@@ -3469,6 +3469,11 @@ mod tests {
             "{response}"
         );
         assert!(response.contains("fallback_demand"), "{response}");
+        assert!(response.contains("fetch(\"status.json\""), "{response}");
+        assert!(
+            !response.contains("fetch(\"/live-feeds/status.json\""),
+            "{response}"
+        );
         Ok(())
     }
 

@@ -638,6 +638,17 @@ def failed_command_summary(command: str | list[str]) -> str:
     return deployment.failed_command_summary(command)
 
 
+def github_git_url(config: dict[str, Any]) -> str:
+    repository = config.get(
+        "github_repository", release_ci.DEFAULT_GITHUB_REPOSITORY
+    )
+    if not isinstance(repository, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository
+    ):
+        raise ManagementError(f"invalid github_repository {repository!r}")
+    return f"git@github.com:{repository}.git"
+
+
 def stage(config_path: Path, releases_path: Path) -> int:
     assert_clean_checkout("stage")
     git("fetch", "--tags", "origin", capture=False)
@@ -666,12 +677,14 @@ def stage(config_path: Path, releases_path: Path) -> int:
             f"This replaces staging release {desired.staging.tag}. The old release tag remains "
             "immutable, but it will no longer be assigned to the staging channel."
         )
+    github_url = github_git_url(config)
     commands = [
         f"Modify deploy/releases.json to make staging {tag}",
         "git add deploy/releases.json",
         f'git commit -m "Stage {tag}"',
         f'git tag -a {tag} -m "Aerobag {tag}"',
         f"git push --atomic origin main {tag}",
+        f"git push --atomic {github_url} main {tag}",
         "tools/prod_manage.py --reconcile",
     ]
     print_proposal(
@@ -693,6 +706,13 @@ def stage(config_path: Path, releases_path: Path) -> int:
     git("commit", "-m", f"Stage {tag}", capture=False)
     git("tag", "-a", tag, "-m", f"Aerobag {tag}", capture=False)
     git("push", "--atomic", "origin", "main", tag, capture=False)
+    try:
+        git("push", "--atomic", github_url, "main", tag, capture=False)
+    except subprocess.CalledProcessError as error:
+        raise ManagementError(
+            f"release {tag} is committed to origin, but its GitHub mirror push failed; "
+            f"retry: git push --atomic {github_url} main {tag}"
+        ) from error
     result = reconcile(config_path, releases_path)
     if result == 0:
         print(

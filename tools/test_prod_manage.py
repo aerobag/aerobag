@@ -480,6 +480,14 @@ class StageOrderingTests(unittest.TestCase):
         git.assert_called_once_with("status", "--porcelain")
         load_config.assert_not_called()
 
+    def test_github_git_url_is_derived_from_the_api_repository(self) -> None:
+        self.assertEqual(
+            prod_manage.github_git_url({"github_repository": "owner/project"}),
+            "git@github.com:owner/project.git",
+        )
+        with self.assertRaisesRegex(prod_manage.ManagementError, "invalid"):
+            prod_manage.github_git_url({"github_repository": "not a repository"})
+
     def test_commit_already_assigned_to_staging_exits_without_prod_access(self) -> None:
         document = desired_document(staging="2026-08-22.1")
 
@@ -539,7 +547,11 @@ class StageOrderingTests(unittest.TestCase):
             return self.clean_git(*args, capture=capture)
 
         with (
-            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+            mock.patch.object(
+                prod_manage.deployment,
+                "load_config",
+                return_value={"github_repository": "aerobag/aerobag"},
+            ),
             mock.patch.object(prod_manage, "git", side_effect=fake_git),
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
@@ -569,6 +581,13 @@ class StageOrderingTests(unittest.TestCase):
                 ("commit", "-m", "Stage 2026-08-22.1"),
                 ("tag", "-a", "2026-08-22.1", "-m", "Aerobag 2026-08-22.1"),
                 ("push", "--atomic", "origin", "main", "2026-08-22.1"),
+                (
+                    "push",
+                    "--atomic",
+                    "git@github.com:aerobag/aerobag.git",
+                    "main",
+                    "2026-08-22.1",
+                ),
             ],
         )
         write_atomic.assert_called_once()

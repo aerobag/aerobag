@@ -85,8 +85,9 @@ run of `.github/workflows/e2e-ci.yml` builds immutable web and Android clients
 for that exact tag and runs every P0, P1, and P2 journey. The ordinary `CI`
 workflow must also pass for the same commit. `--qualification-status` reports
 both deployed-staging and GitHub results, including links to the matching runs.
-The release tag must therefore reach the `aerobag/aerobag` GitHub repository;
-an ordinary main-branch E2E run is intentionally not accepted as a substitute
+`--stage` atomically pushes its new main commit and release tag to the configured
+GitHub repository after updating the shared origin, which starts both workflows.
+An ordinary main-branch E2E run is intentionally not accepted as a substitute
 for the full tag run.
 
 `--promote` requires a clean `main` synchronized with `origin/main`, and checks

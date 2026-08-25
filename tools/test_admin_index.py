@@ -43,6 +43,18 @@ class AdminIndexTests(unittest.TestCase):
         self.assertIn('live:`${base}/live-feeds/status.html`', html)
         self.assertNotIn('/staging/admin/', html)
 
+    def test_labels_reconciler_checks_without_claiming_full_qualification(self) -> None:
+        html = admin_index_html(
+            title="Aerobag Test",
+            front_door="https://example.test",
+            commit_hash="abc123",
+            cycle_products_root="/artifacts/published",
+            live_feed_output_root="/artifacts/live-feeds/v3",
+        )
+
+        self.assertIn("<dt>Deployed checks</dt>", html)
+        self.assertNotIn("<dt>Qualification</dt>", html)
+
 
 if __name__ == "__main__":
     unittest.main()

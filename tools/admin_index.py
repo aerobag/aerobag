@@ -113,7 +113,7 @@ function card(role, tag, record) {{
     <dl class="facts">
       <dt>Commit</dt><dd><code>${{esc(record?.commit || "unknown")}}</code></dd>
       <dt>Build</dt><dd class="${{stateClass(record?.build_status)}}">${{esc(record?.build_status || "unknown")}}</dd>
-      <dt>Qualification</dt><dd class="${{stateClass(record?.qualification_status)}}">${{esc(record?.qualification_status || "unknown")}}</dd>
+      <dt>Deployed checks</dt><dd class="${{stateClass(record?.qualification_status)}}">${{esc(record?.qualification_status || "unknown")}}</dd>
       <dt>Live feeds</dt><dd class="${{stateClass(record?.live_feed_status)}}">${{esc(record?.live_feed_status || "unknown")}}</dd>
       ${{record?.last_error ? `<dt>Last error</dt><dd class="critical">${{esc(record.last_error)}}</dd>` : ""}}
     </dl>

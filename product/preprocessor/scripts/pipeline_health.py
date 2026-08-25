@@ -734,7 +734,7 @@ def add_channel_release_metrics(
     role = channel.get("role")
     for field, label in [
         ("build_status", "release build"),
-        ("qualification_status", "release qualification"),
+        ("qualification_status", "deployed release checks"),
         ("live_feed_status", "release live-feed daemon"),
     ]:
         value = record.get(field)

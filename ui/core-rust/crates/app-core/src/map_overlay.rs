@@ -48,6 +48,7 @@ const OBSTACLE_LOOKAHEAD_CENTER_OFFSET_DIAMETER_RATIO: f64 = 0.3;
 const OBSTACLE_BELOW_OWNERSHIP_HIDE_FT: f64 = 1000.0;
 const OBSTACLE_CAUTION_LOWER_FT: f64 = 800.0;
 const OBSTACLE_DANGER_LOWER_FT: f64 = 200.0;
+const WEATHER_CAMERA_AIRPORT_BADGE_OFFSET_LOGICAL_PX: f64 = 14.0;
 const WEATHER_DISPLAY_FEATURE_LIMIT: usize = 1_000;
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
@@ -101,15 +102,20 @@ fn vector_display_budget_buckets() -> Vec<VectorDisplayBudgetBucket> {
             layer: "fix",
             features: Vec::new(),
         },
+        VectorDisplayBudgetBucket {
+            layer: "weather_camera",
+            features: Vec::new(),
+        },
     ]
 }
 
-fn vector_display_budget_bucket_index(layer: &str) -> Option<usize> {
-    match layer {
+fn vector_display_budget_bucket_index(symbol_kind: &str) -> Option<usize> {
+    match symbol_kind {
         "obstacle" => Some(0),
         "airport" => Some(1),
         "nav" => Some(2),
         "fix" => Some(3),
+        "weather_camera" => Some(4),
         _ => None,
     }
 }
@@ -2263,6 +2269,7 @@ pub fn query_map_overlay_for_surface(
     let mut visible_features = Vec::new();
     let mut vector_budget = VectorDisplayBudgetAudit::default();
     let mut vector_budget_buckets = vector_display_budget_buckets();
+    let mut weather_camera_airport_idents = HashMap::new();
     let projection = MapProjectionContext::new(metrics);
     let center_world = projection.center_world;
     let scale = projection.scale;
@@ -2323,8 +2330,12 @@ pub fn query_map_overlay_for_surface(
                         point,
                         VectorIdentLabelStyle::Default,
                     );
+                    remember_weather_camera_airport_ident(
+                        record,
+                        &mut weather_camera_airport_idents,
+                    );
                     if let Some(bucket_index) =
-                        vector_display_budget_bucket_index(&tile.request.layer)
+                        vector_display_budget_bucket_index(&feature.symbol_kind)
                     {
                         vector_budget_buckets[bucket_index].features.push(feature);
                     }
@@ -2380,7 +2391,9 @@ pub fn query_map_overlay_for_surface(
                         point,
                         VectorIdentLabelStyle::Default,
                     );
-                    if let Some(bucket_index) = vector_display_budget_bucket_index(&tile.layer) {
+                    if let Some(bucket_index) =
+                        vector_display_budget_bucket_index(&feature.symbol_kind)
+                    {
                         vector_budget_buckets[bucket_index].features.push(feature);
                     }
                 }
@@ -2415,6 +2428,12 @@ pub fn query_map_overlay_for_surface(
             break;
         }
     }
+    layout_weather_camera_badges(
+        &mut visible_features,
+        &weather_camera_airport_idents,
+        point_display_scale,
+    );
+    sort_visible_point_features_for_paint(&mut visible_features);
     let budget_ms = overlay_elapsed_ms(budget_started_at);
     let mut data_status_records = if vector_budget.omitted_after_cap > 0 {
         let omitted_summary = layer_counts_summary(&vector_budget.omitted_by_layer);
@@ -2685,6 +2704,122 @@ fn visible_map_feature_from_symbol(
         longest_runway_heading_true_deg: symbol.longest_runway_heading_true_deg,
         label_style,
     }
+}
+
+fn remember_weather_camera_airport_ident(
+    record: &PointVectorRecord,
+    camera_airport_idents: &mut HashMap<String, String>,
+) {
+    if record.style_class != "weather_camera" {
+        return;
+    }
+    let Some(ident) = record
+        .weather_camera
+        .as_ref()
+        .and_then(|camera| camera.icao.as_deref())
+        .map(str::trim)
+        .filter(|ident| !ident.is_empty())
+    else {
+        return;
+    };
+    camera_airport_idents.insert(record.id.clone(), ident.to_ascii_uppercase());
+}
+
+#[derive(Debug)]
+struct AirportBadgeAnchor {
+    id: String,
+    ident: String,
+    screen_x: f64,
+    screen_y: f64,
+    symbol_rect: LabelRect,
+}
+
+fn layout_weather_camera_badges(
+    features: &mut [VisibleMapFeature],
+    camera_airport_idents: &HashMap<String, String>,
+    display_scale: f64,
+) {
+    let airports = features
+        .iter()
+        .filter(|feature| feature.symbol_kind == "airport")
+        .filter_map(|feature| {
+            Some(AirportBadgeAnchor {
+                id: feature.id.clone(),
+                ident: feature
+                    .id
+                    .strip_prefix("airports:")?
+                    .trim()
+                    .to_ascii_uppercase(),
+                screen_x: feature.screen_x,
+                screen_y: feature.screen_y,
+                symbol_rect: point_feature_symbol_rect(feature, display_scale)?,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut badge_counts = HashMap::<String, usize>::new();
+    let offset =
+        WEATHER_CAMERA_AIRPORT_BADGE_OFFSET_LOGICAL_PX * normalized_display_scale(display_scale);
+    let slots = [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)];
+
+    for camera in features
+        .iter_mut()
+        .filter(|feature| feature.symbol_kind == "weather_camera")
+    {
+        let Some(camera_rect) = point_feature_symbol_rect(camera, display_scale) else {
+            continue;
+        };
+        let preferred_ident = camera_airport_idents.get(&camera.id);
+        let Some(airport) = airports
+            .iter()
+            .filter(|airport| camera_rect.overlaps(airport.symbol_rect))
+            .min_by(|left, right| {
+                let left_preferred = preferred_ident == Some(&left.ident);
+                let right_preferred = preferred_ident == Some(&right.ident);
+                right_preferred
+                    .cmp(&left_preferred)
+                    .then_with(|| {
+                        let left_distance = (left.screen_x - camera.screen_x).powi(2)
+                            + (left.screen_y - camera.screen_y).powi(2);
+                        let right_distance = (right.screen_x - camera.screen_x).powi(2)
+                            + (right.screen_y - camera.screen_y).powi(2);
+                        left_distance.total_cmp(&right_distance)
+                    })
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+        else {
+            continue;
+        };
+        let badge_index = badge_counts.entry(airport.id.clone()).or_default();
+        let slot = slots[*badge_index % slots.len()];
+        let ring = 1.0 + (*badge_index / slots.len()) as f64;
+        *badge_index += 1;
+        camera.screen_x = airport.screen_x + slot.0 * offset * ring;
+        camera.screen_y = airport.screen_y + slot.1 * offset * ring;
+        camera.label.clear();
+    }
+}
+
+fn point_feature_paint_rank(feature: &VisibleMapFeature) -> u8 {
+    match feature.symbol_kind.as_str() {
+        "weather_camera" => 0,
+        "obstacle" if feature.obstacle_tone.as_deref() == Some("muted") => 5,
+        "fix" => 10,
+        "nav" => 20,
+        "airport" => 30,
+        "obstacle" if feature.obstacle_tone.as_deref() == Some("danger") => 50,
+        "obstacle" => 40,
+        _ => 10,
+    }
+}
+
+fn sort_visible_point_features_for_paint(features: &mut [VisibleMapFeature]) {
+    features.sort_by(|left, right| {
+        point_feature_paint_rank(left)
+            .cmp(&point_feature_paint_rank(right))
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.screen_x.total_cmp(&right.screen_x))
+            .then_with(|| left.screen_y.total_cmp(&right.screen_y))
+    });
 }
 
 fn project_offline_regions(
@@ -3234,6 +3369,9 @@ pub fn query_map_selection_for_surface_in_time_zone(
     let mut matched_nav_refs = BTreeSet::new();
     let mut vector_layer_airport_ids = BTreeSet::new();
     let mut nearest_weather_camera = None::<(f64, String)>;
+    let mut projected_records = Vec::<(&PointVectorRecord, bool, bool, NavSymbolFeature)>::new();
+    let mut projected_features = Vec::<VisibleMapFeature>::new();
+    let mut weather_camera_airport_idents = HashMap::new();
 
     for tile in visible_point_display_tile_window(
         config,
@@ -3251,7 +3389,9 @@ pub fn query_map_selection_for_surface_in_time_zone(
         };
         for record in vector_tile_point_records(payload, &tile.request.layer) {
             let is_airport = selection_record_is_airport(record);
-            if !is_airport && !should_display_record(record) {
+            let is_weather_camera = record.style_class == "weather_camera";
+            let is_displayed = should_display_record(record);
+            if !is_airport && !is_displayed {
                 continue;
             }
             let point = world_to_screen_with_x_offset(
@@ -3265,69 +3405,111 @@ pub fn query_map_selection_for_surface_in_time_zone(
                 },
                 tile.world_x_offset,
             );
-            let distance_px =
-                ((point.x - click_screen.x).powi(2) + (point.y - click_screen.y).powi(2)).sqrt();
-            if distance_px > hit_radius_px {
+            if !is_airport && !is_weather_camera {
+                let distance_px = ((point.x - click_screen.x).powi(2)
+                    + (point.y - click_screen.y).powi(2))
+                .sqrt();
+                if distance_px > hit_radius_px {
+                    continue;
+                }
+                let Some(symbol) = selection_symbol_for_point(record, false) else {
+                    continue;
+                };
+                if record.style_class == "fix" || record.style_class == "nav" {
+                    let item = selection_item_for_point(
+                        record,
+                        &symbol,
+                        plan,
+                        AirportPlateAvailability::default(),
+                        None,
+                    );
+                    if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
+                        matched_nav_refs.insert(key);
+                    }
+                    navaids.push(MapSelectionPointMatch { item, distance_px });
+                }
                 continue;
             }
             let Some(symbol) = selection_symbol_for_point(record, is_airport) else {
                 continue;
             };
-            if is_airport {
-                if should_display_record(record) {
-                    vector_layer_airport_ids.insert(record.id.clone());
+            remember_weather_camera_airport_ident(record, &mut weather_camera_airport_idents);
+            projected_features.push(visible_map_feature_from_symbol(
+                record.id.clone(),
+                symbol.clone(),
+                point,
+                VectorIdentLabelStyle::Default,
+            ));
+            projected_records.push((record, is_airport, is_displayed, symbol));
+        }
+    }
+
+    let displayed_indices = projected_records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, _, is_displayed, _))| is_displayed.then_some(index))
+        .collect::<Vec<_>>();
+    let mut displayed_features = displayed_indices
+        .iter()
+        .map(|index| projected_features[*index].clone())
+        .collect::<Vec<_>>();
+    layout_weather_camera_badges(
+        &mut displayed_features,
+        &weather_camera_airport_idents,
+        point_display_scale,
+    );
+    for (index, displayed_feature) in displayed_indices.into_iter().zip(displayed_features) {
+        projected_features[index] = displayed_feature;
+    }
+
+    for ((record, is_airport, is_displayed, symbol), feature) in
+        projected_records.into_iter().zip(projected_features)
+    {
+        let distance_px = ((feature.screen_x - click_screen.x).powi(2)
+            + (feature.screen_y - click_screen.y).powi(2))
+        .sqrt();
+        if distance_px > hit_radius_px {
+            continue;
+        }
+        if is_airport {
+            if is_displayed {
+                vector_layer_airport_ids.insert(record.id.clone());
+            }
+            let availability = selection_nav_ref(record, true)
+                .and_then(|nav_ref| match nav_ref {
+                    NavRef::Airport(airport_id) => Some(airport_plate_availability(&airport_id)),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let airport_id = selection_nav_ref(record, true).and_then(|nav_ref| match nav_ref {
+                NavRef::Airport(airport_id) => Some(airport_id),
+                _ => None,
+            });
+            let weather_detail = airport_id.as_deref().and_then(|airport_id| {
+                weather_detail_for_airport(
+                    airport_id,
+                    weather_station_airport_aliases,
+                    metar_payload,
+                    taf_payload,
+                    notam_payload,
+                    weather_age_reference_utc,
+                )
+            });
+            let item =
+                selection_item_for_point(record, &symbol, plan, availability, weather_detail);
+            if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
+                matched_nav_refs.insert(key);
+            }
+            airports.push(MapSelectionPointMatch { item, distance_px });
+        } else if record.style_class == "weather_camera" {
+            if let Some(item) = selection_item_for_weather_camera(record, symbol) {
+                let replace_nearest = nearest_weather_camera
+                    .as_ref()
+                    .is_none_or(|(nearest_distance, _)| distance_px < *nearest_distance);
+                if replace_nearest {
+                    nearest_weather_camera = Some((distance_px, item.id.clone()));
                 }
-                let availability = selection_nav_ref(record, true)
-                    .and_then(|nav_ref| match nav_ref {
-                        NavRef::Airport(airport_id) => {
-                            Some(airport_plate_availability(&airport_id))
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-                let airport_id =
-                    selection_nav_ref(record, true).and_then(|nav_ref| match nav_ref {
-                        NavRef::Airport(airport_id) => Some(airport_id),
-                        _ => None,
-                    });
-                let weather_detail = airport_id.as_deref().and_then(|airport_id| {
-                    weather_detail_for_airport(
-                        airport_id,
-                        weather_station_airport_aliases,
-                        metar_payload,
-                        taf_payload,
-                        notam_payload,
-                        weather_age_reference_utc,
-                    )
-                });
-                let item =
-                    selection_item_for_point(record, &symbol, plan, availability, weather_detail);
-                if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
-                    matched_nav_refs.insert(key);
-                }
-                airports.push(MapSelectionPointMatch { item, distance_px });
-            } else if record.style_class == "weather_camera" {
-                if let Some(item) = selection_item_for_weather_camera(record, symbol) {
-                    let replace_nearest = nearest_weather_camera
-                        .as_ref()
-                        .is_none_or(|(nearest_distance, _)| distance_px < *nearest_distance);
-                    if replace_nearest {
-                        nearest_weather_camera = Some((distance_px, item.id.clone()));
-                    }
-                    weather.push(MapSelectionPointMatch { item, distance_px });
-                }
-            } else if record.style_class == "fix" || record.style_class == "nav" {
-                let item = selection_item_for_point(
-                    record,
-                    &symbol,
-                    plan,
-                    AirportPlateAvailability::default(),
-                    None,
-                );
-                if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
-                    matched_nav_refs.insert(key);
-                }
-                navaids.push(MapSelectionPointMatch { item, distance_px });
+                weather.push(MapSelectionPointMatch { item, distance_px });
             }
         }
     }
@@ -7732,6 +7914,211 @@ mod tests {
             obstacle: None,
             weather_camera: None,
         }
+    }
+
+    fn test_colocated_airport_and_weather_camera(position: LatLon) -> Vec<PointVectorRecord> {
+        let mut airport = test_point_record("airports:KSEA".to_string(), "airport", "airport");
+        airport.lat = position.lat;
+        airport.lon = position.lon;
+        airport.label = "SEATTLE-TACOMA INTL".to_string();
+        airport.towered = Some(true);
+        airport.has_paved_runway = Some(true);
+        airport.longest_runway_length_ft = Some(11_901.0);
+        airport.longest_runway_heading_true_deg = Some(160.0);
+
+        let mut camera = test_point_record(
+            "weather-camera:150".to_string(),
+            "weather camera",
+            "weather_camera",
+        );
+        camera.lat = position.lat;
+        camera.lon = position.lon;
+        camera.label = "KSEA".to_string();
+        camera.weather_camera = Some(WeatherCameraPointSemantics {
+            site_id: "150".to_string(),
+            site_name: "Seattle-Tacoma International".to_string(),
+            site_identifier: Some("KSEA".to_string()),
+            icao: Some("KSEA".to_string()),
+            page_url: "https://weathercams.faa.gov/cameras/cameraSite/150/summary".to_string(),
+            operated_by: Some("FAA".to_string()),
+            attribution: None,
+            active: Some(true),
+            in_maintenance: Some(false),
+            third_party: Some(false),
+        });
+        vec![airport, camera]
+    }
+
+    #[test]
+    fn colocated_weather_camera_is_an_unlabelled_badge_below_its_airport() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.4489,
+                lon: -122.3094,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let airport_tile =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0)
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
+        let mut cache = HashMap::new();
+        cache.insert(
+            tile_key(
+                &airport_tile.layer,
+                airport_tile.z,
+                airport_tile.x,
+                airport_tile.y,
+            ),
+            PointTilePayload {
+                schema_version: 1,
+                layer: airport_tile.layer,
+                z: airport_tile.z,
+                x: airport_tile.x,
+                y: airport_tile.y,
+                records: test_colocated_airport_and_weather_camera(viewport.center),
+            },
+        );
+
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            900.0,
+            &cache,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(
+            result
+                .visible_features
+                .iter()
+                .map(|feature| feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["weather-camera:150", "airports:KSEA"],
+            "later features paint above earlier features on both platforms",
+        );
+        let camera = result
+            .visible_features
+            .iter()
+            .find(|feature| feature.id == "weather-camera:150")
+            .expect("weather camera feature");
+        assert_eq!(camera.label, "");
+        assert!((camera.screen_x - 614.0).abs() < 1e-6);
+        assert!((camera.screen_y - 464.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ordinary_vector_paint_order_follows_operational_priority() {
+        let mut features = vec![
+            test_visible_feature("airports:KSEA", "airport", "airport", "KSEA", 0.0, 0.0),
+            test_visible_feature("nav:SEA:VOR", "VOR", "nav", "SEA", 0.0, 0.0),
+            test_visible_feature("fix:HAROB", "fix", "fix", "HAROB", 0.0, 0.0),
+            test_visible_feature(
+                "weather-camera:150",
+                "weather camera",
+                "weather_camera",
+                "KSEA",
+                0.0,
+                0.0,
+            ),
+            test_visible_feature("obstacle:danger", "obstacle", "obstacle", "", 0.0, 0.0),
+            test_visible_feature("obstacle:caution", "obstacle", "obstacle", "", 0.0, 0.0),
+            test_visible_feature("obstacle:muted", "obstacle", "obstacle", "", 0.0, 0.0),
+        ];
+        features[4].obstacle_tone = Some("danger".to_string());
+        features[5].obstacle_tone = Some("caution".to_string());
+        features[6].obstacle_tone = Some("muted".to_string());
+
+        sort_visible_point_features_for_paint(&mut features);
+
+        assert_eq!(
+            features
+                .iter()
+                .map(|feature| feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "weather-camera:150",
+                "obstacle:muted",
+                "fix:HAROB",
+                "nav:SEA:VOR",
+                "airports:KSEA",
+                "obstacle:caution",
+                "obstacle:danger",
+            ],
+        );
+    }
+
+    #[test]
+    fn map_selection_hits_the_displaced_weather_camera_badge() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.4489,
+                lon: -122.3094,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let airport_tile =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 900.0)
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
+        let mut point_tiles = HashMap::new();
+        point_tiles.insert(
+            tile_key(
+                &airport_tile.layer,
+                airport_tile.z,
+                airport_tile.x,
+                airport_tile.y,
+            ),
+            PointTilePayload {
+                schema_version: 1,
+                layer: airport_tile.layer,
+                z: airport_tile.z,
+                x: airport_tile.x,
+                y: airport_tile.y,
+                records: test_colocated_airport_and_weather_camera(viewport.center),
+            },
+        );
+        let vector_tiles =
+            aggregate_test_vector_tiles(&point_tiles, &HashMap::new(), &HashMap::new());
+        let config = test_map_overlay_config();
+        let metar_tiles = HashMap::new();
+        let airspaces = HashMap::new();
+        let aliases = WeatherStationAirportAliases::default();
+        let mut availability = |_: &str| AirportPlateAvailability::default();
+        let center_world = lat_lon_to_world(viewport.center);
+        let scale = 2.0_f64.powf(viewport.zoom);
+        let badge_click = world_to_lat_lon(WorldPoint {
+            x: center_world.x + 14.0 / scale,
+            y: center_world.y + 14.0 / scale,
+        });
+
+        let selection = query_map_selection(
+            &viewport,
+            1200.0,
+            900.0,
+            MapSelectionQuery::new(
+                &config,
+                badge_click,
+                &vector_tiles,
+                &metar_tiles,
+                &airspaces,
+                &aliases,
+                &mut availability,
+            ),
+        );
+
+        assert_eq!(
+            selection.initial_selected_item_id.as_deref(),
+            Some("weather-camera:150"),
+        );
     }
 
     #[test]

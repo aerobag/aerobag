@@ -44,14 +44,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-      - name: Check shared crates
-        run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path crates/Cargo.toml --all --check
-      - name: Check application core
-        run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path ui/core-rust/Cargo.toml --all --check
-      - name: Check preprocessors
-        run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path product/preprocessor/Cargo.toml --all --check
-      - name: Check services
-        run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path services/Cargo.toml --all --check
+      - name: Check Rust formatting
+        run: ./scripts/check-rust-format.sh
 
   rust-shared:
     name: Rust shared crates

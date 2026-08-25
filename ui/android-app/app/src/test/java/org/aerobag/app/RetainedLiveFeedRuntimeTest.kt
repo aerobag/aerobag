@@ -13,6 +13,12 @@ import org.junit.Test
 
 class RetainedLiveFeedRuntimeTest {
     @Test
+    fun releasePromotionGateIsEnabledOnlyForE2eArtifacts() {
+        val releaseSource = sourceFile("src/release/java/org/aerobag/app/LiveFeedPromotionGate.kt").readText()
+        assertTrue(releaseSource.contains("enabled = BuildConfig.AEROBAG_E2E_ENABLED"))
+    }
+
+    @Test
     fun persistedWindsAreReportedAsInstallingBeforeTheirPackageIsRead() {
         val source = sourceFile("src/main/java/org/aerobag/app/RetainedLiveFeedRuntime.kt").readText()
         val list = source.substringAfter("private suspend fun listPersistedProducts()")

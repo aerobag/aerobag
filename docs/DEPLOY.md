@@ -71,13 +71,14 @@ tools/prod_manage.py --reconcile
 ```
 
 `--stage` chooses the first unused UTC-date release name such as
-`2026-08-22.1`. It requires a clean synchronized `main`, commits the staging
-assignment, creates an immutable annotated tag at that same commit, atomically
-pushes both, then reconciles production. Production remains on its current
-generation while the candidate builds, starts a separate live-feed daemon, and
-is qualified at `https://aerobag.org/staging/`. If the current commit is already
-the assigned staging release, the command exits and directs the operator to
-`--reconcile`.
+`2026-08-22.1`. It requires a clean synchronized `main` and runs the same
+`scripts/check-rust-format.sh` entry point used by CI before contacting
+production or mutating release intent. It then commits the staging assignment,
+creates an immutable annotated tag at that same commit, atomically pushes both,
+and reconciles production. Production remains on its current generation while
+the candidate builds, starts a separate live-feed daemon, and is qualified at
+`https://aerobag.org/staging/`. If the current commit is already the assigned
+staging release, the command exits and directs the operator to `--reconcile`.
 
 Staging qualification has two independent parts. The production reconciler
 checks the bytes and routes actually exposed under `/staging/`. A release-tag

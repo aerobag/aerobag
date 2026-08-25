@@ -523,6 +523,7 @@ class StageOrderingTests(unittest.TestCase):
         with (
             mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "run_stage_preflight"),
             mock.patch.object(
                 prod_manage,
                 "assert_remote_idle",
@@ -537,6 +538,28 @@ class StageOrderingTests(unittest.TestCase):
                 )
 
         confirmed.assert_not_called()
+
+    def test_failed_preflight_aborts_before_prod_access_or_release_mutation(self) -> None:
+        document = desired_document()
+
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "load_release_document", return_value=document),
+            mock.patch.object(
+                prod_manage,
+                "run_stage_preflight",
+                side_effect=prod_manage.ManagementError("formatting failed"),
+            ),
+            mock.patch.object(prod_manage.deployment, "load_config") as load_config,
+            mock.patch.object(prod_manage, "write_atomic") as write_atomic,
+        ):
+            with self.assertRaisesRegex(prod_manage.ManagementError, "formatting failed"):
+                prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+                )
+
+        load_config.assert_not_called()
+        write_atomic.assert_not_called()
 
     def test_confirmed_stage_executes_the_printed_git_transaction_in_order(self) -> None:
         document = desired_document()
@@ -553,6 +576,7 @@ class StageOrderingTests(unittest.TestCase):
                 return_value={"github_repository": "aerobag/aerobag"},
             ),
             mock.patch.object(prod_manage, "git", side_effect=fake_git),
+            mock.patch.object(prod_manage, "run_stage_preflight") as preflight,
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
             mock.patch.object(
@@ -568,6 +592,7 @@ class StageOrderingTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
+        preflight.assert_called_once_with()
         self.assertEqual(idle.call_count, 2)
         mutation_calls = [
             args

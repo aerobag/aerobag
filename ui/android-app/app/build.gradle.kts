@@ -407,6 +407,7 @@ android {
         }
         release {
             signingConfig = signingConfigs.getByName("aerobag")
+            isDebuggable = androidE2eEnabled
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

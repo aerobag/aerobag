@@ -434,6 +434,8 @@ internal fun HomePage(
     onOfflinePackagesClosed: (() -> Unit)? = null,
     onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
     onOfflinePackageArtifactsChanged: suspend (String, Set<String>) -> Set<String> = { _, _ -> emptySet() },
+    onOfflinePackageArtifactsCommitted: () -> Unit = {},
+    showPrimaryNavigation: Boolean = true,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -648,6 +650,7 @@ internal fun HomePage(
                         warnings = downloadSummary.warnings + gcResult.warnings,
                     ),
                 )
+                onOfflinePackageArtifactsCommitted()
             }
 
             DurableOfflinePackageSyncPhase.Complete -> {
@@ -703,19 +706,21 @@ internal fun HomePage(
             (HomeGridTileSize * homeGridRowCount.toFloat()) +
                 (ThumbGap * (homeGridRowCount - 1).toFloat())
 
-        PrimaryNavigationDock(
-            currentPage = page,
-            navElement = navElement,
-            chartPlateTargetPage = mostRecentChartOrPlatePage,
-            onHomeClick = { onSelectPage(AppPage.Home) },
-            onOpenPlan = onOpenPlan,
-            onSelectPage = onSelectPage,
-            onOpenChartOrPlate = onOpenRecentChartOrPlate,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = ThumbGap)
-                .zIndex(OverlayPlaneControls),
-        )
+        if (showPrimaryNavigation) {
+            PrimaryNavigationDock(
+                currentPage = page,
+                navElement = navElement,
+                chartPlateTargetPage = mostRecentChartOrPlatePage,
+                onHomeClick = { onSelectPage(AppPage.Home) },
+                onOpenPlan = onOpenPlan,
+                onSelectPage = onSelectPage,
+                onOpenChartOrPlate = onOpenRecentChartOrPlate,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = ThumbGap)
+                    .zIndex(OverlayPlaneControls),
+            )
+        }
 
         if (!offlinePackagesRouted) {
             LazyVerticalGrid(

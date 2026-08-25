@@ -6,6 +6,11 @@ function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
 }
 
+export function offlineSyncButtonIsIdle(button) {
+  return Boolean(button?.enabled) &&
+    !/\b(?:APPLYING|SYNCING|CANCELING)\b/i.test(button.text ?? "");
+}
+
 function rasterCounts(entries) {
   const id = idOf(entries);
   const match = /planned:(\d+):loaded:(\d+):failed:(\d+)/.exec(id ?? "");
@@ -1063,7 +1068,7 @@ async function contractFailures(runtime) {
 async function waitForOfflineSyncIdle(runtime, description, timeoutMs = 120_000) {
   return runtime.eventually(description, async () => {
     const button = await runtime.driver.readElement("offline-sync-button");
-    return button?.enabled && !/SYNCING|CANCELING/i.test(button.text ?? "") ? button : null;
+    return offlineSyncButtonIsIdle(button) ? button : null;
   }, timeoutMs, 500);
 }
 

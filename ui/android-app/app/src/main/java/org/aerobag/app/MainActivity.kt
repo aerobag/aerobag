@@ -2623,6 +2623,27 @@ internal fun AerobagApp(
                 onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
                 onOpenRecentChartOrPlate = { requestRuntimeReload(AppPage.Map) },
                 offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                onOfflinePackageArtifactsChanged = { _, _ ->
+                    retainedModel.page = AppPage.OfflinePackages
+                    retainedModel.resetRuntime()
+                    Log.i("AerobagRuntime", "reloading runtime after bootstrap package sync")
+                    retainedModel.awaitStartupPreparation(
+                        context.applicationContext,
+                        startupPerfTrace,
+                    ).also { result ->
+                        Log.i(
+                            "AerobagRuntime",
+                            "bootstrap package sync runtime reload success=${result.isSuccess}",
+                        )
+                    }
+                    emptySet()
+                },
+                onOfflinePackageArtifactsCommitted = {
+                    runtimeFixture = checkNotNull(retainedModel.runtimeResult) {
+                        "bootstrap package adoption completed without a prepared runtime result"
+                    }
+                },
+                showPrimaryNavigation = false,
             )
         }
     }

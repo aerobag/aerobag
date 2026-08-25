@@ -7,4 +7,7 @@ package org.aerobag.app
 import android.content.Context
 
 internal fun createInitialLiveFeedPromotionGate(context: Context): InitialLiveFeedPromotionGate =
-    InitialLiveFeedPromotionGate { }
+    createFileControlledInitialLiveFeedPromotionGate(
+        context,
+        enabled = BuildConfig.AEROBAG_E2E_ENABLED,
+    )

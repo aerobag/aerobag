@@ -2933,9 +2933,13 @@ mod tests {
         writer.start_file("manifest.json", options).unwrap();
         writer.write_all(&state_manifest_bytes).unwrap();
         writer.start_file("tiles/res0/0/0.png", options).unwrap();
-        writer.write_all(&solid_png(1, 1, [20, 40, 60, 255])).unwrap();
+        writer
+            .write_all(&solid_png(1, 1, [20, 40, 60, 255]))
+            .unwrap();
         writer.start_file("tiles/res1/0/0.png", options).unwrap();
-        writer.write_all(&solid_png(1, 1, [20, 40, 60, 255])).unwrap();
+        writer
+            .write_all(&solid_png(1, 1, [20, 40, 60, 255]))
+            .unwrap();
         let package = writer.finish().unwrap().into_inner();
         let state_sha256 = canonical_json_sha256(&state_manifest).unwrap();
         let manifest = serde_json::json!({

@@ -37,6 +37,7 @@ DEFAULT_CONFIG = REPO_ROOT / "deploy/aerobag-prod.json"
 DEFAULT_RELEASES = REPO_ROOT / "deploy/releases.json"
 PRODUCT_CONTRACT_SOURCE = "crates/product-contracts/src/lib.rs"
 LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
+RUST_FORMAT_CHECK = REPO_ROOT / "scripts/check-rust-format.sh"
 
 
 class ManagementError(RuntimeError):
@@ -649,6 +650,17 @@ def github_git_url(config: dict[str, Any]) -> str:
     return f"git@github.com:{repository}.git"
 
 
+def run_stage_preflight() -> None:
+    print("Running release preflight: Rust formatting")
+    try:
+        run([str(RUST_FORMAT_CHECK)], capture=False)
+    except subprocess.CalledProcessError as error:
+        raise ManagementError(
+            "release preflight failed: Rust formatting is not clean; "
+            "run scripts/check-rust-format.sh"
+        ) from error
+
+
 def stage(config_path: Path, releases_path: Path) -> int:
     assert_clean_checkout("stage")
     git("fetch", "--tags", "origin", capture=False)
@@ -665,6 +677,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
                 "use --reconcile to check production state"
             )
 
+    run_stage_preflight()
     config = deployment.load_config(config_path)
     assert_remote_idle(config)
     tag = next_release_name(existing_release_tags())

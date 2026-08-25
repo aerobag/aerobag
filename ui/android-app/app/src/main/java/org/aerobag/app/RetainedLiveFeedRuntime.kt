@@ -7,6 +7,7 @@ package org.aerobag.app
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import java.io.File
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
@@ -16,6 +17,7 @@ import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.AndroidLiveFeedClient
@@ -29,6 +31,23 @@ import org.aerobag.app.generated.UiSessionUpdateGroup
 
 internal fun interface InitialLiveFeedPromotionGate {
     suspend fun awaitPromotion(installed: List<LiveFeedInstalledSummary>)
+}
+
+internal const val E2eLiveFeedPromotionPauseFile = "e2e-live-feed-promotion.pause"
+internal const val E2eLiveFeedPromotionPauseMarker = "E2E live-feed promotion paused"
+
+internal fun createFileControlledInitialLiveFeedPromotionGate(
+    context: Context,
+    enabled: Boolean,
+): InitialLiveFeedPromotionGate {
+    if (!enabled) return InitialLiveFeedPromotionGate { }
+    val sentinel = File(context.filesDir, E2eLiveFeedPromotionPauseFile)
+    return InitialLiveFeedPromotionGate { installed ->
+        if (sentinel.exists() && installed.isNotEmpty()) {
+            Log.i("AndroidLiveFeeds", E2eLiveFeedPromotionPauseMarker)
+            while (sentinel.exists()) delay(50)
+        }
+    }
 }
 
 internal suspend fun runLiveFeedStartup(

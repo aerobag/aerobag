@@ -58,7 +58,10 @@ import {
   waitForNode,
 } from "./android-harness.mjs";
 import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
-import { releaseJourneyImplementation } from "./release-journey-implementations.mjs";
+import {
+  offlineSyncButtonIsIdle,
+  releaseJourneyImplementation,
+} from "./release-journey-implementations.mjs";
 import { RELEASE_JOURNEYS } from "./release-journey-registry.mjs";
 import { executeReleaseJourney } from "./release-journey-runtime.mjs";
 import { AndroidSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
@@ -198,8 +201,10 @@ function runtimeUiVisible(xml) {
 function offlineSyncIsIdle(xml) {
   const node = findNode(xml, (candidate) => hasAndroidTag(candidate, "parity:offline-sync-button"));
   if (!node) return false;
-  const label = androidNodeLabel(xml, node).toUpperCase();
-  return node.enabled === "true" && !label.includes("SYNCING") && !label.includes("CANCELING");
+  return offlineSyncButtonIsIdle({
+    enabled: node.enabled === "true",
+    text: androidNodeLabel(xml, node),
+  });
 }
 
 async function tapTagIfPresent(serial, tag, timeoutMs = 3000) {
@@ -272,12 +277,11 @@ async function ensureOfflinePackagesReady(
 
     if (offlineSyncIsIdle(dumpAndroid(serial)) && await tapTagIfPresent(serial, "parity:offline-sync-button", 10000)) {
       recordStep(result, "offline package sync requested", "region nw");
-      await delay(1000);
       await waitFor(() => {
         const nextXml = dumpAndroid(serial);
-        return androidRuntimeReadyForJourney(nextXml) || offlineSyncIsIdle(nextXml);
-      }, 600000, "offline package sync completion", 1000);
-      recordStep(result, "offline package sync completed");
+        return runtimeUiVisible(nextXml) || disclaimerVisible(nextXml);
+      }, 120000, "runtime loaded after offline package sync", 500);
+      recordStep(result, "offline package sync completed", "runtime loaded");
     }
   }
 

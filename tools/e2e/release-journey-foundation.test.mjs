@@ -18,6 +18,7 @@ import { verifyProductSurfaceCoverage } from "./product-surface-coverage.mjs";
 import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-registry.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
+  offlineSyncButtonIsIdle,
   rasterPlanIsDisplayReady,
   selectChartSearchSuggestion,
 } from "./release-journey-implementations.mjs";
@@ -116,6 +117,31 @@ echo '{"live_feed_profile":"fresh","serves_web_app":false}'
   }
 });
 
+test("Android journey suites bound blocked driver processes", () => {
+  const lab = readFileSync(
+    new URL("./release_journey_lab.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(lab, /AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-300/);
+  assert.match(
+    lab,
+    /timeout --foreground --kill-after=15s "\$\{ANDROID_JOURNEY_TIMEOUT_SECONDS\}s"/,
+  );
+
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/e2e-ci.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    workflow,
+    /release-journey-android:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 45/,
+  );
+  assert.match(
+    workflow,
+    /android-native:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 30/,
+  );
+});
+
 test("local lab and immutable app builds agree on fixed service ports", () => {
   const lab = readFileSync(
     new URL("./release_journey_lab.sh", import.meta.url),
@@ -131,6 +157,11 @@ test("local lab and immutable app builds agree on fixed service ports", () => {
   }
   assert.match(builder, /AEROBAG_E2E_ENABLED=1/);
   assert.match(builder, /ANDROID_DEV_SERVER_BASE_URL="\$PACKAGE_ORIGIN"/);
+  const androidBuild = readFileSync(
+    new URL("../../ui/android-app/app/build.gradle.kts", import.meta.url),
+    "utf8",
+  );
+  assert.match(androidBuild, /release\s*\{[\s\S]*?isDebuggable = androidE2eEnabled/);
   const androidHarness = readFileSync(
     new URL("./android-harness.mjs", import.meta.url),
     "utf8",
@@ -176,6 +207,14 @@ test("raster readiness measures painted coverage without hiding reported failure
   assert.equal(rasterPlanIsDisplayReady({ planned: 18, loaded: 17, failed: 0 }), true);
   assert.equal(rasterPlanIsDisplayReady({ planned: 18, loaded: 2, failed: 0 }), false);
   assert.equal(rasterPlanIsDisplayReady({ planned: 18, loaded: 17, failed: 1 }), true);
+});
+
+test("offline package sync completion rejects every in-flight label", () => {
+  assert.equal(offlineSyncButtonIsIdle({ enabled: true, text: "APPLY CHANGES" }), true);
+  assert.equal(offlineSyncButtonIsIdle({ enabled: true, text: "APPLYING (cancel)" }), false);
+  assert.equal(offlineSyncButtonIsIdle({ enabled: true, text: "SYNCING" }), false);
+  assert.equal(offlineSyncButtonIsIdle({ enabled: true, text: "CANCELING" }), false);
+  assert.equal(offlineSyncButtonIsIdle({ enabled: false, text: "APPLY CHANGES" }), false);
 });
 
 test("Android track-up memory is owned above the disposable map page", () => {

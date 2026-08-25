@@ -54,10 +54,12 @@ timestamps and rejects unknown fields.
 make and apply its commits, but they do not introduce a second state model:
 
 - `tools/prod_manage.py --stage` is a desired-state change. It requires a clean
-  synchronized checkout, assigns a new immutable release to staging, commits and
-  tags that exact commit, then enters the reconciliation workflow. If `HEAD` is
-  already the assigned staging release, it exits locally and directs the operator
-  to `--reconcile` instead of turning a change command into an implicit retry.
+  synchronized checkout and runs the repository's CI Rust-formatting check before
+  any production access or release mutation. It assigns a new immutable release
+  to staging, commits and tags that exact commit, then enters the reconciliation
+  workflow. If `HEAD` is already the assigned staging release, it exits locally
+  and directs the operator to `--reconcile` instead of turning a change command
+  into an implicit retry.
 - `tools/prod_manage.py --promote` is a desired-state change. It commits the
   qualified staging assignment as production, clears staging, and then enters
   activation-only reconciliation. With no staging assignment it exits locally;

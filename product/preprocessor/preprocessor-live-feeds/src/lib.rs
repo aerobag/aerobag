@@ -3690,6 +3690,34 @@ mod tests {
     }
 
     #[test]
+    fn nms_five_character_icao_location_survives_normalization_and_publication(
+    ) -> anyhow::Result<()> {
+        let update = nms_initial_load::parse_nms_api_update(
+            r#"<root>
+                <classification>DOM</classification>
+                <NOTAM>
+                    <location>AAA</location>
+                    <number>01/123</number>
+                    <year>2026</year>
+                    <type>N</type>
+                    <text>RWY 01 CLSD</text>
+                </NOTAM>
+                <icaoLocation>01aaa</icaoLocation>
+            </root>"#,
+            nms_initial_load::NmsNotamClassification::Domestic,
+        )?;
+
+        let normalized = update.record;
+        assert_eq!(normalized.icao_id.as_deref(), Some("01AAA"));
+        assert_eq!(normalized.airport_id.as_deref(), Some("01AAA"));
+
+        let published = published_notam_record(&normalized)
+            .context("five-character ICAO location should remain displayable")?;
+        assert_eq!(published.airport_id.as_deref(), Some("01AAA"));
+        Ok(())
+    }
+
+    #[test]
     fn airport_notam_effects_combine_structured_and_text_signals() {
         assert_eq!(
             airport_effects_for_notam(

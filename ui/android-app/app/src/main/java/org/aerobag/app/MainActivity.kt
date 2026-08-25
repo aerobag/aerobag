@@ -3333,13 +3333,14 @@ internal fun AerobagApp(
 
     fun openChartsForAirport(airportId: String, chartId: String? = null) {
         val airport = chartAirportById[airportId]
-        val selectedChart = chartId
-            ?.let { requestedChartId -> airport?.charts?.find { it.id == requestedChartId } }
-            ?: airport?.charts?.firstOrNull()
         val opened = applySessionCommand("openChartAirport") {
-            uiSession.openChartAirport(airportId, selectedChart?.id)
+            uiSession.openChartAirport(airportId, chartId)
         } ?: return
         val openedChart = opened.chartPageState
+        val selectedChartLabel = airport?.charts
+            ?.find { it.id == openedChart.selectedChartId }
+            ?.label
+            .orEmpty()
         applySnapshotLocally(
             currentSnapshot().copy(
                 page = AppPage.Charts,
@@ -3347,7 +3348,7 @@ internal fun AerobagApp(
                 selectedAirportId = openedChart.selectedAirportId,
                 selectedReferenceFamilyId = null,
                 selectedChartId = openedChart.selectedChartId,
-                selectedChartLabel = selectedChart?.label.orEmpty(),
+                selectedChartLabel = selectedChartLabel,
                 recentAirportIds = openedChart.recentAirportIds,
                 suggestedChartIds = emptyList(),
                 chartViewport = null,

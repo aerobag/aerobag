@@ -4062,33 +4062,30 @@ function OperationalApp() {
               return;
             }
             const airport = chartPageData.airports.find((entry) => entry.id === airportId);
-            const resolvedChartId =
-              (chartId && airport?.charts.find((chart) => chart.id === chartId)?.id) ??
-              airport?.charts[0]?.id ??
-              "";
-            const resolvedChartLabel = airport?.charts.find((chart) => chart.id === resolvedChartId)?.label ?? airport?.charts[0]?.label ?? "";
             debugLog("charts.open.request", {
               airport_id: airportId,
-              chart_id: resolvedChartId,
-              chart_label: resolvedChartLabel,
+              chart_id: chartId,
             });
-            void uiSession.openChartAirport(airportId, resolvedChartId || undefined)
+            void uiSession.openChartAirport(airportId, chartId || undefined)
               .then((nextSnapshot) => {
+                const chartState = nextSnapshot.chart_page_state;
+                const selectedChartLabel = airport?.charts.find(
+                  (chart) => chart.id === chartState.selected_chart_id,
+                )?.label ?? "";
                 debugLog("charts.open.snapshot", {
                   requested_airport_id: airportId,
-                  requested_chart_id: resolvedChartId,
-                  selected_airport_id: nextSnapshot.chart_page_state.selected_airport_id,
-                  selected_chart_id: nextSnapshot.chart_page_state.selected_chart_id,
+                  requested_chart_id: chartId,
+                  selected_airport_id: chartState.selected_airport_id,
+                  selected_chart_id: chartState.selected_chart_id,
                 });
                 applySessionSnapshot(nextSnapshot, "open_charts");
-                const chartState = nextSnapshot.chart_page_state;
                 pushViewSnapshot({
                   page: "charts",
                   plateTargetAirportId: airportId,
                   selectedAirportId: chartState.selected_airport_id,
                   selectedReferenceFamilyId: null,
                   selectedChartId: chartState.selected_chart_id,
-                  selectedChartLabel: resolvedChartLabel,
+                  selectedChartLabel,
                   recentAirportIds: chartState.recent_airport_ids,
                   suggestedChartIds: [],
                   chartViewport: null,
@@ -4098,7 +4095,7 @@ function OperationalApp() {
               .catch((error) => {
                 debugLog("charts.open.failed", {
                   airport_id: airportId,
-                  chart_id: resolvedChartId,
+                  chart_id: chartId,
                   error: errorMessage(error),
                 });
               });
@@ -10298,7 +10295,7 @@ function FlightPlanPage(props: {
                 ) : null}
               </form>
             ) : procedurePicker ? (
-              <div className="waypointActionTray procedureChoiceTray">
+              <div className="waypointActionTray procedureChoiceTray" data-testid="plan-procedure-picker">
                 <div className="trayHeader">
                   {procedurePicker.title}
                 </div>

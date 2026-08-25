@@ -21,6 +21,7 @@ import {
   offlineSyncButtonIsIdle,
   rasterPlanIsDisplayReady,
   selectChartSearchSuggestion,
+  selectProcedure,
 } from "./release-journey-implementations.mjs";
 import {
   decodeReleaseJourneyFixturePath,
@@ -140,6 +141,99 @@ test("Android journey suites bound blocked driver processes", () => {
     workflow,
     /android-native:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 30/,
   );
+});
+
+test("Android emulator launchers and journey lab derive one device identity", () => {
+  const root = new URL("../..", import.meta.url).pathname;
+  const helper = new URL("../../ui/android-app/scripts/emulator_identity.sh", import.meta.url).pathname;
+  const identity = (vncPort) => {
+    const env = { ...process.env, VNC_PORT: String(vncPort) };
+    for (const name of [
+      "DISPLAY_NUM", "EMULATOR_CONSOLE_PORT", "EMULATOR_ADB_PORT",
+      "ANDROID_SERIAL", "AVD_INSTANCE_NAME", "EMULATOR_READ_ONLY",
+    ]) {
+      delete env[name];
+    }
+    const result = spawnSync("bash", [helper], { cwd: root, env });
+    assert.equal(result.status, 0, result.stderr.toString());
+    return result.stdout.toString();
+  };
+
+  assert.match(identity(5900), /ANDROID_SERIAL=emulator-5554/);
+  assert.match(identity(5905), /ANDROID_SERIAL=emulator-5564/);
+
+  const lab = readFileSync(new URL("./release_journey_lab.sh", import.meta.url), "utf8");
+  assert.match(lab, /source "\$ROOT\/ui\/android-app\/scripts\/emulator_identity\.sh"/);
+  assert.doesNotMatch(lab, /emulator-5564/);
+});
+
+test("Android qualification isolates semantic tests from Google service instability", () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/e2e-ci.yml", import.meta.url),
+    "utf8",
+  );
+  const aggregate = workflow.match(/  release-journey-android:[\s\S]*?\n  android-native:/)?.[0] ?? "";
+  const native = workflow.match(/  android-native:[\s\S]*?\n  android-chrome-live-feed:/)?.[0] ?? "";
+  assert.match(aggregate, /AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64/);
+  assert.match(native, /matrix\.test == 'android\.plate-first-render-smoke'/);
+  assert.match(native, /system-images;android-34;google_apis;x86_64/);
+  assert.match(native, /system-images;android-34;aosp_atd;x86_64/);
+});
+
+test("procedure replacement waits for the picker transaction before reopening its row", async () => {
+  let transitionSelected = false;
+  let pickerReadCount = 0;
+  const staleRow = { id: "parity:plan-procedure-row:I16R:uid:old" };
+  const currentRow = { id: "parity:plan-procedure-row:I16R:uid:new" };
+  const runtime = {
+    platform: "web",
+    driver: {
+      async findProjectionMatching(prefix, label) {
+        assert.equal(prefix, "parity:plan-row:");
+        assert.equal(label, "KPAE");
+        return { id: "parity:plan-row:airport-row", text: "KPAE" };
+      },
+      async readElement(id) {
+        if (id === "plan-row-action-select_approach") return { enabled: true };
+        if (id === "plan-procedure-picker") {
+          pickerReadCount += 1;
+          return pickerReadCount < 2 ? { id } : null;
+        }
+        return null;
+      },
+      async readProjection(prefix) {
+        if (prefix === "parity:plan-procedure:") {
+          return [{ id: "parity:plan-procedure:I16R" }];
+        }
+        if (prefix === "parity:plan-procedure-transition:") {
+          return [{ id: "parity:plan-procedure-transition:VECTORS", enabled: true }];
+        }
+        if (prefix === "parity:plan-procedure-row:I16R:uid:") {
+          return [transitionSelected && pickerReadCount >= 2 ? currentRow : staleRow];
+        }
+        return [];
+      },
+      async performAction(id) {
+        if (id === "plan-procedure-transition:VECTORS") transitionSelected = true;
+      },
+    },
+    async eventually(label, probe) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const value = await probe();
+        if (value) return value;
+      }
+      throw new Error(`eventually failed: ${label}`);
+    },
+  };
+
+  const selected = await selectProcedure(runtime, {
+    airportId: "KPAE",
+    actionId: "select_approach",
+    procedureId: "I16R",
+  });
+  assert.equal(selected, currentRow);
+  assert.equal(transitionSelected, true);
+  assert.equal(pickerReadCount, 2);
 });
 
 test("local lab and immutable app builds agree on fixed service ports", () => {

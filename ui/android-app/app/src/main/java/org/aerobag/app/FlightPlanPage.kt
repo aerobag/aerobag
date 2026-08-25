@@ -1074,7 +1074,7 @@ internal fun FlightPlanPage(
                 val picker = procedurePicker!!
                 MenuPanel(
                     modifier = Modifier
-                        .testTag("parity:plan-airway-picker")
+                        .testTag("parity:plan-procedure-picker")
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),

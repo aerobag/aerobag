@@ -7,11 +7,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=emulator_identity.sh
+source "$ROOT/ui/android-app/scripts/emulator_identity.sh"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
-if [[ -f "$INSTANCE_CONFIG" ]]; then
-  # shellcheck source=/dev/null
-  source "$INSTANCE_CONFIG"
-fi
+aerobag_source_instance_config "$INSTANCE_CONFIG"
 
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
@@ -24,50 +23,14 @@ PY
 )"
 
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
-VNC_PORT="${VNC_PORT:-5900}"
-DEFAULT_DISPLAY_NUM="$(python3 - <<'PY' "$VNC_PORT"
-import sys
-port = int(sys.argv[1])
-print(f":{max(port - 5900, 1)}")
-PY
-)"
-DEFAULT_EMULATOR_CONSOLE_PORT="$(python3 - <<'PY' "$VNC_PORT"
-import sys
-port = int(sys.argv[1])
-index = max(port - 5900, 0)
-print(5554 + index * 2)
-PY
-)"
+AEROBAG_REQUIRE_EMULATOR_IDENTITY=1
+aerobag_configure_emulator_identity
 STATE_DIR="${AEROBAG_UI_TARGET_ROOT}/android/emulator-stack-${VNC_PORT}"
-DISPLAY_NUM="${DISPLAY_NUM:-$DEFAULT_DISPLAY_NUM}"
-EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
-EMULATOR_ADB_PORT="${EMULATOR_ADB_PORT:-$((EMULATOR_CONSOLE_PORT + 1))}"
-ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
-EXPECTED_ANDROID_SERIAL="emulator-${EMULATOR_CONSOLE_PORT}"
-if [[ "$ANDROID_SERIAL" != "$EXPECTED_ANDROID_SERIAL" ]]; then
-  echo "ANDROID_SERIAL=$ANDROID_SERIAL does not match EMULATOR_CONSOLE_PORT=$EMULATOR_CONSOLE_PORT; expected $EXPECTED_ANDROID_SERIAL" >&2
-  exit 2
-fi
 PACKAGE_SOURCE_PORT="${PACKAGE_SOURCE_PORT:-8083}"
 ANDROID_PACKAGE_SOURCE_REVERSE="${ANDROID_PACKAGE_SOURCE_REVERSE:-1}"
 EMULATOR_HEADLESS="${EMULATOR_HEADLESS:-0}"
 XVFB_SCREEN="${XVFB_SCREEN:-1440x3040x24}"
 VNC_CLIP="${VNC_CLIP:-1080x2400+0+0}"
-AVD_NAME="${AVD_NAME:-aerobag34}"
-if [[ -z "${AVD_INSTANCE_NAME:-}" ]]; then
-  if [[ "$VNC_PORT" == "5900" ]]; then
-    AVD_INSTANCE_NAME="$AVD_NAME"
-  else
-    AVD_INSTANCE_NAME="${AVD_NAME}-${VNC_PORT}"
-  fi
-fi
-if [[ -z "${EMULATOR_READ_ONLY:-}" ]]; then
-  if [[ "$AVD_INSTANCE_NAME" == "$AVD_NAME" ]]; then
-    EMULATOR_READ_ONLY=1
-  else
-    EMULATOR_READ_ONLY=0
-  fi
-fi
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/lib/android-sdk}}"
 EMULATOR_BIN="${EMULATOR_BIN:-$ANDROID_SDK_ROOT/emulator/emulator}"
 AVDMANAGER_BIN="${AVDMANAGER_BIN:-avdmanager}"

@@ -235,6 +235,7 @@ jobs:
       PACKAGE_SOURCE_PORT: 18093
       AEROBAG_E2E_CLOUD_PORT: 18094
       AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
+      AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64
       VNC_PORT: 5900
     steps:
       - uses: actions/checkout@v5
@@ -275,7 +276,7 @@ jobs:
             "platform-tools" \
             "emulator" \
             "platforms;android-34" \
-            "system-images;android-34;google_apis;x86_64"
+            "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
       - name: Start deterministic publication and web peer
@@ -336,6 +337,7 @@ jobs:
       AEROBAG_ANDROID_KEYSTORE_PASSWORD: android
       AEROBAG_ANDROID_KEY_ALIAS: androiddebugkey
       AEROBAG_ANDROID_KEY_PASSWORD: android
+      AVD_PACKAGE_PATH: ${{ matrix.test == 'android.plate-first-render-smoke' && 'system-images;android-34;google_apis;x86_64' || 'system-images;android-34;aosp_atd;x86_64' }}
       PACKAGE_SOURCE_PORT: 18093
       VNC_PORT: 5900
     steps:
@@ -384,7 +386,7 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;26.3.11579264" \
-            "system-images;android-34;google_apis;x86_64"
+            "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
       - name: Create CI signing key

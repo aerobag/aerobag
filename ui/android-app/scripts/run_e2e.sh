@@ -8,6 +8,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 APP_DIR="$ROOT/ui/android-app"
+# shellcheck source=emulator_identity.sh
+source "$APP_DIR/scripts/emulator_identity.sh"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 SKIP_INSTALL=0
@@ -90,10 +92,7 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
-if [[ -f "$INSTANCE_CONFIG" ]]; then
-  # shellcheck source=/dev/null
-  source "$INSTANCE_CONFIG"
-fi
+aerobag_source_instance_config "$INSTANCE_CONFIG"
 if [[ -n "$ENV_ANDROID_SERIAL_SET" ]]; then
   ANDROID_SERIAL="$ENV_ANDROID_SERIAL_VALUE"
 fi
@@ -130,16 +129,7 @@ ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
 GRADLE_USER_HOME="${GRADLE_USER_HOME:-$AEROBAG_UI_TARGET_ROOT/android/gradle-user-home}"
 PROJECT_CACHE_DIR="${PROJECT_CACHE_DIR:-$AEROBAG_UI_TARGET_ROOT/android/project-cache}"
-VNC_PORT="${VNC_PORT:-5900}"
-DEFAULT_EMULATOR_CONSOLE_PORT="$(python3 - <<'PY' "$VNC_PORT"
-import sys
-port = int(sys.argv[1])
-index = max(port - 5900, 0)
-print(5554 + index * 2)
-PY
-)"
-EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
-ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
+aerobag_configure_emulator_identity
 PACKAGE_SOURCE_PORT="${PACKAGE_SOURCE_PORT:-8083}"
 ANDROID_DEV_SERVER_BASE_URL="${ANDROID_DEV_SERVER_BASE_URL:-http://127.0.0.1:${PACKAGE_SOURCE_PORT}}"
 ANDROID_PACKAGE_SOURCE_BASE_URL="${ANDROID_PACKAGE_SOURCE_BASE_URL:-http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/}"

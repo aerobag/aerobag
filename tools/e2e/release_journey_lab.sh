@@ -7,7 +7,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SERIAL="${ANDROID_SERIAL:-emulator-5564}"
+# shellcheck source=../../ui/android-app/scripts/emulator_identity.sh
+source "$ROOT/ui/android-app/scripts/emulator_identity.sh"
+aerobag_source_instance_config "$ROOT/../INSTANCE_CONFIG"
+aerobag_configure_emulator_identity
+SERIAL="$ANDROID_SERIAL"
 PORT="${PACKAGE_SOURCE_PORT:-18093}"
 CLOUD_PORT="${AEROBAG_E2E_CLOUD_PORT:-18094}"
 ARTIFACT_DIR="${AEROBAG_E2E_ARTIFACT_DIR:-/tmp/aerobag-release-journey-results}"

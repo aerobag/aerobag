@@ -7,11 +7,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=emulator_identity.sh
+source "$ROOT/ui/android-app/scripts/emulator_identity.sh"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
-if [[ -f "$INSTANCE_CONFIG" ]]; then
-  # shellcheck source=/dev/null
-  source "$INSTANCE_CONFIG"
-fi
+aerobag_source_instance_config "$INSTANCE_CONFIG"
 
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
@@ -24,32 +23,8 @@ PY
 )"
 
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
-VNC_PORT="${VNC_PORT:-5900}"
-DEFAULT_EMULATOR_CONSOLE_PORT="$(python3 - <<'PY' "$VNC_PORT"
-import sys
-port = int(sys.argv[1])
-index = max(port - 5900, 0)
-print(5554 + index * 2)
-PY
-)"
-EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
-EMULATOR_ADB_PORT="${EMULATOR_ADB_PORT:-$((EMULATOR_CONSOLE_PORT + 1))}"
-ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
-DEFAULT_DISPLAY_NUM="$(python3 - <<'PY' "$VNC_PORT"
-import sys
-port = int(sys.argv[1])
-print(f":{max(port - 5900, 1)}")
-PY
-)"
-DISPLAY_NUM="${DISPLAY_NUM:-$DEFAULT_DISPLAY_NUM}"
-AVD_NAME="${AVD_NAME:-aerobag34}"
-if [[ -z "${AVD_INSTANCE_NAME:-}" ]]; then
-  if [[ "$VNC_PORT" == "5900" ]]; then
-    AVD_INSTANCE_NAME="$AVD_NAME"
-  else
-    AVD_INSTANCE_NAME="${AVD_NAME}-${VNC_PORT}"
-  fi
-fi
+AEROBAG_REQUIRE_EMULATOR_IDENTITY=1
+aerobag_configure_emulator_identity
 STATE_DIR="${AEROBAG_UI_TARGET_ROOT}/android/emulator-stack-${VNC_PORT}"
 XVFB_PID_FILE="${STATE_DIR}/xvfb.pid"
 X11VNC_PID_FILE="${STATE_DIR}/x11vnc.pid"

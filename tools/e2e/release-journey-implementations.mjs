@@ -568,7 +568,7 @@ function procedureTransitionId(entry) {
     .replace(/^plan-procedure-transition-/, "");
 }
 
-async function selectProcedure(runtime, {
+export async function selectProcedure(runtime, {
   airportId, rowLabel = airportId, actionId, procedureId, transition = null,
 }) {
   await planAction(runtime, rowLabel, actionId);
@@ -585,7 +585,11 @@ async function selectProcedure(runtime, {
     }
     return entries.find((entry) => entry.enabled !== false) ?? null;
   }, 45_000);
-  await runtime.driver.performAction(`plan-procedure-transition:${procedureTransitionId(choice)}`);
+  const selectedTransitionId = procedureTransitionId(choice);
+  await runtime.driver.performAction(`plan-procedure-transition:${selectedTransitionId}`);
+  await runtime.eventually(`${procedureId} selection completed`, async () => {
+    return (await runtime.driver.readElement("plan-procedure-picker")) === null;
+  }, 45_000);
   return findProcedureRow(runtime, procedureId);
 }
 

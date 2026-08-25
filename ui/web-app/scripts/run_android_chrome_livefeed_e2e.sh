@@ -8,6 +8,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ANDROID_APP_DIR="$ROOT/ui/android-app"
+# shellcheck source=../../android-app/scripts/emulator_identity.sh
+source "$ANDROID_APP_DIR/scripts/emulator_identity.sh"
+INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 START_EMULATOR=1
 KEEP_EMULATOR="${KEEP_EMULATOR:-}"
 EMULATOR_HEADLESS="${EMULATOR_HEADLESS:-}"
@@ -90,6 +93,8 @@ if [[ -z "$EMULATOR_HEADLESS" ]]; then
   fi
 fi
 
+aerobag_source_instance_config "$INSTANCE_CONFIG"
+
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 DEFAULT_UI_TARGET_ROOT="$(python3 - <<'PY' "$ROOT" "$TARGET_ROOT_FILE"
 from pathlib import Path
@@ -100,26 +105,21 @@ print((repo_root / target_root_file.read_text().strip()).resolve())
 PY
 )"
 AEROBAG_UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$DEFAULT_UI_TARGET_ROOT}"
-VNC_PORT="${VNC_PORT:-5900}"
-DEFAULT_EMULATOR_CONSOLE_PORT="$(python3 - <<'PY' "$VNC_PORT"
-import sys
-port = int(sys.argv[1])
-index = max(port - 5900, 0)
-print(5554 + index * 2)
-PY
-)"
-ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}}"
+aerobag_configure_emulator_identity
 
 cleanup() {
   if [[ "$START_EMULATOR" -eq 1 && "$KEEP_EMULATOR" -eq 0 ]]; then
-    "$ANDROID_APP_DIR/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
+    env VNC_PORT="$VNC_PORT" ANDROID_SERIAL="$ANDROID_SERIAL" \
+      "$ANDROID_APP_DIR/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 if [[ "$START_EMULATOR" -eq 1 ]]; then
-  "$ANDROID_APP_DIR/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
-  EMULATOR_HEADLESS="$EMULATOR_HEADLESS" "$ANDROID_APP_DIR/scripts/start_emulator_stack.sh"
+  env VNC_PORT="$VNC_PORT" ANDROID_SERIAL="$ANDROID_SERIAL" \
+    "$ANDROID_APP_DIR/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
+  env VNC_PORT="$VNC_PORT" ANDROID_SERIAL="$ANDROID_SERIAL" \
+    EMULATOR_HEADLESS="$EMULATOR_HEADLESS" "$ANDROID_APP_DIR/scripts/start_emulator_stack.sh"
 fi
 
 "$ROOT/ui/web-app/scripts/run-target-workspace.sh" \

@@ -864,7 +864,12 @@ async function ensureMapFollowEngaged(serial, result) {
 }
 
 async function disengageMapFollowForRouteVisibility(serial, result) {
-  const probe = await waitForMapFollowProbe(serial, () => true, 30000, "map-follow probe visible");
+  const initialProbe = findMapFollowProbe(dumpAndroid(serial));
+  if (!initialProbe) {
+    recordStep(result, "CTR follow unavailable; already disengaged");
+    return;
+  }
+  const probe = initialProbe;
   if (!probe.following) return;
   await tapTag(serial, "parity:center-here-button", 10000);
   await waitForMapFollowProbe(

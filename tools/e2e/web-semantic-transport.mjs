@@ -9,6 +9,13 @@ function expressionArgument(value) {
   return JSON.stringify(value);
 }
 
+export function clampDragEndpoint(start, delta, minimum, maximum) {
+  return {
+    x: Math.max(minimum.x, Math.min(maximum.x, start.x + delta.x)),
+    y: Math.max(minimum.y, Math.min(maximum.y, start.y + delta.y)),
+  };
+}
+
 export class WebSemanticTransport {
   constructor(page, { url, origin = new URL(url).origin } = {}) {
     this.page = page;
@@ -189,7 +196,9 @@ export class WebSemanticTransport {
 
   async drag(selector, deltaX, deltaY) {
     const start = await this.elementPoint(selector, 0.72, 0.72);
-    const end = { x: start.x + deltaX, y: start.y + deltaY };
+    const minimum = await this.elementPoint(selector, 0.02, 0.02);
+    const maximum = await this.elementPoint(selector, 0.98, 0.98);
+    const end = clampDragEndpoint(start, { x: deltaX, y: deltaY }, minimum, maximum);
     await this.page.evaluate(`(() => {
       const surface = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
         const rect = candidate.getBoundingClientRect();

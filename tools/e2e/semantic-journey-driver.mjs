@@ -311,10 +311,11 @@ export function androidActionCandidates(actionId) {
 }
 
 export function androidElementMayRequireVerticalScroll(elementId) {
-  return elementId.startsWith("settings-") ||
-    elementId.startsWith("parity:settings-") ||
-    elementId.startsWith("parity:offline-") ||
-    elementId.startsWith("offline-");
+  const tag = androidSemanticTag(elementId);
+  return tag.startsWith("parity:settings-") ||
+    tag.startsWith("parity:offline-product:") ||
+    tag.startsWith("parity:offline-region:") ||
+    tag.startsWith("parity:offline-zoom-level");
 }
 
 export function androidElementMayRequireHorizontalScroll(elementId) {
@@ -360,6 +361,13 @@ export function androidSemanticTag(value) {
     return `parity:plan-control:${ANDROID_PLAN_CONTROL_IDS[controlId] ?? controlId}`;
   }
   return value.startsWith("parity:") ? value : `parity:${value}`;
+}
+
+function androidSemanticTreeSignature(xml) {
+  return findNodes(xml, (node) => androidTag(node).startsWith("parity:"))
+    .map((node) => androidTag(node))
+    .sort()
+    .join("\n");
 }
 
 export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
@@ -704,7 +712,14 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async back() {
+    const before = androidSemanticTreeSignature(dumpAndroid(this.serial));
     pressKey(this.serial, "KEYCODE_BACK");
+    await waitFor(
+      () => androidSemanticTreeSignature(dumpAndroid(this.serial)) !== before,
+      10_000,
+      "Android Back action to change the visible semantic tree",
+      250,
+    );
   }
 
   async captureFrame(path) {

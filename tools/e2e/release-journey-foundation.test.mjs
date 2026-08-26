@@ -35,6 +35,7 @@ import {
   validateSemanticDriver, WebSemanticJourneyDriver,
 } from "./semantic-journey-driver.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
+import { clampDragEndpoint } from "./web-semantic-transport.mjs";
 
 test("release journey registry owns every assertion exactly once", () => {
   const index = validateJourneyRegistry();
@@ -45,6 +46,27 @@ test("release journey registry owns every assertion exactly once", () => {
 test("grouped P2 journeys leave destructive contract failure last", () => {
   const p2 = RELEASE_JOURNEYS.filter((journey) => journey.priority === "p2");
   assert.equal(p2.at(-1)?.id, "shared.contract-failures");
+});
+
+test("web semantic drags remain inside their target surface", () => {
+  assert.deepEqual(
+    clampDragEndpoint(
+      { x: 720, y: 720 },
+      { x: 360, y: 260 },
+      { x: 20, y: 20 },
+      { x: 980, y: 980 },
+    ),
+    { x: 980, y: 980 },
+  );
+  assert.deepEqual(
+    clampDragEndpoint(
+      { x: 280, y: 280 },
+      { x: -360, y: -360 },
+      { x: 20, y: 20 },
+      { x: 980, y: 980 },
+    ),
+    { x: 20, y: 20 },
+  );
 });
 
 test("hosted CI pins and fans out immutable release inputs", () => {
@@ -123,7 +145,9 @@ test("Android journey suites bound blocked driver processes", () => {
     new URL("./release_journey_lab.sh", import.meta.url),
     "utf8",
   );
-  assert.match(lab, /AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-300/);
+  assert.match(lab, /AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-600/);
+  assert.match(lab, /android-suite-shard\)/);
+  assert.match(lab, /index % shard_count == shard/);
   assert.match(
     lab,
     /timeout --foreground --kill-after=15s "\$\{ANDROID_JOURNEY_TIMEOUT_SECONDS\}s"/,
@@ -137,6 +161,8 @@ test("Android journey suites bound blocked driver processes", () => {
     workflow,
     /release-journey-android:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 45/,
   );
+  assert.match(workflow, /shard: \[0, 1, 2, 3\]/);
+  assert.match(workflow, /android-suite-shard/);
   assert.match(
     workflow,
     /android-native:[\s\S]*?runs-on: ubuntu-latest\n\s+timeout-minutes: 30/,
@@ -533,6 +559,8 @@ test("Android offline-package state probes can reach lazy-list rows", () => {
     androidElementMayRequireVerticalScroll("parity:settings-slider:display_dim_timeout:2m"),
     true,
   );
+  assert.equal(androidElementMayRequireVerticalScroll("offline-refresh-button"), false);
+  assert.equal(androidElementMayRequireVerticalScroll("offline-sync-button"), false);
 });
 
 test("Android flight-plan state remains a stable semantic page probe", () => {

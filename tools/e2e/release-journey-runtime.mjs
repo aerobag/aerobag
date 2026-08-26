@@ -53,8 +53,11 @@ export function createJourneyRuntime({
 
     async step(actionId, operation, detail = undefined) {
       const startedAt = performance.now();
+      console.log(`[${journey.id}:${platform}] step start: ${actionId}`);
       const value = await operation();
-      recordJourneyStep(result, actionId, detail, Math.round(performance.now() - startedAt));
+      const durationMs = Math.round(performance.now() - startedAt);
+      console.log(`[${journey.id}:${platform}] step pass: ${actionId} (${durationMs}ms)`);
+      recordJourneyStep(result, actionId, detail, durationMs);
       return value;
     },
 
@@ -70,12 +73,19 @@ export function createJourneyRuntime({
     },
 
     async eventually(description, operation, timeoutMs = 15_000, intervalMs = 100) {
+      const startedAt = performance.now();
+      console.log(`[${journey.id}:${platform}] wait start: ${description} (limit ${timeoutMs}ms)`);
       const deadline = Date.now() + timeoutMs;
       let lastError = null;
       while (Date.now() < deadline) {
         try {
           const value = await operation();
-          if (value) return value;
+          if (value) {
+            console.log(
+              `[${journey.id}:${platform}] wait pass: ${description} (${Math.round(performance.now() - startedAt)}ms)`,
+            );
+            return value;
+          }
         } catch (error) {
           lastError = error;
         }

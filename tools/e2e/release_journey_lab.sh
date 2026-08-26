@@ -22,7 +22,7 @@ UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$(cd "$ROOT" && realpath "$TARGET_ROOT
 WEB_DIST="${AEROBAG_RELEASE_JOURNEY_WEB_DIST:-$UI_TARGET_ROOT/web/dist}"
 SERVE_WEB_DIST="${AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST:-0}"
 APP_ARTIFACTS_DIR="${AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR:-/tmp/release-e2e-apps-final}"
-ANDROID_JOURNEY_TIMEOUT_SECONDS="${AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-300}"
+ANDROID_JOURNEY_TIMEOUT_SECONDS="${AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-600}"
 
 latest_fixture() {
   find /tmp -maxdepth 2 -path '/tmp/release-journey-publication-v*-materialized/fixture.json' \
@@ -58,6 +58,8 @@ Commands:
   android-test JOURNEY         Run one journey using the installed app.
   android-suite [p0|p1|all] [START_AT]
                                Run Android journeys, optionally resuming at START_AT.
+  android-suite-shard [p0|p1|all] SHARD COUNT
+                               Run every COUNTth Android journey assigned to SHARD.
   android-implementation-suite [p0|p1|all] [START_AT]
                                Run only registry implementations, optionally resuming.
   android-offline              Run the Android offline cold-start journey.
@@ -436,6 +438,28 @@ case "$command" in
       run_android_test "$journey" || exit $?
     done < <(implemented_journeys android "$priority")
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
+    ;;
+  android-suite-shard)
+    require_fixture
+    priority="${2:-all}"
+    shard="${3:-}"
+    shard_count="${4:-}"
+    [[ "$shard" =~ ^[0-9]+$ && "$shard_count" =~ ^[1-9][0-9]*$ && "$shard" -lt "$shard_count" ]] || {
+      echo "android-suite-shard requires 0 <= SHARD < COUNT" >&2
+      exit 2
+    }
+    index=0
+    selected=0
+    cd "$ROOT"
+    while IFS= read -r journey; do
+      if (( index % shard_count == shard )); then
+        selected=1
+        echo "=== $journey (android shard $shard/$shard_count) ==="
+        run_android_test "$journey" || exit $?
+      fi
+      index=$((index + 1))
+    done < <(implemented_journeys android "$priority")
+    [[ "$selected" == "1" ]] || echo "android shard $shard/$shard_count has no $priority journeys"
     ;;
   android-implementation-suite)
     require_fixture

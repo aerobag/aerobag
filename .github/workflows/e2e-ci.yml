@@ -213,7 +213,7 @@ jobs:
           retention-days: 14
 
   release-journey-android:
-    name: release journeys / android / ${{ matrix.priority }}
+    name: release journeys / android / ${{ matrix.priority }} / s${{ matrix.shard }}
     needs:
       - build-release-apps
       - release-journey-fixture
@@ -223,6 +223,7 @@ jobs:
       fail-fast: false
       matrix:
         priority: ${{ fromJSON(needs.release-journey-fixture.outputs.priorities) }}
+        shard: [0, 1, 2, 3]
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
       AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
@@ -231,7 +232,7 @@ jobs:
       AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"
       AEROBAG_E2E_URL: http://127.0.0.1:18093/
       AEROBAG_E2E_PEER_URL: http://127.0.0.1:18093/
-      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-android-${{ matrix.priority }}
+      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-android-${{ matrix.priority }}-s${{ matrix.shard }}
       PACKAGE_SOURCE_PORT: 18093
       AEROBAG_E2E_CLOUD_PORT: 18094
       AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
@@ -295,8 +296,8 @@ jobs:
           --apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
           --release-fixture "$AEROBAG_RELEASE_JOURNEY_FIXTURE"
           --test shared.startup-navigation
-      - name: Run Android ${{ matrix.priority }} journeys
-        run: ./tools/e2e/release_journey_lab.sh android-suite "${{ matrix.priority }}"
+      - name: Run Android ${{ matrix.priority }} shard ${{ matrix.shard }} journeys
+        run: ./tools/e2e/release_journey_lab.sh android-suite-shard "${{ matrix.priority }}" "${{ matrix.shard }}" 4
       - name: Stop Android and journey services
         if: ${{ always() }}
         run: |
@@ -307,9 +308,9 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: release-journey-android-${{ matrix.priority }}-results
+          name: release-journey-android-${{ matrix.priority }}-s${{ matrix.shard }}-results
           path: |
-            test-results/release-journey-android-${{ matrix.priority }}
+            test-results/release-journey-android-${{ matrix.priority }}-s${{ matrix.shard }}
             .ci/ui-target/android/emulator-stack-5900
           if-no-files-found: ignore
           include-hidden-files: true

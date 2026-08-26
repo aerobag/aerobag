@@ -214,9 +214,16 @@ data class OfflineRegionDisplay(
     val regionId: String,
     val label: String,
     val colorKey: String,
+    val summary: List<OfflineRegionSummaryEntry> = emptyList(),
     val points: List<AirspaceScreenPoint>,
     val labelX: Double,
     val labelY: Double,
+)
+
+data class OfflineRegionSummaryEntry(
+    val action: String,
+    val cycle: String,
+    val count: Int,
 )
 
 data class AirspaceLimitGlyph(
@@ -3774,6 +3781,13 @@ private fun WireOfflineRegionDisplay.toUi() = OfflineRegionDisplay(
     regionId = region_id,
     label = label,
     colorKey = color_key,
+    summary = summary.map {
+        OfflineRegionSummaryEntry(
+            action = it.action,
+            cycle = it.cycle,
+            count = it.count,
+        )
+    },
     points = points.map { it.toUi() },
     labelX = label_x,
     labelY = label_y,

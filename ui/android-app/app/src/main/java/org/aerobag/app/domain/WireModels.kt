@@ -686,9 +686,17 @@ data class WireOfflineRegionDisplay(
     val region_id: String,
     val label: String,
     val color_key: String,
+    val summary: List<WireOfflineRegionSummaryEntry> = emptyList(),
     val points: List<WireAirspaceScreenPoint> = emptyList(),
     val label_x: Double,
     val label_y: Double,
+)
+
+@Serializable
+data class WireOfflineRegionSummaryEntry(
+    val action: String,
+    val cycle: String,
+    val count: Int,
 )
 
 @Serializable

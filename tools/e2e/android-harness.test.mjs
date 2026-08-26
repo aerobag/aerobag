@@ -8,6 +8,7 @@ import {
   assertNoAerobagAnr,
   androidOfflinePackagesVisible,
   androidClearTextCommand,
+  androidSelectAllTextCommand,
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
   androidJourneyEpochMs,
@@ -51,6 +52,13 @@ test("clears focused Android text in one ordered keyevent stream", () => {
       "shell", "input", "keyevent", "KEYCODE_MOVE_END",
       "KEYCODE_DEL", "KEYCODE_DEL", "KEYCODE_DEL",
     ],
+  );
+});
+
+test("selects the complete Android text value before a verified replacement", () => {
+  assert.deepEqual(
+    androidSelectAllTextCommand(),
+    ["shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A"],
   );
 });
 

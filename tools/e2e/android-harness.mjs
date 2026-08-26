@@ -742,7 +742,19 @@ export function androidClearTextCommand(maxChars = 160) {
   ];
 }
 
+export function androidSelectAllTextCommand() {
+  return [
+    "shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A",
+  ];
+}
+
 export function clearFocusedText(serial, maxChars = 160) {
+  // Select-all makes retries replace the previous attempt atomically. Bulk
+  // deletion remains as a fallback for Android controls that ignore Ctrl+A.
+  adb(serial, androidSelectAllTextCommand());
+  spawnSync("sleep", ["0.15"]);
+  adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
+  spawnSync("sleep", ["0.35"]);
   adb(serial, androidClearTextCommand(maxChars));
   spawnSync("sleep", ["0.25"]);
   // Gboard can re-commit one composing character after the bulk key stream.

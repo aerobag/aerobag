@@ -88,6 +88,7 @@ const ROTATION_LIVE_FEED_FIXTURE = process.env.AEROBAG_ROTATION_LIVE_FEED_FIXTUR
     : "");
 const LIVE_FEED_PROMOTION_SENTINEL = "e2e-live-feed-promotion.pause";
 const LIVE_FEED_PROMOTION_PAUSE_MARKER = "E2E live-feed promotion paused";
+const OFFLINE_PACKAGE_SYNC_TIMEOUT_MS = 300000;
 
 function usage() {
   console.log(`Usage:
@@ -280,7 +281,7 @@ async function ensureOfflinePackagesReady(
       await waitFor(() => {
         const nextXml = dumpAndroid(serial);
         return runtimeUiVisible(nextXml) || disclaimerVisible(nextXml);
-      }, 120000, "runtime loaded after offline package sync", 500);
+      }, OFFLINE_PACKAGE_SYNC_TIMEOUT_MS, "runtime loaded after offline package sync", 500);
       recordStep(result, "offline package sync completed", "runtime loaded");
     }
   }

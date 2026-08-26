@@ -29,13 +29,17 @@ const baseUrl = `http://127.0.0.1:${port}/`;
 
 async function main() {
   fs.mkdirSync(artifactRoot, { recursive: true });
-  generatePublication("success", Date.now() + 3_600_000);
-  const vite = launchVite();
   const results = [];
   try {
-    await waitForHttp(baseUrl, 120_000);
     for (const scenario of scenarios) {
-      results.push(await runScenario(scenario));
+      generatePublication(scenario, Date.now() + 3_600_000);
+      const vite = launchVite();
+      try {
+        await waitForHttp(baseUrl, 120_000);
+        results.push(await runScenario(scenario));
+      } finally {
+        await stopProcess(vite);
+      }
     }
     const summary = {
       run_id: runId,
@@ -47,7 +51,6 @@ async function main() {
     writeJson(path.join(artifactRoot, "summary.json"), summary);
     console.log(JSON.stringify(summary, null, 2));
   } finally {
-    await stopProcess(vite);
     fs.rmSync(workRoot, { recursive: true, force: true });
   }
 }
@@ -56,7 +59,6 @@ async function runScenario(scenario) {
   const scenarioRoot = path.join(artifactRoot, scenario);
   const frameRoot = path.join(scenarioRoot, "frames");
   fs.mkdirSync(frameRoot, { recursive: true });
-  generatePublication(scenario, Date.now() + 3_600_000);
   const lab = JSON.parse(fs.readFileSync(path.join(publicationRoot, "lab.json"), "utf8"));
   const initialCycle = lab.initial?.cycle;
   const candidateCycle = lab.candidate?.cycle;
@@ -568,7 +570,7 @@ function materializeFixture(destinationRoot) {
 
 function launchVite() {
   fs.mkdirSync(path.dirname(viteLogPath), { recursive: true });
-  const logFd = fs.openSync(viteLogPath, "w");
+  const logFd = fs.openSync(viteLogPath, "a");
   const viteBin = path.join(process.cwd(), "node_modules", ".bin", "vite");
   const child = spawn(viteBin, ["--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
     cwd: process.cwd(),

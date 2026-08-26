@@ -29,13 +29,16 @@ import {
 } from "./serve-release-journey-fixture.mjs";
 import {
   androidActionCandidates, androidElementEnabled, androidElementFallback,
+  androidActionUsesSubmit, AndroidSemanticJourneyDriver,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
   androidPageTag, androidProjectionMayRequireVerticalScan, androidSemanticTag,
-  androidZoomKeyCode, findTagOrPrefix, SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
+  androidTextControlNeedsTap,
+  androidZoomKeyCode, findTagOrPrefix, retryVerifiedAndroidTextEntry,
+  SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
   validateSemanticDriver, WebSemanticJourneyDriver,
 } from "./semantic-journey-driver.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
-import { clampDragEndpoint } from "./web-semantic-transport.mjs";
+import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
 
 test("release journey registry owns every assertion exactly once", () => {
   const index = validateJourneyRegistry();
@@ -67,6 +70,50 @@ test("web semantic drags remain inside their target surface", () => {
     ),
     { x: 20, y: 20 },
   );
+});
+
+test("replay seek gestures move toward the open side of the timeline", () => {
+  assert.equal(timelineSeekDeltaX(1, 5), 320);
+  assert.equal(timelineSeekDeltaX(4.4, 5), -320);
+});
+
+test("verified Android text entry replaces a dropped first injection", async () => {
+  const observed = ["stale-prefill", "fixture-url"];
+  const attempts = [];
+  const result = await retryVerifiedAndroidTextEntry("fixture-url", {
+    enter: async (attempt) => attempts.push(attempt),
+    read: async () => observed.shift(),
+  });
+  assert.deepEqual(result, { matched: true, observed: "fixture-url", attempts: 2 });
+  assert.deepEqual(attempts, [0, 1]);
+});
+
+test("verified Android text entry rejects three corrupted injections", async () => {
+  const result = await retryVerifiedAndroidTextEntry("fixture-url", {
+    enter: async () => {},
+    read: async () => "corrupt",
+  });
+  assert.deepEqual(result, { matched: false, observed: "corrupt", attempts: 3 });
+});
+
+test("NAVDB rollover scenarios never replace a publication under a live Vite server", () => {
+  const source = readFileSync(
+    new URL("../../ui/web-app/scripts/nav-db-rollover-e2e.mjs", import.meta.url),
+    "utf8",
+  );
+  const scenarioLoop = source.slice(
+    source.indexOf("for (const scenario of scenarios)"),
+    source.indexOf("const summary ="),
+  );
+  assert.match(
+    scenarioLoop,
+    /generatePublication\(scenario,[\s\S]*const vite = launchVite\(\)[\s\S]*await runScenario\(scenario\)[\s\S]*await stopProcess\(vite\)/,
+  );
+  const runScenario = source.slice(
+    source.indexOf("async function runScenario"),
+    source.indexOf("async function buildRichFlightPlan"),
+  );
+  assert.doesNotMatch(runScenario, /generatePublication\(/);
 });
 
 test("hosted CI pins and fans out immutable release inputs", () => {
@@ -102,6 +149,16 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"/);
   assert.doesNotMatch(workflow, /ANDROID_SERIAL:\s*emulator-/);
   assert.equal(workflow.match(/Install browser harness dependencies/g)?.length, 2);
+
+  const lab = readFileSync(
+    new URL("./release_journey_lab.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    lab,
+    /run_e2e\.sh" \\\n\s+--skip-install \\\n\s+--clear-app-data \\\n\s+--sync-all-available-packages \\/,
+  );
+  assert.match(lab, /--test "\$journey" <\/dev\/null/);
 });
 
 test("release journey suites propagate a failed journey process", () => {
@@ -191,6 +248,20 @@ test("Android emulator launchers and journey lab derive one device identity", ()
   const lab = readFileSync(new URL("./release_journey_lab.sh", import.meta.url), "utf8");
   assert.match(lab, /source "\$ROOT\/ui\/android-app\/scripts\/emulator_identity\.sh"/);
   assert.doesNotMatch(lab, /emulator-5564/);
+
+  const stopStack = readFileSync(
+    new URL("../../ui/android-app/scripts/stop_emulator_stack.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(stopStack, /qemu-system\.\*-ports \$\{EMULATOR_CONSOLE_PORT\},\$\{EMULATOR_ADB_PORT\}/);
+  assert.doesNotMatch(stopStack, /qemu-system\.\*@\$AVD_INSTANCE_NAME/);
+
+  const startStack = readFileSync(
+    new URL("../../ui/android-app/scripts/start_emulator_stack.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(startStack, /service check package/);
+  assert.match(startStack, /\^Service package: found\$/);
 });
 
 test("Android qualification isolates semantic tests from Google service instability", () => {
@@ -290,6 +361,21 @@ test("local lab and immutable app builds agree on fixed service ports", () => {
   assert.match(androidHarness, /DEBUG_CLEAR_UI_PREFS_EXTRA/);
   assert.doesNotMatch(androidHarness, /run-as[^\n]+core-settings-v1\.json/);
   assert.doesNotMatch(androidHarness, /run-as[^\n]+aerobag_ui\.xml/);
+});
+
+test("Android E2E can map an immutable APK port to an isolated host fixture", () => {
+  const source = readFileSync(
+    new URL("../../ui/android-app/scripts/run_e2e.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /ANDROID_PACKAGE_SOURCE_DEVICE_PORT="\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-\$PACKAGE_SOURCE_PORT\}"/,
+  );
+  assert.match(
+    source,
+    /"tcp:\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT\}" "tcp:\$\{PACKAGE_SOURCE_PORT\}"/,
+  );
 });
 
 test("chart search selection retries a dropped platform tap", async () => {
@@ -516,6 +602,17 @@ test("Android semantic aliases preserve shared search suggestion ids", () => {
   );
 });
 
+test("Android exact search suggestions use the focused field submit action", () => {
+  assert.equal(androidActionUsesSubmit("chart-search-suggestion:KSEA"), true);
+  assert.equal(androidActionUsesSubmit("airport_info"), false);
+});
+
+test("Android text entry does not retap an auto-focused Compose field", () => {
+  assert.equal(androidTextControlNeedsTap({ focused: "true" }), false);
+  assert.equal(androidTextControlNeedsTap({ focused: "false" }), true);
+  assert.equal(androidTextControlNeedsTap(null), true);
+});
+
 test("Android semantic lookup prefers an exact action over an earlier prefix match", () => {
   const xml = `<hierarchy>` +
     `<node resource-id="parity:chart-search-suggestion:27WA"/>` +
@@ -561,6 +658,20 @@ test("Android offline-package state probes can reach lazy-list rows", () => {
   );
   assert.equal(androidElementMayRequireVerticalScroll("offline-refresh-button"), false);
   assert.equal(androidElementMayRequireVerticalScroll("offline-sync-button"), false);
+  assert.equal(androidElementMayRequireVerticalScroll("cloud-setup-code-output"), true);
+  assert.equal(androidElementMayRequireVerticalScroll("plan-airway-entry:MEDEA"), true);
+  assert.equal(androidElementMayRequireVerticalScroll("plan-airway-exit:KPAE"), true);
+});
+
+test("Android Back remains idempotent when one dismissal closes nested overlays", async () => {
+  let presses = 0;
+  const driver = new AndroidSemanticJourneyDriver("test", {
+    resetApp: async () => {},
+    pressBack: () => { presses += 1; },
+  });
+  await driver.back();
+  await driver.back();
+  assert.equal(presses, 2);
 });
 
 test("Android flight-plan state remains a stable semantic page probe", () => {

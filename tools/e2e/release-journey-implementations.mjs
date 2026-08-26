@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
+
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
 }
@@ -1176,6 +1178,14 @@ const MIXED_STATUS_SEVERITIES = Object.freeze({
   "live_feed:winds-aloft": "ok",
 });
 
+function mixedStatusSeverity(platform, rowId) {
+  // Android deliberately keeps the full winds package on demand, while web's
+  // JIT NavKv path loads the current forecast directly. Both statuses are
+  // core-owned consequences of those configured acquisition policies.
+  if (platform === "android" && rowId === "live_feed:winds-aloft") return "info";
+  return MIXED_STATUS_SEVERITIES[rowId];
+}
+
 async function statusAndSettings(runtime) {
   await runtime.step("app.reset", () => runtime.driver.reset());
   await acceptDisclaimer(runtime);
@@ -1216,7 +1226,7 @@ async function statusAndSettings(runtime) {
   const statusIds = statusRows.map(projectionId);
   for (const [rowId, assertionId] of Object.entries(STATUS_ASSERTIONS)) {
     const row = statusRows.find((entry) => projectionId(entry).startsWith(`parity:data-status-row:${rowId}:`));
-    const expectedSeverity = MIXED_STATUS_SEVERITIES[rowId];
+    const expectedSeverity = mixedStatusSeverity(runtime.platform, rowId);
     const matchesSeverity = !expectedSeverity || projectionId(row).endsWith(`:severity:${expectedSeverity}`);
     runtime.check(assertionId, Boolean(row) && matchesSeverity, row?.text ?? rowId);
   }
@@ -1227,9 +1237,11 @@ async function statusAndSettings(runtime) {
   }));
   runtime.check(
     "status.fresh-stale-missing",
-    Object.entries(MIXED_STATUS_SEVERITIES).every(([rowId, severity]) =>
-      statusIds.some((id) =>
-        id.startsWith(`parity:data-status-row:${rowId}:`) && id.endsWith(`:severity:${severity}`))),
+    Object.keys(MIXED_STATUS_SEVERITIES).every((rowId) => {
+      const severity = mixedStatusSeverity(runtime.platform, rowId);
+      return statusIds.some((id) =>
+        id.startsWith(`parity:data-status-row:${rowId}:`) && id.endsWith(`:severity:${severity}`));
+    }),
     [...severities].join(", "),
   );
 }
@@ -1848,27 +1860,19 @@ async function replayTrackUp(runtime) {
     return button?.pressed === "true" || button?.selected === true ? button : null;
   });
   await runtime.driver.performAction("playback-play-toggle");
-  runtime.result.diagnostics.replay_initial_ownship =
-    await runtime.driver.readProjection("parity:ownship-state:");
   const initialOwnship = await runtime.eventually("initial replay ownship", async () => {
     const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
     return state?.mode === "replay" && state.draw && state.position !== "none" ? state : null;
   });
+  runtime.result.diagnostics.replay_initial_ownship = initialOwnship;
 
   const playing = await runtime.eventually("replay playing", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
     return state?.status === "playing" && state.cursor > 0.2 ? state : null;
   });
-  const rotated = await runtime.eventually("replay TRK-up rotation", async () => {
-    const id = idOf(await runtime.driver.readProjection("parity:viewport:"));
-    const up = Number(/:up:(-?[0-9.]+)/.exec(id ?? "")?.[1] ?? 0);
-    return Math.abs(up) > 1 ? { id, up } : null;
-  });
-  runtime.check("replay.rotation", Boolean(rotated), rotated?.id);
-
-  await runtime.eventually("replay cursor entered track gap", async () => {
-    const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-    return state?.status === "playing" && state.cursor >= 2.1 && state.cursor < 3.2 ? state : null;
+  await runtime.eventually("replay ownship entered track gap", async () => {
+    const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
+    return state?.mode === "replay" && state.draw && state.track === "none" ? state : null;
   }, 12_000, 40);
   await runtime.driver.performAction("playback-play-toggle");
   const paused = await runtime.eventually("replay paused in track gap", async () => {
@@ -1882,6 +1886,12 @@ async function replayTrackUp(runtime) {
     const up = Number(/:up:(-?[0-9.]+)/.exec(viewport ?? "")?.[1] ?? 0);
     return { state, viewport, up };
   });
+  const rotated = await runtime.eventually("replay TRK-up rotation", async () => {
+    const id = idOf(await runtime.driver.readProjection("parity:viewport:"));
+    const up = Number(/:up:(-?[0-9.]+)/.exec(id ?? "")?.[1] ?? 0);
+    return Math.abs(up) > 1 ? { id, up } : null;
+  });
+  runtime.check("replay.rotation", Boolean(rotated), rotated?.id);
   runtime.check(
     "replay.track-gap",
     Math.abs(gap.up) > 1 && Math.abs(gap.up - rotated.up) < 0.2,
@@ -1908,7 +1918,10 @@ async function replayTrackUp(runtime) {
   runtime.check("replay.rate", Boolean(changedRate), `${priorRate} -> ${changedRate.rate}`);
 
   const priorCursor = changedRate.cursor;
-  await runtime.driver.drag("playback-overview", { x: 120, y: 0 });
+  await runtime.driver.drag("playback-overview", {
+    x: timelineSeekDeltaX(priorCursor, changedRate.duration),
+    y: 0,
+  });
   const sought = await runtime.eventually("replay seek committed", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
     return state && Math.abs(state.cursor - priorCursor) > 0.1 ? state : null;

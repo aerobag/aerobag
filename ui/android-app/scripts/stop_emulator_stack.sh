@@ -85,6 +85,9 @@ stop_pid_file "emulator" "$EMULATOR_PID_FILE"
 stop_pid_file "x11vnc" "$X11VNC_PID_FILE"
 stop_pid_file "Xvfb" "$XVFB_PID_FILE"
 
-stop_matching_processes "emulator" "qemu-system.*@$AVD_INSTANCE_NAME|qemu-system.*-ports ${EMULATOR_CONSOLE_PORT},${EMULATOR_ADB_PORT}"
+# The base AVD name is a prefix of per-port AVD names (for example,
+# aerobag34 and aerobag34-5901), so matching by AVD name can kill sibling
+# emulator workers. The console/ADB port pair uniquely identifies this stack.
+stop_matching_processes "emulator" "qemu-system.*-ports ${EMULATOR_CONSOLE_PORT},${EMULATOR_ADB_PORT}( |$)"
 stop_matching_processes "x11vnc" "x11vnc .* -rfbport ${VNC_PORT}( |$)"
 stop_matching_processes "Xvfb" "Xvfb ${DISPLAY_NUM}( |$)"

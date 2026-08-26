@@ -20,6 +20,7 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 }
 
 const ADB_TIMEOUT_MS = 20000;
+const APP_START_TIMEOUT_MS = 60000;
 const UI_DUMP_TIMEOUT_MS = 60000;
 
 export function adbArgs(serial, args) {
@@ -784,7 +785,9 @@ export async function launchFreshAndroidApp(
   if (armLayerNavKvFault) {
     startArgs.push("--ez", DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA, "true");
   }
-  adb(serial, startArgs);
+  // `am start -W` includes Android process startup and can exceed the generic
+  // command timeout on cold CI emulators. UI readiness is still checked below.
+  adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
   let dismissedSystemUiAnr = false;
   await waitFor(async () => {
     const xml = dumpAndroid(serial);

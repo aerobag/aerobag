@@ -227,7 +227,23 @@ for _ in $(seq 1 180); do
     echo "waiting for Android boot broadcasts to become idle"
     if ! timeout "${BROADCAST_IDLE_TIMEOUT}s" \
       adb -s "$ANDROID_SERIAL" shell am wait-for-broadcast-idle; then
-      echo "Android boot broadcasts did not become idle within ${BROADCAST_IDLE_TIMEOUT}s" >&2
+      # Google system-image background services can keep Android's global
+      # broadcast queues non-idle indefinitely. The E2E driver separately
+      # waits for Aerobag's runtime UI, which is the readiness condition the
+      # tests actually require.
+      echo "warning: Android boot broadcasts did not become idle within ${BROADCAST_IDLE_TIMEOUT}s; continuing with app readiness checks" >&2
+    fi
+    package_manager_ready=0
+    for _ in $(seq 1 120); do
+      if adb -s "$ANDROID_SERIAL" shell service check package 2>/dev/null \
+        | tr -d '\r' | grep -q '^Service package: found$'; then
+        package_manager_ready=1
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$package_manager_ready" != "1" ]]; then
+      echo "Android package-manager service did not become ready within 120s" >&2
       exit 1
     fi
     if [[ "$ANDROID_PACKAGE_SOURCE_REVERSE" == "1" ]]; then

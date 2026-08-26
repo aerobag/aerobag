@@ -245,8 +245,10 @@ run_android_test() {
     AEROBAG_E2E_ARTIFACT_DIR="$ARTIFACT_DIR" \
     "$ROOT/ui/android-app/scripts/run_e2e.sh" \
       --skip-install \
+      --clear-app-data \
+      --sync-all-available-packages \
       --release-fixture "$FIXTURE" \
-      --test "$journey"
+      --test "$journey" </dev/null
 }
 
 run_web_test() {

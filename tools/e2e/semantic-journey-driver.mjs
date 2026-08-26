@@ -113,8 +113,12 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async inspectMapAt({ x, y }) {
-    await this.transport.pointerClick('[data-testid="map-surface"]', x, y);
-    await this.transport.waitFor('[data-testid="map-selection-tray"]', "map inspector");
+    const probe = await this.transport.pointerClick('[data-testid="map-surface"]', x, y);
+    try {
+      await this.transport.waitFor('[data-testid="map-selection-tray"]', "map inspector");
+    } catch (error) {
+      throw new Error(`${error.message}; pointer delivery=${JSON.stringify(probe)}`);
+    }
   }
 
   async performAction(actionId) {
@@ -310,12 +314,36 @@ export function androidActionCandidates(actionId) {
   ];
 }
 
+export function androidActionUsesSubmit(actionId) {
+  return actionId.startsWith("chart-search-suggestion:");
+}
+
+export function androidTextControlNeedsTap(node) {
+  return node?.focused !== "true";
+}
+
+export async function retryVerifiedAndroidTextEntry(
+  expected,
+  { enter, read, maxAttempts = 3 },
+) {
+  let observed = "";
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await enter(attempt);
+    observed = await read();
+    if (observed === expected) return { matched: true, observed, attempts: attempt + 1 };
+  }
+  return { matched: false, observed, attempts: maxAttempts };
+}
+
 export function androidElementMayRequireVerticalScroll(elementId) {
   const tag = androidSemanticTag(elementId);
   return tag.startsWith("parity:settings-") ||
     tag.startsWith("parity:offline-product:") ||
     tag.startsWith("parity:offline-region:") ||
-    tag.startsWith("parity:offline-zoom-level");
+    tag.startsWith("parity:offline-zoom-level") ||
+    tag === "parity:cloud-setup-code-output" ||
+    tag.startsWith("parity:plan-airway-entry:") ||
+    tag.startsWith("parity:plan-airway-exit:");
 }
 
 export function androidElementMayRequireHorizontalScroll(elementId) {
@@ -363,19 +391,13 @@ export function androidSemanticTag(value) {
   return value.startsWith("parity:") ? value : `parity:${value}`;
 }
 
-function androidSemanticTreeSignature(xml) {
-  return findNodes(xml, (node) => androidTag(node).startsWith("parity:"))
-    .map((node) => androidTag(node))
-    .sort()
-    .join("\n");
-}
-
 export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
-  constructor(serial, { resetApp, resetApplicationData = null }) {
+  constructor(serial, { resetApp, resetApplicationData = null, pressBack = null }) {
     super("android");
     this.serial = serial;
     this.resetApp = resetApp;
     this.resetApplicationDataCallback = resetApplicationData;
+    this.pressBackCallback = pressBack ?? (() => pressKey(this.serial, "KEYCODE_BACK"));
   }
 
   async reset() {
@@ -496,6 +518,14 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       await tapTag(this.serial, `parity:plate-folder-tile:${actionId.slice("plate-folder-tile:".length)}`, 10000);
       return;
     }
+    if (androidActionUsesSubmit(actionId)) {
+      const tag = `parity:${actionId}`;
+      if (!findTagOrPrefix(dumpAndroid(this.serial), tag)) {
+        throw new Error(`Android action ${actionId} is not visible`);
+      }
+      pressKey(this.serial, "KEYCODE_ENTER");
+      return;
+    }
     if (actionId.startsWith("tray-option:")) {
       await tapTag(this.serial, `parity:tray-option:${actionId.slice("tray-option:".length)}`, 10000);
       return;
@@ -531,48 +561,57 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async enterText(controlId, value, { submit = false, dismissKeyboard = false } = {}) {
     const semanticTag = `parity:${controlId}`;
-    let xml = dumpAndroid(this.serial);
-    let tagged = findTagOrPrefix(xml, semanticTag);
-    if (!tagged && await scrollUntilTagPrefix(this.serial, semanticTag, 20)) {
-      xml = dumpAndroid(this.serial);
-      tagged = findTagOrPrefix(xml, semanticTag);
-    }
-    const fallback = tagged ? null : androidElementFallback(xml, controlId);
-    if (tagged) {
-      await tapTag(this.serial, semanticTag, 10000);
-    } else if (fallback) {
-      if (fallback.focused !== "true") {
-        const bounds = rectOfBounds(fallback.bounds);
-        adb(this.serial, [
-          "shell", "input", "tap",
-          String(Math.round(bounds.left + bounds.width / 2)),
-          String(Math.round(bounds.top + bounds.height / 2)),
-        ]);
+    const focusControl = async (forceTap) => {
+      let xml = dumpAndroid(this.serial);
+      let tagged = findTagOrPrefix(xml, semanticTag);
+      if (!tagged && await scrollUntilTagPrefix(this.serial, semanticTag, 20)) {
+        xml = dumpAndroid(this.serial);
+        tagged = findTagOrPrefix(xml, semanticTag);
       }
-    } else {
+      const fallback = tagged ? null : androidElementFallback(xml, controlId);
+      if (tagged) {
+        if (forceTap || androidTextControlNeedsTap(tagged)) {
+          await tapTag(this.serial, semanticTag, 10000);
+        }
+        return;
+      }
+      if (fallback) {
+        if (forceTap || androidTextControlNeedsTap(fallback)) {
+          const bounds = rectOfBounds(fallback.bounds);
+          adb(this.serial, [
+            "shell", "input", "tap",
+            String(Math.round(bounds.left + bounds.width / 2)),
+            String(Math.round(bounds.top + bounds.height / 2)),
+          ]);
+        }
+        return;
+      }
       throw new Error(`Android text control ${controlId} is not visible`);
+    };
+
+    await focusControl(false);
+    if (!dismissKeyboard) {
+      clearFocusedText(this.serial);
+      inputText(this.serial, value);
+      if (submit) pressKey(this.serial, "KEYCODE_ENTER");
+      return;
     }
-    clearFocusedText(this.serial);
-    inputText(this.serial, value);
-    if (submit) pressKey(this.serial, "KEYCODE_ENTER");
-    if (dismissKeyboard) {
-      pressKey(this.serial, "KEYCODE_BACK");
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      const committed = findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text ?? "";
-      if (committed.startsWith(value) && committed.length > value.length) {
-        adb(this.serial, [
-          "shell", "input", "keyevent",
-          ...Array.from({ length: committed.length - value.length }, () => "KEYCODE_DEL"),
-        ]);
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-      const finalValue = findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text ?? "";
-      if (finalValue !== value) {
-        throw new Error(
-          `Android text control ${controlId} committed ${JSON.stringify(finalValue)}; expected ${JSON.stringify(value)}`,
-        );
-      }
-    }
+
+    const result = await retryVerifiedAndroidTextEntry(value, {
+      enter: async (attempt) => {
+        if (attempt > 0) await focusControl(true);
+        clearFocusedText(this.serial);
+        inputText(this.serial, value);
+        if (submit) pressKey(this.serial, "KEYCODE_ENTER");
+        pressKey(this.serial, "KEYCODE_BACK");
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      },
+      read: () => findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text ?? "",
+    });
+    if (result.matched) return;
+    throw new Error(
+      `Android text control ${controlId} committed ${JSON.stringify(result.observed)}; expected ${JSON.stringify(value)} after ${result.attempts} attempts`,
+    );
   }
 
   async drag(surfaceId, { x, y }) {
@@ -712,14 +751,11 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async back() {
-    const before = androidSemanticTreeSignature(dumpAndroid(this.serial));
-    pressKey(this.serial, "KEYCODE_BACK");
-    await waitFor(
-      () => androidSemanticTreeSignature(dumpAndroid(this.serial)) !== before,
-      10_000,
-      "Android Back action to change the visible semantic tree",
-      250,
-    );
+    this.pressBackCallback();
+    // Back is intentionally idempotent: one dismissal can close a detail modal
+    // and its parent tray together, so a caller's second cleanup Back may be a
+    // legitimate no-op. Subsequent semantic assertions own the postcondition.
+    await new Promise((resolve) => setTimeout(resolve, 350));
   }
 
   async captureFrame(path) {

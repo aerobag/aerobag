@@ -819,10 +819,17 @@ async function fetchAndIngestResource(
 ): Promise<void> {
   const url = publicResourceUrl(resource);
   try {
-    const response = await debugTiming(timingLabel, () => fetch(
-      withNavKvCacheKey(url),
-      resource.id === "publication/current_artifacts" ? { cache: "no-cache" } : undefined,
-    ), {
+    const response = await debugTiming(timingLabel, async () => {
+      try {
+        return await fetch(
+          withNavKvCacheKey(url),
+          resource.id === "publication/current_artifacts" ? { cache: "no-cache" } : undefined,
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`failed to fetch core resource ${resource.id} at ${url}: ${detail}`);
+      }
+    }, {
       id: resource.id,
       url,
     });

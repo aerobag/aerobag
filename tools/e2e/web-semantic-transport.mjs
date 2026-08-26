@@ -4,16 +4,10 @@
 
 import { writeFile } from "node:fs/promises";
 import { waitFor } from "../../ui/web-app/scripts/chrome-cdp.mjs";
+import { clampDragEndpoint } from "./gesture-geometry.mjs";
 
 function expressionArgument(value) {
   return JSON.stringify(value);
-}
-
-export function clampDragEndpoint(start, delta, minimum, maximum) {
-  return {
-    x: Math.max(minimum.x, Math.min(maximum.x, start.x + delta.x)),
-    y: Math.max(minimum.y, Math.min(maximum.y, start.y + delta.y)),
-  };
 }
 
 export class WebSemanticTransport {
@@ -139,6 +133,26 @@ export class WebSemanticTransport {
 
   async pointerClick(selector, xFraction = 0.5, yFraction = 0.5) {
     const point = await this.elementPoint(selector, xFraction, yFraction);
+    await this.page.evaluate(`(() => {
+      const surface = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      const probe = { pointerdown: 0, pointerup: 0, targets: [] };
+      const listeners = {};
+      for (const type of ["pointerdown", "pointerup"]) {
+        listeners[type] = (event) => {
+          probe[type] += 1;
+          probe.targets.push({
+            type,
+            tag: event.target?.tagName ?? null,
+            class_name: event.target?.className?.baseVal ?? event.target?.className ?? null,
+          });
+        };
+        surface?.addEventListener(type, listeners[type], true);
+      }
+      window.__aerobagReleaseClickProbe = { probe, surface, listeners };
+    })()`);
     await this.page.send("Input.dispatchMouseEvent", {
       type: "mouseMoved", x: point.x, y: point.y, button: "none", pointerType: "mouse",
     });
@@ -150,6 +164,15 @@ export class WebSemanticTransport {
       type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0,
       clickCount: 1, pointerType: "mouse", pointerId: 1,
     });
+    return this.page.evaluate(`(() => {
+      const state = window.__aerobagReleaseClickProbe;
+      if (!state) return null;
+      for (const [type, listener] of Object.entries(state.listeners)) {
+        state.surface?.removeEventListener(type, listener, true);
+      }
+      delete window.__aerobagReleaseClickProbe;
+      return state.probe;
+    })()`);
   }
 
   async hoverTestId(testId) {

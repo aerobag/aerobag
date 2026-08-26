@@ -80,6 +80,10 @@ try {
     deviceScaleFactor: 1,
     mobile: false,
   });
+  const cpuThrottleRate = Number(process.env.AEROBAG_E2E_CPU_THROTTLE_RATE ?? 1);
+  if (Number.isFinite(cpuThrottleRate) && cpuThrottleRate > 1) {
+    await page.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottleRate });
+  }
   const transport = new WebSemanticTransport(page, { url: args.url });
   const driver = new WebSemanticJourneyDriver(transport);
   const result = await executeReleaseJourney(

@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
@@ -34,6 +35,7 @@ import org.aerobag.app.domain.PagedSessionOperationMetrics
 import org.aerobag.app.domain.PagedSessionOperationMetricsSnapshot
 import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
+import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.generated.NexradOverlayQueryResult
 import org.aerobag.app.generated.UiSessionWorkCompletionDecision
 import org.aerobag.app.generated.UiSessionWorkKind
@@ -49,11 +51,37 @@ class UiSessionWorkRunner(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val schedulerHandle = bridge.createUiSessionWorkScheduler()
+    private val mutationQueue = Channel<SessionMutation>(Channel.UNLIMITED)
     private val payloads = mutableMapOf<Long, RetainedWork>()
     private val activeRequestIds = mutableSetOf<Long>()
     private var nextRequestId = 1L
     private var closed = false
     private var perfMetricsEnabled = false
+
+    init {
+        scope.launch {
+            for (mutation in mutationQueue) {
+                val startedAtMs = SystemClock.elapsedRealtime()
+                val outcome = runCatching {
+                    withContext(Dispatchers.IO) {
+                        mutation.operation(uiSession)
+                    }
+                }
+                if (closed) return@launch
+                outcome
+                    .onSuccess(mutation.onResult)
+                    .onFailure(mutation.onError)
+                if (perfMetricsEnabled) {
+                    Log.i(
+                        UiSessionWorkLogTag,
+                        "event=mutation_finished command=${mutation.commandName} " +
+                            "outcome=${if (outcome.isSuccess) "success" else "error"} " +
+                            "total_ms=${SystemClock.elapsedRealtime() - startedAtMs} main_thread=false",
+                    )
+                }
+            }
+        }
+    }
 
     fun setPerfMetricsEnabled(enabled: Boolean) {
         if (perfMetricsEnabled == enabled) return
@@ -66,6 +94,7 @@ class UiSessionWorkRunner(
     fun close() {
         if (closed) return
         closed = true
+        mutationQueue.close()
         payloads.values.forEach { retained ->
             retained.payload.dropped("runner_closed")
             logFinished(retained, "runner_closed", outcome = "cancelled")
@@ -74,6 +103,46 @@ class UiSessionWorkRunner(
         activeRequestIds.clear()
         scope.cancel()
         bridge.destroyUiSessionWorkScheduler(schedulerHandle)
+    }
+
+    fun submitSettingsAction(
+        actionId: String,
+        valueId: String,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "performSettingsAction",
+            operation = { it.performSettingsAction(actionId, valueId) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
+    fun submitAircraftLibraryAction(
+        actionId: String,
+        sourceJson: String,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "performAircraftLibraryAction",
+            operation = { it.performAircraftLibraryAction(actionId, sourceJson) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
+    private fun submitMutation(
+        commandName: String,
+        operation: (NativeUiSession) -> UiSessionSnapshot,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        val mutation = SessionMutation(commandName, operation, onResult, onError)
+        if (closed || mutationQueue.trySend(mutation).isFailure) {
+            onError(CancellationException("session work runner is closed"))
+        }
     }
 
     fun submitOverlay(
@@ -526,6 +595,13 @@ private data class RetainedWork(
     val request: UiSessionWorkRequest,
     val payload: WorkPayload,
     var startedAtMs: Long = request.requestedAtMs,
+)
+
+private data class SessionMutation(
+    val commandName: String,
+    val operation: (NativeUiSession) -> UiSessionSnapshot,
+    val onResult: (UiSessionSnapshot) -> Unit,
+    val onError: (Throwable) -> Unit,
 )
 
 private fun operationMetricFields(

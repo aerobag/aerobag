@@ -1764,6 +1764,7 @@ class NativeUiSession internal constructor(
     fun statusActionDecision(actionId: String): UiStatusActionDecision =
         json.decodeFromString(bridge.statusActionDecisionInSessionJson(handle, actionId))
 
+    @RawUiSessionWorkApi
     fun performSettingsAction(actionId: String, valueId: String): UiSessionSnapshot {
         return runPagedSnapshot("performSettingsAction") {
             bridge.performSettingsActionInSessionJson(
@@ -1777,6 +1778,7 @@ class NativeUiSession internal constructor(
         }
     }
 
+    @RawUiSessionWorkApi
     fun performAircraftLibraryAction(
         actionId: String,
         sourceJson: String = "",

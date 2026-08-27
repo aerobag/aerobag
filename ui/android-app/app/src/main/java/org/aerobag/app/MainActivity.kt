@@ -3745,14 +3745,20 @@ internal fun AerobagApp(
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
                         onSettingsAction = { actionId, valueId ->
-                            applySessionCommand("performSettingsAction") {
-                                uiSession.performSettingsAction(actionId, valueId)
-                            }
+                            uiSessionWorkRunner.submitSettingsAction(
+                                actionId = actionId,
+                                valueId = valueId,
+                                onResult = { applySessionSnapshot(it) },
+                                onError = ::recoverSessionCommandFailure,
+                            )
                         },
                         onAircraftLibraryAction = { actionId, sourceJson ->
-                            applySessionCommand("performAircraftLibraryAction") {
-                                uiSession.performAircraftLibraryAction(actionId, sourceJson)
-                            }
+                            uiSessionWorkRunner.submitAircraftLibraryAction(
+                                actionId = actionId,
+                                sourceJson = sourceJson,
+                                onResult = { applySessionSnapshot(it) },
+                                onError = ::recoverSessionCommandFailure,
+                            )
                         },
                     )
                 }

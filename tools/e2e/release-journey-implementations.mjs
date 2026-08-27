@@ -1402,14 +1402,8 @@ async function mapModesAndOverlays(runtime) {
     `gap ${gapViewport.viewport}; paused ${pausedViewport}; returned ${heldViewport}`,
   );
 
-  const warning = await runtime.driver.readElement("data-status-launcher");
+  const warning = await openAndDismissDataStatus(runtime);
   runtime.check("map.warning", Boolean(warning), warning?.text);
-  if (warning) {
-    await runtime.driver.performAction("data-status-launcher");
-    await runtime.driver.back();
-    await runtime.eventually("data status popup dismissed", async () =>
-      (await runtime.driver.readElement("data-status-panel")) ? null : true);
-  }
 
   await runtime.driver.openPage("map");
   await runtime.driver.chooseOption("chart-family-button", "tac");
@@ -1426,6 +1420,19 @@ async function mapModesAndOverlays(runtime) {
   );
   const plate = reference ? await waitForPage(runtime, "plate") : null;
   runtime.check("map.chart-reference", Boolean(reference && plate));
+}
+
+export async function openAndDismissDataStatus(runtime) {
+  const warning = await runtime.driver.readElement("data-status-launcher");
+  if (!warning) return null;
+
+  await runtime.driver.performAction("data-status-launcher");
+  await runtime.eventually("data status popup opened", () =>
+    runtime.driver.readElement("data-status-panel"));
+  await runtime.driver.back();
+  await runtime.eventually("data status popup dismissed", async () =>
+    (await runtime.driver.readElement("data-status-panel")) ? null : true);
+  return warning;
 }
 
 async function selectAirportFromMapSearch(runtime, airportId) {

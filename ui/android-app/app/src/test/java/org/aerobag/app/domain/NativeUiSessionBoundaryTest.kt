@@ -259,6 +259,39 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
+    fun settingsMutationsCannotBlockComposeInputCallbacks() {
+        val sessionSource =
+            sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        val runnerSource =
+            sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
+        val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+
+        for (method in listOf("performSettingsAction", "performAircraftLibraryAction")) {
+            val declaration = sessionSource.substringBefore("fun $method(").takeLast(80)
+            assertTrue(
+                "$method must remain an opt-in raw operation at the native-session boundary.",
+                declaration.contains("@RawUiSessionWorkApi"),
+            )
+            assertTrue(
+                "$method must have exactly one sanctioned caller in UiSessionWorkRunner.",
+                runnerSource.split("it.$method(").size - 1 == 1,
+            )
+            assertFalse(
+                "Compose must not invoke $method directly.",
+                mainActivity.contains("uiSession.$method("),
+            )
+        }
+        assertTrue(
+            "Settings mutations must use the retained FIFO and leave Android's main thread.",
+            runnerSource.contains("private val mutationQueue = Channel<SessionMutation>") &&
+                runnerSource.contains("for (mutation in mutationQueue)") &&
+                runnerSource.contains("withContext(Dispatchers.IO)") &&
+                mainActivity.contains("uiSessionWorkRunner.submitSettingsAction(") &&
+                mainActivity.contains("uiSessionWorkRunner.submitAircraftLibraryAction("),
+        )
+    }
+
+    @Test
     fun mapPageUsesCoreInvalidationAndProjectionRevisions() {
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()

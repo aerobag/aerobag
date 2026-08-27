@@ -18,6 +18,7 @@ import { verifyProductSurfaceCoverage } from "./product-surface-coverage.mjs";
 import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-registry.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
+  openAndDismissDataStatus,
   offlineSyncButtonIsIdle,
   rasterPlanIsDisplayReady,
   selectChartSearchSuggestion,
@@ -75,6 +76,47 @@ test("web semantic drags remain inside their target surface", () => {
 test("replay seek gestures move toward the open side of the timeline", () => {
   assert.equal(timelineSeekDeltaX(1, 5), 320);
   assert.equal(timelineSeekDeltaX(4.4, 5), -320);
+});
+
+test("status popup dismissal waits until the popup can receive Back", async () => {
+  const events = [];
+  let panelOpen = false;
+  const runtime = {
+    driver: {
+      async readElement(id) {
+        events.push(`read:${id}:${panelOpen}`);
+        if (id === "data-status-launcher") return { text: "1" };
+        if (id === "data-status-panel") return panelOpen ? { test_id: id } : null;
+        return null;
+      },
+      async performAction(id) {
+        events.push(`action:${id}`);
+        panelOpen = true;
+      },
+      async back() {
+        events.push(`back:${panelOpen}`);
+        assert.equal(panelOpen, true);
+        panelOpen = false;
+      },
+    },
+    async eventually(label, probe) {
+      events.push(`eventually:${label}`);
+      const value = await probe();
+      assert.ok(value, `${label} did not satisfy its postcondition`);
+      return value;
+    },
+  };
+
+  assert.deepEqual(await openAndDismissDataStatus(runtime), { text: "1" });
+  assert.deepEqual(events, [
+    "read:data-status-launcher:false",
+    "action:data-status-launcher",
+    "eventually:data status popup opened",
+    "read:data-status-panel:true",
+    "back:true",
+    "eventually:data status popup dismissed",
+    "read:data-status-panel:false",
+  ]);
 });
 
 test("verified Android text entry replaces a dropped first injection", async () => {

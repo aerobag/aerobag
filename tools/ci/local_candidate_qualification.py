@@ -387,8 +387,6 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
         check=True,
     )
     apps = run_root / "release-e2e-apps"
-    subprocess.run([str(ROOT / "ui/web-app/scripts/install-binaryen-wasm-opt.sh")], cwd=ROOT, check=True)
-    subprocess.run([str(ROOT / "tools/ci/install_wasm_bindgen.sh")], cwd=ROOT, check=True)
     build_env = lane_environment(
         {
             **CI_SIGNING_ENVIRONMENT,
@@ -396,6 +394,18 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
             "AEROBAG_UI_TARGET_ROOT": str(run_root / "release-ui-target"),
             "ANDROID_TARGET_ABIS": "x86_64",
         }
+    )
+    subprocess.run(
+        [str(ROOT / "ui/web-app/scripts/install-binaryen-wasm-opt.sh")],
+        cwd=ROOT,
+        env=build_env,
+        check=True,
+    )
+    subprocess.run(
+        [str(ROOT / "tools/ci/install_wasm_bindgen.sh")],
+        cwd=ROOT,
+        env=build_env,
+        check=True,
     )
     subprocess.run(
         [str(ROOT / "tools/ci/build_release_e2e_apps.sh"), str(apps)],

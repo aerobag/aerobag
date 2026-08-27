@@ -1407,6 +1407,8 @@ async function mapModesAndOverlays(runtime) {
   if (warning) {
     await runtime.driver.performAction("data-status-launcher");
     await runtime.driver.back();
+    await runtime.eventually("data status popup dismissed", async () =>
+      (await runtime.driver.readElement("data-status-panel")) ? null : true);
   }
 
   await runtime.driver.openPage("map");

@@ -23,11 +23,23 @@ class ChartSearchInspectionGateTest {
         assertFalse(gate.owns(staleSearch))
 
         val staleViewport = gate.begin()
-        gate.invalidate()
+        gate.viewportUpdated(MapViewportUpdateSource.UserInput)
         assertFalse(gate.owns(staleViewport))
 
         val latest = gate.begin()
         assertTrue(gate.owns(latest))
+    }
+
+    @Test
+    fun automaticViewportMovementDoesNotStarveExplicitInspection() {
+        val gate = ChartSearchInspectionGate()
+        val inspection = gate.begin()
+
+        repeat(10) {
+            gate.viewportUpdated(MapViewportUpdateSource.Automatic)
+        }
+
+        assertTrue(gate.owns(inspection))
     }
 
     @Test

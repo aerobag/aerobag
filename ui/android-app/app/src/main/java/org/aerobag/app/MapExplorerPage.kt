@@ -1257,7 +1257,11 @@ internal fun MapExplorerPage(
             }
     }
 
-    fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
+    fun updateViewport(
+        nextViewport: MapViewportState,
+        source: MapViewportUpdateSource,
+        syncFollow: Boolean = true,
+    ) {
         val ownedViewport = viewportOwnedByCenteredInspection(
             requestedViewport = nextViewport,
             centeredInspectionViewport = mapSelection?.centeredViewport,
@@ -1268,9 +1272,9 @@ internal fun MapExplorerPage(
             }
             return
         }
-        // A viewport change after a search request transfers ownership back to the
-        // newer user/navigation input. Its old asynchronous result must not recenter.
-        chartSearchInspectionGate.invalidate()
+        // Only direct user input transfers ownership away from a pending search.
+        // Automatic follow/replay movement must not starve an explicit inspection.
+        chartSearchInspectionGate.viewportUpdated(source)
         val northUpViewport = nextViewport.copy(rotationDeg = 0.0)
         perfLogInfo(MapViewportLogTag) {
             "update map=$selectedMapId from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(northUpViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(northUpViewport.centerWorldX)},${"%.3f".format(northUpViewport.centerWorldY)} syncFollow=$syncFollow"
@@ -1356,7 +1360,7 @@ internal fun MapExplorerPage(
                 centerWorldY = sfo.y,
                 zoom = clampZoom(9.8, selectedMap.minZoom, interactiveMaxZoom),
             )
-            updateViewport(baseViewport, syncFollow = false)
+            updateViewport(baseViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
             delay(750)
             val overlayCompletions = (0 until scenario.overlayFanout).map { worker ->
                 val completion = CompletableDeferred<Unit>()
@@ -1412,7 +1416,7 @@ internal fun MapExplorerPage(
                 val dyPx = (((step % 10) - 5) * 38).toFloat()
                 val zoom = baseViewport.zoom + ((step % 5) - 2) * 0.03
                 lastViewport = dragViewport(baseViewport.copy(zoom = zoom), dxPx, dyPx)
-                updateViewport(lastViewport, syncFollow = false)
+                updateViewport(lastViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
                 if (step == 24) {
                     forcePerfSelection(lastViewport, step.toString())
                 }
@@ -1524,7 +1528,7 @@ internal fun MapExplorerPage(
                 centerWorldY = center.y,
                 zoom = clampZoom(PerfScenarioKorsStressZoom, selectedMap.minZoom, interactiveMaxZoom),
             )
-            updateViewport(baseViewport, syncFollow = false)
+            updateViewport(baseViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
             delay(500)
             val baselineSample = logAndroidPerfMemorySample(scenario, "initial", currentPerfCacheStats())
             val scenarioEndMs = scenarioStartMs + scenario.memoryStressDurationMs
@@ -1538,7 +1542,7 @@ internal fun MapExplorerPage(
                     dxPx,
                     dyPx,
                 )
-                updateViewport(nextViewport, syncFollow = false)
+                updateViewport(nextViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
                 nexradRenderRequests.trySend(Unit)
                 terrainRenderRequests.trySend(Unit)
                 delay(scenario.memorySampleIntervalMs)
@@ -1588,6 +1592,7 @@ internal fun MapExplorerPage(
                     centerWorldX = center.x,
                     centerWorldY = center.y,
                 ),
+                MapViewportUpdateSource.Automatic,
             )
             chartSearchText = ""
             chartSearchOpen = false
@@ -1639,7 +1644,7 @@ internal fun MapExplorerPage(
                     centeredTargetPosition = inspection.position,
                     centeredViewport = nextViewport,
                 )
-                updateViewport(nextViewport)
+                updateViewport(nextViewport, MapViewportUpdateSource.Automatic)
                 chartTrayOpen = false
                 layerTrayOpen = false
                 openStatusControlId = null
@@ -1657,6 +1662,14 @@ internal fun MapExplorerPage(
                 chartSearchInspectionGate.invalidate()
                 chartSearchLoading = false
                 chartSearchError = "Search failed: ${error.message ?: error.toString()}"
+            },
+            onDropped = inspectionDropped@ { reason ->
+                if (!chartSearchInspectionGate.owns(inspectionToken)) {
+                    return@inspectionDropped
+                }
+                chartSearchInspectionGate.invalidate()
+                chartSearchLoading = false
+                chartSearchError = "Search interrupted: $reason"
             },
         )
     }
@@ -2100,7 +2113,7 @@ internal fun MapExplorerPage(
             return@LaunchedEffect
         }
         if (!sameMapViewport(nextViewport, viewportState.value)) {
-            updateViewport(nextViewport, syncFollow = false)
+            updateViewport(nextViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
         }
     }
     LaunchedEffect(uiSession, navDataEpoch, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, trafficRefreshTick, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.traffic.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
@@ -2808,7 +2821,7 @@ internal fun MapExplorerPage(
                     heightPx = surfaceHeightPx,
                     nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.minZoom, interactiveMaxZoom),
                 )
-                updateViewport(nextViewport)
+                updateViewport(nextViewport, MapViewportUpdateSource.UserInput)
                 true
             }
             .focusable()
@@ -2853,7 +2866,11 @@ internal fun MapExplorerPage(
                                             dy = dy,
                                         )
                                         movedViewportDuringGesture = true
-                                        updateViewport(gestureViewport, syncFollow = false)
+                                        updateViewport(
+                                            gestureViewport,
+                                            MapViewportUpdateSource.UserInput,
+                                            syncFollow = false,
+                                        )
                                         actions.onViewportGestureActivity()
                                         endingDragChange.consume()
                                     }
@@ -2890,7 +2907,11 @@ internal fun MapExplorerPage(
                                         dy = change.position.y - last.y,
                                     )
                                     movedViewportDuringGesture = true
-                                    updateViewport(gestureViewport, syncFollow = false)
+                                    updateViewport(
+                                        gestureViewport,
+                                        MapViewportUpdateSource.UserInput,
+                                        syncFollow = false,
+                                    )
                                     actions.onViewportGestureActivity()
                                     dragLastPosition = change.position
                                 }
@@ -2920,7 +2941,11 @@ internal fun MapExplorerPage(
                                         heightPx = surfaceHeightPx,
                                     )
                                 movedViewportDuringGesture = true
-                                updateViewport(gestureViewport, syncFollow = false)
+                                updateViewport(
+                                    gestureViewport,
+                                    MapViewportUpdateSource.UserInput,
+                                    syncFollow = false,
+                                )
                                 actions.onViewportGestureActivity()
                                 first.consume()
                                 second.consume()
@@ -2963,7 +2988,7 @@ internal fun MapExplorerPage(
                         heightPx = surfaceHeightPx,
                         nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, interactiveMaxZoom),
                     )
-                    updateViewport(nextViewport)
+                    updateViewport(nextViewport, MapViewportUpdateSource.UserInput)
                     actions.onViewportGestureActivity()
                     true
                 } else {

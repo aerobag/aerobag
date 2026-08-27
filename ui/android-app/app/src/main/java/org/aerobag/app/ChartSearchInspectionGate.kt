@@ -4,6 +4,11 @@
 
 package org.aerobag.app
 
+internal enum class MapViewportUpdateSource {
+    UserInput,
+    Automatic,
+}
+
 /** Owns the right to publish one asynchronous chart-search inspection result. */
 internal class ChartSearchInspectionGate {
     private var revision = 0L
@@ -15,6 +20,12 @@ internal class ChartSearchInspectionGate {
 
     fun invalidate() {
         revision += 1
+    }
+
+    fun viewportUpdated(source: MapViewportUpdateSource) {
+        if (source == MapViewportUpdateSource.UserInput) {
+            invalidate()
+        }
     }
 
     fun owns(token: Long): Boolean = token == revision

@@ -52,6 +52,7 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             )
 
         self.assertEqual(lane.env["AEROBAG_RELEASE_JOURNEY_REPETITIONS"], "5")
+        self.assertEqual(lane.env["ANDROID_PACKAGE_SOURCE_DEVICE_PORT"], "18093")
         self.assertIn("android-suite-shard p0 2 4", lane.command[4])
         self.assertIn("android-suite-shard p1 2 4", lane.command[4])
         self.assertIn("android-suite-shard p2 2 4", lane.command[4])

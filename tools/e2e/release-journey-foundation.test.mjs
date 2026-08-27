@@ -585,12 +585,24 @@ test("Android E2E can map an immutable APK port to an isolated host fixture", ()
     new URL("../../ui/android-app/scripts/run_e2e.sh", import.meta.url),
     "utf8",
   );
+  const emulatorSource = readFileSync(
+    new URL("../../ui/android-app/scripts/start_emulator_stack.sh", import.meta.url),
+    "utf8",
+  );
   assert.match(
     source,
     /ANDROID_PACKAGE_SOURCE_DEVICE_PORT="\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-\$PACKAGE_SOURCE_PORT\}"/,
   );
   assert.match(
     source,
+    /"tcp:\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT\}" "tcp:\$\{PACKAGE_SOURCE_PORT\}"/,
+  );
+  assert.match(
+    emulatorSource,
+    /ANDROID_PACKAGE_SOURCE_DEVICE_PORT="\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-\$PACKAGE_SOURCE_PORT\}"/,
+  );
+  assert.match(
+    emulatorSource,
     /"tcp:\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT\}" "tcp:\$\{PACKAGE_SOURCE_PORT\}"/,
   );
 });

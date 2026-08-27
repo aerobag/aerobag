@@ -486,6 +486,7 @@ def android_shard_lane(
         "PACKAGE_SOURCE_PORT": str(package_port),
         "AEROBAG_E2E_CLOUD_PORT": str(cloud_port),
         "AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
+        "ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
         "AEROBAG_ANDROID_CLOUD_DEVICE_PORT": "18094",
         "AEROBAG_CLOUD_SERVER_BIN": str(apps / "aerobag-cloud-serverd"),
         "AEROBAG_ANDROID_BASELINE_SNAPSHOT": snapshot,

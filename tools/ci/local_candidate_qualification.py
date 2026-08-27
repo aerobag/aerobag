@@ -156,33 +156,24 @@ def lane_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def prepare_environment() -> None:
-    subprocess.run(
-        [
-            "rustup",
-            "toolchain",
-            "install",
-            "1.94.1",
-            "--profile",
-            "minimal",
-            "--component",
-            "rustfmt",
-        ],
-        cwd=ROOT,
-        check=True,
+    toolchains = subprocess.check_output(
+        ["rustup", "toolchain", "list"], cwd=ROOT, text=True
     )
-    subprocess.run(
-        [
-            "rustup",
-            "target",
-            "add",
-            "wasm32-unknown-unknown",
-            "x86_64-linux-android",
-            "--toolchain",
-            "1.94.1",
-        ],
-        cwd=ROOT,
-        check=True,
+    if "1.94.1-x86_64-unknown-linux-gnu" not in toolchains.split():
+        raise QualificationError("Rust toolchain 1.94.1 is not installed")
+    installed_targets = set(
+        subprocess.check_output(
+            ["rustup", "target", "list", "--toolchain", "1.94.1", "--installed"],
+            cwd=ROOT,
+            text=True,
+        ).split()
     )
+    required_targets = {"wasm32-unknown-unknown", "x86_64-linux-android"}
+    missing_targets = sorted(required_targets - installed_targets)
+    if missing_targets:
+        raise QualificationError(
+            "Rust 1.94.1 is missing targets: " + ", ".join(missing_targets)
+        )
     nextest_version = subprocess.check_output(
         ["cargo", "nextest", "--version"], cwd=ROOT, text=True
     ).splitlines()[0]

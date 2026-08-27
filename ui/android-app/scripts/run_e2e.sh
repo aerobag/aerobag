@@ -14,6 +14,7 @@ TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 SKIP_INSTALL=0
 APK_PATH=""
+DRIVER_APK_PATH="${AEROBAG_E2E_DRIVER_APK:-}"
 CLEAR_APP_DATA=0
 SYNC_OFFLINE_PACKAGES=1
 SYNC_ALL_AVAILABLE_PACKAGES=0
@@ -22,7 +23,7 @@ RELEASE_FIXTURE="${AEROBAG_RELEASE_JOURNEY_FIXTURE:-}"
 
 usage() {
   cat <<'EOF'
-usage: run_e2e.sh [--apk PATH|--skip-install] [--clear-app-data] [--serial SERIAL] [--route "KRNT KPWT"] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID]
+usage: run_e2e.sh [--apk PATH|--skip-install] [--driver-apk PATH] [--clear-app-data] [--serial SERIAL] [--route "KRNT KPWT"] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID]
 
 Builds and installs the Android app, then runs Android end-to-end UI tests.
 Installed package data is preserved; the test runner clears only volatile UI
@@ -50,6 +51,10 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --apk)
       APK_PATH="${2:-}"
+      shift
+      ;;
+    --driver-apk)
+      DRIVER_APK_PATH="${2:-}"
       shift
       ;;
     --skip-install)
@@ -188,6 +193,22 @@ elif [[ "$SKIP_INSTALL" -eq 0 ]]; then
   )
 else
   echo "[1/2] skip installDebug"
+fi
+
+if [[ -z "$DRIVER_APK_PATH" && -n "$APK_PATH" ]]; then
+  sibling_driver="$(dirname "$APK_PATH")/aerobag-e2e-driver.apk"
+  if [[ -f "$sibling_driver" ]]; then
+    DRIVER_APK_PATH="$sibling_driver"
+  fi
+fi
+if [[ -n "$DRIVER_APK_PATH" ]]; then
+  if [[ ! -f "$DRIVER_APK_PATH" ]]; then
+    echo "Android E2E semantic driver APK is missing: $DRIVER_APK_PATH" >&2
+    exit 1
+  fi
+  echo "install persistent Android semantic driver: $DRIVER_APK_PATH"
+  adb -s "$ANDROID_SERIAL" install -r "$DRIVER_APK_PATH" >/dev/null
+  export AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED=1
 fi
 
 if [[ "$CLEAR_APP_DATA" -eq 1 && "$SKIP_INSTALL" -eq 1 ]]; then

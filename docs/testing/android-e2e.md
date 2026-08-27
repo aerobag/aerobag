@@ -1,6 +1,8 @@
 # Android End-To-End UI Tests
 
-Android E2E tests drive a real installed app with `adb` and `uiautomator`.
+Android E2E tests drive a real installed app with `adb`. Release journeys use a
+persistent instrumentation process to read the rendered accessibility tree;
+legacy standalone tests may still use `uiautomator`.
 They exercise Android UI plus core through the same controls a pilot uses.
 
 Run the CI-oriented entrypoint:
@@ -67,6 +69,12 @@ URL is not already available.
 The harness uses stable Android Compose test tags exported through
 `testTagsAsResourceId`. Tags intended for cross-platform parity or E2E coverage
 use the `parity:` prefix.
+
+The release driver never calls a core action directly. It finds a visible,
+enabled node in the rendered hierarchy and invokes that node's ordinary Android
+accessibility action. This preserves user-facing reachability while avoiding
+coordinate guesses and multi-second `uiautomator` process startup for every
+probe.
 
 Painted canvas content is not directly visible to `uiautomator`, so canvas
 render paths that need E2E coverage should expose a small semantic probe. The

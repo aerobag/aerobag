@@ -44,6 +44,30 @@ def run(
 
 
 class ReleaseCiTests(unittest.TestCase):
+    def test_candidate_requires_full_repeated_journey_run_for_exact_commit(self) -> None:
+        candidate = run(workflow="e2e-ci.yml", branch="candidate-main", run_id=7)
+        candidate["display_title"] = f"Candidate qualification {COMMIT}"
+        status = release_ci.evaluate_candidate_qualification(
+            commit=COMMIT,
+            ci_runs=[run(workflow="ci.yml", branch="main")],
+            e2e_runs=[candidate],
+        )
+
+        self.assertTrue(status.passed)
+        self.assertEqual(status.release_journeys.run_id, 7)
+
+    def test_ordinary_main_e2e_cannot_substitute_for_candidate_run(self) -> None:
+        ordinary = run(workflow="e2e-ci.yml", branch="main")
+        ordinary["display_title"] = "E2E main"
+        status = release_ci.evaluate_candidate_qualification(
+            commit=COMMIT,
+            ci_runs=[run(workflow="ci.yml", branch="main")],
+            e2e_runs=[ordinary],
+        )
+
+        self.assertFalse(status.passed)
+        self.assertEqual(status.release_journeys.state, "missing")
+
     def test_requires_successful_main_and_exact_release_tag_runs(self) -> None:
         status = release_ci.evaluate_release_qualification(
             tag=TAG,

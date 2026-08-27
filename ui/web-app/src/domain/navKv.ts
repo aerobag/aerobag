@@ -116,6 +116,19 @@ type PendingNavKvPageInsert = {
   reject: (error: unknown) => void;
 };
 
+type PendingNavKvPageFetch = {
+  resourceId: string;
+  pageIndex: number;
+  requestUrl: string;
+  priority: number;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
+
+export const NAV_KV_PAGE_FETCH_CONCURRENCY = 6;
+const NAV_KV_PAGE_FETCH_ATTEMPTS = 2;
+const NAV_KV_PAGE_FETCH_RETRY_DELAY_MS = 25;
+
 export class ResourceIngestCoordinator {
   private readonly inFlight = new Map<string, Promise<void>>();
 
@@ -153,10 +166,12 @@ async function ensureWasmReady(): Promise<NavKvWasmModule> {
 
 export class NavKvStore {
   private readonly inFlightPageFetches = new Map<number, Promise<void>>();
+  private readonly pendingPageFetches = new Map<number, PendingNavKvPageFetch>();
   private readonly resourceIngestCoordinator = new ResourceIngestCoordinator();
   private readonly pendingPageInserts = new Map<number, PendingNavKvPageInsert>();
   private readonly pageRequestPriorities = new Map<number, number>();
   private pageInsertPumpActive = false;
+  private activePageFetches = 0;
   private pageRequestSequence = 0;
   private activeOperations = 0;
   private retireRequested = false;
@@ -612,6 +627,10 @@ export class NavKvStore {
     if (pendingInsert) {
       pendingInsert.priority = priority;
     }
+    const pendingFetch = this.pendingPageFetches.get(pageIndex);
+    if (pendingFetch) {
+      pendingFetch.priority = priority;
+    }
     const cached = this.inFlightPageFetches.get(pageIndex);
     if (cached) {
       return cached;
@@ -619,25 +638,111 @@ export class NavKvStore {
     const resourceId = `nav_kv/page/${pageIndex.toString().padStart(4, "0")}`;
     const address = `${this.navKvPackageRoot}/page_${pageIndex.toString().padStart(4, "0")}`;
     const requestUrl = withNavKvCacheKey(address);
-    const startedAt = performance.now();
-    const fetched = debugTiming("nav_kv.page.fetch", () => fetch(requestUrl), {
-      page: pageIndex,
-    })
-      .then(async (response) => {
-        const headersAt = performance.now();
-        if (!response.ok) {
-          throw new Error(`failed to fetch nav_kv page ${pageIndex}: ${response.status}`);
+    let resolveFetch!: () => void;
+    let rejectFetch!: (error: unknown) => void;
+    const pending = new Promise<void>((resolve, reject) => {
+      resolveFetch = resolve;
+      rejectFetch = reject;
+    });
+    const fetched = pending.finally(() => {
+      if (this.inFlightPageFetches.get(pageIndex) === fetched) {
+        this.inFlightPageFetches.delete(pageIndex);
+      }
+    });
+    this.pendingPageFetches.set(pageIndex, {
+      resourceId,
+      pageIndex,
+      requestUrl,
+      priority,
+      resolve: resolveFetch,
+      reject: rejectFetch,
+    });
+    this.inFlightPageFetches.set(pageIndex, fetched);
+    this.pumpPageFetchQueue();
+    return fetched;
+  }
+
+  private pumpPageFetchQueue(): void {
+    while (this.activePageFetches < NAV_KV_PAGE_FETCH_CONCURRENCY) {
+      const entry = this.takeHighestPriorityPageFetch();
+      if (!entry) {
+        return;
+      }
+      this.activePageFetches += 1;
+      void this.fetchAndInsertNavKvPage(entry)
+        .then(entry.resolve, entry.reject)
+        .finally(() => {
+          this.activePageFetches -= 1;
+          this.pumpPageFetchQueue();
+        });
+    }
+  }
+
+  private takeHighestPriorityPageFetch(): PendingNavKvPageFetch | null {
+    let selected: PendingNavKvPageFetch | null = null;
+    for (const entry of this.pendingPageFetches.values()) {
+      if (!selected || entry.priority > selected.priority) {
+        selected = entry;
+      }
+    }
+    if (selected) {
+      this.pendingPageFetches.delete(selected.pageIndex);
+    }
+    return selected;
+  }
+
+  private async fetchAndInsertNavKvPage(entry: PendingNavKvPageFetch): Promise<void> {
+    const { resourceId, pageIndex, requestUrl, priority } = entry;
+    let lastTransportError = "unknown transport error";
+    for (let attempt = 1; attempt <= NAV_KV_PAGE_FETCH_ATTEMPTS; attempt += 1) {
+      const startedAt = performance.now();
+      let response: Response;
+      try {
+        response = await debugTiming("nav_kv.page.fetch", () => fetch(requestUrl), {
+          page: pageIndex,
+          attempt,
+        });
+      } catch (error) {
+        lastTransportError = error instanceof Error ? error.message : String(error);
+        if (attempt < NAV_KV_PAGE_FETCH_ATTEMPTS) {
+          await delayNavKvPageRetry();
+          continue;
         }
-        const buffer = await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), { page: pageIndex });
-        const bytes = debugTiming("nav_kv.page.uint8_array", () => new Uint8Array(buffer), {
+        break;
+      }
+
+      if (!response.ok) {
+        throw new Error(`failed to fetch nav_kv page ${pageIndex} from ${requestUrl}: HTTP ${response.status}`);
+      }
+      let bytes: Uint8Array | null = null;
+      try {
+        const headersAt = performance.now();
+        const buffer = await debugTiming("nav_kv.page.array_buffer", () => response.arrayBuffer(), {
+          page: pageIndex,
+          attempt,
+        });
+        bytes = debugTiming("nav_kv.page.uint8_array", () => new Uint8Array(buffer), {
           page: pageIndex,
           byte_length: buffer.byteLength,
         });
         logNavKvPageFetchDetail(pageIndex, requestUrl, startedAt, headersAt, performance.now(), bytes.byteLength);
-        await this.insertNavKvPage(resourceId, pageIndex, bytes, priority);
-      });
-    this.inFlightPageFetches.set(pageIndex, fetched);
-    return fetched;
+      } catch (error) {
+        lastTransportError = error instanceof Error ? error.message : String(error);
+        if (attempt < NAV_KV_PAGE_FETCH_ATTEMPTS) {
+          await delayNavKvPageRetry();
+          continue;
+        }
+        break;
+      }
+      if (!bytes) {
+        continue;
+      }
+      await this.insertNavKvPage(resourceId, pageIndex, bytes, priority);
+      return;
+    }
+    throw new Error(
+      `failed to fetch nav_kv page ${pageIndex} from ${requestUrl} after ${NAV_KV_PAGE_FETCH_ATTEMPTS} attempts: ${lastTransportError}`,
+    );
   }
 
   private insertNavKvPage(resourceId: string, pageIndex: number, bytes: Uint8Array, priority: number): Promise<void> {
@@ -708,6 +813,10 @@ export class NavKvStore {
 
 function yieldToWorkerEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function delayNavKvPageRetry(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, NAV_KV_PAGE_FETCH_RETRY_DELAY_MS));
 }
 
 async function resolveSessionPublicationResult<T>(

@@ -2,15 +2,21 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   completeResourceFreeSessionMutation,
+  NAV_KV_PAGE_FETCH_CONCURRENCY,
+  NavKvStore,
   ResourceIngestCoordinator,
   resolvePublicResourceUrl,
   type SessionMutationOperationJson,
   type SessionResultOperationJson,
   type SessionSnapshotOperationJson,
 } from "./navKv";
+
+type TestableNavKvStore = {
+  ensureNavKvPage(pageIndex: number): Promise<void>;
+};
 
 describe("session operation wire types", () => {
   it("keeps results, mutations, and snapshots nominally distinct", () => {
@@ -77,6 +83,78 @@ describe("ResourceIngestCoordinator", () => {
     });
 
     expect(loadCount).toBe(2);
+  });
+});
+
+describe("NavKvStore page fetching", () => {
+  it("bounds concurrent page fetches while retaining every request", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchPage = vi.fn(() => Promise.resolve(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+    ));
+    globalThis.fetch = fetchPage as typeof fetch;
+    const store = Reflect.construct(NavKvStore, [
+      { nav_kv_insert_resource: vi.fn() },
+      17,
+      "http://fixture.test/nav_db/root",
+    ]) as TestableNavKvStore;
+
+    try {
+      const requests = Array.from(
+        { length: NAV_KV_PAGE_FETCH_CONCURRENCY + 1 },
+        (_, pageIndex) => store.ensureNavKvPage(pageIndex),
+      );
+      expect(fetchPage).toHaveBeenCalledTimes(NAV_KV_PAGE_FETCH_CONCURRENCY);
+      await Promise.all(requests);
+      expect(fetchPage).toHaveBeenCalledTimes(NAV_KV_PAGE_FETCH_CONCURRENCY + 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("recovers one transient page transport failure without retrying the user action", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchPage = vi.fn()
+      .mockRejectedValueOnce(new TypeError("temporary network failure"))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    globalThis.fetch = fetchPage as typeof fetch;
+    const insertResource = vi.fn();
+    const store = Reflect.construct(NavKvStore, [
+      { nav_kv_insert_resource: insertResource },
+      17,
+      "http://fixture.test/nav_db/root",
+    ]) as TestableNavKvStore;
+
+    try {
+      await expect(store.ensureNavKvPage(7)).resolves.toBeUndefined();
+
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+      expect(insertResource).toHaveBeenCalledOnce();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("evicts a page after its transport retry budget is exhausted", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchPage = vi.fn()
+      .mockRejectedValueOnce(new TypeError("first failure"))
+      .mockRejectedValueOnce(new TypeError("second failure"))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    globalThis.fetch = fetchPage as typeof fetch;
+    const store = Reflect.construct(NavKvStore, [
+      { nav_kv_insert_resource: vi.fn() },
+      17,
+      "http://fixture.test/nav_db/root",
+    ]) as TestableNavKvStore;
+
+    try {
+      await expect(store.ensureNavKvPage(7)).rejects.toThrow("after 2 attempts: second failure");
+      await expect(store.ensureNavKvPage(7)).resolves.toBeUndefined();
+      expect(fetchPage).toHaveBeenCalledTimes(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

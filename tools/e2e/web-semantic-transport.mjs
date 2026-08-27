@@ -10,6 +10,19 @@ function expressionArgument(value) {
   return JSON.stringify(value);
 }
 
+const RENDERED_ELEMENT_PREDICATE = `((element) => {
+  if (!(element instanceof Element)) return false;
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || element.getClientRects().length === 0) return false;
+  for (let current = element; current; current = current.parentElement) {
+    const style = getComputedStyle(current);
+    if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || Number(style.opacity) === 0) {
+      return false;
+    }
+  }
+  return true;
+})`;
+
 export class WebSemanticTransport {
   constructor(page, { url, origin = new URL(url).origin } = {}) {
     this.page = page;
@@ -18,6 +31,10 @@ export class WebSemanticTransport {
   }
 
   async reset() {
+    // Stop the application before clearing its origin. Otherwise a live effect
+    // can persist stale state between clearDataForOrigin and navigation.
+    await this.page.navigate("about:blank");
+    await this.page.waitForLoad();
     await this.page.send("Storage.clearDataForOrigin", {
       origin: this.origin,
       storageTypes: "all",
@@ -37,11 +54,8 @@ export class WebSemanticTransport {
 
   async visible(selector) {
     return this.page.evaluate(`(() => {
-      return [...document.querySelectorAll(${expressionArgument(selector)})].some((element) => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-      });
+      return [...document.querySelectorAll(${expressionArgument(selector)})]
+        .some((element) => ${RENDERED_ELEMENT_PREDICATE}(element));
     })()`);
   }
 
@@ -55,61 +69,168 @@ export class WebSemanticTransport {
   }
 
   async click(selector) {
+    await this.page.evaluate(`(() => {
+      const element = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
+      element?.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    })()`);
     if (!await this.clickIfVisible(selector)) {
       throw new Error(`web control is missing: ${selector}`);
     }
   }
 
   async clickIfVisible(selector) {
-    const clicked = await this.page.evaluate(`(() => {
-      const element = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        const style = getComputedStyle(candidate);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    let lastProbe = null;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const target = await this.page.evaluate(`(() => {
+        const element = [...document.querySelectorAll(${expressionArgument(selector)})]
+          .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        const fractions = [0.5, 0.1, 0.9, 0.25, 0.75];
+        let lastHit = null;
+        for (const yFraction of fractions) {
+          for (const xFraction of fractions) {
+            const x = rect.left + rect.width * xFraction;
+            const y = rect.top + rect.height * yFraction;
+            const hit = document.elementFromPoint(x, y);
+            lastHit = hit;
+            if (hit === element || element.contains(hit)) {
+              return { x, y, unobstructed: true };
+            }
+          }
+        }
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          unobstructed: false,
+          hit: lastHit ? {
+            tag: lastHit.tagName,
+            test_id: lastHit.getAttribute("data-testid"),
+            aria_label: lastHit.getAttribute("aria-label"),
+            class_name: typeof lastHit.className === "string" ? lastHit.className : lastHit.className?.baseVal ?? null,
+          } : null,
+        };
+      })()`);
+      if (!target) return false;
+      if (!target.unobstructed) {
+        lastProbe = { obstructed_by: target.hit };
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      await this.page.evaluate(`(() => {
+        const probe = { pointerdown: 0, pointerup: 0, click: 0, matched: 0, actionable_clicks: 0, targets: [] };
+        const listeners = {};
+        for (const type of ["pointerdown", "pointerup", "click"]) {
+          listeners[type] = (event) => {
+            probe[type] += 1;
+            if (event.target instanceof Element && event.target.closest(${expressionArgument(selector)})) {
+              probe.matched += 1;
+            }
+            if (type === "click" && event.target instanceof Element && event.target.closest("button,input,a,[role=button]")) {
+              probe.actionable_clicks += 1;
+            }
+            probe.targets.push(event.target?.getAttribute?.("data-testid") ?? event.target?.tagName ?? null);
+          };
+          document.addEventListener(type, listeners[type], true);
+        }
+        window.__aerobagReleaseControlProbe = { listeners, probe };
+      })()`);
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved", x: target.x, y: target.y, button: "none", pointerType: "mouse",
       });
-      if (!(element instanceof HTMLElement)) return false;
-      element.click();
-      return true;
-    })()`);
-    return clicked;
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mousePressed", x: target.x, y: target.y, button: "left", buttons: 1,
+        clickCount: 1, pointerType: "mouse", pointerId: 1,
+      });
+      const pressed = await this.page.evaluate("window.__aerobagReleaseControlProbe?.probe ?? null");
+      const pressMatched = pressed?.pointerdown === 1 && pressed?.matched === 1;
+      await this.page.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: pressMatched ? target.x : -100,
+        y: pressMatched ? target.y : -100,
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+        pointerType: "mouse",
+        pointerId: 1,
+      });
+      const probe = await this.page.evaluate(`(() => {
+        const state = window.__aerobagReleaseControlProbe;
+        if (!state) return null;
+        for (const [type, listener] of Object.entries(state.listeners)) {
+          document.removeEventListener(type, listener, true);
+        }
+        delete window.__aerobagReleaseControlProbe;
+        return state.probe;
+      })()`);
+      lastProbe = probe;
+      if (pressMatched && probe?.click === 1 && probe?.matched === 3) {
+        return true;
+      }
+      if (probe?.actionable_clicks > 0) {
+        throw new Error(`web pointer produced an unintended click: ${selector}; probe=${JSON.stringify(probe)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(
+      `web control did not remain stable for a click: ${selector}; probe=${JSON.stringify(lastProbe)}`,
+    );
   }
 
   async clickTestId(testId) {
-    const clicked = await this.page.evaluate(`(() => {
-      const element = [...document.querySelectorAll("[data-testid]")].find((candidate) => {
-        if (candidate.dataset.testid !== ${expressionArgument(testId)}) return false;
-        const rect = candidate.getBoundingClientRect();
-        const style = getComputedStyle(candidate);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-      });
-      if (element instanceof HTMLElement) {
-        element.click();
-      } else if (element instanceof SVGElement) {
-        element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      } else {
-        return false;
-      }
-      return true;
-    })()`);
-    if (!clicked) throw new Error(`web control is missing: data-testid=${testId}`);
+    await this.click(`[data-testid=${expressionArgument(testId)}]`);
   }
 
   async firstExisting(selectors) {
     for (const selector of selectors) {
       if (!await this.exists(selector)) continue;
       await this.page.evaluate(`document.querySelector(${expressionArgument(selector)})
-        ?.scrollIntoView({ block: "center", inline: "center" })`);
+        ?.scrollIntoView({ block: "center", inline: "center", behavior: "instant" })`);
       if (await this.visible(selector)) return selector;
     }
     return null;
   }
 
+  async waitForFirstVisible(selectors, description, timeoutMs = 15_000) {
+    return waitFor(
+      () => this.firstExisting(selectors),
+      timeoutMs,
+      `timed out waiting for ${description}`,
+      100,
+    );
+  }
+
+  async optionSelectionState(selector) {
+    return this.page.evaluate(`(() => {
+      const element = document.querySelector(${expressionArgument(selector)});
+      if (!element || !${RENDERED_ELEMENT_PREDICATE}(element)) return null;
+      return JSON.stringify({
+        pressed: element.getAttribute("aria-pressed"),
+        selected: element.getAttribute("aria-selected"),
+        checked: element.getAttribute("aria-checked"),
+        on: element.classList.contains("isOn"),
+        off: element.classList.contains("isOff"),
+      });
+    })()`);
+  }
+
+  async waitForOptionSelection(selector, previousState, description, timeoutMs = 15_000) {
+    return waitFor(
+      async () => {
+        const currentState = await this.optionSelectionState(selector);
+        return currentState === null || currentState !== previousState ? currentState ?? "dismissed" : null;
+      },
+      timeoutMs,
+      `timed out waiting for ${description}`,
+      100,
+    );
+  }
+
   async enterText(selector, value, { submit = false } = {}) {
     const changed = await this.page.evaluate(`(() => {
-      const input = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
+      const input = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return false;
       const prototype = input instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
@@ -134,10 +255,8 @@ export class WebSemanticTransport {
   async pointerClick(selector, xFraction = 0.5, yFraction = 0.5) {
     const point = await this.elementPoint(selector, xFraction, yFraction);
     await this.page.evaluate(`(() => {
-      const surface = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
+      const surface = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       const probe = { pointerdown: 0, pointerup: 0, targets: [] };
       const listeners = {};
       for (const type of ["pointerdown", "pointerup"]) {
@@ -190,8 +309,7 @@ export class WebSemanticTransport {
     const selected = await this.page.evaluate(`(() => {
       const element = [...document.querySelectorAll("[data-testid]")].find((candidate) =>
         candidate.dataset.testid === ${expressionArgument(testId)} &&
-        candidate.getBoundingClientRect().width > 0 &&
-        candidate.getBoundingClientRect().height > 0);
+        ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!element) return null;
       const range = document.createRange();
       range.selectNodeContents(element);
@@ -223,10 +341,8 @@ export class WebSemanticTransport {
     const maximum = await this.elementPoint(selector, 0.98, 0.98);
     const end = clampDragEndpoint(start, { x: deltaX, y: deltaY }, minimum, maximum);
     await this.page.evaluate(`(() => {
-      const surface = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
+      const surface = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       const probe = { pointerdown: 0, pointermove: 0, pointerup: 0, targets: [], blocked_by: null };
       const listeners = {};
       for (const type of ["pointerdown", "pointermove", "pointerup"]) {
@@ -285,10 +401,8 @@ export class WebSemanticTransport {
 
   async elementPoint(selector, xFraction, yFraction) {
     const rect = await this.page.evaluate(`(() => {
-      const element = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
+      const element = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!element) return null;
       const value = element.getBoundingClientRect();
       return { left: value.left, top: value.top, width: value.width, height: value.height };
@@ -302,11 +416,8 @@ export class WebSemanticTransport {
 
   async readElement(selector) {
     return this.page.evaluate(`(() => {
-      const element = [...document.querySelectorAll(${expressionArgument(selector)})].find((candidate) => {
-        const rect = candidate.getBoundingClientRect();
-        const style = getComputedStyle(candidate);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-      });
+      const element = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!(element instanceof HTMLElement)) return null;
       const rect = element.getBoundingClientRect();
       return {
@@ -338,8 +449,20 @@ export class WebSemanticTransport {
         return [{ id: \`parity:raster-state:planned:\${planned}:loaded:\${loaded}:failed:\${failed}\`, text: "", enabled: true, pressed: null }];
       })()`);
     }
+    const visibleControlsOnly = [
+      "tray-option-",
+      "plate-folder-tile:",
+      "plan-row-",
+      "plan-procedure-",
+      "plan-procedure-transition-",
+      "plan-insert-suggestion-",
+    ].some((controlPrefix) => prefix.startsWith(controlPrefix));
     return this.page.evaluate(`(() => [...document.querySelectorAll("[data-testid]")]
       .filter((element) => element.dataset.testid.startsWith(${expressionArgument(prefix)}))
+      .filter((element) => {
+        if (!${visibleControlsOnly}) return true;
+        return ${RENDERED_ELEMENT_PREDICATE}(element);
+      })
       .map((element) => ({
         id: element.dataset.testid,
         text: element.textContent?.replace(/\\s+/g, " ").trim() ?? "",

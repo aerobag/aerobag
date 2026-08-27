@@ -270,18 +270,7 @@ jobs:
             .ci/ui-target/shared/rust-target
           key: web-rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock') }}
       - name: Install matching wasm-bindgen CLI
-        run: |
-          version="$(python3 - <<'PY'
-          from pathlib import Path
-          import tomllib
-          lock = tomllib.loads(Path("ui/core-rust/Cargo.lock").read_text())
-          print(next(package["version"] for package in lock["package"] if package["name"] == "wasm-bindgen"))
-          PY
-          )"
-          current="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
-          if [[ "$current" != "$version" ]]; then
-            cargo install wasm-bindgen-cli --version "$version" --locked --force
-          fi
+        run: ./tools/ci/install_wasm_bindgen.sh
       - name: Build and test web
         run: |
           mkdir -p "$(dirname "$AEROBAG_JUNIT_PATH")"

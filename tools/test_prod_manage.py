@@ -51,6 +51,14 @@ class DesiredStateMutationTests(unittest.TestCase):
         self.assertFalse(hasattr(args, "config"))
         self.assertFalse(hasattr(args, "releases"))
 
+        with mock.patch.object(sys, "argv", ["prod_manage.py", "--prequalify"]):
+            args = prod_manage.parse_args()
+        self.assertTrue(args.prequalify)
+
+        with mock.patch.object(sys, "argv", ["prod_manage.py", "--candidate-status"]):
+            args = prod_manage.parse_args()
+        self.assertTrue(args.candidate_status)
+
         with mock.patch.object(sys, "argv", ["prod_manage.py", "--reconcile"]):
             args = prod_manage.parse_args()
         self.assertTrue(args.reconcile)
@@ -480,6 +488,55 @@ class StageOrderingTests(unittest.TestCase):
         git.assert_called_once_with("status", "--porcelain")
         load_config.assert_not_called()
 
+    def test_prequalification_pushes_candidate_only_and_waits_for_new_green_run(self) -> None:
+        git_calls: list[tuple[tuple[str, ...], bool]] = []
+
+        def fake_git(*args: str, capture: bool = True) -> str:
+            git_calls.append((args, capture))
+            return self.clean_git(*args, capture=capture)
+
+        def qualification(state: str, run_id: int | None) -> object:
+            ordinary = prod_manage.release_ci.WorkflowQualification(
+                "ordinary CI", "passed", "passed", run_id=1
+            )
+            journeys = prod_manage.release_ci.WorkflowQualification(
+                "candidate journeys", state, state, run_id=run_id
+            )
+            return prod_manage.release_ci.ReleaseQualification(
+                "candidate-main", "a" * 40, ordinary, journeys
+            )
+
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=fake_git),
+            mock.patch.object(prod_manage, "run_stage_preflight") as preflight,
+            mock.patch.object(
+                prod_manage.deployment,
+                "load_config",
+                return_value={"github_repository": "owner/project"},
+            ),
+            mock.patch.object(
+                prod_manage,
+                "candidate_qualification",
+                side_effect=[
+                    qualification("failed", 10),
+                    qualification("pending", 11),
+                    qualification("passed", 11),
+                ],
+            ),
+            mock.patch.object(prod_manage.time, "monotonic", side_effect=[0, 1, 2]),
+            mock.patch.object(prod_manage.time, "sleep"),
+            mock.patch.object(prod_manage, "print_candidate_qualification"),
+            mock.patch.object(prod_manage, "print_success"),
+        ):
+            self.assertEqual(prod_manage.prequalify(prod_manage.DEFAULT_CONFIG), 0)
+
+        pushes = [args for args, capture in git_calls if args[0] == "push" and not capture]
+        self.assertEqual(len(pushes), 2)
+        preflight.assert_called_once_with(full=True)
+        self.assertEqual(pushes[0], ("push", "git@github.com:owner/project.git", "main"))
+        self.assertEqual(pushes[1][:2], ("push", "git@github.com:owner/project.git"))
+        self.assertRegex(pushes[1][2], r"^HEAD:refs/tags/candidate-\d{8}T\d{6}Z-a{8}$")
+
     def test_github_git_url_is_derived_from_the_api_repository(self) -> None:
         self.assertEqual(
             prod_manage.github_git_url({"github_repository": "owner/project"}),
@@ -524,6 +581,7 @@ class StageOrderingTests(unittest.TestCase):
             mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
             mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
             mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(prod_manage, "assert_candidate_is_qualified"),
             mock.patch.object(
                 prod_manage,
                 "assert_remote_idle",
@@ -577,6 +635,7 @@ class StageOrderingTests(unittest.TestCase):
             ),
             mock.patch.object(prod_manage, "git", side_effect=fake_git),
             mock.patch.object(prod_manage, "run_stage_preflight") as preflight,
+            mock.patch.object(prod_manage, "assert_candidate_is_qualified") as candidate,
             mock.patch.object(prod_manage, "assert_remote_idle") as idle,
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
             mock.patch.object(
@@ -593,6 +652,9 @@ class StageOrderingTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         preflight.assert_called_once_with()
+        candidate.assert_called_once_with(
+            {"github_repository": "aerobag/aerobag"}, "a" * 40
+        )
         self.assertEqual(idle.call_count, 2)
         mutation_calls = [
             args
@@ -619,6 +681,29 @@ class StageOrderingTests(unittest.TestCase):
         reconcile.assert_called_once_with(
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
         )
+
+    def test_stage_rejects_unqualified_commit_before_production_access(self) -> None:
+        document = desired_document()
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(prod_manage, "load_release_document", return_value=document),
+            mock.patch.object(prod_manage, "run_stage_preflight"),
+            mock.patch.object(
+                prod_manage.deployment,
+                "load_config",
+                return_value={"github_repository": "aerobag/aerobag"},
+            ),
+            mock.patch.object(
+                prod_manage,
+                "assert_candidate_is_qualified",
+                side_effect=prod_manage.ManagementError("candidate failed"),
+            ),
+            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+        ):
+            with self.assertRaisesRegex(prod_manage.ManagementError, "candidate failed"):
+                prod_manage.stage(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES)
+
+        idle.assert_not_called()
 
 
 class ReconcileCommandTests(unittest.TestCase):

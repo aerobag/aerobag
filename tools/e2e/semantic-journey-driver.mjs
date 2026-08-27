@@ -4,8 +4,9 @@
 
 import { writeFileSync } from "node:fs";
 import {
-  adb, androidNodeLabel, androidTag, clearFocusedText, displayBoundsFromXml, dumpAndroid, findNode, findNodes,
+  adb, androidImeVisible, androidNodeLabel, androidTag, clearFocusedText, displayBoundsFromXml, dumpAndroid, findNode, findNodes,
   findVerticalScrollSurface, inputText, pressKey, rectOfBounds, screencapPng,
+  scrollAndroidSemanticNode, setAndroidSemanticText,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
   scrollHorizontallyUntilTag, tapTag, verticalScrollGesture, waitFor,
 } from "./android-harness.mjs";
@@ -104,12 +105,23 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     const optionIds = launcherId === "plate-airport-button" && !optionId.includes(":")
       ? [`airport:${optionId}`, optionId]
       : [optionId];
-    const option = await this.transport.firstExisting(
+    const option = await this.transport.waitForFirstVisible(
       optionIds.map((id) => `[data-testid="tray-option-${id}"]`),
+      `${launcherId} option ${optionId}`,
     );
-    if (!option) throw new Error(`${launcherId} option ${optionId} is unavailable`);
-    await this.transport.waitFor(option, `${launcherId} option ${optionId}`);
+    const optionState = await this.transport.readElement(option);
+    if (!optionState?.enabled) {
+      throw new Error(
+        `${launcherId} option ${optionId} is disabled${optionState?.disabled_reason ? `: ${optionState.disabled_reason}` : ""}`,
+      );
+    }
+    const previousSelectionState = await this.transport.optionSelectionState(option);
     await this.transport.click(option);
+    await this.transport.waitForOptionSelection(
+      option,
+      previousSelectionState,
+      `${launcherId} selection ${optionId}`,
+    );
   }
 
   async inspectMapAt({ x, y }) {
@@ -394,11 +406,17 @@ export function androidSemanticTag(value) {
 }
 
 export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
-  constructor(serial, { resetApp, resetApplicationData = null, pressBack = null }) {
+  constructor(serial, {
+    resetApp,
+    resetApplicationData = null,
+    reloadApp = null,
+    pressBack = null,
+  }) {
     super("android");
     this.serial = serial;
     this.resetApp = resetApp;
     this.resetApplicationDataCallback = resetApplicationData;
+    this.reloadAppCallback = reloadApp;
     this.pressBackCallback = pressBack ?? (() => pressKey(this.serial, "KEYCODE_BACK"));
   }
 
@@ -592,6 +610,18 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     };
 
     await focusControl(false);
+    if (setAndroidSemanticText(this.serial, semanticTag, value)) {
+      await waitFor(
+        () => findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text === value,
+        5_000,
+        `Android semantic text action did not commit ${controlId}`,
+      );
+      if (submit) pressKey(this.serial, "KEYCODE_ENTER");
+      if (dismissKeyboard && androidImeVisible(dumpAndroid(this.serial))) {
+        pressKey(this.serial, "KEYCODE_BACK");
+      }
+      return;
+    }
     if (!dismissKeyboard) {
       clearFocusedText(this.serial);
       inputText(this.serial, value);
@@ -664,9 +694,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         const scrollSurface = findVerticalScrollSurface(xml);
         if (!scrollSurface) break;
         const bounds = rectOfBounds(scrollSurface.bounds);
-        const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-        swipe(this.serial, x, startY, x, endY, 450);
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (scrollAndroidSemanticNode(this.serial, scrollSurface.bounds, direction)) {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+        } else {
+          const { x, startY, endY } = verticalScrollGesture(bounds, direction);
+          swipe(this.serial, x, startY, x, endY, 450);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
       }
     }
     return [...accumulated.values()];
@@ -675,25 +709,43 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   async findProjectionMatching(probe, needle) {
     const prefix = androidSemanticTag(probe);
     const normalizedNeedle = needle.toUpperCase();
-    const findMatch = (xml) => findNodes(xml, (node) => androidTag(node).startsWith(prefix))
-      .map((node) => ({
+    const projectionEntries = (xml) => findNodes(
+      xml,
+      (node) => androidTag(node).startsWith(prefix),
+    ).map((node) => ({
         id: androidTag(node),
         text: androidNodeLabel(xml, node) || node.text || "",
         enabled: androidElementEnabled(node),
         pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
-      }))
+      }));
+    const findMatch = (xml) => projectionEntries(xml)
       .find((entry) => entry.text.toUpperCase().includes(normalizedNeedle)) ?? null;
+    // A picker can take one Compose frame to appear after its launcher accepts
+    // the click. Do not mistake the underlying page's scroll surface for the
+    // requested lazy collection during that frame.
+    const initialXml = dumpAndroid(this.serial);
+    if (projectionEntries(initialXml).length === 0) return null;
     for (const direction of ["down", "up"]) {
+      let previousSignature = null;
+      let unchangedFrames = 0;
       for (let attempt = 0; attempt < 10; attempt += 1) {
         const xml = dumpAndroid(this.serial);
         const match = findMatch(xml);
         if (match) return match;
+        const signature = projectionEntries(xml).map((entry) => entry.id).join("\n");
+        unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
+        previousSignature = signature;
+        if (unchangedFrames >= 2) break;
         const scrollSurface = findVerticalScrollSurface(xml);
         if (!scrollSurface) break;
         const bounds = rectOfBounds(scrollSurface.bounds);
-        const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-        swipe(this.serial, x, startY, x, endY, 450);
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (scrollAndroidSemanticNode(this.serial, scrollSurface.bounds, direction)) {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+        } else {
+          const { x, startY, endY } = verticalScrollGesture(bounds, direction);
+          swipe(this.serial, x, startY, x, endY, 450);
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
       }
     }
     return findMatch(dumpAndroid(this.serial));
@@ -748,6 +800,10 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async reload() {
+    if (this.reloadAppCallback) {
+      await this.reloadAppCallback();
+      return;
+    }
     adb(this.serial, ["shell", "am", "force-stop", "org.aerobag.app"]);
     adb(this.serial, ["shell", "am", "start", "-n", "org.aerobag.app/.MainActivity"]);
   }

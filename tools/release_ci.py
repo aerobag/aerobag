@@ -30,6 +30,7 @@ class WorkflowQualification:
     state: str
     detail: str
     url: str | None = None
+    run_id: int | None = None
 
     @property
     def passed(self) -> bool:
@@ -109,13 +110,47 @@ def _workflow_qualification(
     if run is None:
         return WorkflowQualification(label, "missing", missing_detail)
     url = run.get("html_url") if isinstance(run.get("html_url"), str) else None
+    run_id = run.get("id") if isinstance(run.get("id"), int) else None
     status = run.get("status")
     conclusion = run.get("conclusion")
     if status != "completed":
-        return WorkflowQualification(label, "pending", str(status or "pending"), url)
+        return WorkflowQualification(label, "pending", str(status or "pending"), url, run_id)
     if conclusion == "success":
-        return WorkflowQualification(label, "passed", "passed", url)
-    return WorkflowQualification(label, "failed", str(conclusion or "failed"), url)
+        return WorkflowQualification(label, "passed", "passed", url, run_id)
+    return WorkflowQualification(label, "failed", str(conclusion or "failed"), url, run_id)
+
+
+def evaluate_candidate_qualification(
+    *,
+    commit: str,
+    ci_runs: list[dict[str, Any]],
+    e2e_runs: list[dict[str, Any]],
+) -> ReleaseQualification:
+    ordinary_run = _newest_matching_run(
+        ci_runs,
+        commit=commit,
+        predicate=lambda run: run.get("head_branch") == "main",
+    )
+    candidate_title = f"Candidate qualification {commit}"
+    journey_run = _newest_matching_run(
+        e2e_runs,
+        commit=commit,
+        predicate=lambda run: run.get("display_title") == candidate_title,
+    )
+    return ReleaseQualification(
+        tag="candidate-main",
+        commit=commit,
+        ordinary_ci=_workflow_qualification(
+            "ordinary CI",
+            ordinary_run,
+            missing_detail=f"no CI run found for main at {commit}",
+        ),
+        release_journeys=_workflow_qualification(
+            "candidate journeys",
+            journey_run,
+            missing_detail=f"no full candidate E2E run found at {commit}",
+        ),
+    )
 
 
 def evaluate_release_qualification(
@@ -162,6 +197,20 @@ def release_qualification(
     loader = runs_loader or github_workflow_runs
     return evaluate_release_qualification(
         tag=tag,
+        commit=commit,
+        ci_runs=loader(repository, "ci.yml", commit),
+        e2e_runs=loader(repository, "e2e-ci.yml", commit),
+    )
+
+
+def candidate_qualification(
+    repository: str,
+    commit: str,
+    *,
+    runs_loader: Callable[[str, str, str], list[dict[str, Any]]] | None = None,
+) -> ReleaseQualification:
+    loader = runs_loader or github_workflow_runs
+    return evaluate_candidate_qualification(
         commit=commit,
         ci_runs=loader(repository, "ci.yml", commit),
         e2e_runs=loader(repository, "e2e-ci.yml", commit),

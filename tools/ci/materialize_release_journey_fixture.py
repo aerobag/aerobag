@@ -7,30 +7,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
 
-from build_e2e_package_fixture import BuildError, read_json, safe_member_path, write_json
-
-
-def refresh_live_feed_timestamps(root: Path) -> None:
-    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    for variant in ("fresh", "mixed"):
-        current_path = root / "live-feeds" / variant / "current.json"
-        if not current_path.is_file():
-            continue
-        current = read_json(current_path)
-        current["generated_at_utc"] = now
-        for product in current.get("products", {}).values():
-            for field in ("collected_at_utc", "observed_at_utc", "published_at_utc"):
-                value = product.get(field)
-                if isinstance(value, str) and not value.startswith("2020-"):
-                    product[field] = now
-        write_json(current_path, current)
-
+from build_e2e_package_fixture import BuildError, read_json, safe_member_path
 
 def extract_packages(publication: Path) -> None:
     current_values = read_json(publication / "current_artifacts.json")
@@ -71,7 +53,6 @@ def materialize(source: Path, output: Path) -> None:
     try:
         shutil.copytree(source, temporary, dirs_exist_ok=True)
         extract_packages(temporary / publication_root)
-        refresh_live_feed_timestamps(temporary)
         temporary.rename(output)
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)

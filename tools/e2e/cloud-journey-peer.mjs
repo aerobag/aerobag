@@ -15,7 +15,7 @@ import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 export async function launchCloudJourneyPeer({ url, referenceEpochMs }) {
   const userDataDir = await mkdtemp(join(tmpdir(), "aerobag-cloud-journey-peer-"));
   const chrome = await launchChrome({ userDataDir, width: 1000, height: 900 });
-  const browser = await connectToBrowser(chrome.wsUrl);
+  const browser = await connectToBrowser(chrome.endpoint);
   const page = await browser.createPage();
   await page.send("Page.enable");
   await page.send("Runtime.enable");

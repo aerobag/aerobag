@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 name: End-to-end CI
-run-name: ${{ github.ref_type == 'tag' && format('Release qualification {0}', github.ref_name) || format('E2E {0}', github.ref_name) }}
+run-name: ${{ (inputs.release_candidate || startsWith(github.ref_name, 'candidate-')) && format('Candidate qualification {0}', github.sha) || (github.ref_type == 'tag' && format('Release qualification {0}', github.ref_name) || format('E2E {0}', github.ref_name)) }}
 
 on:
   push:
@@ -11,8 +11,19 @@ on:
       - main
     tags:
       - "20*"
+      - "candidate-*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: Run full candidate qualification before staging
+        type: boolean
+        default: false
+      repetitions:
+        description: Required successful repetitions of every release journey
+        type: choice
+        options: ["1", "3", "5", "10"]
+        default: "1"
   schedule:
     - cron: "17 9 * * *"
 
@@ -26,6 +37,7 @@ concurrency:
 env:
   RUST_TOOLCHAIN: 1.94.1
   RUSTUP_TOOLCHAIN: 1.94.1
+  AEROBAG_RELEASE_JOURNEY_REPETITIONS: ${{ inputs.repetitions || (startsWith(github.ref_name, 'candidate-') && '5') || '1' }}
 
 jobs:
   build-release-apps:
@@ -88,18 +100,7 @@ jobs:
             .ci/ui-target/shared/rust-target
           key: release-e2e-apps-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/android-app/**/*.gradle*', 'ui/android-app/gradle/wrapper/gradle-wrapper.properties', 'ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json') }}
       - name: Install matching wasm-bindgen CLI
-        run: |
-          version="$(python3 - <<'PY'
-          from pathlib import Path
-          import tomllib
-          lock = tomllib.loads(Path("ui/core-rust/Cargo.lock").read_text())
-          print(next(package["version"] for package in lock["package"] if package["name"] == "wasm-bindgen"))
-          PY
-          )"
-          current="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
-          if [[ "$current" != "$version" ]]; then
-            cargo install wasm-bindgen-cli --version "$version" --locked --force
-          fi
+        run: ./tools/ci/install_wasm_bindgen.sh
       - name: Install pinned Binaryen
         run: ./ui/web-app/scripts/install-binaryen-wasm-opt.sh
       - name: Build immutable web and Android apps
@@ -124,9 +125,11 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
+          RELEASE_CANDIDATE: ${{ inputs.release_candidate || 'false' }}
         run: |
           case "$EVENT_NAME" in
-            schedule|workflow_dispatch) value='["p0","p1","p2"]' ;;
+            schedule) value='["p0","p1","p2"]' ;;
+            workflow_dispatch) [[ "$RELEASE_CANDIDATE" == "true" ]] && value='["p0","p1","p2"]' || value='["p0"]' ;;
             push) [[ "$REF_TYPE" == "tag" ]] && value='["p0","p1","p2"]' || value='["p0"]' ;;
             *) value='["p0"]' ;;
           esac
@@ -236,6 +239,8 @@ jobs:
       PACKAGE_SOURCE_PORT: 18093
       AEROBAG_E2E_CLOUD_PORT: 18094
       AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
+      AEROBAG_ANDROID_BASELINE_SNAPSHOT: aerobag-release-journey-baseline
+      AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED: "1"
       AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64
       VNC_PORT: 5900
     steps:
@@ -294,8 +299,11 @@ jobs:
           --skip-system-image-install
           --no-package-server
           --apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
+          --driver-apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk"
           --release-fixture "$AEROBAG_RELEASE_JOURNEY_FIXTURE"
           --test shared.startup-navigation
+      - name: Save prepared Android journey baseline
+        run: ./tools/e2e/release_journey_lab.sh android-baseline-save "$AEROBAG_ANDROID_BASELINE_SNAPSHOT"
       - name: Run Android ${{ matrix.priority }} shard ${{ matrix.shard }} journeys
         run: ./tools/e2e/release_journey_lab.sh android-suite-shard "${{ matrix.priority }}" "${{ matrix.shard }}" 4
       - name: Stop Android and journey services
@@ -419,6 +427,7 @@ jobs:
           AEROBAG_ARTIFACT_READ_PATH: ${{ env.AEROBAG_TEST_ARTIFACTS_ROOT }}/e2e/android-smoke-publication/published
           AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/${{ matrix.test }}
           AEROBAG_E2E_APK: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk
+          AEROBAG_E2E_DRIVER_APK: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk
         run: >-
           ./ui/android-app/scripts/run_e2e_ci.sh
           --headless
@@ -472,18 +481,7 @@ jobs:
             .ci/ui-target/shared/rust-target
           key: android-chrome-web-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json') }}
       - name: Install matching wasm-bindgen CLI
-        run: |
-          version="$(python3 - <<'PY'
-          from pathlib import Path
-          import tomllib
-          lock = tomllib.loads(Path("ui/core-rust/Cargo.lock").read_text())
-          print(next(package["version"] for package in lock["package"] if package["name"] == "wasm-bindgen"))
-          PY
-          )"
-          current="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
-          if [[ "$current" != "$version" ]]; then
-            cargo install wasm-bindgen-cli --version "$version" --locked --force
-          fi
+        run: ./tools/ci/install_wasm_bindgen.sh
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
       - name: Install emulator and Google APIs image
@@ -550,18 +548,7 @@ jobs:
             .ci/ui-target/shared/rust-target
           key: nav-db-rollover-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'ui/web-app/package-lock.json', 'product/preprocessor/Cargo.lock') }}
       - name: Install matching wasm-bindgen CLI
-        run: |
-          version="$(python3 - <<'PY'
-          from pathlib import Path
-          import tomllib
-          lock = tomllib.loads(Path("ui/core-rust/Cargo.lock").read_text())
-          print(next(package["version"] for package in lock["package"] if package["name"] == "wasm-bindgen"))
-          PY
-          )"
-          current="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
-          if [[ "$current" != "$version" ]]; then
-            cargo install wasm-bindgen-cli --version "$version" --locked --force
-          fi
+        run: ./tools/ci/install_wasm_bindgen.sh
       - name: Run headless NAVDB rollover journeys
         run: >-
           npm --prefix ui/web-app run e2e:nav-db-rollover --
@@ -578,7 +565,7 @@ jobs:
           retention-days: 14
 
   qualification-result:
-    name: ${{ github.ref_type == 'tag' && 'Release qualification' || 'E2E aggregate' }}
+    name: ${{ startsWith(github.ref_name, 'candidate-') && 'Candidate qualification' || (github.ref_type == 'tag' && 'Release qualification' || 'E2E aggregate') }}
     if: ${{ always() }}
     needs:
       - build-release-apps

@@ -19,6 +19,39 @@ export function releaseJourneyFixtureUrl(platform, relativePath, fixtureOrigin =
   return fixtureOrigin ? new URL(path, fixtureOrigin).href : path;
 }
 
+export function persistJourneyResult(result, artifactDir) {
+  const resultPath = join(artifactDir, "result.json");
+  writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
+}
+
+export function summarizeFixtureRequests(requests) {
+  if (!Array.isArray(requests)) {
+    return { count: 0, outcomes: {}, statuses: {}, anomalies: [], tail: [] };
+  }
+  const outcomes = {};
+  const statuses = {};
+  const anomalies = [];
+  for (const request of requests) {
+    const outcome = String(request?.outcome ?? "unknown");
+    const status = request?.status == null ? "pending" : String(request.status);
+    outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+    statuses[status] = (statuses[status] ?? 0) + 1;
+    const isExpectedStream = request?.url === "/live-feeds/v3/events" ||
+      String(request?.url ?? "").includes("/cloud/v1/watch");
+    if ((!isExpectedStream && outcome !== "finished") ||
+      (Number.isInteger(request?.status) && request.status >= 400)) {
+      anomalies.push(request);
+    }
+  }
+  return {
+    count: requests.length,
+    outcomes,
+    statuses,
+    anomalies: anomalies.slice(-50),
+    tail: requests.slice(-100),
+  };
+}
+
 export function createJourneyRuntime({
   journey, platform, driver, fixture, fixtureOrigin = null, artifactDir, build = null,
 }) {
@@ -111,8 +144,7 @@ export function createJourneyRuntime({
         }
       }
       finishJourneyResult(result, error);
-      const resultPath = join(artifactDir, "result.json");
-      writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
+      persistJourneyResult(result, artifactDir);
       validateJourneyResult(result);
       return result;
     },

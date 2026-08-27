@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertNoAerobagAnr,
+  androidImeVisible,
   androidOfflinePackagesVisible,
   androidClearTextCommand,
   androidSelectAllTextCommand,
@@ -60,6 +61,15 @@ test("selects the complete Android text value before a verified replacement", ()
     androidSelectAllTextCommand(),
     ["shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A"],
   );
+});
+
+test("detects only a rendered Android input-method window", () => {
+  assert.equal(androidImeVisible(
+    '<hierarchy><node package="com.android.inputmethod.latin" class="android.inputmethodservice.KeyboardView" /></hierarchy>',
+  ), true);
+  assert.equal(androidImeVisible(
+    '<hierarchy><node package="org.aerobag.app" class="android.widget.EditText" /></hierarchy>',
+  ), false);
 });
 
 function anrDialogXml(title, { waitEnabled = true } = {}) {

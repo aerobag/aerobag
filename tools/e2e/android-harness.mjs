@@ -22,6 +22,11 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 const ADB_TIMEOUT_MS = 20000;
 const APP_START_TIMEOUT_MS = 60000;
 const UI_DUMP_TIMEOUT_MS = 60000;
+const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
+const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
+const SEMANTIC_DRIVER_SERVICE =
+  `${SEMANTIC_DRIVER_PACKAGE}/org.aerobag.app.e2e.SemanticDriverService`;
+const semanticDrivers = new Map();
 
 export function adbArgs(serial, args) {
   return serial ? ["-s", serial, ...args] : args;
@@ -70,7 +75,144 @@ export function screencapPng(serial) {
   });
 }
 
+function semanticDriverRequired() {
+  return process.env.AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED === "1";
+}
+
+function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
+  const methodArgs = method === "GET" ? [] : ["--request", method];
+  return spawnSync("curl", [
+    "--fail",
+    "--silent",
+    "--show-error",
+    "--max-time",
+    String(timeoutSeconds),
+    ...methodArgs,
+    `http://127.0.0.1:${port}${path}`,
+  ], {
+    encoding: "utf8",
+    timeout: (timeoutSeconds + 1) * 1000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+}
+
+export function setAndroidSemanticText(serial, tag, value) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) return false;
+  const query = new URLSearchParams({ tag, value });
+  const response = semanticDriverRequest(state.port, `/set-text?${query}`, 5, "POST");
+  if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  const detail = response.error?.message || response.stderr.trim() || response.stdout.trim();
+  if (semanticDriverRequired()) {
+    throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
+  }
+  return false;
+}
+
+export function clickAndroidSemanticNode(serial, tag) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) return false;
+  const query = new URLSearchParams({ tag });
+  const response = semanticDriverRequest(state.port, `/click?${query}`, 5, "POST");
+  if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  const detail = response.error?.message || response.stderr.trim() || response.stdout.trim();
+  if (semanticDriverRequired()) {
+    throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
+  }
+  return false;
+}
+
+export function scrollAndroidSemanticNode(serial, bounds, direction) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) return false;
+  const semanticDirection = direction === "down" ? "forward" : "backward";
+  const query = new URLSearchParams({ bounds, direction: semanticDirection });
+  const response = semanticDriverRequest(state.port, `/scroll?${query}`, 5, "POST");
+  if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  return false;
+}
+
+function semanticDriverDump(serial) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) return null;
+  const response = semanticDriverRequest(state.port, "/dump");
+  if (response.status === 0 && response.stdout.includes("<hierarchy")) {
+    return response.stdout;
+  }
+  const detail = response.error?.message || response.stderr.trim() || "request failed";
+  if (semanticDriverRequired()) {
+    throw new Error(`persistent Android semantic driver failed: ${detail}`);
+  }
+  return null;
+}
+
+export async function ensureAndroidSemanticDriver(serial) {
+  if (!semanticDriverRequired()) return null;
+  const key = serial || "default";
+  const current = semanticDrivers.get(key);
+  if (current && semanticDriverRequest(current.port, "/health", 1).status === 0) {
+    return current.port;
+  }
+
+  const testPackage = adbBestEffort(serial, ["shell", "pm", "path", SEMANTIC_DRIVER_PACKAGE]);
+  if (testPackage.status !== 0 || !testPackage.stdout.includes("package:")) {
+    throw new Error(
+      `persistent Android semantic driver package is not installed: ${SEMANTIC_DRIVER_PACKAGE}`,
+    );
+  }
+
+  if (current) {
+    adbBestEffort(serial, ["forward", "--remove", `tcp:${current.port}`]);
+    semanticDrivers.delete(key);
+  }
+  const forwarded = adb(serial, [
+    "forward", "tcp:0", `tcp:${SEMANTIC_DRIVER_DEVICE_PORT}`,
+  ]).trim();
+  const port = Number(forwarded);
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`adb did not allocate a semantic-driver port: ${JSON.stringify(forwarded)}`);
+  }
+
+  adb(serial, [
+    "shell", "settings", "put", "secure", "enabled_accessibility_services",
+    SEMANTIC_DRIVER_SERVICE,
+  ]);
+  adb(serial, ["shell", "settings", "put", "secure", "accessibility_enabled", "1"]);
+  const state = { port };
+  semanticDrivers.set(key, state);
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (semanticDriverRequest(port, "/health", 1).status === 0) return port;
+    await delay(100);
+  }
+  adbBestEffort(serial, ["forward", "--remove", `tcp:${port}`]);
+  semanticDrivers.delete(key);
+  throw new Error(
+    "persistent Android semantic accessibility service did not start",
+  );
+}
+
+export function shutdownAndroidSemanticDriver(serial) {
+  const key = serial || "default";
+  const state = semanticDrivers.get(key);
+  if (!state) return;
+  adbBestEffort(serial, ["forward", "--remove", `tcp:${state.port}`]);
+  semanticDrivers.delete(key);
+}
+
+export function shutdownAndroidSemanticDrivers() {
+  for (const key of [...semanticDrivers.keys()]) {
+    shutdownAndroidSemanticDriver(key === "default" ? "" : key);
+  }
+}
+
 export function dumpAndroid(serial, dumpPath = `/sdcard/aerobag-e2e-${process.pid}.xml`) {
+  const persistentDump = semanticDriverDump(serial);
+  if (persistentDump !== null) return persistentDump;
+  if (semanticDriverRequired()) {
+    throw new Error("persistent Android semantic driver was required but has not been started");
+  }
   // Compose's outlined text creates many accessibility-only descendants.
   // Compressed dumps retain the tagged semantic controls and omit that noise.
   let lastError = null;
@@ -176,6 +318,13 @@ export function findAerobagAnrDialog(xml) {
 export function assertNoAerobagAnr(xml) {
   const anr = findAerobagAnrDialog(xml);
   if (anr) throw new Error(`Aerobag ANR detected: ${anr.text}`);
+}
+
+export function androidImeVisible(xml) {
+  return findNode(xml, (node) => {
+    const identity = `${node.package ?? ""} ${node.class ?? ""}`;
+    return node.package !== ANDROID_PACKAGE && /(?:inputmethod|keyboard|latinime)/i.test(identity);
+  }) !== null;
 }
 
 export function androidTag(node) {
@@ -464,6 +613,7 @@ export async function tapNode(serial, node) {
 
 export async function tapTag(serial, tag, timeoutMs = 5000) {
   const node = await waitForNode(serial, (candidate) => hasAndroidTag(candidate, tag), timeoutMs, tag);
+  if (clickAndroidSemanticNode(serial, tag)) return node;
   await tapNode(serial, node);
   return node;
 }
@@ -749,17 +899,21 @@ export function androidSelectAllTextCommand() {
 }
 
 export function clearFocusedText(serial, maxChars = 160) {
-  // Select-all makes retries replace the previous attempt atomically. Bulk
-  // deletion remains as a fallback for Android controls that ignore Ctrl+A.
+  // Select-all is the normal path. Only send individual delete events when
+  // the rendered control proves that Android ignored select-all.
   adb(serial, androidSelectAllTextCommand());
   spawnSync("sleep", ["0.15"]);
   adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
-  spawnSync("sleep", ["0.35"]);
-  adb(serial, androidClearTextCommand(maxChars));
-  spawnSync("sleep", ["0.25"]);
-  // Gboard can re-commit one composing character after the bulk key stream.
-  adb(serial, androidClearTextCommand(16));
-  spawnSync("sleep", ["0.25"]);
+  spawnSync("sleep", ["0.2"]);
+  const xml = dumpAndroid(serial);
+  const focused = findNode(xml, (node) =>
+    node.focused === "true" && /(?:EditText|TextField)$/.test(node.class ?? ""));
+  const remaining = focused?.text ?? "";
+  if (remaining.length > 0) {
+    const deleteCount = Math.min(maxChars, [...remaining].length + 2);
+    adb(serial, androidClearTextCommand(deleteCount));
+    spawnSync("sleep", ["0.2"]);
+  }
 }
 
 export function wakeAndUnlock(serial) {
@@ -787,6 +941,7 @@ export async function launchFreshAndroidApp(
   wakeAndUnlock(serial);
   grantAerobagRuntimePermissions(serial);
   adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
+  await ensureAndroidSemanticDriver(serial);
   const startArgs = ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY];
   if (clearUiPrefs) {
     startArgs.push("--ez", DEBUG_CLEAR_UI_PREFS_EXTRA, "true");

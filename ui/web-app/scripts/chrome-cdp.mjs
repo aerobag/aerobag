@@ -13,7 +13,11 @@ export function launchChrome({
   userDataDir,
   width = 1200,
   height = 1000,
-  transport = "websocket",
+  transport = "pipe",
+  netLogPath = process.env.AEROBAG_CHROME_NET_LOG?.replace(
+    "{repeat}",
+    process.env.AEROBAG_E2E_REPEAT_INDEX ?? "1",
+  ) ?? "",
 } = {}) {
   if (!userDataDir) {
     throw new Error("launchChrome requires userDataDir");
@@ -25,6 +29,9 @@ export function launchChrome({
     const transportArgs = transport === "pipe"
       ? ["--remote-debugging-pipe"]
       : ["--remote-debugging-port=0"];
+    const netLogArgs = netLogPath
+      ? [`--log-net-log=${netLogPath}`, "--net-log-capture-mode=IncludeSensitive"]
+      : [];
     const child = spawn(chromeBin, [
       "--headless=new",
       "--no-sandbox",
@@ -33,6 +40,7 @@ export function launchChrome({
       "--no-first-run",
       "--no-default-browser-check",
       ...transportArgs,
+      ...netLogArgs,
       `--user-data-dir=${userDataDir}`,
       `--window-size=${width},${height}`,
       "about:blank",
@@ -56,6 +64,10 @@ export function launchChrome({
         clearTimeout(timeout);
         resolve({
           process: child,
+          endpoint: {
+            pipeWrite: child.stdio[3],
+            pipeRead: child.stdio[4],
+          },
           pipeWrite: child.stdio[3],
           pipeRead: child.stdio[4],
         });
@@ -67,7 +79,7 @@ export function launchChrome({
       const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
       if (match) {
         clearTimeout(timeout);
-        resolve({ process: child, wsUrl: match[1] });
+        resolve({ process: child, endpoint: match[1], wsUrl: match[1] });
       }
     });
     child.on("exit", (code, signal) => {
@@ -82,6 +94,10 @@ export function launchChrome({
 export async function connectToBrowser(endpoint) {
   const client = new CdpClient(endpoint);
   await client.open();
+  // Pipe transport is available as soon as Chrome is spawned, before the
+  // browser process has necessarily finished initializing. Make readiness an
+  // explicit CDP operation rather than inferring it from stderr or a port.
+  await client.send("Browser.getVersion", {}, undefined, 30_000);
   return {
     close: () => client.close(),
     async createPage() {
@@ -133,10 +149,27 @@ class CdpPage {
     this.client = client;
     this.sessionId = sessionId;
     this.diagnostics = [];
+    this.networkRequests = new Map();
     this.loadPromise = null;
+    this.installDiagnosticListeners(sessionId, "page");
+    this.client.onEvent(sessionId, "Target.attachedToTarget", (params) => {
+      const childSessionId = params.sessionId;
+      const target = params.targetInfo?.type ?? "child";
+      this.installDiagnosticListeners(childSessionId, target);
+      // Enabling CDP Network after a worker starts can cancel that worker's
+      // active Fetch batch. Worker failures are captured through Runtime; use
+      // Chrome's optional netlog for transport-level diagnostics.
+      this.client.send("Runtime.enable", {}, childSessionId).catch((error) => {
+        this.diagnostics.push({ method: "Target.diagnosticsFailed", target, error: error.message });
+      });
+    });
+  }
+
+  installDiagnosticListeners(sessionId, target) {
     this.client.onEvent(sessionId, "Runtime.exceptionThrown", (params) => {
       this.diagnostics.push({
         method: "Runtime.exceptionThrown",
+        target,
         exception: params.exceptionDetails,
       });
     });
@@ -144,10 +177,48 @@ class CdpPage {
       if (params.type === "error" || params.type === "warning") {
         this.diagnostics.push({
           method: "Runtime.consoleAPICalled",
+          target,
           type: params.type,
           args: params.args,
         });
       }
+    });
+    this.client.onEvent(sessionId, "Network.requestWillBeSent", (params) => {
+      this.networkRequests.set(`${sessionId}:${params.requestId}`, {
+        url: params.request?.url,
+        timestamp: params.timestamp,
+      });
+    });
+    this.client.onEvent(sessionId, "Network.loadingFailed", (params) => {
+      const requestKey = `${sessionId}:${params.requestId}`;
+      const request = this.networkRequests.get(requestKey);
+      this.diagnostics.push({
+        method: "Network.loadingFailed",
+        target,
+        url: request?.url,
+        requestTimestamp: request?.timestamp,
+        ...params,
+      });
+      this.networkRequests.delete(requestKey);
+    });
+    this.client.onEvent(sessionId, "Network.responseReceived", (params) => {
+      if ((params.response?.status ?? 0) >= 400) {
+        this.diagnostics.push({
+          method: "Network.responseReceived",
+          target,
+          status: params.response.status,
+          url: params.response.url,
+        });
+      }
+      this.networkRequests.delete(`${sessionId}:${params.requestId}`);
+    });
+  }
+
+  async enableChildTargetDiagnostics() {
+    await this.send("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
     });
   }
 
@@ -221,7 +292,7 @@ class CdpClient {
     this.pending.clear();
   }
 
-  send(method, params = {}, sessionId = undefined) {
+  send(method, params = {}, sessionId = undefined, timeoutMs = 15_000) {
     const id = this.nextId++;
     const message = { id, method, params };
     if (sessionId) {
@@ -231,7 +302,7 @@ class CdpClient {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP request timed out: ${method}`));
-      }, 15000);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
       const encoded = JSON.stringify(message);
       if (this.pipeWrite) {

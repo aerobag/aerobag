@@ -1837,6 +1837,7 @@ class NativeUiSession internal constructor(
         )
     }
 
+    @RawUiSessionWorkApi
     fun acceptDisclaimer(agreementId: String): UiSessionSnapshot {
         return runPagedSnapshot("acceptDisclaimer") {
             bridge.acceptDisclaimerInSessionJson(handle, agreementId)

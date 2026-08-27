@@ -14,15 +14,24 @@ aerobag_configure_emulator_identity
 SERIAL="$ANDROID_SERIAL"
 PORT="${PACKAGE_SOURCE_PORT:-18093}"
 CLOUD_PORT="${AEROBAG_E2E_CLOUD_PORT:-18094}"
+ANDROID_PACKAGE_PORT="${AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-$PORT}"
+ANDROID_CLOUD_PORT="${AEROBAG_ANDROID_CLOUD_DEVICE_PORT:-$CLOUD_PORT}"
 ARTIFACT_DIR="${AEROBAG_E2E_ARTIFACT_DIR:-/tmp/aerobag-release-journey-results}"
-LAB_STATE_DIR="${AEROBAG_RELEASE_JOURNEY_LAB_STATE_DIR:-/tmp/aerobag-release-journey-lab}"
+LAB_STATE_DIR="${AEROBAG_RELEASE_JOURNEY_LAB_STATE_DIR:-/tmp/aerobag-release-journey-lab-${PORT}}"
 TEST_ARTIFACTS_ROOT="${AEROBAG_TEST_ARTIFACTS_ROOT:-/tmp/aerobag-release-journey-test-artifacts}"
 TARGET_ROOT_RELATIVE="$(<"$ROOT/ui/target-root.txt")"
 UI_TARGET_ROOT="${AEROBAG_UI_TARGET_ROOT:-$(cd "$ROOT" && realpath "$TARGET_ROOT_RELATIVE")}"
 WEB_DIST="${AEROBAG_RELEASE_JOURNEY_WEB_DIST:-$UI_TARGET_ROOT/web/dist}"
 SERVE_WEB_DIST="${AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST:-0}"
+REUSE_FIXTURE="${AEROBAG_RELEASE_JOURNEY_REUSE_FIXTURE:-1}"
 APP_ARTIFACTS_DIR="${AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR:-/tmp/release-e2e-apps-final}"
 ANDROID_JOURNEY_TIMEOUT_SECONDS="${AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-600}"
+ANDROID_BASELINE_SNAPSHOT="${AEROBAG_ANDROID_BASELINE_SNAPSHOT:-}"
+JOURNEY_REPETITIONS="${AEROBAG_RELEASE_JOURNEY_REPETITIONS:-1}"
+[[ "$JOURNEY_REPETITIONS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "AEROBAG_RELEASE_JOURNEY_REPETITIONS must be a positive integer" >&2
+  exit 2
+}
 
 latest_fixture() {
   find /tmp -maxdepth 2 -path '/tmp/release-journey-publication-v*-materialized/fixture.json' \
@@ -56,10 +65,15 @@ Commands:
   android-install-apk [APK]    Clean-install an immutable APK and sync all fixture packages.
   android-upgrade-apk [APK]    Install a rebuilt immutable APK while preserving app data.
   android-test JOURNEY         Run one journey using the installed app.
+  android-baseline-save NAME   Save the prepared emulator state for fast journey resets.
+  android-baseline-restore NAME
+                               Restore a prepared emulator state and host port mappings.
   android-suite [p0|p1|all] [START_AT]
                                Run Android journeys, optionally resuming at START_AT.
   android-suite-shard [p0|p1|all] SHARD COUNT
                                Run every COUNTth Android journey assigned to SHARD.
+  android-shard-list [p0|p1|all] SHARD COUNT
+                               Print the journeys assigned to one shard.
   android-implementation-suite [p0|p1|all] [START_AT]
                                Run only registry implementations, optionally resuming.
   android-offline              Run the Android offline cold-start journey.
@@ -76,7 +90,8 @@ Environment overrides:
   AEROBAG_RELEASE_JOURNEY_FIXTURE, AEROBAG_RELEASE_JOURNEY_ORIGIN,
   AEROBAG_E2E_URL, AEROBAG_E2E_ARTIFACT_DIR, ANDROID_SERIAL,
   AEROBAG_TEST_ARTIFACTS_ROOT, PACKAGE_SOURCE_PORT, AEROBAG_E2E_CLOUD_PORT,
-  AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS.
+  AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS,
+  AEROBAG_RELEASE_JOURNEY_REPETITIONS, AEROBAG_RELEASE_JOURNEY_REUSE_FIXTURE.
 EOF
 }
 
@@ -109,6 +124,7 @@ fixture_start() {
   fi
   setsid node "$ROOT/tools/e2e/serve-release-journey-fixture.mjs" \
     --fixture "$FIXTURE" --live-feed-profile "$profile" --port "$PORT" \
+    --cloud-origin "http://127.0.0.1:${CLOUD_PORT}" \
     "${web_args[@]}" \
     >"$LAB_STATE_DIR/fixture.log" 2>&1 &
   echo "$!" >"$LAB_STATE_DIR/fixture.pid"
@@ -182,14 +198,21 @@ ensure_journey_profile() {
   local health=""
   local current=""
   local serves_web="false"
+  local current_web_dist_sha256=""
+  local requested_web_dist_sha256=""
+  if [[ "$SERVE_WEB_DIST" == "1" ]]; then
+    requested_web_dist_sha256="$(sha256sum "$WEB_DIST/index.html" | awk '{print $1}')"
+  fi
   health="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/__health" 2>/dev/null || true)"
   if [[ -n "$health" ]]; then
-    read -r current serves_web < <(
-      python3 -c 'import json, sys; value = json.load(sys.stdin); print(value.get("live_feed_profile", ""), str(bool(value.get("serves_web_app"))).lower())' \
+    read -r current serves_web current_web_dist_sha256 < <(
+      python3 -c 'import json, sys; value = json.load(sys.stdin); print(value.get("live_feed_profile", ""), str(bool(value.get("serves_web_app"))).lower(), value.get("web_dist_index_sha256") or "-")' \
         <<<"$health" 2>/dev/null || true
     )
   fi
-  if [[ "$current" == "$profile" && ( "$SERVE_WEB_DIST" != "1" || "$serves_web" == "true" ) ]]; then
+  if [[ "$REUSE_FIXTURE" == "1" && "$current" == "$profile" && \
+    ( "$SERVE_WEB_DIST" != "1" || \
+      ( "$serves_web" == "true" && "$current_web_dist_sha256" == "$requested_web_dist_sha256" ) ) ]]; then
     return
   fi
   if [[ "$SERVE_WEB_DIST" == "1" || "$serves_web" == "true" ]]; then
@@ -197,6 +220,13 @@ ensure_journey_profile() {
   else
     fixture_start "$profile"
   fi
+}
+
+reset_fixture_state() {
+  curl -fsS --max-time 2 \
+    -H 'Content-Type: application/json' \
+    --data '{"reset":true}' \
+    "http://127.0.0.1:${PORT}/__control" >/dev/null
 }
 
 implemented_journeys() {
@@ -219,34 +249,105 @@ for (const journey of RELEASE_JOURNEYS) {
 JS
 }
 
+android_shard_journeys() {
+  local priority="$1"
+  local shard="$2"
+  local shard_count="$3"
+  local implementations_only="${AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY:-0}"
+  node --input-type=module - "$priority" "$shard" "$shard_count" "$implementations_only" <<'JS'
+import { RELEASE_JOURNEYS } from './tools/e2e/release-journey-registry.mjs';
+import { releaseJourneyImplementation } from './tools/e2e/release-journey-implementations.mjs';
+
+const [priority, shardText, shardCountText, implementationsOnly] = process.argv.slice(2);
+const shard = Number(shardText);
+const shardCount = Number(shardCountText);
+const journeys = RELEASE_JOURNEYS.filter((journey) => {
+  if (!journey.platforms.includes('android')) return false;
+  if (priority !== 'all' && journey.priority !== priority) return false;
+  return Boolean(releaseJourneyImplementation(journey.id)) ||
+    (implementationsOnly !== '1' && Boolean(journey.existing_test));
+});
+const isolated = journeys.filter((journey) => journey.android_isolated);
+if (isolated.length >= shardCount) {
+  throw new Error(`${isolated.length} isolated Android journeys need fewer than ${shardCount} shards`);
+}
+isolated.forEach((journey, index) => {
+  if (index === shard) console.log(journey.id);
+});
+const regularShardCount = shardCount - isolated.length;
+journeys.filter((journey) => !journey.android_isolated).forEach((journey, index) => {
+  const assignedShard = isolated.length + (index % regularShardCount);
+  if (assignedShard === shard) console.log(journey.id);
+});
+JS
+}
+
+android_baseline_save() {
+  local name="$1"
+  adb -s "$SERIAL" shell am force-stop org.aerobag.app >/dev/null
+  adb -s "$SERIAL" emu avd snapshot save "$name" >/dev/null
+  echo "Android journey baseline saved: $name"
+}
+
+android_baseline_restore() {
+  local name="$1"
+  adb -s "$SERIAL" emu avd snapshot load "$name" >/dev/null
+  for _ in $(seq 1 100); do
+    if adb -s "$SERIAL" get-state >/dev/null 2>&1 &&
+      [[ "$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
+      adb -s "$SERIAL" reverse "tcp:${ANDROID_PACKAGE_PORT}" "tcp:${PORT}" >/dev/null
+      return
+    fi
+    sleep 0.1
+  done
+  echo "Android emulator did not recover after restoring snapshot $name" >&2
+  adb -s "$SERIAL" get-state >&2 || true
+  adb -s "$SERIAL" shell getprop sys.boot_completed >&2 || true
+  exit 1
+}
+
 run_android_test() {
   local journey="$1"
   local profile
   local -a artifact_env=()
+  local run_artifact_dir="$ARTIFACT_DIR"
+  if [[ "$JOURNEY_REPETITIONS" -gt 1 ]]; then
+    run_artifact_dir="$ARTIFACT_DIR/repeat-${AEROBAG_E2E_REPEAT_INDEX:-1}"
+  fi
   require_fixture
   profile="$(journey_profile "$journey")"
   ensure_journey_profile "$profile"
+  reset_fixture_state
+  if [[ -n "$ANDROID_BASELINE_SNAPSHOT" ]]; then
+    android_baseline_restore "$ANDROID_BASELINE_SNAPSHOT"
+  fi
   if [[ "$journey" == "shared.cloud-crossfill" ]]; then
     cloud_start
-    adb -s "$SERIAL" reverse "tcp:${CLOUD_PORT}" "tcp:${CLOUD_PORT}" >/dev/null
+    adb -s "$SERIAL" reverse "tcp:${ANDROID_CLOUD_PORT}" "tcp:${CLOUD_PORT}" >/dev/null
   fi
   if [[ -d "$TEST_ARTIFACTS_ROOT/e2e/android-rotation-live-feed" ]]; then
     artifact_env+=("AEROBAG_TEST_ARTIFACTS_ROOT=$TEST_ARTIFACTS_ROOT")
+  fi
+  local -a state_args=(--clear-app-data --sync-all-available-packages)
+  if [[ -n "$ANDROID_BASELINE_SNAPSHOT" ]]; then
+    state_args=()
   fi
   timeout --foreground --kill-after=15s "${ANDROID_JOURNEY_TIMEOUT_SECONDS}s" \
     env \
     "${artifact_env[@]}" \
     PACKAGE_SOURCE_PORT="$PORT" \
+    ANDROID_PACKAGE_SOURCE_DEVICE_PORT="$ANDROID_PACKAGE_PORT" \
     ANDROID_SERIAL="$SERIAL" \
-    ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/packages/" \
-    ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/live-feeds/" \
+    ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
+    ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+    ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
     AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-http://127.0.0.1:8085/}" \
     AEROBAG_E2E_CLOUD_PORT="$CLOUD_PORT" \
-    AEROBAG_E2E_ARTIFACT_DIR="$ARTIFACT_DIR" \
+    AEROBAG_E2E_ARTIFACT_DIR="$run_artifact_dir" \
+    AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED="${AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED:-0}" \
     "$ROOT/ui/android-app/scripts/run_e2e.sh" \
       --skip-install \
-      --clear-app-data \
-      --sync-all-available-packages \
+      "${state_args[@]}" \
       --release-fixture "$FIXTURE" \
       --test "$journey" </dev/null
 }
@@ -254,9 +355,14 @@ run_android_test() {
 run_web_test() {
   local journey="$1"
   local profile
+  local run_artifact_dir="$ARTIFACT_DIR"
+  if [[ "$JOURNEY_REPETITIONS" -gt 1 ]]; then
+    run_artifact_dir="$ARTIFACT_DIR/repeat-${AEROBAG_E2E_REPEAT_INDEX:-1}"
+  fi
   require_fixture
   profile="$(journey_profile "$journey")"
   ensure_journey_profile "$profile"
+  reset_fixture_state
   if [[ "$journey" == "shared.cloud-crossfill" ]]; then
     cloud_start
   fi
@@ -267,7 +373,29 @@ run_web_test() {
     --url "${AEROBAG_E2E_URL:-http://127.0.0.1:8085/}" \
     --fixture "$FIXTURE" \
     --fixture-origin "$(fixture_origin)" \
-    --artifact-dir "$ARTIFACT_DIR/$journey/web"
+    --artifact-dir "$run_artifact_dir/$journey/web"
+}
+
+run_repetitions() {
+  local platform="$1"
+  local journey="$2"
+  local iteration
+  for iteration in $(seq 1 "$JOURNEY_REPETITIONS"); do
+    echo "=== $journey ($platform repeat $iteration/$JOURNEY_REPETITIONS) ==="
+    if [[ "$platform" == "android" ]]; then
+      if AEROBAG_E2E_REPEAT_INDEX="$iteration" run_android_test "$journey"; then
+        :
+      else
+        return $?
+      fi
+    else
+      if AEROBAG_E2E_REPEAT_INDEX="$iteration" run_web_test "$journey"; then
+        :
+      else
+        return $?
+      fi
+    fi
+  done
 }
 
 command="${1:-}"
@@ -368,9 +496,9 @@ case "$command" in
     cd "$ROOT"
     env \
       ANDROID_SERIAL="$SERIAL" \
-      ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/packages/" \
-      ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/live-feeds/" \
-      ANDROID_CLOUD_SERVER_BASE_URL="$(cloud_base_url)" \
+      ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
+      ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+      ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       ./ui/android-app/scripts/test.sh :app:installDebug
     ;;
   android-install)
@@ -378,15 +506,16 @@ case "$command" in
     journey="${2:-shared.startup-navigation}"
     if [[ "$journey" == "shared.cloud-crossfill" ]]; then
       cloud_start
-      adb -s "$SERIAL" reverse "tcp:${CLOUD_PORT}" "tcp:${CLOUD_PORT}" >/dev/null
+      adb -s "$SERIAL" reverse "tcp:${ANDROID_CLOUD_PORT}" "tcp:${CLOUD_PORT}" >/dev/null
     fi
     cd "$ROOT"
     env \
       PACKAGE_SOURCE_PORT="$PORT" \
+      ANDROID_PACKAGE_SOURCE_DEVICE_PORT="$ANDROID_PACKAGE_PORT" \
       ANDROID_SERIAL="$SERIAL" \
-      ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/packages/" \
-      ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/live-feeds/" \
-      ANDROID_CLOUD_SERVER_BASE_URL="$(cloud_base_url)" \
+      ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
+      ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+      ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       AEROBAG_E2E_ARTIFACT_DIR="$ARTIFACT_DIR" \
       ./ui/android-app/scripts/run_e2e.sh \
         --clear-app-data \
@@ -402,10 +531,11 @@ case "$command" in
     cd "$ROOT"
     env \
       PACKAGE_SOURCE_PORT="$PORT" \
+      ANDROID_PACKAGE_SOURCE_DEVICE_PORT="$ANDROID_PACKAGE_PORT" \
       ANDROID_SERIAL="$SERIAL" \
-      ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/packages/" \
-      ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${PORT}/live-feeds/" \
-      ANDROID_CLOUD_SERVER_BASE_URL="$(cloud_base_url)" \
+      ANDROID_PACKAGE_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/packages/" \
+      ANDROID_LIVE_FEED_SOURCE_BASE_URL="http://127.0.0.1:${ANDROID_PACKAGE_PORT}/live-feeds/" \
+      ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       AEROBAG_E2E_ARTIFACT_DIR="$ARTIFACT_DIR" \
       ./ui/android-app/scripts/run_e2e.sh \
         --apk "$apk" \
@@ -423,7 +553,18 @@ case "$command" in
   android-test)
     [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
     cd "$ROOT"
-    run_android_test "$2"
+    run_repetitions android "$2"
+    ;;
+  android-baseline-save)
+    name="${2:-$ANDROID_BASELINE_SNAPSHOT}"
+    [[ -n "$name" ]] || { echo "android-baseline-save requires NAME" >&2; exit 2; }
+    android_baseline_save "$name"
+    ;;
+  android-baseline-restore)
+    name="${2:-$ANDROID_BASELINE_SNAPSHOT}"
+    [[ -n "$name" ]] || { echo "android-baseline-restore requires NAME" >&2; exit 2; }
+    android_baseline_restore "$name"
+    echo "Android journey baseline restored: $name"
     ;;
   android-suite)
     require_fixture
@@ -436,8 +577,7 @@ case "$command" in
         continue
       fi
       started="1"
-      echo "=== $journey (android) ==="
-      run_android_test "$journey" || exit $?
+      run_repetitions android "$journey" || exit $?
     done < <(implemented_journeys android "$priority")
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
@@ -450,18 +590,24 @@ case "$command" in
       echo "android-suite-shard requires 0 <= SHARD < COUNT" >&2
       exit 2
     }
-    index=0
     selected=0
     cd "$ROOT"
     while IFS= read -r journey; do
-      if (( index % shard_count == shard )); then
-        selected=1
-        echo "=== $journey (android shard $shard/$shard_count) ==="
-        run_android_test "$journey" || exit $?
-      fi
-      index=$((index + 1))
-    done < <(implemented_journeys android "$priority")
+      selected=1
+      run_repetitions android "$journey" || exit $?
+    done < <(android_shard_journeys "$priority" "$shard" "$shard_count")
     [[ "$selected" == "1" ]] || echo "android shard $shard/$shard_count has no $priority journeys"
+    ;;
+  android-shard-list)
+    priority="${2:-all}"
+    shard="${3:-}"
+    shard_count="${4:-}"
+    [[ "$shard" =~ ^[0-9]+$ && "$shard_count" =~ ^[1-9][0-9]*$ && "$shard" -lt "$shard_count" ]] || {
+      echo "android-shard-list requires 0 <= SHARD < COUNT" >&2
+      exit 2
+    }
+    cd "$ROOT"
+    android_shard_journeys "$priority" "$shard" "$shard_count"
     ;;
   android-implementation-suite)
     require_fixture
@@ -476,8 +622,7 @@ case "$command" in
         continue
       fi
       started="1"
-      echo "=== $journey (android) ==="
-      run_android_test "$journey" || exit $?
+      run_repetitions android "$journey" || exit $?
     done < <(implemented_journeys android "$priority")
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
@@ -545,21 +690,20 @@ JS
   web-test)
     [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
     cd "$ROOT"
-    run_web_test "$2"
+    run_repetitions web "$2"
     ;;
   web-dist-test)
     [[ -n "${2:-}" ]] || { usage >&2; exit 2; }
     cd "$ROOT"
     SERVE_WEB_DIST=1
-    AEROBAG_E2E_URL="$(fixture_origin)" run_web_test "$2"
+    AEROBAG_E2E_URL="$(fixture_origin)" run_repetitions web "$2"
     ;;
   web-suite)
     require_fixture
     priority="${2:-all}"
     cd "$ROOT"
     while IFS= read -r journey; do
-      echo "=== $journey (web) ==="
-      run_web_test "$journey" || exit $?
+      run_repetitions web "$journey" || exit $?
     done < <(implemented_journeys web "$priority")
     ;;
   web-dist-suite)
@@ -568,8 +712,7 @@ JS
     cd "$ROOT"
     SERVE_WEB_DIST=1
     while IFS= read -r journey; do
-      echo "=== $journey (web dist) ==="
-      AEROBAG_E2E_URL="$(fixture_origin)" run_web_test "$journey" || exit $?
+      AEROBAG_E2E_URL="$(fixture_origin)" run_repetitions web "$journey" || exit $?
     done < <(implemented_journeys web "$priority")
     ;;
   -h|--help|help)

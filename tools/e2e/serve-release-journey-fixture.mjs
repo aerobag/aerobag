@@ -6,7 +6,7 @@
 
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -18,6 +18,7 @@ function parseArgs(argv) {
     fixture: process.env.AEROBAG_RELEASE_JOURNEY_FIXTURE ?? "",
     webDist: process.env.AEROBAG_RELEASE_WEB_DIST ?? "",
     liveFeedProfile: process.env.AEROBAG_RELEASE_LIVE_FEED_PROFILE ?? "fresh",
+    cloudOrigin: process.env.AEROBAG_RELEASE_CLOUD_ORIGIN ?? "http://127.0.0.1:18094",
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 18093),
   };
@@ -26,6 +27,7 @@ function parseArgs(argv) {
     if (argument === "--fixture") args.fixture = argv[++index];
     else if (argument === "--web-dist") args.webDist = argv[++index];
     else if (argument === "--live-feed-profile") args.liveFeedProfile = argv[++index];
+    else if (argument === "--cloud-origin") args.cloudOrigin = argv[++index];
     else if (argument === "--host") args.host = argv[++index];
     else if (argument === "--port") args.port = Number(argv[++index]);
     else throw new Error(`unknown argument ${argument}`);
@@ -34,6 +36,11 @@ function parseArgs(argv) {
   if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
     throw new Error(`invalid --port ${args.port}`);
   }
+  const cloudOrigin = new URL(args.cloudOrigin);
+  if (cloudOrigin.protocol !== "http:" || cloudOrigin.pathname !== "/") {
+    throw new Error(`--cloud-origin must be an HTTP origin, got ${args.cloudOrigin}`);
+  }
+  args.cloudOrigin = cloudOrigin.origin;
   return args;
 }
 
@@ -47,6 +54,11 @@ export function decodeReleaseJourneyFixturePath(encoded) {
   if (!/^(?:[0-9a-f]{2})+$/.test(encoded)) return null;
   const decoded = Buffer.from(encoded, "hex").toString("utf8");
   return Buffer.from(decoded, "utf8").toString("hex") === encoded ? decoded : null;
+}
+
+export function webDistIndexSha256(webDist) {
+  if (!webDist) return null;
+  return createHash("sha256").update(readFileSync(join(webDist, "index.html"))).digest("hex");
 }
 
 function contentType(path) {
@@ -83,6 +95,26 @@ function sendBytes(request, response, bytes, contentTypeValue = "application/jso
   response.setHeader("Cache-Control", "no-cache");
   if (request.method === "HEAD") response.end();
   else response.end(bytes);
+}
+
+function proxyCloudRequest(request, response, cloudOrigin) {
+  const target = new URL(request.url ?? "/cloud/", cloudOrigin);
+  const upstream = httpRequest(target, {
+    method: request.method,
+    headers: { ...request.headers, host: target.host },
+  }, (upstreamResponse) => {
+    response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+    upstreamResponse.pipe(response);
+  });
+  upstream.on("error", (error) => {
+    if (response.headersSent) {
+      response.destroy(error);
+      return;
+    }
+    response.statusCode = 502;
+    response.end(`cloud proxy failed: ${error.message}\n`);
+  });
+  request.pipe(upstream);
 }
 
 function sha256(bytes) {
@@ -182,6 +214,7 @@ export function fixtureServerConfiguration(args) {
   if (webDist && !existsSync(join(webDist, "index.html"))) {
     throw new Error(`web dist has no index.html: ${webDist}`);
   }
+  const webDistIndexHash = webDistIndexSha256(webDist);
   const current = JSON.parse(readFileSync(join(liveFeedRoot, "current.json"), "utf8"));
   return {
     fixture,
@@ -191,12 +224,14 @@ export function fixtureServerConfiguration(args) {
     current,
     events: liveFeedEventsFromCurrent(current),
     webDist,
+    webDistIndexSha256: webDistIndexHash,
     publicationVariants: publicationVariants(publicationRoot),
   };
 }
 
 export function createReleaseJourneyFixtureServer(args) {
   const config = fixtureServerConfiguration(args);
+  const recentRequests = [];
   const control = {
     publication: "primary",
     artifact_fault: "none",
@@ -204,6 +239,27 @@ export function createReleaseJourneyFixtureServer(args) {
     completed_update_artifact_requests: 0,
   };
   return createServer((request, response) => {
+    const requestDiagnostic = {
+      method: request.method,
+      url: request.url,
+      started_at_ms: Date.now(),
+      status: null,
+      outcome: "active",
+    };
+    recentRequests.push(requestDiagnostic);
+    if (recentRequests.length > 500) recentRequests.splice(0, recentRequests.length - 500);
+    response.once("finish", () => {
+      requestDiagnostic.status = response.statusCode;
+      requestDiagnostic.outcome = "finished";
+      requestDiagnostic.finished_at_ms = Date.now();
+    });
+    response.once("close", () => {
+      if (requestDiagnostic.outcome === "active") {
+        requestDiagnostic.status = response.statusCode;
+        requestDiagnostic.outcome = "closed";
+        requestDiagnostic.finished_at_ms = Date.now();
+      }
+    });
     response.setHeader("Access-Control-Allow-Origin", "*");
     response.setHeader("Access-Control-Allow-Headers", "content-type");
     response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -224,6 +280,13 @@ export function createReleaseJourneyFixtureServer(args) {
       request.on("end", () => {
         try {
           const update = JSON.parse(body || "{}");
+          if (update.reset === true) {
+            control.publication = "primary";
+            control.artifact_fault = "none";
+            control.dropped_artifact_requests = 0;
+            control.completed_update_artifact_requests = 0;
+            recentRequests.splice(0, Math.max(0, recentRequests.length - 1));
+          }
           if (update.publication !== undefined) {
             if (!["primary", "updated", "unsupported"].includes(update.publication)) {
               throw new Error(`unsupported publication mode ${update.publication}`);
@@ -249,6 +312,10 @@ export function createReleaseJourneyFixtureServer(args) {
       });
       return;
     }
+    if (pathname === "/cloud" || pathname.startsWith("/cloud/")) {
+      proxyCloudRequest(request, response, args.cloudOrigin);
+      return;
+    }
     if (request.method !== "GET" && request.method !== "HEAD") {
       response.statusCode = 405;
       response.end("method not allowed\n");
@@ -261,10 +328,17 @@ export function createReleaseJourneyFixtureServer(args) {
         fixture: config.fixture.fixture,
         live_feed_profile: args.liveFeedProfile,
         serves_web_app: Boolean(config.webDist),
+        web_dist_index_sha256: config.webDistIndexSha256,
+        cloud_origin: args.cloudOrigin,
         product_count: Object.keys(config.current.products ?? {}).length,
         control,
         updated_artifact_filename: config.publicationVariants.updatedArtifactFilename,
       }));
+      return;
+    }
+    if (pathname === "/__requests") {
+      response.setHeader("Content-Type", "application/json; charset=utf-8");
+      response.end(JSON.stringify(recentRequests));
       return;
     }
     if (pathname === "/live-feeds/status.html") {

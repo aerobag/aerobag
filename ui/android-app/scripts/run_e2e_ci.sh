@@ -14,7 +14,7 @@ PACKAGE_SERVER_ARTIFACT_ROOT=""
 
 usage() {
   cat <<'EOF'
-usage: run_e2e_ci.sh [--apk PATH] [--route "KRNT KPWT"] [--test TEST_ID] [--release-fixture fixture.json] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
+usage: run_e2e_ci.sh [--apk PATH] [--driver-apk PATH] [--route "KRNT KPWT"] [--test TEST_ID] [--release-fixture fixture.json] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
 
 Starts a CI-suitable Android E2E environment:
   1. ensures the configured Android emulator system image is installed
@@ -34,6 +34,7 @@ ROUTE="KRNT KPWT"
 TEST_ID=""
 RELEASE_FIXTURE="${AEROBAG_RELEASE_JOURNEY_FIXTURE:-}"
 APK_PATH="${AEROBAG_E2E_APK:-}"
+DRIVER_APK_PATH="${AEROBAG_E2E_DRIVER_APK:-}"
 START_PACKAGE_SERVER="${START_PACKAGE_SERVER:-auto}"
 INSTALL_ANDROID_SYSTEM_IMAGE="${INSTALL_ANDROID_SYSTEM_IMAGE:-1}"
 if [[ -z "${KEEP_EMULATOR+x}" ]]; then
@@ -55,6 +56,10 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --apk)
       APK_PATH="${2:-}"
+      shift
+      ;;
+    --driver-apk)
+      DRIVER_APK_PATH="${2:-}"
       shift
       ;;
     --route)
@@ -203,6 +208,9 @@ echo "[3/4] run Android E2E"
 RUN_E2E_ARGS=(--clear-app-data --route "$ROUTE")
 if [[ -n "$APK_PATH" ]]; then
   RUN_E2E_ARGS+=(--apk "$APK_PATH")
+fi
+if [[ -n "$DRIVER_APK_PATH" ]]; then
+  RUN_E2E_ARGS+=(--driver-apk "$DRIVER_APK_PATH")
 fi
 if [[ -n "$PACKAGE_ARTIFACT_ROOT" || -n "$RELEASE_FIXTURE" ]]; then
   RUN_E2E_ARGS+=(--sync-all-available-packages)

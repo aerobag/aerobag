@@ -211,11 +211,29 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
             "schema_version": 1,
             "publication_root": "published",
         })
+        fixture.write_json(source / "live-feeds" / "fresh" / "current.json", {
+            "schema_version": 3,
+            "generated_at_utc": "2026-08-20T04:13:35.500Z",
+            "products": {
+                "metars": {"collected_at_utc": "2026-08-20T04:13:35.500Z"},
+            },
+        })
         output = self.root / "materialized"
         materializer.materialize(source, output)
         self.assertEqual(
             b"tile",
             (output / "published" / "release-e2e-v1" / "unpacked" / "sample" / "tiles" / "1" / "2" / "3.webp").read_bytes(),
+        )
+        materialized_live_feed = fixture.read_json(
+            output / "live-feeds" / "fresh" / "current.json"
+        )
+        self.assertEqual(
+            "2026-08-20T04:13:35.500Z",
+            materialized_live_feed["generated_at_utc"],
+        )
+        self.assertEqual(
+            "2026-08-20T04:13:35.500Z",
+            materialized_live_feed["products"]["metars"]["collected_at_utc"],
         )
 
     def test_live_feed_variants_include_real_fresh_stale_and_missing_states(self) -> None:

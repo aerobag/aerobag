@@ -49,8 +49,6 @@ env \
   AEROBAG_BUILT_AT_UTC="$BUILT_AT_UTC" \
   AEROBAG_BUILD_STAMP_UTC="$BUILD_STAMP_UTC" \
   AEROBAG_BUILD_DIRTY=0 \
-  AEROBAG_LIVE_FEEDS_ORIGIN="$PACKAGE_ORIGIN" \
-  AEROBAG_CLOUD_SERVER_BASE_URL="$CLOUD_BASE_URL" \
   npm --prefix "$ROOT/ui/web-app" run build:optimized
 
 env \
@@ -74,20 +72,27 @@ env \
   AEROBAG_ANDROID_KEY_PASSWORD="$AEROBAG_ANDROID_KEY_PASSWORD" \
   "$ROOT/ui/android-app/gradlew" \
     --project-cache-dir "$AEROBAG_UI_TARGET_ROOT/android/project-cache" \
-    --no-daemon -p "$ROOT/ui/android-app" :app:assembleRelease
+    --no-daemon -p "$ROOT/ui/android-app" \
+    :app:assembleRelease :app:assembleReleaseAndroidTest
 
 env CARGO_TARGET_DIR="$AEROBAG_UI_TARGET_ROOT/services" \
   cargo build --manifest-path "$ROOT/services/Cargo.toml" -p aerobag-cloud-server
 
 WEB_DIST="$AEROBAG_UI_TARGET_ROOT/web/dist"
 APK="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/release/app-release.apk"
+DRIVER_APK="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/androidTest/release/app-release-androidTest.apk"
 CLOUD_SERVER="$AEROBAG_UI_TARGET_ROOT/services/debug/aerobag-cloud-serverd"
 test -f "$WEB_DIST/index.html"
 test -f "$APK"
+test -f "$DRIVER_APK"
 test -x "$CLOUD_SERVER"
 rm -rf "$OUTPUT/web-dist"
 cp -a "$WEB_DIST" "$OUTPUT/web-dist"
+# Production serves this tree at /icons independently of the Vite bundle.
+# Bundle it for release journeys so their app origin is self-contained too.
+cp -a "$ROOT/ui/icons" "$OUTPUT/web-dist/icons"
 cp "$APK" "$OUTPUT/aerobag-release-e2e.apk"
+cp "$DRIVER_APK" "$OUTPUT/aerobag-e2e-driver.apk"
 cp "$CLOUD_SERVER" "$OUTPUT/aerobag-cloud-serverd"
 
 python3 - <<'PY' "$OUTPUT" "$GIT_COMMIT" "$BUILT_AT_UTC" "$PACKAGE_SOURCE_PORT" "$CLOUD_PORT"
@@ -98,6 +103,7 @@ import sys
 
 root = Path(sys.argv[1])
 apk = root / "aerobag-release-e2e.apk"
+driver_apk = root / "aerobag-e2e-driver.apk"
 cloud_server = root / "aerobag-cloud-serverd"
 manifest = {
     "schema_version": 1,
@@ -111,6 +117,11 @@ manifest = {
         "path": apk.name,
         "size_bytes": apk.stat().st_size,
         "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
+    },
+    "android_e2e_driver_apk": {
+        "path": driver_apk.name,
+        "size_bytes": driver_apk.stat().st_size,
+        "sha256": hashlib.sha256(driver_apk.read_bytes()).hexdigest(),
     },
     "cloud_server": {
         "path": cloud_server.name,

@@ -3792,9 +3792,11 @@ internal fun AerobagApp(
                 DisclaimerConsentModal(
                     state = sessionSnapshot.disclaimerState,
                     onAccept = {
-                        applySessionCommand("acceptDisclaimer") {
-                            uiSession.acceptDisclaimer(sessionSnapshot.disclaimerState.agreementId)
-                        }
+                        uiSessionWorkRunner.submitDisclaimerAcceptance(
+                            agreementId = sessionSnapshot.disclaimerState.agreementId,
+                            onResult = { applySessionSnapshot(it) },
+                            onError = ::recoverSessionCommandFailure,
+                        )
                     },
                 )
             }

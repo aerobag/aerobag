@@ -266,7 +266,11 @@ class NativeUiSessionBoundaryTest {
             sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
 
-        for (method in listOf("performSettingsAction", "performAircraftLibraryAction")) {
+        for (method in listOf(
+            "performSettingsAction",
+            "performAircraftLibraryAction",
+            "acceptDisclaimer",
+        )) {
             val declaration = sessionSource.substringBefore("fun $method(").takeLast(80)
             assertTrue(
                 "$method must remain an opt-in raw operation at the native-session boundary.",
@@ -287,7 +291,8 @@ class NativeUiSessionBoundaryTest {
                 runnerSource.contains("for (mutation in mutationQueue)") &&
                 runnerSource.contains("withContext(Dispatchers.IO)") &&
                 mainActivity.contains("uiSessionWorkRunner.submitSettingsAction(") &&
-                mainActivity.contains("uiSessionWorkRunner.submitAircraftLibraryAction("),
+                mainActivity.contains("uiSessionWorkRunner.submitAircraftLibraryAction(") &&
+                mainActivity.contains("uiSessionWorkRunner.submitDisclaimerAcceptance("),
         )
     }
 

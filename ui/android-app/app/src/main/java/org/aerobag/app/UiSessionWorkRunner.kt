@@ -133,6 +133,19 @@ class UiSessionWorkRunner(
         )
     }
 
+    fun submitDisclaimerAcceptance(
+        agreementId: String,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "acceptDisclaimer",
+            operation = { it.acceptDisclaimer(agreementId) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
     private fun submitMutation(
         commandName: String,
         operation: (NativeUiSession) -> UiSessionSnapshot,

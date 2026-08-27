@@ -140,6 +140,18 @@ create it, so the deadline is 60 seconds. Increasing that readiness budget did
 not weaken the journey's requirement that the socket appear or its live-feed
 recovery assertions.
 
+Desktop Chrome journeys use the DevTools pipe transport. Unlike the ephemeral
+listener, it cannot lose a port race or fail while announcing a websocket URL
+late in a long Android shard. Readiness is still proved by a bounded
+`Browser.getVersion` CDP request.
+
+Release Android jobs install a same-signed instrumentation APK that serves the
+actual rendered accessibility hierarchy over an adb-forwarded localhost port.
+Do not replace rendered-node actions with direct app/core hooks. A visible,
+enabled control is located in the hierarchy and activated through Android's
+accessibility action. Text replacement uses the accessibility text action and
+verifies the rendered value.
+
 ## Timing Rules
 
 Start relative test clocks after expensive setup. The NAVDB rollover journey
@@ -185,16 +197,24 @@ The test-artifact lock uses a public HTTPS URL for reads. Write access for
 publishing fixtures is a separate credential concern and must not be required
 by CI test jobs.
 
-## Cost And Next Improvement
+## Release Stability Gate
 
-The native Android matrix currently rebuilds the APK in each journey. Cold
-builds have taken almost six minutes, and canceled or early-failed runs do not
-reliably populate caches.
+`tools/prod_manage.py --prequalify` first runs the complete workload locally.
+Ordinary CI lanes, three web priority lanes, four persistent Android shards, and
+the native journeys are parallelized where they do not share generated source.
+The local run builds one immutable app bundle, uses pinned fixtures, and requires
+five successful repetitions per release journey.
 
-The next meaningful optimization is a producer job that builds and signs one
-APK, uploads it as a workflow artifact, and lets every native journey install
-that exact APK. After that, consider a pre-warmed emulator image. Preserve
-journey isolation and independent reporting while reducing duplicated setup.
+After that succeeds, the command pushes synchronized `main` under a
+`candidate-*` tag. The hosted run repeats the complete registry. `--stage`
+rejects a commit without both the exact-commit local receipt and hosted result,
+so expensive production reconciliation cannot precede either proof. The final
+release tag still runs one complete exact-tag qualification.
+
+Within each Android matrix job, clean installation and package sync happen
+once. A job-local emulator snapshot then restores identical prepared state
+before every journey and repetition. Snapshots are not shared between jobs or
+persisted in repository artifacts.
 
 ## Before Pushing
 
@@ -207,3 +227,4 @@ Check that:
 - relative clocks begin after expensive preparation;
 - JUnit summary and upload paths match the workspace-relative nextest paths;
 - a readiness adjustment does not weaken a behavioral assertion.
+- every candidate journey repetition passes; no retry-to-green result is accepted.

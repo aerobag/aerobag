@@ -78,12 +78,19 @@ async function waitForPage(runtime, pageId) {
 
 async function acceptDisclaimer(runtime, { required = false } = {}) {
   let accepted = false;
+  let acceptanceSubmitted = false;
   let unobstructedMapSamples = 0;
   await runtime.eventually("disclaimer or unobstructed map", async () => {
     const accept = await runtime.driver.readElement("disclaimer-accept-button");
     if (accept) {
-      await runtime.step("disclaimer.accept", () => runtime.driver.performAction("disclaimer-accept-button"));
-      accepted = true;
+      if (!acceptanceSubmitted) {
+        acceptanceSubmitted = true;
+        await runtime.step(
+          "disclaimer.accept",
+          () => runtime.driver.performAction("disclaimer-accept-button"),
+        );
+        accepted = true;
+      }
       unobstructedMapSamples = 0;
       return false;
     }
@@ -146,6 +153,12 @@ async function enableDeterministicOwnship(runtime) {
   if (toggle?.pressed !== "true" && toggle?.selected !== true && toggle?.checked !== true) {
     await runtime.driver.performAction("settings-toggle-debug_bad_autopilot");
   }
+  await runtime.eventually("Bad Autopilot debug enabled", async () => {
+    const value = await runtime.driver.readElement("settings-toggle-debug_bad_autopilot");
+    return value?.pressed === "true" || value?.selected === true || value?.checked === true
+      ? value
+      : null;
+  });
   await runtime.driver.openPage("map");
   await runtime.driver.chooseOption("ownship-source-button", "__bad_autopilot__");
   await runtime.eventually("enabled CTR", async () => {
@@ -478,7 +491,12 @@ async function flightPlanEditAndNavigate(runtime) {
   await enableDeterministicOwnship(runtime);
   await runtime.driver.openPage("flight_plan");
 
+  const beforeDirectTo = await planState(runtime);
   await planAction(runtime, "KPLU", "direct_to");
+  await runtime.eventually("direct-to KPLU applied", async () => {
+    const state = await planState(runtime);
+    return state && state !== beforeDirectTo ? state : null;
+  });
   const directState = await enabledPlanControl(runtime, "stop_navigation");
   runtime.check("plan.direct-to", Boolean(directState));
   await runtime.driver.performAction("stop_navigation");
@@ -795,6 +813,12 @@ async function plateOperate(runtime) {
   });
   runtime.check("plate.folder", Boolean(folderTile), projectionId(folderTile));
   await runtime.driver.performAction(`plate-folder-tile:${chartId}`);
+  await runtime.eventually("selected plate folder closed", async () => {
+    const entries = await runtime.driver.readProjection(runtime.platform === "web"
+      ? "plate-folder-tile:"
+      : "parity:plate-folder-tile:");
+    return entries.length === 0 ? true : null;
+  });
 
   // Bad Autopilot is intentionally accelerated. Start it only after the plate
   // is selected so its first position remains inside the georeferenced image.
@@ -1032,6 +1056,7 @@ async function pointerDetails(runtime) {
   await acceptDisclaimer(runtime);
   await runtime.driver.openPage("map");
   await loadedMap(runtime);
+  await setLayerVisible(runtime, "metars", true);
   const target = await runtime.eventually("visible METAR hover target", async () => {
     const entries = await runtime.driver.readProjection("parity:metar-hover-target:");
     return entries[0] ?? null;

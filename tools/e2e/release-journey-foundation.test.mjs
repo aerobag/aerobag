@@ -27,6 +27,7 @@ import {
 import {
   decodeReleaseJourneyFixturePath,
   liveFeedEventsFromCurrent,
+  webDistIndexSha256,
 } from "./serve-release-journey-fixture.mjs";
 import {
   androidActionCandidates, androidElementEnabled, androidElementFallback,
@@ -40,6 +41,8 @@ import {
 } from "./semantic-journey-driver.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
+import { WebSemanticTransport } from "./web-semantic-transport.mjs";
+import { summarizeFixtureRequests } from "./release-journey-runtime.mjs";
 
 test("release journey registry owns every assertion exactly once", () => {
   const index = validateJourneyRegistry();
@@ -50,6 +53,26 @@ test("release journey registry owns every assertion exactly once", () => {
 test("grouped P2 journeys leave destructive contract failure last", () => {
   const p2 = RELEASE_JOURNEYS.filter((journey) => journey.priority === "p2");
   assert.equal(p2.at(-1)?.id, "shared.contract-failures");
+});
+
+test("Android cloud crossfill executes alone in its release shard", () => {
+  const script = new URL("./release_journey_lab.sh", import.meta.url);
+  const shardZero = spawnSync("bash", [script.pathname, "android-shard-list", "p1", "0", "4"], {
+    cwd: new URL("../..", import.meta.url),
+    encoding: "utf8",
+  });
+  assert.equal(shardZero.status, 0, shardZero.stderr);
+  assert.equal(shardZero.stdout.trim(), "shared.cloud-crossfill");
+
+  for (const shard of [1, 2, 3]) {
+    const result = spawnSync(
+      "bash",
+      [script.pathname, "android-shard-list", "p1", String(shard), "4"],
+      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /shared\.cloud-crossfill/);
+  }
 });
 
 test("web semantic drags remain inside their target surface", () => {
@@ -184,10 +207,13 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   ]) {
     assert.match(workflow, new RegExp(`^  ${job}`, "m"));
   }
-  assert.match(workflow, /schedule\|workflow_dispatch\) value='\["p0","p1","p2"\]'/);
+  assert.match(workflow, /schedule\) value='\["p0","p1","p2"\]'/);
+  assert.match(workflow, /RELEASE_CANDIDATE.*value='\["p0","p1","p2"\]'/);
   assert.match(workflow, /REF_TYPE" == "tag".*value='\["p0","p1","p2"\]'/);
   assert.match(workflow, /tags:\n\s+- "20\*"/);
   assert.match(workflow, /Release qualification \{0\}/);
+  assert.match(workflow, /Candidate qualification \{0\}/);
+  assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_REPETITIONS/);
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"/);
   assert.doesNotMatch(workflow, /ANDROID_SERIAL:\s*emulator-/);
   assert.equal(workflow.match(/Install browser harness dependencies/g)?.length, 2);
@@ -198,9 +224,145 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   );
   assert.match(
     lab,
-    /run_e2e\.sh" \\\n\s+--skip-install \\\n\s+--clear-app-data \\\n\s+--sync-all-available-packages \\/,
+    /local -a state_args=\(--clear-app-data --sync-all-available-packages\)/,
   );
+  assert.match(lab, /android_baseline_restore "\$ANDROID_BASELINE_SNAPSHOT"/);
+  assert.match(lab, /AEROBAG_RELEASE_JOURNEY_REUSE_FIXTURE:-1/);
+  assert.match(lab, /--data '\{"reset":true\}'/);
+  assert.match(lab, /aerobag-release-journey-lab-\$\{PORT\}/);
+  assert.match(lab, /current_web_dist_sha256.*requested_web_dist_sha256/);
+  assert.match(
+    lab,
+    /ANDROID_PACKAGE_PORT="\$\{AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-\$PORT\}"/,
+  );
+  assert.match(
+    lab,
+    /ANDROID_CLOUD_PORT="\$\{AEROBAG_ANDROID_CLOUD_DEVICE_PORT:-\$CLOUD_PORT\}"/,
+  );
+  assert.match(
+    lab,
+    /reverse "tcp:\$\{ANDROID_PACKAGE_PORT\}" "tcp:\$\{PORT\}"/,
+  );
+  assert.match(
+    lab,
+    /reverse "tcp:\$\{ANDROID_CLOUD_PORT\}" "tcp:\$\{CLOUD_PORT\}"/,
+  );
+  const runAndroidTest = lab.slice(
+    lab.indexOf("run_android_test()"),
+    lab.indexOf("run_web_test()"),
+  );
+  assert.equal(runAndroidTest.match(/--release-fixture "\$FIXTURE"/g)?.length, 1);
+  assert.match(lab, /run_e2e\.sh" \\\n\s+--skip-install \\\n\s+"\$\{state_args\[@\]\}" \\/);
   assert.match(lab, /--test "\$journey" <\/dev\/null/);
+});
+
+test("fixture web identity changes with the exact built application", () => {
+  const temp = mkdtempSync(join(tmpdir(), "aerobag-release-web-identity-"));
+  try {
+    writeFileSync(join(temp, "index.html"), "candidate one\n");
+    const first = webDistIndexSha256(temp);
+    writeFileSync(join(temp, "index.html"), "candidate two\n");
+    const second = webDistIndexSha256(temp);
+
+    assert.match(first, /^[0-9a-f]{64}$/);
+    assert.match(second, /^[0-9a-f]{64}$/);
+    assert.notEqual(first, second);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("failure diagnostics summarize fixture traffic without discarding anomalies", () => {
+  const requests = Array.from({ length: 120 }, (_, index) => ({
+    url: `/packages/page-${index}`,
+    status: 200,
+    outcome: "finished",
+  }));
+  requests.push({ url: "/packages/broken", status: 503, outcome: "finished" });
+  requests.push({ url: "/packages/closed", status: 200, outcome: "closed" });
+  requests.push({ url: "/live-feeds/v3/events", status: 200, outcome: "active" });
+
+  const summary = summarizeFixtureRequests(requests);
+
+  assert.equal(summary.count, 123);
+  assert.deepEqual(summary.outcomes, { finished: 121, closed: 1, active: 1 });
+  assert.equal(summary.tail.length, 100);
+  assert.deepEqual(summary.anomalies.map((entry) => entry.url), [
+    "/packages/broken",
+    "/packages/closed",
+  ]);
+});
+
+test("web reset stops the app before clearing persistent origin state", async () => {
+  const calls = [];
+  const page = {
+    navigate: async (url) => calls.push(["navigate", url]),
+    waitForLoad: async () => calls.push(["waitForLoad"]),
+    send: async (method, args) => calls.push(["send", method, args]),
+  };
+  const transport = new WebSemanticTransport(page, {
+    url: "http://fixture.test/app",
+    origin: "http://fixture.test",
+  });
+
+  await transport.reset();
+
+  assert.deepEqual(calls, [
+    ["navigate", "about:blank"],
+    ["waitForLoad"],
+    ["send", "Storage.clearDataForOrigin", {
+      origin: "http://fixture.test",
+      storageTypes: "all",
+    }],
+    ["navigate", "http://fixture.test/app"],
+    ["waitForLoad"],
+  ]);
+});
+
+test("release journey stability runs require every repetition to pass", () => {
+  const temp = mkdtempSync(join(tmpdir(), "aerobag-release-suite-repetitions-"));
+  try {
+    const fixture = join(temp, "fixture.json");
+    const count = join(temp, "count");
+    const fakeBin = join(temp, "bin");
+    writeFileSync(fixture, "{}\n");
+    writeFileSync(count, "0\n");
+    mkdirSync(fakeBin);
+    const node = join(fakeBin, "node");
+    writeFileSync(node, `#!/usr/bin/env bash
+if [[ "$1" == *run-release-journey.mjs ]]; then
+  value=$(( $(cat "${count}") + 1 ))
+  echo "$value" >"${count}"
+  [[ "$value" == 2 ]] && exit 37
+  exit 0
+fi
+if [[ "$#" == "5" ]]; then echo fake.journey; else echo fresh; fi
+`);
+    chmodSync(node, 0o755);
+    const curl = join(fakeBin, "curl");
+    writeFileSync(curl, `#!/usr/bin/env bash
+echo '{"live_feed_profile":"fresh","serves_web_app":false}'
+`);
+    chmodSync(curl, 0o755);
+    const result = spawnSync("bash", [
+      new URL("./release_journey_lab.sh", import.meta.url).pathname,
+      "web-suite",
+      "p0",
+    ], {
+      cwd: new URL("../..", import.meta.url).pathname,
+      env: {
+        ...process.env,
+        AEROBAG_RELEASE_JOURNEY_FIXTURE: fixture,
+        AEROBAG_RELEASE_JOURNEY_REPETITIONS: "3",
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
+    });
+    const observedCount = readFileSync(count, "utf8").trim();
+    assert.equal(observedCount, "2", `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test("release journey suites propagate a failed journey process", () => {
@@ -246,7 +408,8 @@ test("Android journey suites bound blocked driver processes", () => {
   );
   assert.match(lab, /AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-600/);
   assert.match(lab, /android-suite-shard\)/);
-  assert.match(lab, /index % shard_count == shard/);
+  assert.match(lab, /android_shard_journeys/);
+  assert.match(lab, /journey\.android_isolated/);
   assert.match(
     lab,
     /timeout --foreground --kill-after=15s "\$\{ANDROID_JOURNEY_TIMEOUT_SECONDS\}s"/,
@@ -390,6 +553,18 @@ test("local lab and immutable app builds agree on fixed service ports", () => {
   }
   assert.match(builder, /AEROBAG_E2E_ENABLED=1/);
   assert.match(builder, /ANDROID_DEV_SERVER_BASE_URL="\$PACKAGE_ORIGIN"/);
+  assert.match(builder, /cp -a "\$ROOT\/ui\/icons" "\$OUTPUT\/web-dist\/icons"/);
+  const webBuild = builder.slice(
+    builder.indexOf("env \\\n  AEROBAG_UI_TARGET_ROOT"),
+    builder.indexOf("env \\\n  AEROBAG_UI_TARGET_ROOT", builder.indexOf("env \\\n  AEROBAG_UI_TARGET_ROOT") + 1),
+  );
+  assert.doesNotMatch(webBuild, /AEROBAG_LIVE_FEEDS_ORIGIN|AEROBAG_CLOUD_SERVER_BASE_URL/);
+  const fixtureServer = readFileSync(
+    new URL("./serve-release-journey-fixture.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(fixtureServer, /pathname\.startsWith\("\/cloud\/"\)/);
+  assert.match(fixtureServer, /proxyCloudRequest\(request, response, args\.cloudOrigin\)/);
   const androidBuild = readFileSync(
     new URL("../../ui/android-app/app/build.gradle.kts", import.meta.url),
     "utf8",

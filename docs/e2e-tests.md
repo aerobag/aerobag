@@ -17,7 +17,8 @@ Hosted-runner invariants and failure diagnostics are documented in
   journeys through platform semantic drivers.
 - `tools/e2e/release_journey_lab.sh` is the stable local entry point for
   fixture, build, web, Android, and Cloud journey operations.
-- `tools/e2e/android-harness.mjs` provides the shared adb/uiautomator helpers.
+- `tools/e2e/android-harness.mjs` provides shared adb helpers and a persistent
+  instrumentation-backed rendered-accessibility driver.
 - `tools/e2e/run-android-e2e-suite.mjs` runs the Android suite.
 - `tools/e2e/run-android-chrome-livefeed-e2e.mjs` runs the web live-feed
   reconnect suite inside Chrome on Android through adb/CDP.
@@ -31,6 +32,11 @@ Hosted-runner invariants and failure diagnostics are documented in
   Chrome, and runs the web live-feed reconnect suite without using a physical
   tablet.
 - `docs/testing/android-e2e.md` has operator-facing usage notes.
+
+Release journeys reuse one immutable fixture process per lane for speed, but reset its
+mutable fault/publication controls before every journey and repetition. Set
+`AEROBAG_RELEASE_JOURNEY_REUSE_FIXTURE=0` to force process replacement while
+debugging fixture lifecycle behavior.
 
 ## Current Coverage
 
@@ -151,10 +157,24 @@ The rotation job additionally sparse-checks out
 in Android's persisted cache layout. It contains no operational records and
 does not contact a live-feed server.
 
-## Known Gaps
+## Isolation And Speed
 
-- Emulator system image installation dominates cold-run setup time; Gradle and
-  Rust outputs are cached, while the Android state itself starts clean.
+Each hosted Android job still performs a real clean install, package sync, and
+startup-navigation journey. It then saves an emulator snapshot of that prepared
+state and restores it before each assigned behavior journey. The snapshot is
+created inside the job rather than uploaded across machines, so it cannot hide
+system-image or installation drift.
+
+The persistent Android semantic driver reads the actual accessibility tree
+rendered by Compose. Actions invoke the ordinary accessibility click or scroll
+operation on a visible, enabled rendered node; they do not invoke core actions
+directly or add random coordinate jitter. Keeping the driver process alive
+removes the roughly two-second cost and process-race exposure of each standalone
+`uiautomator dump`.
+
+Set `AEROBAG_RELEASE_JOURNEY_REPETITIONS=N` to require every selected journey
+to pass `N` times. Each repetition has separate diagnostics, and the suite
+stops failed rather than retrying until green.
 
 ## Local Reproduction
 
@@ -171,6 +191,16 @@ For the registry-driven release lab, use:
 ./tools/e2e/release_journey_lab.sh web-dist-suite p0
 ./tools/e2e/release_journey_lab.sh android-suite p0
 ```
+
+Before staging a release, run the local and hosted stability gate:
+
+```sh
+tools/prod_manage.py --prequalify
+```
+
+The local phase runs ordinary CI and all P0/P1/P2 journeys from the same commit
+that will be pushed. Its receipt is invalidated if either workflow, the local
+runner, or the journey lab changes.
 
 Use `--headless` to reproduce the hosted-runner display mode.
 

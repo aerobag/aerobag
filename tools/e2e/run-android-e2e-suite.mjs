@@ -50,6 +50,7 @@ import {
   scrollUntilTag,
   swipe,
   setAndroidRotation,
+  shutdownAndroidSemanticDrivers,
   tapFirstPresentTag,
   tapNode,
   tapTag,
@@ -1466,6 +1467,11 @@ async function runSharedReleaseJourney(args, journey) {
         fixture,
         { clearUiPrefs: true, clearCoreSettings: true },
       ),
+      reloadApp: () => launchReleaseJourneyAndroidApp(
+        args,
+        fixture,
+        { clearUiPrefs: false, clearCoreSettings: false },
+      ),
       resetApplicationData: async () => {
         adb(args.serial, ["shell", "pm", "clear", "org.aerobag.app"]);
         await launchReleaseJourneyAndroidApp(
@@ -1505,6 +1511,7 @@ async function runOfflineColdStart(args) {
 
     const driver = new AndroidSemanticJourneyDriver(args.serial, {
       resetApp: () => launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: false }),
+      reloadApp: () => launchFreshAndroidApp(args.serial, { clearUiPrefs: false, clearCoreSettings: false }),
     });
     const georef = fixture.capabilities.plate.georeferenced;
     await driver.openPage("flight_plan");
@@ -1665,7 +1672,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`E2E FAILED: ${error.message}`);
-  process.exit(1);
-});
+main().then(
+  () => shutdownAndroidSemanticDrivers(),
+  (error) => {
+    shutdownAndroidSemanticDrivers();
+    console.error(`E2E FAILED: ${error.message}`);
+    process.exit(1);
+  },
+);

@@ -106,7 +106,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "cloud.accept-code", "cloud.create-account", "cloud.backup-code", "cloud.add-device",
     "cloud.close-detail", "cloud.begin-unlink", "cloud.confirm-unlink", "cloud.sync-now",
     "cloud.copy-code", "cloud.crossfill-plan", "cloud.crossfill-packages", "cloud.reconnect",
-  ]),
+  ], { android_isolated: true }),
   journey("shared.prepared-live-feeds", "p1", shared, ["livefeed.metar-taf-pirep-notam"]),
   journey("shared.nexrad-frames", "p1", shared, ["livefeed.nexrad-frames"]),
   journey("shared.obstacles-navkv", "p1", shared, ["livefeed.obstacles-navkv"]),

@@ -37,7 +37,9 @@ DEFAULT_CONFIG = REPO_ROOT / "deploy/aerobag-prod.json"
 DEFAULT_RELEASES = REPO_ROOT / "deploy/releases.json"
 PRODUCT_CONTRACT_SOURCE = "crates/product-contracts/src/lib.rs"
 LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
-RUST_FORMAT_CHECK = REPO_ROOT / "scripts/check-rust-format.sh"
+LOCAL_CANDIDATE_QUALIFICATION = (
+    REPO_ROOT / "tools/ci/local_candidate_qualification.py"
+)
 
 
 class ManagementError(RuntimeError):
@@ -61,6 +63,8 @@ def parse_args() -> argparse.Namespace:
         description="Change or reconcile Aerobag's checked-in production release intent."
     )
     operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("--prequalify", action="store_true")
+    operation.add_argument("--candidate-status", action="store_true")
     operation.add_argument("--stage", action="store_true")
     operation.add_argument("--promote", action="store_true")
     operation.add_argument("--reconcile", action="store_true")
@@ -650,15 +654,116 @@ def github_git_url(config: dict[str, Any]) -> str:
     return f"git@github.com:{repository}.git"
 
 
-def run_stage_preflight() -> None:
-    print("Running release preflight: Rust formatting")
+def run_stage_preflight(*, full: bool = False) -> None:
+    mode = "full exact-commit workload" if full else "qualification receipt"
+    print(f"Running local release preflight: {mode}")
+    command = [sys.executable, str(LOCAL_CANDIDATE_QUALIFICATION)]
+    if not full:
+        command.append("--check")
     try:
-        run([str(RUST_FORMAT_CHECK)], capture=False)
+        run(command, capture=False)
     except subprocess.CalledProcessError as error:
         raise ManagementError(
-            "release preflight failed: Rust formatting is not clean; "
-            "run scripts/check-rust-format.sh"
+            "local release qualification failed; run "
+            "tools/ci/local_candidate_qualification.py and inspect its lane logs"
         ) from error
+
+
+def candidate_qualification(
+    config: dict[str, Any], commit: str
+) -> release_ci.ReleaseQualification:
+    return release_ci.candidate_qualification(
+        config.get("github_repository", release_ci.DEFAULT_GITHUB_REPOSITORY),
+        commit,
+    )
+
+
+def print_candidate_qualification(
+    qualification: release_ci.ReleaseQualification,
+) -> None:
+    print(f"Candidate commit: {qualification.commit}")
+    for check in (qualification.ordinary_ci, qualification.release_journeys):
+        suffix = f" ({check.url})" if check.url else ""
+        print(f"{check.label}: {check.state} - {check.detail}{suffix}")
+
+
+def assert_candidate_is_qualified(config: dict[str, Any], commit: str) -> None:
+    qualification = candidate_qualification(config, commit)
+    if not qualification.passed:
+        raise ManagementError(
+            f"commit {commit} has not passed candidate qualification; "
+            f"{qualification.failure_summary()}. Run tools/prod_manage.py --prequalify"
+        )
+
+
+def candidate_status(config_path: Path) -> int:
+    assert_clean_checkout("check candidate qualification")
+    git("fetch", "origin", capture=False)
+    assert_main_not_behind(require_synchronized=True)
+    commit = git("rev-parse", "HEAD")
+    config = deployment.load_config(config_path)
+    qualification = candidate_qualification(config, commit)
+    print_candidate_qualification(qualification)
+    return 0 if qualification.passed else 1
+
+
+def prequalify(config_path: Path) -> int:
+    assert_clean_checkout("prequalify")
+    git("fetch", "origin", capture=False)
+    assert_main_not_behind(require_synchronized=True)
+    run_stage_preflight(full=True)
+    commit = git("rev-parse", "HEAD")
+    config = deployment.load_config(config_path)
+    existing = candidate_qualification(config, commit)
+    if existing.passed:
+        print_candidate_qualification(existing)
+        print_success("Candidate qualification already passed")
+        return 0
+
+    github_url = github_git_url(config)
+    candidate_tag = (
+        "candidate-"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
+        + commit[:8]
+    )
+    print(f"Pushing {commit} to GitHub for five full journey repetitions")
+    git("push", github_url, "main", capture=False)
+    git("push", github_url, f"HEAD:refs/tags/{candidate_tag}", capture=False)
+
+    previous_run_id = existing.release_journeys.run_id
+    deadline = time.monotonic() + 2 * 60 * 60
+    last_report = None
+    while time.monotonic() < deadline:
+        qualification = candidate_qualification(config, commit)
+        candidate = qualification.release_journeys
+        current_report = (
+            qualification.ordinary_ci.state,
+            qualification.ordinary_ci.detail,
+            candidate.state,
+            candidate.detail,
+            candidate.run_id,
+        )
+        if current_report != last_report:
+            print_candidate_qualification(qualification)
+            last_report = current_report
+        if candidate.run_id is not None and candidate.run_id != previous_run_id:
+            if candidate.state == "failed":
+                raise ManagementError(
+                    f"candidate journey qualification failed: {candidate.url or candidate.detail}"
+                )
+            if candidate.state == "passed":
+                if not qualification.ordinary_ci.passed:
+                    raise ManagementError(
+                        "candidate journeys passed, but ordinary CI did not: "
+                        + qualification.ordinary_ci.detail
+                    )
+                print_success("Candidate qualification passed; this commit may be staged")
+                return 0
+        time.sleep(15)
+    raise ManagementError(
+        "candidate qualification did not complete within two hours; "
+        "use --candidate-status to inspect it"
+    )
 
 
 def stage(config_path: Path, releases_path: Path) -> int:
@@ -679,6 +784,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
 
     run_stage_preflight()
     config = deployment.load_config(config_path)
+    assert_candidate_is_qualified(config, head)
     assert_remote_idle(config)
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
@@ -860,7 +966,11 @@ def main() -> int:
     result = 2
     try:
         try:
-            if args.stage:
+            if getattr(args, "prequalify", False):
+                result = prequalify(DEFAULT_CONFIG)
+            elif getattr(args, "candidate_status", False):
+                result = candidate_status(DEFAULT_CONFIG)
+            elif args.stage:
                 result = stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
             elif args.promote:
                 result = promote(DEFAULT_CONFIG, DEFAULT_RELEASES)

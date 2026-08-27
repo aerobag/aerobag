@@ -16,7 +16,11 @@ lock = tomllib.loads(Path(sys.argv[1]).read_text())
 print(next(package["version"] for package in lock["package"] if package["name"] == "wasm-bindgen"))
 PY
 )"
-current="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)"
+wasm_bindgen="$(command -v wasm-bindgen || true)"
+if [[ -z "$wasm_bindgen" && -x "${CARGO_HOME:-$HOME/.cargo}/bin/wasm-bindgen" ]]; then
+  wasm_bindgen="${CARGO_HOME:-$HOME/.cargo}/bin/wasm-bindgen"
+fi
+current="$(${wasm_bindgen:-false} --version 2>/dev/null | awk '{print $2}' || true)"
 if [[ "$current" != "$version" ]]; then
   cargo install wasm-bindgen-cli --version "$version" --locked --force
 fi

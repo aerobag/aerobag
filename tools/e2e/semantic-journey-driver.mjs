@@ -337,7 +337,9 @@ export async function retryVerifiedAndroidTextEntry(
 
 export function androidElementMayRequireVerticalScroll(elementId) {
   const tag = androidSemanticTag(elementId);
-  return tag.startsWith("parity:settings-") ||
+  return ANDROID_CLOUD_ACTION_IDS.has(elementId) ||
+    tag.startsWith("parity:cloud-action:") ||
+    tag.startsWith("parity:settings-") ||
     tag.startsWith("parity:offline-product:") ||
     tag.startsWith("parity:offline-region:") ||
     tag.startsWith("parity:offline-zoom-level") ||

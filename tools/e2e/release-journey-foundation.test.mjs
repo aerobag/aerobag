@@ -639,11 +639,18 @@ test("Android semantic aliases map shared flight-plan controls to core enum ids"
   );
 });
 
-test("Android Cloud actions use their exact semantic selector without generic scroll probes", () => {
+test("Android Cloud actions use exact selectors and require visible scroll reachability", () => {
   assert.deepEqual(
     androidActionCandidates("copy_setup_code"),
     ["parity:cloud-action:copy_setup_code"],
   );
+  for (const actionId of [
+    "begin_setup", "begin_create", "back_setup", "scan_setup_code", "accept_setup_code",
+    "create_account", "backup_setup_code", "add_device", "close_linked_detail",
+    "begin_unlink", "confirm_unlink", "sync_now", "copy_setup_code",
+  ]) {
+    assert.equal(androidElementMayRequireVerticalScroll(actionId), true, actionId);
+  }
 });
 
 test("Android offline-package state probes can reach lazy-list rows", () => {

@@ -13,23 +13,19 @@ class FlightPlanNavigationPolicyTest {
     @Test
     fun focusedAppendRouteFieldDoesNotBlockPageNavigation() {
         val source = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
-        val helperBody = Regex(
-            """fun performRouteEntryNavigation\(action: \(\) -> Unit\) \{(?<body>.*?)\n    \}""",
-            RegexOption.DOT_MATCHES_ALL,
-        ).find(source)?.groups?.get("body")?.value
-            ?: error("performRouteEntryNavigation helper not found")
 
         assertTrue(
-            "Flight-plan page navigation should clear append-route focus before navigating.",
-            helperBody.contains("focusManager.clearFocus(force = true)"),
+            "HOME navigation should invoke its destination directly even while route entry is focused.",
+            source.contains("onHomeClick = { onSelectPage(AppPage.Home) }"),
         )
         assertTrue(
-            "Flight-plan page navigation should still run the requested navigation action.",
-            helperBody.contains("action()"),
+            "Chart/plate navigation should invoke its destination directly even while route entry is focused.",
+            source.contains("onOpenChartOrPlate = onOpenRecentChartOrPlate"),
         )
         assertFalse(
-            "Focused append-route input must not suppress HOME/CHART/CDI navigation.",
-            helperBody.contains("routeEntryFocused"),
+            "Focused append-route input must not install a timing gate over page navigation.",
+            source.contains("routeEntrySuppressNavigationUntilMs") ||
+                source.contains("performRouteEntryNavigation"),
         )
     }
 

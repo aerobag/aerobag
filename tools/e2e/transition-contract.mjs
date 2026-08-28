@@ -7,6 +7,7 @@ export const E2E_TIMING = Object.freeze({
   localReadyMs: 3_000,
   stabilityMs: 1_500,
   stabilityPollIntervalMs: 100,
+  transitionCompletionSamples: 2,
   localResourceMs: 15_000,
   replayProgressMs: 15_000,
   animationCycleMs: 15_000,
@@ -24,21 +25,39 @@ export const E2E_TIMING = Object.freeze({
 export async function observeUntil(
   description,
   probe,
-  { timeoutMs = E2E_TIMING.localReadyMs, intervalMs = E2E_TIMING.pollIntervalMs } = {},
+  {
+    timeoutMs = E2E_TIMING.localReadyMs,
+    intervalMs = E2E_TIMING.pollIntervalMs,
+    consecutiveSuccesses = 1,
+  } = {},
 ) {
+  if (!Number.isInteger(consecutiveSuccesses) || consecutiveSuccesses < 1) {
+    throw new Error("consecutiveSuccesses must be a positive integer");
+  }
   const startedAt = performance.now();
   const deadline = startedAt + timeoutMs;
   let lastError = null;
+  let successfulSamples = 0;
+  let successfulValue = null;
   while (performance.now() < deadline) {
     try {
       const value = await probe();
       const probeFinishedAt = performance.now();
       if (probeFinishedAt >= deadline) break;
       if (value) {
-        return { value, durationMs: Math.round(probeFinishedAt - startedAt) };
+        successfulSamples += 1;
+        successfulValue = value;
+        if (successfulSamples >= consecutiveSuccesses) {
+          return { value: successfulValue, durationMs: Math.round(probeFinishedAt - startedAt) };
+        }
+      } else {
+        successfulSamples = 0;
+        successfulValue = null;
       }
     } catch (error) {
       lastError = error;
+      successfulSamples = 0;
+      successfulValue = null;
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
@@ -98,6 +117,7 @@ export async function performTransition(description, {
   const completion = await observeUntil(`${description} completed`, complete, {
     timeoutMs: responseTimeoutMs,
     intervalMs,
+    consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
   });
   const timing = {
     description,

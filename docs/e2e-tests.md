@@ -202,6 +202,13 @@ state and restores it before each assigned behavior journey. The snapshot is
 created inside the job rather than uploaded across machines, so it cannot hide
 system-image or installation drift.
 
+An Android behavior journey resets core state once during its bootstrap and
+accepts the mandatory disclaimer there. The journey relaunch preserves that
+agreement; it does not clear core settings a second time and manufacture another
+fresh-install consent flow while retained background runtimes are already active.
+Journeys whose subject is application-data loss or an unsupported publication use
+the separate full-data-reset operation explicitly.
+
 The persistent Android semantic driver reads the actual accessibility tree
 rendered by Compose. Actions invoke the ordinary accessibility click or scroll
 operation on a visible, enabled rendered node; they do not invoke core actions

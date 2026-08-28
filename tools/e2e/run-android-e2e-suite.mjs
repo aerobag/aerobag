@@ -1464,7 +1464,10 @@ async function runSharedReleaseJourney(args, journey) {
       resetApp: () => launchReleaseJourneyAndroidApp(
         args,
         fixture,
-        { clearUiPrefs: true, clearCoreSettings: true },
+        // Bootstrap already reset core state and accepted the mandatory
+        // disclaimer. Preserve that agreement instead of manufacturing a
+        // second fresh install while retained background runtimes are active.
+        { clearUiPrefs: true, clearCoreSettings: false },
       ),
       reloadApp: () => launchReleaseJourneyAndroidApp(
         args,

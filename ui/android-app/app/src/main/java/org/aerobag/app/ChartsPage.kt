@@ -100,6 +100,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -2206,6 +2207,11 @@ internal fun MenuPanelRow(
                     onSelect()
                 } else {
                     showDisabledActionToast(context, disabledReason)
+                }
+            }
+            .semantics {
+                if (!enabled && !disabledReason.isNullOrBlank()) {
+                    stateDescription = disabledReason
                 }
             },
         contentAlignment = Alignment.CenterStart,

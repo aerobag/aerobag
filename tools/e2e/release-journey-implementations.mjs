@@ -375,7 +375,7 @@ function routeEntryState(entries) {
 }
 
 async function appendRoute(runtime, route) {
-  await runtime.driver.performAction("dismiss-plan-row-tray");
+  await dismissPlanRowTray(runtime);
   await runtime.driver.enterText("plan-append-route-input", route);
   const destination = route.trim().split(/\s+/).at(-1);
   await runtime.transition(`append route ${route}`, {
@@ -420,6 +420,16 @@ async function openProcedureRow(runtime, procedureId) {
   return row;
 }
 
+async function dismissPlanRowTray(runtime) {
+  if (!(await runtime.driver.readElement("plan-row-tray-scrim"))) return;
+  await runtime.transition("dismiss flight-plan row tray", {
+    ready: () => runtime.driver.readElement("plan-row-tray-scrim"),
+    act: () => runtime.driver.performAction("plan-row-tray-scrim"),
+    complete: async () =>
+      (await runtime.driver.readElement("plan-row-tray-scrim")) === null,
+  });
+}
+
 async function planAction(runtime, label, actionId, { observeAfterDismiss = null } = {}) {
   await openPlanRow(runtime, label);
   let completion = null;
@@ -453,7 +463,7 @@ async function planAction(runtime, label, actionId, { observeAfterDismiss = null
     await runtime.driver.performAction(actionId);
   }
   if (trayStaysOpen) {
-    await runtime.driver.performAction("dismiss-plan-row-tray");
+    await dismissPlanRowTray(runtime);
     if (observeAfterDismiss) {
       completion = await runtime.eventually(`${actionId} ${label} visible result`, observeAfterDismiss);
     }
@@ -764,7 +774,7 @@ async function procedureDeparture(runtime) {
       ? "plan-row-action-move_down"
       : "plan-row-action:move_down"));
   runtime.check("procedure.sid.invariant", Boolean(moveDown && !moveDown.enabled), moveDown?.text);
-  await runtime.driver.performAction("dismiss-plan-row-tray");
+  await dismissPlanRowTray(runtime);
 
   await assertProcedureShowPlate(runtime, sid.procedure_id, "procedure.sid.show-plate", "BANGR");
   await removeProcedure(runtime, sid.procedure_id, "procedure.sid.remove");
@@ -791,7 +801,7 @@ async function procedureArrival(runtime) {
       ? "plan-row-action-move_up"
       : "plan-row-action:move_up"));
   runtime.check("procedure.star.invariant", Boolean(moveUp && !moveUp.enabled), moveUp?.text);
-  await runtime.driver.performAction("dismiss-plan-row-tray");
+  await dismissPlanRowTray(runtime);
 
   await assertProcedureShowPlate(runtime, star.procedure_id, "procedure.star.show-plate", "CHINS");
   const selected = await runtime.driver.readElement("plate-chart-button");
@@ -1736,7 +1746,7 @@ async function inspectorDetails(runtime) {
   const unavailableArrival = await runtime.driver.readElement(runtime.platform === "web"
     ? "plan-row-action-select_arrival"
     : "plan-row-action:select_arrival");
-  const disabledReason = unavailableArrival?.disabled_reason ?? unavailableArrival?.text;
+  const disabledReason = unavailableArrival?.disabled_reason;
   runtime.check(
     "inspector.disabled-reason",
     Boolean(unavailableArrival && !unavailableArrival.enabled && disabledReason),

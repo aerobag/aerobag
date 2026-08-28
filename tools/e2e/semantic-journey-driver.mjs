@@ -139,11 +139,6 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async performAction(actionId) {
-    if (actionId === "dismiss-plan-row-tray") {
-      const scrim = await this.readElement("plan-row-tray-scrim");
-      if (scrim) await this.performAction("plan-row-tray-scrim");
-      return;
-    }
     if (actionId.startsWith("plan-row:")) {
       await this.transport.clickTestId(`plan-row-${actionId.slice("plan-row:".length)}`);
       return;
@@ -531,17 +526,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async performAction(actionId) {
-    if (actionId === "dismiss-plan-row-tray") {
-      const xml = dumpAndroid(this.serial);
-      if (!findTagOrPrefix(xml, "parity:plan-row-action:")) return;
-      await tapTag(this.serial, "parity:plan-row-tray-scrim", E2E_TIMING.localReadyMs);
-      await waitFor(
-        () => !findTagOrPrefix(dumpAndroid(this.serial), "parity:plan-row-action:"),
-        E2E_TIMING.localReadyMs,
-        "dismissed flight-plan row tray",
-      );
-      return;
-    }
     if (actionId === "ownship-source-button") {
       await tapTag(this.serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs);
       return;

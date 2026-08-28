@@ -228,14 +228,14 @@ test("a transition performs its user action exactly once while observing delayed
     act: async () => { actions += 1; },
     complete: async () => {
       completionProbes += 1;
-      return completionProbes === 3 ? { committed: true } : null;
+      return completionProbes >= 3 ? { committed: true } : null;
     },
     readyTimeoutMs: 100,
     responseTimeoutMs: 100,
     intervalMs: 1,
   });
   assert.equal(actions, 1);
-  assert.equal(completionProbes, 3);
+  assert.equal(completionProbes, 4);
   assert.deepEqual(result.value, { committed: true });
 });
 
@@ -249,6 +249,23 @@ test("a user transition cannot borrow a long-running operation budget", async ()
     }),
     /user transitions are capped.*separate named phase/s,
   );
+});
+
+test("a transition does not accept a one-sample completion glitch", async () => {
+  let probes = 0;
+  const result = await performTransition("glitchy completion", {
+    ready: async () => true,
+    act: async () => {},
+    complete: async () => {
+      probes += 1;
+      return probes === 1 || probes >= 3 ? { committed: true } : null;
+    },
+    readyTimeoutMs: 100,
+    responseTimeoutMs: 100,
+    intervalMs: 1,
+  });
+  assert.equal(probes, 4);
+  assert.deepEqual(result.value, { committed: true });
 });
 
 test("a blocked probe cannot report success after its observation budget", async () => {
@@ -288,6 +305,22 @@ test("standalone Android journeys keep host and baked device package ports disti
   assert.doesNotMatch(
     source,
     /\["reverse", `tcp:\$\{packageSourcePort\}`, `tcp:\$\{packageSourcePort\}`\]/,
+  );
+});
+
+test("Android behavior reset preserves bootstrap disclaimer agreement", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const sharedJourney = source.slice(
+    source.indexOf("async function runSharedReleaseJourney"),
+    source.indexOf("async function runOfflineColdStart"),
+  );
+  assert.match(
+    sharedJourney,
+    /resetApp:[\s\S]*?clearUiPrefs: true, clearCoreSettings: false/,
+  );
+  assert.match(
+    sharedJourney,
+    /resetApplicationData:[\s\S]*?pm", "clear"/,
   );
 });
 

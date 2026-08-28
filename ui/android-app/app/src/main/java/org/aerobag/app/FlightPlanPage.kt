@@ -14,7 +14,6 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
@@ -365,7 +364,6 @@ internal fun FlightPlanPage(
     val planDataScrollState = rememberScrollState()
     val planControlScrollState = rememberScrollState()
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
-    var trayOpenedAtMs by remember { mutableStateOf(0L) }
     fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {
             operation().also(onApplySessionSnapshot)
@@ -783,7 +781,6 @@ internal fun FlightPlanPage(
                                         dataScrollState = planDataScrollState,
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
-                                            trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointTrayAnchor =
                                                 structuredSurfaceBounds?.let { surface ->
                                                     structuredRowBounds[block.row.id]?.top?.let { top ->
@@ -810,7 +807,6 @@ internal fun FlightPlanPage(
                                         dataScrollState = planDataScrollState,
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
-                                            trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointTrayAnchor =
                                                 structuredSurfaceBounds?.let { surface ->
                                                     structuredRowBounds[block.header.id]?.top?.let { top ->
@@ -830,7 +826,6 @@ internal fun FlightPlanPage(
                                         children = block.children,
                                         selectedWaypointUid = selectedWaypointUid,
                                         onChildClick = { childRow ->
-                                            trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointTrayAnchor =
                                                 structuredSurfaceBounds?.let { surface ->
                                                     structuredRowBounds[childRow.id]?.top?.let { top ->
@@ -1002,9 +997,7 @@ internal fun FlightPlanPage(
 
         if (selectedWaypointUid != null && selectedRow != null) {
             Scrim(modifier = Modifier.testTag("parity:plan-row-tray-scrim")) {
-                if (SystemClock.elapsedRealtime() - trayOpenedAtMs >= 150L) {
-                    closePanels()
-                }
+                closePanels()
             }
             if (airportInsert != null) {
                 val editor = airportInsert!!

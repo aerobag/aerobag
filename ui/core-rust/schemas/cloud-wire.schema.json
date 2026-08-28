@@ -518,6 +518,11 @@
   "additionalProperties": false,
   "description": "Core-owned Cloud UI and provider-effect wire contract.",
   "properties": {
+    "action_revision": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
     "next_refresh_epoch_ms": {
       "format": "int64",
       "type": [
@@ -561,6 +566,7 @@
     }
   },
   "required": [
+    "action_revision",
     "title",
     "summary",
     "sync_account_heading",
@@ -571,7 +577,7 @@
   ],
   "title": "UiCloudPageState",
   "type": "object",
-  "x-contract-version": 8,
+  "x-contract-version": 9,
   "x-export-order": [
     "CloudProviderKind",
     "CloudUiActionId",

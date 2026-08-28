@@ -233,6 +233,7 @@ pub struct UiCloudPanel {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UiCloudPageState {
+    pub action_revision: u64,
     pub title: String,
     pub summary: String,
     pub sync_account_heading: String,

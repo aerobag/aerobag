@@ -19,6 +19,7 @@ export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "inspectMapAt", "activateMapInspection", "performAction",
   "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
   "readAction", "readSessionRevision", "findProjectionMatching", "revealElement", "scanProjection",
+  "readCloudActionRevision",
   "revealProjectionMatching", "reload",
   "back", "captureFrame", "injectRasterLoadFault",
 ]);
@@ -54,6 +55,9 @@ export class SemanticJourneyDriver {
   }
   async readAction(_actionId) { throw new Error(`${this.platform} driver does not implement readAction`); }
   async readSessionRevision() { throw new Error(`${this.platform} driver does not implement readSessionRevision`); }
+  async readCloudActionRevision() {
+    throw new Error(`${this.platform} driver does not implement readCloudActionRevision`);
+  }
   async enterText(_controlId, _value, _options, _readyElement) {
     throw new Error(`${this.platform} driver does not implement enterText`);
   }
@@ -323,6 +327,13 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readSessionRevision() {
     return this.transport.page.evaluate("window.__aerobagE2e.render().session_revision");
+  }
+
+  async readCloudActionRevision() {
+    return this.transport.page.evaluate(`Number(
+      document.querySelector('[data-testid="cloud-overall-status"]')
+        ?.getAttribute('data-e2e-action-revision') ?? -1
+    )`);
   }
 
   async injectRasterLoadFault() {
@@ -753,6 +764,16 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     // A full Compose accessibility-tree read is expensive. UI events wake
     // immediately; this backstop handles coalesced or missed notifications.
     waitForAndroidSemanticEvent(this.serial, Math.max(200, intervalMs));
+  }
+
+  async readCloudActionRevision() {
+    const node = queryFirstAndroidSemanticNode(
+      this.serial,
+      "parity:cloud-action-revision:",
+      { allowPrefix: true },
+    );
+    const revision = androidTag(node).match(/:cloud-action-revision:(\d+)(?::|$)/)?.[1];
+    return revision == null ? -1 : Number(revision);
   }
 
   async reset() {

@@ -214,13 +214,19 @@ internal fun CloudPage(
                     )
                 }
             }
-            CloudPanelView(
-                panel = state.overallStatus,
-                fields = fields,
-                copyStatus = copyStatus,
-                onInvoke = ::invoke,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("parity:cloud-action-revision:${state.actionRevision}"),
+            ) {
+                CloudPanelView(
+                    panel = state.overallStatus,
+                    fields = fields,
+                    copyStatus = copyStatus,
+                    onInvoke = ::invoke,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }

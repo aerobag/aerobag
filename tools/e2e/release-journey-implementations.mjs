@@ -2881,18 +2881,18 @@ async function cloudCrossfill(runtime) {
   // work. Finish all UI preparation before establishing the quiescent revision
   // that the manual synchronization action must advance.
   const syncNow = await revealCloudAction(runtime, "sync_now", "sync now action");
-  const revisionBeforeSync = await runtime.stable(
+  const actionRevisionBeforeSync = await runtime.stable(
     "settled cloud state before manual synchronization",
     async () => {
       const status = await runtime.driver.readElement(cloudStatusElementId(runtime));
       if (!status?.text || !/Cloud active/i.test(status.text)) return null;
-      return runtime.driver.readSessionRevision();
+      return runtime.driver.readCloudActionRevision();
     },
   );
   await runtime.action("synchronize cloud state now", "sync_now", {
     complete: async () => {
-      const revision = await runtime.driver.readSessionRevision();
-      return revision > revisionBeforeSync ? revision : null;
+      const revision = await runtime.driver.readCloudActionRevision();
+      return revision > actionRevisionBeforeSync ? revision : null;
     },
   });
   await waitForCloudActive(runtime);

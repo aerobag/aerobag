@@ -2510,6 +2510,7 @@ function OperationalApp() {
       sections: [],
     },
     cloud_page_state: {
+      action_revision: 0,
       title: "",
       summary: "",
       sync_account_heading: "",
@@ -13159,6 +13160,7 @@ function CloudPage(props: {
       key={`${region}:${panel.id}`}
       className={`cloudFlowPanel is-${panel.state}`}
       data-e2e-state={panel.state}
+      data-e2e-action-revision={region === "status" ? props.state.action_revision : undefined}
       data-testid={region === "provider"
         ? "cloud-provider-card"
         : region === "status"

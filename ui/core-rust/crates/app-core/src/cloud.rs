@@ -416,6 +416,7 @@ impl Default for CloudPersistentState {
 #[derive(Debug, Clone)]
 pub(crate) struct CloudEngine {
     persistent: CloudPersistentState,
+    action_revision: u64,
     provider_request_in_flight: Option<CloudProviderRequest>,
     linked_account_detail: Option<LinkedAccountDetail>,
     acs_default_base_url: Option<String>,
@@ -532,6 +533,7 @@ impl CloudEngine {
         }
         Self {
             persistent,
+            action_revision: 0,
             provider_request_in_flight: None,
             linked_account_detail: None,
             acs_default_base_url: None,
@@ -1249,28 +1251,29 @@ impl CloudEngine {
         now_epoch_ms: i64,
     ) -> AppResult<()> {
         let action = match action_id {
-            CloudUiActionId::BeginSetup => CloudAction::BeginSetupFromDevice,
-            CloudUiActionId::BeginCreate => CloudAction::BeginCreateAccount,
-            CloudUiActionId::BackSetup => CloudAction::BackSetup,
-            CloudUiActionId::CreateAccount => CloudAction::CreateAccount,
-            CloudUiActionId::AcceptSetupCode => CloudAction::AcceptDeviceSetupCode {
+            CloudUiActionId::BeginSetup => Some(CloudAction::BeginSetupFromDevice),
+            CloudUiActionId::BeginCreate => Some(CloudAction::BeginCreateAccount),
+            CloudUiActionId::BackSetup => Some(CloudAction::BackSetup),
+            CloudUiActionId::CreateAccount => Some(CloudAction::CreateAccount),
+            CloudUiActionId::AcceptSetupCode => Some(CloudAction::AcceptDeviceSetupCode {
                 setup_code: required_ui_field(fields, CloudUiFieldId::DeviceSetupCode)?,
-            },
-            CloudUiActionId::BackupSetupCode => CloudAction::BackUpDeviceSetupCode,
-            CloudUiActionId::AddDevice => CloudAction::AddAnotherDevice,
-            CloudUiActionId::CloseLinkedDetail => CloudAction::CloseLinkedAccountDetail,
-            CloudUiActionId::BeginUnlink => CloudAction::BeginUnlinkDevice,
-            CloudUiActionId::ConfirmUnlink => CloudAction::ConfirmUnlinkDevice,
-            CloudUiActionId::SyncNow => CloudAction::SyncNow,
+            }),
+            CloudUiActionId::BackupSetupCode => Some(CloudAction::BackUpDeviceSetupCode),
+            CloudUiActionId::AddDevice => Some(CloudAction::AddAnotherDevice),
+            CloudUiActionId::CloseLinkedDetail => Some(CloudAction::CloseLinkedAccountDetail),
+            CloudUiActionId::BeginUnlink => Some(CloudAction::BeginUnlinkDevice),
+            CloudUiActionId::ConfirmUnlink => Some(CloudAction::ConfirmUnlinkDevice),
+            CloudUiActionId::SyncNow => Some(CloudAction::SyncNow),
             CloudUiActionId::CopySetupCode => {
                 self.device_setup_code()?;
-                return Ok(());
+                None
             }
-            CloudUiActionId::ScanSetupCode => {
-                return Ok(());
-            }
+            CloudUiActionId::ScanSetupCode => None,
         };
-        self.perform_action_at(action, current_plan, now_epoch_ms)?;
+        if let Some(action) = action {
+            self.perform_action_at(action, current_plan, now_epoch_ms)?;
+        }
+        self.action_revision = self.action_revision.saturating_add(1);
         Ok(())
     }
 
@@ -2150,6 +2153,7 @@ impl CloudEngine {
         now_epoch_ms: i64,
     ) -> UiCloudPageState {
         UiCloudPageState {
+            action_revision: self.action_revision,
             title: "Cloud".to_string(),
             summary: "Keep your Aerobag state synchronized between devices.".to_string(),
             sync_account_heading: "Sync Account".to_string(),
@@ -3349,6 +3353,28 @@ mod tests {
             .perform_ui_action(CloudUiActionId::CreateAccount, &[], &initial, 1)
             .unwrap();
         assert_eq!(active_panel(&engine).state, UiCloudPanelState::Working);
+    }
+
+    #[test]
+    fn cloud_ui_action_revision_acknowledges_only_successful_ui_actions() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = configured_engine();
+        assert_eq!(engine.page_state(0).action_revision, 0);
+
+        engine
+            .perform_ui_action(CloudUiActionId::BeginSetup, &[], &initial, 1)
+            .unwrap();
+        assert_eq!(engine.page_state(1).action_revision, 1);
+
+        engine
+            .perform_ui_action(CloudUiActionId::AcceptSetupCode, &[], &initial, 2)
+            .unwrap_err();
+        assert_eq!(engine.page_state(2).action_revision, 1);
+
+        engine
+            .perform_ui_action(CloudUiActionId::BackSetup, &[], &initial, 3)
+            .unwrap();
+        assert_eq!(engine.page_state(3).action_revision, 2);
     }
 
     #[test]

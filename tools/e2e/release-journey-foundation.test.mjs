@@ -200,6 +200,7 @@ test("cloud Sync Now establishes quiescence after revealing its control", () => 
   assert.ok(reveal >= 0, "cloud journey must reveal Sync Now");
   assert.ok(quiescence > reveal, "cloud quiescence must follow UI preparation");
   assert.ok(action > quiescence, "Sync Now must follow the quiescence barrier");
+  assert.match(journey, /runtime\.driver\.readCloudActionRevision\(\)/);
 });
 
 test("web semantic drags remain inside their target surface", () => {

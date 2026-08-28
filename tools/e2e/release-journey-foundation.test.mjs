@@ -185,6 +185,23 @@ test("Android cloud crossfill executes alone in its release shard", () => {
   }
 });
 
+test("cloud Sync Now establishes quiescence after revealing its control", () => {
+  const source = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const journey = source.slice(
+    source.indexOf("async function cloudCrossfill"),
+    source.indexOf("export const RELEASE_JOURNEY_IMPLEMENTATIONS"),
+  );
+  const reveal = journey.indexOf('revealCloudAction(runtime, "sync_now"');
+  const quiescence = journey.indexOf('runtime.stable(\n    "settled cloud state before manual synchronization"');
+  const action = journey.indexOf('runtime.action("synchronize cloud state now"');
+  assert.ok(reveal >= 0, "cloud journey must reveal Sync Now");
+  assert.ok(quiescence > reveal, "cloud quiescence must follow UI preparation");
+  assert.ok(action > quiescence, "Sync Now must follow the quiescence barrier");
+});
+
 test("web semantic drags remain inside their target surface", () => {
   assert.deepEqual(
     clampDragEndpoint(

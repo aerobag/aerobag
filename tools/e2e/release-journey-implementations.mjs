@@ -2877,9 +2877,10 @@ async function cloudCrossfill(runtime) {
   });
   runtime.check("cloud.close-detail", Boolean(closeBackup?.enabled && closeAddDevice?.enabled));
 
-  // Account creation has automatic root-publication and event-stream work.
-  // Exercise the manual synchronization control after those workflows have
-  // settled so its revision acknowledgement belongs to this user action.
+  // Revealing a control may overlap automatic root-publication and event-stream
+  // work. Finish all UI preparation before establishing the quiescent revision
+  // that the manual synchronization action must advance.
+  const syncNow = await revealCloudAction(runtime, "sync_now", "sync now action");
   const revisionBeforeSync = await runtime.stable(
     "settled cloud state before manual synchronization",
     async () => {
@@ -2888,7 +2889,6 @@ async function cloudCrossfill(runtime) {
       return runtime.driver.readSessionRevision();
     },
   );
-  const syncNow = await revealCloudAction(runtime, "sync_now", "sync now action");
   await runtime.action("synchronize cloud state now", "sync_now", {
     complete: async () => {
       const revision = await runtime.driver.readSessionRevision();

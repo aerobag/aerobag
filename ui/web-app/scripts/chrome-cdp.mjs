@@ -226,6 +226,32 @@ class CdpPage {
     return this.client.send(method, params, this.sessionId);
   }
 
+  async routeOrigin(sourceOrigin, targetOrigin) {
+    const source = new URL(sourceOrigin).origin;
+    const target = new URL(targetOrigin).origin;
+    this.client.onEvent(this.sessionId, "Fetch.requestPaused", (params) => {
+      const original = new URL(params.request.url);
+      const replacement = original.origin === source
+        ? `${target}${original.pathname}${original.search}${original.hash}`
+        : original.toString();
+      this.send("Fetch.continueRequest", {
+        requestId: params.requestId,
+        url: replacement,
+      }).catch((error) => {
+        this.diagnostics.push({
+          method: "Fetch.continueRequestFailed",
+          source,
+          target,
+          url: original.toString(),
+          error: error.message,
+        });
+      });
+    });
+    await this.send("Fetch.enable", {
+      patterns: [{ urlPattern: `${source}/*`, requestStage: "Request" }],
+    });
+  }
+
   async navigate(url) {
     this.loadPromise = new Promise((resolve) => {
       const finish = () => {
@@ -258,41 +284,71 @@ class CdpPage {
   }
 }
 
-class CdpClient {
+export class CdpClient {
   constructor(endpoint) {
     this.endpoint = endpoint;
     this.nextId = 1;
     this.pending = new Map();
     this.listeners = new Map();
+    this.closedError = null;
   }
 
   open() {
     if (typeof this.endpoint !== "string") {
       this.pipeWrite = this.endpoint.pipeWrite;
       this.pipeBuffer = Buffer.alloc(0);
-      this.endpoint.pipeRead.on("data", (chunk) => this.handlePipeData(chunk));
-      this.endpoint.pipeRead.on("error", (error) => this.close(error));
+      this.pipeDataHandler = (chunk) => this.handlePipeData(chunk);
+      this.pipeErrorHandler = (error) => this.close(error);
+      this.pipeClosedHandler = () => this.close(new Error("CDP pipe closed"));
+      this.endpoint.pipeRead.on("data", this.pipeDataHandler);
+      this.endpoint.pipeRead.on("error", this.pipeErrorHandler);
+      this.endpoint.pipeRead.on("end", this.pipeClosedHandler);
+      this.pipeWrite.on("error", this.pipeErrorHandler);
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.endpoint);
-      this.ws.addEventListener("open", resolve, { once: true });
-      this.ws.addEventListener("error", reject, { once: true });
+      const startupError = (event) => reject(event.error ?? new Error("CDP websocket failed to open"));
+      this.ws.addEventListener("error", startupError, { once: true });
+      this.ws.addEventListener("open", () => {
+        this.ws.removeEventListener("error", startupError);
+        this.ws.addEventListener("error", (event) => {
+          this.close(event.error ?? new Error("CDP websocket failed"));
+        });
+        this.ws.addEventListener("close", () => {
+          this.close(new Error("CDP websocket closed"));
+        });
+        resolve();
+      }, { once: true });
       this.ws.addEventListener("message", (event) => this.handleMessage(event.data));
     });
   }
 
   close(error = undefined) {
-    this.ws?.close();
-    this.pipeWrite?.end();
+    if (this.closedError) return;
+    this.closedError = error ?? new Error("CDP connection closed");
+    this.listeners.clear();
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timeout);
-      pending.reject(error ?? new Error(`CDP connection closed while request ${id} was pending`));
+      pending.reject(new Error(
+        `${this.closedError.message} while request ${id} was pending`,
+        { cause: this.closedError },
+      ));
     }
     this.pending.clear();
+    this.ws?.close();
+    if (this.pipeWrite && !this.pipeWrite.destroyed && !this.pipeWrite.writableEnded) {
+      this.pipeWrite.end();
+    }
   }
 
   send(method, params = {}, sessionId = undefined, timeoutMs = 15_000) {
+    if (this.closedError) {
+      return Promise.reject(new Error(
+        `CDP request ${method} rejected: ${this.closedError.message}`,
+        { cause: this.closedError },
+      ));
+    }
     const id = this.nextId++;
     const message = { id, method, params };
     if (sessionId) {
@@ -305,10 +361,27 @@ class CdpClient {
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
       const encoded = JSON.stringify(message);
-      if (this.pipeWrite) {
-        this.pipeWrite.write(`${encoded}\0`);
-      } else {
-        this.ws.send(encoded);
+      try {
+        if (this.pipeWrite) {
+          if (this.pipeWrite.destroyed || this.pipeWrite.writableEnded) {
+            throw new Error("CDP pipe is not writable");
+          }
+          this.pipeWrite.write(`${encoded}\0`, (error) => {
+            if (!error || !this.pending.has(id)) return;
+            clearTimeout(timeout);
+            this.pending.delete(id);
+            reject(error);
+          });
+        } else {
+          if (this.ws.readyState !== WebSocket.OPEN) {
+            throw new Error("CDP websocket is not open");
+          }
+          this.ws.send(encoded);
+        }
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        reject(error);
       }
     });
   }
@@ -325,6 +398,7 @@ class CdpClient {
   }
 
   handlePipeData(chunk) {
+    if (this.closedError) return;
     this.pipeBuffer = Buffer.concat([this.pipeBuffer, chunk]);
     for (;;) {
       const delimiter = this.pipeBuffer.indexOf(0);
@@ -336,6 +410,7 @@ class CdpClient {
   }
 
   handleMessage(data) {
+    if (this.closedError) return;
     const message = JSON.parse(data);
     if (message.id && this.pending.has(message.id)) {
       const pending = this.pending.get(message.id);

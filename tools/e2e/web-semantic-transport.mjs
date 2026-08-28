@@ -5,6 +5,7 @@
 import { writeFile } from "node:fs/promises";
 import { waitFor } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { clampDragEndpoint } from "./gesture-geometry.mjs";
+import { E2E_TIMING } from "./transition-contract.mjs";
 
 function expressionArgument(value) {
   return JSON.stringify(value);
@@ -59,12 +60,12 @@ export class WebSemanticTransport {
     })()`);
   }
 
-  async waitFor(selector, description, timeoutMs = 15_000) {
+  async waitFor(selector, description, timeoutMs = E2E_TIMING.localReadyMs) {
     return waitFor(
       () => this.visible(selector),
       timeoutMs,
       `timed out waiting for ${description}`,
-      100,
+      E2E_TIMING.pollIntervalMs,
     );
   }
 
@@ -82,99 +83,82 @@ export class WebSemanticTransport {
   async clickIfVisible(selector) {
     let lastProbe = null;
     for (let attempt = 0; attempt < 8; attempt += 1) {
-      const target = await this.page.evaluate(`(() => {
+      const result = await this.page.evaluate(`(() => {
         const element = [...document.querySelectorAll(${expressionArgument(selector)})]
           .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
-        if (!element) return null;
+        if (!element) return { status: "missing" };
         const rect = element.getBoundingClientRect();
         const fractions = [0.5, 0.1, 0.9, 0.25, 0.75];
         let lastHit = null;
+        let unobstructed = false;
         for (const yFraction of fractions) {
           for (const xFraction of fractions) {
-            const x = rect.left + rect.width * xFraction;
-            const y = rect.top + rect.height * yFraction;
-            const hit = document.elementFromPoint(x, y);
+            const hit = document.elementFromPoint(
+              rect.left + rect.width * xFraction,
+              rect.top + rect.height * yFraction,
+            );
             lastHit = hit;
             if (hit === element || element.contains(hit)) {
-              return { x, y, unobstructed: true };
+              unobstructed = true;
+              break;
             }
           }
+          if (unobstructed) break;
         }
-        return {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-          unobstructed: false,
-          hit: lastHit ? {
-            tag: lastHit.tagName,
-            test_id: lastHit.getAttribute("data-testid"),
-            aria_label: lastHit.getAttribute("aria-label"),
-            class_name: typeof lastHit.className === "string" ? lastHit.className : lastHit.className?.baseVal ?? null,
-          } : null,
+        if (!unobstructed) {
+          return {
+            status: "obstructed",
+            hit: lastHit ? {
+              tag: lastHit.tagName,
+              test_id: lastHit.getAttribute("data-testid"),
+              aria_label: lastHit.getAttribute("aria-label"),
+              class_name: typeof lastHit.className === "string" ? lastHit.className : lastHit.className?.baseVal ?? null,
+            } : null,
+          };
+        }
+        if (typeof element.click !== "function") {
+          return { status: "unsupported", tag: element.tagName };
+        }
+
+        const probe = { click: 0, matched: 0, actionable_clicks: 0 };
+        const listener = (event) => {
+          probe.click += 1;
+          if (event.target instanceof Element && event.target.closest(${expressionArgument(selector)})) {
+            probe.matched += 1;
+          }
+          if (event.target instanceof Element && event.target.closest("button,input,a,[role=button]")) {
+            probe.actionable_clicks += 1;
+          }
         };
+        document.addEventListener("click", listener, true);
+        try {
+          // Visibility, hit testing, and activation happen in one browser task so
+          // a render cannot move the control between observation and delivery.
+          element.click();
+        } finally {
+          document.removeEventListener("click", listener, true);
+        }
+        return { status: "activated", probe };
       })()`);
-      if (!target) return false;
-      if (!target.unobstructed) {
-        lastProbe = { obstructed_by: target.hit };
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      if (result.status === "missing") return false;
+      if (result.status === "obstructed") {
+        lastProbe = { obstructed_by: result.hit };
+        await new Promise((resolve) => setTimeout(resolve, E2E_TIMING.pollIntervalMs));
         continue;
       }
-      await this.page.evaluate(`(() => {
-        const probe = { pointerdown: 0, pointerup: 0, click: 0, matched: 0, actionable_clicks: 0, targets: [] };
-        const listeners = {};
-        for (const type of ["pointerdown", "pointerup", "click"]) {
-          listeners[type] = (event) => {
-            probe[type] += 1;
-            if (event.target instanceof Element && event.target.closest(${expressionArgument(selector)})) {
-              probe.matched += 1;
-            }
-            if (type === "click" && event.target instanceof Element && event.target.closest("button,input,a,[role=button]")) {
-              probe.actionable_clicks += 1;
-            }
-            probe.targets.push(event.target?.getAttribute?.("data-testid") ?? event.target?.tagName ?? null);
-          };
-          document.addEventListener(type, listeners[type], true);
-        }
-        window.__aerobagReleaseControlProbe = { listeners, probe };
-      })()`);
-      await this.page.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved", x: target.x, y: target.y, button: "none", pointerType: "mouse",
-      });
-      await this.page.send("Input.dispatchMouseEvent", {
-        type: "mousePressed", x: target.x, y: target.y, button: "left", buttons: 1,
-        clickCount: 1, pointerType: "mouse", pointerId: 1,
-      });
-      const pressed = await this.page.evaluate("window.__aerobagReleaseControlProbe?.probe ?? null");
-      const pressMatched = pressed?.pointerdown === 1 && pressed?.matched === 1;
-      await this.page.send("Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: pressMatched ? target.x : -100,
-        y: pressMatched ? target.y : -100,
-        button: "left",
-        buttons: 0,
-        clickCount: 1,
-        pointerType: "mouse",
-        pointerId: 1,
-      });
-      const probe = await this.page.evaluate(`(() => {
-        const state = window.__aerobagReleaseControlProbe;
-        if (!state) return null;
-        for (const [type, listener] of Object.entries(state.listeners)) {
-          document.removeEventListener(type, listener, true);
-        }
-        delete window.__aerobagReleaseControlProbe;
-        return state.probe;
-      })()`);
-      lastProbe = probe;
-      if (pressMatched && probe?.click === 1 && probe?.matched === 3) {
+      if (result.status !== "activated") {
+        throw new Error(`web control cannot be activated: ${selector}; probe=${JSON.stringify(result)}`);
+      }
+      if (result.probe?.click === 1 && result.probe?.matched === 1 && result.probe?.actionable_clicks === 1) {
         return true;
       }
-      if (probe?.actionable_clicks > 0) {
-        throw new Error(`web pointer produced an unintended click: ${selector}; probe=${JSON.stringify(probe)}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      throw new Error(
+        `web semantic action did not complete on its target: ${selector}; ` +
+          `probe=${JSON.stringify(result.probe)}`,
+      );
     }
     throw new Error(
-      `web control did not remain stable for a click: ${selector}; probe=${JSON.stringify(lastProbe)}`,
+      `web control did not become unobstructed: ${selector}; probe=${JSON.stringify(lastProbe)}`,
     );
   }
 
@@ -185,19 +169,17 @@ export class WebSemanticTransport {
   async firstExisting(selectors) {
     for (const selector of selectors) {
       if (!await this.exists(selector)) continue;
-      await this.page.evaluate(`document.querySelector(${expressionArgument(selector)})
-        ?.scrollIntoView({ block: "center", inline: "center", behavior: "instant" })`);
       if (await this.visible(selector)) return selector;
     }
     return null;
   }
 
-  async waitForFirstVisible(selectors, description, timeoutMs = 15_000) {
+  async waitForFirstVisible(selectors, description, timeoutMs = E2E_TIMING.localReadyMs) {
     return waitFor(
       () => this.firstExisting(selectors),
       timeoutMs,
       `timed out waiting for ${description}`,
-      100,
+      E2E_TIMING.pollIntervalMs,
     );
   }
 
@@ -215,7 +197,7 @@ export class WebSemanticTransport {
     })()`);
   }
 
-  async waitForOptionSelection(selector, previousState, description, timeoutMs = 15_000) {
+  async waitForOptionSelection(selector, previousState, description, timeoutMs = E2E_TIMING.localReadyMs) {
     return waitFor(
       async () => {
         const currentState = await this.optionSelectionState(selector);
@@ -223,7 +205,7 @@ export class WebSemanticTransport {
       },
       timeoutMs,
       `timed out waiting for ${description}`,
-      100,
+      E2E_TIMING.pollIntervalMs,
     );
   }
 
@@ -250,6 +232,23 @@ export class WebSemanticTransport {
         type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13,
       });
     }
+  }
+
+  async submit(selector) {
+    const focused = await this.page.evaluate(`(() => {
+      const input = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
+      if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return false;
+      input.focus();
+      return document.activeElement === input;
+    })()`);
+    if (!focused) throw new Error(`web text control is missing for submit: ${selector}`);
+    await this.page.send("Input.dispatchKeyEvent", {
+      type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13,
+    });
+    await this.page.send("Input.dispatchKeyEvent", {
+      type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13,
+    });
   }
 
   async pointerClick(selector, xFraction = 0.5, yFraction = 0.5) {
@@ -429,7 +428,10 @@ export class WebSemanticTransport {
         enabled: element.getAttribute("aria-disabled") !== "true" &&
           (!(element instanceof HTMLButtonElement || element instanceof HTMLInputElement) || !element.disabled),
         pressed: element.getAttribute("aria-pressed"),
-        expanded: element.getAttribute("aria-expanded"),
+        expanded: element.hasAttribute("aria-expanded")
+          ? element.getAttribute("aria-expanded") === "true"
+          : null,
+        state: element.getAttribute("data-e2e-state"),
         selected: element.getAttribute("aria-selected"),
         checked: element instanceof HTMLInputElement ? element.checked : null,
         disabled_reason: element.getAttribute("title"),
@@ -437,6 +439,17 @@ export class WebSemanticTransport {
         bounds: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
       };
     })()`);
+  }
+
+  async revealElement(selector) {
+    const revealed = await this.page.evaluate(`(() => {
+      const element = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
+      if (!(element instanceof HTMLElement)) return false;
+      element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+      return true;
+    })()`);
+    if (!revealed) throw new Error(`web element is missing: ${selector}`);
   }
 
   async collectTestIds(prefix) {

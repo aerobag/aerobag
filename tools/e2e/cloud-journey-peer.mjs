@@ -6,13 +6,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  connectToBrowser, launchChrome, stopProcess, waitFor,
+  connectToBrowser, launchChrome, stopProcess,
 } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
+import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 
-export async function launchCloudJourneyPeer({ url, referenceEpochMs }) {
+export function rewriteRequestOrigin(url, sourceOrigin, targetOrigin) {
+  const original = new URL(url);
+  if (original.origin !== new URL(sourceOrigin).origin) return original.toString();
+  return `${new URL(targetOrigin).origin}${original.pathname}${original.search}${original.hash}`;
+}
+
+export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOriginRoutes = [] }) {
   const userDataDir = await mkdtemp(join(tmpdir(), "aerobag-cloud-journey-peer-"));
   const chrome = await launchChrome({ userDataDir, width: 1000, height: 900 });
   const browser = await connectToBrowser(chrome.endpoint);
@@ -24,26 +31,31 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs }) {
       source: advancingVirtualClockScript(referenceEpochMs),
     });
   }
+  for (const route of requestOriginRoutes) {
+    await page.routeOrigin(route.sourceOrigin, route.targetOrigin);
+  }
   await page.navigate(url);
   await page.waitForLoad();
-  await waitFor(async () => {
-    const state = await page.evaluate(`(() => ({
+  const transport = new WebSemanticTransport(page, { url });
+  const driver = new WebSemanticJourneyDriver(transport);
+  const readStartupState = () => page.evaluate(`(() => ({
       disclaimer: Boolean(document.querySelector('[data-testid="parity:disclaimer-accept-button"]')),
       map: Boolean(document.querySelector('[data-testid="parity:page:map"]')),
       error: document.querySelector('.startupErrorModal')?.textContent ?? null,
     }))()`);
+  const startup = await observeUntil("cloud journey peer startup surface", async () => {
+    const state = await readStartupState();
     if (state.error) throw new Error(state.error);
-    if (state.disclaimer) {
-      await page.evaluate(
-        `document.querySelector('[data-testid="parity:disclaimer-accept-button"]').click()`,
-      );
-      return false;
-    }
-    return state.map;
-  }, 60_000, "cloud journey peer did not reach the map");
+    return state.disclaimer || state.map ? state : null;
+  }, { timeoutMs: E2E_TIMING.startupMs });
+  if (startup.value.disclaimer) {
+    await performTransition("cloud journey peer disclaimer", {
+      ready: () => driver.readElement("disclaimer-accept-button"),
+      act: () => driver.performAction("disclaimer-accept-button"),
+      complete: async () => (await readStartupState()).map,
+    });
+  }
 
-  const transport = new WebSemanticTransport(page, { url });
-  const driver = new WebSemanticJourneyDriver(transport);
   return {
     page,
     driver,
@@ -52,47 +64,57 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs }) {
       return page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
     },
 
-    async waitForState(predicate, description, timeoutMs = 20_000) {
-      return waitFor(async () => {
+    async waitForState(predicate, description, timeoutMs = E2E_TIMING.cloudConsistencyMs) {
+      const result = await observeUntil(description, async () => {
         const state = await page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
-        return state && predicate(state) ? state : false;
-      }, timeoutMs, description);
+        return state && predicate(state) ? state : null;
+      }, { timeoutMs });
+      return result.value;
     },
 
     async acceptSetupCode(setupCode) {
       await driver.openPage("cloud");
       await driver.performAction("begin_setup");
-      await waitFor(
+      await observeUntil(
+        "cloud journey peer setup-code input",
         () => driver.readElement("cloud-setup-code-input"),
-        10_000,
-        "cloud journey peer setup-code input did not appear",
+        { timeoutMs: E2E_TIMING.localReadyMs },
       );
       await driver.enterText("cloud-setup-code-input", setupCode);
-      await driver.performAction("accept_setup_code");
-      await this.waitForState(
-        (state) => Boolean(state.event_stream_id),
-        "cloud journey peer did not link and connect",
-      );
+      await performTransition("cloud journey peer link", {
+        ready: () => driver.readElement("cloud-action-accept_setup_code"),
+        act: () => driver.performAction("accept_setup_code"),
+        complete: async () => {
+          const state = await page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
+          return state?.event_stream_id ? state : null;
+        },
+        responseTimeoutMs: E2E_TIMING.cloudConsistencyMs,
+      });
     },
 
     async appendRoute(route) {
       await driver.openPage("flight_plan");
       await driver.enterText("plan-append-route-input", route);
-      await waitFor(
+      await observeUntil(
+        `cloud journey peer route ${route} committable`,
         () => page.evaluate(
           "Boolean(document.querySelector('.pageLayer.isActive .planEntryInputShell.isReady'))",
         ),
-        20_000,
-        `cloud journey peer route ${route} did not become committable`,
-      );
-      await page.evaluate(
-        "document.querySelector('.pageLayer.isActive .planEntryForm').requestSubmit()",
+        { timeoutMs: E2E_TIMING.resourceMs },
       );
       const expected = route.trim().split(/\s+/);
-      return this.waitForState(
-        (state) => expected.every((ident) => state.flight_plan_rows.includes(ident)),
-        `cloud journey peer did not commit ${route}`,
-      );
+      const result = await performTransition(`cloud journey peer commit ${route}`, {
+        ready: () => driver.readElement("plan-append-route-input"),
+        act: () => driver.submit("plan-append-route-input"),
+        complete: async () => {
+          const state = await page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
+          return state && expected.every((ident) => state.flight_plan_rows.includes(ident))
+            ? state
+            : null;
+        },
+        responseTimeoutMs: E2E_TIMING.cloudConsistencyMs,
+      });
+      return result.value;
     },
 
     async setOfflinePackagePreferences(preferences) {

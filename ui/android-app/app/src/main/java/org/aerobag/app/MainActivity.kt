@@ -2007,15 +2007,14 @@ internal fun writeUiPrefs(
     selectedAirportId: String,
     selectedChartId: String,
     recentAirportIds: List<String>,
-) {
+): Boolean =
     context.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
         .edit()
         .putString(UiPrefsPageKey, page.name)
         .putString(UiPrefsSelectedAirportKey, selectedAirportId)
         .putString(UiPrefsSelectedChartKey, selectedChartId)
         .putString(UiPrefsRecentAirportsKey, recentAirportIds.joinToString("\n"))
-        .apply()
-}
+        .commit()
 
 internal fun readStoredPage(prefs: SharedPreferences): AppPage {
     val stored = prefs.getString(UiPrefsPageKey, AppPage.Map.name) ?: AppPage.Map.name
@@ -2709,6 +2708,7 @@ internal fun AerobagApp(
             retainedModel.page ?: readStoredPage(prefs),
         )
     }
+    var persistedPage by remember { mutableStateOf(readStoredPage(prefs)) }
     var mapOrientationMode by remember { mutableStateOf(readStoredMapOrientationMode(prefs)) }
     LaunchedEffect(perfScenario?.id) {
         if (perfScenario != null) {
@@ -3087,7 +3087,12 @@ internal fun AerobagApp(
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
         retainedModel.page = page
-        writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
+        val persisted = withContext(Dispatchers.IO) {
+            writeUiPrefs(context.applicationContext, page, selectedAirportId, selectedChartId, recentAirportIds)
+        }
+        if (persisted) {
+            persistedPage = page
+        }
     }
     LaunchedEffect(pageHistory) {
         retainedModel.pageHistory = pageHistory
@@ -3415,7 +3420,15 @@ internal fun AerobagApp(
             uiSession = uiSession,
             onSnapshot = ::applySessionSnapshot,
         )
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag(
+                    "parity:startup-state:ready:true:" +
+                        "disclaimer_required:${sessionSnapshot.disclaimerState.required}:" +
+                        "persisted_page:${persistedPage.name}",
+                ),
+        ) {
             val bottomCornerControlsRaised = shouldRaiseBottomCornerControls(maxWidth)
             when (page) {
                 AppPage.Map -> {

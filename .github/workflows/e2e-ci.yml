@@ -285,8 +285,8 @@ jobs:
             "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
-      - name: Start deterministic publication and web peer
-        run: ./tools/e2e/release_journey_lab.sh fixture-start-web fresh
+      - name: Start package-only Android baseline publication
+        run: ./tools/e2e/release_journey_lab.sh fixture-start-web empty
       - name: Clean-install immutable APK and sync packages
         env:
           CI: "1"

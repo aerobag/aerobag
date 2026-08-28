@@ -8,6 +8,9 @@ import {
   createJourneyResult, finishJourneyResult, recordJourneyCheck,
   recordJourneyStep, validateJourneyResult,
 } from "./journey-result.mjs";
+import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
+
+export { E2E_TIMING } from "./transition-contract.mjs";
 
 export function releaseJourneyFixtureUrl(platform, relativePath, fixtureOrigin = null) {
   if (/^https?:\/\//.test(relativePath)) return relativePath;
@@ -105,26 +108,36 @@ export function createJourneyRuntime({
       return recordJourneyCheck(result, assertionId, pass, detail);
     },
 
-    async eventually(description, operation, timeoutMs = 15_000, intervalMs = 100) {
-      const startedAt = performance.now();
+    async eventually(
+      description,
+      operation,
+      timeoutMs = E2E_TIMING.localReadyMs,
+      intervalMs = E2E_TIMING.pollIntervalMs,
+    ) {
       console.log(`[${journey.id}:${platform}] wait start: ${description} (limit ${timeoutMs}ms)`);
-      const deadline = Date.now() + timeoutMs;
-      let lastError = null;
-      while (Date.now() < deadline) {
-        try {
-          const value = await operation();
-          if (value) {
-            console.log(
-              `[${journey.id}:${platform}] wait pass: ${description} (${Math.round(performance.now() - startedAt)}ms)`,
-            );
-            return value;
-          }
-        } catch (error) {
-          lastError = error;
-        }
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      }
-      throw new Error(`${description} timed out${lastError ? `: ${lastError.message}` : ""}`);
+      const observed = await observeUntil(description, operation, { timeoutMs, intervalMs });
+      console.log(`[${journey.id}:${platform}] wait pass: ${description} (${observed.durationMs}ms)`);
+      return observed.value;
+    },
+
+    async transition(description, contract) {
+      console.log(
+        `[${journey.id}:${platform}] transition start: ${description} ` +
+          `(budget ${contract.responseTimeoutMs ?? E2E_TIMING.userResponseMs}ms)`,
+      );
+      const completed = await performTransition(description, {
+        ...contract,
+        onTiming(timing) {
+          result.diagnostics.user_transitions ??= [];
+          result.diagnostics.user_transitions.push(timing);
+          contract.onTiming?.(timing);
+        },
+      });
+      console.log(
+        `[${journey.id}:${platform}] transition pass: ${description} ` +
+          `(${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total)`,
+      );
+      return completed.value;
     },
 
     async finish(error = null) {

@@ -125,17 +125,29 @@ export function clickAndroidSemanticNode(serial, tag) {
 export function scrollAndroidSemanticNode(serial, bounds, direction) {
   const state = semanticDrivers.get(serial || "default");
   if (!state) return false;
-  const semanticDirection = direction === "down" ? "forward" : "backward";
+  const semanticDirection = direction === "down" || direction === "forward"
+    ? "forward"
+    : "backward";
   const query = new URLSearchParams({ bounds, direction: semanticDirection });
   const response = semanticDriverRequest(state.port, `/scroll?${query}`, 5, "POST");
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
+    return false;
+  }
+  const detail = response.error?.message || response.stderr.trim() || response.stdout.trim();
+  if (semanticDriverRequired()) {
+    throw new Error(`persistent Android semantic scroll failed for ${bounds}: ${detail}`);
+  }
   return false;
 }
 
 function semanticDriverDump(serial) {
   const state = semanticDrivers.get(serial || "default");
   if (!state) return null;
-  const response = semanticDriverRequest(state.port, "/dump");
+  // Concurrent software-rendered emulators can briefly starve the test-only
+  // accessibility traversal. Reads are idempotent; mutations retain the
+  // shorter timeout and are never retried.
+  const response = semanticDriverRequest(state.port, "/dump", 15);
   if (response.status === 0 && response.stdout.includes("<hierarchy")) {
     return response.stdout;
   }
@@ -356,6 +368,18 @@ export function androidRuntimeUiVisible(xml) {
     hasAndroidTag(node, "parity:button:FLIGHT\nPLAN") ||
     hasAndroidTag(node, "parity:button:CHART")
   ) !== null;
+}
+
+export function androidStartupState(xml) {
+  const node = findNode(xml, (candidate) =>
+    androidTag(candidate).startsWith("parity:startup-state:"));
+  if (!node) return null;
+  const fields = {};
+  const components = androidTag(node).slice("parity:startup-state:".length).split(":");
+  for (let index = 0; index + 1 < components.length; index += 2) {
+    fields[components[index]] = components[index + 1];
+  }
+  return fields.ready === "true" ? fields : null;
 }
 
 const MAP_LAYER_PARITY_IDS = Object.freeze({
@@ -701,8 +725,34 @@ async function recoverObscuredAndroidApp(serial, xml) {
   const systemUiVisible = findNode(xml, (node) => node.package === "com.android.systemui");
   if (aerobagVisible || !systemUiVisible) return xml;
   adbBestEffort(serial, ["shell", "cmd", "statusbar", "collapse"], { timeout: 3000 });
-  await delay(250);
-  return dumpAndroid(serial);
+  let recovered = null;
+  await waitFor(() => {
+    recovered = dumpAndroid(serial);
+    return findNode(recovered, (node) => node.package === ANDROID_PACKAGE) !== null;
+  }, 3000, "Aerobag visible after collapsing System UI", 50);
+  return recovered;
+}
+
+export async function scrollAndroidAndAwait(serial, bounds, direction) {
+  if (scrollAndroidSemanticNode(serial, bounds, direction)) return true;
+  const before = dumpAndroid(serial);
+  const rect = rectOfBounds(bounds);
+  if (direction === "forward" || direction === "backward") {
+    const inset = Math.min(80, rect.width / 5);
+    const startX = direction === "forward" ? rect.right - inset : rect.left + inset;
+    const endX = direction === "forward" ? rect.left + inset : rect.right - inset;
+    const y = Math.round((rect.top + rect.bottom) / 2);
+    swipe(serial, startX, y, endX, y, 450);
+  } else {
+    const { x, startY, endY } = verticalScrollGesture(rect, direction);
+    swipe(serial, x, startY, x, endY, 450);
+  }
+  try {
+    await waitFor(() => dumpAndroid(serial) !== before, 1000, "Android scroll projection changed", 50);
+    return true;
+  } catch (_error) {
+    return false;
+  }
 }
 
 export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
@@ -714,10 +764,7 @@ export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
       const scrollSurface =
         findVerticalScrollSurface(xml) ??
         findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-      const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
-      const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-      swipe(serial, x, startY, x, endY, 450);
-      await delay(350);
+      if (!await scrollAndroidAndAwait(serial, scrollSurface?.bounds ?? "[90,383][1065,2021]", direction)) break;
       xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
       found = findNode(xml, predicate);
       if (found) return found;
@@ -737,10 +784,11 @@ async function scrollUntilTagPrefixInDirection(
     const scrollSurface =
       findVerticalScrollSurface(xml) ??
       findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-    const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
-    const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-    swipe(serial, x, startY, x, endY, 450);
-    await delay(250);
+    if (!await scrollAndroidAndAwait(
+      serial,
+      scrollSurface?.bounds ?? "[90,383][1065,2021]",
+      direction,
+    )) break;
   }
   const xml = dumpAndroid(serial);
   return requireReachable
@@ -755,13 +803,7 @@ export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
       if (findNode(xml, (node) => hasAndroidTag(node, tag))) return true;
       const horizontalSurface = findHorizontalScrollSurface(xml);
       if (!horizontalSurface) return false;
-      const bounds = rectOfBounds(horizontalSurface.bounds);
-      const inset = Math.min(80, bounds.width / 5);
-      const startX = direction === "forward" ? bounds.right - inset : bounds.left + inset;
-      const endX = direction === "forward" ? bounds.left + inset : bounds.right - inset;
-      const y = Math.round((bounds.top + bounds.bottom) / 2);
-      swipe(serial, startX, y, endX, y, 450);
-      await delay(250);
+      if (!await scrollAndroidAndAwait(serial, horizontalSurface.bounds, direction)) break;
     }
   }
   return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
@@ -778,93 +820,16 @@ async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requ
     const scrollSurface =
       findVerticalScrollSurface(xml) ??
       findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-    const bounds = rectOfBounds(scrollSurface?.bounds ?? "[90,383][1065,2021]");
-    const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-    adb(serial, ["shell", "input", "touchscreen", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
-    await delay(250);
+    if (!await scrollAndroidAndAwait(
+      serial,
+      scrollSurface?.bounds ?? "[90,383][1065,2021]",
+      direction,
+    )) break;
   }
   const xml = dumpAndroid(serial);
   return requireReachable
     ? verticalScrollTargetIsReachable(xml, tag)
     : findNode(xml, (node) => hasAndroidTag(node, tag)) !== null;
-}
-
-const ANDROID_DIRECT_TEXT_KEYS = Object.freeze({
-  "/": "KEYCODE_SLASH",
-  "-": "KEYCODE_MINUS",
-  ".": "KEYCODE_PERIOD",
-  ",": "KEYCODE_COMMA",
-  "@": "KEYCODE_AT",
-  "=": "KEYCODE_EQUALS",
-  "[": "KEYCODE_LEFT_BRACKET",
-  "]": "KEYCODE_RIGHT_BRACKET",
-  "\\": "KEYCODE_BACKSLASH",
-  ";": "KEYCODE_SEMICOLON",
-  "'": "KEYCODE_APOSTROPHE",
-  "`": "KEYCODE_GRAVE",
-});
-
-const ANDROID_SHIFTED_TEXT_KEYS = Object.freeze({
-  ":": "KEYCODE_SEMICOLON",
-  "?": "KEYCODE_SLASH",
-  "_": "KEYCODE_MINUS",
-  "+": "KEYCODE_EQUALS",
-  "!": "KEYCODE_1",
-  "#": "KEYCODE_3",
-  "$": "KEYCODE_4",
-  "%": "KEYCODE_5",
-  "^": "KEYCODE_6",
-  "&": "KEYCODE_7",
-  "*": "KEYCODE_8",
-  "(": "KEYCODE_9",
-  ")": "KEYCODE_0",
-  "<": "KEYCODE_COMMA",
-  ">": "KEYCODE_PERIOD",
-  "\"": "KEYCODE_APOSTROPHE",
-  "{": "KEYCODE_LEFT_BRACKET",
-  "}": "KEYCODE_RIGHT_BRACKET",
-  "|": "KEYCODE_BACKSLASH",
-  "~": "KEYCODE_GRAVE",
-});
-
-export function androidTextInputCommands(text) {
-  const commands = [];
-  let plain = "";
-  const flushPlain = () => {
-    if (!plain) return;
-    commands.push(["shell", "input", "text", plain.replaceAll(" ", "%s")]);
-    plain = "";
-  };
-  for (const character of String(text)) {
-    if (/^[A-Za-z0-9 ]$/.test(character)) {
-      plain += character;
-      continue;
-    }
-    flushPlain();
-    const directKey = ANDROID_DIRECT_TEXT_KEYS[character];
-    if (directKey) {
-      commands.push(["shell", "input", "keyevent", directKey]);
-      continue;
-    }
-    const shiftedKey = ANDROID_SHIFTED_TEXT_KEYS[character];
-    if (shiftedKey) {
-      commands.push([
-        "shell", "input", "keycombination", "KEYCODE_SHIFT_LEFT", shiftedKey,
-      ]);
-      continue;
-    }
-    throw new Error(`Android E2E text injection does not support ${JSON.stringify(character)}`);
-  }
-  flushPlain();
-  return commands;
-}
-
-export function inputText(serial, text) {
-  for (const command of androidTextInputCommands(text)) {
-    adb(serial, command);
-    spawnSync("sleep", ["0.075"]);
-  }
-  spawnSync("sleep", ["0.25"]);
 }
 
 export function pressKey(serial, keyCode) {
@@ -883,37 +848,6 @@ export function swipe(serial, startX, startY, endX, endY, durationMs = 450) {
     String(Math.round(endY)),
     String(Math.round(durationMs)),
   ]);
-}
-
-export function androidClearTextCommand(maxChars = 160) {
-  return [
-    "shell", "input", "keyevent", "KEYCODE_MOVE_END",
-    ...Array.from({ length: maxChars }, () => "KEYCODE_DEL"),
-  ];
-}
-
-export function androidSelectAllTextCommand() {
-  return [
-    "shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A",
-  ];
-}
-
-export function clearFocusedText(serial, maxChars = 160) {
-  // Select-all is the normal path. Only send individual delete events when
-  // the rendered control proves that Android ignored select-all.
-  adb(serial, androidSelectAllTextCommand());
-  spawnSync("sleep", ["0.15"]);
-  adb(serial, ["shell", "input", "keyevent", "KEYCODE_DEL"]);
-  spawnSync("sleep", ["0.2"]);
-  const xml = dumpAndroid(serial);
-  const focused = findNode(xml, (node) =>
-    node.focused === "true" && /(?:EditText|TextField)$/.test(node.class ?? ""));
-  const remaining = focused?.text ?? "";
-  if (remaining.length > 0) {
-    const deleteCount = Math.min(maxChars, [...remaining].length + 2);
-    adb(serial, androidClearTextCommand(deleteCount));
-    spawnSync("sleep", ["0.2"]);
-  }
 }
 
 export function wakeAndUnlock(serial) {
@@ -973,14 +907,24 @@ export async function launchFreshAndroidApp(
 
 export async function acceptDisclaimerIfPresent(serial) {
   const xml = dumpAndroid(serial);
-  if (!findNode(xml, (node) => hasAndroidTag(node, "parity:disclaimer-accept-button"))) {
+  const button = findNode(xml, (node) => hasAndroidTag(node, "parity:disclaimer-accept-button"));
+  if (!button) {
     return false;
+  }
+  const initial = androidStartupState(xml);
+  if (initial?.disclaimer_required !== "true") {
+    throw new Error("disclaimer is visible without a startup-state requirement");
   }
   await tapTag(serial, "parity:disclaimer-accept-button", 3000);
   await waitFor(
-    () => !findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:disclaimer-accept-button")),
-    10000,
-    "disclaimer dismissed",
+    () => {
+      const nextXml = dumpAndroid(serial);
+      return androidStartupState(nextXml)?.disclaimer_required === "false" &&
+        !findNode(nextXml, (node) => hasAndroidTag(node, "parity:disclaimer-accept-button"));
+    },
+    3000,
+    "disclaimer acceptance did not commit within the user-response budget",
+    50,
   );
   return true;
 }

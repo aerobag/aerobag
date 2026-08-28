@@ -344,7 +344,7 @@ run_android_test() {
     AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-http://127.0.0.1:8085/}" \
     AEROBAG_E2E_CLOUD_PORT="$CLOUD_PORT" \
     AEROBAG_E2E_ARTIFACT_DIR="$run_artifact_dir" \
-    AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED="${AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED:-0}" \
+    AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED="${AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED:-1}" \
     "$ROOT/ui/android-app/scripts/run_e2e.sh" \
       --skip-install \
       "${state_args[@]}" \

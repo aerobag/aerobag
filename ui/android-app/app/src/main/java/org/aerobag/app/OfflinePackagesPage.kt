@@ -56,6 +56,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -571,6 +572,15 @@ internal fun OfflinePackagesPanel(
         !syncInFlight && !syncEnabled -> syncDisabledReason
         else -> null
     }
+    val preferenceStateTag = buildString {
+        append("parity:offline-preferences")
+        uiState.regions.sortedBy { it.id }.forEach { row ->
+            append(":region:").append(row.id).append(':').append(row.selection.name.lowercase())
+        }
+        uiState.products.sortedBy { it.id }.forEach { row ->
+            append(":product:").append(row.id).append(':').append(row.selection.name.lowercase())
+        }
+    }
     Surface(
         modifier = modifier
             .fillMaxSize()
@@ -587,6 +597,11 @@ internal fun OfflinePackagesPanel(
                 .padding(ThumbGap),
             verticalArrangement = Arrangement.spacedBy(ThumbGap),
         ) {
+            Spacer(
+                modifier = Modifier
+                    .size(1.dp)
+                    .testTag(preferenceStateTag),
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

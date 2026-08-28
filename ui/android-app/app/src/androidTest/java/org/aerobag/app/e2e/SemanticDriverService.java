@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -35,6 +36,8 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final int DRIVER_PORT = 19_191;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicLong accessibilityEventSequence = new AtomicLong();
+    private final Object accessibilityEventMonitor = new Object();
     private ServerSocket server;
     private Thread serverThread;
 
@@ -47,7 +50,12 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {}
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        accessibilityEventSequence.incrementAndGet();
+        synchronized (accessibilityEventMonitor) {
+            accessibilityEventMonitor.notifyAll();
+        }
+    }
 
     @Override
     public void onInterrupt() {}
@@ -144,8 +152,26 @@ public final class SemanticDriverService extends AccessibilityService {
             : "backward".equals(direction)
                 ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 : 0;
+        long eventSequence = accessibilityEventSequence.get();
         boolean scrolled = bounds != null && action != 0 && scrollRenderedNode(bounds, action);
+        if (scrolled) awaitAccessibilityEventAfter(eventSequence, 1_000);
         respondAction(socket, scrolled, "scroll action rejected\n");
+    }
+
+    private void awaitAccessibilityEventAfter(long sequence, long timeoutMs) {
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        synchronized (accessibilityEventMonitor) {
+            while (accessibilityEventSequence.get() <= sequence) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) return;
+                try {
+                    TimeUnit.NANOSECONDS.timedWait(accessibilityEventMonitor, remainingNanos);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
     }
 
     private static Map<String, String> queryOf(String path) {

@@ -4,17 +4,18 @@
 
 import { writeFileSync } from "node:fs";
 import {
-  adb, androidImeVisible, androidNodeLabel, androidTag, clearFocusedText, displayBoundsFromXml, dumpAndroid, findNode, findNodes,
-  findVerticalScrollSurface, inputText, pressKey, rectOfBounds, screencapPng,
-  scrollAndroidSemanticNode, setAndroidSemanticText,
+  adb, androidImeVisible, androidNodeLabel, androidTag, displayBoundsFromXml, dumpAndroid, findNode, findNodes,
+  findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
+  scrollAndroidAndAwait, setAndroidSemanticText,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
-  scrollHorizontallyUntilTag, tapTag, verticalScrollGesture, waitFor,
+  scrollHorizontallyUntilTag, tapTag, waitFor,
 } from "./android-harness.mjs";
+import { E2E_TIMING, observeUntil } from "./transition-contract.mjs";
 
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "reset", "resetApplicationData", "openPage", "chooseOption", "inspectMapAt", "performAction",
-  "enterText", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
-  "findProjectionMatching", "reload",
+  "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
+  "findProjectionMatching", "revealElement", "scanProjection", "revealProjectionMatching", "reload",
   "back", "captureFrame",
 ]);
 
@@ -30,13 +31,17 @@ export class SemanticJourneyDriver {
   async inspectMapAt(_point) { throw new Error(`${this.platform} driver does not implement inspectMapAt`); }
   async performAction(_actionId) { throw new Error(`${this.platform} driver does not implement performAction`); }
   async enterText(_controlId, _value, _options) { throw new Error(`${this.platform} driver does not implement enterText`); }
+  async submit(_controlId) { throw new Error(`${this.platform} driver does not implement submit`); }
   async drag(_surfaceId, _delta) { throw new Error(`${this.platform} driver does not implement drag`); }
   async zoom(_surfaceId, _amount) { throw new Error(`${this.platform} driver does not implement zoom`); }
   async hover(_elementId) { throw new Error(`${this.platform} driver does not implement hover`); }
   async copyText(_elementId) { throw new Error(`${this.platform} driver does not implement copyText`); }
   async readElement(_elementId) { throw new Error(`${this.platform} driver does not implement readElement`); }
+  async revealElement(_elementId) { throw new Error(`${this.platform} driver does not implement revealElement`); }
   async readProjection(_probe) { throw new Error(`${this.platform} driver does not implement readProjection`); }
   async findProjectionMatching(_probe, _needle) { throw new Error(`${this.platform} driver does not implement findProjectionMatching`); }
+  async scanProjection(_probe) { throw new Error(`${this.platform} driver does not implement scanProjection`); }
+  async revealProjectionMatching(_probe, _needle) { throw new Error(`${this.platform} driver does not implement revealProjectionMatching`); }
   async reload() { throw new Error(`${this.platform} driver does not implement reload`); }
   async back() { throw new Error(`${this.platform} driver does not implement back`); }
   async captureFrame(_path) { throw new Error(`${this.platform} driver does not implement captureFrame`); }
@@ -135,7 +140,8 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async performAction(actionId) {
     if (actionId === "dismiss-plan-row-tray") {
-      await this.back();
+      const scrim = await this.readElement("plan-row-tray-scrim");
+      if (scrim) await this.performAction("plan-row-tray-scrim");
       return;
     }
     if (actionId.startsWith("plan-row:")) {
@@ -179,6 +185,10 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     await this.transport.enterText(`[data-testid="${controlId}"]`, value, options);
   }
 
+  async submit(controlId) {
+    await this.transport.submit(`[data-testid="${controlId}"]`);
+  }
+
   async drag(surfaceId, { x, y }) {
     if (surfaceId.startsWith("airport-info-modal:")) {
       await this.transport.wheel(`[data-testid="${surfaceId}"]`, -y);
@@ -202,6 +212,8 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   async readProjection(probe) {
     const translated = probe === "parity:plan-row:"
       ? "plan-row-"
+      : probe === "parity:plan-row-action:"
+        ? "plan-row-action-"
       : probe === "parity:plan-procedure-transition:"
         ? "plan-procedure-transition-"
         : probe === "parity:plan-procedure:"
@@ -215,11 +227,36 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     return entries.find((entry) => entry.text?.toUpperCase().includes(needle.toUpperCase())) ?? null;
   }
 
+  async scanProjection(probe) {
+    return this.readProjection(probe);
+  }
+
+  async revealProjectionMatching(probe, needle) {
+    return (await observeUntil(
+      `${probe} projection matching ${needle}`,
+      () => this.findProjectionMatching(probe, needle),
+      {
+        timeoutMs: E2E_TIMING.localReadyMs,
+        intervalMs: E2E_TIMING.pollIntervalMs,
+      },
+    )).value;
+  }
+
   async readElement(elementId) {
     const exact = await this.transport.readElement(`[data-testid="${elementId}"]`);
     if (exact?.visible) return exact;
     const parity = await this.transport.readElement(`[data-testid="parity:${elementId}"]`);
     return parity?.visible ? parity : null;
+  }
+
+  async revealElement(elementId) {
+    const selector = await this.transport.firstExisting([
+      `[data-testid="${elementId}"]`,
+      `[data-testid="parity:${elementId}"]`,
+    ]);
+    if (!selector) return null;
+    await this.transport.revealElement(selector);
+    return this.readElement(elementId);
   }
 
   async reload() {
@@ -334,19 +371,6 @@ export function androidTextControlNeedsTap(node) {
   return node?.focused !== "true";
 }
 
-export async function retryVerifiedAndroidTextEntry(
-  expected,
-  { enter, read, maxAttempts = 3 },
-) {
-  let observed = "";
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await enter(attempt);
-    observed = await read();
-    if (observed === expected) return { matched: true, observed, attempts: attempt + 1 };
-  }
-  return { matched: false, observed, attempts: maxAttempts };
-}
-
 export function androidElementMayRequireVerticalScroll(elementId) {
   const tag = androidSemanticTag(elementId);
   return ANDROID_CLOUD_ACTION_IDS.has(elementId) ||
@@ -367,7 +391,26 @@ export function androidElementMayRequireHorizontalScroll(elementId) {
 }
 
 export function androidProjectionMayRequireVerticalScan(probe) {
-  return androidSemanticTag(probe).startsWith("parity:data-status-row:");
+  const tag = androidSemanticTag(probe);
+  return tag.startsWith("parity:data-status-row:") ||
+    tag.startsWith("parity:offline-");
+}
+
+export function androidDataStatusRowsFromStateTag(tag) {
+  const prefix = "parity:data-status-state:";
+  if (!tag.startsWith(prefix)) return [];
+  return tag.slice(prefix.length).split("|").flatMap((entry) => {
+    const separator = entry.lastIndexOf("=");
+    if (separator <= 0 || separator === entry.length - 1) return [];
+    const rowId = entry.slice(0, separator);
+    const severity = entry.slice(separator + 1);
+    return [{
+      id: `parity:data-status-row:${rowId}:severity:${severity}`,
+      text: "",
+      enabled: true,
+      pressed: "false",
+    }];
+  });
 }
 
 export function findTagOrPrefix(xml, tag) {
@@ -437,39 +480,40 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     if (!target) throw new Error(`unsupported Android page ${pageId}`);
     if (findTagOrPrefix(dumpAndroid(this.serial), target)) return;
     if (pageId === "home") {
-      await tapTag(this.serial, "parity:button:HOME", 10000);
+      await tapTag(this.serial, "parity:button:HOME", E2E_TIMING.localReadyMs);
     } else {
       if (!findTagOrPrefix(dumpAndroid(this.serial), ANDROID_PAGE_TAGS.home)) {
-        let landedHome = false;
-        for (let attempt = 0; attempt < 3 && !landedHome; attempt += 1) {
-          await tapTag(this.serial, "parity:button:HOME", 10000);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          landedHome = findTagOrPrefix(dumpAndroid(this.serial), ANDROID_PAGE_TAGS.home) !== null;
-        }
-        if (!landedHome) throw new Error("Android Home navigation did not land");
+        await tapTag(this.serial, "parity:button:HOME", E2E_TIMING.localReadyMs);
+        await waitFor(
+          () => findTagOrPrefix(dumpAndroid(this.serial), ANDROID_PAGE_TAGS.home) !== null,
+          E2E_TIMING.localReadyMs,
+          "Android Home navigation did not land after one tap",
+          E2E_TIMING.pollIntervalMs,
+        );
       }
-      await tapTag(this.serial, `parity:home-button:${ANDROID_HOME_KEYS[pageId]}`, 10000);
+      await tapTag(this.serial, `parity:home-button:${ANDROID_HOME_KEYS[pageId]}`, E2E_TIMING.localReadyMs);
     }
     await waitFor(
       () => findTagOrPrefix(dumpAndroid(this.serial), target) !== null,
-      15000,
+      E2E_TIMING.localReadyMs,
       `${pageId} page`,
+      E2E_TIMING.pollIntervalMs,
     );
   }
 
   async chooseOption(launcherId, optionId) {
     if (launcherId === "ownship-source-button") {
-      await tapTag(this.serial, "parity:ownship-launcher", 10000);
-      await tapTag(this.serial, `parity:ownship-source:${optionId}`, 10000);
+      await tapTag(this.serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs);
+      await tapTag(this.serial, `parity:ownship-source:${optionId}`, E2E_TIMING.localReadyMs);
       return;
     }
-    await tapTag(this.serial, `parity:${launcherId}`, 10000);
+    await tapTag(this.serial, `parity:${launcherId}`, E2E_TIMING.localReadyMs);
     const androidOptionId = launcherId === "plate-airport-button"
       ? optionId.replace(/^airport:/, "")
       : launcherId === "layers-button"
         ? ANDROID_LAYER_OPTION_IDS[optionId] ?? optionId
       : optionId;
-    await tapTag(this.serial, `parity:tray-option:${androidOptionId}`, 10000);
+    await tapTag(this.serial, `parity:tray-option:${androidOptionId}`, E2E_TIMING.localReadyMs);
   }
 
   async inspectMapAt({ x, y }) {
@@ -481,7 +525,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     adb(this.serial, ["shell", "input", "tap", String(px), String(py)]);
     await waitFor(
       () => findTagOrPrefix(dumpAndroid(this.serial), "parity:map-selection-tray") !== null,
-      10000,
+      E2E_TIMING.localReadyMs,
       "map inspector",
     );
   }
@@ -490,21 +534,16 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     if (actionId === "dismiss-plan-row-tray") {
       const xml = dumpAndroid(this.serial);
       if (!findTagOrPrefix(xml, "parity:plan-row-action:")) return;
-      const display = displayBoundsFromXml(xml);
-      adb(this.serial, [
-        "shell", "input", "tap",
-        String(display.left + 8),
-        String(Math.round(display.top + display.height / 2)),
-      ]);
+      await tapTag(this.serial, "parity:plan-row-tray-scrim", E2E_TIMING.localReadyMs);
       await waitFor(
         () => !findTagOrPrefix(dumpAndroid(this.serial), "parity:plan-row-action:"),
-        10_000,
+        E2E_TIMING.localReadyMs,
         "dismissed flight-plan row tray",
       );
       return;
     }
     if (actionId === "ownship-source-button") {
-      await tapTag(this.serial, "parity:ownship-launcher", 10000);
+      await tapTag(this.serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs);
       return;
     }
     if (actionId === "playback-play-toggle") {
@@ -519,23 +558,23 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       return;
     }
     if (actionId.startsWith("plan-row:")) {
-      await tapTag(this.serial, `parity:plan-row:${actionId.slice("plan-row:".length)}`, 10000);
+      await tapTag(this.serial, `parity:plan-row:${actionId.slice("plan-row:".length)}`, E2E_TIMING.localReadyMs);
       return;
     }
     if (actionId.startsWith("plan-procedure:")) {
-      await tapTag(this.serial, `parity:plan-procedure:${actionId.slice("plan-procedure:".length)}`, 10000);
+      await tapTag(this.serial, `parity:plan-procedure:${actionId.slice("plan-procedure:".length)}`, E2E_TIMING.localReadyMs);
       return;
     }
     if (actionId.startsWith("plan-procedure-transition:")) {
-      await tapTag(this.serial, `parity:plan-procedure-transition:${actionId.slice("plan-procedure-transition:".length)}`, 10000);
+      await tapTag(this.serial, `parity:plan-procedure-transition:${actionId.slice("plan-procedure-transition:".length)}`, E2E_TIMING.localReadyMs);
       return;
     }
     if (actionId.startsWith("plan-insert-suggestion:")) {
-      await tapTag(this.serial, `parity:plan-insert-suggestion:${actionId.slice("plan-insert-suggestion:".length)}`, 10000);
+      await tapTag(this.serial, `parity:plan-insert-suggestion:${actionId.slice("plan-insert-suggestion:".length)}`, E2E_TIMING.localReadyMs);
       return;
     }
     if (actionId.startsWith("plate-folder-tile:")) {
-      await tapTag(this.serial, `parity:plate-folder-tile:${actionId.slice("plate-folder-tile:".length)}`, 10000);
+      await tapTag(this.serial, `parity:plate-folder-tile:${actionId.slice("plate-folder-tile:".length)}`, E2E_TIMING.localReadyMs);
       return;
     }
     if (androidActionUsesSubmit(actionId)) {
@@ -547,7 +586,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       return;
     }
     if (actionId.startsWith("tray-option:")) {
-      await tapTag(this.serial, `parity:tray-option:${actionId.slice("tray-option:".length)}`, 10000);
+      await tapTag(this.serial, `parity:tray-option:${actionId.slice("tray-option:".length)}`, E2E_TIMING.localReadyMs);
       return;
     }
     const candidates = androidActionCandidates(actionId);
@@ -576,7 +615,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     }
     if (!tag) throw new Error(`Android action ${actionId} is not visible`);
     if (!await scrollUntilTag(this.serial, tag, 8)) throw new Error(`Android action ${actionId} cannot be reached`);
-    await tapTag(this.serial, tag, 5000);
+    await tapTag(this.serial, tag, E2E_TIMING.localReadyMs);
   }
 
   async enterText(controlId, value, { submit = false, dismissKeyboard = false } = {}) {
@@ -591,7 +630,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       const fallback = tagged ? null : androidElementFallback(xml, controlId);
       if (tagged) {
         if (forceTap || androidTextControlNeedsTap(tagged)) {
-          await tapTag(this.serial, semanticTag, 10000);
+          await tapTag(this.serial, semanticTag, E2E_TIMING.localReadyMs);
         }
         return;
       }
@@ -610,40 +649,45 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     };
 
     await focusControl(false);
-    if (setAndroidSemanticText(this.serial, semanticTag, value)) {
+    if (controlId === "plan-append-route-input") {
       await waitFor(
-        () => findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text === value,
-        5_000,
-        `Android semantic text action did not commit ${controlId}`,
+        () => {
+          const state = findTagOrPrefix(
+            dumpAndroid(this.serial),
+            "parity:plan-append-route-state:can_commit:",
+          );
+          return state ? androidTag(state).endsWith(":ready_for_input:true") : false;
+        },
+        E2E_TIMING.localReadyMs,
+        "Android flight-plan editor did not finish dismissing its overlay",
+        E2E_TIMING.pollIntervalMs,
       );
-      if (submit) pressKey(this.serial, "KEYCODE_ENTER");
-      if (dismissKeyboard && androidImeVisible(dumpAndroid(this.serial))) {
-        pressKey(this.serial, "KEYCODE_BACK");
-      }
-      return;
     }
-    if (!dismissKeyboard) {
-      clearFocusedText(this.serial);
-      inputText(this.serial, value);
-      if (submit) pressKey(this.serial, "KEYCODE_ENTER");
-      return;
+    if (!setAndroidSemanticText(this.serial, semanticTag, value)) {
+      throw new Error(
+        `Android semantic text action is unavailable for ${controlId}; refusing to retry a synthetic user edit`,
+      );
     }
-
-    const result = await retryVerifiedAndroidTextEntry(value, {
-      enter: async (attempt) => {
-        if (attempt > 0) await focusControl(true);
-        clearFocusedText(this.serial);
-        inputText(this.serial, value);
-        if (submit) pressKey(this.serial, "KEYCODE_ENTER");
-        pressKey(this.serial, "KEYCODE_BACK");
-        await new Promise((resolve) => setTimeout(resolve, 350));
-      },
-      read: () => findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text ?? "",
-    });
-    if (result.matched) return;
-    throw new Error(
-      `Android text control ${controlId} committed ${JSON.stringify(result.observed)}; expected ${JSON.stringify(value)} after ${result.attempts} attempts`,
+    await waitFor(
+      () => findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text === value,
+      E2E_TIMING.localReadyMs,
+      `Android semantic text action did not commit ${controlId}`,
+      E2E_TIMING.pollIntervalMs,
     );
+    if (submit) pressKey(this.serial, "KEYCODE_ENTER");
+    if (dismissKeyboard && androidImeVisible(dumpAndroid(this.serial))) {
+      pressKey(this.serial, "KEYCODE_BACK");
+    }
+  }
+
+  async submit(controlId) {
+    const semanticTag = `parity:${controlId}`;
+    const node = findTagOrPrefix(dumpAndroid(this.serial), semanticTag);
+    if (!node) throw new Error(`Android text control ${controlId} is not rendered for submit`);
+    if (node.focused !== "true") {
+      throw new Error(`Android text control ${controlId} lost focus before submit`);
+    }
+    pressKey(this.serial, "KEYCODE_ENTER");
   }
 
   async drag(surfaceId, { x, y }) {
@@ -670,6 +714,24 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readProjection(probe) {
     const prefix = androidSemanticTag(probe);
+    const xml = dumpAndroid(this.serial);
+    if (prefix === "parity:data-status-row:") {
+      const stateNode = findNode(xml, (node) =>
+        androidTag(node).startsWith("parity:data-status-state:"));
+      if (stateNode) return androidDataStatusRowsFromStateTag(androidTag(stateNode));
+    }
+    const collect = (xml) => findNodes(xml, (node) => androidTag(node).startsWith(prefix))
+      .map((node) => ({
+        id: androidTag(node),
+        text: androidNodeLabel(xml, node) || node.text || "",
+        enabled: androidElementEnabled(node),
+        pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+      }));
+    return collect(xml);
+  }
+
+  async scanProjection(probe) {
+    const prefix = androidSemanticTag(probe);
     const collect = (xml) => findNodes(xml, (node) => androidTag(node).startsWith(prefix))
       .map((node) => ({
         id: androidTag(node),
@@ -693,20 +755,19 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         if (unchangedFrames >= 2) break;
         const scrollSurface = findVerticalScrollSurface(xml);
         if (!scrollSurface) break;
-        const bounds = rectOfBounds(scrollSurface.bounds);
-        if (scrollAndroidSemanticNode(this.serial, scrollSurface.bounds, direction)) {
-          await new Promise((resolve) => setTimeout(resolve, 80));
-        } else {
-          const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-          swipe(this.serial, x, startY, x, endY, 450);
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
+        if (!await scrollAndroidAndAwait(this.serial, scrollSurface.bounds, direction)) break;
       }
     }
     return [...accumulated.values()];
   }
 
   async findProjectionMatching(probe, needle) {
+    const normalizedNeedle = needle.toUpperCase();
+    return (await this.readProjection(probe))
+      .find((entry) => entry.text.toUpperCase().includes(normalizedNeedle)) ?? null;
+  }
+
+  async revealProjectionMatching(probe, needle) {
     const prefix = androidSemanticTag(probe);
     const normalizedNeedle = needle.toUpperCase();
     const projectionEntries = (xml) => findNodes(
@@ -720,6 +781,16 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       }));
     const findMatch = (xml) => projectionEntries(xml)
       .find((entry) => entry.text.toUpperCase().includes(normalizedNeedle)) ?? null;
+    let visibleMatch = null;
+    try {
+      await waitFor(() => {
+        visibleMatch = findMatch(dumpAndroid(this.serial));
+        return visibleMatch !== null;
+      }, E2E_TIMING.localReadyMs, `${probe} projection matching ${needle}`, E2E_TIMING.pollIntervalMs);
+      return visibleMatch;
+    } catch (_error) {
+      // The collection is ready but the item may be outside the rendered lazy-list viewport.
+    }
     // A picker can take one Compose frame to appear after its launcher accepts
     // the click. Do not mistake the underlying page's scroll surface for the
     // requested lazy collection during that frame.
@@ -738,14 +809,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         if (unchangedFrames >= 2) break;
         const scrollSurface = findVerticalScrollSurface(xml);
         if (!scrollSurface) break;
-        const bounds = rectOfBounds(scrollSurface.bounds);
-        if (scrollAndroidSemanticNode(this.serial, scrollSurface.bounds, direction)) {
-          await new Promise((resolve) => setTimeout(resolve, 80));
-        } else {
-          const { x, startY, endY } = verticalScrollGesture(bounds, direction);
-          swipe(this.serial, x, startY, x, endY, 450);
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
+        if (!await scrollAndroidAndAwait(this.serial, scrollSurface.bounds, direction)) break;
       }
     }
     return findMatch(dumpAndroid(this.serial));
@@ -772,21 +836,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       } : null;
     }
     const semanticTag = ANDROID_PAGE_ELEMENT_TAGS[elementId] ?? androidSemanticTag(elementId);
-    let xml = dumpAndroid(this.serial);
+    const xml = dumpAndroid(this.serial);
     let node = findTagOrPrefix(xml, semanticTag);
     if (!node) node = androidElementFallback(xml, elementId);
-    if (!node && androidElementMayRequireHorizontalScroll(elementId)) {
-      if (await scrollHorizontallyUntilTag(this.serial, semanticTag, 8)) {
-        xml = dumpAndroid(this.serial);
-        node = findTagOrPrefix(xml, semanticTag);
-      }
-    }
-    if (!node && androidElementMayRequireVerticalScroll(elementId)) {
-      if (await scrollUntilTag(this.serial, semanticTag, 8, true)) {
-        xml = dumpAndroid(this.serial);
-        node = findTagOrPrefix(xml, semanticTag);
-      }
-    }
     return node ? {
       test_id: androidTag(node),
       text: androidNodeLabel(xml, node) || node.text || "",
@@ -794,9 +846,25 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       selected: node.selected === "true",
       checked: node.checked === "true",
       pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
-      expanded: elementId.startsWith("settings-section-") ? node.selected : null,
+      expanded: elementId.startsWith("settings-section-")
+        ? node.checked === "true" || node.selected === "true"
+        : null,
+      state: androidTag(node).match(/:state:([^:]+)(?::|$)/)?.[1] ?? null,
       bounds: node.bounds,
     } : null;
+  }
+
+  async revealElement(elementId) {
+    const existing = await this.readElement(elementId);
+    if (existing) return existing;
+    const semanticTag = ANDROID_PAGE_ELEMENT_TAGS[elementId] ?? androidSemanticTag(elementId);
+    if (androidElementMayRequireHorizontalScroll(elementId)) {
+      await scrollHorizontallyUntilTag(this.serial, semanticTag, 8);
+    }
+    if (!await this.readElement(elementId) && androidElementMayRequireVerticalScroll(elementId)) {
+      await scrollUntilTag(this.serial, semanticTag, 8, true);
+    }
+    return this.readElement(elementId);
   }
 
   async reload() {
@@ -810,10 +878,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async back() {
     this.pressBackCallback();
-    // Back is intentionally idempotent: one dismissal can close a detail modal
-    // and its parent tray together, so a caller's second cleanup Back may be a
-    // legitimate no-op. Subsequent semantic assertions own the postcondition.
-    await new Promise((resolve) => setTimeout(resolve, 350));
   }
 
   async captureFrame(path) {

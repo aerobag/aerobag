@@ -19,6 +19,10 @@ Hosted-runner invariants and failure diagnostics are documented in
   fixture, build, web, Android, and Cloud journey operations.
 - `tools/e2e/android-harness.mjs` provides shared adb helpers and a persistent
   instrumentation-backed rendered-accessibility driver.
+- `tools/e2e/transition-contract.mjs` defines the shared readiness, single-action,
+  completion, and stability-sampling contracts plus named timing classes.
+- `tools/e2e/journey-structure-audit.mjs` rejects fixed UI sleeps, mutations in
+  observation loops, and unnamed journey deadlines before a journey can reach CI.
 - `tools/e2e/run-android-e2e-suite.mjs` runs the Android suite.
 - `tools/e2e/run-android-chrome-livefeed-e2e.mjs` runs the web live-feed
   reconnect suite inside Chrome on Android through adb/CDP.
@@ -51,9 +55,10 @@ debugging fixture lifecycle behavior.
     least one visible segment.
 - `android.plate-first-render-smoke`
   - Launches the app and ensures offline packages are ready.
-  - Searches the chart for `KPLU`.
+  - Uses the immutable fixture's declared georeferenced-plate capability rather
+    than assuming a particular airport or plate exists.
   - Opens the airport inspector's `Plates` action.
-  - Selects the first plate in the folder.
+  - Selects the capability-addressed plate in the folder.
   - Captures the screen and verifies the plate canvas is visibly painted on the
     first open.
 - `android.raw-map-inspector-terrain-smoke`
@@ -145,7 +150,7 @@ CI sparse-checks out
 `e2e/android-smoke-publication` from the commit pinned in
 `test-artifacts.lock.json`. The compact frozen publication contains a full
 production NAVDB package matching the current client contract and a
-contract-valid TPP1 package restricted to KPLU. It exercises the ordinary
+contract-valid TPP1 package containing only the declared journey fixtures. It exercises the ordinary
 Offline Packages discovery, download, checksum, install, and runtime adoption
 paths without depending on the 19 GiB production publication. Because that
 publication contains only the packages needed by the suite, CI syncs every
@@ -159,6 +164,30 @@ does not contact a live-feed server.
 
 ## Isolation And Speed
 
+Journeys follow one deterministic state-transition shape:
+
+1. Observe that the intended control is rendered, reachable, and enabled.
+2. Deliver the user action exactly once.
+3. Observe the semantic or painted result without retrying the action.
+
+Polling is allowed only for read-only observation. Scrolling a lazy list is an
+explicit action, not a side effect hidden in a probe. Behavior that must remain
+true after an action is sampled throughout a named stability interval rather
+than checked after a sleep. Local user actions have a three-second response
+budget; startup, resource loading, cloud convergence, and package sync use
+separate named budgets so increasing an external-operation allowance cannot
+hide an unresponsive button.
+
+The foundation suite statically audits both shared and Android-native journeys
+for these rules. A failed action is a failed journey; the runner never repeats
+typing, clicking, or navigation until it happens to pass.
+
+Release fixtures declare the data capabilities each journey consumes. The
+fixture builder validates those preconditions and injects stable synthetic data
+where the assertion is about rendering rather than an upstream snapshot's
+incidental contents. A missing prerequisite therefore fails fixture construction
+instead of spending a journey deadline waiting for an impossible UI state.
+
 Each hosted Android job still performs a real clean install, package sync, and
 startup-navigation journey. It then saves an emulator snapshot of that prepared
 state and restores it before each assigned behavior journey. The snapshot is
@@ -171,6 +200,13 @@ operation on a visible, enabled rendered node; they do not invoke core actions
 directly or add random coordinate jitter. Keeping the driver process alive
 removes the roughly two-second cost and process-race exposure of each standalone
 `uiautomator dump`.
+
+Web control actions verify that the rendered element is unobstructed and invoke
+its ordinary DOM activation in the same browser task. This preserves the real
+application click handler while eliminating the race where a render moves a
+control between reading its coordinates and sending a later CDP pointer event.
+Spatial behavior such as map selection, pan, zoom, and slider gestures still
+uses browser pointer input because hit location is part of those contracts.
 
 Set `AEROBAG_RELEASE_JOURNEY_REPETITIONS=N` to require every selected journey
 to pass `N` times. Each repetition has separate diagnostics, and the suite

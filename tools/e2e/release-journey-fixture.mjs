@@ -14,7 +14,7 @@ const REQUIRED_CAPABILITIES = Object.freeze([
   "procedure.approach", "plate.georeferenced", "plate.multi_page_rotated",
   "plate.notam", "plate.geometry_warning", "plate.legend", "plate.inset",
   "document.csup", "document.other", "live_feeds.fresh", "live_feeds.mixed",
-  "live_feeds.stale",
+  "live_feeds.stale", "live_feeds.pirep_target_airport",
 ]);
 
 export function nestedCapability(manifest, capability) {

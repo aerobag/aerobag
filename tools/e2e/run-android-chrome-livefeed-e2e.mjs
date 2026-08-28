@@ -15,10 +15,10 @@ import {
   adb,
   adbBestEffort,
   captureAndroidFailureDiagnostics,
-  delay,
   waitFor,
   wakeAndUnlock,
 } from "./android-harness.mjs";
+import { E2E_TIMING, observeUntil } from "./transition-contract.mjs";
 import {
   LIVE_FEED_SCHEMA_VERSION,
   liveFeedPath,
@@ -30,7 +30,7 @@ const REPO_ROOT = process.env.AEROBAG_REPO_ROOT
 const DEFAULT_WEB_PORT = 18082;
 const DEFAULT_LIVE_FEED_PORT = 18083;
 const DEFAULT_CDP_PORT = 9222;
-const CDP_COMMAND_TIMEOUT_MS = 5000;
+const CDP_COMMAND_TIMEOUT_MS = E2E_TIMING.localReadyMs;
 const CHROME_PACKAGES = [
   "com.android.chrome",
   "com.chrome.beta",
@@ -341,7 +341,7 @@ function httpJson(url) {
       });
     });
     req.on("error", reject);
-    req.setTimeout(3000, () => {
+    req.setTimeout(E2E_TIMING.userResponseMs, () => {
       req.destroy(new Error(`timeout fetching ${url}`));
     });
   });
@@ -364,7 +364,7 @@ function httpText(url) {
       });
     });
     req.on("error", reject);
-    req.setTimeout(3000, () => {
+    req.setTimeout(E2E_TIMING.userResponseMs, () => {
       req.destroy(new Error(`timeout fetching ${url}`));
     });
   });
@@ -377,7 +377,7 @@ function httpReady(url) {
       resolve((res.statusCode ?? 500) < 500);
     });
     req.on("error", () => resolve(false));
-    req.setTimeout(1500, () => {
+    req.setTimeout(E2E_TIMING.stabilityMs, () => {
       req.destroy();
       resolve(false);
     });
@@ -398,7 +398,11 @@ class CdpSocket {
   static async connect(webSocketDebuggerUrl) {
     const parsed = new URL(webSocketDebuggerUrl);
     const socket = net.connect(Number(parsed.port), parsed.hostname);
-    await withTimeout(once(socket, "connect"), 5000, `CDP socket did not connect to ${webSocketDebuggerUrl}`);
+    await withTimeout(
+      once(socket, "connect"),
+      E2E_TIMING.localReadyMs,
+      `CDP socket did not connect to ${webSocketDebuggerUrl}`,
+    );
     const key = crypto.randomBytes(16).toString("base64");
     socket.write([
       `GET ${parsed.pathname}${parsed.search} HTTP/1.1`,
@@ -409,7 +413,11 @@ class CdpSocket {
       "Sec-WebSocket-Version: 13",
       "\r\n",
     ].join("\r\n"));
-    await withTimeout(readUntil(socket, "\r\n\r\n"), 5000, `CDP websocket handshake timed out for ${webSocketDebuggerUrl}`);
+    await withTimeout(
+      readUntil(socket, "\r\n\r\n"),
+      E2E_TIMING.localReadyMs,
+      `CDP websocket handshake timed out for ${webSocketDebuggerUrl}`,
+    );
     return new CdpSocket(socket);
   }
 
@@ -568,25 +576,31 @@ async function liveFeedStatus(cdp) {
   return cdpEval(cdp, "window.__aerobagE2e?.liveFeeds?.() ?? null");
 }
 
-async function waitForLiveFeedStatus(cdp, predicate, timeoutMs, message, intervalMs = 500) {
-  const started = Date.now();
+async function waitForLiveFeedStatus(
+  cdp,
+  predicate,
+  timeoutMs,
+  message,
+  intervalMs = E2E_TIMING.resourcePollIntervalMs,
+) {
   let lastStatus = null;
   let lastError = null;
-  while (Date.now() - started < timeoutMs) {
-    try {
-      lastStatus = await liveFeedStatus(cdp);
-      if (predicate(lastStatus)) {
-        return lastStatus;
+  try {
+    return (await observeUntil(message, async () => {
+      try {
+        lastStatus = await liveFeedStatus(cdp);
+        return predicate(lastStatus) ? lastStatus : null;
+      } catch (error) {
+        lastError = error;
+        return null;
       }
-    } catch (error) {
-      lastError = error;
-    }
-    await delay(intervalMs);
+    }, { timeoutMs, intervalMs })).value;
+  } catch (error) {
+    const diagnostic = lastError
+      ? `last error: ${lastError.message}`
+      : `last status: ${JSON.stringify(lastStatus)}`;
+    throw new Error(`${message}: ${diagnostic}`, { cause: error });
   }
-  const diagnostic = lastError
-    ? `last error: ${lastError.message}`
-    : `last status: ${JSON.stringify(lastStatus)}`;
-  throw new Error(`${message}: ${diagnostic}`);
 }
 
 function defaultWebAppDir() {
@@ -641,10 +655,11 @@ async function stopProcess(proc) {
   } catch (_error) {
     proc.kill("SIGTERM");
   }
-  await Promise.race([
+  await withTimeout(
     once(proc, "exit").catch(() => {}),
-    delay(5000),
-  ]);
+    E2E_TIMING.localReadyMs,
+    `process ${proc.pid} did not stop after SIGTERM`,
+  ).catch(() => {});
   if (proc.exitCode === null) {
     try {
       process.kill(-proc.pid, "SIGKILL");
@@ -683,12 +698,16 @@ function findChromePackage(serial) {
 async function waitForChromeDevtoolsSocket(serial) {
   await waitFor(
     () => {
-      const sockets = adbBestEffort(serial, ["shell", "cat", "/proc/net/unix"], { timeout: 5000 });
+      const sockets = adbBestEffort(
+        serial,
+        ["shell", "cat", "/proc/net/unix"],
+        { timeout: E2E_TIMING.localReadyMs },
+      );
       return sockets.status === 0 && sockets.stdout.includes("@chrome_devtools_remote");
     },
-    60000,
+    E2E_TIMING.startupMs,
     "Android Chrome did not create chrome_devtools_remote",
-    250,
+    E2E_TIMING.resourcePollIntervalMs,
   );
 }
 
@@ -719,9 +738,9 @@ async function launchAndroidChrome(serial, url, cdpPort) {
         return false;
       }
     },
-    30000,
+    E2E_TIMING.cloudConsistencyMs,
     `Android Chrome did not expose CDP on forwarded port ${cdpPort}`,
-    500,
+    E2E_TIMING.resourcePollIntervalMs,
   );
   return { packageName };
 }
@@ -793,9 +812,9 @@ async function run(args) {
           }
           return httpReady(webUrl);
         },
-        120000,
+        E2E_TIMING.bulkOperationMs,
         `Vite did not become ready at ${webUrl}`,
-        1000,
+        E2E_TIMING.resourcePollIntervalMs,
       );
     }
 
@@ -809,18 +828,18 @@ async function run(args) {
     progress("waiting for web live-feed hook");
     await waitFor(
       async () => Boolean(await cdpEval(cdp, "typeof window.__aerobagE2e?.liveFeeds === 'function'")),
-      90000,
+      E2E_TIMING.externalConsistencyMs,
       "web live-feed E2E hook did not become available in Android Chrome",
-      500,
+      E2E_TIMING.resourcePollIntervalMs,
     );
 
     progress("waiting for initial METAR v1");
     await waitForLiveFeedStatus(
       cdp,
       (status) => status?.connection?.value === "CONNECTED" && status?.product_versions?.metars === "v1",
-      90000,
+      E2E_TIMING.externalConsistencyMs,
       "initial live-feed connection did not reach METAR v1",
-      500,
+      E2E_TIMING.resourcePollIntervalMs,
     );
     result.checks.initial_metar_version = "v1";
 
@@ -829,9 +848,9 @@ async function run(args) {
     await waitForLiveFeedStatus(
       cdp,
       (status) => status?.product_versions?.metars === "v2",
-      30000,
+      E2E_TIMING.cloudConsistencyMs,
       "SSE update did not advance METARs to v2",
-      500,
+      E2E_TIMING.resourcePollIntervalMs,
     );
     result.checks.sse_metar_version = "v2";
 
@@ -843,9 +862,9 @@ async function run(args) {
       cdp,
       (status) => status?.navigator_online === false
         && status?.connection?.facts?.some((fact) => fact.label === "Last error"),
-      15000,
+      E2E_TIMING.observationMs,
       "offline transition did not schedule live-feed reconnect",
-      250,
+      E2E_TIMING.resourcePollIntervalMs,
     );
 
     progress("publishing METAR v3 while offline");
@@ -857,9 +876,9 @@ async function run(args) {
     progress("waiting for online to interrupt reconnect backoff");
     await waitFor(
       () => liveFeed.requestCounts.events > beforeOnlineEventStreams,
-      2500,
+      E2E_TIMING.userResponseMs,
       "online event did not interrupt pending live-feed reconnect backoff",
-      100,
+      E2E_TIMING.stabilityPollIntervalMs,
     );
     result.checks.online_interrupted_backoff = true;
 
@@ -867,9 +886,9 @@ async function run(args) {
     await waitForLiveFeedStatus(
       cdp,
       (status) => status?.product_versions?.metars === "v3",
-      30000,
+      E2E_TIMING.cloudConsistencyMs,
       "live-feed SSE catalog after online did not advance METARs to v3",
-      500,
+      E2E_TIMING.resourcePollIntervalMs,
     );
     const finalStatus = await liveFeedStatus(cdp);
     result.checks.recovered_metar_version = "v3";
@@ -903,10 +922,11 @@ async function run(args) {
     adbBestEffort(args.serial, ["forward", "--remove", `tcp:${args.cdpPort}`]);
     await stopProcess(vite);
     liveFeed.dropSseClients();
-    await Promise.race([
+    await withTimeout(
       closeServer(liveFeedHttp),
-      delay(3000),
-    ]);
+      E2E_TIMING.localReadyMs,
+      "live-feed fixture server did not close",
+    ).catch(() => {});
   }
 }
 

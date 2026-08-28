@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
+import { E2E_TIMING } from "./transition-contract.mjs";
 
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
@@ -76,75 +77,92 @@ async function waitForPage(runtime, pageId) {
   );
 }
 
-async function acceptDisclaimer(runtime, { required = false } = {}) {
-  let accepted = false;
-  let acceptanceSubmitted = false;
-  let unobstructedMapSamples = 0;
-  await runtime.eventually("disclaimer or unobstructed map", async () => {
-    const accept = await runtime.driver.readElement("disclaimer-accept-button");
-    if (accept) {
-      if (!acceptanceSubmitted) {
-        acceptanceSubmitted = true;
-        await runtime.step(
-          "disclaimer.accept",
-          () => runtime.driver.performAction("disclaimer-accept-button"),
-        );
-        accepted = true;
-      }
-      unobstructedMapSamples = 0;
-      return false;
-    }
-    const appIsUnobstructed = Boolean(await runtime.driver.readElement(
-      runtime.platform === "android" ? "primary-navigation" : "page:map",
-    ));
-    if (!appIsUnobstructed) {
-      unobstructedMapSamples = 0;
-      return false;
-    }
-    // Core startup can paint the chart before the persisted disclaimer setting
-    // has been read. Require several clean samples so that a late modal cannot
-    // race the journey's first action.
-    unobstructedMapSamples += 1;
-    return unobstructedMapSamples >= 5;
-  }, 60_000);
-  if (required && !accepted) {
-    throw new Error("fresh profile reached the map without presenting the disclaimer");
+function taggedFields(entry, prefix) {
+  const id = projectionId(entry);
+  if (!id.startsWith(prefix)) return null;
+  const fields = {};
+  const components = id.slice(prefix.length).split(":");
+  for (let index = 0; index + 1 < components.length; index += 2) {
+    fields[components[index]] = components[index + 1];
   }
-  return accepted;
+  return fields;
+}
+
+async function startupState(runtime, timeoutMs = E2E_TIMING.startupMs) {
+  return runtime.eventually("operational startup state", async () => {
+    const entries = await runtime.driver.readProjection("parity:startup-state:");
+    const fields = taggedFields(entries[0], "parity:startup-state:");
+    return fields?.ready === "true" ? fields : null;
+  }, timeoutMs);
+}
+
+async function acceptDisclaimer(runtime, { required = false } = {}) {
+  const initial = await startupState(runtime);
+  if (initial.disclaimer_required !== "true") {
+    if (required) {
+      throw new Error("fresh profile reached the map without presenting the disclaimer");
+    }
+    return false;
+  }
+  await runtime.transition("accept mandatory disclaimer", {
+    ready: () => runtime.driver.readElement("disclaimer-accept-button"),
+    act: () => runtime.step(
+      "disclaimer.accept",
+      () => runtime.driver.performAction("disclaimer-accept-button"),
+    ),
+    complete: async () => {
+      const entries = await runtime.driver.readProjection("parity:startup-state:");
+      const fields = taggedFields(entries[0], "parity:startup-state:");
+      const button = await runtime.driver.readElement("disclaimer-accept-button");
+      return fields?.disclaimer_required === "false" && !button ? fields : null;
+    },
+  });
+  return true;
 }
 
 async function loadedMap(runtime) {
   const raster = await runtime.eventually("loaded raster plan", async () => {
     const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
     return rasterPlanIsDisplayReady(counts) ? counts : null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
   const vectors = await runtime.eventually("vector overlay", async () => {
     const id = idOf(await runtime.driver.readProjection("parity:vector-state:"));
     const count = Number(/features:(\d+)/.exec(id ?? "")?.[1] ?? 0);
     return count > 0 ? count : null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
   return { raster, vectors };
 }
 
 export async function selectChartSearchSuggestion(runtime, ident) {
   const suggestionProjection = `chart-search-suggestion-${ident}`;
   const selectedProjection = `parity:map-selection-selected:${ident}`;
-  return runtime.eventually(`${ident} chart search selection`, async () => {
-    const selected = await runtime.driver.readProjection(selectedProjection);
-    if (selected.length > 0) return selected[0];
-    const suggestions = await runtime.driver.readProjection(suggestionProjection);
-    if (suggestions.length === 0) return null;
-    await runtime.driver.performAction(suggestionProjection);
-    return null;
-  }, 45_000);
+  const selected = await runtime.driver.readProjection(selectedProjection);
+  if (selected.length > 0) return selected[0];
+  return runtime.transition(`${ident} chart search selection`, {
+    ready: async () => (await runtime.driver.readProjection(suggestionProjection))[0] ?? null,
+    act: () => runtime.driver.performAction(suggestionProjection),
+    complete: async () => (await runtime.driver.readProjection(selectedProjection))[0] ?? null,
+  });
+}
+
+async function revealRequiredElement(runtime, elementId, description = elementId) {
+  const element = await runtime.step(`reveal ${description}`, () =>
+    runtime.driver.revealElement(elementId));
+  if (!element) throw new Error(`${description} is not present after explicit traversal`);
+  return element;
 }
 
 async function enableDeterministicOwnship(runtime) {
   await runtime.driver.openPage("settings");
-  const section = await runtime.driver.readElement("settings-section-debug_diagnostics");
-  if (section?.expanded !== "true") {
+  const section = await revealRequiredElement(
+    runtime, "settings-section-debug_diagnostics", "Debug Diagnostics settings section",
+  );
+  if (section?.expanded !== true) {
     await runtime.driver.performAction("settings-section-debug_diagnostics");
   }
+  await revealRequiredElement(
+    runtime, "settings-toggle-debug_bad_autopilot", "Bad Autopilot debug toggle",
+  );
   await runtime.eventually(
     "Bad Autopilot debug toggle",
     () => runtime.driver.readElement("settings-toggle-debug_bad_autopilot"),
@@ -179,7 +197,11 @@ async function startupNavigation(runtime) {
   runtime.check("startup.supported-publication", firstMap.raster.failed === 0, JSON.stringify(firstMap));
 
   await runtime.step("app.reload", () => runtime.driver.reload());
-  await runtime.eventually("map after reload", () => runtime.driver.readElement("page:map"), 60_000);
+  await runtime.eventually(
+    "map after reload",
+    () => runtime.driver.readElement("page:map"),
+    E2E_TIMING.startupMs,
+  );
   runtime.check(
     "disclaimer.accept-persist",
     !(await runtime.driver.readElement("disclaimer-accept-button")),
@@ -289,10 +311,6 @@ function projectionId(entry) {
   return entry?.id ?? entry ?? "";
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function setFixtureControl(runtime, update) {
   if (!runtime.fixtureOrigin) throw new Error("journey fixture origin is unavailable");
   return fetchFixtureJson(runtime, "/__control", {
@@ -308,18 +326,9 @@ async function fixtureHealth(runtime) {
 }
 
 async function fetchFixtureJson(runtime, path, options = {}) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      const response = await fetch(new URL(path, runtime.fixtureOrigin), options);
-      if (!response.ok) throw new Error(`${path} failed: HTTP ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      lastError = error;
-      if (attempt < 4) await delay(100 * (attempt + 1));
-    }
-  }
-  throw lastError;
+  const response = await fetch(new URL(path, runtime.fixtureOrigin), options);
+  if (!response.ok) throw new Error(`${path} failed: HTTP ${response.status}`);
+  return response.json();
 }
 
 function planRowUid(entry) {
@@ -332,22 +341,42 @@ async function planRows(runtime) {
   return runtime.driver.readProjection("parity:plan-row:");
 }
 
-async function findPlanRow(runtime, label) {
+async function findPlanRow(runtime, label, timeoutMs = E2E_TIMING.localReadyMs) {
+  const revealed = await runtime.step(`flight-plan row ${label} revealed`, () =>
+    runtime.driver.revealProjectionMatching("parity:plan-row:", label));
+  if (!revealed) throw new Error(`flight-plan row ${label} is not reachable`);
   return runtime.eventually(`flight-plan row ${label}`, async () => {
     const entry = await runtime.driver.findProjectionMatching("parity:plan-row:", label);
     return entry?.text?.split(/\s+/).includes(label) ? entry : null;
-  }, 45_000);
+  }, timeoutMs);
+}
+
+function routeEntryState(entries) {
+  const id = projectionId(entries[0]);
+  const match = /can_commit:(true|false):loading:(true|false)/.exec(id ?? "");
+  return match ? {
+    canCommit: match[1] === "true",
+    loading: match[2] === "true",
+  } : null;
 }
 
 async function appendRoute(runtime, route) {
-  await runtime.driver.enterText("plan-append-route-input", route);
-  // Route parsing runs through the latency-sensitive core worker. Enter only
-  // after its preview has had an opportunity to make the form committable.
-  await delay(750);
-  await runtime.driver.enterText("plan-append-route-input", route, { submit: true });
   await runtime.driver.performAction("dismiss-plan-row-tray");
+  await runtime.driver.enterText("plan-append-route-input", route);
   const destination = route.trim().split(/\s+/).at(-1);
-  await findPlanRow(runtime, destination);
+  await runtime.transition(`append route ${route}`, {
+    ready: async () => {
+      const state = routeEntryState(await runtime.driver.readProjection(
+        "parity:plan-append-route-state:",
+      ));
+      return state?.canCommit && !state.loading ? state : null;
+    },
+    act: () => runtime.driver.submit("plan-append-route-input"),
+    complete: async () => {
+      const entry = await runtime.driver.findProjectionMatching("parity:plan-row:", destination);
+      return entry?.text?.split(/\s+/).includes(destination) ? entry : null;
+    },
+  });
 }
 
 async function openPlanRow(runtime, label) {
@@ -360,7 +389,7 @@ async function findProcedureRow(runtime, procedureId) {
   return runtime.eventually(`flight-plan procedure ${procedureId}`, async () => {
     const entries = await runtime.driver.readProjection(`parity:plan-procedure-row:${procedureId}:uid:`);
     return entries[0] ?? null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
 }
 
 function procedureRowUid(entry) {
@@ -377,25 +406,54 @@ async function openProcedureRow(runtime, procedureId) {
   return row;
 }
 
-async function planAction(runtime, label, actionId) {
+async function planAction(runtime, label, actionId, { observeAfterDismiss = null } = {}) {
   await openPlanRow(runtime, label);
-  await runtime.eventually(`${actionId} action for ${label}`, async () => {
-    const id = runtime.platform === "web"
-      ? `plan-row-action-${actionId}`
-      : `plan-row-action:${actionId}`;
-    const action = await runtime.driver.readElement(id);
-    return action?.enabled ? action : null;
-  });
-  await runtime.driver.performAction(actionId);
-  if ([
-    "activate_leg", "direct_to", "move_up", "move_down", "remove", "remove_all_above",
-  ].includes(actionId)) {
-    await runtime.driver.performAction("dismiss-plan-row-tray");
+  let completion = null;
+  const trayStaysOpen = ["move_up", "move_down"].includes(actionId);
+  const trayCloses = [
+    "activate_leg", "direct_to", "remove", "remove_all_above",
+  ].includes(actionId);
+  if (trayStaysOpen || trayCloses) {
+    completion = await runtime.transition(`${actionId} ${label}`, {
+      ready: async () => {
+        const id = runtime.platform === "web"
+          ? `plan-row-action-${actionId}`
+          : `plan-row-action:${actionId}`;
+        const action = await runtime.driver.readElement(id);
+        return action?.enabled ? action : null;
+      },
+      act: () => runtime.driver.performAction(actionId),
+      complete: async () => {
+        const open = (await runtime.driver.readProjection("parity:plan-row-action:")).length > 0;
+        return open === trayStaysOpen ? { open } : null;
+      },
+    });
+  } else {
+    await runtime.eventually(`${actionId} action for ${label}`, async () => {
+      const id = runtime.platform === "web"
+        ? `plan-row-action-${actionId}`
+        : `plan-row-action:${actionId}`;
+      const action = await runtime.driver.readElement(id);
+      return action?.enabled ? action : null;
+    });
+    await runtime.driver.performAction(actionId);
   }
+  if (trayStaysOpen) {
+    await runtime.driver.performAction("dismiss-plan-row-tray");
+    if (observeAfterDismiss) {
+      completion = await runtime.eventually(`${actionId} ${label} visible result`, observeAfterDismiss);
+    }
+  }
+  return completion;
 }
 
 async function planState(runtime) {
   return projectionId((await runtime.driver.readProjection("parity:plan-state:"))[0]);
+}
+
+function planStateRowCount(state) {
+  const match = /:rows:(\d+):/.exec(state ?? "");
+  return match ? Number(match[1]) : null;
 }
 
 async function enabledPlanControl(runtime, controlId) {
@@ -421,7 +479,7 @@ async function flightPlanEditAndNavigate(runtime) {
   const invalidFeedback = await runtime.eventually("invalid route feedback", async () => {
     const feedback = await runtime.driver.readElement("plan-append-route-feedback");
     return feedback?.text && !/^Checking/i.test(feedback.text) ? feedback : null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   runtime.check("plan.route-invalid", Boolean(invalidFeedback?.text), invalidFeedback?.text);
 
   await appendRoute(runtime, "KSEA KBFI KRNT KPAE");
@@ -449,20 +507,22 @@ async function flightPlanEditAndNavigate(runtime) {
   await findPlanRow(runtime, "S50");
   runtime.check("plan.insert-after", (await planRows(runtime)).length > beforeCount);
 
-  await planAction(runtime, "S50", "move_up");
-  const movedUp = await runtime.eventually("S50 moved above KRNT", async () => {
-    const labels = (await planRows(runtime)).map((entry) => entry.text);
-    return labels.findIndex((text) => text.includes("S50")) < labels.findIndex((text) => text.includes("KRNT"))
-      ? labels
-      : null;
+  const movedUp = await planAction(runtime, "S50", "move_up", {
+    observeAfterDismiss: async () => {
+      const labels = (await planRows(runtime)).map((entry) => entry.text);
+      return labels.findIndex((text) => text.includes("S50")) < labels.findIndex((text) => text.includes("KRNT"))
+        ? labels
+        : null;
+    },
   });
   runtime.check("plan.move-up", movedUp.findIndex((text) => text.includes("S50")) < movedUp.findIndex((text) => text.includes("KRNT")));
-  await planAction(runtime, "S50", "move_down");
-  const movedDown = await runtime.eventually("S50 moved below KRNT", async () => {
-    const labels = (await planRows(runtime)).map((entry) => entry.text);
-    return labels.findIndex((text) => text.includes("S50")) > labels.findIndex((text) => text.includes("KRNT"))
-      ? labels
-      : null;
+  const movedDown = await planAction(runtime, "S50", "move_down", {
+    observeAfterDismiss: async () => {
+      const labels = (await planRows(runtime)).map((entry) => entry.text);
+      return labels.findIndex((text) => text.includes("S50")) > labels.findIndex((text) => text.includes("KRNT"))
+        ? labels
+        : null;
+    },
   });
   runtime.check("plan.move-down", movedDown.findIndex((text) => text.includes("S50")) > movedDown.findIndex((text) => text.includes("KRNT")));
 
@@ -471,10 +531,24 @@ async function flightPlanEditAndNavigate(runtime) {
   await runtime.eventually("S50 removed", async () => !(await planRows(runtime)).some((entry) => entry.text.includes("S50")));
   runtime.check("plan.remove", (await planRows(runtime)).length < beforeCount);
 
-  beforeCount = (await planRows(runtime)).length;
+  const beforeTrimRows = await planRows(runtime);
+  const beforeTrimLabels = beforeTrimRows.map((entry) => entry.text);
+  const trimIndex = beforeTrimLabels.findIndex((text) => text.includes("KPLU"));
+  if (trimIndex < 0) throw new Error(`KPLU is absent before remove-all-above: ${beforeTrimLabels}`);
+  const expectedTrimmedLabels = beforeTrimLabels.slice(trimIndex + 1);
   await planAction(runtime, "KPLU", "remove_all_above");
-  await runtime.eventually("route trimmed above KPLU", async () => (await planRows(runtime)).length < beforeCount);
-  runtime.check("plan.remove-all-above", (await planRows(runtime)).length < beforeCount);
+  const trimmedLabels = await runtime.eventually("route trimmed above KPLU", async () => {
+    const labels = (await planRows(runtime)).map((entry) => entry.text);
+    return labels.length === expectedTrimmedLabels.length &&
+      expectedTrimmedLabels.every((label, index) => labels[index]?.includes(label))
+      ? labels
+      : null;
+  }, E2E_TIMING.userResponseMs);
+  runtime.check(
+    "plan.remove-all-above",
+    !trimmedLabels.some((label) => label.includes("KPLU")),
+    `${beforeTrimLabels.join(" ")} -> ${trimmedLabels.join(" ")}`,
+  );
 
   // Preserve two downstream legs so both manual sequencing controls can be
   // exercised independently after activating the KPAE leg.
@@ -560,18 +634,19 @@ function trayOptionId(entry) {
 
 async function selectTrayOptionMatching(runtime, launcherId, needle, { waitForSelection = true } = {}) {
   await runtime.driver.performAction(launcherId);
-  const entry = await runtime.eventually(`${launcherId} option matching ${needle}`, async () => {
-    return runtime.driver.findProjectionMatching(
-      runtime.platform === "web" ? "tray-option-" : "parity:tray-option:",
-      needle,
-    );
-  }, 45_000);
+  const projection = runtime.platform === "web" ? "tray-option-" : "parity:tray-option:";
+  await runtime.eventually(`${launcherId} options visible`, async () =>
+    (await runtime.driver.readProjection(projection))[0] ?? null,
+  E2E_TIMING.localReadyMs);
+  const entry = await runtime.step(`${launcherId} option ${needle} revealed`, () =>
+    runtime.driver.revealProjectionMatching(projection, needle));
+  if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
   await runtime.driver.performAction(`tray-option:${trayOptionId(entry)}`);
   if (waitForSelection) {
     await runtime.eventually(`${launcherId} selected ${needle}`, async () => {
       const launcher = await runtime.driver.readElement(launcherId);
       return launcher?.text?.toUpperCase().includes(needle.toUpperCase()) ? launcher : null;
-    }, 45_000);
+    }, E2E_TIMING.userResponseMs);
   }
   return entry;
 }
@@ -595,7 +670,7 @@ export async function selectProcedure(runtime, {
   const procedure = await runtime.eventually(`${procedureId} procedure choice`, async () => {
     const entries = await runtime.driver.readProjection("parity:plan-procedure:");
     return entries.find((entry) => procedureChoiceId(entry) === procedureId) ?? null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   await runtime.driver.performAction(`plan-procedure:${procedureId}`);
   const choice = await runtime.eventually(`${procedureId} transition choice`, async () => {
     const entries = await runtime.driver.readProjection("parity:plan-procedure-transition:");
@@ -604,12 +679,12 @@ export async function selectProcedure(runtime, {
         procedureTransitionId(entry) === transition || entry.text?.includes(transition)) ?? null;
     }
     return entries.find((entry) => entry.enabled !== false) ?? null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   const selectedTransitionId = procedureTransitionId(choice);
   await runtime.driver.performAction(`plan-procedure-transition:${selectedTransitionId}`);
   await runtime.eventually(`${procedureId} selection completed`, async () => {
     return (await runtime.driver.readElement("plan-procedure-picker")) === null;
-  }, 45_000);
+  }, E2E_TIMING.userResponseMs);
   return findProcedureRow(runtime, procedureId);
 }
 
@@ -618,7 +693,7 @@ async function assertProcedurePainted(runtime, assertionId) {
   const projection = await runtime.eventually("procedure route painted", async () => {
     const entries = await runtime.driver.readProjection("parity:flight-plan-route-overlay:");
     return entries.length > 0 ? projectionId(entries[0]) : null;
-  }, 45_000);
+  }, E2E_TIMING.resourceMs);
   runtime.check(assertionId, Boolean(projection), projection);
   await runtime.driver.openPage("flight_plan");
 }
@@ -636,7 +711,7 @@ async function assertProcedureShowPlate(runtime, procedureId, assertionId, expec
   const chart = await runtime.eventually("selected procedure plate", async () => {
     const selected = await runtime.driver.readElement("plate-chart-button");
     return selected?.text?.toUpperCase().includes(expectedLabel.toUpperCase()) ? selected : null;
-  }, 45_000);
+  }, E2E_TIMING.resourceMs);
   runtime.check(assertionId, Boolean(plate && chart?.text), chart?.text);
 }
 
@@ -670,9 +745,10 @@ async function procedureDeparture(runtime) {
   await assertProcedurePainted(runtime, "procedure.sid.render");
 
   await openPlanRow(runtime, sid.airport_id);
-  const moveDown = await runtime.driver.readElement(runtime.platform === "web"
-    ? "plan-row-action-move_down"
-    : "plan-row-action:move_down");
+  const moveDown = await runtime.eventually("departure move-down action", () =>
+    runtime.driver.readElement(runtime.platform === "web"
+      ? "plan-row-action-move_down"
+      : "plan-row-action:move_down"));
   runtime.check("procedure.sid.invariant", Boolean(moveDown && !moveDown.enabled), moveDown?.text);
   await runtime.driver.performAction("dismiss-plan-row-tray");
 
@@ -696,9 +772,10 @@ async function procedureArrival(runtime) {
   await assertProcedurePainted(runtime, "procedure.star.render");
 
   await openPlanRow(runtime, star.airport_id);
-  const moveUp = await runtime.driver.readElement(runtime.platform === "web"
-    ? "plan-row-action-move_up"
-    : "plan-row-action:move_up");
+  const moveUp = await runtime.eventually("arrival move-up action", () =>
+    runtime.driver.readElement(runtime.platform === "web"
+      ? "plan-row-action-move_up"
+      : "plan-row-action:move_up"));
   runtime.check("procedure.star.invariant", Boolean(moveUp && !moveUp.enabled), moveUp?.text);
   await runtime.driver.performAction("dismiss-plan-row-tray");
 
@@ -741,7 +818,7 @@ async function procedureApproach(runtime) {
   await runtime.eventually("enabled plate load button", async () => {
     const button = await runtime.driver.readElement("plate-load-button");
     return button?.enabled ? button : null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   await runtime.driver.performAction("plate-load-button");
   const load = await runtime.eventually("plate load option", async () => {
     const entries = await runtime.driver.readProjection(runtime.platform === "web" ? "tray-option-" : "parity:tray-option:");
@@ -763,7 +840,7 @@ async function selectPlateFolderTileMatching(runtime, needle) {
       ? "plate-folder-tile:"
       : "parity:plate-folder-tile:");
     return entries.find((option) => option.text?.toUpperCase().includes(needle.toUpperCase())) ?? null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   const chartId = projectionId(entry)
     .replace(/^parity:plate-folder-tile:/, "")
     .replace(/^plate-folder-tile:/, "");
@@ -771,7 +848,7 @@ async function selectPlateFolderTileMatching(runtime, needle) {
   await runtime.eventually(`plate selected ${needle}`, async () => {
     const launcher = await runtime.driver.readElement("plate-chart-button");
     return launcher?.text?.toUpperCase().includes(needle.toUpperCase()) ? launcher : null;
-  }, 45_000);
+  }, E2E_TIMING.userResponseMs);
   return entry;
 }
 
@@ -825,7 +902,6 @@ async function plateOperate(runtime) {
   await enableDeterministicOwnship(runtime);
   await runtime.driver.openPage("charts");
 
-  await delay(1000);
   runtime.result.diagnostics.plate_ownship_input = (await runtime.driver.readProjection(
     "parity:plate-ownship-input:",
   )).map(projectionId);
@@ -834,7 +910,7 @@ async function plateOperate(runtime) {
       ? "plate-ownship-overlay"
       : "parity:plate-ownship-overlay");
     return entries[0] ?? null;
-  }, 5_000);
+  }, E2E_TIMING.observationMs);
   runtime.check("plate.georeferenced-ownship", Boolean(ownship));
 
   const initialViewport = await runtime.eventually("initial plate viewport", () => plateViewport(runtime));
@@ -854,7 +930,7 @@ async function plateOperate(runtime) {
   const loadButton = await runtime.eventually("enabled plate procedure load", async () => {
     const button = await runtime.driver.readElement("plate-load-button");
     return button?.enabled ? button : null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   await runtime.driver.performAction("plate-load-button");
   const loadOption = await runtime.eventually("plate procedure load option", async () => {
     const entries = await runtime.driver.readProjection(runtime.platform === "web" ? "tray-option-" : "parity:tray-option:");
@@ -910,7 +986,7 @@ async function plateAdvisoriesAndReferences(runtime) {
   await waitForPage(runtime, "plate");
   await selectPlateFolderTileMatching(runtime, warning.label_contains);
   const warningLauncher = await runtime.eventually("plate procedure geometry warning", () =>
-    runtime.driver.readElement("procedure-status-launcher"), 45_000);
+    runtime.driver.readElement("procedure-status-launcher"), E2E_TIMING.resourceMs);
   await runtime.driver.performAction("procedure-status-launcher");
   const warningPanel = await runtime.eventually("plate procedure geometry detail", () =>
     runtime.driver.readElement("procedure-status-panel"));
@@ -932,7 +1008,7 @@ async function plateAdvisoriesAndReferences(runtime) {
       runtime.platform === "web" ? "plate-notam:" : "parity:plate-notam:",
     );
     return entries[0] ?? null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
   await runtime.driver.performAction(projectionId(notamBadge));
   const notamModal = await runtime.eventually("plate NOTAM detail", () =>
     runtime.driver.readElement("procedure-notam-modal"));
@@ -948,13 +1024,13 @@ async function plateAdvisoriesAndReferences(runtime) {
   await runtime.eventually("TAC family selected for references", async () => {
     const entries = await runtime.driver.readProjection(`parity:map-family:${legend.family_id}:`);
     return entries[0] ?? null;
-  }, 45_000);
+  }, E2E_TIMING.localReadyMs);
   await selectAirportFromMapSearch(runtime, inset.map_airport_id ?? "KSEA");
   await runtime.driver.back();
   await runtime.eventually("contextual TAC raster plan", async () => {
     const [entry] = await runtime.driver.readProjection("parity:raster-state:");
     return (rasterCounts([entry])?.planned ?? 0) > 0 ? entry : null;
-  }, 45_000);
+  }, E2E_TIMING.resourceMs);
   runtime.result.diagnostics.chart_reference_raster_state =
     await runtime.driver.readProjection("parity:raster-state:");
   runtime.result.diagnostics.chart_reference_controls =
@@ -993,8 +1069,12 @@ async function otherDocuments(runtime) {
   const csupSelection = await runtime.eventually("airport CSUP selected", async () => {
     const control = await runtime.driver.readElement("plate-chart-button");
     return /CSUP|CHART SUPPLEMENT/i.test(control?.text ?? "") ? control : null;
-  }, 45_000);
-  const csupViewport = await runtime.eventually("CSUP document painted", () => plateViewport(runtime), 45_000);
+  }, E2E_TIMING.localReadyMs);
+  const csupViewport = await runtime.eventually(
+    "CSUP document painted",
+    () => plateViewport(runtime),
+    E2E_TIMING.resourceMs,
+  );
   runtime.check("plate.csup", Boolean(csupSelection && csupViewport), csupSelection?.text);
 
   if (other.airport_id !== csup.airport_id) {
@@ -1008,7 +1088,7 @@ async function otherDocuments(runtime) {
   const otherViewport = await runtime.eventually(
     "other airport document painted",
     () => plateViewport(runtime),
-    45_000,
+    E2E_TIMING.resourceMs,
   );
   runtime.check(
     "plate.other-document",
@@ -1032,8 +1112,14 @@ async function aboutAndSavedState(runtime) {
   );
   runtime.check("navigation.about", Boolean(about), about?.text);
   if (runtime.platform === "android") {
-    await runtime.driver.back();
-    await delay(500);
+    await runtime.transition("return from external About page", {
+      ready: () => runtime.driver.readElement("external-page:about"),
+      act: () => runtime.driver.back(),
+      complete: async () => {
+        const entries = await runtime.driver.readProjection("parity:startup-state:");
+        return taggedFields(entries[0], "parity:startup-state:");
+      },
+    });
   }
 
   // Begin the persistence check from a clean operational app. Settings is not
@@ -1044,10 +1130,16 @@ async function aboutAndSavedState(runtime) {
   await runtime.driver.openPage("settings");
   await runtime.eventually("Settings selected before restart", () =>
     runtime.driver.readElement("page:settings"));
-  await delay(500);
+  await runtime.eventually("Settings page persisted before restart", async () => {
+    const entries = await runtime.driver.readProjection("parity:startup-state:");
+    const fields = taggedFields(entries[0], "parity:startup-state:");
+    return fields?.persisted_page === (runtime.platform === "web" ? "settings" : "Settings")
+      ? fields
+      : null;
+  }, E2E_TIMING.localReadyMs);
   await runtime.driver.reload();
   const restored = await runtime.eventually("saved Settings page after restart", () =>
-    runtime.driver.readElement("page:settings"), 60_000);
+    runtime.driver.readElement("page:settings"), E2E_TIMING.startupMs);
   runtime.check("saved-state.restart", Boolean(restored), "Settings page restored after restart");
 }
 
@@ -1060,10 +1152,10 @@ async function pointerDetails(runtime) {
   const target = await runtime.eventually("visible METAR hover target", async () => {
     const entries = await runtime.driver.readProjection("parity:metar-hover-target:");
     return entries[0] ?? null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
   await runtime.driver.hover(projectionId(target));
   const weather = await runtime.eventually("hover weather detail", () =>
-    runtime.driver.readElement("weather-detail-modal"), 30_000);
+    runtime.driver.readElement("weather-detail-modal"), E2E_TIMING.userResponseMs);
   runtime.check(
     "web.metar-hover",
     Boolean(weather?.text && /METAR/i.test(weather.text)),
@@ -1085,7 +1177,7 @@ async function contractFailures(runtime) {
     const failure = await runtime.eventually("unsupported publication failure", () =>
       runtime.driver.readElement(
         runtime.platform === "web" ? "startup-fatal-error" : "offline-library-panel",
-      ), 60_000);
+      ), E2E_TIMING.startupMs);
     runtime.check(
       "startup.unsupported-contract",
       Boolean(failure?.text && /unsupported|no manifest supported/i.test(failure.text)),
@@ -1096,7 +1188,11 @@ async function contractFailures(runtime) {
   }
 }
 
-async function waitForOfflineSyncIdle(runtime, description, timeoutMs = 120_000) {
+async function waitForOfflineSyncIdle(
+  runtime,
+  description,
+  timeoutMs = E2E_TIMING.bulkOperationMs,
+) {
   return runtime.eventually(description, async () => {
     const button = await runtime.driver.readElement("offline-sync-button");
     return offlineSyncButtonIsIdle(button) ? button : null;
@@ -1108,15 +1204,17 @@ async function androidPackageMaintenance(runtime) {
   await acceptDisclaimer(runtime);
   await runtime.driver.openPage("settings");
 
-  await runtime.eventually("display dim slider", () =>
-    runtime.driver.readElement("parity:settings-slider:display_dim_timeout:2m"));
+  await revealRequiredElement(
+    runtime, "parity:settings-slider:display_dim_timeout:2m", "display dim slider",
+  );
   await runtime.driver.drag("settings-slider:display_dim_timeout:2m", { x: -1_000, y: 0 });
   const dimmed = await runtime.eventually("display dim timeout changed", () =>
     runtime.driver.readElement("parity:settings-slider:display_dim_timeout:10s"));
   runtime.check("settings.display-dim-timeout", Boolean(dimmed), dimmed?.test_id);
 
-  await runtime.eventually("inactivity sleep slider", () =>
-    runtime.driver.readElement("parity:settings-slider:inactivity_sleep_timeout:1h"));
+  await revealRequiredElement(
+    runtime, "parity:settings-slider:inactivity_sleep_timeout:1h", "inactivity sleep slider",
+  );
   await runtime.driver.drag("settings-slider:inactivity_sleep_timeout:1h", { x: -1_000, y: 0 });
   const sleeps = await runtime.eventually("inactivity sleep timeout changed", () =>
     runtime.driver.readElement("parity:settings-slider:inactivity_sleep_timeout:30m"));
@@ -1134,7 +1232,7 @@ async function androidPackageMaintenance(runtime) {
     await runtime.eventually("interrupted package request observed", async () => {
       const health = await fixtureHealth(runtime);
       return health.control?.dropped_artifact_requests > 0 ? health : null;
-    }, 60_000, 250);
+    }, E2E_TIMING.resourceMs, 250);
     const recovered = await waitForOfflineSyncIdle(runtime, "failed package sync returned to idle");
     runtime.check(
       "offline.interrupted-sync",
@@ -1146,7 +1244,7 @@ async function androidPackageMaintenance(runtime) {
     await runtime.driver.performAction("offline-sync-button");
     const installed = await runtime.eventually("updated package installed", () =>
       runtime.driver.readElement(`installed-package:${updated.updated_artifact_filename}`),
-    120_000, 500);
+    E2E_TIMING.bulkOperationMs, 500);
     await waitForOfflineSyncIdle(runtime, "updated package sync completed");
     const health = await fixtureHealth(runtime);
     runtime.check(
@@ -1223,13 +1321,15 @@ async function statusAndSettings(runtime) {
     await runtime.driver.performAction(projectionId(firstFlightDataChoice).replace(/^parity:/, ""));
   }
 
-  const debugSection = await runtime.driver.readElement("settings-section-debug_diagnostics");
-  runtime.check("settings.debug-folded", debugSection?.expanded === "false", debugSection?.test_id);
+  const debugSection = await revealRequiredElement(
+    runtime, "settings-section-debug_diagnostics", "Debug Diagnostics settings section",
+  );
+  runtime.check("settings.debug-folded", debugSection?.expanded === false, debugSection?.test_id);
   await runtime.driver.performAction("settings-section-debug_diagnostics");
   let firstDebugToggle = true;
   for (const [flagId, assertionId] of Object.entries(DEBUG_ASSERTIONS)) {
     const actionId = `settings-toggle-debug_${flagId}`;
-    const before = await runtime.eventually(`${flagId} debug setting`, () => runtime.driver.readElement(actionId));
+    const before = await revealRequiredElement(runtime, actionId, `${flagId} debug setting`);
     await runtime.driver.performAction(actionId);
     const after = await runtime.eventually(`${flagId} debug setting changed`, async () => {
       const value = await runtime.driver.readElement(actionId);
@@ -1243,10 +1343,10 @@ async function statusAndSettings(runtime) {
   }
 
   await runtime.driver.openPage("data_status");
-  const statusRows = await runtime.eventually("data status rows", async () => {
-    const entries = await runtime.driver.readProjection("parity:data-status-row:");
-    return entries.length >= Object.keys(STATUS_ASSERTIONS).length ? entries : null;
-  }, 45_000);
+  await runtime.eventually("first data status row", async () =>
+    (await runtime.driver.readProjection("parity:data-status-row:"))[0] ?? null,
+  E2E_TIMING.resourceMs);
+  const statusRows = await runtime.driver.readProjection("parity:data-status-row:");
   runtime.check("status.all-rows", statusRows.length >= Object.keys(STATUS_ASSERTIONS).length, `${statusRows.length} rows`);
   const statusIds = statusRows.map(projectionId);
   for (const [rowId, assertionId] of Object.entries(STATUS_ASSERTIONS)) {
@@ -1318,17 +1418,21 @@ async function setLayerVisible(runtime, layerId, visible) {
   return runtime.eventually(`${layerId} layer ${visible ? "visible" : "hidden"}`, async () => {
     const id = projectionId((await runtime.driver.readProjection(`parity:map-layer:${probeName}:`))[0]);
     return id && /:visible:true:/.test(id) === visible ? id : null;
-  }, 45_000);
+  }, E2E_TIMING.userResponseMs);
 }
 
 async function mapModesAndOverlays(runtime) {
   await runtime.step("app.reset", () => runtime.driver.reset());
   await acceptDisclaimer(runtime);
   await runtime.driver.openPage("settings");
-  await runtime.driver.performAction("settings-section-debug_diagnostics");
-  const adsb = await runtime.eventually(
-    "internet ADS-B setting",
-    () => runtime.driver.readElement("settings-toggle-debug_internet_adsb"),
+  const debugSection = await revealRequiredElement(
+    runtime, "settings-section-debug_diagnostics", "Debug Diagnostics settings section",
+  );
+  if (debugSection.expanded !== true) {
+    await runtime.driver.performAction("settings-section-debug_diagnostics");
+  }
+  const adsb = await revealRequiredElement(
+    runtime, "settings-toggle-debug_internet_adsb", "internet ADS-B setting",
   );
   if (!adsb.checked) {
     await runtime.driver.performAction("settings-toggle-debug_internet_adsb");
@@ -1344,7 +1448,7 @@ async function mapModesAndOverlays(runtime) {
     const selected = await runtime.eventually(`${familyId} raster family selected`, async () => {
       const entries = await runtime.driver.readProjection(`parity:map-family:${familyId}:`);
       return entries[0] ?? null;
-    }, 45_000);
+    }, E2E_TIMING.userResponseMs);
     if (familyId === "none") {
       const empty = await runtime.eventually("empty raster plan", async () => {
         const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
@@ -1380,7 +1484,6 @@ async function mapModesAndOverlays(runtime) {
       });
       runtime.check(assertionId, Boolean(changed), changed);
       if (runtime.platform !== "android") await runtime.driver.back();
-      await delay(350);
     } else {
       runtime.check(assertionId, Boolean(option.text), `${option.text} (disabled with reason)`);
       await runtime.driver.back();
@@ -1408,7 +1511,7 @@ async function mapModesAndOverlays(runtime) {
     if (state?.track !== "none") return null;
     const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
     return viewport ? { state, viewport } : null;
-  }, 15_000, 40);
+  }, E2E_TIMING.observationMs, 40);
   await runtime.driver.performAction("playback-play-toggle");
   await runtime.eventually("replay paused in track gap", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
@@ -1475,11 +1578,29 @@ async function selectAirportFromMapSearch(runtime, airportId) {
   });
 }
 
+export async function selectTfrFromPreparedMap(runtime, airportId) {
+  // Searching establishes the target viewport. Do not ask the resulting
+  // selection snapshot about TFRs until the asynchronous overlay for that
+  // viewport is present; snapshots intentionally do not mutate underneath an
+  // open inspector.
+  await selectAirportFromMapSearch(runtime, airportId);
+  await runtime.driver.back();
+  const overlay = await runtime.eventually("TFR overlay in target viewport", async () => {
+    const state = liveOverlayState(await runtime.driver.readProjection("parity:live-overlay:"));
+    return state?.tfrs > 0 ? state : null;
+  }, E2E_TIMING.externalConsistencyMs);
+  const selection = await selectAirportFromMapSearch(runtime, airportId);
+  return { overlay, selection };
+}
+
 async function openAirportInfo(runtime, airportId) {
   await selectAirportFromMapSearch(runtime, airportId);
   await runtime.driver.performAction("airport_info");
-  return runtime.eventually(`${airportId} airport info`, () =>
-    runtime.driver.readElement(`airport-info-modal:${airportId}`), 45_000);
+  return runtime.eventually(
+    `${airportId} airport info`,
+    () => runtime.driver.readElement(`airport-info-modal:${airportId}`),
+    E2E_TIMING.resourceMs,
+  );
 }
 
 async function closeMapDetail(runtime) {
@@ -1545,7 +1666,7 @@ async function inspectorDetails(runtime) {
   const changedDistance = await runtime.eventually("live inspector distance", async () => {
     const entry = (await runtime.driver.readProjection("parity:map-selection-selected:KSEA"))[0];
     return entry?.text && entry.text !== initialDistance ? entry.text : null;
-  }, 5_000, 250);
+  }, E2E_TIMING.observationMs, 250);
   runtime.check("inspector.distance-live", Boolean(changedDistance), `${initialDistance} -> ${changedDistance}`);
 
   await runtime.driver.performAction("airport_info");
@@ -1582,13 +1703,13 @@ async function inspectorDetails(runtime) {
   const spot = await runtime.eventually("raw SPOT selection", async () => {
     const entries = await runtime.driver.readProjection("parity:map-selection-selected:");
     return entries.find((entry) => /SPOT/i.test(entry.text)) ?? null;
-  }, 15_000);
+  }, E2E_TIMING.observationMs);
   runtime.check("inspector.spot-fallback", Boolean(spot), spot?.text);
   const terrain = await runtime.eventually("SPOT terrain result", async () => {
     const entry = (await runtime.driver.readProjection("parity:map-selection-selected:"))
       .find((candidate) => /SPOT/i.test(candidate.text));
     return entry && /(MSL|ELEV|FT)/i.test(entry.text) ? entry : null;
-  }, 15_000);
+  }, E2E_TIMING.observationMs);
   runtime.check("inspector.terrain-async", Boolean(terrain), terrain?.text);
   if (await runtime.driver.readElement("map-selection-tray")) {
     await runtime.driver.back();
@@ -1628,11 +1749,17 @@ async function flightPlanAirwayEstimates(runtime) {
     const options = await runtime.driver.readProjection("parity:plan-airway-suggestion:");
     return options.length > 0 ? options : null;
   });
-  await runtime.eventually(`${airway.airway} airway suggestion`, () =>
-    runtime.driver.readElement(`plan-airway-suggestion:${airway.airway}`));
+  await revealRequiredElement(
+    runtime, `plan-airway-suggestion:${airway.airway}`, `${airway.airway} airway suggestion`,
+  );
   await runtime.driver.performAction(`plan-airway-suggestion:${airway.airway}`);
-  await runtime.eventually(`${airway.entry} airway entry`, () =>
-    runtime.driver.readElement(`plan-airway-entry:${airway.entry}`));
+  await runtime.eventually("airway entries", async () => {
+    const entries = await runtime.driver.readProjection("parity:plan-airway-entry:");
+    return entries.length > 0 ? entries : null;
+  });
+  await revealRequiredElement(
+    runtime, `plan-airway-entry:${airway.entry}`, `${airway.entry} airway entry`,
+  );
   await runtime.driver.performAction(`plan-airway-entry:${airway.entry}`);
   await runtime.eventually("airway exits", async () => {
     const entries = await runtime.driver.readProjection("parity:plan-airway-exit:");
@@ -1646,9 +1773,8 @@ async function flightPlanAirwayEstimates(runtime) {
   runtime.check("plan.airway-scroll", Boolean(airwayExit), airwayExit?.text);
   runtime.check("plan.add-airway", Boolean(airwayExit), airwayExit?.text);
 
-  const weather = await runtime.eventually("flight-plan weather badge", async () => {
-    return runtime.driver.findProjectionMatching("parity:plan-weather-badge:", "");
-  }, 45_000);
+  const weather = await runtime.step("flight-plan weather badge revealed", () =>
+    runtime.driver.revealProjectionMatching("parity:plan-weather-badge:", ""));
   runtime.check("plan.weather-badge", Boolean(weather), projectionId(weather));
 
   const eteColumn = (await runtime.driver.readProjection("parity:plan-column:"))
@@ -1699,7 +1825,7 @@ async function flightPlanAirwayEstimates(runtime) {
     const entries = await runtime.driver.readProjection("parity:plan-data:");
     const populated = entries.filter((entry) => !/:none$/.test(projectionId(entry)));
     return populated.length >= 3 ? populated : null;
-  }, 45_000);
+  }, E2E_TIMING.resourceMs);
   runtime.check("plan.estimates-vectors", Boolean(estimates), `${estimates?.length ?? 0} populated cells`);
 }
 
@@ -1711,28 +1837,32 @@ function altitudeControlId(runtime, controlId) {
 
 async function chooseDifferentAltitudeOption(runtime, controlId) {
   const launcherId = altitudeControlId(runtime, controlId);
-  const before = await runtime.driver.readElement(launcherId);
+  const before = await revealRequiredElement(runtime, launcherId, `${controlId} altitude control`);
   await runtime.driver.performAction(launcherId);
-  await delay(150);
-  const directAfter = await runtime.driver.readElement(launcherId);
-  if (directAfter?.text && directAfter.text !== before?.text) {
-    return { before, option: null, after: directAfter };
-  }
-  const option = await runtime.eventually(`${controlId} alternate option`, async () => {
+  const opened = await runtime.eventually(`${controlId} response`, async () => {
+    const directAfter = await runtime.driver.readElement(launcherId);
+    if (directAfter?.text && directAfter.text !== before?.text) {
+      return { directAfter, option: null };
+    }
     const options = await runtime.driver.readProjection(runtime.platform === "web"
       ? "tray-option-"
       : `parity:altitude-planner-option:${controlId}:`);
-    return options.find((entry) => entry.enabled !== false && entry.pressed !== "true")
+    const option = options.find((entry) => entry.enabled !== false && entry.pressed !== "true")
       ?? options.find((entry) => entry.enabled !== false)
       ?? null;
-  });
+    return option ? { directAfter: null, option } : null;
+  }, E2E_TIMING.userResponseMs);
+  if (opened.directAfter) {
+    return { before, option: null, after: opened.directAfter };
+  }
+  const option = opened.option;
   await runtime.driver.performAction(runtime.platform === "web"
     ? `tray-option:${trayOptionId(option)}`
     : projectionId(option));
   const after = await runtime.eventually(`${controlId} selection changed`, async () => {
     const value = await runtime.driver.readElement(launcherId);
     return value?.text && value.text !== before?.text ? value : null;
-  }, 45_000);
+  }, E2E_TIMING.userResponseMs);
   return { before, option, after };
 }
 
@@ -1746,32 +1876,34 @@ function selectedSemantic(element) {
   return element?.pressed === "true" || element?.selected === true || element?.checked === true;
 }
 
-async function chooseForecastWindModel(runtime) {
+export async function chooseForecastWindModel(runtime) {
   const noWindId = altitudeWindActionId(runtime, "no_wind");
   const readyId = altitudeWindActionId(runtime, "ready_forecast");
   const latestId = altitudeWindActionId(runtime, "latest_forecast");
   const noWind = await runtime.eventually("no-wind model row", () => runtime.driver.readElement(noWindId));
-  let ready = await runtime.driver.readElement(readyId);
+  const available = await runtime.eventually("forecast wind choice ready", async () => {
+    const ready = await runtime.driver.readElement(readyId);
+    if (ready && ready.enabled !== false) return { ready, latest: null };
+    const latest = await runtime.driver.readElement(latestId);
+    return latest && latest.enabled !== false ? { ready: null, latest } : null;
+  });
+  let ready = available.ready;
   let downloaded = false;
 
-  if (!ready || ready.enabled === false) {
-    const latest = await runtime.eventually("latest forecast download", async () => {
-      const value = await runtime.driver.readElement(latestId);
-      return value && value.enabled !== false ? value : null;
-    });
+  if (available.latest) {
     await runtime.driver.performAction(latestId);
     downloaded = true;
     ready = await runtime.eventually("downloaded forecast is ready", async () => {
       const value = await runtime.driver.readElement(readyId);
       return value && value.enabled !== false ? value : null;
-    }, 90_000);
+    }, E2E_TIMING.externalConsistencyMs);
   }
 
   await runtime.driver.performAction(readyId);
   const selected = await runtime.eventually("ready forecast selected", async () => {
     const value = await runtime.driver.readElement(readyId);
     return selectedSemantic(value) ? value : null;
-  }, 45_000);
+  }, E2E_TIMING.userResponseMs);
   return { noWind, ready, selected, downloaded };
 }
 
@@ -1787,7 +1919,7 @@ async function altitudePlanner(runtime) {
   await appendRoute(runtime, "KSEA KPAE");
   await runtime.driver.openPage("altitude_planner");
   const initialPanel = await runtime.eventually("altitude comparison panel", () =>
-    runtime.driver.readElement("altitude-comparison-panel"), 60_000);
+    runtime.driver.readElement("altitude-comparison-panel"), E2E_TIMING.resourceMs);
   const initialText = initialPanel.text;
 
   const aircraft = await chooseDifferentAltitudeOption(runtime, "aircraft");
@@ -1795,7 +1927,7 @@ async function altitudePlanner(runtime) {
   const afterAircraft = await runtime.eventually("aircraft comparison changed", async () => {
     const panel = await runtime.driver.readElement("altitude-comparison-panel");
     return panel?.text && panel.text !== initialText ? panel : null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
   runtime.check("altitude.changed-estimate", Boolean(afterAircraft), afterAircraft?.text.slice(0, 240));
 
   const profile = await chooseDifferentAltitudeOption(runtime, "aircraft_profile");
@@ -1814,7 +1946,9 @@ async function altitudePlanner(runtime) {
     forecast?.text ?? wind.selected?.text,
   );
 
-  const basisBefore = await runtime.driver.readElement("altitude-planner-departure-basis");
+  const basisBefore = await revealRequiredElement(
+    runtime, "altitude-planner-departure-basis", "altitude departure-time basis",
+  );
   await runtime.driver.performAction("altitude-planner-departure-basis");
   const basisAfter = await runtime.eventually("departure time basis changed", async () => {
     const value = await runtime.driver.readElement("altitude-planner-departure-basis");
@@ -1861,12 +1995,18 @@ async function loadReplayFixture(runtime) {
     tracePath,
     { dismissKeyboard: runtime.platform === "android" },
   );
-  return runtime.eventually("loaded replay trace", async () => {
-    const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-    if (state?.status === "paused" && state.duration > 0) return state;
-    if (state?.status === "empty") await runtime.driver.performAction("playback-load-button");
-    return null;
-  }, 45_000);
+  return runtime.transition("load replay trace", {
+    ready: async () => {
+      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+      return state?.status === "empty" ? state : null;
+    },
+    act: () => runtime.driver.performAction("playback-load-button"),
+    complete: async () => {
+      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+      return state?.status === "paused" && state.duration > 0 ? state : null;
+    },
+    responseTimeoutMs: E2E_TIMING.resourceMs,
+  });
 }
 
 async function setReplayRate(runtime, rate) {
@@ -1907,7 +2047,7 @@ async function replayTrackUp(runtime) {
   await runtime.eventually("replay ownship entered track gap", async () => {
     const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
     return state?.mode === "replay" && state.draw && state.track === "none" ? state : null;
-  }, 12_000, 40);
+  }, E2E_TIMING.observationMs, 40);
   await runtime.driver.performAction("playback-play-toggle");
   const paused = await runtime.eventually("replay paused in track gap", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
@@ -1972,7 +2112,7 @@ async function preparedLiveFeeds(runtime) {
   const overlay = await runtime.eventually("prepared weather overlays", async () => {
     const state = liveOverlayState(await runtime.driver.readProjection("parity:live-overlay:"));
     return state && state.metars > 0 && state.pireps > 0 ? state : null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
 
   await selectAirportFromMapSearch(runtime, "KSEA");
   const weatherAction = await runtime.eventually("KSEA weather action", () => runtime.driver.readElement(
@@ -1985,7 +2125,7 @@ async function preparedLiveFeeds(runtime) {
     return modal?.text && /METAR/i.test(modal.text) && /TAF/i.test(modal.text) && /NOTAM/i.test(modal.text)
       ? modal
       : null;
-  }, 60_000);
+  }, E2E_TIMING.resourceMs);
   runtime.check(
     "livefeed.metar-taf-pirep-notam",
     Boolean(detail && overlay.metars > 0 && overlay.pireps > 0),
@@ -2001,11 +2141,11 @@ async function nexradFrames(runtime) {
   const first = await runtime.eventually("painted NEXRAD history frame", async () => {
     const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
     return state && state.tiles > 0 && state.frames >= 2 && state.frame !== null ? state : null;
-  }, 90_000);
+  }, E2E_TIMING.externalConsistencyMs);
   const next = await runtime.eventually("advanced NEXRAD history frame", async () => {
     const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
     return state && state.tiles > 0 && state.frames === first.frames && state.frame !== first.frame ? state : null;
-  }, 12_000, 100);
+  }, E2E_TIMING.observationMs, 100);
   runtime.check("livefeed.nexrad-frames", Boolean(next), `${JSON.stringify(first)} -> ${JSON.stringify(next)}`);
 }
 
@@ -2017,7 +2157,7 @@ async function obstaclesNavKv(runtime) {
   const overlay = await runtime.eventually("faulted obstacle NavKv tiles", async () => {
     const state = liveOverlayState(await runtime.driver.readProjection("parity:live-overlay:"));
     return state && state.obstacles > 0 ? state : null;
-  }, 90_000);
+  }, E2E_TIMING.externalConsistencyMs);
   runtime.check("livefeed.obstacles-navkv", overlay.obstacles > 0, JSON.stringify(overlay));
 }
 
@@ -2031,9 +2171,9 @@ async function windsAloftNavKv(runtime) {
   const forecast = await runtime.eventually("forecast-backed altitude comparison", async () => {
     const value = await runtime.driver.readElement("altitude-planner-forecast");
     return value?.text && /(forecast from|extends|valid through)/i.test(value.text) ? value : null;
-  }, 90_000);
+  }, E2E_TIMING.externalConsistencyMs);
   const comparison = await runtime.eventually("wind-backed altitude rows", () =>
-    runtime.driver.readElement("altitude-comparison-panel"), 60_000);
+    runtime.driver.readElement("altitude-comparison-panel"), E2E_TIMING.resourceMs);
   runtime.check(
     "livefeed.winds-aloft-navkv",
     Boolean(forecast && comparison?.text),
@@ -2048,14 +2188,14 @@ async function tfrMapDetail(runtime) {
   await runtime.driver.openPage("map");
   await setLayerVisible(runtime, "vectors", true);
   await runtime.driver.chooseOption("chart-family-button", "none");
-  await selectAirportFromMapSearch(runtime, airportId);
+  await selectTfrFromPreparedMap(runtime, airportId);
   const tfrItemId = runtime.platform === "web"
     ? "map-selection-item-airspace-TFR"
     : "map-selection-item:airspace-TFR";
   const tfrItem = await runtime.eventually(
     "TFR map selection item",
     () => runtime.driver.readElement(tfrItemId),
-    90_000,
+    E2E_TIMING.localReadyMs,
   );
   await runtime.driver.performAction(tfrItemId);
   await runtime.driver.performAction("tfr_text");
@@ -2076,11 +2216,22 @@ function cloudActionElementId(runtime, actionId) {
   return runtime.platform === "web" ? `cloud-action-${actionId}` : `cloud-action:${actionId}`;
 }
 
+function cloudPanelElementId(runtime, panelId) {
+  return runtime.platform === "web" ? `cloud-panel-${panelId}` : `cloud-panel:${panelId}`;
+}
+
+async function waitForCloudPanel(runtime, panelId, state) {
+  return runtime.eventually(`${panelId} ${state} cloud panel`, async () => {
+    const panel = await runtime.driver.readElement(cloudPanelElementId(runtime, panelId));
+    return panel?.state === state ? panel : null;
+  });
+}
+
 async function waitForCloudActive(runtime) {
   return runtime.eventually("active Sync Account", async () => {
     const status = await runtime.driver.readElement(cloudStatusElementId(runtime));
     return status?.text && /Cloud active/i.test(status.text) ? status : null;
-  }, 30_000);
+  }, E2E_TIMING.cloudConsistencyMs);
 }
 
 async function waitForPlanIdents(runtime, expected) {
@@ -2088,7 +2239,7 @@ async function waitForPlanIdents(runtime, expected) {
     const rows = await runtime.driver.readProjection("parity:plan-row:");
     const text = rows.map((row) => row.text).join(" ");
     return expected.every((ident) => text.includes(ident)) ? rows : null;
-  }, 30_000);
+  }, E2E_TIMING.cloudConsistencyMs);
 }
 
 async function waitForTargetPackagePreferences(runtime, preferences) {
@@ -2101,22 +2252,39 @@ async function waitForTargetPackagePreferences(runtime, preferences) {
         && JSON.stringify(state.offline_package_preferences) === JSON.stringify(preferences)
         ? state
         : null;
-    }, 30_000);
+    }, E2E_TIMING.cloudConsistencyMs);
   }
 
   await runtime.driver.openPage("offline_packages");
-  const expected = [
+  const expectedStateFragments = [
+    ...Object.entries(preferences.regions).map(([id, selection]) =>
+      `:region:${id}:${selection}`),
+    ...Object.entries(preferences.products).map(([id, selection]) =>
+      `:product:${id}:${selection}`),
+  ];
+  const state = await runtime.eventually("Android cloud package preferences", async () => {
+    const [entry] = await runtime.driver.readProjection("parity:offline-preferences:");
+    const id = projectionId(entry);
+    return id && expectedStateFragments.every((fragment) => id.includes(fragment)) ? entry : null;
+  }, E2E_TIMING.cloudConsistencyMs);
+  const expectedRows = [
     ...Object.entries(preferences.regions).map(([id, selection]) =>
       `parity:offline-region:${id}:selection:${selection}`),
     ...Object.entries(preferences.products).map(([id, selection]) =>
       `parity:offline-product:${id}:selection:${selection}`),
   ];
-  return runtime.eventually("Android cloud package preferences", async () => {
-    for (const probe of expected) {
-      if (!await runtime.driver.readElement(probe)) return null;
-    }
-    return expected;
-  }, 30_000);
+  for (const expected of expectedRows) {
+    await revealRequiredElement(
+      runtime,
+      expected.replace(/^parity:/, ""),
+      `synchronized package preference ${expected}`,
+    );
+  }
+  return state;
+}
+
+async function revealCloudAction(runtime, actionId, description) {
+  return revealRequiredElement(runtime, cloudActionElementId(runtime, actionId), description);
 }
 
 async function cloudCrossfill(runtime) {
@@ -2126,55 +2294,47 @@ async function cloudCrossfill(runtime) {
   await acceptDisclaimer(runtime);
   await runtime.driver.openPage("cloud");
 
-  const beginSetup = await runtime.eventually(
-    "begin cloud setup action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "begin_setup")),
-  );
+  const beginSetup = await revealCloudAction(runtime, "begin_setup", "begin cloud setup action");
   runtime.check("cloud.begin-setup", Boolean(beginSetup?.enabled));
   await runtime.driver.performAction("begin_setup");
+  await waitForCloudPanel(runtime, "receive_setup", "active");
 
-  const scanCode = await runtime.eventually(
-    "scan setup code action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "scan_setup_code")),
-  );
+  const scanCode = await revealCloudAction(runtime, "scan_setup_code", "scan setup code action");
   runtime.check(
     "cloud.scan-code",
     Boolean(scanCode),
     scanCode?.enabled ? "scanner action enabled" : "scanner action explains platform unavailability",
   );
-  const setupInput = await runtime.driver.readElement("cloud-setup-code-input");
+  const setupInput = await revealRequiredElement(
+    runtime, "cloud-setup-code-input", "cloud setup code input",
+  );
   if (!setupInput) throw new Error("cloud setup code input is unavailable");
 
-  const backSetup = await runtime.driver.readElement(cloudActionElementId(runtime, "back_setup"));
+  const backSetup = await revealCloudAction(runtime, "back_setup", "back from cloud setup");
   await runtime.driver.performAction("back_setup");
+  await waitForCloudPanel(runtime, "get_started", "active");
   runtime.check("cloud.back-setup", Boolean(backSetup?.enabled));
 
-  const beginCreate = await runtime.eventually(
-    "begin account creation action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "begin_create")),
+  const beginCreate = await revealCloudAction(
+    runtime, "begin_create", "begin account creation action",
   );
   runtime.check("cloud.begin-create", Boolean(beginCreate?.enabled));
   await runtime.driver.performAction("begin_create");
-  const createAccount = await runtime.eventually(
-    "create account action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "create_account")),
-  );
+  await waitForCloudPanel(runtime, "create_account", "active");
+  const createAccount = await revealCloudAction(runtime, "create_account", "create account action");
   await runtime.driver.performAction("create_account");
   const active = await waitForCloudActive(runtime);
   runtime.check("cloud.create-account", Boolean(createAccount?.enabled && active));
 
-  const syncNow = await runtime.eventually(
-    "sync now action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "sync_now")),
-  );
+  const syncNow = await revealCloudAction(runtime, "sync_now", "sync now action");
   await runtime.driver.performAction("sync_now");
   await waitForCloudActive(runtime);
   runtime.check("cloud.sync-now", Boolean(syncNow?.enabled));
 
-  const backup = await runtime.driver.readElement(
-    cloudActionElementId(runtime, "backup_setup_code"),
-  );
+  const backup = await revealCloudAction(runtime, "backup_setup_code", "backup setup code action");
   await runtime.driver.performAction("backup_setup_code");
+  await waitForCloudPanel(runtime, "backup_code", "active");
+  await revealRequiredElement(runtime, "cloud-setup-code-output", "Device Setup Code output");
   const setupCodeElement = await runtime.eventually("Device Setup Code", async () => {
     const element = await runtime.driver.readElement("cloud-setup-code-output");
     const value = element?.value || element?.text;
@@ -2183,30 +2343,28 @@ async function cloudCrossfill(runtime) {
   runtime.check("cloud.backup-code", Boolean(backup?.enabled && setupCodeElement));
 
   await runtime.driver.performAction("copy_setup_code");
-  const copy = await runtime.eventually(
-    "copy setup code action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "copy_setup_code")),
-  );
+  const copy = await revealCloudAction(runtime, "copy_setup_code", "copy setup code action");
   runtime.check("cloud.copy-code", Boolean(copy?.enabled));
-  const closeBackup = await runtime.driver.readElement(
-    cloudActionElementId(runtime, "close_linked_detail"),
+  const closeBackup = await revealCloudAction(
+    runtime, "close_linked_detail", "close backup detail action",
   );
   await runtime.driver.performAction("close_linked_detail");
+  await waitForCloudPanel(runtime, "linked", "active");
 
-  const addDevice = await runtime.eventually(
-    "add device action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "add_device")),
-  );
+  const addDevice = await revealCloudAction(runtime, "add_device", "add device action");
   await runtime.driver.performAction("add_device");
+  await waitForCloudPanel(runtime, "add_device", "active");
+  await revealRequiredElement(runtime, "cloud-setup-code-output", "add-device setup code output");
   const addDeviceCode = await runtime.eventually(
     "add-device setup code",
     () => runtime.driver.readElement("cloud-setup-code-output"),
   );
   runtime.check("cloud.add-device", Boolean(addDevice?.enabled && addDeviceCode));
-  const closeAddDevice = await runtime.driver.readElement(
-    cloudActionElementId(runtime, "close_linked_detail"),
+  const closeAddDevice = await revealCloudAction(
+    runtime, "close_linked_detail", "close add-device detail action",
   );
   await runtime.driver.performAction("close_linked_detail");
+  await waitForCloudPanel(runtime, "linked", "active");
   runtime.check("cloud.close-detail", Boolean(closeBackup?.enabled && closeAddDevice?.enabled));
 
   try {
@@ -2214,6 +2372,10 @@ async function cloudCrossfill(runtime) {
     peer = await launchCloudJourneyPeer({
       url: peerUrl,
       referenceEpochMs: null,
+      requestOriginRoutes: runtime.platform === "android" ? [{
+        sourceOrigin: `http://127.0.0.1:${process.env.AEROBAG_ANDROID_CLOUD_DEVICE_PORT ?? "18094"}`,
+        targetOrigin: `http://127.0.0.1:${process.env.AEROBAG_E2E_CLOUD_PORT ?? "18094"}`,
+      }] : [],
     });
     await peer.acceptSetupCode(setupCodeElement.value);
     runtime.check("cloud.accept-code", true, "second client linked with the pasted setup code");
@@ -2238,7 +2400,7 @@ async function cloudCrossfill(runtime) {
     } else {
       await runtime.driver.reload();
       await runtime.eventually("Android app after cloud reconnect restart", () =>
-        runtime.driver.readElement("primary-navigation"), 60_000);
+        runtime.driver.readElement("primary-navigation"), E2E_TIMING.startupMs);
     }
     await peer.appendRoute("KPLU");
     await runtime.driver.openPage("flight_plan");
@@ -2249,16 +2411,11 @@ async function cloudCrossfill(runtime) {
   }
 
   await runtime.driver.openPage("cloud");
-  const beginUnlink = await runtime.eventually(
-    "begin unlink action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "begin_unlink")),
-  );
+  const beginUnlink = await revealCloudAction(runtime, "begin_unlink", "begin unlink action");
   await runtime.driver.performAction("begin_unlink");
+  await waitForCloudPanel(runtime, "confirm_unlink", "caution");
   runtime.check("cloud.begin-unlink", Boolean(beginUnlink?.enabled));
-  const confirmUnlink = await runtime.eventually(
-    "confirm unlink action",
-    () => runtime.driver.readElement(cloudActionElementId(runtime, "confirm_unlink")),
-  );
+  const confirmUnlink = await revealCloudAction(runtime, "confirm_unlink", "confirm unlink action");
   await runtime.driver.performAction("confirm_unlink");
   const inactive = await runtime.eventually("unlinked Sync Account", async () => {
     const status = await runtime.driver.readElement(cloudStatusElementId(runtime));

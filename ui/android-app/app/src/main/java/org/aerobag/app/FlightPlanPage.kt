@@ -90,7 +90,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.produceState
@@ -366,7 +365,6 @@ internal fun FlightPlanPage(
     val planDataScrollState = rememberScrollState()
     val planControlScrollState = rememberScrollState()
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
-    var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {
@@ -379,7 +377,7 @@ internal fun FlightPlanPage(
             null
     }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
-    val planStateTestTag = remember(projectedPlanUiState) {
+    val planStateTestTag = run {
         val activeRows = projectedPlanUiState.displayRows
             .filter { it.active }
             .joinToString(",") { it.uid }
@@ -618,28 +616,19 @@ internal fun FlightPlanPage(
         if (input.isEmpty() || !routeEntryPreview.canCommit || routeEntrySubmitting) {
             return
         }
-        routeEntrySuppressNavigationUntilMs = SystemClock.elapsedRealtime() + 800L
         routeEntrySubmitting = true
         routeEntryError = null
         val snapshot = applySessionCommand("appendFlightPlanEntry") {
             uiSession.appendFlightPlanEntry(input)
         }
         if (snapshot != null) {
+            closePanels()
             routeEntryText = ""
             routeEntryPreview = emptyFlightPlanEntryPreview()
             keyboardController?.hide()
             focusManager.clearFocus(force = true)
         }
         routeEntrySubmitting = false
-    }
-
-    fun performRouteEntryNavigation(action: () -> Unit) {
-        if (SystemClock.elapsedRealtime() < routeEntrySuppressNavigationUntilMs) {
-            return
-        }
-        keyboardController?.hide()
-        focusManager.clearFocus(force = true)
-        action()
     }
 
     fun currentRouteEntryPreviewState(): RouteEntryPreviewUiState =
@@ -864,11 +853,20 @@ internal fun FlightPlanPage(
                                 loading = routeEntryLoading,
                                 error = routeEntryError,
                                 submitting = routeEntrySubmitting,
+                                readyForInput =
+                                    routeEntryFocused &&
+                                        selectedWaypointUid == null &&
+                                        airwayPicker == null &&
+                                        procedurePicker == null &&
+                                        airportInsert == null,
                                 onTextChange = { value ->
                                     routeEntryText = value.uppercase()
                                     routeEntryError = null
                                 },
-                                onFocusChange = { focused -> routeEntryFocused = focused },
+                                onFocusChange = { focused ->
+                                    routeEntryFocused = focused
+                                    if (focused) closePanels()
+                                },
                                 onSubmit = { submitRouteEntry() },
                             )
                         }
@@ -994,24 +992,16 @@ internal fun FlightPlanPage(
                 currentPage = page,
                 navElement = navElement,
                 chartPlateTargetPage = mostRecentChartOrPlatePage,
-                onHomeClick = {
-                    performRouteEntryNavigation {
-                        onSelectPage(AppPage.Home)
-                    }
-                },
+                onHomeClick = { onSelectPage(AppPage.Home) },
                 onOpenPlan = null,
                 onSelectPage = onSelectPage,
-                onOpenChartOrPlate = {
-                    performRouteEntryNavigation {
-                        onOpenRecentChartOrPlate()
-                    }
-                },
+                onOpenChartOrPlate = onOpenRecentChartOrPlate,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
 
         if (selectedWaypointUid != null && selectedRow != null) {
-            Scrim {
+            Scrim(modifier = Modifier.testTag("parity:plan-row-tray-scrim")) {
                 if (SystemClock.elapsedRealtime() - trayOpenedAtMs >= 150L) {
                     closePanels()
                 }
@@ -1511,6 +1501,7 @@ internal fun FlightPlanRouteEntryRow(
     loading: Boolean,
     error: String?,
     submitting: Boolean,
+    readyForInput: Boolean,
     onTextChange: (String) -> Unit,
     onFocusChange: (Boolean) -> Unit,
     onSubmit: () -> Unit,
@@ -1532,7 +1523,13 @@ internal fun FlightPlanRouteEntryRow(
             ?: preview.issues.firstOrNull()?.message
             ?: if (loading) "Checking..." else null
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(
+                "parity:plan-append-route-state:" +
+                    "can_commit:${preview.canCommit}:loading:$loading:" +
+                    "ready_for_input:$readyForInput",
+            ),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
     ) {
         BasicTextField(
@@ -1576,7 +1573,7 @@ internal fun FlightPlanRouteEntryRow(
                         if (event.nativeKeyEvent.keyCode != AndroidKeyEvent.KEYCODE_ENTER) {
                             return@onPreviewKeyEvent false
                         }
-                        if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN) {
+                        if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_UP) {
                             submitAction()
                         }
                         true

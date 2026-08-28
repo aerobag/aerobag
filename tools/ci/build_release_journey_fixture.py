@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
+import lzma
 import math
 import os
 import shutil
@@ -42,6 +44,7 @@ TILE_WINDOW_CENTERS = (MAP_CENTER, (33.9425, -118.4081))
 # still pan far enough to prove newly revealed tiles load.
 MAP_TILE_RADIUS = 3
 LIVE_FEED_HISTORY_LIMIT = 2
+FIXTURE_PIREP_ID = "pirep:release-journey-ksea"
 TPP_ASSETS = {
     "nw": {
         "KSEA": {"BANGR NINE", "CHINS FIVE", "AIRPORT DIAGRAM"},
@@ -444,9 +447,11 @@ def fixture_capabilities(reference_epoch_ms: int) -> dict[str, Any]:
         "replay_trace": "replay/track-gap.json",
         "second_publication": {"fixture": "nav-db-advance"},
         "live_feeds": {
+            "empty": "live-feeds/empty",
             "fresh": "live-feeds/fresh",
             "mixed": "live-feeds/mixed",
             "stale": "live-feeds/stale",
+            "pirep_target_airport": "KSEA",
             "tfr_target_airport": "27W",
         },
     }
@@ -479,6 +484,77 @@ def live_feed_manifest_resources(value: Any) -> Iterable[dict[str, Any]]:
     elif isinstance(value, list):
         for child in value:
             yield from live_feed_manifest_resources(child)
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def install_fixture_pirep(output: Path, current: dict[str, Any]) -> bool:
+    product = current.get("products", {}).get("pireps")
+    if not isinstance(product, dict):
+        return False
+    state_url = product.get("state_url")
+    manifest_url = product.get("version_manifest_url")
+    version = product.get("current")
+    if not all(isinstance(value, str) for value in (state_url, manifest_url, version)):
+        raise BuildError("PIREP fixture product has incomplete state references")
+
+    state_path = output.joinpath(*safe_member_path(state_url).parts)
+    manifest_path = output.joinpath(*safe_member_path(manifest_url).parts)
+    try:
+        state = json.loads(lzma.decompress(state_path.read_bytes()))
+    except (OSError, lzma.LZMAError, json.JSONDecodeError) as error:
+        raise BuildError(f"cannot decode PIREP fixture state {state_path}: {error}") from error
+    if state.get("version_label") != version:
+        raise BuildError("PIREP fixture state version does not match current.json")
+    records = state.get("pireps_by_id")
+    if not isinstance(records, dict):
+        raise BuildError("PIREP fixture state has no pireps_by_id object")
+
+    observed_at_utc = current.get("generated_at_utc")
+    if not isinstance(observed_at_utc, str):
+        raise BuildError("live-feed fixture has no generated_at_utc for synthetic PIREP")
+    records[FIXTURE_PIREP_ID] = {
+        "id": FIXTURE_PIREP_ID,
+        "raw_text": "KSEA UA /OV SEA/TM RELEASE/FI TEST/TP C172",
+        "observed_at_utc": observed_at_utc,
+        "report_type": "PIREP",
+        "longitude": MAP_CENTER[1],
+        "latitude": MAP_CENTER[0],
+        "symbol": "generic",
+        "icing": "none",
+        "turbulence": "none",
+    }
+    state["pirep_count"] = len(records)
+    state_bytes = canonical_json_bytes(state)
+    state_sha256 = hashlib.sha256(state_bytes).hexdigest()
+    compressed = lzma.compress(state_bytes, format=lzma.FORMAT_XZ, preset=6)
+    state_path.write_bytes(compressed)
+
+    manifest = read_json(manifest_path)
+    manifest.pop("previous", None)
+    manifest.pop("delta_from_previous", None)
+    manifest["state"] = {
+        "kind": "json_xz",
+        "url": state_url,
+        "bytes": len(compressed),
+        "blob_sha256": hashlib.sha256(compressed).hexdigest(),
+        "state_sha256": state_sha256,
+    }
+    write_json(manifest_path, manifest)
+    product["state_sha256"] = state_sha256
+
+    installed = records.get(FIXTURE_PIREP_ID)
+    if (
+        installed is None
+        or abs(installed.get("latitude", 0) - MAP_CENTER[0]) > 0.001
+        or abs(installed.get("longitude", 0) - MAP_CENTER[1]) > 0.001
+    ):
+        raise BuildError("synthetic PIREP is not visible in the initial viewport")
+    return True
 
 
 def compact_live_feed_fixture(source: Path, output: Path, *, stale: bool) -> dict[str, Any]:
@@ -522,6 +598,7 @@ def compact_live_feed_fixture(source: Path, output: Path, *, stale: bool) -> dic
             destination.parent.mkdir(parents=True, exist_ok=True)
             write_json(destination, manifest)
             copied_versions += 1
+    pirep_overlay = install_fixture_pirep(output, compact)
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "current.json", compact)
     return {
@@ -529,6 +606,7 @@ def compact_live_feed_fixture(source: Path, output: Path, *, stale: bool) -> dic
         "product_count": len(compact["products"]),
         "version_count": copied_versions,
         "stale": stale,
+        "pirep_overlay": pirep_overlay,
     }
 
 
@@ -540,11 +618,11 @@ def write_replay_fixture(root: Path) -> Path:
         "t": "C172",
         "trace": [
             [0.0, 47.493, -122.216, 1500, 105, 320],
-            [1.0, 47.497, -122.222, 1550, 105, 320],
-            [2.0, 47.501, -122.228, 1600, 105, None],
-            [3.0, 47.505, -122.234, 1650, 105, None],
-            [4.0, 47.509, -122.240, 1700, 105, 300],
-            [5.0, 47.513, -122.246, 1750, 105, 300],
+            [0.25, 47.497, -122.222, 1550, 105, 320],
+            [0.5, 47.501, -122.228, 1600, 105, None],
+            [0.75, 47.505, -122.234, 1650, 105, None],
+            [1.0, 47.509, -122.240, 1700, 105, 300],
+            [1.25, 47.513, -122.246, 1750, 105, 300],
         ],
     })
     return replay
@@ -552,10 +630,20 @@ def write_replay_fixture(root: Path) -> Path:
 
 def write_auxiliary_fixtures(root: Path, live_feed_source: Path) -> list[dict[str, Any]]:
     write_replay_fixture(root)
+    empty = root / "live-feeds" / "empty"
     fresh = root / "live-feeds" / "fresh"
     mixed = root / "live-feeds" / "mixed"
     stale = root / "live-feeds" / "stale"
     fresh_diagnostics = compact_live_feed_fixture(live_feed_source, fresh, stale=False)
+    if not fresh_diagnostics["pirep_overlay"]:
+        raise BuildError("live-feed fixture requires a PIREP product")
+    fresh_current = read_json(fresh / "current.json")
+    empty.mkdir(parents=True)
+    write_json(empty / "current.json", {
+        "schema_version": fresh_current["schema_version"],
+        "generated_at_utc": fresh_current["generated_at_utc"],
+        "products": {},
+    })
     shutil.copytree(fresh, mixed, copy_function=os.link)
     mixed_current_path = mixed / "current.json"
     mixed_current = read_json(mixed_current_path)
@@ -584,7 +672,12 @@ def write_auxiliary_fixtures(root: Path, live_feed_source: Path) -> list[dict[st
     stale_diagnostics["stale"] = True
     mixed_diagnostics = dict(fresh_diagnostics)
     mixed_diagnostics.update({"mixed": True, "missing_product": "pireps", "stale_product": "tfrs"})
-    return [fresh_diagnostics, mixed_diagnostics, stale_diagnostics]
+    empty_diagnostics = {
+        "product_count": 0,
+        "version_count": 0,
+        "empty": True,
+    }
+    return [empty_diagnostics, fresh_diagnostics, mixed_diagnostics, stale_diagnostics]
 
 
 def live_feed_reference_epoch_ms(live_feed_source: Path) -> int:

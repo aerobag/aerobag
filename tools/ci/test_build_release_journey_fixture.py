@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import json
+import lzma
 import tempfile
 import unittest
 import zipfile
@@ -243,7 +244,18 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
             version = f"{product}-v1"
             state = source / "states" / product / f"{version}.json.xz"
             state.parent.mkdir(parents=True, exist_ok=True)
-            state.write_bytes(product.encode())
+            payload = {
+                "schema_version": 1,
+                "version_label": version,
+            }
+            if product == "pireps":
+                payload.update({
+                    "generated_at_utc": "2026-08-20T00:00:00Z",
+                    "observed_at_utc": "2026-08-20T00:00:00Z",
+                    "pirep_count": 0,
+                    "pireps_by_id": {},
+                })
+            state.write_bytes(lzma.compress(fixture.canonical_json_bytes(payload)))
             manifest = source / "versions" / product / f"{version}.json"
             fixture.write_json(manifest, {
                 "schema_version": 3,
@@ -254,6 +266,7 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
             products[product] = {
                 "current": version,
                 "version_manifest_url": f"versions/{product}/{version}.json",
+                "state_url": f"states/{product}/{version}.json.xz",
                 "collected_at_utc": "2026-08-20T00:00:00Z",
                 "history": [],
             }
@@ -267,6 +280,10 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         self.assertEqual("2020-01-01T00:00:00Z", mixed["products"]["tfrs"]["collected_at_utc"])
         self.assertNotIn("pireps", mixed["products"])
         self.assertTrue(any(value.get("mixed") for value in diagnostics))
+        fresh_state = lzma.decompress(next(
+            (self.root / "fixture/live-feeds/fresh/states/pireps").glob("*.json.xz")
+        ).read_bytes())
+        self.assertIn(fixture.FIXTURE_PIREP_ID, json.loads(fresh_state)["pireps_by_id"])
 
     def test_live_feed_reference_epoch_comes_from_source_generation(self) -> None:
         source = self.root / "live-source"
@@ -286,6 +303,7 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         self.assertIsInstance(replay["trace"], list)
         self.assertGreaterEqual(len(replay["trace"]), 6)
         self.assertEqual([None, None], [replay["trace"][2][5], replay["trace"][3][5]])
+        self.assertLessEqual(replay["trace"][-1][0], 1.25)
 
 
 if __name__ == "__main__":

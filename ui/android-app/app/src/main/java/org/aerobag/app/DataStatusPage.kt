@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -366,6 +367,16 @@ internal fun DataStatusPage(
             .testTag("parity:page:data_status")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
+        Spacer(
+            modifier = Modifier
+                .size(1.dp)
+                .testTag(
+                    state.rows.joinToString(
+                        prefix = "parity:data-status-state:",
+                        separator = "|",
+                    ) { row -> "${row.id}=${row.severity.name.lowercase()}" },
+                ),
+        )
         PrimaryNavigationDock(
             currentPage = page,
             navElement = navElement,

@@ -497,7 +497,7 @@ def android_shard_lane(
         for priority in PRIORITIES
     )
     setup = (
-        "tools/e2e/release_journey_lab.sh fixture-start-web fresh"
+        "tools/e2e/release_journey_lab.sh fixture-start-web empty"
         " && ui/android-app/scripts/run_e2e_ci.sh --headless --keep-emulator"
         " --skip-system-image-install --no-package-server"
         f" --apk {apps / 'aerobag-release-e2e.apk'}"

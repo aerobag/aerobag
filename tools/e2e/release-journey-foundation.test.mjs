@@ -7,7 +7,9 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { PassThrough } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import {
   createJourneyResult, finishJourneyResult, recordJourneyCheck,
@@ -18,11 +20,13 @@ import { verifyProductSurfaceCoverage } from "./product-surface-coverage.mjs";
 import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-registry.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
+  chooseForecastWindModel,
   openAndDismissDataStatus,
   offlineSyncButtonIsIdle,
   rasterPlanIsDisplayReady,
   selectChartSearchSuggestion,
   selectProcedure,
+  selectTfrFromPreparedMap,
 } from "./release-journey-implementations.mjs";
 import {
   decodeReleaseJourneyFixturePath,
@@ -33,9 +37,9 @@ import {
   androidActionCandidates, androidElementEnabled, androidElementFallback,
   androidActionUsesSubmit, AndroidSemanticJourneyDriver,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
-  androidPageTag, androidProjectionMayRequireVerticalScan, androidSemanticTag,
+  androidDataStatusRowsFromStateTag, androidPageTag, androidProjectionMayRequireVerticalScan, androidSemanticTag,
   androidTextControlNeedsTap,
-  androidZoomKeyCode, findTagOrPrefix, retryVerifiedAndroidTextEntry,
+  androidZoomKeyCode, findTagOrPrefix,
   SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
   validateSemanticDriver, WebSemanticJourneyDriver,
 } from "./semantic-journey-driver.mjs";
@@ -43,11 +47,32 @@ import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 import { summarizeFixtureRequests } from "./release-journey-runtime.mjs";
+import { assertConditionRemains, observeUntil, performTransition } from "./transition-contract.mjs";
+import {
+  auditJourneyStructure,
+  auditQualificationJourneys,
+} from "./journey-structure-audit.mjs";
+import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
+import { CdpClient } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 
 test("release journey registry owns every assertion exactly once", () => {
   const index = validateJourneyRegistry();
   assert.equal(index.journey_ids.size, RELEASE_JOURNEYS.length);
   assert.ok(index.assertion_owners.size > 100);
+});
+
+test("CDP transport rejects late work without writing after pipe shutdown", async () => {
+  const pipeWrite = new PassThrough();
+  const pipeRead = new PassThrough();
+  pipeWrite.resume();
+  const client = new CdpClient({ pipeWrite, pipeRead });
+  await client.open();
+  const pending = client.send("Runtime.enable");
+  client.close();
+  await assert.rejects(pending, /connection closed/);
+  await assert.rejects(client.send("Runtime.enable"), /request Runtime\.enable rejected/);
+  pipeRead.write(`${JSON.stringify({ method: "Runtime.event" })}\0`);
+  assert.equal(pipeWrite.writableEnded, true);
 });
 
 test("grouped P2 journeys leave destructive contract failure last", () => {
@@ -142,23 +167,204 @@ test("status popup dismissal waits until the popup can receive Back", async () =
   ]);
 });
 
-test("verified Android text entry replaces a dropped first injection", async () => {
-  const observed = ["stale-prefill", "fixture-url"];
-  const attempts = [];
-  const result = await retryVerifiedAndroidTextEntry("fixture-url", {
-    enter: async (attempt) => attempts.push(attempt),
-    read: async () => observed.shift(),
-  });
-  assert.deepEqual(result, { matched: true, observed: "fixture-url", attempts: 2 });
-  assert.deepEqual(attempts, [0, 1]);
+test("TFR selection observes the target overlay before taking its final inspector snapshot", async () => {
+  const events = [];
+  let selections = 0;
+  let overlayProbes = 0;
+  const runtime = {
+    platform: "web",
+    driver: {
+      async openPage(id) { events.push(`page:${id}`); },
+      async enterText(id, value) { events.push(`text:${id}:${value}`); },
+      async readElement(id) {
+        events.push(`read:${id}`);
+        return id === "chart-search-suggestion-27W" ? { enabled: true } : null;
+      },
+      async performAction(id) {
+        events.push(`action:${id}`);
+        selections += 1;
+      },
+      async readProjection(probe) {
+        events.push(`projection:${probe}`);
+        if (probe === "parity:map-selection-selected:27W") {
+          return selections > 0 ? [{ id: `${probe}:ready` }] : [];
+        }
+        if (probe === "parity:live-overlay:") {
+          overlayProbes += 1;
+          return [{ id: `parity:live-overlay:metars:0:pireps:0:obstacles:0:tfrs:${overlayProbes > 1 ? 1 : 0}` }];
+        }
+        return [];
+      },
+      async back() { events.push("back"); },
+    },
+    async eventually(label, probe) {
+      events.push(`eventually:${label}`);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const value = await probe();
+        if (value) return value;
+      }
+      throw new Error(`${label} did not satisfy its postcondition`);
+    },
+  };
+
+  const result = await selectTfrFromPreparedMap(runtime, "27W");
+  assert.equal(result.overlay.tfrs, 1);
+  assert.equal(selections, 2);
+  assert.equal(events.filter((event) => event === "back").length, 1);
+  assert.ok(
+    events.indexOf("projection:parity:live-overlay:") <
+      events.lastIndexOf("action:chart-search-suggestion-27W"),
+    events.join("\n"),
+  );
 });
 
-test("verified Android text entry rejects three corrupted injections", async () => {
-  const result = await retryVerifiedAndroidTextEntry("fixture-url", {
-    enter: async () => {},
-    read: async () => "corrupt",
+test("a transition performs its user action exactly once while observing delayed completion", async () => {
+  let actions = 0;
+  let completionProbes = 0;
+  const result = await performTransition("delayed state", {
+    ready: async () => ({ enabled: true }),
+    act: async () => { actions += 1; },
+    complete: async () => {
+      completionProbes += 1;
+      return completionProbes === 3 ? { committed: true } : null;
+    },
+    readyTimeoutMs: 100,
+    responseTimeoutMs: 100,
+    intervalMs: 1,
   });
-  assert.deepEqual(result, { matched: false, observed: "corrupt", attempts: 3 });
+  assert.equal(actions, 1);
+  assert.equal(completionProbes, 3);
+  assert.deepEqual(result.value, { committed: true });
+});
+
+test("a blocked probe cannot report success after its observation budget", async () => {
+  await assert.rejects(
+    observeUntil("blocked probe", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return true;
+    }, { timeoutMs: 5, intervalMs: 1 }),
+    /blocked probe timed out/,
+  );
+});
+
+test("temporal behavior is sampled instead of hidden behind a sleep", async () => {
+  let samples = 0;
+  const result = await assertConditionRemains(
+    "stable state",
+    async () => ++samples,
+    (sample) => sample > 0,
+    { durationMs: 8, intervalMs: 1 },
+  );
+  assert.ok(result.samples >= 2);
+});
+
+test("shared journeys contain no mutations inside observation loops or fixed UI sleeps", () => {
+  const path = new URL("./release-journey-implementations.mjs", import.meta.url);
+  const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
+  assert.deepEqual(violations, []);
+});
+
+test("cloud peer follows the deterministic journey structure", () => {
+  const source = readFileSync(new URL("./cloud-journey-peer.mjs", import.meta.url), "utf8");
+  assert.deepEqual(auditJourneyStructure(source, "cloud-journey-peer.mjs"), []);
+});
+
+test("Android pairing keeps its provider descriptor while the browser peer routes loopback", () => {
+  assert.equal(
+    rewriteRequestOrigin(
+      "http://127.0.0.1:18094/cloud/v1/events?cursor=4",
+      "http://127.0.0.1:18094",
+      "http://127.0.0.1:18134",
+    ),
+    "http://127.0.0.1:18134/cloud/v1/events?cursor=4",
+  );
+  assert.equal(
+    rewriteRequestOrigin(
+      "https://example.test/cloud/v1/events",
+      "http://127.0.0.1:18094",
+      "http://127.0.0.1:18134",
+    ),
+    "https://example.test/cloud/v1/events",
+  );
+});
+
+test("native Android journeys contain no mutations inside observation loops or fixed UI sleeps", () => {
+  const path = new URL("./run-android-e2e-suite.mjs", import.meta.url);
+  const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
+  assert.deepEqual(violations, []);
+});
+
+test("semantic driver read APIs cannot traverse or mutate the rendered UI", () => {
+  const path = new URL("./semantic-journey-driver.mjs", import.meta.url);
+  const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
+  assert.deepEqual(violations, []);
+});
+
+test("Android Chrome journey uses the shared named timing policy", () => {
+  const path = new URL("./run-android-chrome-livefeed-e2e.mjs", import.meta.url);
+  const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
+  assert.deepEqual(violations, []);
+});
+
+test("NAVDB rollover journey follows the deterministic journey structure", () => {
+  const path = new URL("../../ui/web-app/scripts/nav-db-rollover-e2e.mjs", import.meta.url);
+  const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
+  assert.deepEqual(violations, []);
+});
+
+test("every qualification journey entrypoint passes the structural audit", () => {
+  const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+  assert.deepEqual(auditQualificationJourneys(repoRoot), []);
+});
+
+test("journey structure audit follows helper calls into observation loops", () => {
+  const source = `
+    async function clickThing(runtime) {
+      await runtime.driver.performAction("thing");
+    }
+    async function broken(runtime) {
+      await runtime.eventually("bad", async () => {
+        await clickThing(runtime);
+        return null;
+      }, 5000);
+      await delay(500);
+    }
+  `;
+  const violations = auditJourneyStructure(source, "broken-journey.mjs");
+  assert.deepEqual(
+    violations.map((violation) => violation.message),
+    [
+      "raw eventually deadline is forbidden; use a named E2E_TIMING class",
+      "eventually callback invokes mutating operation clickThing",
+      "fixed delay is forbidden in journey function broken",
+    ],
+  );
+});
+
+test("journey structure audit rejects text entry combined with submission", () => {
+  const source = `
+    async function broken(runtime) {
+      await runtime.driver.enterText("route", "KSEA KPAE", { submit: true });
+    }
+  `;
+  assert.deepEqual(
+    auditJourneyStructure(source, "combined-entry.mjs").map((violation) => violation.message),
+    ["enterText must not also submit; model editing and submission as separate user actions"],
+  );
+});
+
+test("journey structure audit recognizes DOM actions hidden inside page evaluation", () => {
+  const source = `
+    async function broken(page) {
+      await observeUntil("button", async () =>
+        page.evalValue("document.querySelector('button')?.click(); true"));
+    }
+  `;
+  const violations = auditJourneyStructure(source, "dom-mutation.mjs");
+  assert.deepEqual(
+    violations.map((violation) => violation.message),
+    ["observeUntil callback invokes mutating operation evalValue"],
+  );
 });
 
 test("NAVDB rollover scenarios never replace a publication under a live Vite server", () => {
@@ -317,6 +523,26 @@ test("web reset stops the app before clearing persistent origin state", async ()
     ["navigate", "http://fixture.test/app"],
     ["waitForLoad"],
   ]);
+});
+
+test("web controls are hit-tested and activated atomically without a coordinate round trip", async () => {
+  const evaluations = [];
+  const page = {
+    evaluate: async (expression) => {
+      evaluations.push(expression);
+      return {
+        status: "activated",
+        probe: { click: 1, matched: 1, actionable_clicks: 1 },
+      };
+    },
+    send: async () => assert.fail("semantic control activation must not use CDP pointer coordinates"),
+  };
+  const transport = new WebSemanticTransport(page, { url: "http://fixture.test/app" });
+
+  assert.equal(await transport.clickIfVisible('[data-testid="button"]'), true);
+  assert.equal(evaluations.length, 1);
+  assert.match(evaluations[0], /elementFromPoint/);
+  assert.match(evaluations[0], /element\.click\(\)/);
 });
 
 test("release journey stability runs require every repetition to pass", () => {
@@ -482,6 +708,19 @@ test("Android qualification isolates semantic tests from Google service instabil
   assert.match(native, /system-images;android-34;aosp_atd;x86_64/);
 });
 
+test("Android qualification snapshots packages without leaking live-feed state between profiles", () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/e2e-ci.yml", import.meta.url),
+    "utf8",
+  );
+  const localQualification = readFileSync(
+    new URL("../ci/local_candidate_qualification.py", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /fixture-start-web empty[\s\S]+android-baseline-save/);
+  assert.match(localQualification, /fixture-start-web empty/);
+});
+
 test("procedure replacement waits for the picker transaction before reopening its row", async () => {
   let transitionSelected = false;
   let pickerReadCount = 0;
@@ -494,6 +733,9 @@ test("procedure replacement waits for the picker transaction before reopening it
         assert.equal(prefix, "parity:plan-row:");
         assert.equal(label, "KPAE");
         return { id: "parity:plan-row:airport-row", text: "KPAE" };
+      },
+      async revealProjectionMatching(prefix, label) {
+        return this.findProjectionMatching(prefix, label);
       },
       async readElement(id) {
         if (id === "plan-row-action-select_approach") return { enabled: true };
@@ -519,6 +761,9 @@ test("procedure replacement waits for the picker transaction before reopening it
         if (id === "plan-procedure-transition:VECTORS") transitionSelected = true;
       },
     },
+    async step(_label, action) {
+      return action();
+    },
     async eventually(label, probe) {
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const value = await probe();
@@ -538,6 +783,42 @@ test("procedure replacement waits for the picker transaction before reopening it
   assert.equal(pickerReadCount, 2);
 });
 
+test("forecast choice waits for one coherent action state before branching", async () => {
+  let readyReads = 0;
+  let readySelected = false;
+  const actions = [];
+  const runtime = {
+    platform: "web",
+    driver: {
+      async readElement(id) {
+        if (id === "altitude-planner-wind-action-no_wind") return { enabled: true };
+        if (id === "altitude-planner-wind-action-latest_forecast") return null;
+        if (id === "altitude-planner-wind-action-ready_forecast") {
+          readyReads += 1;
+          if (readyReads === 1) return null;
+          return { enabled: true, pressed: readySelected ? "true" : "false" };
+        }
+        return null;
+      },
+      async performAction(id) {
+        actions.push(id);
+        if (id === "altitude-planner-wind-action-ready_forecast") readySelected = true;
+      },
+    },
+    async eventually(_label, probe) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const value = await probe();
+        if (value) return value;
+      }
+      throw new Error("forecast state did not settle");
+    },
+  };
+
+  const result = await chooseForecastWindModel(runtime);
+  assert.equal(result.downloaded, false);
+  assert.deepEqual(actions, ["altitude-planner-wind-action-ready_forecast"]);
+});
+
 test("local lab and immutable app builds agree on fixed service ports", () => {
   const lab = readFileSync(
     new URL("./release_journey_lab.sh", import.meta.url),
@@ -547,10 +828,11 @@ test("local lab and immutable app builds agree on fixed service ports", () => {
     new URL("../ci/build_release_e2e_apps.sh", import.meta.url),
     "utf8",
   );
-  for (const source of [lab, builder]) {
-    assert.match(source, /PACKAGE_SOURCE_PORT:-18093/);
-    assert.match(source, /AEROBAG_E2E_CLOUD_PORT:-18094/);
-  }
+  assert.match(lab, /PACKAGE_SOURCE_PORT:-18093/);
+  assert.match(lab, /AEROBAG_E2E_CLOUD_PORT:-18094/);
+  assert.match(builder, /AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-18093/);
+  assert.match(builder, /AEROBAG_ANDROID_CLOUD_DEVICE_PORT:-18094/);
+  assert.doesNotMatch(builder, /PACKAGE_ORIGIN="http:\/\/127\.0\.0\.1:\$\{PACKAGE_SOURCE_PORT\}"/);
   assert.match(builder, /AEROBAG_E2E_ENABLED=1/);
   assert.match(builder, /ANDROID_DEV_SERVER_BASE_URL="\$PACKAGE_ORIGIN"/);
   assert.match(builder, /cp -a "\$ROOT\/ui\/icons" "\$OUTPUT\/web-dist\/icons"/);
@@ -607,7 +889,16 @@ test("Android E2E can map an immutable APK port to an isolated host fixture", ()
   );
 });
 
-test("chart search selection retries a dropped platform tap", async () => {
+test("persistent Android semantic reads tolerate bounded emulator contention", () => {
+  const source = readFileSync(
+    new URL("./android-harness.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /semanticDriverRequest\(state\.port, "\/dump", 15\)/);
+  assert.match(source, /semanticDriverRequest\(state\.port, `\/click\?\$\{query\}`, 5, "POST"\)/);
+});
+
+test("chart search selection delivers one platform tap and observes its result", async () => {
   let selected = false;
   let taps = 0;
   const runtime = {
@@ -620,22 +911,20 @@ test("chart search selection retries a dropped platform tap", async () => {
       async performAction(id) {
         assert.equal(id, "chart-search-suggestion-KSEA");
         taps += 1;
-        if (taps === 2) selected = true;
+        selected = true;
       },
     },
-    async eventually(_label, probe) {
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        const value = await probe();
-        if (value) return value;
-      }
-      throw new Error("selection did not land");
+    async transition(_label, { ready, act, complete }) {
+      assert.ok(await ready());
+      await act();
+      return complete();
     },
   };
   assert.deepEqual(
     await selectChartSearchSuggestion(runtime, "KSEA"),
     { id: "parity:map-selection-selected:KSEA" },
   );
-  assert.equal(taps, 2);
+  assert.equal(taps, 1);
 });
 
 test("raster readiness measures painted coverage without hiding reported failures", () => {
@@ -724,9 +1013,31 @@ test("shared settings-choice probes translate to Android's core-owned row IDs", 
   );
 });
 
-test("Android scans lazy Data Status projections across the vertical list", () => {
+test("Android identifies projections whose visible cards can be explicitly scanned", () => {
   assert.equal(androidProjectionMayRequireVerticalScan("parity:data-status-row:"), true);
+  assert.equal(androidProjectionMayRequireVerticalScan("parity:offline-"), true);
+  assert.equal(androidProjectionMayRequireVerticalScan("parity:offline-region:"), true);
+  assert.equal(androidProjectionMayRequireVerticalScan("parity:offline-product:"), true);
   assert.equal(androidProjectionMayRequireVerticalScan("parity:plan-row:"), false);
+});
+
+test("Android exposes virtualized Data Status state without scrolling every card", () => {
+  assert.deepEqual(
+    androidDataStatusRowsFromStateTag(
+      "parity:data-status-state:client=ok|live_feed:notams=stale",
+    ).map((row) => row.id),
+    [
+      "parity:data-status-row:client:severity:ok",
+      "parity:data-status-row:live_feed:notams:severity:stale",
+    ],
+  );
+});
+
+test("projection observations are distinct from explicit UI traversal", () => {
+  assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("readProjection"));
+  assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("scanProjection"));
+  assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("findProjectionMatching"));
+  assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("revealProjectionMatching"));
 });
 
 test("Android playback uses a direct tap instead of a multi-dump generic action", () => {
@@ -785,7 +1096,7 @@ test("release fixture is capability-addressed and complete", () => {
       procedure: { sid: {}, star: {}, approach: {} },
       plate: { georeferenced: {}, multi_page_rotated: {}, notam: {}, geometry_warning: {}, legend: {}, inset: {} },
       document: { csup: {}, other: {} },
-      live_feeds: { fresh: {}, mixed: {}, stale: {} },
+      live_feeds: { fresh: {}, mixed: {}, stale: {}, pirep_target_airport: "KSEA" },
     },
   };
   assert.equal(validateReleaseJourneyFixture(manifest).fixture, "release-journey-publication");

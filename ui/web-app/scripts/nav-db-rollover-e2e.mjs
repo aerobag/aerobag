@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { CdpClient } from "./chrome-cdp.mjs";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
-const WebSocket = require("ws");
+import {
+  E2E_TIMING,
+  observeUntil,
+  performTransition,
+} from "../../../tools/e2e/transition-contract.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const repoRoot = path.resolve(process.env.AEROBAG_REPO_ROOT ?? path.join(import.meta.dirname, "../../.."));
@@ -35,7 +38,7 @@ async function main() {
       generatePublication(scenario, Date.now() + 3_600_000);
       const vite = launchVite();
       try {
-        await waitForHttp(baseUrl, 120_000);
+        await waitForHttp(baseUrl);
         results.push(await runScenario(scenario));
       } finally {
         await stopProcess(vite);
@@ -125,16 +128,20 @@ async function runScenario(scenario) {
       });
     });
     await page.navigate(`${baseUrl}?navDbRolloverE2e=${scenario}&run=${encodeURIComponent(runId)}`);
-    await waitFor(() => page.evalValue("document.readyState === 'complete'"), 30_000, "document ready");
-    await waitFor(
-      () => page.evalValue("typeof window.__aerobagE2e?.navDb === 'function'"),
-      90_000,
+    await observePage(
+      "document ready",
+      () => page.evalValue("document.readyState === 'complete'"),
+      E2E_TIMING.startupMs,
+    );
+    await observePage(
       "NAVDB E2E probe",
+      () => page.evalValue("typeof window.__aerobagE2e?.navDb === 'function'"),
+      E2E_TIMING.startupMs,
     );
     await waitForProbe(
       page,
       (probe) => probe.active_nav_db?.cycle === initialCycle,
-      90_000,
+      E2E_TIMING.resourceMs,
       `cycle ${initialCycle} startup`,
     );
     await acceptDisclaimer(page);
@@ -153,30 +160,34 @@ async function runScenario(scenario) {
 
     await installStatusOverlay(page, scenario, transitionEpochMs);
     await capturePng(page, path.join(scenarioRoot, "before.png"));
-    await page.evalValue(
-      `window.__aerobagE2e.navDbMaintainAt(${Math.trunc(transitionEpochMs + 1)})`,
-    );
     const frames = [];
     let nextFrameAt = 0;
-    const transitionDeadline = Date.now() + 120_000;
-    let after = before;
-    while (Date.now() < transitionDeadline) {
-      after = await navDbProbe(page);
-      if (
-        scenario === "success"
-          ? after.active_nav_db?.cycle === candidateCycle
-          : after.advance_warning !== null
-      ) {
-        break;
-      }
-      if (record && Date.now() >= nextFrameAt) {
-        const framePath = path.join(frameRoot, `${String(frames.length).padStart(4, "0")}.jpg`);
-        await captureJpeg(page, framePath);
-        frames.push(framePath);
-        nextFrameAt = Date.now() + 1_000;
-      }
-      await sleep(200);
-    }
+    const transition = await performTransition(`NAVDB ${scenario} transition`, {
+      ready: async () => {
+        const probe = await navDbProbe(page);
+        return probe?.active_nav_db?.cycle === initialCycle ? probe : null;
+      },
+      act: () => page.evalValue(
+        `window.__aerobagE2e.navDbMaintainAt(${Math.trunc(transitionEpochMs + 1)})`,
+      ),
+      complete: async () => {
+        const probe = await navDbProbe(page);
+        const complete = scenario === "success"
+          ? probe?.active_nav_db?.cycle === candidateCycle
+          : probe?.advance_warning !== null;
+        if (!complete && record && Date.now() >= nextFrameAt) {
+          const framePath = path.join(frameRoot, `${String(frames.length).padStart(4, "0")}.jpg`);
+          await captureJpeg(page, framePath);
+          frames.push(framePath);
+          nextFrameAt = Date.now() + 1_000;
+        }
+        return complete ? probe : null;
+      },
+      readyTimeoutMs: E2E_TIMING.localReadyMs,
+      responseTimeoutMs: E2E_TIMING.bulkOperationMs,
+      intervalMs: E2E_TIMING.resourcePollIntervalMs,
+    });
+    const after = transition.value;
     const warningUi = scenario === "reject"
       ? await revealRejectedWarning(page)
       : null;
@@ -233,12 +244,12 @@ async function runScenario(scenario) {
 }
 
 async function buildRichFlightPlan(page) {
-  await click(page, '.pageLayer.isActive [data-testid="page-button-home"]');
-  await click(page, '.pageLayer.isActive [data-testid="home-button-flight_plan"]');
-  await waitFor(
-    () => page.evalValue("Boolean(document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]'))"),
-    10_000,
+  await clickOnce(page, '.pageLayer.isActive [data-testid="page-button-home"]');
+  await clickOnce(page, '.pageLayer.isActive [data-testid="home-button-flight_plan"]');
+  await observePage(
     "flight-plan route input",
+    () => page.evalValue("Boolean(document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]'))"),
+    E2E_TIMING.localReadyMs,
   );
   await page.evalValue(`(() => {
     const input = document.querySelector('.pageLayer.isActive [data-testid="plan-append-route-input"]');
@@ -248,10 +259,10 @@ async function buildRichFlightPlan(page) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     return true;
   })()`);
-  await waitFor(
-    () => page.evalValue("Boolean(document.querySelector('.pageLayer.isActive .planEntryInputShell.isReady'))"),
-    30_000,
+  await observePage(
     "qualified KRNT SEA KPAE route",
+    () => page.evalValue("Boolean(document.querySelector('.pageLayer.isActive .planEntryInputShell.isReady'))"),
+    E2E_TIMING.resourceMs,
   );
   await page.evalValue(`(() => {
     const input = document.querySelector('.pageLayer.isActive [data-testid="plan-append-route-input"]');
@@ -265,23 +276,23 @@ async function buildRichFlightPlan(page) {
       const labels = probe.plan_ui_state?.display_rows?.map((row) => row.label) ?? [];
       return ["KRNT", "SEA", "KPAE"].every((label) => labels.includes(label));
     },
-    30_000,
+    E2E_TIMING.localReadyMs,
     "three-component route",
   );
 
-  await clickButtonByText(page, '[data-testid^="plan-row-"]', "KPAE");
-  await click(page, '.pageLayer.isActive [data-testid="plan-row-action-select_approach"]');
-  await waitFor(
-    () => page.evalValue("document.querySelectorAll('.pageLayer.isActive .procedureChoiceButton').length > 0"),
-    30_000,
+  await clickButtonByTextOnce(page, '[data-testid^="plan-row-"]', "KPAE");
+  await clickOnce(page, '.pageLayer.isActive [data-testid="plan-row-action-select_approach"]');
+  await observePage(
     "KPAE procedures",
+    () => page.evalValue("document.querySelectorAll('.pageLayer.isActive .procedureChoiceButton').length > 0"),
+    E2E_TIMING.resourceMs,
   );
-  await clickButtonByText(page, ".pageLayer.isActive .procedureChoiceButton", "VOR-A");
-  await click(page, '.pageLayer.isActive [data-testid="plan-procedure-transition-ECEPO"]');
+  await clickButtonByTextOnce(page, ".pageLayer.isActive .procedureChoiceButton", "VOR-A");
+  await clickOnce(page, '.pageLayer.isActive [data-testid="plan-procedure-transition-ECEPO"]');
   await waitForProbe(
     page,
     (probe) => probe.plan_ui_state?.display_rows?.some((row) => row.procedure_id?.includes("VOR-A")),
-    30_000,
+    E2E_TIMING.localReadyMs,
     "KPAE VOR-A ECEPO insertion",
   );
 }
@@ -339,23 +350,24 @@ function assertScenario(
 }
 
 async function revealRejectedWarning(page) {
-  await click(page, '.pageLayer.isActive [data-testid="page-button-return-chart"]');
-  await waitFor(
+  await clickOnce(page, '.pageLayer.isActive [data-testid="page-button-return-chart"]');
+  await observePage(
+    "chart page after rejected NAVDB advance",
     () => page.evalValue(
       "Boolean(document.querySelector('.pageLayer.isActive [data-testid=\"map-surface\"]'))",
     ),
-    10_000,
-    "chart page after rejected NAVDB advance",
+    E2E_TIMING.localReadyMs,
   );
-  await waitFor(
+  await observePage(
+    "data status warning launcher",
     () => page.evalValue(
       "Boolean(document.querySelector('.pageLayer.isActive [data-testid=\"data-status-launcher\"]'))",
     ),
-    10_000,
-    "data status warning launcher",
+    E2E_TIMING.localReadyMs,
   );
-  await click(page, '.pageLayer.isActive [data-testid="data-status-launcher"]');
-  await waitFor(
+  await clickOnce(page, '.pageLayer.isActive [data-testid="data-status-launcher"]');
+  await observePage(
+    "visible NAVDB rejection warning and reload action",
     () => page.evalValue(`(() => {
       const panel = document.querySelector('[data-testid="data-status-panel"]');
       const warning = document.querySelector('[data-testid="data-status-box-nav_db:advance"]');
@@ -374,8 +386,7 @@ async function revealRejectedWarning(page) {
         && text.includes("Reload application when not flying")
         && reload.textContent?.trim() === "Reload application";
     })()`),
-    10_000,
-    "visible NAVDB rejection warning and reload action",
+    E2E_TIMING.localReadyMs,
   );
   return { visible: true };
 }
@@ -407,16 +418,16 @@ async function acceptDisclaimer(page) {
   if (!visible) {
     return;
   }
-  await waitFor(
-    () => page.evalValue("document.querySelector('.disclaimerAcceptButton')?.disabled === false"),
-    30_000,
+  await observePage(
     "disclaimer acceptance button",
+    () => page.evalValue("document.querySelector('.disclaimerAcceptButton')?.disabled === false"),
+    E2E_TIMING.localReadyMs,
   );
-  await click(page, ".disclaimerAcceptButton");
-  await waitFor(
-    () => page.evalValue("!document.querySelector('.disclaimerAcceptButton')"),
-    10_000,
+  await clickOnce(page, ".disclaimerAcceptButton");
+  await observePage(
     "disclaimer dismissal",
+    () => page.evalValue("!document.querySelector('.disclaimerAcceptButton')"),
+    E2E_TIMING.localReadyMs,
   );
 }
 
@@ -467,37 +478,58 @@ async function navDbProbe(page) {
 }
 
 async function waitForProbe(page, predicate, timeoutMs, description) {
-  return waitFor(async () => {
+  return observePage(description, async () => {
     const probe = await navDbProbe(page);
     return probe && predicate(probe) ? probe : false;
-  }, timeoutMs, description);
+  }, timeoutMs);
 }
 
-async function click(page, selector) {
-  await waitFor(
+async function clickOnce(page, selector) {
+  await observePage(
+    `clickable ${selector}`,
     () => page.evalValue(`(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!(element instanceof HTMLElement)) return false;
-      element.click();
-      return true;
+      if (element instanceof HTMLButtonElement && element.disabled) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0
+        && style.visibility !== "hidden" && style.display !== "none";
     })()`),
-    10_000,
-    `clickable ${selector}`,
+    E2E_TIMING.localReadyMs,
   );
+  const acted = await page.evalValue(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof HTMLElement)) return false;
+    element.click();
+    return true;
+  })()`);
+  assert(acted, `click target vanished before action: ${selector}`);
 }
 
-async function clickButtonByText(page, selector, text) {
-  await waitFor(
+async function clickButtonByTextOnce(page, selector, text) {
+  await observePage(
+    `${selector} with text ${text}`,
     () => page.evalValue(`(() => {
       const element = Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
         .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
       if (!(element instanceof HTMLElement)) return false;
-      element.click();
-      return true;
+      if (element instanceof HTMLButtonElement && element.disabled) return false;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0
+        && style.visibility !== "hidden" && style.display !== "none";
     })()`),
-    10_000,
-    `${selector} with text ${text}`,
+    E2E_TIMING.localReadyMs,
   );
+  const acted = await page.evalValue(`(() => {
+    const element = Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
+      .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+    if (!(element instanceof HTMLElement)) return false;
+    element.click();
+    return true;
+  })()`);
+  assert(acted, `button vanished before action: ${selector} with text ${text}`);
 }
 
 function generatePublication(scenario, transitionEpochMs) {
@@ -637,6 +669,7 @@ function launchChrome(userDataDir, browserLogPath) {
 async function connectToBrowser(wsUrl) {
   const client = new CdpClient(wsUrl);
   await client.open();
+  await client.send("Browser.getVersion", {}, undefined, E2E_TIMING.startupMs);
   return {
     close: () => client.close(),
     async createTarget() {
@@ -681,65 +714,6 @@ class CdpPage {
   }
 }
 
-class CdpClient {
-  constructor(wsUrl) {
-    this.wsUrl = wsUrl;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.listeners = new Map();
-  }
-
-  open() {
-    return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.wsUrl);
-      this.ws.addEventListener("open", resolve, { once: true });
-      this.ws.addEventListener("error", reject, { once: true });
-      this.ws.addEventListener("message", (event) => this.handleMessage(event.data));
-    });
-  }
-
-  close() {
-    this.ws?.close();
-  }
-
-  send(method, params = {}, sessionId = undefined) {
-    const id = this.nextId++;
-    const message = { id, method, params };
-    if (sessionId) {
-      message.sessionId = sessionId;
-    }
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify(message));
-    });
-  }
-
-  onEvent(sessionId, method, handler) {
-    const key = `${sessionId}:${method}`;
-    const handlers = this.listeners.get(key) ?? [];
-    handlers.push(handler);
-    this.listeners.set(key, handlers);
-  }
-
-  handleMessage(data) {
-    const message = JSON.parse(data);
-    if (message.id && this.pending.has(message.id)) {
-      const pending = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(JSON.stringify(message.error)));
-      } else {
-        pending.resolve(message.result ?? {});
-      }
-      return;
-    }
-    const key = `${message.sessionId ?? ""}:${message.method ?? ""}`;
-    for (const handler of this.listeners.get(key) ?? []) {
-      handler(message.params ?? {});
-    }
-  }
-}
-
 async function capturePng(page, outputPath) {
   const result = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
   fs.writeFileSync(outputPath, Buffer.from(result.data, "base64"));
@@ -774,32 +748,23 @@ function renderRecording(frames, scenarioRoot) {
   return output;
 }
 
-async function waitFor(check, timeoutMs, description) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (Date.now() < deadline) {
-    try {
-      const value = await check();
-      if (value) {
-        return value;
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    await sleep(200);
-  }
-  throw new Error(`timed out waiting for ${description}${lastError ? `: ${lastError}` : ""}`);
+async function observePage(description, probe, timeoutMs) {
+  const result = await observeUntil(description, probe, {
+    timeoutMs,
+    intervalMs: E2E_TIMING.resourcePollIntervalMs,
+  });
+  return result.value;
 }
 
-async function waitForHttp(url, timeoutMs) {
-  await waitFor(async () => {
+async function waitForHttp(url) {
+  await observePage(`Vite at ${url}`, async () => {
     try {
       const response = await fetch(url);
       return response.ok;
     } catch {
       return false;
     }
-  }, timeoutMs, `Vite at ${url}`);
+  }, E2E_TIMING.startupMs);
 }
 
 async function stopProcess(process) {
@@ -807,13 +772,24 @@ async function stopProcess(process) {
     return;
   }
   process.kill("SIGTERM");
-  const exited = await Promise.race([
-    new Promise((resolve) => process.once("exit", () => resolve(true))),
-    sleep(3_000).then(() => false),
-  ]);
+  const exited = await processExitWithin(process, E2E_TIMING.userResponseMs);
   if (!exited && process.exitCode === null) {
     process.kill("SIGKILL");
   }
+}
+
+function processExitWithin(process, timeoutMs) {
+  return new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      process.off("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    process.once("exit", onExit);
+  });
 }
 
 function runChecked(command, commandArgs, options = {}) {
@@ -874,10 +850,6 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 await main();

@@ -22,10 +22,13 @@ GIT_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 SHORT_COMMIT="$(git -C "$ROOT" rev-parse --short=8 HEAD)"
 BUILT_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_STAMP_UTC="$(date -u +%Y%m%d%H%M)"
-PACKAGE_SOURCE_PORT="${PACKAGE_SOURCE_PORT:-18093}"
-CLOUD_PORT="${AEROBAG_E2E_CLOUD_PORT:-18094}"
-PACKAGE_ORIGIN="http://127.0.0.1:${PACKAGE_SOURCE_PORT}"
-CLOUD_BASE_URL="http://127.0.0.1:${CLOUD_PORT}/cloud/"
+# Immutable APKs always address stable emulator-local ports. Parallel lanes
+# isolate their host daemons with adb reverse; host ports must never leak into
+# the built application.
+ANDROID_PACKAGE_SOURCE_DEVICE_PORT="${AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-18093}"
+ANDROID_CLOUD_DEVICE_PORT="${AEROBAG_ANDROID_CLOUD_DEVICE_PORT:-18094}"
+PACKAGE_ORIGIN="http://127.0.0.1:${ANDROID_PACKAGE_SOURCE_DEVICE_PORT}"
+CLOUD_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_DEVICE_PORT}/cloud/"
 
 if [[ -n "$(git -C "$ROOT" status --porcelain)" && -n "${CI:-}" ]]; then
   echo "release E2E apps must be built from a clean CI checkout" >&2
@@ -95,7 +98,7 @@ cp "$APK" "$OUTPUT/aerobag-release-e2e.apk"
 cp "$DRIVER_APK" "$OUTPUT/aerobag-e2e-driver.apk"
 cp "$CLOUD_SERVER" "$OUTPUT/aerobag-cloud-serverd"
 
-python3 - <<'PY' "$OUTPUT" "$GIT_COMMIT" "$BUILT_AT_UTC" "$PACKAGE_SOURCE_PORT" "$CLOUD_PORT"
+python3 - <<'PY' "$OUTPUT" "$GIT_COMMIT" "$BUILT_AT_UTC" "$ANDROID_PACKAGE_SOURCE_DEVICE_PORT" "$ANDROID_CLOUD_DEVICE_PORT"
 import hashlib
 import json
 from pathlib import Path

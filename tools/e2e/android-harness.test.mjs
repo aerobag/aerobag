@@ -8,12 +8,10 @@ import {
   assertNoAerobagAnr,
   androidImeVisible,
   androidOfflinePackagesVisible,
-  androidClearTextCommand,
-  androidSelectAllTextCommand,
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
+  androidStartupState,
   androidJourneyEpochMs,
-  androidTextInputCommands,
   classifyAerobagLogcat,
   displayBoundsFromXml,
   destinationCenterEvidence,
@@ -29,38 +27,9 @@ import {
   verticalScrollGesture,
 } from "./android-harness.mjs";
 
-test("plans Android input for a keyboard-safe encoded fixture path", () => {
-  assert.deepEqual(
-    androidTextInputCommands("/releasejourney/7265706c61792f747261636b2d6761702e6a736f6e"),
-    [
-      ["shell", "input", "keyevent", "KEYCODE_SLASH"],
-      ["shell", "input", "text", "releasejourney"],
-      ["shell", "input", "keyevent", "KEYCODE_SLASH"],
-      ["shell", "input", "text", "7265706c61792f747261636b2d6761702e6a736f6e"],
-    ],
-  );
-});
-
 test("cloud journeys use host time while deterministic data journeys use fixture time", () => {
   assert.equal(androidJourneyEpochMs("shared.cloud-crossfill", 100, 200), 200);
   assert.equal(androidJourneyEpochMs("shared.replay-track-up", 100, 200), 100);
-});
-
-test("clears focused Android text in one ordered keyevent stream", () => {
-  assert.deepEqual(
-    androidClearTextCommand(3),
-    [
-      "shell", "input", "keyevent", "KEYCODE_MOVE_END",
-      "KEYCODE_DEL", "KEYCODE_DEL", "KEYCODE_DEL",
-    ],
-  );
-});
-
-test("selects the complete Android text value before a verified replacement", () => {
-  assert.deepEqual(
-    androidSelectAllTextCommand(),
-    ["shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A"],
-  );
 });
 
 test("detects only a rendered Android input-method window", () => {
@@ -110,6 +79,15 @@ test("distinguishes the offline package bootstrap from its navigable runtime pag
   assert.equal(androidRuntimeReadyForJourney(
     '<hierarchy><node resource-id="parity:primary-navigation" /></hierarchy>',
   ), true);
+});
+
+test("parses explicit Android startup acknowledgements", () => {
+  const xml = `<hierarchy><node resource-id="parity:startup-state:ready:true:disclaimer_required:false:persisted_page:Settings" /></hierarchy>`;
+  assert.deepEqual(androidStartupState(xml), {
+    ready: "true",
+    disclaimer_required: "false",
+    persisted_page: "Settings",
+  });
 });
 
 test("vertical scrolling stays below Android's status-bar gesture zone", () => {

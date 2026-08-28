@@ -23,9 +23,7 @@ import {
   assertRuntimeIsAvailable,
   captureAndroidFailureDiagnostics,
   clearAerobagPersistedLiveFeeds,
-  clearFocusedText,
   currentAerobagPid,
-  delay,
   destinationCenterEvidence,
   dumpAndroid,
   findNode,
@@ -33,7 +31,6 @@ import {
   findNodes,
   hasAndroidTag,
   hasAndroidText,
-  inputText,
   launchFreshAndroidApp,
   layerToggleNode,
   layerToggleTag,
@@ -51,7 +48,6 @@ import {
   swipe,
   setAndroidRotation,
   shutdownAndroidSemanticDrivers,
-  tapFirstPresentTag,
   tapNode,
   tapTag,
   waitFor,
@@ -66,14 +62,18 @@ import {
 import { RELEASE_JOURNEYS } from "./release-journey-registry.mjs";
 import { executeReleaseJourney } from "./release-journey-runtime.mjs";
 import { AndroidSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
+import {
+  assertConditionRemains,
+  E2E_TIMING,
+  observeUntil,
+  performTransition,
+} from "./transition-contract.mjs";
 
 const DEFAULT_ROUTE = "KRNT KPWT";
 const CTR_STRESS_ROUTE = "KRNT KPDX";
 const ROTATION_ROUTE = "KRNT KPWT KPLU";
 const DEFAULT_PACKAGE_SOURCE_PORT = process.env.PACKAGE_SOURCE_PORT ?? "8083";
 const OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
-const PLAN_PAGE_TAGS = ["parity:plan-append-route-input"];
-const CHART_PAGE_TAGS = ["parity:map-surface"];
 const CHART_SEARCH_INPUT_TAG = "parity:chart-search-input";
 const ROUTE_OVERLAY_PREFIX = "parity:flight-plan-route-overlay:";
 const MAP_FOLLOW_PREFIX = "parity:map-follow-state:";
@@ -89,7 +89,31 @@ const ROTATION_LIVE_FEED_FIXTURE = process.env.AEROBAG_ROTATION_LIVE_FEED_FIXTUR
     : "");
 const LIVE_FEED_PROMOTION_SENTINEL = "e2e-live-feed-promotion.pause";
 const LIVE_FEED_PROMOTION_PAUSE_MARKER = "E2E live-feed promotion paused";
-const OFFLINE_PACKAGE_SYNC_TIMEOUT_MS = 300000;
+
+function nativeSemanticDriver(serial) {
+  return new AndroidSemanticJourneyDriver(serial, {
+    resetApp: async () => {
+      throw new Error("native journey reset must be performed by its explicit bootstrap");
+    },
+  });
+}
+
+async function nativeTransition(result, description, contract) {
+  const completed = await performTransition(description, {
+    ...contract,
+    onTiming(timing) {
+      result.diagnostics.userTransitions ??= [];
+      result.diagnostics.userTransitions.push(timing);
+      contract.onTiming?.(timing);
+    },
+  });
+  recordStep(
+    result,
+    description,
+    `${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total`,
+  );
+  return completed.value;
+}
 
 function usage() {
   console.log(`Usage:
@@ -209,7 +233,7 @@ function offlineSyncIsIdle(xml) {
   });
 }
 
-async function tapTagIfPresent(serial, tag, timeoutMs = 3000) {
+async function tapTagIfPresent(serial, tag, timeoutMs = E2E_TIMING.localReadyMs) {
   try {
     await tapTag(serial, tag, timeoutMs);
     return true;
@@ -230,7 +254,7 @@ async function ensureOfflinePackagesReady(
   await waitFor(() => {
     const xml = dumpAndroid(serial);
     return runtimeUiVisible(xml) || offlinePackagesVisible(xml) || disclaimerVisible(xml);
-  }, 45000, "runtime or offline package UI ready");
+  }, E2E_TIMING.startupMs, "runtime or offline package UI ready");
 
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
@@ -249,7 +273,7 @@ async function ensureOfflinePackagesReady(
     findNode(xml, (node) => hasAndroidTag(node, "parity:offline-refresh-button"))
   ) {
     if (!findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"))) {
-      if (await tapTagIfPresent(serial, "parity:offline-refresh-button", 10000)) {
+      if (await tapTagIfPresent(serial, "parity:offline-refresh-button", E2E_TIMING.localReadyMs)) {
         recordStep(result, "offline package library refresh requested");
         await waitFor(() => {
           const nextXml = dumpAndroid(serial);
@@ -257,7 +281,7 @@ async function ensureOfflinePackagesReady(
             hasAndroidTag(node, "parity:offline-packages-panel") ||
             hasAndroidTag(node, "parity:offline-sync-button")
           );
-        }, 120000, "offline package planner after refresh", 500);
+        }, E2E_TIMING.bulkOperationMs, "offline package planner after refresh", E2E_TIMING.resourcePollIntervalMs);
         recordStep(result, "offline package planner visible after refresh");
       }
     }
@@ -270,45 +294,51 @@ async function ensureOfflinePackagesReady(
         if (regionId === "nw") continue;
         const tag = `parity:offline-region:${regionId}:toggle`;
         await scrollUntilTag(serial, tag, 6);
-        if (await tapTagIfPresent(serial, tag, 1200)) {
+        const before = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag));
+        const selected = before?.selected === "true" || before?.checked === "true";
+        if (selected && await tapTagIfPresent(serial, tag, 1200)) {
           recordStep(result, "offline region deselected", regionId);
-          await delay(150);
+          await waitFor(() => {
+            const after = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag));
+            return after && after.selected !== "true" && after.checked !== "true";
+          }, E2E_TIMING.userResponseMs, `offline region ${regionId} deselection`, E2E_TIMING.pollIntervalMs);
         }
       }
     }
 
-    if (offlineSyncIsIdle(dumpAndroid(serial)) && await tapTagIfPresent(serial, "parity:offline-sync-button", 10000)) {
+    if (offlineSyncIsIdle(dumpAndroid(serial)) && await tapTagIfPresent(
+      serial,
+      "parity:offline-sync-button",
+      E2E_TIMING.localReadyMs,
+    )) {
       recordStep(result, "offline package sync requested", "region nw");
       await waitFor(() => {
         const nextXml = dumpAndroid(serial);
         return runtimeUiVisible(nextXml) || disclaimerVisible(nextXml);
-      }, OFFLINE_PACKAGE_SYNC_TIMEOUT_MS, "runtime loaded after offline package sync", 500);
+      }, E2E_TIMING.offlineSyncMs, "runtime loaded after offline package sync", E2E_TIMING.resourcePollIntervalMs);
       recordStep(result, "offline package sync completed", "runtime loaded");
     }
   }
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    if (await acceptDisclaimerIfPresent(serial)) {
-      recordStep(result, "disclaimer accepted");
-    }
-    if (androidRuntimeReadyForJourney(dumpAndroid(serial))) {
-      recordStep(result, "offline packages ready", "runtime available");
-      return;
-    }
-    await tapFirstPresentTag(
-      serial,
-      ["parity:button:FLIGHT\nPLAN", "parity:button:PLAN", "parity:button:CHART", "parity:button:HOME"],
-      10000,
-    ).catch(() => {});
-    await delay(1000);
+  if (await acceptDisclaimerIfPresent(serial)) {
+    recordStep(result, "disclaimer accepted");
   }
-
-  await waitFor(async () => {
-    if (await acceptDisclaimerIfPresent(serial)) {
-      recordStep(result, "disclaimer accepted");
-    }
-    return androidRuntimeReadyForJourney(dumpAndroid(serial));
-  }, 45000, "runtime available after offline package sync");
+  xml = dumpAndroid(serial);
+  if (offlinePackagesVisible(xml) && runtimeUiVisible(xml)) {
+    await tapTag(serial, "parity:button:HOME", E2E_TIMING.localReadyMs);
+    await waitFor(
+      () => androidRuntimeReadyForJourney(dumpAndroid(serial)),
+      E2E_TIMING.localReadyMs,
+      "Home page after offline package bootstrap",
+      50,
+    );
+    recordStep(result, "offline package page dismissed", "Home page visible");
+  }
+  await waitFor(
+    () => androidRuntimeReadyForJourney(dumpAndroid(serial)),
+    E2E_TIMING.startupMs,
+    "runtime available after offline package sync",
+  );
   recordStep(result, "offline packages ready", "runtime available");
 }
 
@@ -316,51 +346,15 @@ async function waitForRuntime(serial, result) {
   await waitFor(() => {
     const xml = dumpAndroid(serial);
     return runtimeUiVisible(xml);
-  }, 45000, "runtime UI ready");
+  }, E2E_TIMING.startupMs, "runtime UI ready");
   assertRuntimeIsAvailable(serial);
   recordStep(result, "runtime UI ready");
 }
 
 async function ensurePlanPage(serial, result) {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const xml = dumpAndroid(serial);
-    if (
-      PLAN_PAGE_TAGS.some((tag) => findNode(xml, (node) => hasAndroidTag(node, tag))) ||
-      findNode(xml, (node) => androidTag(node).startsWith("parity:plan-state:"))
-    ) {
-      recordStep(result, "plan page visible");
-      return;
-    }
-    assertRuntimeIsAvailable(serial);
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:map-surface") || hasAndroidTag(node, "parity:plate-airport-button"))) {
-      await tapTag(serial, "parity:nav-cdi", 10000);
-      await delay(500);
-      continue;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:FLIGHT\nPLAN"))) {
-      await tapTag(serial, "parity:button:FLIGHT\nPLAN", 10000);
-      await delay(500);
-      continue;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:FlightPlan"))) {
-      await tapTag(serial, "parity:home-button:FlightPlan", 10000);
-      await delay(500);
-      continue;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
-      await tapTag(serial, "parity:button:HOME", 10000);
-      await delay(400);
-      continue;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:PLAN"))) {
-      await tapTag(serial, "parity:button:PLAN", 10000);
-      await delay(500);
-      continue;
-    }
-    pressKey(serial, "KEYCODE_BACK");
-    await delay(400);
-  }
-  throwWithUi(serial, "could not navigate to flight plan page");
+  assertRuntimeIsAvailable(serial);
+  await nativeSemanticDriver(serial).openPage("flight_plan");
+  recordStep(result, "plan page visible");
 }
 
 function routeDestination(route) {
@@ -375,46 +369,29 @@ function routeInputText(xml) {
 }
 
 async function fillRouteInput(serial, route) {
-  let lastObserved = "";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await tapTag(serial, "parity:plan-append-route-input", 10000);
-    await delay(300);
-    clearFocusedText(serial);
-    inputText(serial, route);
-    const matched = await waitFor(() => {
-      const xml = dumpAndroid(serial);
-      lastObserved = routeInputText(xml);
-      return lastObserved === route;
-    }, 3500, `route input contains ${route}`).then(
-      () => true,
-      () => false,
-    );
-    if (matched) return;
-  }
-  throwWithUi(serial, `route input did not contain ${route}; last observed=${JSON.stringify(lastObserved)}`);
+  await nativeSemanticDriver(serial).enterText("plan-append-route-input", route);
 }
 
 async function appendRoute(serial, result, route, assertionId = "flightPlan.routeCommitted") {
   await fillRouteInput(serial, route);
-  await tapTag(serial, "parity:plan-append-route-input", 10000);
-  pressKey(serial, "KEYCODE_ENTER");
   const destination = routeDestination(route);
   const shortDestination = destination.replace(/^K(?=[A-Z]{3}$)/, "");
-  await waitFor(async () => {
-    const xml = dumpAndroid(serial);
-    const planRows = findNodes(xml, (node) => androidTag(node).startsWith("parity:plan-row:"));
-    return planRows.length >= 2 &&
-      (
-        hasAndroidText(xml, destination) ||
-        hasAndroidText(xml, shortDestination) ||
-        hasAndroidTextContaining(xml, destination) ||
-        hasAndroidTextContaining(xml, shortDestination)
-      );
-  }, 45000, `route ${route} committed to flight plan`);
-  recordStep(result, "route committed to flight plan", route);
+  await nativeTransition(result, `route ${route} committed to flight plan`, {
+    ready: async () => routeInputText(dumpAndroid(serial)) === route,
+    act: async () => pressKey(serial, "KEYCODE_ENTER"),
+    complete: async () => {
+      const xml = dumpAndroid(serial);
+      const planRows = findNodes(xml, (node) => androidTag(node).startsWith("parity:plan-row:"));
+      return planRows.length >= 2 &&
+        (
+          hasAndroidText(xml, destination) ||
+          hasAndroidText(xml, shortDestination) ||
+          hasAndroidTextContaining(xml, destination) ||
+          hasAndroidTextContaining(xml, shortDestination)
+        );
+    },
+  });
   if (assertionId) recordCheck(result, assertionId, true, route);
-  pressKey(serial, "KEYCODE_BACK");
-  await delay(600);
 }
 
 async function activateDestinationLeg(serial, result, route) {
@@ -429,48 +406,33 @@ async function activateDestinationLeg(serial, result, route) {
         return label.includes(destination) || label.includes(shortDestination);
       }) ?? null;
     return rowNode !== null;
-  }, 10000, `destination plan row visible for ${destination}`);
+  }, E2E_TIMING.localReadyMs, `destination plan row visible for ${destination}`);
   await tapNode(serial, rowNode);
   const activate = await waitForNode(
     serial,
     (node) => androidTag(node).startsWith("parity:plan-row-action:activate_leg:enabled:true"),
-    10000,
+    E2E_TIMING.localReadyMs,
     "enabled activate-leg action",
   );
-  await tapNode(serial, activate);
-  await delay(1000);
-  recordStep(result, "destination leg activated", destination);
+  await nativeTransition(result, `destination leg activated ${destination}`, {
+    ready: async () => findNode(
+      dumpAndroid(serial),
+      (node) => androidTag(node).startsWith("parity:plan-row-action:activate_leg:enabled:true"),
+    ),
+    act: async () => tapNode(serial, activate),
+    complete: async () => findNode(
+      dumpAndroid(serial),
+      (node) => androidTag(node).startsWith("parity:plan-state:") &&
+        !androidTag(node).includes(":from:none:to:") &&
+        !androidTag(node).endsWith(":to:none"),
+    ),
+  });
 }
 
 async function ensureChartPage(serial, result) {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const xml = dumpAndroid(serial);
-    if (CHART_PAGE_TAGS.some((tag) => findNode(xml, (node) => hasAndroidTag(node, tag)))) {
-      recordStep(result, "chart page visible");
-      return;
-    }
-    assertRuntimeIsAvailable(serial);
-    const chartButton = findNode(xml, (node) => hasAndroidTag(node, "parity:button:CHART"));
-    if (chartButton) {
-      await tapNode(serial, chartButton);
-      await delay(600);
-      continue;
-    }
-    const homeButton = findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"));
-    if (homeButton) {
-      await tapNode(serial, homeButton);
-      await delay(400);
-      continue;
-    }
-    const planButton = findNode(xml, (node) =>
-      hasAndroidTag(node, "parity:button:FLIGHT\nPLAN") || hasAndroidTag(node, "parity:button:PLAN")
-    );
-    if (planButton) {
-      await tapNode(serial, planButton);
-    }
-    await delay(400);
-  }
-  throwWithUi(serial, "could not navigate to chart page");
+  assertRuntimeIsAvailable(serial);
+  await nativeSemanticDriver(serial).openPage("map");
+  recordStep(result, "chart page visible");
 }
 
 function chartSearchInputText(xml) {
@@ -482,70 +444,50 @@ function chartSearchInputText(xml) {
 async function centerChartOnDestination(serial, result, route) {
   const destination = routeDestination(route);
   if (!destination) return;
-  let lastObserved = "";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await tapTag(serial, CHART_SEARCH_INPUT_TAG, 10000);
-    await delay(300);
-    clearFocusedText(serial);
-    inputText(serial, destination);
-    const matched = await waitFor(() => {
+  const driver = nativeSemanticDriver(serial);
+  await driver.enterText("chart-search-input", destination);
+  let evidence = null;
+  await nativeTransition(result, `chart centered on destination ${destination}`, {
+    ready: async () => {
       const xml = dumpAndroid(serial);
-      lastObserved = chartSearchInputText(xml);
-      return lastObserved === destination &&
-        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${destination}`)) !== null;
-    }, 3500, `chart search contains ${destination}`).then(
-      () => true,
-      () => false,
-    );
-    if (matched) {
-      await tapTag(serial, `parity:chart-search-suggestion:${destination}`, 10000);
-      let evidence = null;
-      await waitFor(() => {
-        evidence = destinationCenterEvidence(dumpAndroid(serial), destination);
-        return evidence.matched;
-      }, 15000, `destination-specific centered inspector for ${destination}`);
-      await dismissMapSelection(serial);
-      await waitForNode(
-        serial,
-        (node) => hasAndroidTag(node, "parity:map-surface"),
-        10000,
-        "map semantics visible after destination search",
-      );
-      recordStep(result, "chart centered on destination", `${destination}, ${evidence.probeTag}`);
-      return;
-    }
-  }
-  throwWithUi(serial, `chart search did not contain ${destination}; last observed=${JSON.stringify(lastObserved)}`);
+      return chartSearchInputText(xml) === destination &&
+        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${destination}`));
+    },
+    act: async () => driver.performAction(`chart-search-suggestion-${destination}`),
+    complete: async () => {
+      evidence = destinationCenterEvidence(dumpAndroid(serial), destination);
+      return evidence.matched ? evidence : null;
+    },
+    responseTimeoutMs: E2E_TIMING.observationMs,
+  });
+  await dismissMapSelection(serial);
+  await waitForNode(
+    serial,
+    (node) => hasAndroidTag(node, "parity:map-surface"),
+    E2E_TIMING.localReadyMs,
+    "map semantics visible after destination search",
+  );
+  recordStep(result, "chart centered on destination", `${destination}, ${evidence.probeTag}`);
 }
 
 async function inspectAirportFromChartSearch(serial, result, airportId) {
-  let lastObserved = "";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await tapTag(serial, CHART_SEARCH_INPUT_TAG, 10000);
-    await delay(300);
-    clearFocusedText(serial);
-    inputText(serial, airportId);
-    const matched = await waitFor(() => {
+  const driver = nativeSemanticDriver(serial);
+  await driver.enterText("chart-search-input", airportId);
+  let evidence = null;
+  await nativeTransition(result, `airport inspector opened for ${airportId}`, {
+    ready: async () => {
       const xml = dumpAndroid(serial);
-      lastObserved = chartSearchInputText(xml);
-      return lastObserved === airportId &&
-        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${airportId}`)) !== null;
-    }, 7000, `chart search suggestion visible for ${airportId}`).then(
-      () => true,
-      () => false,
-    );
-    if (matched) {
-      await tapTag(serial, `parity:chart-search-suggestion:${airportId}`, 10000);
-      let evidence = null;
-      await waitFor(() => {
-        evidence = destinationCenterEvidence(dumpAndroid(serial), airportId);
-        return evidence.matched;
-      }, 15000, `destination-specific centered inspector for ${airportId}`);
-      recordStep(result, "airport inspector opened", `${airportId}, ${evidence.probeTag}`);
-      return;
-    }
-  }
-  throwWithUi(serial, `chart search did not show ${airportId} suggestion; last observed=${JSON.stringify(lastObserved)}`);
+      return chartSearchInputText(xml) === airportId &&
+        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${airportId}`));
+    },
+    act: async () => driver.performAction(`chart-search-suggestion-${airportId}`),
+    complete: async () => {
+      evidence = destinationCenterEvidence(dumpAndroid(serial), airportId);
+      return evidence.matched ? evidence : null;
+    },
+    responseTimeoutMs: E2E_TIMING.observationMs,
+  });
+  recordStep(result, "airport inspector opened", `${airportId}, ${evidence.probeTag}`);
 }
 
 async function dismissMapSelection(serial) {
@@ -553,14 +495,14 @@ async function dismissMapSelection(serial) {
   await waitFor(() => {
     const xml = dumpAndroid(serial);
     return findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray")) === null;
-  }, 5000, "map inspector dismissed");
+  }, E2E_TIMING.localReadyMs, "map inspector dismissed");
 }
 
 async function inspectRawTerrainSpot(serial, result) {
   const surface = await waitForNode(
     serial,
     (node) => hasAndroidTag(node, "parity:map-surface"),
-    10000,
+    E2E_TIMING.localReadyMs,
     "map surface for raw inspection",
   );
   const rect = rectOfBounds(surface.bounds);
@@ -573,7 +515,7 @@ async function inspectRawTerrainSpot(serial, result) {
     return findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray")) !== null &&
       findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-selected:SPOT")) !== null &&
       findNode(xml, (node) => /(?:^| · )Elev -?\d+(?:$| · )/.test(node.text ?? "")) !== null;
-  }, 15000, "raw SPOT inspector with terrain elevation");
+  }, E2E_TIMING.observationMs, "raw SPOT inspector with terrain elevation");
   recordStep(result, "raw map SPOT inspector opened", `screen=${x},${y}`);
   recordCheck(result, "inspector.rawSpotTerrainElevation", true, "numeric terrain elevation");
 }
@@ -601,7 +543,7 @@ async function waitForRouteOverlay(serial, result) {
       tag: androidTag(node),
     };
     return parsed.segments > 0 && parsed.visible > 0;
-  }, 45000, "visible flight-plan route overlay");
+  }, E2E_TIMING.resourceMs, "visible flight-plan route overlay");
   recordStep(result, "flight-plan route overlay visible", `${overlay.segments} segment(s), ${overlay.visible} visible`);
   recordCheck(result, "chart.flightPlanRouteRendered", true, overlay.tag);
 }
@@ -636,44 +578,34 @@ function findMapFollowProbe(xml) {
 }
 
 async function waitForMapFollowProbe(serial, predicate, timeoutMs, message) {
-  let probe = null;
-  let lastError = null;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      probe = findMapFollowProbe(dumpAndroid(serial));
-      if (probe !== null && predicate(probe)) return probe;
-    } catch (error) {
-      lastError = error;
-    }
-    await delay(1000);
-  }
-  throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
+  return (await observeUntil(message, async () => {
+    const probe = findMapFollowProbe(dumpAndroid(serial));
+    return probe !== null && predicate(probe) ? probe : null;
+  }, { timeoutMs, intervalMs: E2E_TIMING.pollIntervalMs })).value;
 }
 
 async function ensureBadAutopilotDebugFlag(serial, result) {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const xml = dumpAndroid(serial);
-    if (findNode(xml, (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG))) {
-      break;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:Settings"))) {
-      await tapTag(serial, "parity:home-button:Settings", 10000);
-      await delay(400);
-      await scrollUntilTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 12);
-    } else if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
-      await tapTag(serial, "parity:button:HOME", 10000);
-    } else {
-      pressKey(serial, "KEYCODE_BACK");
-    }
-    await delay(400);
-  }
+  const driver = nativeSemanticDriver(serial);
+  await driver.openPage("settings");
+  await scrollUntilTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 12);
   let xml = dumpAndroid(serial);
   if (!findNode(xml, (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG))) {
     throwWithUi(serial, "Debug Diagnostics settings section is not visible");
   }
-  await tapTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 5000);
-  await delay(300);
+  await nativeTransition(result, "Debug Diagnostics section opened", {
+    ready: async () => findNode(
+      dumpAndroid(serial),
+      (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG),
+    ),
+    act: async () => tapTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, E2E_TIMING.localReadyMs),
+    complete: async () => {
+      const section = findNode(
+        dumpAndroid(serial),
+        (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG),
+      );
+      return section?.checked === "true" || section?.selected === "true" ? section : null;
+    },
+  });
   await scrollUntilTag(serial, BAD_AUTOPILOT_DEBUG_TAG, 6);
   xml = dumpAndroid(serial);
   let checkbox = findNode(xml, (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG));
@@ -681,50 +613,64 @@ async function ensureBadAutopilotDebugFlag(serial, result) {
     throwWithUi(serial, "Bad Autopilot debug flag is not visible");
   }
   if (checkbox.checked !== "true") {
-    await tapTag(serial, BAD_AUTOPILOT_DEBUG_TAG, 5000);
-    await delay(700);
+    await nativeTransition(result, "Bad Autopilot debug flag enabled", {
+      ready: async () => findNode(
+        dumpAndroid(serial),
+        (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG) && node.checked !== "true",
+      ),
+      act: async () => tapTag(serial, BAD_AUTOPILOT_DEBUG_TAG, E2E_TIMING.localReadyMs),
+      complete: async () => findNode(
+        dumpAndroid(serial),
+        (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG) && node.checked === "true",
+      ),
+    });
   }
-  await tapTag(serial, "parity:button:CHART", 5000);
-  await delay(500);
+  await driver.openPage("map");
   recordStep(result, "Bad Autopilot debug source enabled");
 }
 
 async function ensureBadAutopilotAvailable(serial, result) {
-  await tapTag(serial, "parity:ownship-launcher", 10000);
-  await delay(300);
+  await nativeTransition(result, "ownship source tray opened", {
+    ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:ownship-launcher")),
+    act: async () => tapTag(serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs),
+    complete: async () => findNode(
+      dumpAndroid(serial),
+      (node) => androidTag(node).startsWith("parity:ownship-source:"),
+    ),
+  });
   if (findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG))) {
     pressKey(serial, "KEYCODE_BACK");
-    await delay(300);
     recordStep(result, "Bad Autopilot source available");
     return;
   }
   pressKey(serial, "KEYCODE_BACK");
-  await delay(300);
   await ensureBadAutopilotDebugFlag(serial, result);
-  await tapTag(serial, "parity:ownship-launcher", 10000);
-  await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    return findNode(xml, (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)) !== null;
-  }, 10000, "Bad Autopilot source available after enabling debug flag");
+  await nativeTransition(result, "Bad Autopilot source available after enabling debug flag", {
+    ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:ownship-launcher")),
+    act: async () => tapTag(serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs),
+    complete: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)),
+  });
   pressKey(serial, "KEYCODE_BACK");
-  await delay(300);
   recordStep(result, "Bad Autopilot source available");
 }
 
 async function selectBadAutopilotSource(serial, result) {
-  await tapTag(serial, "parity:ownship-launcher", 10000);
+  await tapTag(serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs);
   const sourceNode = await waitForNode(
     serial,
     (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG),
-    10000,
+    E2E_TIMING.localReadyMs,
     "Bad Autopilot ownship source",
   );
   if (sourceNode.enabled !== "true") {
     throwWithUi(serial, "Bad Autopilot source is visible but disabled");
   }
-  await tapTag(serial, BAD_AUTOPILOT_SOURCE_TAG, 5000);
-  await waitForMapFollowProbe(serial, () => true, 45000, "Bad Autopilot ownship probe visible");
-  recordStep(result, "Bad Autopilot ownship selected");
+  await nativeTransition(result, "Bad Autopilot ownship selected", {
+    ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)),
+    act: async () => tapTag(serial, BAD_AUTOPILOT_SOURCE_TAG, E2E_TIMING.localReadyMs),
+    complete: async () => findMapFollowProbe(dumpAndroid(serial)),
+    responseTimeoutMs: E2E_TIMING.observationMs,
+  });
 }
 
 function cropPlateSurface(rect) {
@@ -801,7 +747,7 @@ async function waitForPlateImagePainted(serial, result) {
     lastCrop = cropPlateSurface(rectOfBounds(surface.bounds));
     lastStats = analyzePngCrop(screencapPng(serial), lastCrop);
     return plateImageIsVisiblyPainted(lastStats);
-  }, 45000, "plate image visibly painted on first open", 1000).catch((error) => {
+  }, E2E_TIMING.resourceMs, "plate image visibly painted on first open", E2E_TIMING.resourcePollIntervalMs).catch((error) => {
     throw new Error(`${error.message}; lastCrop=${JSON.stringify(lastCrop)}; lastStats=${JSON.stringify(lastStats)}`);
   });
   recordStep(
@@ -812,54 +758,82 @@ async function waitForPlateImagePainted(serial, result) {
   recordCheck(result, "plate.firstOpenVisiblyPainted", true, JSON.stringify(lastStats));
 }
 
-async function openFirstPlateFromAirportInspector(serial, result, airportId) {
+function labelContainsWords(label, expected) {
+  const haystack = label.toUpperCase();
+  return expected.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+    .every((word) => haystack.includes(word));
+}
+
+async function openPlateFromAirportInspector(serial, result, airportId, expectedLabel) {
   await inspectAirportFromChartSearch(serial, result, airportId);
 
   const airportItemTag = `parity:map-selection-item:airport-${airportId}`;
   if (findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, airportItemTag))) {
-    await tapTag(serial, airportItemTag, 5000);
-    await delay(300);
+    await nativeTransition(result, `airport ${airportId} selected in inspector`, {
+      ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, airportItemTag)),
+      act: async () => tapTag(serial, airportItemTag, E2E_TIMING.localReadyMs),
+      complete: async () => findNode(
+        dumpAndroid(serial),
+        (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
+      ),
+    });
   }
   const platesAction = await waitForNode(
     serial,
     (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
-    10000,
+    E2E_TIMING.localReadyMs,
     "airport plates action",
   );
   if (platesAction.enabled !== "true") {
     throwWithUi(serial, `airport plates action is disabled for ${airportId}`);
   }
-  await tapTag(serial, "parity:map-selection-action:plates", 10000);
+  await tapTag(serial, "parity:map-selection-action:plates", E2E_TIMING.localReadyMs);
   await waitForNode(
     serial,
     (node) => hasAndroidTag(node, "parity:plate-folder-button"),
-    15000,
+    E2E_TIMING.observationMs,
     "plate folder page opened",
   );
   recordStep(result, "plate folder opened", airportId);
 
-  const firstTile = await waitForNode(
+  const tile = await findNodeByScrolling(
     serial,
-    (node) => androidTag(node).startsWith(PLATE_FOLDER_TILE_PREFIX),
-    45000,
-    "first plate folder tile",
+    (node) => androidTag(node).startsWith(PLATE_FOLDER_TILE_PREFIX) &&
+      labelContainsWords(androidTag(node), expectedLabel),
+    12,
   );
-  const firstTileTag = androidTag(firstTile);
-  await tapTag(serial, firstTileTag, 10000);
-  await waitForNode(serial, (node) => hasAndroidTag(node, PLATE_SURFACE_TAG), 15000, "plate surface after tile selection");
-  recordStep(result, "first plate opened", firstTileTag.slice(PLATE_FOLDER_TILE_PREFIX.length));
+  if (!tile) throwWithUi(serial, `plate folder does not contain ${expectedLabel}`);
+  const tileTag = androidTag(tile);
+  await tapTag(serial, tileTag, E2E_TIMING.localReadyMs);
+  await waitForNode(
+    serial,
+    (node) => hasAndroidTag(node, PLATE_SURFACE_TAG),
+    E2E_TIMING.observationMs,
+    "plate surface after tile selection",
+  );
+  recordStep(result, "fixture plate opened", tileTag.slice(PLATE_FOLDER_TILE_PREFIX.length));
 }
 
 async function ensureMapFollowEngaged(serial, result) {
-  let probe = await waitForMapFollowProbe(serial, () => true, 10000, "map-follow probe visible");
+  let probe = await waitForMapFollowProbe(
+    serial,
+    () => true,
+    E2E_TIMING.observationMs,
+    "map-follow probe visible",
+  );
   if (!probe.following) {
-    await tapTag(serial, "parity:center-here-button", 10000);
-    probe = await waitForMapFollowProbe(serial, (nextProbe) => nextProbe.following, 10000, "CTR follow engaged");
+    await tapTag(serial, "parity:center-here-button", E2E_TIMING.localReadyMs);
+    probe = await waitForMapFollowProbe(
+      serial,
+      (nextProbe) => nextProbe.following,
+      E2E_TIMING.userResponseMs,
+      "CTR follow engaged",
+    );
   }
   await waitForMapFollowProbe(
     serial,
     (nextProbe) => nextProbe.following && mapFollowOffsetPx(nextProbe) <= 120,
-    15000,
+    E2E_TIMING.observationMs,
     "CTR follow centered on ownship",
   );
   recordStep(result, "CTR follow engaged");
@@ -873,11 +847,11 @@ async function disengageMapFollowForRouteVisibility(serial, result) {
   }
   const probe = initialProbe;
   if (!probe.following) return;
-  await tapTag(serial, "parity:center-here-button", 10000);
+  await tapTag(serial, "parity:center-here-button", E2E_TIMING.localReadyMs);
   await waitForMapFollowProbe(
     serial,
     (nextProbe) => !nextProbe.following,
-    30000,
+    E2E_TIMING.observationMs,
     "CTR follow disengaged",
   );
   recordStep(result, "CTR follow disengaged for route visibility");
@@ -889,14 +863,14 @@ async function prepareRouteViewportForRotations(serial, result, route, expectedS
   await centerChartOnDestination(serial, result, route);
   await waitForRouteOverlay(serial, result);
   await ensurePlanPage(serial, result);
-  await waitForPlanSignature(serial, expectedSignature, 15000);
+  await waitForPlanSignature(serial, expectedSignature, E2E_TIMING.observationMs);
 }
 
 async function dragMapWhileFollowing(serial, result) {
   const surfaceNode = await waitForNode(
     serial,
     (node) => hasAndroidTag(node, "parity:map-surface"),
-    10000,
+    E2E_TIMING.localReadyMs,
     "map surface bounds",
   );
   const rect = rectOfBounds(surfaceNode.bounds);
@@ -904,78 +878,90 @@ async function dragMapWhileFollowing(serial, result) {
   const startY = rect.top + rect.height * 0.54;
   const endX = rect.left + rect.width * 0.72;
   const endY = startY;
-  swipe(serial, startX, startY, endX, endY, 650);
   let probe = null;
   try {
-    probe = await waitForMapFollowProbe(
-      serial,
-      (nextProbe) => nextProbe.following && mapFollowOffsetPx(nextProbe) >= 80,
-      8000,
-      "ownship remains off-center after map drag with CTR engaged",
-    );
+    probe = await nativeTransition(result, "map drag keeps CTR engaged with an offset ownship", {
+      ready: async () => findMapFollowProbe(dumpAndroid(serial)),
+      act: async () => swipe(serial, startX, startY, endX, endY, 650),
+      complete: async () => {
+        const nextProbe = findMapFollowProbe(dumpAndroid(serial));
+        return nextProbe?.following && mapFollowOffsetPx(nextProbe) >= 80 ? nextProbe : null;
+      },
+      responseTimeoutMs: E2E_TIMING.observationMs,
+    });
   } catch (error) {
     probe = findMapFollowProbe(dumpAndroid(serial));
     throw new Error(`${error.message}; lastProbe=${describeMapFollowProbe(probe)}`);
   }
-  await delay(1200);
-  const settled = await waitForMapFollowProbe(
-    serial,
-    (nextProbe) => nextProbe.following,
-    3000,
-    "map-follow probe after drag settle",
+  const stable = await assertConditionRemains(
+    "CTR offset remains stable after drag",
+    async () => findMapFollowProbe(dumpAndroid(serial)),
+    (nextProbe) => Boolean(nextProbe?.following && mapFollowOffsetPx(nextProbe) >= 80),
+    {
+      durationMs: E2E_TIMING.stabilityMs,
+      intervalMs: E2E_TIMING.stabilityPollIntervalMs,
+    },
   );
+  const settled = findMapFollowProbe(dumpAndroid(serial));
   const settledOffset = mapFollowOffsetPx(settled);
-  recordCheck(result, "chart.ctrDragKeepsOwnshipOffset", settledOffset >= 80, `offset=${settledOffset.toFixed(0)}px tag=${settled.tag}`);
-  recordStep(result, "map drag preserved CTR offset", `offset=${mapFollowOffsetPx(probe).toFixed(0)}px`);
+  recordCheck(
+    result,
+    "chart.ctrDragKeepsOwnshipOffset",
+    settledOffset >= 80,
+    `offset=${settledOffset.toFixed(0)}px samples=${stable.samples} tag=${settled.tag}`,
+  );
 }
 
-async function zoomMapWhileFollowing(serial, result) {
+async function zoomMapOneStepWhileFollowing(serial, result, direction) {
   const before = await waitForMapFollowProbe(
     serial,
     (probe) => probe.following && mapFollowOffsetPx(probe) >= 80,
-    5000,
-    "map-follow offset before zoom",
+    E2E_TIMING.localReadyMs,
+    `map-follow offset before ${direction} zoom`,
   );
+  const key = direction === "in" ? "KEYCODE_PLUS" : "KEYCODE_MINUS";
+  const changed = await nativeTransition(result, `map zoom ${direction} keeps CTR engaged`, {
+    ready: async () => findMapFollowProbe(dumpAndroid(serial)),
+    act: async () => pressKey(serial, key),
+    complete: async () => {
+      const probe = findMapFollowProbe(dumpAndroid(serial));
+      const changedInDirection = direction === "in"
+        ? probe?.zoomCenti > before.zoomCenti
+        : probe?.zoomCenti < before.zoomCenti;
+      return probe?.following && changedInDirection && mapFollowOffsetPx(probe) >= 80 ? probe : null;
+    },
+    responseTimeoutMs: E2E_TIMING.observationMs,
+  });
+  return changed;
+}
 
-  pressKey(serial, "KEYCODE_PLUS");
-  const firstZoomed = await waitForMapFollowProbe(
-    serial,
-    (probe) => probe.following && probe.zoomCenti > before.zoomCenti,
-    8000,
-    "first map zoom changed while CTR was engaged",
-  );
-  await delay(1200);
-  const firstSettled = await waitForMapFollowProbe(
-    serial,
-    (probe) => probe.following && probe.zoomCenti >= firstZoomed.zoomCenti,
-    3000,
-    "map-follow probe after first zoom settled",
-  );
-  const firstSettledOffset = mapFollowOffsetPx(firstSettled);
-  recordCheck(
-    result,
-    "chart.ctrFirstZoomKeepsOwnshipOffset",
-    firstSettledOffset >= 80,
-    `offset=${firstSettledOffset.toFixed(0)}px tag=${firstSettled.tag}`,
-  );
-
-  pressKey(serial, "KEYCODE_PLUS");
-  const secondZoomed = await waitForMapFollowProbe(
-    serial,
-    (probe) => probe.following && probe.zoomCenti > firstSettled.zoomCenti,
-    8000,
-    "second map zoom changed while CTR was engaged",
-  );
-  await delay(1200);
-  const settled = await waitForMapFollowProbe(
-    serial,
-    (probe) => probe.following && probe.zoomCenti >= secondZoomed.zoomCenti,
-    3000,
-    "map-follow probe after second zoom settled",
-  );
+async function zoomMapWhileFollowing(serial, result, { assertStable = false } = {}) {
+  const before = findMapFollowProbe(dumpAndroid(serial));
+  await zoomMapOneStepWhileFollowing(serial, result, "in");
+  const settled = await zoomMapOneStepWhileFollowing(serial, result, "in");
+  if (assertStable) {
+    await assertConditionRemains(
+      "CTR offset remains stable after zoom",
+      async () => findMapFollowProbe(dumpAndroid(serial)),
+      (probe) => Boolean(
+        probe?.following &&
+        mapFollowOffsetPx(probe) >= 80 &&
+        probe.zoomCenti >= settled.zoomCenti
+      ),
+      {
+        durationMs: E2E_TIMING.stabilityMs,
+        intervalMs: E2E_TIMING.stabilityPollIntervalMs,
+      },
+    );
+  }
   const settledOffset = mapFollowOffsetPx(settled);
   recordCheck(result, "chart.ctrZoomKeepsFollowing", settled.following, settled.tag);
-  recordCheck(result, "chart.ctrZoomKeepsOwnshipOffset", settledOffset >= 80, `offset=${settledOffset.toFixed(0)}px tag=${settled.tag}`);
+  recordCheck(
+    result,
+    "chart.ctrZoomKeepsOwnshipOffset",
+    settledOffset >= 80,
+    `offset=${settledOffset.toFixed(0)}px tag=${settled.tag}`,
+  );
   recordStep(result, "map zoom preserved CTR offset", `${before.zoomCenti} -> ${settled.zoomCenti}`);
 }
 
@@ -986,11 +972,15 @@ function layerToggleIsOn(xml, layerId) {
 async function openLayersTray(serial, result) {
   let xml = dumpAndroid(serial);
   if (!layerToggleNode(xml, "terrain_warning")) {
-    await tapTag(serial, "parity:layers-button", 10000);
-    await waitFor(() => layerToggleNode(dumpAndroid(serial), "terrain_warning") !== null, 10000, "Layers tray");
+    await nativeTransition(result, "Layers tray opened", {
+      ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:layers-button")),
+      act: async () => tapTag(serial, "parity:layers-button", E2E_TIMING.localReadyMs),
+      complete: async () => layerToggleNode(dumpAndroid(serial), "terrain_warning"),
+    });
     xml = dumpAndroid(serial);
+  } else {
+    recordStep(result, "Layers tray opened");
   }
-  recordStep(result, "Layers tray opened");
   return xml;
 }
 
@@ -1039,15 +1029,21 @@ async function runLayerToggleNavDbRegression(args) {
   recordCheck(result, "layers.terrainInitiallyOn", layerToggleIsOn(xml, "terrain_warning"));
   recordCheck(result, "layers.nexradInitiallyOff", !layerToggleIsOn(xml, "nexrad"));
 
-  await tapTag(serial, layerToggleTag("terrain_warning"), 10000);
-  await delay(500);
+  await nativeTransition(result, "Terrain disabled", {
+    ready: async () => layerToggleIsOn(dumpAndroid(serial), "terrain_warning"),
+    act: async () => tapTag(serial, layerToggleTag("terrain_warning"), E2E_TIMING.localReadyMs),
+    complete: async () => !layerToggleIsOn(dumpAndroid(serial), "terrain_warning"),
+  });
   recordCheck(result, "layers.terrainCommandAccepted", rejectedLayerCommandCount(serial) === 0);
   recordStep(result, "Terrain disabled without a session-command warning");
 
   xml = await openLayersTray(serial, result);
   recordCheck(result, "layers.terrainTurnedOff", !layerToggleIsOn(xml, "terrain_warning"));
-  await tapTag(serial, layerToggleTag("nexrad"), 10000);
-  await delay(500);
+  await nativeTransition(result, "NEXRAD enabled", {
+    ready: async () => !layerToggleIsOn(dumpAndroid(serial), "nexrad"),
+    act: async () => tapTag(serial, layerToggleTag("nexrad"), E2E_TIMING.localReadyMs),
+    complete: async () => layerToggleIsOn(dumpAndroid(serial), "nexrad"),
+  });
   const screenshotPath = captureLayerToggleRegressionScreenshot(serial, result);
   recordCheck(result, "layers.nexradCommandAccepted", rejectedLayerCommandCount(serial) === 0, screenshotPath);
   recordStep(result, "NEXRAD enabled without a session-command warning");
@@ -1088,7 +1084,7 @@ function planContentsEqual(left, right) {
   return left.rowCount === right.rowCount && JSON.stringify(left.rows) === JSON.stringify(right.rows);
 }
 
-async function waitForPlanSignature(serial, expected = null, timeoutMs = 15000) {
+async function waitForPlanSignature(serial, expected = null, timeoutMs = E2E_TIMING.observationMs) {
   let signature = null;
   await waitFor(() => {
     const xml = dumpAndroid(serial);
@@ -1130,14 +1126,14 @@ async function exerciseRetainedPlanAcrossRotations(
     for (let transition = 0; transition < transitionCount; transition += 1) {
       const orientation = transition % 2 === 0 ? "landscape" : "portrait";
       setAndroidRotation(serial, orientation);
-      const bounds = await waitForAndroidOrientation(serial, orientation, 15000);
-      const signature = await waitForPlanSignature(serial, baselineSignature, 15000);
+      const bounds = await waitForAndroidOrientation(serial, orientation, E2E_TIMING.observationMs);
+      const signature = await waitForPlanSignature(serial, baselineSignature, E2E_TIMING.observationMs);
       const pid = currentAerobagPid(serial);
       recordCheck(result, `rotation.${transition + 1}.pidStable`, pid === initialPid, `${initialPid} -> ${pid}`);
       await ensureChartPage(serial, result);
       await waitForRouteOverlay(serial, result);
       await ensurePlanPage(serial, result);
-      finalSignature = await waitForPlanSignature(serial, baselineSignature, 15000);
+      finalSignature = await waitForPlanSignature(serial, baselineSignature, E2E_TIMING.observationMs);
       transcript.push({
         transition: transition + 1,
         orientation,
@@ -1155,7 +1151,7 @@ async function exerciseRetainedPlanAcrossRotations(
   return finalSignature;
 }
 
-async function waitForLogcatMarker(serial, marker, timeoutMs = 30000) {
+async function waitForLogcatMarker(serial, marker, timeoutMs = E2E_TIMING.resourceMs) {
   await waitFor(() => {
     const logcat = adb(serial, ["logcat", "-d", "-v", "brief"], { maxBuffer: 8 * 1024 * 1024 });
     return logcat.includes(marker);
@@ -1168,30 +1164,16 @@ function logcatMarkerCount(serial, marker) {
 }
 
 async function verifyNotamsLoadedInUi(serial, result) {
-  let statusPageVisible = false;
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const xml = dumpAndroid(serial);
-    const statusRows = findNodes(xml, (node) => androidTag(node).startsWith("parity:data-status-row:"));
-    if (statusRows.length > 0) {
-      statusPageVisible = true;
-      break;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:DataStatus"))) {
-      await tapTag(serial, "parity:home-button:DataStatus", 10000);
-      await delay(500);
-      continue;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
-      await tapTag(serial, "parity:button:HOME", 10000);
-      await delay(500);
-      continue;
-    }
-    pressKey(serial, "KEYCODE_BACK");
-    await delay(400);
-  }
-  if (!statusPageVisible) {
-    throwWithUi(serial, "Data Status page did not become visible for persisted NOTAM verification");
-  }
+  await nativeSemanticDriver(serial).openPage("data_status");
+  await waitFor(
+    () => findNodes(
+      dumpAndroid(serial),
+      (node) => androidTag(node).startsWith("parity:data-status-row:"),
+    ).length > 0,
+    E2E_TIMING.localReadyMs,
+    "Data Status rows",
+    E2E_TIMING.pollIntervalMs,
+  );
 
   const anyNotamNode = await findNodeByScrolling(
     serial,
@@ -1211,7 +1193,7 @@ async function verifyNotamsLoadedInUi(serial, result) {
         return tag.startsWith("parity:data-status-row:live_feed:notams:") && !tag.endsWith(":MISSING");
       });
       return loadedNode !== null;
-    }, 45000, "persisted NOTAM loaded row", 1000);
+    }, E2E_TIMING.resourceMs, "persisted NOTAM loaded row", E2E_TIMING.resourcePollIntervalMs);
   } catch (_error) {
     throwWithUi(serial, "persisted NOTAM did not appear loaded in Data Status");
   }
@@ -1236,7 +1218,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
     adb(serial, ["logcat", "-c"]);
     recordStep(result, "persisted live-feed promotion paused at deterministic gate");
     await ensurePlanPage(serial, result);
-    const restoredSignature = await waitForPlanSignature(serial, null, 15000);
+    const restoredSignature = await waitForPlanSignature(serial, null, E2E_TIMING.observationMs);
     recordCheck(
       result,
       "rotation.liveFeedPhaseRouteRestored",
@@ -1244,7 +1226,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
       JSON.stringify(restoredSignature),
     );
     await activateDestinationLeg(serial, result, ROTATION_ROUTE);
-    const liveFeedBaselineSignature = await waitForPlanSignature(serial, null, 15000);
+    const liveFeedBaselineSignature = await waitForPlanSignature(serial, null, E2E_TIMING.observationMs);
     recordCheck(
       result,
       "rotation.liveFeedPhaseActiveLegProjected",
@@ -1269,7 +1251,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
     setAerobagPrivateSentinel(serial, LIVE_FEED_PROMOTION_SENTINEL, false);
     await verifyNotamsLoadedInUi(serial, result);
     await ensurePlanPage(serial, result);
-    await waitForPlanSignature(serial, liveFeedBaselineSignature, 15000);
+    await waitForPlanSignature(serial, liveFeedBaselineSignature, E2E_TIMING.observationMs);
     await prepareRouteViewportForRotations(
       serial,
       result,
@@ -1386,11 +1368,10 @@ async function runMapFollowCtrGestureSmoke(args) {
   await ensureMapFollowEngaged(serial, result);
   await dragMapWhileFollowing(serial, result);
   for (let cycle = 1; cycle <= 8; cycle += 1) {
-    await zoomMapWhileFollowing(serial, result);
+    await zoomMapWhileFollowing(serial, result, { assertStable: cycle === 1 || cycle === 8 });
     recordStep(result, "CTR zoom stress cycle", String(cycle));
-    pressKey(serial, "KEYCODE_MINUS");
-    pressKey(serial, "KEYCODE_MINUS");
-    await delay(1200);
+    await zoomMapOneStepWhileFollowing(serial, result, "out");
+    await zoomMapOneStepWhileFollowing(serial, result, "out");
   }
   result.status = "pass";
   result.finished_at = new Date().toISOString();
@@ -1399,6 +1380,11 @@ async function runMapFollowCtrGestureSmoke(args) {
 
 async function runPlateFirstRenderSmoke(args) {
   const { serial } = args;
+  if (!args.releaseFixture) {
+    throw new Error("android.plate-first-render-smoke requires --release-fixture");
+  }
+  const fixture = loadReleaseJourneyFixture(args.releaseFixture);
+  const plateCapability = fixture.capabilities.plate.georeferenced;
   const result = createTestResult("android.plate-first-render-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
@@ -1409,7 +1395,12 @@ async function runPlateFirstRenderSmoke(args) {
   await ensureOfflinePackagesReady(serial, result, args);
   await waitForRuntime(serial, result);
   await ensureChartPage(serial, result);
-  await openFirstPlateFromAirportInspector(serial, result, "KPLU");
+  await openPlateFromAirportInspector(
+    serial,
+    result,
+    plateCapability.airport_id,
+    plateCapability.label_contains,
+  );
   await waitForPlateImagePainted(serial, result);
   result.status = "pass";
   result.finished_at = new Date().toISOString();
@@ -1426,7 +1417,6 @@ async function launchReleaseJourneyAndroidApp(args, fixture, options) {
       String(initialViewport.longitude ?? initialViewport.lon),
       String(initialViewport.latitude ?? initialViewport.lat),
     ]);
-    await delay(500);
   }
 }
 
@@ -1529,7 +1519,11 @@ async function runOfflineColdStart(args) {
     adbBestEffort(args.serial, ["shell", "svc", "data", "disable"]);
     try {
       await driver.reload();
-      await waitFor(() => runtimeUiVisible(dumpAndroid(args.serial)), 45_000, "offline cold-start runtime");
+      await waitFor(
+        () => runtimeUiVisible(dumpAndroid(args.serial)),
+        E2E_TIMING.startupMs,
+        "offline cold-start runtime",
+      );
       recordCheck(result, "offline.cold-start", true);
 
       await driver.openPage("map");
@@ -1539,7 +1533,7 @@ async function runOfflineColdStart(args) {
           androidTag(node).startsWith("parity:raster-state:"));
         raster = entry ? androidTag(entry) : null;
         return raster && /planned:[1-9][0-9]*:loaded:[1-9][0-9]*/.test(raster);
-      }, 45_000, "offline chart raster");
+      }, E2E_TIMING.resourceMs, "offline chart raster");
       recordCheck(result, "offline.chart", Boolean(raster), raster);
 
       await driver.openPage("charts");
@@ -1551,8 +1545,12 @@ async function runOfflineColdStart(args) {
         .find((entry) => entry.text.toUpperCase().includes(label.toUpperCase()));
       if (!option) throw new Error(`offline plate ${label} is unavailable`);
       await driver.performAction(`tray-option:${option.id.replace(/^parity:tray-option:/, "")}`);
-      const plate = await waitForNode(args.serial, (node) =>
-        androidTag(node).startsWith("parity:plate-viewport:chart:"), 45_000, "offline plate image");
+      const plate = await waitForNode(
+        args.serial,
+        (node) => androidTag(node).startsWith("parity:plate-viewport:chart:"),
+        E2E_TIMING.resourceMs,
+        "offline plate image",
+      );
       recordCheck(result, "offline.plate", Boolean(plate), plate ? androidTag(plate) : undefined);
     } finally {
       adbBestEffort(args.serial, ["shell", "svc", "wifi", "enable"]);

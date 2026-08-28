@@ -2354,6 +2354,7 @@ function OperationalApp() {
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const initialPage = useMemo(() => appPageForCurrentPath() ?? persistedUiState.page ?? "map", [persistedUiState.page]);
   const [page, setPage] = useState<AppPage>(initialPage);
+  const [persistedPage, setPersistedPage] = useState<AppPage>(initialPage);
   const [mapOrientationMode, setMapOrientationMode] = useState<MapOrientationMode>(
     persistedUiState.mapOrientationMode ?? "north",
   );
@@ -3698,6 +3699,7 @@ function OperationalApp() {
       selectedChartId,
       recentAirportIds,
     });
+    if (page !== "about") setPersistedPage(page);
   }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId]);
 
   const navigationPageOptions = useMemo(
@@ -3970,7 +3972,11 @@ function OperationalApp() {
   }
 
   return (
-    <main className="appShell" style={themeVars}>
+    <main
+      className="appShell"
+      style={themeVars}
+      data-testid={`parity:startup-state:ready:true:disclaimer_required:${sessionSnapshot.disclaimer_state.required}:persisted_page:${persistedPage}`}
+    >
       <NavigationPageOptionsContext.Provider value={navigationPageOptions}>
       <HighRateSessionEffects
         sessionRenderStore={sessionRenderStore}
@@ -4588,7 +4594,7 @@ function MapPage(props: {
   const mapBearingTransformRef = useRef<HTMLDivElement | null>(null);
   const mapContentTransformRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["family", "layers", "procedureWarning", "status", "ownship"] as const);
-  const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
+  const layerToggleBusyRef = useRef(false);
   const [chartSearch, setChartSearch] = useState<{
     query: string;
     open: boolean;
@@ -5873,18 +5879,17 @@ function MapPage(props: {
     || mapLayerState.traffic.visible
     || mapLayerState.offline_regions.visible;
   const setMapLayerVisible = useCallback(async (layerId: MapLayerId, visible: boolean) => {
-    if (!uiSession || layerToggleBusyId !== null) {
+    if (!uiSession || layerToggleBusyRef.current) {
       return;
     }
-    setLayerToggleBusyId(layerId);
+    layerToggleBusyRef.current = true;
     try {
       const nextSnapshot = await uiSession.setMapLayerVisibility(layerId, visible);
       onPlaybackSnapshotChange(nextSnapshot);
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
     } finally {
-      setLayerToggleBusyId((current) => (current === layerId ? null : current));
+      layerToggleBusyRef.current = false;
     }
-  }, [layerToggleBusyId, onPlaybackSnapshotChange, uiSession]);
+  }, [onPlaybackSnapshotChange, uiSession]);
   const routeScreenSegments = useMemo(() => {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];
@@ -10065,6 +10070,7 @@ function FlightPlanPage(props: {
             <div className="planEntryCell">
               <form
                 className="planEntryForm"
+                data-testid={`parity:plan-append-route-state:can_commit:${routeEntryPreview.can_commit}:loading:${routeEntryLoading}`}
                 onSubmit={async (event) => {
                   event.preventDefault();
                   if (!routeEntryPreview.can_commit || routeEntrySubmitting) {
@@ -10193,6 +10199,7 @@ function FlightPlanPage(props: {
           <button
             type="button"
             className="trayScrim"
+            data-testid="plan-row-tray-scrim"
             aria-label="Close waypoint actions"
             onClick={() => {
               setSelectedWaypointUid(null);
@@ -12966,6 +12973,7 @@ function CloudPage(props: {
     return <section
       key={`${region}:${panel.id}`}
       className={`cloudFlowPanel is-${panel.state}`}
+      data-e2e-state={panel.state}
       data-testid={region === "provider"
         ? "cloud-provider-card"
         : region === "status"

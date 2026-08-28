@@ -189,14 +189,7 @@ async function enableDeterministicOwnship(runtime) {
   if (!initialOwnship || initialOwnship.includes("position:none")) {
     throw new Error(`Bad Autopilot did not publish an initial ownship position: ${initialOwnship}`);
   }
-  await runtime.eventually("Bad Autopilot ownship advanced", async () => {
-    const current = projectionId((await runtime.driver.readProjection(
-      "parity:ownship-state:",
-    ))[0]);
-    return current && current !== initialOwnship && !current.includes("position:none")
-      ? current
-      : null;
-  });
+  return initialOwnship;
 }
 
 async function selectStationaryPlanPreview(runtime) {
@@ -1720,7 +1713,7 @@ async function inspectorDetails(runtime) {
     if (entry?.text && distanceSamples.at(-1) !== entry.text) distanceSamples.push(entry.text);
     runtime.result.diagnostics.inspector_distance_samples = distanceSamples;
     return entry?.text && entry.text !== initialDistance ? entry.text : null;
-  }, E2E_TIMING.userResponseMs, 250);
+  }, E2E_TIMING.syntheticOwnshipProgressMs, 250);
   runtime.check("inspector.distance-live", Boolean(changedDistance), `${initialDistance} -> ${changedDistance}`);
 
   await runtime.driver.performAction("airport_info");

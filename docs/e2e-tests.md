@@ -184,7 +184,8 @@ cannot consume three seconds and then receive a second three-second completion
 allowance. Longer
 waits are separate phases with names that expose what the test is actually
 waiting for: local resource computation, replay progression, an animation
-cycle, Android activity recreation, startup, remote consistency, or a bulk
+cycle, synthetic ownship progression, Android activity recreation, startup,
+remote consistency, or a bulk
 operation. There is deliberately no generic "observation" timeout. A new
 journey must either prove an ordinary UI postcondition promptly or declare the
 specific asynchronous boundary it exercises.

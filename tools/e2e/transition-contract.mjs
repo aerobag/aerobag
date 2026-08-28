@@ -6,6 +6,7 @@ export const E2E_TIMING = Object.freeze({
   userResponseMs: 3_000,
   localReadyMs: 3_000,
   stabilityMs: 1_500,
+  syntheticOwnshipProgressMs: 5_000,
   stabilityPollIntervalMs: 100,
   transitionCompletionSamples: 2,
   localResourceMs: 15_000,

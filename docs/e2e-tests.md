@@ -207,7 +207,10 @@ rendered by Compose. Actions invoke the ordinary accessibility click or scroll
 operation on a visible, enabled rendered node; they do not invoke core actions
 directly or add random coordinate jitter. Keeping the driver process alive
 removes the roughly two-second cost and process-race exposure of each standalone
-`uiautomator dump`.
+`uiautomator dump`. The action endpoint also closes the probe/action race: if
+Compose replaces a previously observed node, it waits on accessibility events
+until Android accepts one action against the currently rendered replacement.
+It never retries an action that Android accepted.
 
 Web control actions verify that the rendered element is unobstructed and invoke
 its ordinary DOM activation in the same browser task. This preserves the real
@@ -244,7 +247,10 @@ tools/prod_manage.py --prequalify
 
 The local phase runs ordinary CI and all P0/P1/P2 journeys from the same commit
 that will be pushed. Its receipt is invalidated if either workflow, the local
-runner, or the journey lab changes.
+runner, or the journey lab changes. GitHub's four Android matrix shards receive
+separate hosts. Local qualification preserves those four shards but defaults to
+two concurrent emulators so host contention does not become a false product
+latency failure; `--android-workers` can override that capacity setting.
 
 Use `--headless` to reproduce the hosted-runner display mode.
 

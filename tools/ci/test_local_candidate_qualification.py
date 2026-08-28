@@ -62,6 +62,10 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         )
         self.assert_shell_is_valid(lane.command)
 
+    def test_local_android_parallelism_does_not_assume_github_runner_isolation(self) -> None:
+        self.assertEqual(qualification.ANDROID_SHARDS, 4)
+        self.assertEqual(qualification.DEFAULT_ANDROID_WORKERS, 2)
+
     def test_local_receipt_is_bound_to_workflow_content(self) -> None:
         identity = qualification.workflow_identity()
 

@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 /** Test-only semantic driver that remains independent of Aerobag's process lifecycle. */
 public final class SemanticDriverService extends AccessibilityService {
     private static final int DRIVER_PORT = 19_191;
+    private static final long ACTION_ACCEPT_TIMEOUT_MS = 2_000;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong accessibilityEventSequence = new AtomicLong();
@@ -133,13 +134,13 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String value = query.getOrDefault("value", "");
-        boolean changed = !tag.isEmpty() && setRenderedText(tag, value);
+        boolean changed = !tag.isEmpty() && awaitAcceptedTextAction(tag, value);
         respondAction(socket, changed, "text action rejected\n");
     }
 
     private void handleClick(Socket socket, String path) throws IOException {
         String tag = queryOf(path).getOrDefault("tag", "");
-        boolean clicked = !tag.isEmpty() && clickRenderedNode(tag);
+        boolean clicked = !tag.isEmpty() && awaitAcceptedClickAction(tag);
         respondAction(socket, clicked, "click action rejected\n");
     }
 
@@ -158,20 +159,21 @@ public final class SemanticDriverService extends AccessibilityService {
         respondAction(socket, scrolled, "scroll action rejected\n");
     }
 
-    private void awaitAccessibilityEventAfter(long sequence, long timeoutMs) {
+    private boolean awaitAccessibilityEventAfter(long sequence, long timeoutMs) {
         long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         synchronized (accessibilityEventMonitor) {
             while (accessibilityEventSequence.get() <= sequence) {
                 long remainingNanos = deadlineNanos - System.nanoTime();
-                if (remainingNanos <= 0) return;
+                if (remainingNanos <= 0) return false;
                 try {
                     TimeUnit.NANOSECONDS.timedWait(accessibilityEventMonitor, remainingNanos);
                 } catch (InterruptedException error) {
                     Thread.currentThread().interrupt();
-                    return;
+                    return false;
                 }
             }
         }
+        return true;
     }
 
     private static Map<String, String> queryOf(String path) {
@@ -241,6 +243,21 @@ public final class SemanticDriverService extends AccessibilityService {
         return output.toString();
     }
 
+    private boolean awaitAcceptedTextAction(String tag, String value) {
+        long deadlineNanos = System.nanoTime()
+            + TimeUnit.MILLISECONDS.toNanos(ACTION_ACCEPT_TIMEOUT_MS);
+        while (true) {
+            long eventSequence = accessibilityEventSequence.get();
+            if (setRenderedText(tag, value)) return true;
+            long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0) return false;
+            if (!awaitAccessibilityEventAfter(
+                eventSequence,
+                TimeUnit.NANOSECONDS.toMillis(remainingNanos)
+            )) return false;
+        }
+    }
+
     private boolean setRenderedText(String tag, String value) {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
@@ -250,6 +267,21 @@ public final class SemanticDriverService extends AccessibilityService {
             return false;
         } finally {
             recycleAll(roots);
+        }
+    }
+
+    private boolean awaitAcceptedClickAction(String tag) {
+        long deadlineNanos = System.nanoTime()
+            + TimeUnit.MILLISECONDS.toNanos(ACTION_ACCEPT_TIMEOUT_MS);
+        while (true) {
+            long eventSequence = accessibilityEventSequence.get();
+            if (clickRenderedNode(tag)) return true;
+            long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0) return false;
+            if (!awaitAccessibilityEventAfter(
+                eventSequence,
+                TimeUnit.NANOSECONDS.toMillis(remainingNanos)
+            )) return false;
         }
     }
 
@@ -363,6 +395,7 @@ public final class SemanticDriverService extends AccessibilityService {
     @SuppressWarnings("deprecation")
     private static boolean setNodeText(AccessibilityNodeInfo node, String tag, String value) {
         if (tag.equals(node.getViewIdResourceName())) {
+            if (!node.refresh() || !tag.equals(node.getViewIdResourceName())) return false;
             Bundle arguments = new Bundle();
             arguments.putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -385,6 +418,7 @@ public final class SemanticDriverService extends AccessibilityService {
     @SuppressWarnings("deprecation")
     private static boolean clickNode(AccessibilityNodeInfo node, String tag) {
         if (tag.equals(node.getViewIdResourceName())) {
+            if (!node.refresh() || !tag.equals(node.getViewIdResourceName())) return false;
             return node.isVisibleToUser()
                 && node.isEnabled()
                 && node.isClickable()

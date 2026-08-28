@@ -28,6 +28,7 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPETITIONS = 5
 ANDROID_SHARDS = 4
+DEFAULT_ANDROID_WORKERS = 2
 NEXTEST_VERSION = "0.9.140"
 PRIORITIES = ("p0", "p1", "p2")
 NATIVE_TESTS = (
@@ -77,7 +78,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
-    parser.add_argument("--android-workers", type=int, default=ANDROID_SHARDS)
+    parser.add_argument(
+        "--android-workers",
+        type=int,
+        default=DEFAULT_ANDROID_WORKERS,
+        help=(
+            "number of Android emulators sharing this host; GitHub matrix shards run on "
+            "separate hosts"
+        ),
+    )
     parser.add_argument("--check", action="store_true", help="only verify the receipt for HEAD")
     return parser.parse_args()
 
@@ -652,6 +661,8 @@ def main() -> int:
     args = parse_args()
     if args.repetitions < 1:
         raise QualificationError("--repetitions must be positive")
+    if args.android_workers < 1:
+        raise QualificationError("--android-workers must be positive")
     commit = assert_clean_commit()
     receipt = valid_receipt(commit)
     if args.check:
@@ -692,20 +703,27 @@ def main() -> int:
     web_and_nav.append(auxiliary_lanes(run_root, fixtures)[0])
     results.extend(run_lanes(web_and_nav, logs, min(args.jobs, len(web_and_nav))))
 
-    print("Running four prepared Android shards in parallel", flush=True)
+    android_workers = min(args.android_workers, ANDROID_SHARDS)
+    print(
+        f"Running four prepared Android shards with {android_workers} local emulator worker(s)",
+        flush=True,
+    )
     android_lanes = [
         android_shard_lane(shard, run_root, fixture, apps, args.repetitions)
         for shard in range(ANDROID_SHARDS)
     ]
-    results.extend(run_lanes(android_lanes, logs, min(args.android_workers, ANDROID_SHARDS)))
+    results.extend(run_lanes(android_lanes, logs, android_workers))
 
-    print("Running native Android and Chrome lanes in parallel", flush=True)
+    print(
+        f"Running native Android and Chrome lanes with {android_workers} local emulator worker(s)",
+        flush=True,
+    )
     native = [
         native_lane(test_id, index, run_root, fixtures, apps)
         for index, test_id in enumerate(NATIVE_TESTS)
     ]
     native.append(auxiliary_lanes(run_root, fixtures)[1])
-    results.extend(run_lanes(native, logs, min(args.android_workers, len(native))))
+    results.extend(run_lanes(native, logs, min(android_workers, len(native))))
 
     path = write_receipt(commit, started_at, run_root, apps, results, args.repetitions)
     print(f"Local candidate qualification passed: {path}")

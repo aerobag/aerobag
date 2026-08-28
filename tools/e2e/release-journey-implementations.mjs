@@ -1861,6 +1861,8 @@ async function mapModesAndOverlays(runtime) {
   });
   runtime.check("map.trk-up", Boolean(track && trackViewport), trackViewport);
   const gapViewport = await runtime.eventually("map missing-track sample", async () => {
+    const playback = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+    if (playback?.status !== "playing") return null;
     const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
     if (state?.track !== "none") return null;
     const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
@@ -2506,6 +2508,8 @@ async function replayTrackUp(runtime) {
     return Math.abs(up) > 1 ? { id, up } : null;
   });
   const gap = await runtime.eventually("replay ownship entered track gap", async () => {
+    const playback = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+    if (playback?.status !== "playing") return null;
     const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
     if (state?.mode !== "replay" || !state.draw || state.track !== "none") return null;
     const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));

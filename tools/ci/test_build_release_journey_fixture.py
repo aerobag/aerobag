@@ -303,7 +303,8 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         self.assertIsInstance(replay["trace"], list)
         self.assertGreaterEqual(len(replay["trace"]), 6)
         self.assertEqual([None, None], [replay["trace"][2][5], replay["trace"][3][5]])
-        self.assertLessEqual(replay["trace"][-1][0], 1.25)
+        missing_track_seconds = replay["trace"][4][0] - replay["trace"][2][0]
+        self.assertGreaterEqual(missing_track_seconds / 0.25, 10.0)
 
 
 if __name__ == "__main__":

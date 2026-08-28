@@ -26,6 +26,7 @@ const MUTATING_DRIVER_METHODS = new Set([
   "drag",
   "enterText",
   "hover",
+  "injectRasterLoadFault",
   "inspectMapAt",
   "openPage",
   "openChooser",
@@ -43,6 +44,7 @@ const MUTATING_DRIVER_METHODS = new Set([
 ]);
 
 const MUTATING_FUNCTIONS = new Set([
+  "activateAndroidNode",
   "launchFreshAndroidApp",
   "nativeTransition",
   "pressKey",
@@ -79,6 +81,7 @@ const RAW_DRIVER_METHODS = new Set([
   "drag",
   "enterText",
   "hover",
+  "injectRasterLoadFault",
   "performAction",
   "openChooser",
   "selectOption",
@@ -100,6 +103,17 @@ function containsDomMutation(node) {
   if (method !== "evalValue" && method !== "evaluate") return false;
   const expression = node.arguments[0];
   return Boolean(expression && DOM_MUTATION_PATTERN.test(expression.getText()));
+}
+
+function containsRawAndroidInput(node) {
+  if (!ts.isCallExpression(node) || calledFunction(node) !== "adb") return false;
+  const args = node.arguments[1];
+  return Boolean(
+    args &&
+    ts.isArrayLiteralExpression(args) &&
+    args.elements.some((element) =>
+      ts.isStringLiteral(element) && element.text === "input"),
+  );
 }
 
 function calledMethod(node) {
@@ -188,8 +202,38 @@ function isTransitionActionCallback(node) {
   return false;
 }
 
+function reportNativeActionEvidence(source, violations, callback) {
+  if (!callback || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))) return;
+  const evidenceNames = new Set(callback.parameters.flatMap((parameter) =>
+    ts.isIdentifier(parameter.name) ? [parameter.name.text] : []));
+  if (callback.parameters.length === 0) {
+    violations.push({
+      ...sourceLocation(source, callback),
+      message: "nativeTransition action must accept its observed readiness evidence",
+    });
+  }
+  visit(callback.body, (child) => {
+    const called = calledFunction(child);
+    if (called === "tapTag" || called === "waitForNode") {
+      violations.push({
+        ...sourceLocation(source, child),
+        message: `nativeTransition action must not rediscover UI state through ${called}`,
+      });
+    }
+    if (called !== "tapNode" && called !== "activateAndroidNode") return;
+    const evidence = child.arguments[1];
+    if (!evidence || !evidenceNames.has(evidence.getText(source))) {
+      violations.push({
+        ...sourceLocation(source, child),
+        message: `${called} must use the readiness evidence passed to act`,
+      });
+    }
+  });
+}
+
 export function auditJourneyStructure(text, filename = "release-journey-implementations.mjs") {
   const source = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const rawAndroidInputMustBeContracted = filename.endsWith("run-android-e2e-suite.mjs");
   const functions = new Map();
   visit(source, (node) => {
     const name = functionName(node);
@@ -208,7 +252,7 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
       ) {
         mutatingFunctions.add(name);
       }
-      if (containsDomMutation(node)) mutatingFunctions.add(name);
+      if (containsDomMutation(node) || containsRawAndroidInput(node)) mutatingFunctions.add(name);
       const called = calledFunction(node);
       if (called && MUTATING_FUNCTIONS.has(called)) mutatingFunctions.add(name);
       if (called) calls.add(called);
@@ -241,6 +285,7 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
         MUTATING_DRIVER_METHODS.has(method) ||
         ["step", "transition", "action", "chooseOption"].includes(method) ||
         containsDomMutation(child) ||
+        containsRawAndroidInput(child) ||
         (called && (MUTATING_FUNCTIONS.has(called) || mutatingFunctions.has(called)))
       ) {
         violations.push({
@@ -280,6 +325,16 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
           : `${method} must be the act phase of a semantic transition`,
       });
     }
+    if (
+      rawAndroidInputMustBeContracted &&
+      containsRawAndroidInput(node) &&
+      !isTransitionActionCallback(node)
+    ) {
+      violations.push({
+        ...sourceLocation(source, node),
+        message: "raw adb input must be the act phase of a semantic transition",
+      });
+    }
     const isObservation = OBSERVATION_METHODS.has(method) || OBSERVATION_FUNCTIONS.has(called);
     if (method === "eventually" && node.arguments[2] && ts.isNumericLiteral(node.arguments[2])) {
       violations.push({
@@ -301,7 +356,11 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
       }
     }
     const timeoutArgument = called ? TIMEOUT_ARGUMENTS.get(called) : undefined;
-    if (timeoutArgument !== undefined && ts.isNumericLiteral(node.arguments[timeoutArgument])) {
+    if (
+      timeoutArgument !== undefined &&
+      node.arguments[timeoutArgument] &&
+      ts.isNumericLiteral(node.arguments[timeoutArgument])
+    ) {
       violations.push({
         ...sourceLocation(source, node.arguments[timeoutArgument]),
         message: `raw ${called} deadline is forbidden; use a named E2E_TIMING class`,
@@ -339,8 +398,16 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
       }
       for (const property of contract.properties) {
         if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) continue;
+        if (method === "action" && property.name.text === "ready") {
+          violations.push({
+            ...sourceLocation(source, property),
+            message: "action readiness must come from driver.readAction(actionId)",
+          });
+        }
         if (property.name.text === "ready" || property.name.text === "complete") {
           reportMutations(property.initializer, `${called ?? method} ${property.name.text} callback`);
+        } else if (called === "nativeTransition" && property.name.text === "act") {
+          reportNativeActionEvidence(source, violations, property.initializer);
         } else if (
           property.name.text === "responseTimeoutMs" &&
           !isTimingClass(property.initializer, "userResponseMs")

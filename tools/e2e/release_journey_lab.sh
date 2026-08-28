@@ -59,9 +59,11 @@ Commands:
   web-restart                  Rebuild and restart the release-lab web app on 8085.
   web-build                    Build the optimized, E2E-enabled web bundle.
   web-dist-test JOURNEY        Run a web journey against the fixture-served bundle.
-  web-dist-suite [p0|p1|all]   Run implemented web journeys against that bundle.
+  web-dist-suite [p0|p1|p2|all]
+                               Run implemented web journeys against that bundle.
   android-compile              Compile the Android app and semantic probes.
   android-deploy               Install the current debug APK without clearing app data.
+  android-boot-install [APK]   Boot the configured emulator and clean-install immutable apps.
   android-install [JOURNEY]    Clean-install/sync, then run one journey.
   android-install-apk [APK]    Clean-install an immutable APK and sync all fixture packages.
   android-upgrade-apk [APK]    Install a rebuilt immutable APK while preserving app data.
@@ -69,23 +71,23 @@ Commands:
   android-baseline-save FILE   Archive prepared app data for fast journey resets.
   android-baseline-restore FILE
                                Restore prepared app data without resetting the emulator VM.
-  android-suite [p0|p1|all] [START_AT]
+  android-suite [p0|p1|p2|all] [START_AT]
                                Run Android journeys, optionally resuming at START_AT.
-  android-suite-shard [p0|p1|all] SHARD COUNT
+  android-suite-shard [p0|p1|p2|all] SHARD COUNT
                                Run every COUNTth Android journey assigned to SHARD.
-  android-shard-list [p0|p1|all] SHARD COUNT
+  android-shard-list [p0|p1|p2|all] SHARD COUNT
                                Print the journeys assigned to one shard.
-  android-implementation-suite [p0|p1|all] [START_AT]
+  android-implementation-suite [p0|p1|p2|all] [START_AT]
                                Run only registry implementations, optionally resuming.
   android-offline              Run the Android offline cold-start journey.
   android-open-page PAGE       Navigate the installed app through the semantic driver.
   android-action ID            Perform one Android semantic action.
   android-enter-text ID VALUE  Enter text through the Android semantic driver.
   android-zoom SURFACE AMOUNT  Apply one semantic zoom gesture to the current page.
-  android-ui                   Capture compressed UI XML and screenshot.
+  android-ui                   Capture semantic-driver UI XML and screenshot.
   android-log [PATTERN]        Capture logcat and print matching diagnostics.
   web-test JOURNEY             Run one web journey against port 8085.
-  web-suite [p0|p1|all]        Run implemented web journeys.
+  web-suite [p0|p1|p2|all]     Run implemented web journeys.
 
 Environment overrides:
   AEROBAG_RELEASE_JOURNEY_FIXTURE, AEROBAG_RELEASE_JOURNEY_ORIGIN,
@@ -105,6 +107,21 @@ require_fixture() {
 
 fixture_origin() {
   printf '%s' "${AEROBAG_RELEASE_JOURNEY_ORIGIN:-http://127.0.0.1:${PORT}}"
+}
+
+require_web_fixture_origin() {
+  local managed="http://127.0.0.1:${PORT}"
+  local declared
+  local browser
+  declared="$(node -e 'process.stdout.write(new URL(process.argv[1]).origin)' \
+    "$(fixture_origin)")"
+  browser="$(node -e 'process.stdout.write(new URL(process.argv[1]).origin)' \
+    "${AEROBAG_E2E_URL:-http://127.0.0.1:8085/}")"
+  if [[ "$declared" != "$managed" || "$browser" != "$managed" ]]; then
+    echo "web journey fixture mismatch: managed=$managed declared=$declared browser=$browser" >&2
+    echo "set PACKAGE_SOURCE_PORT, AEROBAG_RELEASE_JOURNEY_ORIGIN, and AEROBAG_E2E_URL consistently" >&2
+    exit 2
+  fi
 }
 
 fixture_start() {
@@ -230,6 +247,16 @@ reset_fixture_state() {
     "http://127.0.0.1:${PORT}/__control" >/dev/null
 }
 
+require_journey_priority() {
+  case "$1" in
+    p0|p1|p2|all) ;;
+    *)
+      echo "invalid journey priority: $1 (expected p0, p1, p2, or all)" >&2
+      exit 2
+      ;;
+  esac
+}
+
 implemented_journeys() {
   local platform="$1"
   local priority="$2"
@@ -345,6 +372,25 @@ android_baseline_restore() {
   adb -s "$SERIAL" reverse "tcp:${ANDROID_PACKAGE_PORT}" "tcp:${PORT}" >/dev/null
 }
 
+android_boot_install() {
+  local apk="${1:-$APP_ARTIFACTS_DIR/aerobag-release-e2e.apk}"
+  local driver_apk="${2:-$APP_ARTIFACTS_DIR/aerobag-e2e-driver.apk}"
+  [[ -f "$apk" ]] || { echo "immutable APK is missing: $apk" >&2; exit 1; }
+  [[ -f "$driver_apk" ]] || {
+    echo "immutable Android semantic driver is missing: $driver_apk" >&2
+    exit 1
+  }
+  "$ROOT/ui/android-app/scripts/stop_emulator_stack.sh" >/dev/null 2>&1 || true
+  "$ROOT/ui/android-app/scripts/start_emulator_stack.sh"
+  adb -s "$SERIAL" wait-for-device
+  adb -s "$SERIAL" uninstall org.aerobag.app.test >/dev/null 2>&1 || true
+  adb -s "$SERIAL" uninstall org.aerobag.app >/dev/null 2>&1 || true
+  adb -s "$SERIAL" install "$apk" >/dev/null
+  adb -s "$SERIAL" install "$driver_apk" >/dev/null
+  adb -s "$SERIAL" reverse "tcp:${ANDROID_PACKAGE_PORT}" "tcp:${PORT}" >/dev/null
+  echo "immutable Android apps clean-installed on $SERIAL"
+}
+
 run_android_test() {
   local journey="$1"
   local profile
@@ -383,7 +429,6 @@ run_android_test() {
     AEROBAG_E2E_PEER_URL="${AEROBAG_E2E_PEER_URL:-http://127.0.0.1:8085/}" \
     AEROBAG_E2E_CLOUD_PORT="$CLOUD_PORT" \
     AEROBAG_E2E_ARTIFACT_DIR="$run_artifact_dir" \
-    AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED="${AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED:-1}" \
     "$ROOT/ui/android-app/scripts/run_e2e.sh" \
       --skip-install \
       "${state_args[@]}" \
@@ -399,6 +444,7 @@ run_web_test() {
     run_artifact_dir="$ARTIFACT_DIR/repeat-${AEROBAG_E2E_REPEAT_INDEX:-1}"
   fi
   require_fixture
+  require_web_fixture_origin
   profile="$(journey_profile "$journey")"
   ensure_journey_profile "$profile"
   reset_fixture_state
@@ -540,6 +586,9 @@ case "$command" in
       ANDROID_CLOUD_SERVER_BASE_URL="http://127.0.0.1:${ANDROID_CLOUD_PORT}/cloud/" \
       ./ui/android-app/scripts/test.sh :app:installDebug
     ;;
+  android-boot-install)
+    android_boot_install "${2:-}" "${3:-}"
+    ;;
   android-install)
     require_fixture
     journey="${2:-shared.startup-navigation}"
@@ -606,8 +655,9 @@ case "$command" in
     echo "Android journey app-data baseline restored: $archive"
     ;;
   android-suite)
-    require_fixture
     priority="${2:-all}"
+    require_journey_priority "$priority"
+    require_fixture
     start_at="${3:-}"
     started="${start_at:+0}"
     cd "$ROOT"
@@ -622,8 +672,9 @@ case "$command" in
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
   android-suite-shard)
-    require_fixture
     priority="${2:-all}"
+    require_journey_priority "$priority"
+    require_fixture
     shard="${3:-}"
     shard_count="${4:-}"
     [[ "$shard" =~ ^[0-9]+$ && "$shard_count" =~ ^[1-9][0-9]*$ && "$shard" -lt "$shard_count" ]] || {
@@ -641,6 +692,7 @@ case "$command" in
     ;;
   android-shard-list)
     priority="${2:-all}"
+    require_journey_priority "$priority"
     shard="${3:-}"
     shard_count="${4:-}"
     [[ "$shard" =~ ^[0-9]+$ && "$shard_count" =~ ^[1-9][0-9]*$ && "$shard" -lt "$shard_count" ]] || {
@@ -651,8 +703,9 @@ case "$command" in
     android_shard_journeys "$priority" "$shard" "$shard_count"
     ;;
   android-implementation-suite)
-    require_fixture
     priority="${2:-all}"
+    require_journey_priority "$priority"
+    require_fixture
     start_at="${3:-}"
     started="${start_at:+0}"
     cd "$ROOT"
@@ -690,7 +743,9 @@ JS
 import { AndroidSemanticJourneyDriver } from "./tools/e2e/semantic-journey-driver.mjs";
 const [serial, action] = process.argv.slice(2);
 const driver = new AndroidSemanticJourneyDriver(serial, { resetApp: async () => {} });
-await driver.performAction(action);
+const ready = await driver.readAction(action);
+if (!ready) throw new Error(`android action is not visible and enabled: ${action}`);
+await driver.performAction(action, ready);
 console.log(`android action performed: ${action}`);
 JS
     ;;
@@ -726,8 +781,17 @@ JS
     ;;
   android-ui)
     mkdir -p "$ARTIFACT_DIR/android-ui"
-    adb -s "$SERIAL" shell uiautomator dump --compressed /sdcard/aerobag-release-journey.xml >/dev/null
-    adb -s "$SERIAL" exec-out cat /sdcard/aerobag-release-journey.xml >"$ARTIFACT_DIR/android-ui/ui.xml"
+    cd "$ROOT"
+    node --input-type=module - "$SERIAL" "$ARTIFACT_DIR/android-ui/ui.xml" <<'JS'
+import { writeFileSync } from "node:fs";
+import {
+  dumpAndroid, ensureAndroidSemanticDriver, shutdownAndroidSemanticDrivers,
+} from "./tools/e2e/android-harness.mjs";
+const [serial, output] = process.argv.slice(2);
+await ensureAndroidSemanticDriver(serial);
+writeFileSync(output, dumpAndroid(serial));
+shutdownAndroidSemanticDrivers();
+JS
     adb -s "$SERIAL" exec-out screencap -p >"$ARTIFACT_DIR/android-ui/screenshot.png"
     rg -o 'resource-id="parity:[^"]+' "$ARTIFACT_DIR/android-ui/ui.xml" || true
     ;;
@@ -748,8 +812,9 @@ JS
     AEROBAG_E2E_URL="$(fixture_origin)" run_repetitions web "$2"
     ;;
   web-suite)
-    require_fixture
     priority="${2:-all}"
+    require_journey_priority "$priority"
+    require_fixture
     cd "$ROOT"
     mapfile -t journeys < <(implemented_journeys web "$priority")
     for journey in "${journeys[@]}"; do
@@ -757,8 +822,9 @@ JS
     done
     ;;
   web-dist-suite)
-    require_fixture
     priority="${2:-all}"
+    require_journey_priority "$priority"
+    require_fixture
     cd "$ROOT"
     SERVE_WEB_DIST=1
     mapfile -t journeys < <(implemented_journeys web "$priority")

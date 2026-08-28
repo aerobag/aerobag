@@ -20,12 +20,10 @@ import {
   findVerticalScrollSurface,
   findNode,
   findAerobagAnrDialog,
-  findSystemUiAnrWaitButton,
   layerToggleNode,
   layerToggleTag,
   renderedFlightPlanSignature,
   verticalScrollTargetIsReachable,
-  verticalScrollGesture,
 } from "./android-harness.mjs";
 
 test("persistent semantic dumps refresh accessibility roots before traversal", () => {
@@ -65,19 +63,6 @@ function anrDialogXml(title, { waitEnabled = true } = {}) {
   </hierarchy>`;
 }
 
-test("recognizes the hosted emulator System UI ANR wait action", () => {
-  assert.deepEqual(
-    findSystemUiAnrWaitButton(anrDialogXml("System UI isn't responding")),
-    {
-      text: "Wait",
-      "resource-id": "android:id/aerr_wait",
-      package: "android",
-      enabled: "true",
-      bounds: "[70,1300][1010,1426]",
-    },
-  );
-});
-
 test("parses UIAutomator single-quoted attributes containing JSON", () => {
   const tag = 'parity:tray-option:{"procedure_id":"I32R","enroute_transition":"OVR"}';
   const xml = `<hierarchy><node resource-id='${tag}' class="android.view.View" /></hierarchy>`;
@@ -104,13 +89,6 @@ test("parses explicit Android startup acknowledgements", () => {
     disclaimer_required: "false",
     persisted_page: "Settings",
   });
-});
-
-test("vertical scrolling stays below Android's status-bar gesture zone", () => {
-  assert.deepEqual(
-    verticalScrollGesture({ left: 0, top: 0, right: 1080, bottom: 1200, width: 1080, height: 1200 }, "up"),
-    { x: 540, startY: 369, endY: 831 },
-  );
 });
 
 test("vertical scrolling skips flight-plan horizontal scrollers", () => {
@@ -142,17 +120,6 @@ test("vertical scrolling rejects controls clipped beyond the list viewport", () 
   assert.equal(
     verticalScrollTargetIsReachable(xml, "parity:settings-toggle:debug_nexrad_tile_labels"),
     false,
-  );
-});
-
-test("does not hide an Aerobag ANR", () => {
-  assert.equal(findSystemUiAnrWaitButton(anrDialogXml("Aerobag isn't responding")), null);
-});
-
-test("does not select a disabled System UI wait action", () => {
-  assert.equal(
-    findSystemUiAnrWaitButton(anrDialogXml("System UI isn't responding", { waitEnabled: false })),
-    null,
   );
 });
 
@@ -240,28 +207,4 @@ test("maps core layer IDs to Android's exported parity tags", () => {
   assert.equal(layerToggleNode(xml, "terrain_warning")?.checked, "true");
   assert.equal(layerToggleNode(xml, "nexrad")?.checked, "false");
   assert.throws(() => layerToggleTag("unknown"), /unsupported E2E map layer/);
-});
-
-test("scroll searches retain enough viewport overlap to avoid skipping rows", () => {
-  const bounds = {
-    left: 56,
-    top: 261,
-    right: 1024,
-    bottom: 2120,
-    width: 968,
-    height: 1859,
-  };
-  const down = verticalScrollGesture(bounds, "down");
-  const up = verticalScrollGesture(bounds, "up");
-  const viewportHeight = bounds.height;
-  const travel = Math.abs(down.startY - down.endY);
-
-  assert.ok(down.startY > down.endY);
-  assert.deepEqual(up, {
-    x: down.x,
-    startY: down.endY,
-    endY: down.startY,
-  });
-  assert.ok(travel <= viewportHeight * 0.60, `${travel}px scroll exceeded overlap budget`);
-  assert.ok(travel >= viewportHeight * 0.40, `${travel}px scroll made too little progress`);
 });

@@ -106,7 +106,7 @@ export async function connectToBrowser(endpoint) {
         targetId: created.targetId,
         flatten: true,
       });
-      return new CdpPage(client, attached.sessionId);
+      return new CdpPage(client, attached.sessionId, created.targetId);
     },
   };
 }
@@ -144,10 +144,11 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-class CdpPage {
-  constructor(client, sessionId) {
+export class CdpPage {
+  constructor(client, sessionId, targetId) {
     this.client = client;
     this.sessionId = sessionId;
+    this.targetId = targetId;
     this.diagnostics = [];
     this.networkRequests = new Map();
     this.loadPromise = null;
@@ -222,6 +223,17 @@ class CdpPage {
     });
   }
 
+  async closeForReset(timeoutMs) {
+    const targetId = this.targetId;
+    await this.client.send("Target.closeTarget", { targetId });
+    await waitFor(async () => {
+      const { targetInfos } = await this.client.send("Target.getTargets");
+      const pageExists = targetInfos.some((target) => target.targetId === targetId);
+      const dedicatedWorkersExist = targetInfos.some((target) => target.type === "worker");
+      return !pageExists && !dedicatedWorkersExist;
+    }, timeoutMs, "old page or dedicated worker survived browser reset", 10);
+  }
+
   send(method, params = {}) {
     return this.client.send(method, params, this.sessionId);
   }
@@ -253,17 +265,29 @@ class CdpPage {
   }
 
   async navigate(url) {
+    if (this.loadListener) {
+      this.client.offEvent(this.sessionId, "Page.loadEventFired", this.loadListener);
+    }
     this.loadPromise = new Promise((resolve) => {
       const finish = () => {
         this.client.offEvent(this.sessionId, "Page.loadEventFired", finish);
+        this.loadListener = null;
         resolve();
       };
+      this.loadListener = finish;
       this.client.onEvent(this.sessionId, "Page.loadEventFired", finish);
     });
-    await this.send("Page.navigate", { url });
+    const result = await this.send("Page.navigate", { url });
+    if (result.errorText) {
+      this.client.offEvent(this.sessionId, "Page.loadEventFired", this.loadListener);
+      this.loadListener = null;
+      this.loadPromise = null;
+      throw new Error(`Page.navigate failed for ${url}: ${result.errorText}`);
+    }
   }
 
   async waitForLoad() {
+    if (!this.loadPromise) throw new Error("waitForLoad called without a successful navigation");
     await this.loadPromise;
   }
 

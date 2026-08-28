@@ -189,7 +189,8 @@ elif [[ "$SKIP_INSTALL" -eq 0 ]]; then
       AEROBAG_ANDROID_KEYSTORE_PASSWORD="$AEROBAG_ANDROID_KEYSTORE_PASSWORD" \
       AEROBAG_ANDROID_KEY_ALIAS="$AEROBAG_ANDROID_KEY_ALIAS" \
       AEROBAG_ANDROID_KEY_PASSWORD="$AEROBAG_ANDROID_KEY_PASSWORD" \
-      "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" --no-daemon -p "$APP_DIR" installDebug
+      "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" --no-daemon -p "$APP_DIR" \
+        installDebug :app:assembleDebugAndroidTest
   )
 else
   echo "[1/2] skip installDebug"
@@ -201,6 +202,9 @@ if [[ -z "$DRIVER_APK_PATH" && -n "$APK_PATH" ]]; then
     DRIVER_APK_PATH="$sibling_driver"
   fi
 fi
+if [[ -z "$DRIVER_APK_PATH" && "$SKIP_INSTALL" -eq 0 ]]; then
+  DRIVER_APK_PATH="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+fi
 if [[ -n "$DRIVER_APK_PATH" ]]; then
   if [[ ! -f "$DRIVER_APK_PATH" ]]; then
     echo "Android E2E semantic driver APK is missing: $DRIVER_APK_PATH" >&2
@@ -208,7 +212,9 @@ if [[ -n "$DRIVER_APK_PATH" ]]; then
   fi
   echo "install persistent Android semantic driver: $DRIVER_APK_PATH"
   adb -s "$ANDROID_SERIAL" install -r "$DRIVER_APK_PATH" >/dev/null
-  export AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED=1
+elif ! adb -s "$ANDROID_SERIAL" shell pm path org.aerobag.app.test | grep -q '^package:'; then
+  echo "Android E2E requires its semantic driver; supply --driver-apk or install it first" >&2
+  exit 1
 fi
 
 if [[ "$CLEAR_APP_DATA" -eq 1 && "$SKIP_INSTALL" -eq 1 ]]; then

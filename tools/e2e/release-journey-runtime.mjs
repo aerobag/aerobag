@@ -11,7 +11,9 @@ import {
 import {
   editSemanticText, inspectSemanticMapAt, navigateSemanticPage,
 } from "./semantic-journey-driver.mjs";
-import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
+import {
+  E2E_TIMING, observeUntil, observeValueUntilStable, performTransition,
+} from "./transition-contract.mjs";
 
 export { E2E_TIMING } from "./transition-contract.mjs";
 
@@ -56,6 +58,10 @@ export function summarizeFixtureRequests(requests) {
     anomalies: anomalies.slice(-50),
     tail: requests.slice(-100),
   };
+}
+
+export function semanticOptionSelected(option) {
+  return option?.checked === true || option?.selected === true || option?.pressed === "true";
 }
 
 export function createJourneyRuntime({
@@ -150,6 +156,22 @@ export function createJourneyRuntime({
       return observed.value;
     },
 
+    async stable(
+      description,
+      operation,
+      timeoutMs = E2E_TIMING.localReadyMs,
+      intervalMs = E2E_TIMING.pollIntervalMs,
+    ) {
+      console.log(`[${journey.id}:${platform}] stable start: ${description} (limit ${timeoutMs}ms)`);
+      const observed = await observeValueUntilStable(description, operation, {
+        timeoutMs,
+        intervalMs,
+        waitForNextProbe: driver.waitForObservation?.bind(driver) ?? null,
+      });
+      console.log(`[${journey.id}:${platform}] stable pass: ${description} (${observed.durationMs}ms)`);
+      return observed.value;
+    },
+
     async transition(description, contract) {
       const sessionRevisionBefore = await driver.readSessionRevision?.().catch(() => null) ?? null;
       let timingRecord = null;
@@ -205,12 +227,18 @@ export function createJourneyRuntime({
       if (unexpectedArguments.length > 0) {
         throw new Error(`${description} action received unexpected positional arguments`);
       }
+      if (contract?.ready) {
+        throw new Error(
+          `${description} supplies custom action readiness; ` +
+            "action readiness must come from driver.readAction(actionId)",
+        );
+      }
       if (typeof contract?.complete !== "function") {
         throw new Error(`${description} must declare a semantic completion condition`);
       }
       return runtime.transition(description, {
         ...contract,
-        ready: contract.ready ?? (() => driver.readAction(actionId)),
+        ready: () => driver.readAction(actionId),
         act: (readyElement) => driver.performAction(actionId, readyElement),
         diagnose: contract.diagnose ?? (async () => ({
           action: await driver.readAction(actionId),
@@ -219,19 +247,40 @@ export function createJourneyRuntime({
       });
     },
 
-    async chooseOption(description, launcherId, optionId, contract) {
-      if (typeof contract?.complete !== "function") {
-        throw new Error(`${description} must declare a semantic completion condition`);
-      }
-      await runtime.transition(`open ${description} choices`, {
+    async openOption(description, launcherId, optionId) {
+      const rendered = await driver.readOption(launcherId, optionId);
+      if (rendered) return rendered;
+      return runtime.transition(`open ${description} choices`, {
         ready: () => driver.readAction(launcherId),
         act: (readyElement) => driver.openChooser(launcherId, readyElement),
         complete: () => driver.readOption(launcherId, optionId),
       });
+    },
+
+    async selectOpenOption(description, launcherId, optionId, complete) {
+      if (typeof complete !== "function") {
+        throw new Error(`${description} must declare a semantic completion condition`);
+      }
       return runtime.transition(description, {
         ready: () => driver.readOption(launcherId, optionId),
         act: (readyElement) => driver.selectOption(launcherId, optionId, readyElement),
-        complete: contract.complete,
+        complete,
+      });
+    },
+
+    async chooseOption(description, launcherId, optionId, contract) {
+      if (typeof contract?.complete !== "function") {
+        throw new Error(`${description} must declare a semantic completion condition`);
+      }
+      await runtime.openOption(description, launcherId, optionId);
+      return runtime.selectOpenOption(description, launcherId, optionId, contract.complete);
+    },
+
+    async toggleOption(description, launcherId, optionId, selected) {
+      await runtime.openOption(description, launcherId, optionId);
+      return runtime.selectOpenOption(description, launcherId, optionId, async () => {
+        const option = await driver.readOption(launcherId, optionId);
+        return option && semanticOptionSelected(option) === selected ? option : null;
       });
     },
 

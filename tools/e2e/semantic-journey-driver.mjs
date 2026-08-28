@@ -9,7 +9,7 @@ import {
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
-  scrollHorizontallyUntilTag, tapTag, waitFor, waitForAndroidSemanticEvent,
+  scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
 } from "./android-harness.mjs";
 import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 
@@ -20,7 +20,7 @@ export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
   "readAction", "readSessionRevision", "findProjectionMatching", "revealElement", "scanProjection",
   "revealProjectionMatching", "reload",
-  "back", "captureFrame",
+  "back", "captureFrame", "injectRasterLoadFault",
 ]);
 
 export class SemanticJourneyDriver {
@@ -57,7 +57,9 @@ export class SemanticJourneyDriver {
   async enterText(_controlId, _value, _options, _readyElement) {
     throw new Error(`${this.platform} driver does not implement enterText`);
   }
-  async submit(_controlId) { throw new Error(`${this.platform} driver does not implement submit`); }
+  async submit(_controlId, _readyElement) {
+    throw new Error(`${this.platform} driver does not implement submit`);
+  }
   async drag(_surfaceId, _delta) { throw new Error(`${this.platform} driver does not implement drag`); }
   async zoom(_surfaceId, _amount) { throw new Error(`${this.platform} driver does not implement zoom`); }
   async hover(_elementId) { throw new Error(`${this.platform} driver does not implement hover`); }
@@ -71,6 +73,7 @@ export class SemanticJourneyDriver {
   async reload() { throw new Error(`${this.platform} driver does not implement reload`); }
   async back() { throw new Error(`${this.platform} driver does not implement back`); }
   async captureFrame(_path) { throw new Error(`${this.platform} driver does not implement captureFrame`); }
+  async injectRasterLoadFault() { throw new Error(`${this.platform} driver does not implement raster fault injection`); }
 }
 
 export async function navigateSemanticPage(
@@ -137,7 +140,7 @@ export async function editSemanticText(
   return transition(description, {
     ready: async () => {
       const element = await driver.readElement(controlId);
-      return element?.enabled ? element : null;
+      return element?.enabled && element.actionable !== false ? element : null;
     },
     act: (readyElement) => driver.enterText(controlId, expected, options, readyElement),
     complete: async () => {
@@ -256,18 +259,25 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     }
     if (!await this.transport.visible(selector)) return null;
     const value = await this.transport.readElement(selector);
-    return value?.enabled ? value : null;
+    return value?.enabled && value.actionable ? value : null;
   }
 
-  async activateNavigation(pageId, _readyElement) {
+  async activateNavigation(pageId, readyElement) {
     const selector = pageId === "home"
       ? '[data-testid="page-button-home"]'
       : webTestIdSelector(`home-button-${WEB_HOME_KEYS[pageId]}`);
-    await this.transport.click(selector);
+    const expectedTestId = pageId === "home" ? "page-button-home" : `home-button-${WEB_HOME_KEYS[pageId]}`;
+    if (readyElement?.test_id !== expectedTestId) {
+      throw new Error(`web navigation to ${pageId} has no matching readiness evidence`);
+    }
+    await this.transport.click(selector, readyElement);
   }
 
-  async openChooser(launcherId, _readyElement) {
-    await this.transport.click(webTestIdSelector(launcherId));
+  async openChooser(launcherId, readyElement) {
+    if (readyElement?.test_id !== launcherId) {
+      throw new Error(`${launcherId} has no matching readiness evidence`);
+    }
+    await this.transport.click(webTestIdSelector(launcherId), readyElement);
   }
 
   async readOption(launcherId, optionId) {
@@ -279,47 +289,65 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     );
     if (!option) return null;
     const optionState = await this.transport.readElement(option);
-    return optionState?.enabled ? optionState : null;
+    return optionState?.enabled && optionState.actionable ? optionState : null;
   }
 
-  async selectOption(launcherId, optionId, _readyElement) {
+  async selectOption(launcherId, optionId, readyElement) {
     const optionIds = launcherId === "plate-airport-button" && !optionId.includes(":")
       ? [`airport:${optionId}`, optionId]
       : [optionId];
-    const option = await this.transport.firstExisting(
-      optionIds.map((id) => webTestIdSelector(`tray-option-${id}`)),
-    );
-    if (!option) throw new Error(`${launcherId} option ${optionId} is not visible`);
-    await this.transport.click(option);
+    const expectedTestIds = optionIds.map((id) => `tray-option-${id}`);
+    if (!expectedTestIds.includes(readyElement?.test_id)) {
+      throw new Error(`${launcherId} option ${optionId} has no matching readiness evidence`);
+    }
+    await this.transport.click(webTestIdSelector(readyElement.test_id), readyElement);
   }
 
   async activateMapInspection({ x, y }) {
     return this.transport.pointerClick('[data-testid="map-surface"]', x, y);
   }
 
-  async performAction(actionId, _readyElement) {
-    const selector = await this.transport.firstExisting(webActionSelectors(actionId));
-    if (!selector) throw new Error(`web action ${actionId} is not visible`);
-    await this.transport.click(selector);
+  async performAction(actionId, readyElement) {
+    if (!readyElement?.test_id) {
+      throw new Error(`web action ${actionId} has no readiness evidence`);
+    }
+    await this.transport.click(webTestIdSelector(readyElement.test_id), readyElement);
   }
 
   async readAction(actionId) {
     const selector = await this.transport.firstExisting(webActionSelectors(actionId));
     if (!selector) return null;
     const element = await this.transport.readElement(selector);
-    return element?.enabled ? element : null;
+    return element?.enabled && element.actionable ? element : null;
   }
 
   async readSessionRevision() {
     return this.transport.page.evaluate("window.__aerobagE2e.render().session_revision");
   }
 
-  async enterText(controlId, value, options = {}, _readyElement = null) {
-    await this.transport.enterText(webTestIdSelector(controlId), value, options);
+  async injectRasterLoadFault() {
+    return this.transport.page.evaluate(`(() => {
+      const inject = window.__aerobagE2e?.rasterFaultOnce;
+      if (typeof inject !== "function") throw new Error("raster fault injector is unavailable");
+      return inject();
+    })()`);
   }
 
-  async submit(controlId) {
-    await this.transport.submit(webTestIdSelector(controlId));
+  async enterText(controlId, value, { submit = false, dismissKeyboard = false } = {}, readyElement = null) {
+    if (submit || dismissKeyboard) {
+      throw new Error("text editing cannot bundle submit or keyboard actions");
+    }
+    if (readyElement?.test_id !== controlId || !readyElement.bounds || !readyElement.action_point) {
+      throw new Error(`web text control ${controlId} has no matching readiness evidence`);
+    }
+    await this.transport.enterText(webTestIdSelector(controlId), value, readyElement);
+  }
+
+  async submit(controlId, readyElement) {
+    if (readyElement?.test_id !== controlId || !readyElement.bounds || !readyElement.focused) {
+      throw new Error(`web text control ${controlId} has no focused readiness evidence`);
+    }
+    await this.transport.submit(webTestIdSelector(controlId), readyElement);
   }
 
   async drag(surfaceId, { x, y }) {
@@ -365,7 +393,7 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async revealProjectionMatching(probe, needle) {
-    return (await observeUntil(
+    const entry = (await observeUntil(
       `${probe} projection matching ${needle}`,
       () => this.findProjectionMatching(probe, needle),
       {
@@ -373,6 +401,29 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
         intervalMs: E2E_TIMING.pollIntervalMs,
       },
     )).value;
+    const elementId = entry?.id ?? entry?.test_id;
+    if (!elementId) {
+      throw new Error(`${probe} projection matching ${needle} has no semantic identity`);
+    }
+
+    // Discovery includes rendered offscreen controls so a long tray can be
+    // searched. Reveal exactly that control once, then observe its hit-testable
+    // readiness without rediscovering or repeatedly mutating the page.
+    const revealed = await this.revealElement(elementId);
+    if (!revealed?.actionable) {
+      await observeUntil(
+        `${elementId} actionable after reveal`,
+        async () => {
+          const current = await this.readElement(elementId);
+          return current?.actionable ? current : null;
+        },
+        {
+          timeoutMs: E2E_TIMING.localReadyMs,
+          intervalMs: E2E_TIMING.pollIntervalMs,
+        },
+      );
+    }
+    return entry;
   }
 
   async readElement(elementId) {
@@ -544,14 +595,6 @@ export function androidActionUsesSubmit(actionId) {
   return actionId.startsWith("chart-search-suggestion:");
 }
 
-export function androidActionUsesSemanticActivation(actionId) {
-  return androidSemanticTag(actionId).endsWith("scrim");
-}
-
-export function androidTextControlNeedsTap(node) {
-  return node?.focused !== true && node?.focused !== "true";
-}
-
 export function androidElementMayRequireVerticalScroll(elementId) {
   const tag = androidSemanticTag(elementId);
   return ANDROID_CLOUD_ACTION_IDS.has(elementId) ||
@@ -604,13 +647,6 @@ export function findTagOrPrefix(xml, tag) {
     findNode(xml, (node) => androidTag(node).startsWith(tag));
 }
 
-export function androidElementFallback(xml, elementId) {
-  if (elementId !== "plan-insert-airport-input") return null;
-  if (!findTagOrPrefix(xml, "parity:button:Enter")) return null;
-  const fields = findNodes(xml, (node) => node.class === "android.widget.EditText");
-  return fields.find((node) => node.focused === "true") ?? (fields.length === 1 ? fields[0] : null);
-}
-
 export function androidElementEnabled(node) {
   const projected = androidTag(node).match(/:enabled:(true|false)(?::|$)/)?.[1];
   return projected == null ? node.enabled === "true" : projected === "true";
@@ -638,41 +674,31 @@ function androidProjectedElement(node, elementId = androidTag(node)) {
 function queryFirstAndroidSemanticNode(
   serial,
   tag,
-  { allowPrefix = true, requireVisible = false } = {},
+  { allowPrefix = true, requireVisible = false, requireReachable = false } = {},
 ) {
-  const choose = (nodes) => nodes?.find((node) => !requireVisible || node.visible === "true") ?? null;
+  const choose = (nodes) => nodes?.find((node) =>
+    (!requireVisible || node.visible === "true") &&
+    (!requireReachable || node["center-reachable"] === "true")) ?? null;
   const exact = choose(queryAndroidSemanticNodes(serial, tag));
   if (exact || !allowPrefix) return exact;
   return choose(queryAndroidSemanticNodes(serial, tag, { prefix: true }));
 }
 
-function tapAndroidSemanticEvidence(serial, expectedTag, readyElement) {
+function readinessEvidenceMatchesTag(expectedTag, readyElement) {
   const observedTag = readyElement?.test_id ?? readyElement?.["resource-id"];
-  if (observedTag !== expectedTag || !readyElement?.bounds) return false;
-  const bounds = rectOfBounds(readyElement.bounds);
-  adb(serial, [
-    "shell", "input", "tap",
-    String(Math.round(bounds.left + bounds.width / 2)),
-    String(Math.round(bounds.top + bounds.height / 2)),
-  ]);
-  return true;
+  return observedTag === expectedTag && Boolean(readyElement?.bounds);
 }
 
 function activateAndroidSemanticTag(serial, tag, readyElement = null) {
-  if (tapAndroidSemanticEvidence(serial, tag, readyElement)) return;
-  if (clickAndroidSemanticNode(serial, tag)) return;
-  const node = queryFirstAndroidSemanticNode(
-    serial,
-    tag,
-    { allowPrefix: false, requireVisible: true },
-  );
-  if (!node) throw new Error(`Android semantic action ${tag} is not visible`);
-  const bounds = rectOfBounds(node.bounds);
-  adb(serial, [
-    "shell", "input", "tap",
-    String(Math.round(bounds.left + bounds.width / 2)),
-    String(Math.round(bounds.top + bounds.height / 2)),
-  ]);
+  if (!readyElement) {
+    throw new Error(`Android semantic action ${tag} has no readiness evidence`);
+  }
+  if (!readinessEvidenceMatchesTag(tag, readyElement)) {
+    throw new Error(`Android semantic action ${tag} readiness evidence does not match`);
+  }
+  if (!clickAndroidSemanticNode(serial, tag, readyElement.bounds)) {
+    throw new Error(`Android semantic action ${tag} was rejected`);
+  }
 }
 
 export function androidPageIdFromStartupStateTag(tag) {
@@ -755,7 +781,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const node = queryFirstAndroidSemanticNode(
       this.serial,
       tag,
-      { allowPrefix: false, requireVisible: true },
+      { allowPrefix: false, requireVisible: true, requireReachable: true },
     );
     return node && androidElementEnabled(node) ? androidProjectedElement(node) : null;
   }
@@ -775,6 +801,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const node = queryFirstAndroidSemanticNode(
       this.serial,
       androidOptionTag(launcherId, optionId),
+      { requireVisible: true, requireReachable: true },
     );
     if (!node || !androidElementEnabled(node)) return null;
     return androidProjectedElement(node);
@@ -803,95 +830,19 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       return;
     }
     const readyTag = readyElement?.test_id ?? readyElement?.["resource-id"];
-    if (readyTag) {
-      if (androidActionUsesSemanticActivation(readyTag)) {
-        if (!clickAndroidSemanticNode(this.serial, readyTag)) {
-          throw new Error(`Android semantic action ${readyTag} was rejected`);
-        }
-        return;
-      }
-      activateAndroidSemanticTag(this.serial, readyTag, readyElement);
-      return;
+    if (!readyTag) {
+      throw new Error(`Android action ${actionId} has no readiness evidence`);
     }
-    if (actionId === "ownship-source-button") {
-      await tapTag(this.serial, "parity:ownship-launcher", E2E_TIMING.localReadyMs);
-      return;
-    }
-    if (actionId === "playback-play-toggle") {
-      const node = findTagOrPrefix(dumpAndroid(this.serial), "parity:playback-play-toggle");
-      if (!node) throw new Error("Android playback toggle is not visible");
-      const bounds = rectOfBounds(node.bounds);
-      adb(this.serial, [
-        "shell", "input", "tap",
-        String(Math.round(bounds.left + bounds.width / 2)),
-        String(Math.round(bounds.top + bounds.height / 2)),
-      ]);
-      return;
-    }
-    if (actionId.startsWith("plan-row:")) {
-      await tapTag(this.serial, `parity:plan-row:${actionId.slice("plan-row:".length)}`, E2E_TIMING.localReadyMs);
-      return;
-    }
-    if (actionId.startsWith("plan-procedure:")) {
-      await tapTag(this.serial, `parity:plan-procedure:${actionId.slice("plan-procedure:".length)}`, E2E_TIMING.localReadyMs);
-      return;
-    }
-    if (actionId.startsWith("plan-procedure-transition:")) {
-      await tapTag(this.serial, `parity:plan-procedure-transition:${actionId.slice("plan-procedure-transition:".length)}`, E2E_TIMING.localReadyMs);
-      return;
-    }
-    if (actionId.startsWith("plan-insert-suggestion:")) {
-      await tapTag(this.serial, `parity:plan-insert-suggestion:${actionId.slice("plan-insert-suggestion:".length)}`, E2E_TIMING.localReadyMs);
-      return;
-    }
-    if (actionId.startsWith("plate-folder-tile:")) {
-      await tapTag(this.serial, `parity:plate-folder-tile:${actionId.slice("plate-folder-tile:".length)}`, E2E_TIMING.localReadyMs);
-      return;
-    }
-    if (androidActionUsesSubmit(actionId)) {
-      const tag = `parity:${actionId}`;
-      if (!findTagOrPrefix(dumpAndroid(this.serial), tag)) {
-        throw new Error(`Android action ${actionId} is not visible`);
-      }
-      pressKey(this.serial, "KEYCODE_ENTER");
-      return;
-    }
-    if (actionId.startsWith("tray-option:")) {
-      await tapTag(this.serial, `parity:tray-option:${actionId.slice("tray-option:".length)}`, E2E_TIMING.localReadyMs);
-      return;
-    }
-    const candidates = androidActionCandidates(actionId);
-    let xml = dumpAndroid(this.serial);
-    const initialCandidate = candidates.find((candidate) => findTagOrPrefix(xml, candidate));
-    let tag = initialCandidate ? androidTag(findTagOrPrefix(xml, initialCandidate)) : null;
-    if (!tag && androidElementMayRequireHorizontalScroll(actionId)) {
-      for (const candidate of candidates) {
-        if (!await scrollHorizontallyUntilTag(this.serial, candidate, 8)) continue;
-        xml = dumpAndroid(this.serial);
-        tag = androidTag(findTagOrPrefix(xml, candidate));
-        break;
-      }
-    }
-    if (!tag || androidElementMayRequireVerticalScroll(actionId)) {
-      if (androidElementMayRequireVerticalScroll(actionId)) tag = null;
-      for (const candidate of candidates) {
-        if (!await scrollUntilTagPrefix(
-          this.serial, candidate, 8, androidElementMayRequireVerticalScroll(actionId),
-        )) continue;
-        tag = candidate;
-        xml = dumpAndroid(this.serial);
-        tag = androidTag(findTagOrPrefix(xml, candidate));
-        break;
-      }
-    }
-    if (!tag) throw new Error(`Android action ${actionId} is not visible`);
-    if (!await scrollUntilTag(this.serial, tag, 8)) throw new Error(`Android action ${actionId} cannot be reached`);
-    await tapTag(this.serial, tag, E2E_TIMING.localReadyMs);
+    activateAndroidSemanticTag(this.serial, readyTag, readyElement);
   }
 
   async readAction(actionId) {
     for (const candidate of androidActionCandidates(actionId)) {
-      const node = queryFirstAndroidSemanticNode(this.serial, candidate);
+      const node = queryFirstAndroidSemanticNode(
+        this.serial,
+        candidate,
+        { requireVisible: true, requireReachable: true },
+      );
       if (!node || !androidElementEnabled(node)) continue;
       return androidProjectedElement(node);
     }
@@ -910,78 +861,27 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     readyElement = null,
   ) {
     const semanticTag = `parity:${controlId}`;
-    const focusControl = async (forceTap) => {
-      let xml = dumpAndroid(this.serial);
-      let tagged = findTagOrPrefix(xml, semanticTag);
-      if (!tagged && await scrollUntilTagPrefix(this.serial, semanticTag, 20)) {
-        xml = dumpAndroid(this.serial);
-        tagged = findTagOrPrefix(xml, semanticTag);
-      }
-      const fallback = tagged ? null : androidElementFallback(xml, controlId);
-      if (tagged) {
-        if (forceTap || androidTextControlNeedsTap(tagged)) {
-          await tapTag(this.serial, semanticTag, E2E_TIMING.localReadyMs);
-        }
-        return;
-      }
-      if (fallback) {
-        if (forceTap || androidTextControlNeedsTap(fallback)) {
-          const bounds = rectOfBounds(fallback.bounds);
-          adb(this.serial, [
-            "shell", "input", "tap",
-            String(Math.round(bounds.left + bounds.width / 2)),
-            String(Math.round(bounds.top + bounds.height / 2)),
-          ]);
-        }
-        return;
-      }
-      throw new Error(`Android text control ${controlId} is not visible`);
-    };
-
-    if (readyElement?.test_id === semanticTag) {
-      if (androidTextControlNeedsTap(readyElement)) {
-        activateAndroidSemanticTag(this.serial, semanticTag, readyElement);
-      }
-    } else {
-      await focusControl(false);
+    if (submit || dismissKeyboard) {
+      throw new Error("text editing cannot bundle submit or keyboard actions");
     }
-    if (controlId === "plan-append-route-input") {
-      await waitFor(
-        () => {
-          const state = findTagOrPrefix(
-            dumpAndroid(this.serial),
-            "parity:plan-append-route-state:can_commit:",
-          );
-          return state ? androidTag(state).endsWith(":ready_for_input:true") : false;
-        },
-        E2E_TIMING.localReadyMs,
-        "Android flight-plan editor did not finish dismissing its overlay",
-        E2E_TIMING.pollIntervalMs,
-      );
+    if (readyElement?.test_id !== semanticTag || !readyElement.bounds) {
+      throw new Error(`Android text control ${controlId} has no matching readiness evidence`);
     }
-    if (!setAndroidSemanticText(this.serial, semanticTag, value)) {
+    if (!setAndroidSemanticText(this.serial, semanticTag, value, readyElement.bounds)) {
       throw new Error(
         `Android semantic text action is unavailable for ${controlId}; refusing to retry a synthetic user edit`,
       );
     }
-    await waitFor(
-      () => findTagOrPrefix(dumpAndroid(this.serial), semanticTag)?.text === value,
-      E2E_TIMING.localReadyMs,
-      `Android semantic text action did not commit ${controlId}`,
-      E2E_TIMING.pollIntervalMs,
-    );
-    if (submit) pressKey(this.serial, "KEYCODE_ENTER");
-    if (dismissKeyboard && androidImeVisible(dumpAndroid(this.serial))) {
-      pressKey(this.serial, "KEYCODE_BACK");
-    }
   }
 
-  async submit(controlId) {
+  async submit(controlId, readyElement) {
     const semanticTag = `parity:${controlId}`;
-    const node = findTagOrPrefix(dumpAndroid(this.serial), semanticTag);
-    if (!node) throw new Error(`Android text control ${controlId} is not rendered for submit`);
-    if (node.focused !== "true") {
-      throw new Error(`Android text control ${controlId} lost focus before submit`);
+    if (
+      readyElement?.test_id !== semanticTag ||
+      !readyElement.bounds ||
+      !readyElement.focused
+    ) {
+      throw new Error(`Android text control ${controlId} has no focused readiness evidence`);
     }
     pressKey(this.serial, "KEYCODE_ENTER");
   }
@@ -1024,6 +924,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         text: node.text || "",
         enabled: androidElementEnabled(node),
         pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+        state: node["state-description"] || null,
       }));
     }
     const xml = dumpAndroid(this.serial);
@@ -1033,6 +934,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         text: androidNodeLabel(xml, node) || node.text || "",
         enabled: androidElementEnabled(node),
         pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+        state: node["state-description"] || null,
       }));
     return collect(xml);
   }
@@ -1153,25 +1055,34 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       } : null;
     }
     const semanticTag = androidElementSemanticTag(elementId);
-    const queried = queryFirstAndroidSemanticNode(this.serial, semanticTag);
-    if (queried) return androidProjectedElement(queried, elementId);
-    if (elementId !== "plan-insert-airport-input") return null;
-    const xml = dumpAndroid(this.serial);
-    return androidProjectedElement(androidElementFallback(xml, elementId), elementId);
+    const queried = queryFirstAndroidSemanticNode(
+      this.serial,
+      semanticTag,
+      { requireVisible: true },
+    );
+    if (!queried) return null;
+    return androidProjectedElement(queried, elementId);
   }
 
   async revealElement(elementId) {
     const semanticTag = androidElementSemanticTag(elementId);
-    if (androidElementMayRequireVerticalScroll(elementId)) {
-      if (!await scrollUntilTag(this.serial, semanticTag, 8, true)) return null;
-      return this.readElement(elementId);
-    }
-    const existing = await this.readElement(elementId);
+    const reachable = () => {
+      const node = queryFirstAndroidSemanticNode(
+        this.serial,
+        semanticTag,
+        { requireVisible: true, requireReachable: true },
+      );
+      return androidProjectedElement(node, elementId);
+    };
+    const existing = reachable();
     if (existing) return existing;
     if (androidElementMayRequireHorizontalScroll(elementId)) {
       await scrollHorizontallyUntilTag(this.serial, semanticTag, 8);
+      const horizontal = reachable();
+      if (horizontal) return horizontal;
     }
-    return this.readElement(elementId);
+    if (!await scrollUntilTagPrefix(this.serial, semanticTag, 20, true)) return null;
+    return reachable();
   }
 
   async reload() {

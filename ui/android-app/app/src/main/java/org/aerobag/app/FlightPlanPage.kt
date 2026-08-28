@@ -848,12 +848,6 @@ internal fun FlightPlanPage(
                                 loading = routeEntryLoading,
                                 error = routeEntryError,
                                 submitting = routeEntrySubmitting,
-                                readyForInput =
-                                    routeEntryFocused &&
-                                        selectedWaypointUid == null &&
-                                        airwayPicker == null &&
-                                        procedurePicker == null &&
-                                        airportInsert == null,
                                 onTextChange = { value ->
                                     routeEntryText = value.uppercase()
                                     routeEntryError = null
@@ -1494,7 +1488,6 @@ internal fun FlightPlanRouteEntryRow(
     loading: Boolean,
     error: String?,
     submitting: Boolean,
-    readyForInput: Boolean,
     onTextChange: (String) -> Unit,
     onFocusChange: (Boolean) -> Unit,
     onSubmit: () -> Unit,
@@ -1520,8 +1513,7 @@ internal fun FlightPlanRouteEntryRow(
             .fillMaxWidth()
             .testTag(
                 "parity:plan-append-route-state:" +
-                    "can_commit:${preview.canCommit}:loading:$loading:" +
-                    "ready_for_input:$readyForInput",
+                    "can_commit:${preview.canCommit}:loading:$loading",
             ),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
     ) {

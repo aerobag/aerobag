@@ -4,6 +4,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Historical diagnostic runner only. Release qualification and all new UI
+// journeys belong in tools/e2e, whose transition contract forbids fixed sleeps,
+// action retries, coordinate rediscovery, and mutation inside observation loops.
+
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";

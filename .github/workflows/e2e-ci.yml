@@ -215,17 +215,112 @@ jobs:
           include-hidden-files: true
           retention-days: 14
 
-  release-journey-android:
-    name: release journeys / android / ${{ matrix.priority }} / s${{ matrix.shard }}
+  release-journey-android-baseline:
+    name: Prepare Android release-journey baseline
     needs:
       - build-release-apps
       - release-journey-fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
+      AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
+      AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST: "1"
+      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-android-baseline
+      PACKAGE_SOURCE_PORT: 18093
+      AEROBAG_E2E_CLOUD_PORT: 18094
+      AEROBAG_ANDROID_BASELINE_ARCHIVE: ${{ github.workspace }}/.ci/aerobag-release-journey-baseline.tar
+      AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64
+      VNC_PORT: 5900
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Download immutable apps
+        uses: actions/download-artifact@v5
+        with:
+          name: release-e2e-apps-${{ github.sha }}
+          path: .ci/release-e2e-apps
+      - name: Verify immutable apps
+        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Download release-journey fixture
+        uses: actions/download-artifact@v5
+        with:
+          name: release-journey-fixture-${{ github.sha }}
+          path: .ci/release-journey-source
+      - name: Materialize static publication
+        run: >-
+          python3 tools/ci/materialize_release_journey_fixture.py
+          --source "${{ github.workspace }}/.ci/release-journey-source"
+          --output "${{ github.workspace }}/.ci/release-journey-materialized"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      - name: Install emulator image
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "emulator" "platforms;android-34" "$AVD_PACKAGE_PATH"
+      - name: Enable KVM
+        run: sudo chmod 666 /dev/kvm
+      - name: Start package-only Android baseline publication
+        run: ./tools/e2e/release_journey_lab.sh fixture-start-web empty
+      - name: Qualify clean install, package sync, and startup
+        env:
+          CI: "1"
+          KEEP_EMULATOR: "1"
+          EMULATOR_HEADLESS: "1"
+        run: >-
+          ./ui/android-app/scripts/run_e2e_ci.sh
+          --headless
+          --keep-emulator
+          --skip-system-image-install
+          --no-package-server
+          --apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
+          --driver-apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk"
+          --release-fixture "$AEROBAG_RELEASE_JOURNEY_FIXTURE"
+          --test shared.startup-navigation
+      - name: Save prepared Android journey baseline
+        run: ./tools/e2e/release_journey_lab.sh android-baseline-save "$AEROBAG_ANDROID_BASELINE_ARCHIVE"
+      - name: Stop Android and journey services
+        if: ${{ always() }}
+        run: |
+          ./ui/android-app/scripts/stop_emulator_stack.sh
+          ./tools/e2e/release_journey_lab.sh fixture-stop
+      - name: Upload qualified Android baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-journey-android-baseline-${{ github.sha }}
+          path: .ci/aerobag-release-journey-baseline.tar
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload baseline diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-journey-android-baseline-results
+          path: |
+            test-results/release-journey-android-baseline
+            .ci/ui-target/android/emulator-stack-5900
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
+
+  release-journey-android:
+    name: release journeys / android / s${{ matrix.shard }}
+    needs:
+      - build-release-apps
+      - release-journey-fixture
+      - release-journey-android-baseline
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        priority: ${{ fromJSON(needs.release-journey-fixture.outputs.priorities) }}
         shard: [0, 1, 2, 3]
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
@@ -235,12 +330,11 @@ jobs:
       AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"
       AEROBAG_E2E_URL: http://127.0.0.1:18093/
       AEROBAG_E2E_PEER_URL: http://127.0.0.1:18093/
-      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-android-${{ matrix.priority }}-s${{ matrix.shard }}
+      AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/release-journey-android-s${{ matrix.shard }}
       PACKAGE_SOURCE_PORT: 18093
       AEROBAG_E2E_CLOUD_PORT: 18094
       AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
       AEROBAG_ANDROID_BASELINE_ARCHIVE: ${{ github.workspace }}/.ci/aerobag-release-journey-baseline.tar
-      AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED: "1"
       AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64
       VNC_PORT: 5900
     steps:
@@ -261,6 +355,13 @@ jobs:
         with:
           name: release-e2e-apps-${{ github.sha }}
           path: .ci/release-e2e-apps
+      - name: Verify immutable apps
+        run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Download qualified Android baseline
+        uses: actions/download-artifact@v5
+        with:
+          name: release-journey-android-baseline-${{ github.sha }}
+          path: .ci
       - name: Restore executable build artifact mode
         run: chmod +x .ci/release-e2e-apps/aerobag-cloud-serverd
       - name: Download release-journey fixture
@@ -285,27 +386,19 @@ jobs:
             "$AVD_PACKAGE_PATH"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
-      - name: Start package-only Android baseline publication
+      - name: Start deterministic Android publication
         run: ./tools/e2e/release_journey_lab.sh fixture-start-web empty
-      - name: Clean-install immutable APK and sync packages
+      - name: Boot emulator and clean-install immutable apps
         env:
           CI: "1"
           KEEP_EMULATOR: "1"
           EMULATOR_HEADLESS: "1"
         run: >-
-          ./ui/android-app/scripts/run_e2e_ci.sh
-          --headless
-          --keep-emulator
-          --skip-system-image-install
-          --no-package-server
-          --apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
-          --driver-apk "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk"
-          --release-fixture "$AEROBAG_RELEASE_JOURNEY_FIXTURE"
-          --test shared.startup-navigation
-      - name: Save prepared Android journey baseline
-        run: ./tools/e2e/release_journey_lab.sh android-baseline-save "$AEROBAG_ANDROID_BASELINE_ARCHIVE"
-      - name: Run Android ${{ matrix.priority }} shard ${{ matrix.shard }} journeys
-        run: ./tools/e2e/release_journey_lab.sh android-suite-shard "${{ matrix.priority }}" "${{ matrix.shard }}" 4
+          ./tools/e2e/release_journey_lab.sh android-boot-install
+          "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-release-e2e.apk"
+          "${{ github.workspace }}/.ci/release-e2e-apps/aerobag-e2e-driver.apk"
+      - name: Run Android shard ${{ matrix.shard }} journeys
+        run: ./tools/e2e/release_journey_lab.sh android-suite-shard all "${{ matrix.shard }}" 4
       - name: Stop Android and journey services
         if: ${{ always() }}
         run: |
@@ -316,9 +409,9 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: release-journey-android-${{ matrix.priority }}-s${{ matrix.shard }}-results
+          name: release-journey-android-s${{ matrix.shard }}-results
           path: |
-            test-results/release-journey-android-${{ matrix.priority }}-s${{ matrix.shard }}
+            test-results/release-journey-android-s${{ matrix.shard }}
             .ci/ui-target/android/emulator-stack-5900
           if-no-files-found: ignore
           include-hidden-files: true
@@ -570,6 +663,7 @@ jobs:
     needs:
       - build-release-apps
       - release-journey-fixture
+      - release-journey-android-baseline
       - release-journey-web
       - release-journey-android
       - android-native
@@ -581,6 +675,7 @@ jobs:
         env:
           BUILD_RELEASE_APPS: ${{ needs.build-release-apps.result }}
           RELEASE_JOURNEY_FIXTURE: ${{ needs.release-journey-fixture.result }}
+          RELEASE_JOURNEY_ANDROID_BASELINE: ${{ needs.release-journey-android-baseline.result }}
           RELEASE_JOURNEY_WEB: ${{ needs.release-journey-web.result }}
           RELEASE_JOURNEY_ANDROID: ${{ needs.release-journey-android.result }}
           ANDROID_NATIVE: ${{ needs.android-native.result }}
@@ -590,7 +685,8 @@ jobs:
           failed=0
           for name in \
             BUILD_RELEASE_APPS RELEASE_JOURNEY_FIXTURE RELEASE_JOURNEY_WEB \
-            RELEASE_JOURNEY_ANDROID ANDROID_NATIVE ANDROID_CHROME_LIVE_FEED \
+            RELEASE_JOURNEY_ANDROID_BASELINE RELEASE_JOURNEY_ANDROID \
+            ANDROID_NATIVE ANDROID_CHROME_LIVE_FEED \
             WEB_NAV_DB_ROLLOVER
           do
             result="${!name}"

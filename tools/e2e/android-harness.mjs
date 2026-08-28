@@ -5,6 +5,9 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  E2E_TIMING, observeChangedValueUntilStable, observeUntil, performTransition,
+} from "./transition-contract.mjs";
 
 export const ANDROID_PACKAGE = "org.aerobag.app";
 export const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
@@ -21,8 +24,10 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 
 const ADB_TIMEOUT_MS = 20000;
 const APP_START_TIMEOUT_MS = 60000;
-const UI_DUMP_TIMEOUT_MS = 60000;
+const CLOCK_SET_TIMEOUT_MS = 15000;
+const SEMANTIC_REQUEST_TIMEOUT_SECONDS = 2;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/2";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const SEMANTIC_DRIVER_SERVICE =
   `${SEMANTIC_DRIVER_PACKAGE}/org.aerobag.app.e2e.SemanticDriverService`;
@@ -75,8 +80,10 @@ export function screencapPng(serial) {
   });
 }
 
-function semanticDriverRequired() {
-  return process.env.AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED === "1";
+function requiredSemanticDriver(serial) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) throw new Error("persistent Android semantic driver has not been started");
+  return state;
 }
 
 function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
@@ -96,54 +103,53 @@ function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
   });
 }
 
-export function setAndroidSemanticText(serial, tag, value) {
-  const state = semanticDrivers.get(serial || "default");
-  if (!state) return false;
-  const query = new URLSearchParams({ tag, value });
-  const response = semanticDriverRequest(state.port, `/set-text?${query}`, 5, "POST");
+export function setAndroidSemanticText(serial, tag, value, expectedBounds) {
+  const state = requiredSemanticDriver(serial);
+  if (!expectedBounds) {
+    throw new Error(`persistent Android semantic text action for ${tag} has no readiness bounds`);
+  }
+  const query = new URLSearchParams({ tag, value, bounds: expectedBounds });
+  const response = semanticDriverRequest(
+    state.port, `/set-text?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
+  );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequired()) {
-    throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
-  }
-  return false;
+  throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
 }
 
-export function clickAndroidSemanticNode(serial, tag) {
-  const state = semanticDrivers.get(serial || "default");
-  if (!state) return false;
-  const query = new URLSearchParams({ tag });
-  const response = semanticDriverRequest(state.port, `/click?${query}`, 5, "POST");
+export function clickAndroidSemanticNode(serial, tag, expectedBounds) {
+  const state = requiredSemanticDriver(serial);
+  if (!expectedBounds) {
+    throw new Error(`persistent Android semantic click for ${tag} has no readiness bounds`);
+  }
+  const query = new URLSearchParams({ tag, bounds: expectedBounds });
+  const response = semanticDriverRequest(
+    state.port, `/click?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
+  );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequired()) {
-    throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
-  }
-  return false;
+  throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
 }
 
 export function scrollAndroidSemanticNode(serial, bounds, direction) {
-  const state = semanticDrivers.get(serial || "default");
-  if (!state) return false;
+  const state = requiredSemanticDriver(serial);
   const semanticDirection = direction === "down" || direction === "forward"
     ? "forward"
     : "backward";
   const query = new URLSearchParams({ bounds, direction: semanticDirection });
-  const response = semanticDriverRequest(state.port, `/scroll?${query}`, 5, "POST");
+  const response = semanticDriverRequest(
+    state.port, `/scroll?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
+  );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
     return false;
   }
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequired()) {
-    throw new Error(`persistent Android semantic scroll failed for ${bounds}: ${detail}`);
-  }
-  return false;
+  throw new Error(`persistent Android semantic scroll failed for ${bounds}: ${detail}`);
 }
 
 export function waitForAndroidSemanticEvent(serial, timeoutMs) {
-  const state = semanticDrivers.get(serial || "default");
-  if (!state) return false;
+  const state = requiredSemanticDriver(serial);
   const boundedTimeoutMs = Math.max(1, Math.min(1_000, Math.ceil(timeoutMs)));
   const query = new URLSearchParams({ timeout_ms: String(boundedTimeoutMs) });
   const response = semanticDriverRequest(
@@ -153,48 +159,42 @@ export function waitForAndroidSemanticEvent(serial, timeoutMs) {
   );
   if (response.status === 0) return response.stdout.trim() === "changed";
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequired()) {
-    throw new Error(`persistent Android semantic event wait failed: ${detail}`);
-  }
-  return false;
+  throw new Error(`persistent Android semantic event wait failed: ${detail}`);
 }
 
 export function queryAndroidSemanticNodes(serial, tag, { prefix = false } = {}) {
-  const state = semanticDrivers.get(serial || "default");
-  if (!state) return null;
+  const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({ tag, prefix: String(prefix) });
-  const response = semanticDriverRequest(state.port, `/query?${query}`, 5);
+  const response = semanticDriverRequest(
+    state.port, `/query?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS,
+  );
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequired()) {
-    throw new Error(`persistent Android semantic query failed for ${tag}: ${detail}`);
-  }
-  return null;
+  throw new Error(`persistent Android semantic query failed for ${tag}: ${detail}`);
 }
 
 function semanticDriverDump(serial) {
-  const state = semanticDrivers.get(serial || "default");
-  if (!state) return null;
-  // Concurrent software-rendered emulators can briefly starve the test-only
-  // accessibility traversal. Reads are idempotent; mutations retain the
-  // shorter timeout and are never retried.
-  const response = semanticDriverRequest(state.port, "/dump", 15);
+  const state = requiredSemanticDriver(serial);
+  // A blocked accessibility traversal is a failed transition, not a reason to
+  // hide an emulator stall behind a journey-scale timeout.
+  const response = semanticDriverRequest(
+    state.port, "/dump", SEMANTIC_REQUEST_TIMEOUT_SECONDS,
+  );
   if (response.status === 0 && response.stdout.includes("<hierarchy")) {
     return response.stdout;
   }
   const detail = response.error?.message || response.stderr.trim() || "request failed";
-  if (semanticDriverRequired()) {
-    throw new Error(`persistent Android semantic driver failed: ${detail}`);
-  }
-  return null;
+  throw new Error(`persistent Android semantic driver failed: ${detail}`);
 }
 
 export async function ensureAndroidSemanticDriver(serial) {
-  if (!semanticDriverRequired()) return null;
   const key = serial || "default";
   const current = semanticDrivers.get(key);
-  if (current && semanticDriverRequest(current.port, "/health", 1).status === 0) {
-    return current.port;
+  if (current) {
+    const health = semanticDriverRequest(current.port, "/health", 1);
+    if (health.status === 0 && health.stdout.trim() === SEMANTIC_DRIVER_PROTOCOL) {
+      return current.port;
+    }
   }
 
   const testPackage = adbBestEffort(serial, ["shell", "pm", "path", SEMANTIC_DRIVER_PACKAGE]);
@@ -226,7 +226,17 @@ export async function ensureAndroidSemanticDriver(serial) {
 
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    if (semanticDriverRequest(port, "/health", 1).status === 0) return port;
+    const health = semanticDriverRequest(port, "/health", 1);
+    if (health.status === 0) {
+      const actualProtocol = health.stdout.trim();
+      if (actualProtocol !== SEMANTIC_DRIVER_PROTOCOL) {
+        throw new Error(
+          `persistent Android semantic driver protocol mismatch: expected ` +
+            `${SEMANTIC_DRIVER_PROTOCOL}, got ${actualProtocol || "<empty>"}`,
+        );
+      }
+      return port;
+    }
     await delay(100);
   }
   adbBestEffort(serial, ["forward", "--remove", `tcp:${port}`]);
@@ -250,31 +260,10 @@ export function shutdownAndroidSemanticDrivers() {
   }
 }
 
-export function dumpAndroid(serial, dumpPath = `/sdcard/aerobag-e2e-${process.pid}.xml`) {
+export function dumpAndroid(serial) {
   const persistentDump = semanticDriverDump(serial);
   if (persistentDump !== null) return persistentDump;
-  if (semanticDriverRequired()) {
-    throw new Error("persistent Android semantic driver was required but has not been started");
-  }
-  // Compose's outlined text creates many accessibility-only descendants.
-  // Compressed dumps retain the tagged semantic controls and omit that noise.
-  let lastError = null;
-  const modes = ["compressed", "compressed", "compressed", "full"];
-  for (let attempt = 0; attempt < modes.length; attempt += 1) {
-    try {
-      adbBestEffort(serial, ["shell", "rm", "-f", dumpPath], { timeout: 3000 });
-      const modeArgs = modes[attempt] === "compressed" ? ["--compressed"] : [];
-      adb(serial, ["shell", "uiautomator", "dump", ...modeArgs, dumpPath], {
-        timeout: UI_DUMP_TIMEOUT_MS,
-      });
-      return adb(serial, ["exec-out", "cat", dumpPath]);
-    } catch (error) {
-      lastError = error;
-      adbBestEffort(serial, ["shell", "input", "keyevent", "KEYCODE_WAKEUP"], { timeout: 3000 });
-      spawnSync("sleep", [String(0.4 + attempt * 0.3)]);
-    }
-  }
-  throw lastError;
+  throw new Error("persistent Android semantic driver has not been started");
 }
 
 export function captureAndroidFailureDiagnostics(serial, artifactDir, label) {
@@ -336,20 +325,6 @@ export function findNode(xml, predicate) {
   return findNodes(xml, predicate)[0] ?? null;
 }
 
-export function findSystemUiAnrWaitButton(xml) {
-  const systemUiTitle = findNode(xml, (node) =>
-    node.package === "android" &&
-    node["resource-id"] === "android:id/alertTitle" &&
-    node.text === "System UI isn't responding"
-  );
-  if (!systemUiTitle) return null;
-  return findNode(xml, (node) =>
-    node.package === "android" &&
-    node["resource-id"] === "android:id/aerr_wait" &&
-    node.enabled === "true"
-  );
-}
-
 export function findAerobagAnrDialog(xml) {
   return findNode(xml, (node) =>
     node.package === "android" &&
@@ -401,9 +376,7 @@ export function androidRuntimeUiVisible(xml) {
   ) !== null;
 }
 
-export function androidStartupState(xml) {
-  const node = findNode(xml, (candidate) =>
-    androidTag(candidate).startsWith("parity:startup-state:"));
+function startupStateFromNode(node) {
   if (!node) return null;
   const fields = {};
   const components = androidTag(node).slice("parity:startup-state:".length).split(":");
@@ -411,6 +384,17 @@ export function androidStartupState(xml) {
     fields[components[index]] = components[index + 1];
   }
   return fields.ready === "true" ? fields : null;
+}
+
+export function androidStartupState(xml) {
+  return startupStateFromNode(findNode(xml, (candidate) =>
+    androidTag(candidate).startsWith("parity:startup-state:")));
+}
+
+export function queryAndroidStartupState(serial) {
+  const nodes = queryAndroidSemanticNodes(serial, "parity:startup-state:", { prefix: true });
+  return startupStateFromNode(nodes?.find((node) =>
+    androidTag(node).startsWith("parity:startup-state:")) ?? null);
 }
 
 const MAP_LAYER_PARITY_IDS = Object.freeze({
@@ -602,14 +586,6 @@ export function setAerobagPrivateSentinel(serial, relativePath, present) {
   }
 }
 
-export function centerOfBounds(bounds) {
-  const rect = rectOfBounds(bounds);
-  return {
-    x: Math.round((rect.left + rect.right) / 2),
-    y: Math.round((rect.top + rect.bottom) / 2),
-  };
-}
-
 export function androidNodeLabel(xml, node) {
   const rect = rectOfBounds(node.bounds);
   return findNodes(xml, (candidate) => {
@@ -635,17 +611,28 @@ export function delay(ms) {
 }
 
 export async function waitFor(fn, timeoutMs, message, intervalMs = 150) {
-  const started = Date.now();
-  let lastError;
-  while (Date.now() - started < timeoutMs) {
-    try {
-      if (await fn()) return;
-    } catch (error) {
-      lastError = error;
-    }
-    await delay(intervalMs);
-  }
-  throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
+  await observeUntil(message, async () => await fn() ? true : null, {
+    timeoutMs,
+    intervalMs,
+  });
+}
+
+export async function setAndroidWallClockAndWait(
+  serial,
+  epochMs,
+  {
+    adbCommand = adb,
+    now = Date.now,
+    wait = waitFor,
+  } = {},
+) {
+  const requestedAtHostMs = now();
+  adbCommand(serial, ["shell", "cmd", "alarm", "set-time", String(epochMs)]);
+  await wait(async () => {
+    const deviceEpochMs = Number(adbCommand(serial, ["shell", "date", "+%s%3N"]).trim());
+    const expectedEpochMs = epochMs + (now() - requestedAtHostMs);
+    return Number.isFinite(deviceEpochMs) && Math.abs(deviceEpochMs - expectedEpochMs) <= 1_500;
+  }, CLOCK_SET_TIMEOUT_MS, "Android fixture clock did not reach the requested epoch", 100);
 }
 
 export async function waitForNode(serial, predicate, timeoutMs, message) {
@@ -661,27 +648,15 @@ export function tagExists(serial, tag) {
   return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
 }
 
-export async function tapNode(serial, node) {
-  const { x, y } = centerOfBounds(node.bounds);
-  adb(serial, ["shell", "input", "tap", String(x), String(y)]);
-}
-
-export async function tapTag(serial, tag, timeoutMs = 5000) {
-  const node = await waitForNode(serial, (candidate) => hasAndroidTag(candidate, tag), timeoutMs, tag);
-  if (clickAndroidSemanticNode(serial, tag)) return node;
-  await tapNode(serial, node);
+export async function activateAndroidNode(serial, node) {
+  const tag = androidTag(node);
+  if (!tag || !node?.bounds) {
+    throw new Error("Android semantic action requires tagged readiness evidence");
+  }
+  if (!clickAndroidSemanticNode(serial, tag, node.bounds)) {
+    throw new Error(`Android semantic action ${tag} was rejected`);
+  }
   return node;
-}
-
-export async function tapFirstPresentTag(serial, tags, timeoutMs = 5000) {
-  const node = await waitForNode(
-    serial,
-    (candidate) => tags.some((tag) => hasAndroidTag(candidate, tag)),
-    timeoutMs,
-    `one of ${tags.join(", ")}`,
-  );
-  await tapNode(serial, node);
-  return androidTag(node);
 }
 
 export async function scrollUntilTag(serial, tag, maxSwipes = 8, requireReachable = false) {
@@ -734,64 +709,27 @@ export function verticalScrollTargetIsReachable(xml, tag, { prefix = false } = {
     centerY >= surfaceBounds.top && centerY <= surfaceBounds.bottom;
 }
 
-export function verticalScrollGesture(bounds, direction) {
-  const inset = Math.min(80, bounds.height / 5);
-  // Starting in Android's status or navigation gesture zones opens the shade
-  // or leaves the app instead of scrolling Compose content.
-  const systemGestureInset = Math.max(inset, 180);
-  const safeTop = Math.min(bounds.bottom - 1, bounds.top + systemGestureInset);
-  const safeBottom = Math.max(safeTop + 1, bounds.bottom - systemGestureInset);
-  const midpoint = (safeTop + safeBottom) / 2;
-  const travel = (safeBottom - safeTop) * 0.55;
-  const upperY = Math.round(midpoint - travel / 2);
-  const lowerY = Math.round(midpoint + travel / 2);
-  const x = Math.round((bounds.left + bounds.right) / 2);
-  if (direction === "down") return { x, startY: lowerY, endY: upperY };
-  if (direction === "up") return { x, startY: upperY, endY: lowerY };
-  throw new Error(`unsupported scroll direction: ${direction}`);
-}
-
-async function recoverObscuredAndroidApp(serial, xml) {
-  const aerobagVisible = findNode(xml, (node) => node.package === ANDROID_PACKAGE);
-  const systemUiVisible = findNode(xml, (node) => node.package === "com.android.systemui");
-  if (aerobagVisible || !systemUiVisible) return xml;
-  adbBestEffort(serial, ["shell", "cmd", "statusbar", "collapse"], { timeout: 3000 });
-  let recovered = null;
-  await waitFor(() => {
-    recovered = dumpAndroid(serial);
-    return findNode(recovered, (node) => node.package === ANDROID_PACKAGE) !== null;
-  }, 3000, "Aerobag visible after collapsing System UI", 50);
-  return recovered;
-}
-
 export async function scrollAndroidAndAwait(serial, bounds, direction) {
   const before = dumpAndroid(serial);
-  const rect = rectOfBounds(bounds);
-  if (direction === "forward" || direction === "backward") {
-    if (scrollAndroidSemanticNode(serial, bounds, direction)) return true;
-    const inset = Math.min(80, rect.width / 5);
-    const startX = direction === "forward" ? rect.right - inset : rect.left + inset;
-    const endX = direction === "forward" ? rect.left + inset : rect.right - inset;
-    const y = Math.round((rect.top + rect.bottom) / 2);
-    swipe(serial, startX, y, endX, y, 450);
-  } else {
-    const { x, startY, endY } = verticalScrollGesture(rect, direction);
-    swipe(serial, x, startY, x, endY, 450);
-  }
+  if (!scrollAndroidSemanticNode(serial, bounds, direction)) return false;
   try {
-    await waitFor(() => dumpAndroid(serial) !== before, 1000, "Android scroll projection changed", 50);
+    await observeChangedValueUntilStable(
+      "Android semantic scroll projection settled",
+      () => dumpAndroid(serial),
+      {
+        initialValue: before,
+        timeoutMs: E2E_TIMING.userResponseMs,
+        intervalMs: E2E_TIMING.pollIntervalMs,
+      },
+    );
     return true;
   } catch (_error) {
-    // Compose's semantic vertical scroll sometimes advances only one item.
-    // Use it only when the human-sized gesture could not move this surface.
-    return direction === "down" || direction === "up"
-      ? scrollAndroidSemanticNode(serial, bounds, direction)
-      : false;
+    return false;
   }
 }
 
 export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
-  let xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+  let xml = dumpAndroid(serial);
   let found = findNode(xml, predicate);
   if (found) return found;
   for (const direction of ["down", "up"]) {
@@ -799,8 +737,8 @@ export async function findNodeByScrolling(serial, predicate, maxSwipes = 8) {
       const scrollSurface =
         findVerticalScrollSurface(xml) ??
         findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-      if (!await scrollAndroidAndAwait(serial, scrollSurface?.bounds ?? "[90,383][1065,2021]", direction)) break;
-      xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+      if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
+      xml = dumpAndroid(serial);
       found = findNode(xml, predicate);
       if (found) return found;
     }
@@ -812,18 +750,14 @@ async function scrollUntilTagPrefixInDirection(
   serial, tagPrefix, direction, maxSwipes, requireReachable,
 ) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-    const xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+    const xml = dumpAndroid(serial);
     if (requireReachable
       ? verticalScrollTargetIsReachable(xml, tagPrefix, { prefix: true })
       : findNode(xml, (node) => androidTag(node).startsWith(tagPrefix))) return true;
     const scrollSurface =
       findVerticalScrollSurface(xml) ??
       findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-    if (!await scrollAndroidAndAwait(
-      serial,
-      scrollSurface?.bounds ?? "[90,383][1065,2021]",
-      direction,
-    )) break;
+    if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
   }
   const xml = dumpAndroid(serial);
   return requireReachable
@@ -846,7 +780,7 @@ export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
 
 async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requireReachable) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-    const xml = await recoverObscuredAndroidApp(serial, dumpAndroid(serial));
+    const xml = dumpAndroid(serial);
     if (requireReachable
       ? verticalScrollTargetIsReachable(xml, tag)
       : findNode(xml, (node) => hasAndroidTag(node, tag))) {
@@ -855,11 +789,7 @@ async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requ
     const scrollSurface =
       findVerticalScrollSurface(xml) ??
       findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-    if (!await scrollAndroidAndAwait(
-      serial,
-      scrollSurface?.bounds ?? "[90,383][1065,2021]",
-      direction,
-    )) break;
+    if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
   }
   const xml = dumpAndroid(serial);
   return requireReachable
@@ -924,43 +854,40 @@ export async function launchFreshAndroidApp(
   // `am start -W` includes Android process startup and can exceed the generic
   // command timeout on cold CI emulators. UI readiness is still checked below.
   adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
-  let dismissedSystemUiAnr = false;
-  await waitFor(async () => {
+  await waitFor(() => {
     const xml = dumpAndroid(serial);
-    if (findNode(xml, (node) => node.package === ANDROID_PACKAGE)) {
-      return true;
-    }
-    const waitButton = findSystemUiAnrWaitButton(xml);
-    if (waitButton && !dismissedSystemUiAnr) {
-      dismissedSystemUiAnr = true;
-      console.warn("Android System UI ANR obscured Aerobag during startup; selecting Wait once");
-      await tapNode(serial, waitButton);
-    }
-    return false;
+    return findNode(xml, (node) => node.package === ANDROID_PACKAGE) !== null;
   }, 90000, "Aerobag app visible");
 }
 
 export async function acceptDisclaimerIfPresent(serial) {
-  const xml = dumpAndroid(serial);
-  const button = findNode(xml, (node) => hasAndroidTag(node, "parity:disclaimer-accept-button"));
+  const button = queryAndroidSemanticNodes(serial, "parity:disclaimer-accept-button")?.[0] ?? null;
   if (!button) {
     return false;
   }
-  const initial = androidStartupState(xml);
+  const initial = queryAndroidStartupState(serial);
   if (initial?.disclaimer_required !== "true") {
     throw new Error("disclaimer is visible without a startup-state requirement");
   }
-  await tapTag(serial, "parity:disclaimer-accept-button", 3000);
-  await waitFor(
-    () => {
-      const nextXml = dumpAndroid(serial);
-      return androidStartupState(nextXml)?.disclaimer_required === "false" &&
-        !findNode(nextXml, (node) => hasAndroidTag(node, "parity:disclaimer-accept-button"));
+  await performTransition("accept mandatory disclaimer", {
+    ready: async () => {
+      const readyState = queryAndroidStartupState(serial);
+      if (readyState?.disclaimer_required !== "true") return null;
+      return queryAndroidSemanticNodes(serial, "parity:disclaimer-accept-button")?.[0] ?? null;
     },
-    3000,
-    "disclaimer acceptance did not commit within the user-response budget",
-    50,
-  );
+    act: async (readyButton) => activateAndroidNode(serial, readyButton),
+    complete: async () => {
+      const nextState = queryAndroidStartupState(serial);
+      const nextButton = queryAndroidSemanticNodes(
+        serial,
+        "parity:disclaimer-accept-button",
+      )?.[0] ?? null;
+      return nextState?.disclaimer_required === "false" && !nextButton
+        ? nextState
+        : null;
+    },
+    responseTimeoutMs: E2E_TIMING.userResponseMs,
+  });
   return true;
 }
 

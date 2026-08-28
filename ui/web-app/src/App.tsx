@@ -156,6 +156,12 @@ import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateO
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { NexradFrameImageCache } from "./domain/nexradFrameCache";
+import {
+  RASTER_TILE_LOAD_RECOVERY_DELAY_MS,
+  classifyRasterTileLoadRecovery,
+  e2eRasterTileStallUrl,
+  rasterTileLoadUrl,
+} from "./domain/rasterTileLoadRecovery";
 import { appPageForPath, appPageUrl } from "./domain/webRouteUrl";
 import {
   clampImageViewport,
@@ -213,6 +219,8 @@ declare global {
         dropEventStream: () => Promise<void>;
       };
       render?: () => unknown;
+      raster?: () => unknown;
+      rasterFaultOnce?: () => number;
     };
   }
 }
@@ -5448,6 +5456,11 @@ function MapPage(props: {
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
   const [rasterTileFrame, setRasterTileFrame] = useState<MapDisplayFrame | null>(null);
   const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
+  const [rasterTileLoadAttempts, setRasterTileLoadAttempts] = useState<Map<string, number>>(() => new Map());
+  const rasterTileLoadAttemptsRef = useRef<Map<string, number>>(new Map());
+  const rasterTileRecoveryCountRef = useRef(0);
+  const [e2eRasterTileFaultKeys, setE2eRasterTileFaultKeys] = useState<Set<string>>(() => new Set());
+  const e2eRasterTileFaultKeysRef = useRef<Set<string>>(new Set());
   const loadedRasterTileKeysRef = useRef<Set<string>>(new Set());
   const completedPageTilePaintTimingIdsRef = useRef<Set<number>>(new Set());
   const rasterTilePlanRequestRef = useRef<{
@@ -5486,6 +5499,49 @@ function MapPage(props: {
   const rasterTileKey = useCallback((tile: RasterRenderTile) =>
     `${tile.chartFamily}-${tile.packageName ?? tile.mapViewId}-${tile.drawKey}`,
   []);
+  const recoverRasterTileLoads = useCallback((
+    tileList: RasterRenderTile[],
+    trigger: "error" | "watchdog",
+  ) => {
+    const decision = classifyRasterTileLoadRecovery(
+      tileList.map(rasterTileKey),
+      loadedRasterTileKeysRef.current,
+      failedRasterTileKeys,
+      rasterTileLoadAttemptsRef.current,
+    );
+    if (decision.retry.length > 0) {
+      const nextAttempts = new Map(rasterTileLoadAttemptsRef.current);
+      for (const key of decision.retry) {
+        nextAttempts.set(key, (nextAttempts.get(key) ?? 0) + 1);
+      }
+      rasterTileLoadAttemptsRef.current = nextAttempts;
+      rasterTileRecoveryCountRef.current += 1;
+      setRasterTileLoadAttempts(nextAttempts);
+      debugLog("map.raster.tile.recovery", {
+        trigger,
+        selected_map_id: selectedMap.selected_map_id,
+        retry_count: rasterTileRecoveryCountRef.current,
+        tile_count: decision.retry.length,
+        tile_keys: decision.retry,
+      });
+    }
+    if (decision.exhausted.length > 0) {
+      setFailedRasterTileKeys((current) => {
+        const next = new Set(current);
+        for (const key of decision.exhausted) {
+          next.add(key);
+        }
+        return next.size === current.size ? current : next;
+      });
+      debugLog("map.raster.tile.recovery_exhausted", {
+        trigger,
+        selected_map_id: selectedMap.selected_map_id,
+        tile_count: decision.exhausted.length,
+        tile_keys: decision.exhausted,
+      });
+    }
+    return decision;
+  }, [failedRasterTileKeys, rasterTileKey, selectedMap.selected_map_id]);
   const rasterTilePlanKey = useCallback((
     nextViewport: MapViewportState,
     width: number,
@@ -5581,6 +5637,10 @@ function MapPage(props: {
     rasterTileImageLoadStartedAtRef.current = performance.now();
     const imageTimingResetEndedAt = performance.now();
     setFailedRasterTileKeys(new Set());
+    rasterTileLoadAttemptsRef.current = new Map();
+    setRasterTileLoadAttempts(new Map());
+    e2eRasterTileFaultKeysRef.current = new Set();
+    setE2eRasterTileFaultKeys(new Set());
     const failedStateQueuedAt = performance.now();
     setTiles(nextTiles);
     setChartReferenceAction(nextChartReferenceAction ?? null);
@@ -5661,6 +5721,20 @@ function MapPage(props: {
       queue_to_commit_ms: Math.round(committedAt - timing.requestedAt),
     }));
   }, [rasterTileViewport, tiles]);
+
+  useEffect(() => {
+    if (page !== "map" || tiles.length === 0) {
+      return;
+    }
+    const requestId = landedRasterTilePlanRequestIdRef.current;
+    const timeout = window.setTimeout(() => {
+      if (requestId !== landedRasterTilePlanRequestIdRef.current) {
+        return;
+      }
+      recoverRasterTileLoads(tiles, "watchdog");
+    }, RASTER_TILE_LOAD_RECOVERY_DELAY_MS);
+    return () => window.clearTimeout(timeout);
+  }, [page, rasterTileLoadAttempts, recoverRasterTileLoads, tiles]);
 
   function pumpRasterTilePlanQueue() {
     if (rasterTilePlanPumpActiveRef.current) {
@@ -7109,9 +7183,12 @@ function MapPage(props: {
     onFirstVisualReady();
   }
 
-  function reportRasterTileLoaded(tile: RasterRenderTile) {
+  function reportRasterTileLoaded(tile: RasterRenderTile, loadAttempt: number) {
     reportFirstVisualReady();
     const key = rasterTileKey(tile);
+    if ((rasterTileLoadAttemptsRef.current.get(key) ?? 0) !== loadAttempt) {
+      return;
+    }
     loadedRasterTileKeysRef.current.add(key);
     knownLoadedRasterTileKeysRef.current.add(key);
     if (page !== "map" || tiles.length === 0) {
@@ -7133,19 +7210,18 @@ function MapPage(props: {
     completePageTilePaintTiming(timing, "images");
   }
 
-  function reportRasterTileError(tile: RasterRenderTile) {
+  function reportRasterTileError(tile: RasterRenderTile, loadAttempt: number) {
     const key = rasterTileKey(tile);
-    loadedRasterTileKeysRef.current.add(key);
-    knownLoadedRasterTileKeysRef.current.add(key);
-    setFailedRasterTileKeys((current) => {
-      if (current.has(key)) {
-        return current;
-      }
-      const next = new Set(current);
-      next.add(key);
-      return next;
-    });
-    loadedRasterTileKeysRef.current.add(key);
+    if ((rasterTileLoadAttemptsRef.current.get(key) ?? 0) !== loadAttempt) {
+      return;
+    }
+    if (e2eRasterTileFaultKeysRef.current.has(key)) {
+      const remainingFaults = new Set(e2eRasterTileFaultKeysRef.current);
+      remainingFaults.delete(key);
+      e2eRasterTileFaultKeysRef.current = remainingFaults;
+      setE2eRasterTileFaultKeys(remainingFaults);
+    }
+    const decision = recoverRasterTileLoads([tile], "error");
     debugLog("map.raster.tile.error", {
       selected_map_id: selectedMap.selected_map_id,
       selected_family_id: selectedFamily?.id ?? null,
@@ -7157,6 +7233,8 @@ function MapPage(props: {
       map_view_id: tile.mapViewId,
       package_name: tile.packageName,
       src: tile.src,
+      load_attempt: loadAttempt,
+      retrying: decision.retry.includes(key),
     });
   }
 
@@ -7309,6 +7387,58 @@ function MapPage(props: {
     surface_size: surfaceSize,
     map_selection: mapSelection,
   });
+
+  useEffect(() => {
+    if (!__AEROBAG_E2E_ENABLED__) return;
+    const raster = () => ({
+      selected_map_id: selectedMap.selected_map_id,
+      request: rasterTilePlanRequestRef.current ? {
+        id: rasterTilePlanRequestRef.current.id,
+        key: rasterTilePlanRequestRef.current.key,
+        requested_at_ms: rasterTilePlanRequestRef.current.requestedAt,
+      } : null,
+      request_pending: rasterTilePlanPendingRef.current,
+      pump_active: rasterTilePlanPumpActiveRef.current,
+      landed_request_id: landedRasterTilePlanRequestIdRef.current,
+      landing: rasterTilePlanLandingTimingRef.current,
+      planned_tiles: tiles.length,
+      loaded_tile_keys: loadedRasterTileKeysRef.current.size,
+      failed_tile_keys: failedRasterTileKeys.size,
+      load_retry_attempts: Object.fromEntries(rasterTileLoadAttempts),
+      recovery_count: rasterTileRecoveryCountRef.current,
+      images: [...document.querySelectorAll<HTMLImageElement>(".rasterTileLayer .mapTileImage")]
+        .map((image) => ({
+          src: image.currentSrc || image.src,
+          complete: image.complete,
+          natural_width: image.naturalWidth,
+        })),
+    });
+    window.__aerobagE2e = { ...(window.__aerobagE2e ?? {}), raster };
+    return () => {
+      if (window.__aerobagE2e?.raster === raster) delete window.__aerobagE2e.raster;
+    };
+  }, [failedRasterTileKeys, rasterTileLoadAttempts, selectedMap.selected_map_id, tiles]);
+
+  useEffect(() => {
+    if (!__AEROBAG_E2E_ENABLED__) return;
+    const rasterFaultOnce = () => {
+      const firstTile = tiles[0];
+      const faultKeys = new Set(firstTile ? [rasterTileKey(firstTile)] : []);
+      for (const key of faultKeys) {
+        loadedRasterTileKeysRef.current.delete(key);
+        knownLoadedRasterTileKeysRef.current.delete(key);
+      }
+      e2eRasterTileFaultKeysRef.current = faultKeys;
+      setE2eRasterTileFaultKeys(faultKeys);
+      return faultKeys.size;
+    };
+    window.__aerobagE2e = { ...(window.__aerobagE2e ?? {}), rasterFaultOnce };
+    return () => {
+      if (window.__aerobagE2e?.rasterFaultOnce === rasterFaultOnce) {
+        delete window.__aerobagE2e.rasterFaultOnce;
+      }
+    };
+  }, [rasterTileKey, tiles]);
 
   return (
     <section className="pageSurface" data-testid="parity:page:map">
@@ -7470,36 +7600,46 @@ function MapPage(props: {
               aria-hidden="true"
               style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "0 0" } : undefined}
             >
-              {tiles.map((tile) => (
-                <div
-                  key={rasterTileKey(tile)}
-                  className="mapTile"
-                  style={{
-                    left: `${tile.left}px`,
-                    top: `${tile.top}px`,
-                    // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
-                    width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
-                    height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
-                    zIndex: tile.zIndex,
-                  }}
-                >
-                  {failedRasterTileKeys.has(rasterTileKey(tile)) ? null : (
-                    <img
-                      className="mapTileImage"
-                      src={tile.src}
-                      alt=""
-                      draggable={false}
-                      onLoad={() => reportRasterTileLoaded(tile)}
-                      onError={() => reportRasterTileError(tile)}
-                    />
-                  )}
-                  {debugState.tile_labels ? (
-                    <div className="tileLabel">
-                      z{tile.zoom} x{tile.x} y{tile.yTms}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
+              {tiles.map((tile) => {
+                const tileKey = rasterTileKey(tile);
+                const loadAttempt = rasterTileLoadAttempts.get(tileKey) ?? 0;
+                const tileSource = __AEROBAG_E2E_ENABLED__
+                  && loadAttempt === 0
+                  && e2eRasterTileFaultKeys.has(tileKey)
+                  ? e2eRasterTileStallUrl(tile.src)
+                  : rasterTileLoadUrl(tile.src, loadAttempt);
+                return (
+                  <div
+                    key={tileKey}
+                    className="mapTile"
+                    style={{
+                      left: `${tile.left}px`,
+                      top: `${tile.top}px`,
+                      // Fractional overzoomed tile sizes can expose subpixel seams between rasters.
+                      width: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+                      height: `${tile.size + RASTER_TILE_OVERDRAW_PX}px`,
+                      zIndex: tile.zIndex,
+                    }}
+                  >
+                    {failedRasterTileKeys.has(tileKey) ? null : (
+                      <img
+                        key={`${tileKey}:load:${loadAttempt}`}
+                        className="mapTileImage"
+                        src={tileSource}
+                        alt=""
+                        draggable={false}
+                        onLoad={() => reportRasterTileLoaded(tile, loadAttempt)}
+                        onError={() => reportRasterTileError(tile, loadAttempt)}
+                      />
+                    )}
+                    {debugState.tile_labels ? (
+                      <div className="tileLabel">
+                        z{tile.zoom} x{tile.x} y{tile.yTms}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </Profiler>
           <RenderDependencyBoundary
@@ -9934,7 +10074,8 @@ function FlightPlanPage(props: {
                 {planDataColumns.map((column) => (
                   <div
                     key={column.id}
-                    data-testid={`parity:plan-column:${column.id}:${column.label}`}
+                    data-testid={`parity:plan-column:${column.id}`}
+                    data-e2e-state={column.label}
                     className={`planHeader${column.action_id ? " isActionable" : ""}`}
                     role={column.action_id ? "button" : undefined}
                     tabIndex={column.action_id ? 0 : undefined}
@@ -10955,7 +11096,7 @@ function TrayDock(props: {
                       data-testid={`tray-option-${option.id}`}
                       disabled={optionDisabled && !optionDisabledReason}
                       aria-disabled={optionDisabled ? "true" : undefined}
-                      aria-pressed={option.active ? "true" : "false"}
+                      aria-pressed={(option.toggleState?.visible ?? option.active) ? "true" : "false"}
                       title={optionDisabledReason ?? undefined}
                       style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
                       onPointerDown={stopPointer}

@@ -150,6 +150,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.text.TextStyle
@@ -346,7 +347,8 @@ internal fun PlanHeaderRow(
                 column.label,
                 Modifier
                     .width(dataColumnWidth)
-                    .testTag("parity:plan-column:${column.id}:${column.label}")
+                    .testTag("parity:plan-column:${column.id}")
+                    .semantics { stateDescription = column.label }
                     .then(column.actionId?.let { actionId ->
                         Modifier.clickable { onDataColumnAction(actionId) }
                     } ?: Modifier),

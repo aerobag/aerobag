@@ -83,8 +83,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_ANDROID_WORKERS,
         help=(
-            "number of Android emulators sharing this host; GitHub matrix shards run on "
-            "separate hosts"
+            "number of Android emulators sharing this host; one models each GitHub matrix "
+            "runner, while larger values are an optional host-contention stress mode"
         ),
     )
     parser.add_argument("--check", action="store_true", help="only verify the receipt for HEAD")
@@ -465,19 +465,17 @@ def web_lane(
 
 
 def android_shard_lane(
-    priority: str,
     shard: int,
     run_root: Path,
     fixture: Path,
     apps: Path,
     repetitions: int,
 ) -> Lane:
-    lane_index = PRIORITIES.index(priority) * ANDROID_SHARDS + shard
-    package_port = 21_200 + lane_index
-    cloud_port = 21_300 + lane_index
-    vnc_port = 5_940 + lane_index
-    target = run_root / f"android-target-{priority}-s{shard}"
-    baseline_archive = run_root / f"android-baseline-{priority}-s{shard}.tar"
+    package_port = 21_200 + shard
+    cloud_port = 21_300 + shard
+    vnc_port = 5_940 + shard
+    target = run_root / f"android-target-s{shard}"
+    baseline_archive = run_root / "android-release-journey-baseline.tar"
     env = {
         "CI": "1",
         "KEEP_EMULATOR": "1",
@@ -485,7 +483,7 @@ def android_shard_lane(
         "VNC_PORT": str(vnc_port),
         "AVD_NAME": "aerobag34-local-candidate",
         "AVD_INSTANCE_NAME": (
-            f"aerobag-local-{git('rev-parse', '--short=8', 'HEAD')}-{priority}-s{shard}"
+            f"aerobag-local-{git('rev-parse', '--short=8', 'HEAD')}-s{shard}"
         ),
         "EMULATOR_READ_ONLY": "0",
         "AVD_PACKAGE_PATH": "system-images;android-34;aosp_atd;x86_64",
@@ -499,10 +497,10 @@ def android_shard_lane(
         "AEROBAG_E2E_URL": f"http://127.0.0.1:{package_port}/",
         "AEROBAG_E2E_PEER_URL": f"http://127.0.0.1:{package_port}/",
         "AEROBAG_E2E_ARTIFACT_DIR": str(
-            run_root / f"results-android-{priority}-s{shard}"
+            run_root / f"results-android-s{shard}"
         ),
         "AEROBAG_RELEASE_JOURNEY_LAB_STATE_DIR": str(
-            run_root / f"lab-android-{priority}-s{shard}"
+            run_root / f"lab-android-s{shard}"
         ),
         "PACKAGE_SOURCE_PORT": str(package_port),
         "AEROBAG_E2E_CLOUD_PORT": str(cloud_port),
@@ -511,20 +509,16 @@ def android_shard_lane(
         "AEROBAG_ANDROID_CLOUD_DEVICE_PORT": "18094",
         "AEROBAG_CLOUD_SERVER_BIN": str(apps / "aerobag-cloud-serverd"),
         "AEROBAG_ANDROID_BASELINE_ARCHIVE": str(baseline_archive),
-        "AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED": "1",
     }
     suite = (
         "tools/e2e/release_journey_lab.sh android-suite-shard "
-        f"{priority} {shard} {ANDROID_SHARDS}"
+        f"all {shard} {ANDROID_SHARDS}"
     )
     setup = (
         "tools/e2e/release_journey_lab.sh fixture-start-web empty"
-        " && ui/android-app/scripts/run_e2e_ci.sh --headless --keep-emulator"
-        " --skip-system-image-install --no-package-server"
-        f" --apk {apps / 'aerobag-release-e2e.apk'}"
-        f" --driver-apk {apps / 'aerobag-e2e-driver.apk'}"
-        f" --release-fixture {fixture} --test shared.startup-navigation"
-        f" && tools/e2e/release_journey_lab.sh android-baseline-save {baseline_archive}"
+        " && tools/e2e/release_journey_lab.sh android-boot-install"
+        f" {apps / 'aerobag-release-e2e.apk'}"
+        f" {apps / 'aerobag-e2e-driver.apk'}"
         f" && {suite}"
     )
     cleanup = (
@@ -535,10 +529,69 @@ def android_shard_lane(
         " exit \"$status\""
     )
     return Lane(
-        f"e2e-android-{priority}-s{shard}",
+        f"e2e-android-s{shard}",
         bash("status=0; (" + setup + cleanup),
         env=env,
         timeout_seconds=21_600,
+    )
+
+
+def android_baseline_lane(
+    run_root: Path,
+    fixture: Path,
+    apps: Path,
+) -> Lane:
+    package_port = 21_190
+    cloud_port = 21_191
+    baseline_archive = run_root / "android-release-journey-baseline.tar"
+    avd = f"aerobag-local-{git('rev-parse', '--short=8', 'HEAD')}-baseline"
+    env = {
+        "CI": "1",
+        "KEEP_EMULATOR": "1",
+        "EMULATOR_HEADLESS": "1",
+        "VNC_PORT": "5939",
+        "AVD_NAME": "aerobag34-local-candidate",
+        "AVD_INSTANCE_NAME": avd,
+        "EMULATOR_READ_ONLY": "0",
+        "AVD_PACKAGE_PATH": "system-images;android-34;aosp_atd;x86_64",
+        "AEROBAG_UI_TARGET_ROOT": str(run_root / "android-target-baseline"),
+        "AEROBAG_RELEASE_JOURNEY_FIXTURE": str(fixture),
+        "AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR": str(apps),
+        "AEROBAG_RELEASE_JOURNEY_WEB_DIST": str(apps / "web-dist"),
+        "AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST": "1",
+        "AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY": "1",
+        "AEROBAG_RELEASE_JOURNEY_REPETITIONS": "1",
+        "AEROBAG_E2E_URL": f"http://127.0.0.1:{package_port}/",
+        "AEROBAG_E2E_PEER_URL": f"http://127.0.0.1:{package_port}/",
+        "AEROBAG_E2E_ARTIFACT_DIR": str(run_root / "results-android-baseline"),
+        "AEROBAG_RELEASE_JOURNEY_LAB_STATE_DIR": str(run_root / "lab-android-baseline"),
+        "PACKAGE_SOURCE_PORT": str(package_port),
+        "AEROBAG_E2E_CLOUD_PORT": str(cloud_port),
+        "AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
+        "ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
+        "AEROBAG_ANDROID_CLOUD_DEVICE_PORT": "18094",
+        "AEROBAG_CLOUD_SERVER_BIN": str(apps / "aerobag-cloud-serverd"),
+    }
+    setup = (
+        "tools/e2e/release_journey_lab.sh fixture-start-web empty"
+        " && ui/android-app/scripts/run_e2e_ci.sh --headless --keep-emulator"
+        " --skip-system-image-install --no-package-server"
+        f" --apk {apps / 'aerobag-release-e2e.apk'}"
+        f" --driver-apk {apps / 'aerobag-e2e-driver.apk'}"
+        f" --release-fixture {fixture} --test shared.startup-navigation"
+        f" && tools/e2e/release_journey_lab.sh android-baseline-save {baseline_archive}"
+    )
+    cleanup = (
+        ") || status=$?; ui/android-app/scripts/stop_emulator_stack.sh || true;"
+        " tools/e2e/release_journey_lab.sh fixture-stop || true;"
+        f" avdmanager delete avd --name {shlex.quote(avd)} >/dev/null 2>&1 || true;"
+        " exit \"$status\""
+    )
+    return Lane(
+        "e2e-android-baseline",
+        bash("status=0; (" + setup + cleanup),
+        env=env,
+        timeout_seconds=3_600,
     )
 
 
@@ -707,26 +760,26 @@ def main() -> int:
     print("Building one immutable app bundle and fixture", flush=True)
     fixtures, fixture, apps = prepare_inputs(run_root)
 
-    print("Running web priorities and NAV rollover in parallel", flush=True)
+    print("Running web priorities, NAV rollover, and Android baseline in parallel", flush=True)
     web_and_nav = [
         web_lane(priority, run_root, fixture, apps, args.repetitions)
         for priority in PRIORITIES
     ]
     web_and_nav.append(auxiliary_lanes(run_root, fixtures)[0])
+    web_and_nav.append(android_baseline_lane(run_root, fixture, apps))
     results.extend(run_lanes(web_and_nav, logs, min(args.jobs, len(web_and_nav))))
 
-    android_lane_count = len(PRIORITIES) * ANDROID_SHARDS
+    android_lane_count = ANDROID_SHARDS
     android_workers = min(args.android_workers, android_lane_count)
     print(
-        f"Running {android_lane_count} fresh Android priority/shard lanes with "
+        f"Running {android_lane_count} fresh Android shards with "
         f"{android_workers} local emulator worker(s)",
         flush=True,
     )
     android_lanes = [
         android_shard_lane(
-            priority, shard, run_root, fixture, apps, args.repetitions
+            shard, run_root, fixture, apps, args.repetitions
         )
-        for priority in PRIORITIES
         for shard in range(ANDROID_SHARDS)
     ]
     results.extend(run_lanes(android_lanes, logs, android_workers))

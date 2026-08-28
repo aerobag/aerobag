@@ -45,7 +45,7 @@ X11VNC_LOG="${STATE_DIR}/x11vnc.log"
 EMULATOR_LOG="${STATE_DIR}/emulator.log"
 DISPLAY_READY_TIMEOUT="${DISPLAY_READY_TIMEOUT:-15}"
 ADB_DEVICE_READY_TIMEOUT="${ADB_DEVICE_READY_TIMEOUT:-120}"
-BROADCAST_IDLE_TIMEOUT="${BROADCAST_IDLE_TIMEOUT:-180}"
+DISPLAY_CONFIGURATION_READY_TIMEOUT="${DISPLAY_CONFIGURATION_READY_TIMEOUT:-30}"
 
 mkdir -p "$STATE_DIR"
 
@@ -225,15 +225,6 @@ for _ in $(seq 1 180); do
   boot_completed="$(adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
   if [[ "$boot_completed" == "1" ]]; then
     echo "emulator boot completed"
-    echo "waiting for Android boot broadcasts to become idle"
-    if ! timeout "${BROADCAST_IDLE_TIMEOUT}s" \
-      adb -s "$ANDROID_SERIAL" shell am wait-for-broadcast-idle; then
-      # Google system-image background services can keep Android's global
-      # broadcast queues non-idle indefinitely. The E2E driver separately
-      # waits for Aerobag's runtime UI, which is the readiness condition the
-      # tests actually require.
-      echo "warning: Android boot broadcasts did not become idle within ${BROADCAST_IDLE_TIMEOUT}s; continuing with app readiness checks" >&2
-    fi
     package_manager_ready=0
     for _ in $(seq 1 120); do
       if adb -s "$ANDROID_SERIAL" shell service check package 2>/dev/null \
@@ -247,6 +238,17 @@ for _ in $(seq 1 180); do
       echo "Android package-manager service did not become ready within 120s" >&2
       exit 1
     fi
+    echo "waiting for final Android display configuration"
+    display_configuration_deadline=$((SECONDS + DISPLAY_CONFIGURATION_READY_TIMEOUT))
+    while ! adb -s "$ANDROID_SERIAL" shell dumpsys window displays 2>/dev/null \
+      | grep -Eq 'mAppBounds=Rect\(0, [1-9][0-9]* -'; do
+      if (( SECONDS >= display_configuration_deadline )); then
+        echo "Android display cutout did not initialize within ${DISPLAY_CONFIGURATION_READY_TIMEOUT}s" >&2
+        exit 1
+      fi
+      sleep 0.1
+    done
+    echo "Android display configuration ready"
     if [[ "$ANDROID_PACKAGE_SOURCE_REVERSE" == "1" ]]; then
       adb -s "$ANDROID_SERIAL" reverse \
         "tcp:${ANDROID_PACKAGE_SOURCE_DEVICE_PORT}" "tcp:${PACKAGE_SOURCE_PORT}" >/dev/null

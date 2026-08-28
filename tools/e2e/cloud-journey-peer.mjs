@@ -116,8 +116,11 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
       );
       const expected = route.trim().split(/\s+/);
       const result = await performTransition(`cloud journey peer commit ${route}`, {
-        ready: () => driver.readElement("plan-append-route-input"),
-        act: () => driver.submit("plan-append-route-input"),
+        ready: async () => {
+          const input = await driver.readElement("plan-append-route-input");
+          return input?.focused ? input : null;
+        },
+        act: (readyElement) => driver.submit("plan-append-route-input", readyElement),
         complete: async () => {
           const state = await page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
           return state && expected.every((ident) => state.flight_plan_rows.includes(ident))

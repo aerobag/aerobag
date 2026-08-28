@@ -1,8 +1,8 @@
 # Android End-To-End UI Tests
 
-Android E2E tests drive a real installed app with `adb`. Release journeys use a
-persistent instrumentation process to read the rendered accessibility tree;
-legacy standalone tests may still use `uiautomator`.
+Android E2E tests drive a real installed app with `adb`. Every journey uses a
+persistent instrumentation process to read and act on the rendered
+accessibility tree; there is no slower `uiautomator` fallback path.
 They exercise Android UI plus core through the same controls a pilot uses.
 
 Run the CI-oriented entrypoint:
@@ -76,7 +76,11 @@ accessibility action. This preserves user-facing reachability while avoiding
 coordinate guesses and multi-second `uiautomator` process startup for every
 probe.
 
-Painted canvas content is not directly visible to `uiautomator`, so canvas
+Native journey code is statically forbidden from bypassing this contract with
+raw `adb shell input`. Map gestures and key events must also declare exact
+readiness and a visible completion condition.
+
+Painted canvas content is not directly visible to the accessibility tree, so canvas
 render paths that need E2E coverage should expose a small semantic probe. The
 route smoke test uses:
 

@@ -112,6 +112,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
   journey("shared.obstacles-navkv", "p1", shared, ["livefeed.obstacles-navkv"]),
   journey("shared.winds-aloft-navkv", "p1", shared, ["livefeed.winds-aloft-navkv"]),
   journey("shared.tfr-map-detail", "p1", shared, ["livefeed.tfr-map-detail"]),
+  journey("web.raster-load-recovery", "p1", ["web"], ["web.raster-load-recovery"]),
 
   journey("android.package-maintenance", "p2", ["android"], [
     "settings.display-dim-timeout", "settings.inactivity-sleep-timeout",

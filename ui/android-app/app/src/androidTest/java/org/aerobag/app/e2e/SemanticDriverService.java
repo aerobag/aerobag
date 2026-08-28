@@ -5,9 +5,7 @@
 package org.aerobag.app.e2e;
 
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.GestureDescription;
 import android.graphics.Rect;
-import android.graphics.Path;
 import android.os.Bundle;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -28,7 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -37,9 +34,7 @@ import org.json.JSONObject;
 /** Test-only semantic driver that remains independent of Aerobag's process lifecycle. */
 public final class SemanticDriverService extends AccessibilityService {
     private static final int DRIVER_PORT = 19_191;
-    private static final long ACTION_ACCEPT_TIMEOUT_MS = 2_000;
-    private static final long ACTION_RETRY_POLL_MS = 50;
-
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/2";
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong accessibilityEventSequence = new AtomicLong();
     private final Object accessibilityEventMonitor = new Object();
@@ -110,7 +105,12 @@ public final class SemanticDriverService extends AccessibilityService {
         String endpoint = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
         switch (endpoint) {
             case "/health":
-                respond(socket.getOutputStream(), "text/plain; charset=utf-8", "ok\n", 200);
+                respond(
+                    socket.getOutputStream(),
+                    "text/plain; charset=utf-8",
+                    DRIVER_PROTOCOL + "\n",
+                    200
+                );
                 return;
             case "/dump":
                 respond(
@@ -144,7 +144,9 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String value = query.getOrDefault("value", "");
-        boolean changed = !tag.isEmpty() && awaitAcceptedTextAction(tag, value);
+        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
+        boolean changed = !tag.isEmpty() && expectedBounds != null &&
+            setRenderedText(tag, value, expectedBounds);
         respondAction(socket, changed, "text action rejected\n");
     }
 
@@ -179,8 +181,11 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private void handleClick(Socket socket, String path) throws IOException {
-        String tag = queryOf(path).getOrDefault("tag", "");
-        boolean clicked = !tag.isEmpty() && awaitAcceptedClickAction(tag);
+        Map<String, String> query = queryOf(path);
+        String tag = query.getOrDefault("tag", "");
+        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
+        boolean clicked = !tag.isEmpty() && expectedBounds != null &&
+            clickRenderedNode(tag, expectedBounds);
         respondAction(socket, clicked, "click action rejected for " + tag + "\n");
     }
 
@@ -193,9 +198,7 @@ public final class SemanticDriverService extends AccessibilityService {
             : "backward".equals(direction)
                 ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 : 0;
-        long eventSequence = accessibilityEventSequence.get();
         boolean scrolled = bounds != null && action != 0 && scrollRenderedNode(bounds, action);
-        if (scrolled) awaitAccessibilityEventAfter(eventSequence, 1_000);
         respondAction(socket, scrolled, "scroll action rejected\n");
     }
 
@@ -288,7 +291,9 @@ public final class SemanticDriverService extends AccessibilityService {
         if (tag.isEmpty()) return output;
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
-            for (AccessibilityNodeInfo root : roots) collectMatchingNodes(root, tag, prefix, output);
+            for (AccessibilityNodeInfo root : roots) {
+                collectMatchingNodes(root, tag, prefix, output, null);
+            }
         } catch (JSONException error) {
             throw new IllegalStateException("failed to encode semantic query result", error);
         } finally {
@@ -302,18 +307,26 @@ public final class SemanticDriverService extends AccessibilityService {
         AccessibilityNodeInfo node,
         String tag,
         boolean prefix,
-        JSONArray output
+        JSONArray output,
+        Rect ancestorClip
     ) throws JSONException {
+        // Compose can retain an accessibility node whose only changing field is
+        // its test tag. Refresh every queried node so transition predicates see
+        // the current semantic projection rather than a cached identifier.
+        node.refresh();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        boolean centerReachable = node.isVisibleToUser() && !bounds.isEmpty() &&
+            (ancestorClip == null || ancestorClip.contains(bounds.centerX(), bounds.centerY()));
         String nodeTag = node.getViewIdResourceName();
         if (nodeTag != null && (prefix ? nodeTag.startsWith(tag) : nodeTag.equals(tag))) {
-            Rect bounds = new Rect();
-            node.getBoundsInScreen(bounds);
             JSONObject value = new JSONObject();
             value.put("resource-id", nodeTag);
             value.put("text", nodeLabel(node));
             value.put("enabled", Boolean.toString(node.isEnabled()));
             value.put("clickable", Boolean.toString(node.isClickable()));
             value.put("visible", Boolean.toString(node.isVisibleToUser()));
+            value.put("center-reachable", Boolean.toString(centerReachable));
             value.put("selected", Boolean.toString(node.isSelected()));
             value.put("checked", Boolean.toString(node.isChecked()));
             value.put("checkable", Boolean.toString(node.isCheckable()));
@@ -323,11 +336,13 @@ public final class SemanticDriverService extends AccessibilityService {
             value.put("bounds", bounds.toShortString());
             output.put(value);
         }
+        Rect childClip = new Rect(bounds);
+        if (ancestorClip != null && !childClip.intersect(ancestorClip)) childClip.setEmpty();
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
-                collectMatchingNodes(child, tag, prefix, output);
+                collectMatchingNodes(child, tag, prefix, output, childClip);
             } finally {
                 child.recycle();
             }
@@ -351,6 +366,7 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
+                child.refresh();
                 appendLabel(output, child);
             } finally {
                 child.recycle();
@@ -362,30 +378,11 @@ public final class SemanticDriverService extends AccessibilityService {
         return value == null ? "" : value.toString();
     }
 
-    private boolean awaitAcceptedTextAction(String tag, String value) {
-        long deadlineNanos = System.nanoTime()
-            + TimeUnit.MILLISECONDS.toNanos(ACTION_ACCEPT_TIMEOUT_MS);
-        while (true) {
-            long eventSequence = accessibilityEventSequence.get();
-            if (setRenderedText(tag, value)) return true;
-            long remainingNanos = deadlineNanos - System.nanoTime();
-            if (remainingNanos <= 0) return false;
-            awaitAccessibilityEventAfter(
-                eventSequence,
-                Math.min(
-                    ACTION_RETRY_POLL_MS,
-                    Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos))
-                )
-            );
-            if (Thread.currentThread().isInterrupted()) return false;
-        }
-    }
-
-    private boolean setRenderedText(String tag, String value) {
+    private boolean setRenderedText(String tag, String value, Rect expectedBounds) {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                if (setNodeText(root, tag, value)) return true;
+                if (setNodeText(root, tag, value, expectedBounds)) return true;
             }
             return false;
         } finally {
@@ -393,30 +390,11 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    private boolean awaitAcceptedClickAction(String tag) {
-        long deadlineNanos = System.nanoTime()
-            + TimeUnit.MILLISECONDS.toNanos(ACTION_ACCEPT_TIMEOUT_MS);
-        while (true) {
-            long eventSequence = accessibilityEventSequence.get();
-            if (clickRenderedNode(tag)) return true;
-            long remainingNanos = deadlineNanos - System.nanoTime();
-            if (remainingNanos <= 0) return false;
-            awaitAccessibilityEventAfter(
-                eventSequence,
-                Math.min(
-                    ACTION_RETRY_POLL_MS,
-                    Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos))
-                )
-            );
-            if (Thread.currentThread().isInterrupted()) return false;
-        }
-    }
-
-    private boolean clickRenderedNode(String tag) {
+    private boolean clickRenderedNode(String tag, Rect expectedBounds) {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                if (clickNode(root, tag)) return true;
+                if (clickNode(root, tag, expectedBounds)) return true;
             }
             return false;
         } finally {
@@ -427,57 +405,12 @@ public final class SemanticDriverService extends AccessibilityService {
     private boolean scrollRenderedNode(Rect bounds, int action) {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
-            boolean renderedScrollableNodeExists = false;
             for (AccessibilityNodeInfo root : roots) {
-                renderedScrollableNodeExists |= hasScrollableNode(root, bounds);
                 if (scrollNode(root, bounds, action)) return true;
             }
-            return renderedScrollableNodeExists && dispatchScrollGesture(bounds, action);
+            return false;
         } finally {
             recycleAll(roots);
-        }
-    }
-
-    private boolean dispatchScrollGesture(Rect bounds, int action) {
-        int inset = Math.min(80, bounds.height() / 5);
-        int systemGestureInset = Math.max(inset, 180);
-        int safeTop = Math.min(bounds.bottom - 1, bounds.top + systemGestureInset);
-        int safeBottom = Math.max(safeTop + 1, bounds.bottom - systemGestureInset);
-        float midpoint = (safeTop + safeBottom) / 2.0f;
-        float travel = (safeBottom - safeTop) * 0.55f;
-        float upperY = midpoint - travel / 2.0f;
-        float lowerY = midpoint + travel / 2.0f;
-        float startY = action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD ? lowerY : upperY;
-        float endY = action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD ? upperY : lowerY;
-        float x = (bounds.left + bounds.right) / 2.0f;
-        Path path = new Path();
-        path.moveTo(x, startY);
-        path.lineTo(x, endY);
-        GestureDescription gesture = new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
-            .build();
-        CountDownLatch completed = new CountDownLatch(1);
-        boolean accepted = dispatchGesture(
-            gesture,
-            new GestureResultCallback() {
-                @Override
-                public void onCompleted(GestureDescription description) {
-                    completed.countDown();
-                }
-
-                @Override
-                public void onCancelled(GestureDescription description) {
-                    completed.countDown();
-                }
-            },
-            null
-        );
-        if (!accepted) return false;
-        try {
-            return completed.await(2, TimeUnit.SECONDS);
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            return false;
         }
     }
 
@@ -520,9 +453,23 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static boolean setNodeText(AccessibilityNodeInfo node, String tag, String value) {
+    private static boolean setNodeText(
+        AccessibilityNodeInfo node,
+        String tag,
+        String value,
+        Rect expectedBounds
+    ) {
+        node.refresh();
         if (tag.equals(node.getViewIdResourceName())) {
-            if (!node.refresh() || !tag.equals(node.getViewIdResourceName())) return false;
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            if (!bounds.equals(expectedBounds)) return false;
+            if (!node.isFocused()) {
+                if (!node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) return false;
+                if (!node.refresh()) return false;
+                node.getBoundsInScreen(bounds);
+                if (!bounds.equals(expectedBounds) || !node.isFocused()) return false;
+            }
             Bundle arguments = new Bundle();
             arguments.putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -534,7 +481,7 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
-                if (setNodeText(child, tag, value)) return true;
+                if (setNodeText(child, tag, value, expectedBounds)) return true;
             } finally {
                 child.recycle();
             }
@@ -543,60 +490,25 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private boolean clickNode(AccessibilityNodeInfo node, String tag) {
+    private boolean clickNode(AccessibilityNodeInfo node, String tag, Rect expectedBounds) {
+        node.refresh();
         if (tag.equals(node.getViewIdResourceName())) {
-            if (!node.refresh() || !tag.equals(node.getViewIdResourceName())) return false;
             if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
-            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
             Rect bounds = new Rect();
             node.getBoundsInScreen(bounds);
-            return dispatchTapGesture(bounds);
+            if (!bounds.equals(expectedBounds)) return false;
+            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
         }
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
-                if (clickNode(child, tag)) return true;
+                if (clickNode(child, tag, expectedBounds)) return true;
             } finally {
                 child.recycle();
             }
         }
         return false;
-    }
-
-    private boolean dispatchTapGesture(Rect bounds) {
-        float x = bounds.exactCenterX();
-        float y = bounds.exactCenterY();
-        Path path = new Path();
-        path.moveTo(x, y);
-        GestureDescription gesture = new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(path, 0, 50))
-            .build();
-        CountDownLatch completed = new CountDownLatch(1);
-        final boolean[] succeeded = {false};
-        boolean accepted = dispatchGesture(
-            gesture,
-            new GestureResultCallback() {
-                @Override
-                public void onCompleted(GestureDescription description) {
-                    succeeded[0] = true;
-                    completed.countDown();
-                }
-
-                @Override
-                public void onCancelled(GestureDescription description) {
-                    completed.countDown();
-                }
-            },
-            null
-        );
-        if (!accepted) return false;
-        try {
-            return completed.await(2, TimeUnit.SECONDS) && succeeded[0];
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
     }
 
     @SuppressWarnings("deprecation")
@@ -618,25 +530,9 @@ public final class SemanticDriverService extends AccessibilityService {
         return false;
     }
 
-    @SuppressWarnings("deprecation")
-    private static boolean hasScrollableNode(AccessibilityNodeInfo node, Rect bounds) {
-        Rect nodeBounds = new Rect();
-        node.getBoundsInScreen(nodeBounds);
-        if (bounds.equals(nodeBounds) && node.isVisibleToUser() && node.isScrollable()) return true;
-        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
-            if (child == null) continue;
-            try {
-                if (hasScrollableNode(child, bounds)) return true;
-            } finally {
-                child.recycle();
-            }
-        }
-        return false;
-    }
-
     private static Rect parseBounds(String value) {
         String normalized = value
+            .replace("][", " ")
             .replace("[", "")
             .replace("]", "")
             .replace(",", " ")

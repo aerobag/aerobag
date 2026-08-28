@@ -1,5 +1,14 @@
 # UI Parity Journeys
 
+The release-qualification registry in `tools/e2e` is the canonical home for new
+cross-platform behavior coverage. It drives both platforms through one shared
+journey implementation and enforces observed readiness, one action, and an
+observed completion condition. Run it through `tools/e2e/release_journey_lab.sh`.
+
+The older runner documented below remains useful for ad hoc inventory
+diagnostics, but it predates the deterministic transition framework and is not a
+qualification path. Do not add new release coverage to it.
+
 The parity harness drives the same semantic journey against web and Android.
 It reports platform gaps and cross-platform divergences as first-class output.
 The harness uses stable view/controller identifiers only; it should not
@@ -53,8 +62,8 @@ diagnostics and compared when both platforms expose them.
 ## Stable Identifiers
 
 Web uses `data-testid`. Android uses accessibility content descriptions
-prefixed with `parity:` so `adb shell uiautomator dump` can find the same
-semantic controls.
+prefixed with `parity:` so the persistent semantic driver can find the same
+semantic controls in the rendered accessibility tree.
 
 Examples:
 

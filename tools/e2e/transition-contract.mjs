@@ -8,7 +8,10 @@ export const E2E_TIMING = Object.freeze({
   stabilityMs: 1_500,
   syntheticOwnshipProgressMs: 5_000,
   stabilityPollIntervalMs: 100,
+  transitionReadinessSamples: 2,
   transitionCompletionSamples: 2,
+  stableObservationSamples: 3,
+  localRenderMs: 3_000,
   localResourceMs: 15_000,
   replayProgressMs: 15_000,
   animationCycleMs: 15_000,
@@ -46,6 +49,20 @@ export class ObservationTimeoutError extends Error {
   }
 }
 
+export class TerminalObservationError extends Error {
+  constructor(description, detail, options = undefined) {
+    super(`${description}: ${detail}`, options);
+    this.name = "TerminalObservationError";
+  }
+}
+
+export class TransientObservationError extends Error {
+  constructor(detail, cause = undefined) {
+    super(detail, cause ? { cause } : undefined);
+    this.name = "TransientObservationError";
+  }
+}
+
 export async function observeUntil(
   description,
   probe,
@@ -53,6 +70,7 @@ export async function observeUntil(
     timeoutMs = E2E_TIMING.localReadyMs,
     intervalMs = E2E_TIMING.pollIntervalMs,
     consecutiveSuccesses = 1,
+    consecutiveValueKey = null,
     waitForNextProbe = null,
   } = {},
 ) {
@@ -64,6 +82,7 @@ export async function observeUntil(
   let lastError = null;
   let successfulSamples = 0;
   let successfulValue = null;
+  let successfulKey = null;
   let lastValue = null;
   let attempts = 0;
   while (performance.now() < deadline) {
@@ -74,19 +93,31 @@ export async function observeUntil(
       const probeFinishedAt = performance.now();
       if (probeFinishedAt >= deadline) break;
       if (value) {
-        successfulSamples += 1;
+        const currentKey = consecutiveValueKey ? consecutiveValueKey(value) : null;
+        if (successfulSamples > 0 && consecutiveValueKey && currentKey !== successfulKey) {
+          successfulSamples = 1;
+        } else {
+          successfulSamples += 1;
+        }
         successfulValue = value;
+        successfulKey = currentKey;
         if (successfulSamples >= consecutiveSuccesses) {
           return { value: successfulValue, durationMs: Math.round(probeFinishedAt - startedAt) };
         }
       } else {
         successfulSamples = 0;
         successfulValue = null;
+        successfulKey = null;
       }
     } catch (error) {
+      if (error instanceof TerminalObservationError) throw error;
+      if (!(error instanceof TransientObservationError)) {
+        throw new TerminalObservationError(description, error.message, { cause: error });
+      }
       lastError = error;
       successfulSamples = 0;
       successfulValue = null;
+      successfulKey = null;
     }
     const remainingMs = Math.max(0, deadline - performance.now());
     if (remainingMs <= 0) break;
@@ -112,6 +143,76 @@ export async function observeUntil(
     },
     lastError,
   );
+}
+
+function transitionReadinessKey(value) {
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  return JSON.stringify({
+    semantic_id: value.test_id ?? value.id ?? null,
+    enabled: value.enabled ?? null,
+    actionable: value.actionable ?? null,
+    bounds: value.bounds ?? null,
+  });
+}
+
+export async function observeChangedValueUntilStable(
+  description,
+  probe,
+  {
+    initialValue,
+    timeoutMs = E2E_TIMING.userResponseMs,
+    intervalMs = E2E_TIMING.pollIntervalMs,
+    stableSamples = E2E_TIMING.transitionCompletionSamples + 1,
+    valueKey = (value) => value,
+    waitForNextProbe = null,
+  } = {},
+) {
+  if (!Number.isInteger(stableSamples) || stableSamples < 2) {
+    throw new Error("stableSamples must be at least two");
+  }
+  const initialKey = valueKey(initialValue);
+  let previousKey = initialKey;
+  let unchangedSamples = 0;
+  return observeUntil(description, async () => {
+    const value = await probe();
+    const key = valueKey(value);
+    if (key === initialKey) {
+      previousKey = key;
+      unchangedSamples = 0;
+      return null;
+    }
+    if (key !== previousKey) {
+      previousKey = key;
+      unchangedSamples = 1;
+      return null;
+    }
+    unchangedSamples += 1;
+    return unchangedSamples >= stableSamples ? value : null;
+  }, {
+    timeoutMs,
+    intervalMs,
+    waitForNextProbe,
+  });
+}
+
+export async function observeValueUntilStable(
+  description,
+  probe,
+  {
+    timeoutMs = E2E_TIMING.localReadyMs,
+    intervalMs = E2E_TIMING.pollIntervalMs,
+    stableSamples = E2E_TIMING.stableObservationSamples,
+    valueKey = (value) => JSON.stringify(value),
+    waitForNextProbe = null,
+  } = {},
+) {
+  return observeUntil(description, probe, {
+    timeoutMs,
+    intervalMs,
+    consecutiveSuccesses: stableSamples,
+    consecutiveValueKey: valueKey,
+    waitForNextProbe,
+  });
 }
 
 export async function assertConditionRemains(
@@ -187,6 +288,8 @@ export async function performTransition(description, {
     readyResult = await observeUntil(`${description} ready`, ready, {
       timeoutMs: readyTimeoutMs,
       intervalMs,
+      consecutiveSuccesses: E2E_TIMING.transitionReadinessSamples,
+      consecutiveValueKey: transitionReadinessKey,
       waitForNextProbe: waitForObservation,
     });
     timing.ready_ms = readyResult.durationMs;

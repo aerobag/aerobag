@@ -125,6 +125,7 @@ manifest = {
         "path": driver_apk.name,
         "size_bytes": driver_apk.stat().st_size,
         "sha256": hashlib.sha256(driver_apk.read_bytes()).hexdigest(),
+        "protocol": "aerobag-semantic-driver/2",
     },
     "cloud_server": {
         "path": cloud_server.name,
@@ -135,3 +136,5 @@ manifest = {
 }
 (root / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 PY
+
+python3 "$ROOT/tools/ci/verify_release_e2e_apps.py" "$OUTPUT"

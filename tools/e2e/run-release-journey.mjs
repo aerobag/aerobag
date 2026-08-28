@@ -17,6 +17,7 @@ import {
   executeReleaseJourney, persistJourneyResult, summarizeFixtureRequests,
 } from "./release-journey-runtime.mjs";
 import { WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
+import { E2E_TIMING } from "./transition-contract.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 
@@ -25,6 +26,10 @@ const workerErrorCaptureScript = String.raw`
   const NativeWorker = globalThis.Worker;
   if (typeof NativeWorker !== "function") return;
   const errors = [];
+  const record = (value) => {
+    errors.push(value);
+    if (errors.length > 50) errors.splice(0, errors.length - 50);
+  };
   globalThis.__aerobagE2eWorkerErrors = errors;
   globalThis.Worker = class E2eObservedWorker extends NativeWorker {
     constructor(...args) {
@@ -32,12 +37,22 @@ const workerErrorCaptureScript = String.raw`
       this.addEventListener("message", (event) => {
         const message = event.data;
         if (message?.kind !== "response" || message.ok !== false) return;
-        errors.push({
+        record({
+          kind: "response-error",
           id: message.id,
           error: message.error,
           captured_at_ms: performance.now(),
         });
-        if (errors.length > 50) errors.splice(0, errors.length - 50);
+      });
+      this.addEventListener("error", (event) => {
+        record({
+          kind: "worker-error",
+          error: { message: event.message, filename: event.filename, lineno: event.lineno },
+          captured_at_ms: performance.now(),
+        });
+      });
+      this.addEventListener("messageerror", () => {
+        record({ kind: "message-error", captured_at_ms: performance.now() });
       });
     }
   };
@@ -92,31 +107,41 @@ let page;
 try {
   chrome = await launchChrome({ userDataDir, width: args.width, height: args.height });
   browser = await connectToBrowser(chrome.endpoint);
-  page = await browser.createPage();
-  await page.enableChildTargetDiagnostics();
-  await page.send("Page.enable");
-  await page.send("Runtime.enable");
-  await page.send("Log.enable");
-  await page.send("Network.enable");
-  await page.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: workerErrorCaptureScript,
-  });
-  if (journey.id !== "shared.cloud-crossfill") {
-    await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: advancingVirtualClockScript(fixture.capabilities.reference_epoch_ms),
+  const createConfiguredPage = async () => {
+    const configuredPage = await browser.createPage();
+    await configuredPage.send("Page.enable");
+    await configuredPage.send("Runtime.enable");
+    await configuredPage.send("Log.enable");
+    await configuredPage.send("Network.enable");
+    await configuredPage.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: workerErrorCaptureScript,
     });
-  }
-  await page.send("Emulation.setDeviceMetricsOverride", {
-    width: args.width,
-    height: args.height,
-    deviceScaleFactor: 1,
-    mobile: false,
+    if (journey.id !== "shared.cloud-crossfill") {
+      await configuredPage.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: advancingVirtualClockScript(fixture.capabilities.reference_epoch_ms),
+      });
+    }
+    await configuredPage.send("Emulation.setDeviceMetricsOverride", {
+      width: args.width,
+      height: args.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    const cpuThrottleRate = Number(process.env.AEROBAG_E2E_CPU_THROTTLE_RATE ?? 1);
+    if (Number.isFinite(cpuThrottleRate) && cpuThrottleRate > 1) {
+      await configuredPage.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottleRate });
+    }
+    page = configuredPage;
+    return configuredPage;
+  };
+  page = await createConfiguredPage();
+  transport = new WebSemanticTransport(page, {
+    url: args.url,
+    recreatePage: async (previousPage) => {
+      await previousPage.closeForReset(E2E_TIMING.localReadyMs);
+      return createConfiguredPage();
+    },
   });
-  const cpuThrottleRate = Number(process.env.AEROBAG_E2E_CPU_THROTTLE_RATE ?? 1);
-  if (Number.isFinite(cpuThrottleRate) && cpuThrottleRate > 1) {
-    await page.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottleRate });
-  }
-  transport = new WebSemanticTransport(page, { url: args.url });
   const driver = new WebSemanticJourneyDriver(transport);
   const result = await executeReleaseJourney(
     {

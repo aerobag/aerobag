@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
-import { E2E_TIMING } from "./transition-contract.mjs";
+import { E2E_TIMING, TerminalObservationError } from "./transition-contract.mjs";
 
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
@@ -18,6 +18,11 @@ function rasterCounts(entries) {
   const id = idOf(entries);
   const match = /planned:(\d+):loaded:(\d+):failed:(\d+)/.exec(id ?? "");
   return match ? { planned: Number(match[1]), loaded: Number(match[2]), failed: Number(match[3]) } : null;
+}
+
+function rasterRecoveryCount(entries) {
+  const match = /count:(\d+)/.exec(idOf(entries) ?? "");
+  return match ? Number(match[1]) : 0;
 }
 
 export function rasterPlanIsDisplayReady(counts, minimumLoadedRatio = 0.85) {
@@ -91,6 +96,10 @@ function taggedFields(entry, prefix) {
 
 async function startupState(runtime, timeoutMs = E2E_TIMING.startupMs) {
   return runtime.eventually("operational startup state", async () => {
+    const fatal = await runtime.driver.readElement("startup-fatal-error");
+    if (fatal) {
+      throw new TerminalObservationError("application startup failed", fatal.text || "unknown failure");
+    }
     const entries = await runtime.driver.readProjection("parity:startup-state:");
     const fields = taggedFields(entries[0], "parity:startup-state:");
     return fields?.ready === "true" ? fields : null;
@@ -106,7 +115,6 @@ async function acceptDisclaimer(runtime, { required = false } = {}) {
     return false;
   }
   await runtime.action("accept mandatory disclaimer", "disclaimer-accept-button", {
-    ready: () => runtime.driver.readElement("disclaimer-accept-button"),
     complete: async () => {
       const entries = await runtime.driver.readProjection("parity:startup-state:");
       const fields = taggedFields(entries[0], "parity:startup-state:");
@@ -121,13 +129,57 @@ async function loadedMap(runtime) {
   const raster = await runtime.eventually("loaded raster plan", async () => {
     const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
     return rasterPlanIsDisplayReady(counts) ? counts : null;
-  }, E2E_TIMING.resourceMs);
+  }, E2E_TIMING.localRenderMs);
   const vectors = await runtime.eventually("vector overlay", async () => {
     const id = idOf(await runtime.driver.readProjection("parity:vector-state:"));
     const count = Number(/features:(\d+)/.exec(id ?? "")?.[1] ?? 0);
     return count > 0 ? count : null;
-  }, E2E_TIMING.resourceMs);
+  }, E2E_TIMING.localRenderMs);
   return { raster, vectors };
+}
+
+async function rasterLoadRecovery(runtime) {
+  await runtime.reset();
+  await acceptDisclaimer(runtime);
+  await runtime.openPage("map");
+  await loadedMap(runtime);
+  const before = rasterRecoveryCount(
+    await runtime.driver.readProjection("parity:raster-recovery:"),
+  );
+  const recovered = await runtime.transition("recover stalled raster image load", {
+    ready: async () => {
+      const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
+      return rasterPlanIsDisplayReady(counts) && counts.failed === 0 ? counts : null;
+    },
+    act: () => runtime.driver.injectRasterLoadFault(),
+    complete: async () => {
+      const recoveryCount = rasterRecoveryCount(
+        await runtime.driver.readProjection("parity:raster-recovery:"),
+      );
+      const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
+      return recoveryCount > before
+        && rasterPlanIsDisplayReady(counts)
+        && counts.failed === 0
+        ? { recovery_count: recoveryCount, ...counts }
+        : null;
+    },
+  });
+  runtime.check("web.raster-load-recovery", Boolean(recovered), JSON.stringify(recovered));
+}
+
+async function disableCtrBeforeFreePan(runtime, description) {
+  const initial = await runtime.driver.readElement("center-here-button");
+  if (initial?.pressed !== "true" && initial?.selected !== true && initial?.checked !== true) {
+    return initial;
+  }
+  return runtime.action(description, "center-here-button", {
+    complete: async () => {
+      const value = await runtime.driver.readElement("center-here-button");
+      return value && value.pressed !== "true" && value.selected !== true && value.checked !== true
+        ? value
+        : null;
+    },
+  });
 }
 
 export async function selectChartSearchSuggestion(runtime, ident) {
@@ -135,9 +187,7 @@ export async function selectChartSearchSuggestion(runtime, ident) {
   const selectedProjection = `parity:map-selection-selected:${ident}`;
   const selected = await runtime.driver.readProjection(selectedProjection);
   if (selected.length > 0) return selected[0];
-  return runtime.transition(`${ident} chart search selection`, {
-    ready: async () => (await runtime.driver.readProjection(suggestionProjection))[0] ?? null,
-    act: (readyElement) => runtime.driver.performAction(suggestionProjection, readyElement),
+  return runtime.action(`${ident} chart search selection`, suggestionProjection, {
     complete: async () => (await runtime.driver.readProjection(selectedProjection))[0] ?? null,
   });
 }
@@ -282,17 +332,7 @@ async function chartBasicUse(runtime) {
   await runtime.openPage("map");
   await loadedMap(runtime);
 
-  const initialCtr = await runtime.driver.readElement("center-here-button");
-  if (initialCtr?.pressed === "true" || initialCtr?.selected === true || initialCtr?.checked === true) {
-    await runtime.action("disable CTR before free pan", "center-here-button", {
-      complete: async () => {
-        const value = await runtime.driver.readElement("center-here-button");
-        return value && value.pressed !== "true" && value.selected !== true && value.checked !== true
-          ? value
-          : null;
-      },
-    });
-  }
+  await disableCtrBeforeFreePan(runtime, "disable CTR before chart pan");
 
   await runtime.editText("enter KSEA chart search", "chart-search-input", "KSEA");
   const selected = await selectChartSearchSuggestion(runtime, "KSEA");
@@ -303,7 +343,8 @@ async function chartBasicUse(runtime) {
     act: () => runtime.driver.back(),
     complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
   });
-  const initialViewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
+  const initialViewport = await runtime.stable("settled chart viewport before pan", async () =>
+    idOf(await runtime.driver.readProjection("parity:viewport:")));
   runtime.result.diagnostics.chart_pan_initial_viewport = initialViewport;
 
   let dragProbe = null;
@@ -379,6 +420,10 @@ function projectionId(entry) {
   return entry?.id ?? entry ?? "";
 }
 
+function projectionState(entry) {
+  return entry?.state ?? entry?.text ?? "";
+}
+
 async function setFixtureControl(runtime, update) {
   if (!runtime.fixtureOrigin) throw new Error("journey fixture origin is unavailable");
   return fetchFixtureJson(runtime, "/__control", {
@@ -431,6 +476,7 @@ function routeEntryState(entries) {
 
 async function appendRoute(runtime, route) {
   await dismissPlanRowTray(runtime);
+  await runtime.revealElement("plan-append-route-input", "flight-plan route editor");
   await runtime.editText(`enter route ${route}`, "plan-append-route-input", route);
   const destination = route.trim().split(/\s+/).at(-1);
   await runtime.transition(`append route ${route}`, {
@@ -438,9 +484,11 @@ async function appendRoute(runtime, route) {
       const state = routeEntryState(await runtime.driver.readProjection(
         "parity:plan-append-route-state:",
       ));
-      return state?.canCommit && !state.loading ? state : null;
+      if (!state?.canCommit || state.loading) return null;
+      const input = await runtime.driver.readElement("plan-append-route-input");
+      return input?.focused ? input : null;
     },
-    act: () => runtime.driver.submit("plan-append-route-input"),
+    act: (readyElement) => runtime.driver.submit("plan-append-route-input", readyElement),
     complete: async () => {
       const entry = await runtime.driver.findProjectionMatching("parity:plan-row:", destination);
       return entry?.text?.split(/\s+/).includes(destination) ? entry : null;
@@ -451,10 +499,6 @@ async function appendRoute(runtime, route) {
 async function openPlanRow(runtime, label) {
   const row = await findPlanRow(runtime, label);
   await runtime.action(`open flight-plan row ${label}`, `plan-row:${planRowUid(row)}`, {
-    ready: async () => {
-      const current = await runtime.driver.findProjectionMatching("parity:plan-row:", label);
-      return current?.text?.split(/\s+/).includes(label) ? current : null;
-    },
     complete: () => runtime.driver.readElement("plan-row-tray-scrim"),
   });
   return row;
@@ -481,9 +525,6 @@ async function openProcedureRow(runtime, procedureId) {
     `open flight-plan procedure ${procedureId}`,
     `plan-row:${procedureRowUid(row)}`,
     {
-      ready: async () => (await runtime.driver.readProjection(
-        `parity:plan-procedure-row:${procedureId}:uid:`,
-      ))[0] ?? null,
       complete: () => runtime.driver.readElement("plan-row-tray-scrim"),
     },
   );
@@ -492,9 +533,7 @@ async function openProcedureRow(runtime, procedureId) {
 
 async function dismissPlanRowTray(runtime) {
   if (!(await runtime.driver.readElement("plan-row-tray-scrim"))) return;
-  await runtime.transition("dismiss flight-plan row tray", {
-    ready: () => runtime.driver.readElement("plan-row-tray-scrim"),
-    act: (readyElement) => runtime.driver.performAction("plan-row-tray-scrim", readyElement),
+  await runtime.action("dismiss flight-plan row tray", "plan-row-tray-scrim", {
     complete: async () =>
       (await runtime.driver.readElement("plan-row-tray-scrim")) === null,
   });
@@ -512,15 +551,7 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
       throw new Error(`${actionId} ${label} must declare its visible row result`);
     }
     const beforeRevision = trayStaysOpen ? await runtime.driver.readSessionRevision() : null;
-    completion = await runtime.transition(`${actionId} ${label}`, {
-      ready: async () => {
-        const id = runtime.platform === "web"
-          ? `plan-row-action-${actionId}`
-          : `plan-row-action:${actionId}`;
-        const action = await runtime.driver.readElement(id);
-        return action?.enabled ? action : null;
-      },
-      act: (readyElement) => runtime.driver.performAction(actionId, readyElement),
+    completion = await runtime.action(`${actionId} ${label}`, actionId, {
       complete: async () => {
         const open = (await runtime.driver.readProjection("parity:plan-row-action:")).length > 0;
         if (open !== trayStaysOpen) return null;
@@ -530,9 +561,6 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
       },
     });
   } else {
-    const actionElementId = runtime.platform === "web"
-      ? `plan-row-action-${actionId}`
-      : `plan-row-action:${actionId}`;
     const completionByAction = {
       insert_before: () => runtime.driver.readElement("plan-insert-airport-input"),
       insert_after: () => runtime.driver.readElement("plan-insert-airport-input"),
@@ -545,10 +573,6 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
     const complete = completionByAction[actionId];
     if (!complete) throw new Error(`plan action ${actionId} has no semantic completion contract`);
     await runtime.action(`${actionId} ${label}`, actionId, {
-      ready: async () => {
-        const action = await runtime.driver.readElement(actionElementId);
-        return action?.enabled ? action : null;
-      },
       complete: complete,
     });
   }
@@ -696,7 +720,6 @@ async function flightPlanEditAndNavigate(runtime) {
   const directState = await enabledPlanControl(runtime, "stop_navigation");
   runtime.check("plan.direct-to", Boolean(directState));
   const stopped = await runtime.action("stop navigation", "stop_navigation", {
-    ready: () => enabledPlanControl(runtime, "stop_navigation"),
     complete: async () => {
       const control = await planControl(runtime, "stop_navigation");
       return control && !control.enabled ? control : null;
@@ -708,7 +731,6 @@ async function flightPlanEditAndNavigate(runtime) {
 
   const beforeNext = await planState(runtime);
   await runtime.action("activate next leg", "activate_next_leg", {
-    ready: () => enabledPlanControl(runtime, "activate_next_leg"),
     complete: async () => {
       const state = await planState(runtime);
       return state && state !== beforeNext ? state : null;
@@ -718,21 +740,14 @@ async function flightPlanEditAndNavigate(runtime) {
   runtime.check("plan.activate-next-leg", Boolean(activeAfterNext));
 
   const suspensionControl = "toggle_sequencing_suspension";
-  const suspended = await runtime.transition("suspend sequencing", {
-    ready: () => enabledPlanControl(runtime, suspensionControl),
-    act: (readyElement) => runtime.driver.performAction(suspensionControl, readyElement),
+  const suspended = await runtime.action("suspend sequencing", suspensionControl, {
     complete: async () => {
       const control = await planControl(runtime, suspensionControl);
       return control?.pressed === "true" || control?.selected === true ? control : null;
     },
   });
   runtime.check("plan.suspend-sequencing", Boolean(suspended), suspended?.text);
-  const resumed = await runtime.transition("resume sequencing", {
-    ready: async () => {
-      const control = await planControl(runtime, suspensionControl);
-      return control?.pressed === "true" || control?.selected === true ? control : null;
-    },
-    act: (readyElement) => runtime.driver.performAction(suspensionControl, readyElement),
+  const resumed = await runtime.action("resume sequencing", suspensionControl, {
     complete: async () => {
       const control = await planControl(runtime, suspensionControl);
       return control && control.pressed !== "true" && control.selected !== true ? control : null;
@@ -744,14 +759,10 @@ async function flightPlanEditAndNavigate(runtime) {
   await runtime.editText("enter S50 chart search", "chart-search-input", "S50");
   await selectChartSearchSuggestion(runtime, "S50");
   await runtime.action("direct to selected S50", "direct_to", {
-    ready: () => runtime.driver.readElement(
-      runtime.platform === "web" ? "map-selection-action-direct_to" : "map-selection-action:direct_to",
-    ),
     complete: async () => (await runtime.driver.readElement("map-selection-tray")) === null,
   });
   await runtime.openPage("flight_plan");
   const restored = await runtime.action("restore underlying plan", "restore_direct_to", {
-    ready: () => enabledPlanControl(runtime, "restore_direct_to"),
     complete: async () => {
       const control = await planControl(runtime, "restore_direct_to");
       return control && !control.enabled ? control : null;
@@ -810,7 +821,6 @@ async function selectTrayOptionMatching(runtime, launcherId, needle) {
   );
   if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
   await runtime.action(`select ${needle} from ${launcherId}`, `tray-option:${trayOptionId(entry)}`, {
-    ready: async () => entry.enabled === false ? null : entry,
     complete: async () => {
       const launcher = await runtime.driver.readElement(launcherId);
       return launcher?.text?.toUpperCase().includes(needle.toUpperCase()) ? launcher : null;
@@ -843,7 +853,6 @@ export async function selectProcedure(runtime, {
     `select ${procedureId} procedure`,
     `plan-procedure:${procedureId}`,
     {
-      ready: async () => procedure.enabled === false ? null : procedure,
       complete: async () => {
         const entries = await runtime.driver.readProjection("parity:plan-procedure-transition:");
         if (transition) {
@@ -859,7 +868,6 @@ export async function selectProcedure(runtime, {
     `select ${procedureId} transition ${selectedTransitionId}`,
     `plan-procedure-transition:${selectedTransitionId}`,
     {
-      ready: async () => choice.enabled === false ? null : choice,
       complete: async () =>
         (await runtime.driver.readElement("plan-procedure-picker")) === null,
     },
@@ -880,12 +888,6 @@ async function assertProcedurePainted(runtime, assertionId) {
 async function assertProcedureShowPlate(runtime, procedureId, assertionId, expectedLabel = procedureId) {
   await openProcedureRow(runtime, procedureId);
   const plate = await runtime.action(`show plate for ${procedureId}`, "show_plate", {
-    ready: async () => {
-      const action = await runtime.driver.readElement(runtime.platform === "web"
-        ? "plan-row-action-show_plate"
-        : "plan-row-action:show_plate");
-      return action?.enabled ? action : null;
-    },
     complete: () => runtime.driver.readElement("page:plate"),
   });
   const chart = await runtime.eventually("selected procedure plate", async () => {
@@ -900,12 +902,6 @@ async function removeProcedure(runtime, procedureId, assertionId) {
   await openProcedureRow(runtime, procedureId);
   const beforeRevision = await runtime.driver.readSessionRevision();
   await runtime.action(`remove procedure ${procedureId}`, "remove_procedure", {
-    ready: async () => {
-      const action = await runtime.driver.readElement(runtime.platform === "web"
-        ? "plan-row-action-remove_procedure"
-        : "plan-row-action:remove_procedure");
-      return action?.enabled ? action : null;
-    },
     complete: async () => {
       const tray = await runtime.driver.readElement("plan-row-tray-scrim");
       const revision = await runtime.driver.readSessionRevision();
@@ -1003,10 +999,6 @@ async function procedureApproach(runtime) {
   await selectTrayOptionMatching(runtime, "plate-airport-button", approach.airport_id);
   await selectTrayOptionMatching(runtime, "plate-chart-button", "ILS OR LOC 32R");
   const load = await runtime.action("open plate load choices", "plate-load-button", {
-    ready: async () => {
-      const button = await runtime.driver.readElement("plate-load-button");
-      return button?.enabled ? button : null;
-    },
     complete: async () => {
       const entries = await runtime.driver.readProjection(runtime.platform === "web" ? "tray-option-" : "parity:tray-option:");
       return entries.find((entry) => entry.enabled !== false) ?? null;
@@ -1114,7 +1106,7 @@ async function plateOperate(runtime) {
   }, E2E_TIMING.userResponseMs);
   runtime.check("plate.georeferenced-ownship", Boolean(ownship));
 
-  const initialViewport = await runtime.eventually("initial plate viewport", () => plateViewport(runtime));
+  const initialViewport = await runtime.stable("settled initial plate viewport", () => plateViewport(runtime));
   const pannedViewport = await runtime.transition("pan georeferenced plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
     act: () => runtime.driver.drag("plate-surface", { x: -120, y: -100 }),
@@ -1135,10 +1127,6 @@ async function plateOperate(runtime) {
   runtime.check("plate.zoom", Boolean(zoomedViewport), `${pannedViewport} -> ${zoomedViewport}`);
 
   const loadOption = await runtime.action("open plate procedure load choices", "plate-load-button", {
-    ready: async () => {
-      const button = await runtime.driver.readElement("plate-load-button");
-      return button?.enabled ? button : null;
-    },
     complete: async () => {
       const entries = await runtime.driver.readProjection(runtime.platform === "web" ? "tray-option-" : "parity:tray-option:");
       return entries.find((entry) => entry.enabled !== false) ?? null;
@@ -1158,7 +1146,9 @@ async function plateOperate(runtime) {
     await selectTrayOptionMatching(runtime, "plate-airport-button", multiPage.airport_id);
   }
   const multi = await selectTrayOptionMatching(runtime, "plate-chart-button", multiPage.label_contains);
-  const firstPageViewport = await runtime.eventually("multi-page plate initial viewport", () => plateViewport(runtime));
+  const firstPageViewport = await runtime.stable(
+    "settled multi-page plate initial viewport", () => plateViewport(runtime),
+  );
   const lastPageViewport = await runtime.transition("scroll multi-page plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
     act: () => runtime.driver.drag("plate-surface", { x: 0, y: -600 }),
@@ -1282,7 +1272,7 @@ async function plateAdvisoriesAndReferences(runtime) {
 
   const legendOption = await selectTrayOptionMatching(runtime, "plate-chart-button", legend.label_contains);
   runtime.check("plate.legend", Boolean(legendOption), legendOption.text);
-  const legendViewport = await runtime.eventually("legend viewport", () => plateViewport(runtime));
+  const legendViewport = await runtime.stable("settled legend viewport", () => plateViewport(runtime));
   const zoomedLegendViewport = await runtime.transition("zoom legend for composite scroll", {
     ready: () => runtime.driver.readElement("plate-surface"),
     act: () => runtime.driver.zoom("plate-surface", -360),
@@ -1730,19 +1720,17 @@ async function setLayerVisible(runtime, layerId, visible) {
   });
   if (current.visible === visible) return current.id;
   if (!current.enabled) throw new Error(`${layerId} layer is disabled: ${current.id}`);
-  const changed = await runtime.chooseOption(
+  await runtime.toggleOption(
     `${layerId} layer ${visible ? "visible" : "hidden"}`,
     "layers-button",
     layerId,
-    {
-    complete: async () => {
-      const id = projectionId((await runtime.driver.readProjection(`parity:map-layer:${probeName}:`))[0]);
-      return id && /:visible:true:/.test(id) === visible ? id : null;
-    },
-    },
+    visible,
   );
   await dismissTrayOptions(runtime, `dismiss ${layerId} layer choices`);
-  return changed;
+  return runtime.eventually(`${layerId} map projection`, async () => {
+    const id = projectionId((await runtime.driver.readProjection(`parity:map-layer:${probeName}:`))[0]);
+    return id && /:visible:true:/.test(id) === visible ? id : null;
+  });
 }
 
 async function mapModesAndOverlays(runtime) {
@@ -1809,35 +1797,45 @@ async function mapModesAndOverlays(runtime) {
     }
   }
 
+  const changedLayers = [];
   for (const [layerId, assertionId] of Object.entries(LAYER_ASSERTIONS)) {
     const probeName = layerProbeId(runtime, layerId);
     const before = projectionId((await runtime.driver.readProjection(`parity:map-layer:${probeName}:`))[0]);
-    const beforeVisible = /:visible:true:/.test(before);
-    const suffix = runtime.platform === "web" ? layerId : probeName;
-    const option = await runtime.action(`open ${layerId} layer option`, "layers-button", {
-      complete: async () => {
-        const entries = await runtime.driver.readProjection(
-          runtime.platform === "web" ? "tray-option-" : "parity:tray-option:",
-        );
-        return entries.find((entry) => projectionId(entry).endsWith(suffix)) ?? null;
-      },
-    });
+    const option = await runtime.openOption(
+      `${layerId} layer option`,
+      "layers-button",
+      layerId,
+    );
+    // The rendered toggle is the authoritative current state. Some layers do
+    // not emit a map projection while hidden, so absence is not equivalent to
+    // an unchecked option.
+    const beforeVisible = selectedSemantic(option);
     runtime.result.diagnostics[`layer_${layerId}`] = { before, option };
     if (option.enabled) {
-      const changed = await runtime.action(`toggle ${layerId} layer`, `tray-option:${trayOptionId(option)}`, {
-        complete: async () => {
-          const id = projectionId((await runtime.driver.readProjection(
-            `parity:map-layer:${probeName}:`,
-          ))[0]);
-          return id && /:visible:true:/.test(id) !== beforeVisible ? id : null;
-        },
-      });
-      runtime.check(assertionId, Boolean(changed), projectionId(changed));
-      await dismissTrayOptions(runtime, `dismiss ${layerId} layer choices`);
+      const control = await runtime.toggleOption(
+        `toggle ${layerId} layer`,
+        "layers-button",
+        layerId,
+        !beforeVisible,
+      );
+      changedLayers.push({ layerId, assertionId, probeName, beforeVisible, control });
     } else {
       runtime.check(assertionId, Boolean(option.text), `${option.text} (disabled with reason)`);
-      await dismissTrayOptions(runtime, `dismiss disabled ${layerId} layer choice`);
     }
+  }
+  await dismissTrayOptions(runtime, "dismiss layer choices");
+  for (const { layerId, assertionId, probeName, beforeVisible, control } of changedLayers) {
+    const changed = await runtime.eventually(`${layerId} map projection changed`, async () => {
+      const id = projectionId((await runtime.driver.readProjection(
+        `parity:map-layer:${probeName}:`,
+      ))[0]);
+      return id && /:visible:true:/.test(id) !== beforeVisible ? id : null;
+    });
+    runtime.check(
+      assertionId,
+      Boolean(control && changed),
+      `${projectionId(control)} -> ${projectionId(changed)}`,
+    );
   }
 
   const north = await runtime.driver.readElement("map-orientation-button");
@@ -1931,7 +1929,6 @@ async function selectAirportFromMapSearch(runtime, airportId) {
     airportId,
   );
   return runtime.action(`select ${airportId} chart search result`, suggestionId, {
-    ready: () => runtime.driver.readElement(suggestionId),
     complete: async () => {
       const entries = await runtime.driver.readProjection(`parity:map-selection-selected:${airportId}`);
       return entries[0] ?? null;
@@ -1997,7 +1994,8 @@ async function airportInfo(runtime) {
     },
   });
   runtime.check("airport-info.time-toggle", Boolean(afterTime), `${beforeTime} -> ${afterTime}`);
-  const initialScroll = projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]);
+  const initialScroll = await runtime.stable("settled airport-info scroll position", async () =>
+    projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]));
   const scrolled = await runtime.transition("scroll airport info", {
     ready: () => runtime.driver.readElement(`airport-info-modal:${complexAirport}`),
     act: () => runtime.driver.drag(`airport-info-modal:${complexAirport}`, { x: 0, y: -500 }),
@@ -2091,7 +2089,9 @@ async function inspectorDetails(runtime) {
       complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
     });
   }
-  const viewportBeforeSpotPan = idOf(await runtime.driver.readProjection("parity:viewport:"));
+  await disableCtrBeforeFreePan(runtime, "disable CTR before SPOT pan");
+  const viewportBeforeSpotPan = await runtime.stable("settled viewport before SPOT pan", async () =>
+    idOf(await runtime.driver.readProjection("parity:viewport:")));
   await runtime.transition("pan before SPOT inspection", {
     ready: () => runtime.driver.readElement("map-surface"),
     act: () => runtime.driver.drag("map-surface", { x: 360, y: 260 }),
@@ -2196,37 +2196,35 @@ async function flightPlanAirwayEstimates(runtime) {
   runtime.check("plan.weather-badge", Boolean(weather), projectionId(weather));
 
   const eteColumn = (await runtime.driver.readProjection("parity:plan-column:"))
-    .find((entry) => /\bETE\b/i.test(entry.text));
-  const eteBefore = eteColumn?.text;
+    .find((entry) => /\bETE\b/i.test(projectionState(entry)));
+  const eteBefore = projectionState(eteColumn);
   const eteAfter = eteColumn?.enabled ? await runtime.action("change ETE scope", projectionId(eteColumn), {
     complete: async () => {
       const column = (await runtime.driver.readProjection("parity:plan-column:"))
-        .find((entry) => /\bETE\b/i.test(entry.text));
-      return column?.text && column.text !== eteBefore ? column : null;
+        .find((entry) => /\bETE\b/i.test(projectionState(entry)));
+      return projectionState(column) && projectionState(column) !== eteBefore ? column : null;
     },
   }) : null;
-  runtime.check("plan.ete-scope", Boolean(eteAfter), `${eteBefore} -> ${eteAfter?.text}`);
+  runtime.check("plan.ete-scope", Boolean(eteAfter), `${eteBefore} -> ${projectionState(eteAfter)}`);
 
   const etaColumn = (await runtime.driver.readProjection("parity:plan-column:"))
-    .find((entry) => /\bETA\b/i.test(entry.text));
-  const etaBefore = etaColumn?.text;
+    .find((entry) => /\bETA\b/i.test(projectionState(entry)));
+  const etaBefore = projectionState(etaColumn);
   const etaAfter = etaColumn?.enabled ? await runtime.action("change ETA time basis", projectionId(etaColumn), {
     complete: async () => {
       const column = (await runtime.driver.readProjection("parity:plan-column:"))
-        .find((entry) => /\bETA\b/i.test(entry.text));
-      return column?.text && column.text !== etaBefore ? column : null;
+        .find((entry) => /\bETA\b/i.test(projectionState(entry)));
+      return projectionState(column) && projectionState(column) !== etaBefore ? column : null;
     },
   }) : null;
-  runtime.check("plan.time-mode", Boolean(etaAfter), `${etaBefore} -> ${etaAfter?.text}`);
+  runtime.check("plan.time-mode", Boolean(etaAfter), `${etaBefore} -> ${projectionState(etaAfter)}`);
 
   await appendRoute(runtime, "S88");
   const undone = await runtime.action("undo route append", "undo", {
-    ready: () => enabledPlanControl(runtime, "undo"),
     complete: async () => !(await planRows(runtime)).some((entry) => entry.text.includes("S88")),
   });
   runtime.check("plan.undo", undone);
   const redone = await runtime.action("redo route append", "redo", {
-    ready: () => enabledPlanControl(runtime, "redo"),
     complete: async () => (await planRows(runtime)).some((entry) => entry.text.includes("S88")),
   });
   runtime.check("plan.redo", redone);
@@ -2441,7 +2439,6 @@ async function loadReplayFixture(runtime) {
     "enter replay trace location",
     "playback-source-input",
     tracePath,
-    { dismissKeyboard: runtime.platform === "android" },
   );
   await runtime.eventually("replay trace ready to load", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
@@ -2977,6 +2974,7 @@ export const RELEASE_JOURNEY_IMPLEMENTATIONS = Object.freeze({
   "shared.obstacles-navkv": obstaclesNavKv,
   "shared.winds-aloft-navkv": windsAloftNavKv,
   "shared.tfr-map-detail": tfrMapDetail,
+  "web.raster-load-recovery": rasterLoadRecovery,
   "shared.cloud-crossfill": cloudCrossfill,
   "shared.other-documents": otherDocuments,
   "shared.about-and-saved-state": aboutAndSavedState,

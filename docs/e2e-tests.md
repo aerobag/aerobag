@@ -117,7 +117,7 @@ The Android UI now exposes stable `parity:` tags for the smoke test:
 - map-follow semantic probe
 - rendered flight-plan state and Data Status row semantic probes
 
-Painted canvas content is not directly visible to `uiautomator`, so the E2E
+Painted canvas content is not directly visible to the accessibility tree, so the E2E
 checks use semantic probe tags for map overlays and screenshot analysis for
 plate imagery:
 
@@ -171,13 +171,27 @@ Journeys follow one deterministic state-transition shape:
 3. Deliver the user action exactly once.
 4. Observe the semantic or painted result without retrying the action.
 
+Semantic actions obtain readiness from `driver.readAction(actionId)` and
+deliver through that exact observed element. Journey code cannot substitute a
+read-only model projection or rediscover the control after readiness.
+
 Polling is allowed only for read-only observation. Scrolling a lazy list is an
 explicit action, not a side effect hidden in a probe. Behavior that must remain
 true after an action is sampled throughout a named stability interval rather
-than checked after a sleep. Local user actions have a three-second response
+than checked after a sleep. A gesture whose postcondition is relative to a
+pre-action viewport, scroll position, or other moving value must acquire that
+baseline through `runtime.stable(...)`; a single projection read is not a valid
+baseline. Local user actions have a three-second response
 budget; startup, resource loading, cloud convergence, and package sync use
 separate named budgets so increasing an external-operation allowance cannot
 hide an unresponsive button.
+
+An observation probe that throws is terminal by default. CDP failures,
+semantic-driver disconnects, malformed projections, and application errors
+therefore fail immediately instead of being swallowed until a long resource
+deadline expires. A test may retry an exception only by classifying that
+specific condition as `TransientObservationError`; ordinary not-ready state is
+represented by a null probe result.
 
 There is no generic journey `step` escape hatch. User input must use a semantic
 transition. Non-interactive lifecycle work uses the typed reset/reload phases,
@@ -202,18 +216,26 @@ The foundation suite statically audits both shared and Android-native journeys
 for these rules. A failed action is a failed journey; the runner never repeats
 typing, clicking, or navigation until it happens to pass.
 
+`tools/parity/run-flight-plan-inspect-journey.mjs` is a historical diagnostic
+inventory, not a release-qualification entry point. Its older coordinate and
+delay-based implementation must not be copied into new tests; migrate useful
+coverage into the shared release registry instead.
+
 Release fixtures declare the data capabilities each journey consumes. The
 fixture builder validates those preconditions and injects stable synthetic data
 where the assertion is about rendering rather than an upstream snapshot's
 incidental contents. A missing prerequisite therefore fails fixture construction
 instead of spending a journey deadline waiting for an impossible UI state.
 
-Each hosted Android job still performs a real clean install, package sync, and
-startup-navigation journey. It then archives the stopped app's private data and
-restores that archive after `pm clear` before each assigned behavior journey.
-The archive is created inside the job rather than uploaded across machines, so
-it cannot hide system-image or installation drift. It contains no durable
-live-feed state; every profile must acquire only the products it publishes.
+One dedicated hosted job performs a real clean install, package sync, and
+startup-navigation journey, then archives the stopped app's private data. The
+content-addressed archive is an explicit qualification artifact consumed by four
+all-priority shard jobs. Each consumer still boots the declared system image and
+clean-installs the exact immutable app and semantic-driver APKs before restoring
+the archive after `pm clear`. This proves installation compatibility in every
+lane while avoiding twelve emulator boots and eleven duplicate package downloads. The archive
+contains no durable live-feed state; every profile must acquire only the
+products it publishes.
 
 This is an app-data checkpoint, not an emulator VM snapshot. VM snapshots also
 capture GPU surfaces, clocks, sockets, and running coroutines; repeated restores
@@ -232,18 +254,32 @@ the same clean-start conditions exercised by qualification.
 Journeys whose subject is application-data loss or an unsupported publication use
 the separate full-data-reset operation explicitly.
 
+Web resets and reloads replace the complete CDP page target. The harness closes the prior
+target, observes destruction of its dedicated workers, creates and instruments
+a fresh target, then optionally clears origin storage and navigates. It does not race a
+replacement app against workers left behind by `about:blank`, and it never
+retries a failed startup.
+
 The persistent Android semantic driver reads the actual accessibility tree
 rendered by Compose. Actions invoke the ordinary accessibility click or scroll
 operation on a visible, enabled rendered node; they do not invoke core actions
 directly or add random coordinate jitter. Keeping the driver process alive
 removes the roughly two-second cost and process-race exposure of each standalone
-`uiautomator dump`. The action endpoint also closes the probe/action race: if
-Compose replaces a previously observed node, it waits on accessibility events
-until it can resolve the currently rendered replacement. The test-only service
-then dispatches one tap gesture at that node inside Android, preserving semantic
-targeting without a host-side coordinate round trip. It never retries an action
-that Android accepted. Completion probes wait on accessibility events between
-reads so full Compose hierarchy traversal cannot starve the UI being tested.
+`uiautomator dump`. Readiness records the exact semantic tag and screen bounds.
+The action endpoint accepts only that exact still-rendered node and invokes its
+ordinary accessibility action once; replacing or moving the node makes the
+action fail rather than triggering rediscovery, a coordinate fallback, or a
+retry. Text editing similarly focuses and replaces the exact held node, and
+submission requires focused readiness evidence. Animated scrolls are complete
+only after their rendered projection changes and then remains stable, so a
+following action cannot race a still-moving lazy list. Completion probes wait
+on accessibility events between reads so full Compose hierarchy traversal
+cannot starve the UI being tested.
+
+The immutable app manifest names the semantic-driver protocol. Bundle creation
+opens the driver APK and verifies that its DEX implements that protocol; runtime
+startup repeats the handshake before any journey. Artifact skew therefore fails
+at build/download validation rather than becoming a mysterious missing action.
 
 Chooser interactions are two transitions, not one opaque driver operation: the
 launcher must expose the requested enabled option, then one selection action
@@ -290,10 +326,11 @@ tools/prod_manage.py --prequalify
 
 The local phase runs ordinary CI and all P0/P1/P2 journeys from the same commit
 that will be pushed. Its receipt is invalidated if either workflow, the local
-runner, or the journey lab changes. GitHub's four Android matrix shards receive
-separate hosts. Local qualification preserves those four shards but defaults to
-two concurrent emulators so host contention does not become a false product
-latency failure; `--android-workers` can override that capacity setting.
+runner, or the journey lab changes. The local runner prepares the same one-time
+Android baseline artifact as GitHub, then runs two emulator lanes in parallel by
+default. `--android-workers` adjusts that bounded host parallelism; it does not
+change journey assignments or assertion coverage. Ordinary-CI and web lanes also
+run in parallel where their build outputs do not conflict.
 
 Use `--headless` to reproduce the hosted-runner display mode.
 

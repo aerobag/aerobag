@@ -341,6 +341,12 @@ export function createReleaseJourneyFixtureServer(args) {
       response.end(JSON.stringify(recentRequests));
       return;
     }
+    if (pathname.endsWith(".aerobag-e2e-stall")) {
+      // Deliberately leave the image request unresolved. The browser closes it
+      // when the product watchdog remounts that tile with its recovery URL.
+      request.on("close", () => response.destroy());
+      return;
+    }
     if (pathname === "/live-feeds/status.html") {
       response.setHeader("Content-Type", "text/html; charset=utf-8");
       response.end("<!doctype html><title>Aerobag release-journey live feeds</title><p>Deterministic fixture.</p>");

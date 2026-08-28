@@ -47,7 +47,9 @@ import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 import { summarizeFixtureRequests } from "./release-journey-runtime.mjs";
-import { assertConditionRemains, observeUntil, performTransition } from "./transition-contract.mjs";
+import {
+  assertConditionRemains, E2E_TIMING, observeUntil, performTransition,
+} from "./transition-contract.mjs";
 import {
   auditJourneyStructure,
   auditQualificationJourneys,
@@ -237,6 +239,18 @@ test("a transition performs its user action exactly once while observing delayed
   assert.deepEqual(result.value, { committed: true });
 });
 
+test("a user transition cannot borrow a long-running operation budget", async () => {
+  await assert.rejects(
+    performTransition("slow button", {
+      ready: async () => true,
+      act: async () => {},
+      complete: async () => true,
+      responseTimeoutMs: E2E_TIMING.localResourceMs,
+    }),
+    /user transitions are capped.*separate named phase/s,
+  );
+});
+
 test("a blocked probe cannot report success after its observation budget", async () => {
   await assert.rejects(
     observeUntil("blocked probe", async () => {
@@ -262,6 +276,19 @@ test("shared journeys contain no mutations inside observation loops or fixed UI 
   const path = new URL("./release-journey-implementations.mjs", import.meta.url);
   const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
   assert.deepEqual(violations, []);
+});
+
+test("standalone Android journeys keep host and baked device package ports distinct", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  assert.match(source, /packageSourceDevicePort: process\.env\.AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT/);
+  assert.match(
+    source,
+    /`tcp:\$\{packageSourceDevicePort\}`,[\s\S]*?`tcp:\$\{packageSourcePort\}`/,
+  );
+  assert.doesNotMatch(
+    source,
+    /\["reverse", `tcp:\$\{packageSourcePort\}`, `tcp:\$\{packageSourcePort\}`\]/,
+  );
 });
 
 test("cloud peer follows the deterministic journey structure", () => {
@@ -367,6 +394,23 @@ test("journey structure audit recognizes DOM actions hidden inside page evaluati
   );
 });
 
+test("journey structure audit rejects long-running budgets on user transitions", () => {
+  const source = `
+    async function broken(runtime) {
+      await runtime.transition("slow button", {
+        ready: async () => true,
+        act: async () => runtime.driver.performAction("button"),
+        complete: async () => true,
+        responseTimeoutMs: E2E_TIMING.resourceMs,
+      });
+    }
+  `;
+  assert.deepEqual(
+    auditJourneyStructure(source, "slow-transition.mjs").map((violation) => violation.message),
+    ["user transition responseTimeoutMs must use E2E_TIMING.userResponseMs"],
+  );
+});
+
 test("NAVDB rollover scenarios never replace a publication under a live Vite server", () => {
   const source = readFileSync(
     new URL("../../ui/web-app/scripts/nav-db-rollover-e2e.mjs", import.meta.url),
@@ -460,6 +504,8 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   assert.equal(runAndroidTest.match(/--release-fixture "\$FIXTURE"/g)?.length, 1);
   assert.match(lab, /run_e2e\.sh" \\\n\s+--skip-install \\\n\s+"\$\{state_args\[@\]\}" \\/);
   assert.match(lab, /--test "\$journey" <\/dev\/null/);
+  assert.doesNotMatch(lab, /setTimeout\(resolve,\s*750\)/);
+  assert.match(lab, /observeUntil\(`\$\{surface\} zoom`/);
 });
 
 test("fixture web identity changes with the exact built application", () => {

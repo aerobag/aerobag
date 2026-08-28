@@ -117,7 +117,7 @@ async function nativeTransition(result, description, contract) {
 
 function usage() {
   console.log(`Usage:
-  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
+  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--package-source-device-port 8083] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
 
 Runs Android end-to-end UI tests against an installed Aerobag app.
 When a clean emulator starts on Offline Packages, the runner syncs the NW
@@ -131,6 +131,8 @@ function parseArgs(argv) {
     serial: process.env.ANDROID_SERIAL ?? "",
     route: DEFAULT_ROUTE,
     packageSourcePort: DEFAULT_PACKAGE_SOURCE_PORT,
+    packageSourceDevicePort: process.env.AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT ??
+      process.env.ANDROID_PACKAGE_SOURCE_DEVICE_PORT ?? "",
     syncOfflinePackages: true,
     syncAllAvailablePackages: false,
     releaseFixture: process.env.AEROBAG_RELEASE_JOURNEY_FIXTURE ?? "",
@@ -147,6 +149,8 @@ function parseArgs(argv) {
       args.route = argv[++i] ?? "";
     } else if (arg === "--package-source-port") {
       args.packageSourcePort = argv[++i] ?? "";
+    } else if (arg === "--package-source-device-port") {
+      args.packageSourceDevicePort = argv[++i] ?? "";
     } else if (arg === "--no-sync-offline-packages") {
       args.syncOfflinePackages = false;
     } else if (arg === "--sync-all-available-packages") {
@@ -161,6 +165,7 @@ function parseArgs(argv) {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
+  args.packageSourceDevicePort ||= args.packageSourcePort;
   return args;
 }
 
@@ -245,10 +250,14 @@ async function tapTagIfPresent(serial, tag, timeoutMs = E2E_TIMING.localReadyMs)
 async function ensureOfflinePackagesReady(
   serial,
   result,
-  { packageSourcePort, syncOfflinePackages, syncAllAvailablePackages },
+  { packageSourcePort, packageSourceDevicePort, syncOfflinePackages, syncAllAvailablePackages },
 ) {
-  if (packageSourcePort) {
-    adbBestEffort(serial, ["reverse", `tcp:${packageSourcePort}`, `tcp:${packageSourcePort}`]);
+  if (packageSourcePort && packageSourceDevicePort) {
+    adbBestEffort(serial, [
+      "reverse",
+      `tcp:${packageSourceDevicePort}`,
+      `tcp:${packageSourcePort}`,
+    ]);
   }
 
   await waitFor(() => {
@@ -458,7 +467,7 @@ async function centerChartOnDestination(serial, result, route) {
       evidence = destinationCenterEvidence(dumpAndroid(serial), destination);
       return evidence.matched ? evidence : null;
     },
-    responseTimeoutMs: E2E_TIMING.observationMs,
+    responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
   await dismissMapSelection(serial);
   await waitForNode(
@@ -485,7 +494,7 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
       evidence = destinationCenterEvidence(dumpAndroid(serial), airportId);
       return evidence.matched ? evidence : null;
     },
-    responseTimeoutMs: E2E_TIMING.observationMs,
+    responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
   recordStep(result, "airport inspector opened", `${airportId}, ${evidence.probeTag}`);
 }
@@ -515,7 +524,7 @@ async function inspectRawTerrainSpot(serial, result) {
     return findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray")) !== null &&
       findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-selected:SPOT")) !== null &&
       findNode(xml, (node) => /(?:^| · )Elev -?\d+(?:$| · )/.test(node.text ?? "")) !== null;
-  }, E2E_TIMING.observationMs, "raw SPOT inspector with terrain elevation");
+  }, E2E_TIMING.localResourceMs, "raw SPOT inspector with terrain elevation");
   recordStep(result, "raw map SPOT inspector opened", `screen=${x},${y}`);
   recordCheck(result, "inspector.rawSpotTerrainElevation", true, "numeric terrain elevation");
 }
@@ -669,7 +678,7 @@ async function selectBadAutopilotSource(serial, result) {
     ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)),
     act: async () => tapTag(serial, BAD_AUTOPILOT_SOURCE_TAG, E2E_TIMING.localReadyMs),
     complete: async () => findMapFollowProbe(dumpAndroid(serial)),
-    responseTimeoutMs: E2E_TIMING.observationMs,
+    responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
 }
 
@@ -791,7 +800,7 @@ async function openPlateFromAirportInspector(serial, result, airportId, expected
   await waitForNode(
     serial,
     (node) => hasAndroidTag(node, "parity:plate-folder-button"),
-    E2E_TIMING.observationMs,
+    E2E_TIMING.userResponseMs,
     "plate folder page opened",
   );
   recordStep(result, "plate folder opened", airportId);
@@ -808,7 +817,7 @@ async function openPlateFromAirportInspector(serial, result, airportId, expected
   await waitForNode(
     serial,
     (node) => hasAndroidTag(node, PLATE_SURFACE_TAG),
-    E2E_TIMING.observationMs,
+    E2E_TIMING.userResponseMs,
     "plate surface after tile selection",
   );
   recordStep(result, "fixture plate opened", tileTag.slice(PLATE_FOLDER_TILE_PREFIX.length));
@@ -818,7 +827,7 @@ async function ensureMapFollowEngaged(serial, result) {
   let probe = await waitForMapFollowProbe(
     serial,
     () => true,
-    E2E_TIMING.observationMs,
+    E2E_TIMING.localReadyMs,
     "map-follow probe visible",
   );
   if (!probe.following) {
@@ -833,7 +842,7 @@ async function ensureMapFollowEngaged(serial, result) {
   await waitForMapFollowProbe(
     serial,
     (nextProbe) => nextProbe.following && mapFollowOffsetPx(nextProbe) <= 120,
-    E2E_TIMING.observationMs,
+    E2E_TIMING.userResponseMs,
     "CTR follow centered on ownship",
   );
   recordStep(result, "CTR follow engaged");
@@ -851,7 +860,7 @@ async function disengageMapFollowForRouteVisibility(serial, result) {
   await waitForMapFollowProbe(
     serial,
     (nextProbe) => !nextProbe.following,
-    E2E_TIMING.observationMs,
+    E2E_TIMING.userResponseMs,
     "CTR follow disengaged",
   );
   recordStep(result, "CTR follow disengaged for route visibility");
@@ -863,7 +872,7 @@ async function prepareRouteViewportForRotations(serial, result, route, expectedS
   await centerChartOnDestination(serial, result, route);
   await waitForRouteOverlay(serial, result);
   await ensurePlanPage(serial, result);
-  await waitForPlanSignature(serial, expectedSignature, E2E_TIMING.observationMs);
+  await waitForPlanSignature(serial, expectedSignature, E2E_TIMING.localReadyMs);
 }
 
 async function dragMapWhileFollowing(serial, result) {
@@ -887,7 +896,7 @@ async function dragMapWhileFollowing(serial, result) {
         const nextProbe = findMapFollowProbe(dumpAndroid(serial));
         return nextProbe?.following && mapFollowOffsetPx(nextProbe) >= 80 ? nextProbe : null;
       },
-      responseTimeoutMs: E2E_TIMING.observationMs,
+      responseTimeoutMs: E2E_TIMING.userResponseMs,
     });
   } catch (error) {
     probe = findMapFollowProbe(dumpAndroid(serial));
@@ -930,7 +939,7 @@ async function zoomMapOneStepWhileFollowing(serial, result, direction) {
         : probe?.zoomCenti < before.zoomCenti;
       return probe?.following && changedInDirection && mapFollowOffsetPx(probe) >= 80 ? probe : null;
     },
-    responseTimeoutMs: E2E_TIMING.observationMs,
+    responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
   return changed;
 }
@@ -1084,7 +1093,7 @@ function planContentsEqual(left, right) {
   return left.rowCount === right.rowCount && JSON.stringify(left.rows) === JSON.stringify(right.rows);
 }
 
-async function waitForPlanSignature(serial, expected = null, timeoutMs = E2E_TIMING.observationMs) {
+async function waitForPlanSignature(serial, expected = null, timeoutMs = E2E_TIMING.localReadyMs) {
   let signature = null;
   await waitFor(() => {
     const xml = dumpAndroid(serial);
@@ -1126,14 +1135,14 @@ async function exerciseRetainedPlanAcrossRotations(
     for (let transition = 0; transition < transitionCount; transition += 1) {
       const orientation = transition % 2 === 0 ? "landscape" : "portrait";
       setAndroidRotation(serial, orientation);
-      const bounds = await waitForAndroidOrientation(serial, orientation, E2E_TIMING.observationMs);
-      const signature = await waitForPlanSignature(serial, baselineSignature, E2E_TIMING.observationMs);
+      const bounds = await waitForAndroidOrientation(serial, orientation, E2E_TIMING.androidRecreationMs);
+      const signature = await waitForPlanSignature(serial, baselineSignature, E2E_TIMING.androidRecreationMs);
       const pid = currentAerobagPid(serial);
       recordCheck(result, `rotation.${transition + 1}.pidStable`, pid === initialPid, `${initialPid} -> ${pid}`);
       await ensureChartPage(serial, result);
       await waitForRouteOverlay(serial, result);
       await ensurePlanPage(serial, result);
-      finalSignature = await waitForPlanSignature(serial, baselineSignature, E2E_TIMING.observationMs);
+      finalSignature = await waitForPlanSignature(serial, baselineSignature, E2E_TIMING.localReadyMs);
       transcript.push({
         transition: transition + 1,
         orientation,
@@ -1218,7 +1227,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
     adb(serial, ["logcat", "-c"]);
     recordStep(result, "persisted live-feed promotion paused at deterministic gate");
     await ensurePlanPage(serial, result);
-    const restoredSignature = await waitForPlanSignature(serial, null, E2E_TIMING.observationMs);
+    const restoredSignature = await waitForPlanSignature(serial, null, E2E_TIMING.localReadyMs);
     recordCheck(
       result,
       "rotation.liveFeedPhaseRouteRestored",
@@ -1226,7 +1235,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
       JSON.stringify(restoredSignature),
     );
     await activateDestinationLeg(serial, result, ROTATION_ROUTE);
-    const liveFeedBaselineSignature = await waitForPlanSignature(serial, null, E2E_TIMING.observationMs);
+    const liveFeedBaselineSignature = await waitForPlanSignature(serial, null, E2E_TIMING.localReadyMs);
     recordCheck(
       result,
       "rotation.liveFeedPhaseActiveLegProjected",
@@ -1251,7 +1260,7 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
     setAerobagPrivateSentinel(serial, LIVE_FEED_PROMOTION_SENTINEL, false);
     await verifyNotamsLoadedInUi(serial, result);
     await ensurePlanPage(serial, result);
-    await waitForPlanSignature(serial, liveFeedBaselineSignature, E2E_TIMING.observationMs);
+    await waitForPlanSignature(serial, liveFeedBaselineSignature, E2E_TIMING.localReadyMs);
     await prepareRouteViewportForRotations(
       serial,
       result,
@@ -1514,7 +1523,7 @@ async function runOfflineColdStart(args) {
       await driver.readElement("page:offline_packages"),
     ));
 
-    adbBestEffort(args.serial, ["reverse", "--remove", `tcp:${args.packageSourcePort}`]);
+    adbBestEffort(args.serial, ["reverse", "--remove", `tcp:${args.packageSourceDevicePort}`]);
     adbBestEffort(args.serial, ["shell", "svc", "wifi", "disable"]);
     adbBestEffort(args.serial, ["shell", "svc", "data", "disable"]);
     try {
@@ -1555,7 +1564,11 @@ async function runOfflineColdStart(args) {
     } finally {
       adbBestEffort(args.serial, ["shell", "svc", "wifi", "enable"]);
       adbBestEffort(args.serial, ["shell", "svc", "data", "enable"]);
-      adbBestEffort(args.serial, ["reverse", `tcp:${args.packageSourcePort}`, `tcp:${args.packageSourcePort}`]);
+      adbBestEffort(args.serial, [
+        "reverse",
+        `tcp:${args.packageSourceDevicePort}`,
+        `tcp:${args.packageSourcePort}`,
+      ]);
     }
     result.status = "pass";
     result.finished_at = new Date().toISOString();

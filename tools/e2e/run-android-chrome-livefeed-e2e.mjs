@@ -862,7 +862,7 @@ async function run(args) {
       cdp,
       (status) => status?.navigator_online === false
         && status?.connection?.facts?.some((fact) => fact.label === "Last error"),
-      E2E_TIMING.observationMs,
+      E2E_TIMING.userResponseMs,
       "offline transition did not schedule live-feed reconnect",
       E2E_TIMING.resourcePollIntervalMs,
     );

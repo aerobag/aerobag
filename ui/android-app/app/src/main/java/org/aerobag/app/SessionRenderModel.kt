@@ -147,6 +147,10 @@ internal class SessionRenderModel(initialSnapshot: UiSessionSnapshot) {
     }
 
     fun publishUnannouncedSnapshot(snapshot: UiSessionSnapshot): Boolean {
+        // NativeUiSession publishes typed group metadata before returning this
+        // same snapshot to its command caller. Do not turn that publication
+        // into a second, full-shell invalidation at the command boundary.
+        if (latestSnapshot.get() === snapshot) return true
         val latest = observeLatest(snapshot)
         publish(
             NativeUiSession.SnapshotPublication(

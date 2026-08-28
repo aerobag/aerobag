@@ -2793,6 +2793,27 @@ internal fun AerobagApp(
             false
         }
     }
+    suspend fun runHighRateSessionCommand(
+        commandName: String,
+        logTag: String,
+        operation: () -> Unit,
+    ) {
+        val failure = withContext(Dispatchers.Default) {
+            try {
+                operation()
+                null
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                error
+            }
+        }
+        if (failure is NativeSessionCommandRejectedException) {
+            recoverSessionCommandFailure(failure, notifyUser = false)
+        } else if (failure != null) {
+            Log.w(logTag, "high-rate session command failed command=$commandName", failure)
+        }
+    }
     suspend fun recordOfflinePackagePreferencesForCloud(
         preferencesJson: String,
         nowEpochMs: Long,
@@ -3401,17 +3422,17 @@ internal fun AerobagApp(
             sessionRenderModel = sessionRenderModel,
             diagnostics = sessionRenderDiagnostics,
             onRefreshOwnship = {
-                applySessionCommand("refreshOwnshipSource", notifyUser = false) {
+                runHighRateSessionCommand("refreshOwnshipSource", "AerobagOwnship") {
                     uiSession.refreshSnapshot()
                 }
             },
             onPlaybackTick = {
-                applyBackgroundSessionCommand("tickPlayback", "AerobagPlayback") {
+                runHighRateSessionCommand("tickPlayback", "AerobagPlayback") {
                     uiSession.tickPlayback(System.currentTimeMillis().toDouble())
                 }
             },
             onBadAutopilotTick = {
-                applyBackgroundSessionCommand("tickBadAutopilot", "AerobagOwnship") {
+                runHighRateSessionCommand("tickBadAutopilot", "AerobagOwnship") {
                     uiSession.tickBadAutopilot(System.currentTimeMillis().toDouble())
                 }
             },
@@ -3837,9 +3858,9 @@ internal fun AerobagApp(
 private fun HighRateSessionEffects(
     sessionRenderModel: SessionRenderModel,
     diagnostics: SessionRenderDiagnostics,
-    onRefreshOwnship: () -> Unit,
-    onPlaybackTick: () -> Unit,
-    onBadAutopilotTick: () -> Unit,
+    onRefreshOwnship: suspend () -> Unit,
+    onPlaybackTick: suspend () -> Unit,
+    onBadAutopilotTick: suspend () -> Unit,
 ) {
     SideEffect(diagnostics::recordHighRateEffects)
     val projection by sessionRenderModel.highRateProjectionState

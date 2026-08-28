@@ -8,7 +8,6 @@ import { CdpClient } from "./chrome-cdp.mjs";
 import {
   E2E_TIMING,
   observeUntil,
-  performTransition,
 } from "../../../tools/e2e/transition-contract.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -161,33 +160,28 @@ async function runScenario(scenario) {
     await installStatusOverlay(page, scenario, transitionEpochMs);
     await capturePng(page, path.join(scenarioRoot, "before.png"));
     const frames = [];
-    let nextFrameAt = 0;
-    const transition = await performTransition(`NAVDB ${scenario} transition`, {
-      ready: async () => {
-        const probe = await navDbProbe(page);
-        return probe?.active_nav_db?.cycle === initialCycle ? probe : null;
-      },
-      act: () => page.evalValue(
-        `window.__aerobagE2e.navDbMaintainAt(${Math.trunc(transitionEpochMs + 1)})`,
-      ),
-      complete: async () => {
-        const probe = await navDbProbe(page);
-        const complete = scenario === "success"
-          ? probe?.active_nav_db?.cycle === candidateCycle
-          : probe?.advance_warning !== null;
-        if (!complete && record && Date.now() >= nextFrameAt) {
-          const framePath = path.join(frameRoot, `${String(frames.length).padStart(4, "0")}.jpg`);
-          await captureJpeg(page, framePath);
-          frames.push(framePath);
-          nextFrameAt = Date.now() + 1_000;
-        }
-        return complete ? probe : null;
-      },
-      readyTimeoutMs: E2E_TIMING.localReadyMs,
-      responseTimeoutMs: E2E_TIMING.bulkOperationMs,
+    if (record) {
+      const framePath = path.join(frameRoot, `${String(frames.length).padStart(4, "0")}.jpg`);
+      await captureJpeg(page, framePath);
+      frames.push(framePath);
+    }
+    await observeUntil(`NAVDB ${scenario} ready`, async () => {
+      const probe = await navDbProbe(page);
+      return probe?.active_nav_db?.cycle === initialCycle ? probe : null;
+    }, { timeoutMs: E2E_TIMING.localReadyMs });
+    await page.evalValue(
+      `window.__aerobagE2e.navDbMaintainAt(${Math.trunc(transitionEpochMs + 1)})`,
+    );
+    const after = (await observeUntil(`NAVDB ${scenario} transaction`, async () => {
+      const probe = await navDbProbe(page);
+      const complete = scenario === "success"
+        ? probe?.active_nav_db?.cycle === candidateCycle
+        : probe?.advance_warning !== null;
+      return complete ? probe : null;
+    }, {
+      timeoutMs: E2E_TIMING.bulkOperationMs,
       intervalMs: E2E_TIMING.resourcePollIntervalMs,
-    });
-    const after = transition.value;
+    })).value;
     const warningUi = scenario === "reject"
       ? await revealRejectedWarning(page)
       : null;

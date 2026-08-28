@@ -178,6 +178,14 @@ budget; startup, resource loading, cloud convergence, and package sync use
 separate named budgets so increasing an external-operation allowance cannot
 hide an unresponsive button.
 
+The transition helper enforces that three-second ceiling at runtime. Longer
+waits are separate phases with names that expose what the test is actually
+waiting for: local resource computation, replay progression, an animation
+cycle, Android activity recreation, startup, remote consistency, or a bulk
+operation. There is deliberately no generic "observation" timeout. A new
+journey must either prove an ordinary UI postcondition promptly or declare the
+specific asynchronous boundary it exercises.
+
 The foundation suite statically audits both shared and Android-native journeys
 for these rules. A failed action is a failed journey; the runner never repeats
 typing, clicking, or navigation until it happens to pass.

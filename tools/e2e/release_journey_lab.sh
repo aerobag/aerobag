@@ -668,10 +668,17 @@ JS
     cd "$ROOT"
     node --input-type=module - "$SERIAL" "$2" "$3" <<'JS'
 import { AndroidSemanticJourneyDriver } from "./tools/e2e/semantic-journey-driver.mjs";
+import { E2E_TIMING, observeUntil } from "./tools/e2e/transition-contract.mjs";
 const [serial, surface, amount] = process.argv.slice(2);
 const driver = new AndroidSemanticJourneyDriver(serial, { resetApp: async () => {} });
+const viewportProbe = surface === "plate-surface" ? "parity:plate-viewport:" : "parity:viewport:";
+const before = (await driver.readProjection(viewportProbe))[0]?.id;
+if (!before) throw new Error(`viewport is unavailable for ${surface}`);
 await driver.zoom(surface, Number(amount));
-await new Promise((resolve) => setTimeout(resolve, 750));
+await observeUntil(`${surface} zoom`, async () => {
+  const current = (await driver.readProjection(viewportProbe))[0]?.id;
+  return current && current !== before ? current : null;
+}, { timeoutMs: E2E_TIMING.userResponseMs });
 console.log(`android zoom applied: surface=${surface} amount=${amount}`);
 JS
     ;;

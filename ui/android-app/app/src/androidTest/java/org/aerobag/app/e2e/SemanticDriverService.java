@@ -332,11 +332,17 @@ public final class SemanticDriverService extends AccessibilityService {
             List<AccessibilityNodeInfo> roots = new ArrayList<>();
             for (AccessibilityWindowInfo window : ordered) {
                 AccessibilityNodeInfo root = window.getRoot();
-                if (root != null) roots.add(root);
+                if (root != null) {
+                    root.refresh();
+                    roots.add(root);
+                }
             }
             if (roots.isEmpty()) {
                 AccessibilityNodeInfo activeRoot = getRootInActiveWindow();
-                if (activeRoot != null) roots.add(activeRoot);
+                if (activeRoot != null) {
+                    activeRoot.refresh();
+                    roots.add(activeRoot);
+                }
             }
             return roots;
         } finally {
@@ -454,6 +460,19 @@ public final class SemanticDriverService extends AccessibilityService {
 
     @SuppressWarnings("deprecation")
     private static void appendNode(StringBuilder output, AccessibilityNodeInfo node, int index) {
+        appendNode(output, node, index, false);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void appendNode(
+        StringBuilder output,
+        AccessibilityNodeInfo node,
+        int index,
+        boolean refreshSubtree
+    ) {
+        String viewId = string(node.getViewIdResourceName());
+        boolean refreshThisSubtree = refreshSubtree || viewId.startsWith("parity:");
+        if (refreshThisSubtree) node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         output.append("<node");
@@ -463,6 +482,7 @@ public final class SemanticDriverService extends AccessibilityService {
         attribute(output, "class", string(node.getClassName()));
         attribute(output, "package", string(node.getPackageName()));
         attribute(output, "content-desc", string(node.getContentDescription()));
+        attribute(output, "state-description", string(node.getStateDescription()));
         attribute(output, "checkable", Boolean.toString(node.isCheckable()));
         attribute(output, "checked", Boolean.toString(node.isChecked()));
         attribute(output, "clickable", Boolean.toString(node.isClickable()));
@@ -483,7 +503,7 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
-                appendNode(output, child, childIndex);
+                appendNode(output, child, childIndex, refreshThisSubtree);
             } finally {
                 child.recycle();
             }

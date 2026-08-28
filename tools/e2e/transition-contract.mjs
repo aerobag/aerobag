@@ -7,7 +7,10 @@ export const E2E_TIMING = Object.freeze({
   localReadyMs: 3_000,
   stabilityMs: 1_500,
   stabilityPollIntervalMs: 100,
-  observationMs: 15_000,
+  localResourceMs: 15_000,
+  replayProgressMs: 15_000,
+  animationCycleMs: 15_000,
+  androidRecreationMs: 15_000,
   startupMs: 60_000,
   resourceMs: 60_000,
   cloudConsistencyMs: 30_000,
@@ -21,7 +24,7 @@ export const E2E_TIMING = Object.freeze({
 export async function observeUntil(
   description,
   probe,
-  { timeoutMs = E2E_TIMING.observationMs, intervalMs = E2E_TIMING.pollIntervalMs } = {},
+  { timeoutMs = E2E_TIMING.localReadyMs, intervalMs = E2E_TIMING.pollIntervalMs } = {},
 ) {
   const startedAt = performance.now();
   const deadline = startedAt + timeoutMs;
@@ -77,6 +80,13 @@ export async function performTransition(description, {
   intervalMs = E2E_TIMING.pollIntervalMs,
   onTiming = null,
 }) {
+  if (responseTimeoutMs > E2E_TIMING.userResponseMs) {
+    throw new Error(
+      `${description} requests a ${responseTimeoutMs}ms user-response budget; ` +
+        `user transitions are capped at ${E2E_TIMING.userResponseMs}ms. ` +
+        "Observe longer resource or temporal work as a separate named phase.",
+    );
+  }
   const transitionStartedAt = performance.now();
   const readyResult = await observeUntil(`${description} ready`, ready, {
     timeoutMs: readyTimeoutMs,

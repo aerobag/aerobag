@@ -846,6 +846,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       selected: node.selected === "true",
       checked: node.checked === "true",
       pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+      disabled_reason: node["state-description"] || null,
       expanded: elementId.startsWith("settings-section-")
         ? node.checked === "true" || node.selected === "true"
         : null,

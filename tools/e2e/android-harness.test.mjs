@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   assertNoAerobagAnr,
@@ -26,6 +27,21 @@ import {
   verticalScrollTargetIsReachable,
   verticalScrollGesture,
 } from "./android-harness.mjs";
+
+test("persistent semantic dumps refresh accessibility roots before traversal", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  assert.match(source, /AccessibilityNodeInfo root = window\.getRoot\(\);[\s\S]*?root\.refresh\(\);/);
+  assert.match(source, /AccessibilityNodeInfo activeRoot = getRootInActiveWindow\(\);[\s\S]*?activeRoot\.refresh\(\);/);
+  assert.match(
+    source,
+    /refreshSubtree \|\| viewId\.startsWith\("parity:"\)[\s\S]*?if \(refreshThisSubtree\) node\.refresh\(\);/,
+  );
+  assert.match(source, /appendNode\(output, child, childIndex, refreshThisSubtree\)/);
+  assert.match(source, /attribute\(output, "state-description", string\(node\.getStateDescription\(\)\)\);/);
+});
 
 test("cloud journeys use host time while deterministic data journeys use fixture time", () => {
   assert.equal(androidJourneyEpochMs("shared.cloud-crossfill", 100, 200), 200);

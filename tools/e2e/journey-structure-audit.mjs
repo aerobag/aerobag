@@ -95,6 +95,13 @@ function calledFunction(node) {
     : null;
 }
 
+function isTimingClass(node, name) {
+  return ts.isPropertyAccessExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "E2E_TIMING" &&
+    node.name.text === name;
+}
+
 function visit(node, callback) {
   callback(node);
   ts.forEachChild(node, (child) => visit(child, callback));
@@ -230,6 +237,14 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
         if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) continue;
         if (property.name.text === "ready" || property.name.text === "complete") {
           reportMutations(property.initializer, `${called ?? method} ${property.name.text} callback`);
+        } else if (
+          property.name.text === "responseTimeoutMs" &&
+          !isTimingClass(property.initializer, "userResponseMs")
+        ) {
+          violations.push({
+            ...sourceLocation(source, property.initializer),
+            message: "user transition responseTimeoutMs must use E2E_TIMING.userResponseMs",
+          });
         }
       }
     }

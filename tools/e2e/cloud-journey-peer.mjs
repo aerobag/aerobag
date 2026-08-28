@@ -84,12 +84,12 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
       await performTransition("cloud journey peer link", {
         ready: () => driver.readElement("cloud-action-accept_setup_code"),
         act: () => driver.performAction("accept_setup_code"),
-        complete: async () => {
-          const state = await page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
-          return state?.event_stream_id ? state : null;
-        },
-        responseTimeoutMs: E2E_TIMING.cloudConsistencyMs,
+        complete: () => driver.readElement("cloud-panel-linked"),
       });
+      await this.waitForState(
+        (state) => Boolean(state.event_stream_id),
+        "cloud journey peer event stream",
+      );
     },
 
     async appendRoute(route) {
@@ -112,7 +112,6 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
             ? state
             : null;
         },
-        responseTimeoutMs: E2E_TIMING.cloudConsistencyMs,
       });
       return result.value;
     },

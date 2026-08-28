@@ -183,6 +183,20 @@ async function enableDeterministicOwnship(runtime) {
     const value = await runtime.driver.readElement("center-here-button");
     return value?.enabled ? value : null;
   });
+  const initialOwnship = projectionId((await runtime.driver.readProjection(
+    "parity:ownship-state:",
+  ))[0]);
+  if (!initialOwnship || initialOwnship.includes("position:none")) {
+    throw new Error(`Bad Autopilot did not publish an initial ownship position: ${initialOwnship}`);
+  }
+  await runtime.eventually("Bad Autopilot ownship advanced", async () => {
+    const current = projectionId((await runtime.driver.readProjection(
+      "parity:ownship-state:",
+    ))[0]);
+    return current && current !== initialOwnship && !current.includes("position:none")
+      ? current
+      : null;
+  });
 }
 
 async function startupNavigation(runtime) {
@@ -910,7 +924,7 @@ async function plateOperate(runtime) {
       ? "plate-ownship-overlay"
       : "parity:plate-ownship-overlay");
     return entries[0] ?? null;
-  }, E2E_TIMING.observationMs);
+  }, E2E_TIMING.userResponseMs);
   runtime.check("plate.georeferenced-ownship", Boolean(ownship));
 
   const initialViewport = await runtime.eventually("initial plate viewport", () => plateViewport(runtime));
@@ -1511,7 +1525,7 @@ async function mapModesAndOverlays(runtime) {
     if (state?.track !== "none") return null;
     const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
     return viewport ? { state, viewport } : null;
-  }, E2E_TIMING.observationMs, 40);
+  }, E2E_TIMING.replayProgressMs, 40);
   await runtime.driver.performAction("playback-play-toggle");
   await runtime.eventually("replay paused in track gap", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
@@ -1663,10 +1677,13 @@ async function inspectorDetails(runtime) {
   const airport = await selectAirportFromMapSearch(runtime, "KSEA");
   runtime.check("inspector.airport-priority", Boolean(airport), airport.text);
   const initialDistance = airport.text;
+  const distanceSamples = [initialDistance];
   const changedDistance = await runtime.eventually("live inspector distance", async () => {
     const entry = (await runtime.driver.readProjection("parity:map-selection-selected:KSEA"))[0];
+    if (entry?.text && distanceSamples.at(-1) !== entry.text) distanceSamples.push(entry.text);
+    runtime.result.diagnostics.inspector_distance_samples = distanceSamples;
     return entry?.text && entry.text !== initialDistance ? entry.text : null;
-  }, E2E_TIMING.observationMs, 250);
+  }, E2E_TIMING.userResponseMs, 250);
   runtime.check("inspector.distance-live", Boolean(changedDistance), `${initialDistance} -> ${changedDistance}`);
 
   await runtime.driver.performAction("airport_info");
@@ -1703,13 +1720,13 @@ async function inspectorDetails(runtime) {
   const spot = await runtime.eventually("raw SPOT selection", async () => {
     const entries = await runtime.driver.readProjection("parity:map-selection-selected:");
     return entries.find((entry) => /SPOT/i.test(entry.text)) ?? null;
-  }, E2E_TIMING.observationMs);
+  }, E2E_TIMING.userResponseMs);
   runtime.check("inspector.spot-fallback", Boolean(spot), spot?.text);
   const terrain = await runtime.eventually("SPOT terrain result", async () => {
     const entry = (await runtime.driver.readProjection("parity:map-selection-selected:"))
       .find((candidate) => /SPOT/i.test(candidate.text));
     return entry && /(MSL|ELEV|FT)/i.test(entry.text) ? entry : null;
-  }, E2E_TIMING.observationMs);
+  }, E2E_TIMING.localResourceMs);
   runtime.check("inspector.terrain-async", Boolean(terrain), terrain?.text);
   if (await runtime.driver.readElement("map-selection-tray")) {
     await runtime.driver.back();
@@ -1995,18 +2012,15 @@ async function loadReplayFixture(runtime) {
     tracePath,
     { dismissKeyboard: runtime.platform === "android" },
   );
-  return runtime.transition("load replay trace", {
-    ready: async () => {
-      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-      return state?.status === "empty" ? state : null;
-    },
-    act: () => runtime.driver.performAction("playback-load-button"),
-    complete: async () => {
-      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-      return state?.status === "paused" && state.duration > 0 ? state : null;
-    },
-    responseTimeoutMs: E2E_TIMING.resourceMs,
+  await runtime.eventually("replay trace ready to load", async () => {
+    const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+    return state?.status === "empty" ? state : null;
   });
+  await runtime.driver.performAction("playback-load-button");
+  return runtime.eventually("loaded replay trace", async () => {
+    const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+    return state?.status === "paused" && state.duration > 0 ? state : null;
+  }, E2E_TIMING.resourceMs);
 }
 
 async function setReplayRate(runtime, rate) {
@@ -2047,7 +2061,7 @@ async function replayTrackUp(runtime) {
   await runtime.eventually("replay ownship entered track gap", async () => {
     const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
     return state?.mode === "replay" && state.draw && state.track === "none" ? state : null;
-  }, E2E_TIMING.observationMs, 40);
+  }, E2E_TIMING.replayProgressMs, 40);
   await runtime.driver.performAction("playback-play-toggle");
   const paused = await runtime.eventually("replay paused in track gap", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
@@ -2145,7 +2159,7 @@ async function nexradFrames(runtime) {
   const next = await runtime.eventually("advanced NEXRAD history frame", async () => {
     const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
     return state && state.tiles > 0 && state.frames === first.frames && state.frame !== first.frame ? state : null;
-  }, E2E_TIMING.observationMs, 100);
+  }, E2E_TIMING.animationCycleMs, 100);
   runtime.check("livefeed.nexrad-frames", Boolean(next), `${JSON.stringify(first)} -> ${JSON.stringify(next)}`);
 }
 

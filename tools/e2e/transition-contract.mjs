@@ -114,16 +114,24 @@ export async function performTransition(description, {
   const actionStartedAt = performance.now();
   await act(readyResult.value);
   const actionDurationMs = Math.round(performance.now() - actionStartedAt);
+  const remainingResponseMs = responseTimeoutMs - (performance.now() - actionStartedAt);
+  if (remainingResponseMs <= 0) {
+    throw new Error(
+      `${description} action exceeded the ${responseTimeoutMs}ms user-response budget`,
+    );
+  }
   const completion = await observeUntil(`${description} completed`, complete, {
-    timeoutMs: responseTimeoutMs,
+    timeoutMs: remainingResponseMs,
     intervalMs,
     consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
   });
+  const responseDurationMs = Math.round(performance.now() - actionStartedAt);
   const timing = {
     description,
     ready_ms: readyResult.durationMs,
     action_ms: actionDurationMs,
-    response_ms: completion.durationMs,
+    completion_ms: completion.durationMs,
+    response_ms: responseDurationMs,
     total_ms: Math.round(performance.now() - transitionStartedAt),
     response_budget_ms: responseTimeoutMs,
   };

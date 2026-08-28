@@ -173,8 +173,6 @@ internal class AerobagRetainedModel : ViewModel() {
                 selectedChartId = prefs.getString(UiPrefsSelectedChartKey, null),
                 startupPerfTrace = startupPerfTrace,
             )
-            retainedSession.liveFeedRuntime.start()
-            startupPerfTrace?.mark("live_feed_runtime_started")
             startupPerfTrace?.mark("session_created", sessionCreateStartedAtMs)
 
             val result = Result.success(loadedRuntime)

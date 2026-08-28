@@ -178,7 +178,10 @@ budget; startup, resource loading, cloud convergence, and package sync use
 separate named budgets so increasing an external-operation allowance cannot
 hide an unresponsive button.
 
-The transition helper enforces that three-second ceiling at runtime. Longer
+The transition helper enforces that three-second ceiling at runtime. Action
+delivery and completion observation share that one budget; a slow driver call
+cannot consume three seconds and then receive a second three-second completion
+allowance. Longer
 waits are separate phases with names that expose what the test is actually
 waiting for: local resource computation, replay progression, an animation
 cycle, Android activity recreation, startup, remote consistency, or a bulk
@@ -206,6 +209,10 @@ An Android behavior journey resets core state once during its bootstrap and
 accepts the mandatory disclaimer there. The journey relaunch preserves that
 agreement; it does not clear core settings a second time and manufacture another
 fresh-install consent flow while retained background runtimes are already active.
+The product also treats mandatory consent as a startup barrier: live-feed restore,
+cloud synchronization, ownship ticks, and scheduled session refreshes do not start
+until consent is persisted. This keeps the mandatory user action responsive under
+the same clean-start conditions exercised by qualification.
 Journeys whose subject is application-data loss or an unsupported publication use
 the separate full-data-reset operation explicitly.
 

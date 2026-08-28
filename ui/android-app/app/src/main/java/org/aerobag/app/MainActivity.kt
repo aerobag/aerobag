@@ -400,6 +400,10 @@ private const val SessionCommandNoticeDurationMs = 4_000L
 internal fun shouldRaiseBottomCornerControls(surfaceWidth: Dp): Boolean =
     surfaceWidth > 0.dp &&
         surfaceWidth < PrimaryNavigationDockWidth + (BottomRightControlClearance * 2f)
+
+internal fun backgroundSessionEffectsEnabled(disclaimerRequired: Boolean): Boolean =
+    !disclaimerRequired
+
 internal const val MapTileLoadWorkerCount = 4
 internal const val SlowTileLoadLogMs = 1000L
 internal val TileLoadGenerationIds = AtomicLong()
@@ -2907,7 +2911,15 @@ internal fun AerobagApp(
             uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
         }
     }
-    LaunchedEffect(uiSession, sessionSnapshot.nextSessionSnapshotRefreshEpochMs) {
+    val backgroundEffectsEnabled = backgroundSessionEffectsEnabled(
+        sessionSnapshot.disclaimerState.required,
+    )
+    LaunchedEffect(
+        uiSession,
+        backgroundEffectsEnabled,
+        sessionSnapshot.nextSessionSnapshotRefreshEpochMs,
+    ) {
+        if (!backgroundEffectsEnabled) return@LaunchedEffect
         val deadlineEpochMs = sessionSnapshot.nextSessionSnapshotRefreshEpochMs
         delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
         sessionSnapshotRefreshRunner.request(
@@ -2915,7 +2927,12 @@ internal fun AerobagApp(
             reason = "core_deadline",
         )
     }
-    LaunchedEffect(uiSession, sessionSnapshot.nextCycleProductFreshnessCheckEpochMs) {
+    LaunchedEffect(
+        uiSession,
+        backgroundEffectsEnabled,
+        sessionSnapshot.nextCycleProductFreshnessCheckEpochMs,
+    ) {
+        if (!backgroundEffectsEnabled) return@LaunchedEffect
         val nextCheckEpochMs = sessionSnapshot.nextCycleProductFreshnessCheckEpochMs ?: return@LaunchedEffect
         val delayMs = (nextCheckEpochMs - System.currentTimeMillis())
             .coerceAtLeast(0L)
@@ -2925,6 +2942,11 @@ internal fun AerobagApp(
         }
     }
     val liveFeedRuntime = retainedCoreSession.liveFeedRuntime
+    LaunchedEffect(liveFeedRuntime, backgroundEffectsEnabled) {
+        if (backgroundEffectsEnabled) {
+            liveFeedRuntime.start()
+        }
+    }
     var liveFeedGeneration by remember(liveFeedRuntime) { mutableIntStateOf(0) }
     DisposableEffect(liveFeedRuntime) {
         val subscription = liveFeedRuntime.subscribeGeneration { generation ->
@@ -3418,29 +3440,31 @@ internal fun AerobagApp(
         LocalAerobagUiTheme provides uiTheme,
         LocalNavigationPageOptions provides navigationPageOptions,
     ) {
-        HighRateSessionEffects(
-            sessionRenderModel = sessionRenderModel,
-            diagnostics = sessionRenderDiagnostics,
-            onRefreshOwnship = {
-                runHighRateSessionCommand("refreshOwnshipSource", "AerobagOwnship") {
-                    uiSession.refreshSnapshot()
-                }
-            },
-            onPlaybackTick = {
-                runHighRateSessionCommand("tickPlayback", "AerobagPlayback") {
-                    uiSession.tickPlayback(System.currentTimeMillis().toDouble())
-                }
-            },
-            onBadAutopilotTick = {
-                runHighRateSessionCommand("tickBadAutopilot", "AerobagOwnship") {
-                    uiSession.tickBadAutopilot(System.currentTimeMillis().toDouble())
-                }
-            },
-        )
-        CloudEffectPump(
-            uiSession = uiSession,
-            onSnapshot = ::applySessionSnapshot,
-        )
+        if (backgroundEffectsEnabled) {
+            HighRateSessionEffects(
+                sessionRenderModel = sessionRenderModel,
+                diagnostics = sessionRenderDiagnostics,
+                onRefreshOwnship = {
+                    runHighRateSessionCommand("refreshOwnshipSource", "AerobagOwnship") {
+                        uiSession.refreshSnapshot()
+                    }
+                },
+                onPlaybackTick = {
+                    runHighRateSessionCommand("tickPlayback", "AerobagPlayback") {
+                        uiSession.tickPlayback(System.currentTimeMillis().toDouble())
+                    }
+                },
+                onBadAutopilotTick = {
+                    runHighRateSessionCommand("tickBadAutopilot", "AerobagOwnship") {
+                        uiSession.tickBadAutopilot(System.currentTimeMillis().toDouble())
+                    }
+                },
+            )
+            CloudEffectPump(
+                uiSession = uiSession,
+                onSnapshot = ::applySessionSnapshot,
+            )
+        }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()

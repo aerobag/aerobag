@@ -298,6 +298,7 @@ export function androidPageTag(pageId) {
 }
 
 const ANDROID_PAGE_ELEMENT_TAGS = Object.freeze({
+  "ownship-source-button": "parity:ownship-launcher",
   "page:map": ANDROID_PAGE_TAGS.map,
   "page:plate": ANDROID_PAGE_TAGS.charts,
   "page:flight_plan": ANDROID_PAGE_TAGS.flight_plan,
@@ -441,6 +442,10 @@ export function androidSemanticTag(value) {
     return `parity:plan-control:${ANDROID_PLAN_CONTROL_IDS[controlId] ?? controlId}`;
   }
   return value.startsWith("parity:") ? value : `parity:${value}`;
+}
+
+export function androidElementSemanticTag(elementId) {
+  return ANDROID_PAGE_ELEMENT_TAGS[elementId] ?? androidSemanticTag(elementId);
 }
 
 export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
@@ -819,7 +824,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         enabled: true,
       } : null;
     }
-    const semanticTag = ANDROID_PAGE_ELEMENT_TAGS[elementId] ?? androidSemanticTag(elementId);
+    const semanticTag = androidElementSemanticTag(elementId);
     const xml = dumpAndroid(this.serial);
     let node = findTagOrPrefix(xml, semanticTag);
     if (!node) node = androidElementFallback(xml, elementId);
@@ -842,7 +847,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   async revealElement(elementId) {
     const existing = await this.readElement(elementId);
     if (existing) return existing;
-    const semanticTag = ANDROID_PAGE_ELEMENT_TAGS[elementId] ?? androidSemanticTag(elementId);
+    const semanticTag = androidElementSemanticTag(elementId);
     if (androidElementMayRequireHorizontalScroll(elementId)) {
       await scrollHorizontallyUntilTag(this.serial, semanticTag, 8);
     }

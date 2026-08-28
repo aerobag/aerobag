@@ -37,6 +37,7 @@ import {
   androidActionCandidates, androidElementEnabled, androidElementFallback,
   androidActionUsesSubmit, AndroidSemanticJourneyDriver,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
+  androidElementSemanticTag,
   androidDataStatusRowsFromStateTag, androidPageTag, androidProjectionMayRequireVerticalScan, androidSemanticTag,
   androidTextControlNeedsTap,
   androidZoomKeyCode, findTagOrPrefix,
@@ -248,6 +249,20 @@ test("a user transition cannot borrow a long-running operation budget", async ()
       responseTimeoutMs: E2E_TIMING.localResourceMs,
     }),
     /user transitions are capped.*separate named phase/s,
+  );
+});
+
+test("action delivery and completion share one user-response budget", async () => {
+  await assert.rejects(
+    performTransition("slow action delivery", {
+      ready: async () => true,
+      act: async () => new Promise((resolve) => setTimeout(resolve, 8)),
+      complete: async () => false,
+      readyTimeoutMs: 20,
+      responseTimeoutMs: 10,
+      intervalMs: 1,
+    }),
+    /timed out|exceeded the 10ms user-response budget/,
   );
 });
 
@@ -1219,6 +1234,10 @@ test("Android semantic aliases preserve shared search suggestion ids", () => {
     androidSemanticTag("chart-search-suggestion-KSEA"),
     "parity:chart-search-suggestion:KSEA",
   );
+});
+
+test("Android aliases the shared ownship launcher to its Compose semantic tag", () => {
+  assert.equal(androidElementSemanticTag("ownship-source-button"), "parity:ownship-launcher");
 });
 
 test("Android exact search suggestions use the focused field submit action", () => {

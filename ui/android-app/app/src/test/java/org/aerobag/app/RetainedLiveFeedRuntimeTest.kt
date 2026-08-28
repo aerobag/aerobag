@@ -8,10 +8,23 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RetainedLiveFeedRuntimeTest {
+    @Test
+    fun mandatoryDisclaimerDefersBackgroundSessionEffects() {
+        assertFalse(backgroundSessionEffectsEnabled(disclaimerRequired = true))
+        assertTrue(backgroundSessionEffectsEnabled(disclaimerRequired = false))
+
+        val retainedSource = sourceFile("src/main/java/org/aerobag/app/RetainedSession.kt").readText()
+        val activitySource = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+        assertFalse(retainedSource.contains("retainedSession.liveFeedRuntime.start()"))
+        assertTrue(activitySource.contains("liveFeedRuntime.start()"))
+        assertTrue(activitySource.contains("if (backgroundEffectsEnabled)"))
+    }
+
     @Test
     fun releasePromotionGateIsEnabledOnlyForE2eArtifacts() {
         val releaseSource = sourceFile("src/release/java/org/aerobag/app/LiveFeedPromotionGate.kt").readText()

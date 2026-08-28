@@ -199,6 +199,21 @@ async function enableDeterministicOwnship(runtime) {
   });
 }
 
+async function selectStationaryPlanPreview(runtime) {
+  await runtime.driver.openPage("map");
+  await runtime.transition("select stationary Plan Preview ownship", {
+    ready: async () => {
+      const launcher = await runtime.driver.readElement("ownship-source-button");
+      return launcher?.enabled ? launcher : null;
+    },
+    act: () => runtime.driver.chooseOption("ownship-source-button", "__direct_situation__"),
+    complete: async () => {
+      const launcher = await runtime.driver.readElement("ownship-source-button");
+      return /Plan Preview/i.test(launcher?.text ?? "") ? launcher : null;
+    },
+  });
+}
+
 async function startupNavigation(runtime) {
   await runtime.step("app.reset", () => runtime.driver.reset());
   // Android's clean-device package bootstrap must accept the disclaimer before
@@ -595,6 +610,10 @@ async function flightPlanEditAndNavigate(runtime) {
     const state = await planState(runtime);
     return state && state !== beforeDirectTo ? state : null;
   });
+  // Bad Autopilot supplied the position needed to construct Direct-To, but it
+  // must not keep auto-sequencing while this journey exercises manual controls.
+  await selectStationaryPlanPreview(runtime);
+  await runtime.driver.openPage("flight_plan");
   const directState = await enabledPlanControl(runtime, "stop_navigation");
   runtime.check("plan.direct-to", Boolean(directState));
   await runtime.driver.performAction("stop_navigation");
@@ -612,17 +631,25 @@ async function flightPlanEditAndNavigate(runtime) {
   runtime.check("plan.activate-next-leg", Boolean(activeAfterNext));
 
   const suspensionControl = "toggle_sequencing_suspension";
-  await enabledPlanControl(runtime, suspensionControl);
-  await runtime.driver.performAction(suspensionControl);
-  const suspended = await runtime.eventually("sequencing suspended", async () => {
-    const control = await planControl(runtime, suspensionControl);
-    return control?.pressed === "true" || control?.selected === true ? control : null;
+  const suspended = await runtime.transition("suspend sequencing", {
+    ready: () => enabledPlanControl(runtime, suspensionControl),
+    act: () => runtime.driver.performAction(suspensionControl),
+    complete: async () => {
+      const control = await planControl(runtime, suspensionControl);
+      return control?.pressed === "true" || control?.selected === true ? control : null;
+    },
   });
   runtime.check("plan.suspend-sequencing", Boolean(suspended), suspended?.text);
-  await runtime.driver.performAction(suspensionControl);
-  const resumed = await runtime.eventually("sequencing resumed", async () => {
-    const control = await planControl(runtime, suspensionControl);
-    return control && control.pressed !== "true" && control.selected !== true ? control : null;
+  const resumed = await runtime.transition("resume sequencing", {
+    ready: async () => {
+      const control = await planControl(runtime, suspensionControl);
+      return control?.pressed === "true" || control?.selected === true ? control : null;
+    },
+    act: () => runtime.driver.performAction(suspensionControl),
+    complete: async () => {
+      const control = await planControl(runtime, suspensionControl);
+      return control && control.pressed !== "true" && control.selected !== true ? control : null;
+    },
   });
   runtime.check("plan.unsuspend-sequencing", Boolean(resumed), resumed?.text);
 

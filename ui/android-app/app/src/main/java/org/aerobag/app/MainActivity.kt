@@ -3471,7 +3471,8 @@ internal fun AerobagApp(
                 .testTag(
                     "parity:startup-state:ready:true:" +
                         "disclaimer_required:${sessionSnapshot.disclaimerState.required}:" +
-                        "persisted_page:${persistedPage.name}",
+                        "persisted_page:${persistedPage.name}:" +
+                        "session_revision:${sessionSnapshot.sessionRevision}",
                 ),
         ) {
             val bottomCornerControlsRaised = shouldRaiseBottomCornerControls(maxWidth)
@@ -3794,9 +3795,10 @@ internal fun AerobagApp(
                     )
                 }
                 AppPage.Settings -> {
+                    val renderedSettingsPageState by sessionRenderModel.settingsPageState
                     SettingsPage(
                         page = page,
-                        state = sessionSnapshot.settingsPageState,
+                        state = renderedSettingsPageState,
                         navElement = navElement,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         onOpenPlan = { navigateToPage(AppPage.Plan) },

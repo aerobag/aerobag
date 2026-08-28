@@ -3975,7 +3975,7 @@ function OperationalApp() {
     <main
       className="appShell"
       style={themeVars}
-      data-testid={`parity:startup-state:ready:true:disclaimer_required:${sessionSnapshot.disclaimer_state.required}:persisted_page:${persistedPage}`}
+      data-testid={`parity:startup-state:ready:true:disclaimer_required:${sessionSnapshot.disclaimer_state.required}:persisted_page:${persistedPage}:session_revision:${sessionSnapshot.session_revision}`}
     >
       <NavigationPageOptionsContext.Provider value={navigationPageOptions}>
       <HighRateSessionEffects
@@ -4543,6 +4543,10 @@ function MapPage(props: {
   const ownship = highRateSnapshot.app_ui_state.ownship.render;
   const aircraftPlanViewPath = flightPlanSnapshot.app_ui_state.aircraft_plan_view_path;
   const ownshipControls = highRateSnapshot.app_ui_state.ownship.controls;
+  const activeOwnshipSourceId = ownshipControls.sources.find((source) => source.active)?.source_id;
+  const activeOwnshipSource = typeof activeOwnshipSourceId === "string"
+    ? activeOwnshipSourceId
+    : activeOwnshipSourceId?.[0] ?? "none";
   const flightDataBanner = highRateSnapshot.app_ui_state.flight_data_banner;
   const playbackUiState = highRateSnapshot.playback_ui_state;
   const playbackPanelState = highRateSnapshot.playback_panel_state;
@@ -7436,7 +7440,7 @@ function MapPage(props: {
           </div>
         ) : null}
         <div
-          data-testid={`parity:ownship-state:mode:${ownship.mode}:draw:${ownship.draw_aircraft}:position:${ownship.position ? `${ownship.position.lat.toFixed(5)},${ownship.position.lon.toFixed(5)}` : "none"}:track:${ownship.track_deg_true == null ? "none" : ownship.track_deg_true.toFixed(1)}`}
+          data-testid={`parity:ownship-state:mode:${ownship.mode}:source:${activeOwnshipSource}:draw:${ownship.draw_aircraft}:position:${ownship.position ? `${ownship.position.lat.toFixed(5)},${ownship.position.lon.toFixed(5)}` : "none"}:track:${ownship.track_deg_true == null ? "none" : ownship.track_deg_true.toFixed(1)}`}
           aria-hidden="true"
           style={{ display: "none" }}
         />
@@ -13026,7 +13030,9 @@ function CloudPage(props: {
           >
             {control.copy_action.label}
           </button>
-          {copyStatus ? <span className="cloudCopyStatus">{copyStatus}</span> : null}
+          {copyStatus ? (
+            <span className="cloudCopyStatus" data-testid="cloud-copy-status">{copyStatus}</span>
+          ) : null}
         </div>
       ) : null}
       {panel.actions.length > 0 ? (

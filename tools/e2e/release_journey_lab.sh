@@ -26,7 +26,8 @@ SERVE_WEB_DIST="${AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST:-0}"
 REUSE_FIXTURE="${AEROBAG_RELEASE_JOURNEY_REUSE_FIXTURE:-1}"
 APP_ARTIFACTS_DIR="${AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR:-/tmp/release-e2e-apps-final}"
 ANDROID_JOURNEY_TIMEOUT_SECONDS="${AEROBAG_ANDROID_JOURNEY_TIMEOUT_SECONDS:-600}"
-ANDROID_BASELINE_SNAPSHOT="${AEROBAG_ANDROID_BASELINE_SNAPSHOT:-}"
+ANDROID_BASELINE_ARCHIVE="${AEROBAG_ANDROID_BASELINE_ARCHIVE:-}"
+ANDROID_BASELINE_DEVICE_ARCHIVE="/data/local/tmp/aerobag-release-journey-baseline.tar"
 JOURNEY_REPETITIONS="${AEROBAG_RELEASE_JOURNEY_REPETITIONS:-1}"
 [[ "$JOURNEY_REPETITIONS" =~ ^[1-9][0-9]*$ ]] || {
   echo "AEROBAG_RELEASE_JOURNEY_REPETITIONS must be a positive integer" >&2
@@ -65,9 +66,9 @@ Commands:
   android-install-apk [APK]    Clean-install an immutable APK and sync all fixture packages.
   android-upgrade-apk [APK]    Install a rebuilt immutable APK while preserving app data.
   android-test JOURNEY         Run one journey using the installed app.
-  android-baseline-save NAME   Save the prepared emulator state for fast journey resets.
-  android-baseline-restore NAME
-                               Restore a prepared emulator state and host port mappings.
+  android-baseline-save FILE   Archive prepared app data for fast journey resets.
+  android-baseline-restore FILE
+                               Restore prepared app data without resetting the emulator VM.
   android-suite [p0|p1|all] [START_AT]
                                Run Android journeys, optionally resuming at START_AT.
   android-suite-shard [p0|p1|all] SHARD COUNT
@@ -283,27 +284,65 @@ JS
 }
 
 android_baseline_save() {
-  local name="$1"
+  local archive="$1"
+  local temporary="${archive}.tmp"
+  android_clear_baseline_live_feeds
+  android_assert_baseline_live_feeds_empty
+  mkdir -p "$(dirname "$archive")"
+  adb -s "$SERIAL" exec-out run-as org.aerobag.app tar -C . -cf - . >"$temporary"
+  mv "$temporary" "$archive"
+  android_assert_baseline_archive_clean "$archive"
+  adb -s "$SERIAL" push "$archive" "$ANDROID_BASELINE_DEVICE_ARCHIVE" >/dev/null
+  echo "Android journey app-data baseline saved: $archive"
+}
+
+android_clear_baseline_live_feeds() {
   adb -s "$SERIAL" shell am force-stop org.aerobag.app >/dev/null
-  adb -s "$SERIAL" emu avd snapshot save "$name" >/dev/null
-  echo "Android journey baseline saved: $name"
+  adb -s "$SERIAL" shell run-as org.aerobag.app rm -rf files/live-feeds
+  adb -s "$SERIAL" shell run-as org.aerobag.app rm -f files/e2e-live-feed-promotion.pause
+}
+
+android_assert_baseline_live_feeds_empty() {
+  local paths
+  paths="$({
+    adb -s "$SERIAL" shell run-as org.aerobag.app \
+      find files/live-feeds -type f -print 2>/dev/null || true
+  } | tr -d '\r')"
+  if [[ -n "$paths" ]]; then
+    echo "Android journey baseline contains persisted live-feed state:" >&2
+    echo "$paths" >&2
+    exit 1
+  fi
+}
+
+android_assert_baseline_archive_clean() {
+  local archive="$1"
+  local leaked
+  leaked="$(tar -tf "$archive" | grep -E '^\./files/(live-feeds/|e2e-live-feed-promotion\.pause$)' || true)"
+  if [[ -n "$leaked" ]]; then
+    echo "Android journey app-data baseline contains persisted live-feed state:" >&2
+    echo "$leaked" >&2
+    exit 1
+  fi
 }
 
 android_baseline_restore() {
-  local name="$1"
-  adb -s "$SERIAL" emu avd snapshot load "$name" >/dev/null
-  for _ in $(seq 1 100); do
-    if adb -s "$SERIAL" get-state >/dev/null 2>&1 &&
-      [[ "$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
-      adb -s "$SERIAL" reverse "tcp:${ANDROID_PACKAGE_PORT}" "tcp:${PORT}" >/dev/null
-      return
-    fi
-    sleep 0.1
-  done
-  echo "Android emulator did not recover after restoring snapshot $name" >&2
-  adb -s "$SERIAL" get-state >&2 || true
-  adb -s "$SERIAL" shell getprop sys.boot_completed >&2 || true
-  exit 1
+  local archive="$1"
+  [[ -f "$archive" ]] || {
+    echo "Android journey app-data baseline is missing: $archive" >&2
+    exit 1
+  }
+  android_assert_baseline_archive_clean "$archive"
+  adb -s "$SERIAL" shell am force-stop org.aerobag.app >/dev/null
+  adb -s "$SERIAL" shell pm clear org.aerobag.app >/dev/null
+  if ! adb -s "$SERIAL" shell test -f "$ANDROID_BASELINE_DEVICE_ARCHIVE"; then
+    adb -s "$SERIAL" push "$archive" "$ANDROID_BASELINE_DEVICE_ARCHIVE" >/dev/null
+  fi
+  adb -s "$SERIAL" shell run-as org.aerobag.app \
+    tar -C . -xf "$ANDROID_BASELINE_DEVICE_ARCHIVE"
+  android_clear_baseline_live_feeds
+  android_assert_baseline_live_feeds_empty
+  adb -s "$SERIAL" reverse "tcp:${ANDROID_PACKAGE_PORT}" "tcp:${PORT}" >/dev/null
 }
 
 run_android_test() {
@@ -318,8 +357,8 @@ run_android_test() {
   profile="$(journey_profile "$journey")"
   ensure_journey_profile "$profile"
   reset_fixture_state
-  if [[ -n "$ANDROID_BASELINE_SNAPSHOT" ]]; then
-    android_baseline_restore "$ANDROID_BASELINE_SNAPSHOT"
+  if [[ -n "$ANDROID_BASELINE_ARCHIVE" ]]; then
+    android_baseline_restore "$ANDROID_BASELINE_ARCHIVE"
   fi
   if [[ "$journey" == "shared.cloud-crossfill" ]]; then
     cloud_start
@@ -329,7 +368,7 @@ run_android_test() {
     artifact_env+=("AEROBAG_TEST_ARTIFACTS_ROOT=$TEST_ARTIFACTS_ROOT")
   fi
   local -a state_args=(--clear-app-data --sync-all-available-packages)
-  if [[ -n "$ANDROID_BASELINE_SNAPSHOT" ]]; then
+  if [[ -n "$ANDROID_BASELINE_ARCHIVE" ]]; then
     state_args=()
   fi
   timeout --foreground --kill-after=15s "${ANDROID_JOURNEY_TIMEOUT_SECONDS}s" \
@@ -556,15 +595,15 @@ case "$command" in
     run_repetitions android "$2"
     ;;
   android-baseline-save)
-    name="${2:-$ANDROID_BASELINE_SNAPSHOT}"
-    [[ -n "$name" ]] || { echo "android-baseline-save requires NAME" >&2; exit 2; }
-    android_baseline_save "$name"
+    archive="${2:-$ANDROID_BASELINE_ARCHIVE}"
+    [[ -n "$archive" ]] || { echo "android-baseline-save requires FILE" >&2; exit 2; }
+    android_baseline_save "$archive"
     ;;
   android-baseline-restore)
-    name="${2:-$ANDROID_BASELINE_SNAPSHOT}"
-    [[ -n "$name" ]] || { echo "android-baseline-restore requires NAME" >&2; exit 2; }
-    android_baseline_restore "$name"
-    echo "Android journey baseline restored: $name"
+    archive="${2:-$ANDROID_BASELINE_ARCHIVE}"
+    [[ -n "$archive" ]] || { echo "android-baseline-restore requires FILE" >&2; exit 2; }
+    android_baseline_restore "$archive"
+    echo "Android journey app-data baseline restored: $archive"
     ;;
   android-suite)
     require_fixture
@@ -572,13 +611,14 @@ case "$command" in
     start_at="${3:-}"
     started="${start_at:+0}"
     cd "$ROOT"
-    while IFS= read -r journey; do
+    mapfile -t journeys < <(implemented_journeys android "$priority")
+    for journey in "${journeys[@]}"; do
       if [[ "$started" == "0" && "$journey" != "$start_at" ]]; then
         continue
       fi
       started="1"
       run_repetitions android "$journey" || exit $?
-    done < <(implemented_journeys android "$priority")
+    done
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
   android-suite-shard)
@@ -592,10 +632,11 @@ case "$command" in
     }
     selected=0
     cd "$ROOT"
-    while IFS= read -r journey; do
+    mapfile -t journeys < <(android_shard_journeys "$priority" "$shard" "$shard_count")
+    for journey in "${journeys[@]}"; do
       selected=1
       run_repetitions android "$journey" || exit $?
-    done < <(android_shard_journeys "$priority" "$shard" "$shard_count")
+    done
     [[ "$selected" == "1" ]] || echo "android shard $shard/$shard_count has no $priority journeys"
     ;;
   android-shard-list)
@@ -617,13 +658,14 @@ case "$command" in
     cd "$ROOT"
     AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY=1
     export AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY
-    while IFS= read -r journey; do
+    mapfile -t journeys < <(implemented_journeys android "$priority")
+    for journey in "${journeys[@]}"; do
       if [[ "$started" == "0" && "$journey" != "$start_at" ]]; then
         continue
       fi
       started="1"
       run_repetitions android "$journey" || exit $?
-    done < <(implemented_journeys android "$priority")
+    done
     [[ "$started" != "0" ]] || { echo "START_AT journey not found: $start_at" >&2; exit 2; }
     ;;
   android-offline)
@@ -709,18 +751,20 @@ JS
     require_fixture
     priority="${2:-all}"
     cd "$ROOT"
-    while IFS= read -r journey; do
+    mapfile -t journeys < <(implemented_journeys web "$priority")
+    for journey in "${journeys[@]}"; do
       run_repetitions web "$journey" || exit $?
-    done < <(implemented_journeys web "$priority")
+    done
     ;;
   web-dist-suite)
     require_fixture
     priority="${2:-all}"
     cd "$ROOT"
     SERVE_WEB_DIST=1
-    while IFS= read -r journey; do
+    mapfile -t journeys < <(implemented_journeys web "$priority")
+    for journey in "${journeys[@]}"; do
       AEROBAG_E2E_URL="$(fixture_origin)" run_repetitions web "$journey" || exit $?
-    done < <(implemented_journeys web "$priority")
+    done
     ;;
   -h|--help|help)
     usage

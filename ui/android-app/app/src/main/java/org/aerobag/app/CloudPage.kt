@@ -27,9 +27,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -74,6 +77,7 @@ internal fun CloudPage(
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
     val fields = remember { mutableStateMapOf<CloudUiFieldId, String>() }
+    var copyStatus by remember { mutableStateOf("") }
     val currentOnAction = rememberUpdatedState(onAction)
     val compositionActive = remember { AtomicBoolean(true) }
     DisposableEffect(Unit) {
@@ -89,6 +93,7 @@ internal fun CloudPage(
     }
 
     fun invoke(action: UiCloudAction) {
+        copyStatus = ""
         val values = fields.map { CloudUiFieldValue(it.key, it.value) }
         if (!onAction(action.id, values)) return
         when (val effect = action.platformEffect) {
@@ -122,6 +127,7 @@ internal fun CloudPage(
             is CloudPlatformEffect.CopyText -> {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("Aerobag Device Setup Code", effect.text))
+                copyStatus = "Device Setup Code copied"
             }
             null -> Unit
         }
@@ -184,6 +190,7 @@ internal fun CloudPage(
                             heading = state.syncAccountHeading,
                             panels = state.syncAccountPanels,
                             fields = fields,
+                            copyStatus = copyStatus,
                             onInvoke = ::invoke,
                             modifier = Modifier.weight(1f),
                         )
@@ -191,6 +198,7 @@ internal fun CloudPage(
                             heading = state.providerHeading,
                             panels = listOfNotNull(state.providerCard),
                             fields = fields,
+                            copyStatus = copyStatus,
                             onInvoke = ::invoke,
                             modifier = Modifier.weight(1f),
                         )
@@ -200,6 +208,7 @@ internal fun CloudPage(
                         heading = state.syncAccountHeading,
                         panels = state.syncAccountPanels + listOfNotNull(state.providerCard),
                         fields = fields,
+                        copyStatus = copyStatus,
                         onInvoke = ::invoke,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -208,6 +217,7 @@ internal fun CloudPage(
             CloudPanelView(
                 panel = state.overallStatus,
                 fields = fields,
+                copyStatus = copyStatus,
                 onInvoke = ::invoke,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -220,6 +230,7 @@ private fun CloudPanelColumn(
     heading: String,
     panels: List<UiCloudPanel>,
     fields: MutableMap<CloudUiFieldId, String>,
+    copyStatus: String,
     onInvoke: (UiCloudAction) -> Unit,
     modifier: Modifier,
 ) {
@@ -231,7 +242,7 @@ private fun CloudPanelColumn(
             color = uiTheme.controls.panelFg,
         )
         panels.forEach { panel ->
-            CloudPanelView(panel, fields, onInvoke, Modifier.fillMaxWidth())
+            CloudPanelView(panel, fields, copyStatus, onInvoke, Modifier.fillMaxWidth())
         }
     }
 }
@@ -240,6 +251,7 @@ private fun CloudPanelColumn(
 private fun CloudPanelView(
     panel: UiCloudPanel,
     fields: MutableMap<CloudUiFieldId, String>,
+    copyStatus: String,
     onInvoke: (UiCloudAction) -> Unit,
     modifier: Modifier,
 ) {
@@ -325,6 +337,14 @@ private fun CloudPanelView(
                     color = uiTheme.controls.panelFg,
                 )
                 CloudActionButton(control.copyAction, fields, onInvoke)
+                if (copyStatus.isNotEmpty()) {
+                    Text(
+                        text = copyStatus,
+                        modifier = Modifier.testTag("parity:cloud-copy-status"),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = uiTheme.controls.panelFg,
+                    )
+                }
             }
             null -> Unit
         }

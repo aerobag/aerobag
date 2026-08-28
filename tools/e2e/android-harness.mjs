@@ -82,7 +82,7 @@ function semanticDriverRequired() {
 function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
   const methodArgs = method === "GET" ? [] : ["--request", method];
   return spawnSync("curl", [
-    "--fail",
+    "--fail-with-body",
     "--silent",
     "--show-error",
     "--max-time",
@@ -102,7 +102,7 @@ export function setAndroidSemanticText(serial, tag, value) {
   const query = new URLSearchParams({ tag, value });
   const response = semanticDriverRequest(state.port, `/set-text?${query}`, 5, "POST");
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
-  const detail = response.error?.message || response.stderr.trim() || response.stdout.trim();
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverRequired()) {
     throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
   }
@@ -115,7 +115,7 @@ export function clickAndroidSemanticNode(serial, tag) {
   const query = new URLSearchParams({ tag });
   const response = semanticDriverRequest(state.port, `/click?${query}`, 5, "POST");
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
-  const detail = response.error?.message || response.stderr.trim() || response.stdout.trim();
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverRequired()) {
     throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
   }
@@ -134,11 +134,42 @@ export function scrollAndroidSemanticNode(serial, bounds, direction) {
   if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
     return false;
   }
-  const detail = response.error?.message || response.stderr.trim() || response.stdout.trim();
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverRequired()) {
     throw new Error(`persistent Android semantic scroll failed for ${bounds}: ${detail}`);
   }
   return false;
+}
+
+export function waitForAndroidSemanticEvent(serial, timeoutMs) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) return false;
+  const boundedTimeoutMs = Math.max(1, Math.min(1_000, Math.ceil(timeoutMs)));
+  const query = new URLSearchParams({ timeout_ms: String(boundedTimeoutMs) });
+  const response = semanticDriverRequest(
+    state.port,
+    `/await-event?${query}`,
+    Math.max(2, Math.ceil(boundedTimeoutMs / 1_000) + 1),
+  );
+  if (response.status === 0) return response.stdout.trim() === "changed";
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  if (semanticDriverRequired()) {
+    throw new Error(`persistent Android semantic event wait failed: ${detail}`);
+  }
+  return false;
+}
+
+export function queryAndroidSemanticNodes(serial, tag, { prefix = false } = {}) {
+  const state = semanticDrivers.get(serial || "default");
+  if (!state) return null;
+  const query = new URLSearchParams({ tag, prefix: String(prefix) });
+  const response = semanticDriverRequest(state.port, `/query?${query}`, 5);
+  if (response.status === 0) return JSON.parse(response.stdout);
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  if (semanticDriverRequired()) {
+    throw new Error(`persistent Android semantic query failed for ${tag}: ${detail}`);
+  }
+  return null;
 }
 
 function semanticDriverDump(serial) {
@@ -734,10 +765,10 @@ async function recoverObscuredAndroidApp(serial, xml) {
 }
 
 export async function scrollAndroidAndAwait(serial, bounds, direction) {
-  if (scrollAndroidSemanticNode(serial, bounds, direction)) return true;
   const before = dumpAndroid(serial);
   const rect = rectOfBounds(bounds);
   if (direction === "forward" || direction === "backward") {
+    if (scrollAndroidSemanticNode(serial, bounds, direction)) return true;
     const inset = Math.min(80, rect.width / 5);
     const startX = direction === "forward" ? rect.right - inset : rect.left + inset;
     const endX = direction === "forward" ? rect.left + inset : rect.right - inset;
@@ -751,7 +782,11 @@ export async function scrollAndroidAndAwait(serial, bounds, direction) {
     await waitFor(() => dumpAndroid(serial) !== before, 1000, "Android scroll projection changed", 50);
     return true;
   } catch (_error) {
-    return false;
+    // Compose's semantic vertical scroll sometimes advances only one item.
+    // Use it only when the human-sized gesture could not move this surface.
+    return direction === "down" || direction === "up"
+      ? scrollAndroidSemanticNode(serial, bounds, direction)
+      : false;
   }
 }
 

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import {
   connectToBrowser, launchChrome, stopProcess,
 } from "../../ui/web-app/scripts/chrome-cdp.mjs";
-import { WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
+import { editSemanticText, WebSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
 import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
@@ -51,8 +51,11 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
   if (startup.value.disclaimer) {
     await performTransition("cloud journey peer disclaimer", {
       ready: () => driver.readElement("disclaimer-accept-button"),
-      act: () => driver.performAction("disclaimer-accept-button"),
-      complete: async () => (await readStartupState()).map,
+      act: (readyElement) => driver.performAction("disclaimer-accept-button", readyElement),
+      complete: async () => {
+        const state = await readStartupState();
+        return !state.disclaimer && state.map ? state : null;
+      },
     });
   }
 
@@ -74,16 +77,20 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
 
     async acceptSetupCode(setupCode) {
       await driver.openPage("cloud");
-      await driver.performAction("begin_setup");
-      await observeUntil(
-        "cloud journey peer setup-code input",
-        () => driver.readElement("cloud-setup-code-input"),
-        { timeoutMs: E2E_TIMING.localReadyMs },
+      await performTransition("cloud journey peer begin setup", {
+        ready: () => driver.readElement("cloud-action-begin_setup"),
+        act: (readyElement) => driver.performAction("begin_setup", readyElement),
+        complete: () => driver.readElement("cloud-setup-code-input"),
+      });
+      await editSemanticText(
+        driver,
+        "cloud journey peer enter setup code",
+        "cloud-setup-code-input",
+        setupCode,
       );
-      await driver.enterText("cloud-setup-code-input", setupCode);
       await performTransition("cloud journey peer link", {
         ready: () => driver.readElement("cloud-action-accept_setup_code"),
-        act: () => driver.performAction("accept_setup_code"),
+        act: (readyElement) => driver.performAction("accept_setup_code", readyElement),
         complete: () => driver.readElement("cloud-panel-linked"),
       });
       await this.waitForState(
@@ -94,7 +101,12 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
 
     async appendRoute(route) {
       await driver.openPage("flight_plan");
-      await driver.enterText("plan-append-route-input", route);
+      await editSemanticText(
+        driver,
+        `cloud journey peer enter route ${route}`,
+        "plan-append-route-input",
+        route,
+      );
       await observeUntil(
         `cloud journey peer route ${route} committable`,
         () => page.evaluate(

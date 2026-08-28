@@ -75,10 +75,11 @@ tools/prod_manage.py --reconcile
 `--prequalify` is the mandatory gate before staging. It first runs the complete
 ordinary-CI and release-journey workload locally against one immutable app
 bundle and pinned fixture. Independent Rust, web, and Android lanes run in
-parallel; four persistent Android emulator workers restore a prepared snapshot
-before every journey. Every P0, P1, and P2 web and Android journey must pass
-five times. The resulting receipt is bound to the exact commit and workflow
-definitions.
+parallel; twelve fresh Android priority/shard lanes mirror GitHub's matrix and
+use a configurable pool of local emulator workers. Each lane prepares its own
+job-local app-data baseline before its assigned journeys. Every P0, P1, and P2 web and
+Android journey must pass five times. The resulting receipt is bound to the
+exact commit and workflow definitions.
 
 Only after that local proof passes does `--prequalify` push synchronized `main`
 and a disposable `candidate-*` tag to GitHub. GitHub repeats the full workload

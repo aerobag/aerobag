@@ -465,20 +465,28 @@ def web_lane(
 
 
 def android_shard_lane(
-    shard: int, run_root: Path, fixture: Path, apps: Path, repetitions: int
+    priority: str,
+    shard: int,
+    run_root: Path,
+    fixture: Path,
+    apps: Path,
+    repetitions: int,
 ) -> Lane:
-    package_port = 21_200 + shard
-    cloud_port = 21_300 + shard
-    vnc_port = 5_940 + shard
-    target = run_root / f"android-target-s{shard}"
-    snapshot = f"aerobag-local-{git('rev-parse', '--short=8', 'HEAD')}-s{shard}"
+    lane_index = PRIORITIES.index(priority) * ANDROID_SHARDS + shard
+    package_port = 21_200 + lane_index
+    cloud_port = 21_300 + lane_index
+    vnc_port = 5_940 + lane_index
+    target = run_root / f"android-target-{priority}-s{shard}"
+    baseline_archive = run_root / f"android-baseline-{priority}-s{shard}.tar"
     env = {
         "CI": "1",
         "KEEP_EMULATOR": "1",
         "EMULATOR_HEADLESS": "1",
         "VNC_PORT": str(vnc_port),
         "AVD_NAME": "aerobag34-local-candidate",
-        "AVD_INSTANCE_NAME": snapshot,
+        "AVD_INSTANCE_NAME": (
+            f"aerobag-local-{git('rev-parse', '--short=8', 'HEAD')}-{priority}-s{shard}"
+        ),
         "EMULATOR_READ_ONLY": "0",
         "AVD_PACKAGE_PATH": "system-images;android-34;aosp_atd;x86_64",
         "AEROBAG_UI_TARGET_ROOT": str(target),
@@ -490,20 +498,24 @@ def android_shard_lane(
         "AEROBAG_RELEASE_JOURNEY_REPETITIONS": str(repetitions),
         "AEROBAG_E2E_URL": f"http://127.0.0.1:{package_port}/",
         "AEROBAG_E2E_PEER_URL": f"http://127.0.0.1:{package_port}/",
-        "AEROBAG_E2E_ARTIFACT_DIR": str(run_root / f"results-android-s{shard}"),
-        "AEROBAG_RELEASE_JOURNEY_LAB_STATE_DIR": str(run_root / f"lab-android-s{shard}"),
+        "AEROBAG_E2E_ARTIFACT_DIR": str(
+            run_root / f"results-android-{priority}-s{shard}"
+        ),
+        "AEROBAG_RELEASE_JOURNEY_LAB_STATE_DIR": str(
+            run_root / f"lab-android-{priority}-s{shard}"
+        ),
         "PACKAGE_SOURCE_PORT": str(package_port),
         "AEROBAG_E2E_CLOUD_PORT": str(cloud_port),
         "AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
         "ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
         "AEROBAG_ANDROID_CLOUD_DEVICE_PORT": "18094",
         "AEROBAG_CLOUD_SERVER_BIN": str(apps / "aerobag-cloud-serverd"),
-        "AEROBAG_ANDROID_BASELINE_SNAPSHOT": snapshot,
+        "AEROBAG_ANDROID_BASELINE_ARCHIVE": str(baseline_archive),
         "AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED": "1",
     }
-    suites = " && ".join(
-        f"tools/e2e/release_journey_lab.sh android-suite-shard {priority} {shard} {ANDROID_SHARDS}"
-        for priority in PRIORITIES
+    suite = (
+        "tools/e2e/release_journey_lab.sh android-suite-shard "
+        f"{priority} {shard} {ANDROID_SHARDS}"
     )
     setup = (
         "tools/e2e/release_journey_lab.sh fixture-start-web empty"
@@ -512,18 +524,18 @@ def android_shard_lane(
         f" --apk {apps / 'aerobag-release-e2e.apk'}"
         f" --driver-apk {apps / 'aerobag-e2e-driver.apk'}"
         f" --release-fixture {fixture} --test shared.startup-navigation"
-        f" && tools/e2e/release_journey_lab.sh android-baseline-save {snapshot}"
-        f" && {suites}"
+        f" && tools/e2e/release_journey_lab.sh android-baseline-save {baseline_archive}"
+        f" && {suite}"
     )
     cleanup = (
         ") || status=$?; ui/android-app/scripts/stop_emulator_stack.sh || true;"
         " tools/e2e/release_journey_lab.sh fixture-stop || true;"
         " tools/e2e/release_journey_lab.sh cloud-stop || true;"
-        f" avdmanager delete avd --name {shlex.quote(snapshot)} >/dev/null 2>&1 || true;"
+        " avdmanager delete avd --name \"$AVD_INSTANCE_NAME\" >/dev/null 2>&1 || true;"
         " exit \"$status\""
     )
     return Lane(
-        f"e2e-android-s{shard}",
+        f"e2e-android-{priority}-s{shard}",
         bash("status=0; (" + setup + cleanup),
         env=env,
         timeout_seconds=21_600,
@@ -703,13 +715,18 @@ def main() -> int:
     web_and_nav.append(auxiliary_lanes(run_root, fixtures)[0])
     results.extend(run_lanes(web_and_nav, logs, min(args.jobs, len(web_and_nav))))
 
-    android_workers = min(args.android_workers, ANDROID_SHARDS)
+    android_lane_count = len(PRIORITIES) * ANDROID_SHARDS
+    android_workers = min(args.android_workers, android_lane_count)
     print(
-        f"Running four prepared Android shards with {android_workers} local emulator worker(s)",
+        f"Running {android_lane_count} fresh Android priority/shard lanes with "
+        f"{android_workers} local emulator worker(s)",
         flush=True,
     )
     android_lanes = [
-        android_shard_lane(shard, run_root, fixture, apps, args.repetitions)
+        android_shard_lane(
+            priority, shard, run_root, fixture, apps, args.repetitions
+        )
+        for priority in PRIORITIES
         for shard in range(ANDROID_SHARDS)
     ]
     results.extend(run_lanes(android_lanes, logs, android_workers))

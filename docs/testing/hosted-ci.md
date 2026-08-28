@@ -200,8 +200,9 @@ by CI test jobs.
 ## Release Stability Gate
 
 `tools/prod_manage.py --prequalify` first runs the complete workload locally.
-Ordinary CI lanes, three web priority lanes, four persistent Android shards, and
-the native journeys are parallelized where they do not share generated source.
+Ordinary CI lanes, three web priority lanes, twelve fresh Android
+priority/shard lanes, and the native journeys are parallelized where they do
+not share generated source.
 The local run builds one immutable app bundle, uses pinned fixtures, and requires
 five successful repetitions per release journey.
 
@@ -212,9 +213,16 @@ so expensive production reconciliation cannot precede either proof. The final
 release tag still runs one complete exact-tag qualification.
 
 Within each Android matrix job, clean installation and package sync happen
-once. A job-local emulator snapshot then restores identical prepared state
-before every journey and repetition. Snapshots are not shared between jobs or
-persisted in repository artifacts.
+once. A job-local app-data archive then restores identical prepared state after
+`pm clear` before every journey and repetition. Archives are not shared between
+jobs or persisted in repository artifacts. Unlike a VM snapshot, this does not
+restore stale GPU surfaces, clocks, sockets, or running app work.
+
+The local qualifier mirrors the hosted matrix boundary: each priority/shard
+pair gets a fresh AVD, installation, package sync, and job-local baseline.
+Reusing one emulator across priorities is forbidden because GitHub does not do
+so; it can hide startup contamination or invent order-dependent failures that
+the hosted jobs cannot reproduce.
 
 ## Before Pushing
 

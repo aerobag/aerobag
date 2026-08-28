@@ -21,6 +21,28 @@ class SessionRenderModelTest {
     }
 
     @Test
+    fun flightDataUpdatesRefreshTheBannerAndSettingsPreviewWithoutInvalidatingTheShell() {
+        assertEquals(
+            setOf(SessionRenderScope.HighRate, SessionRenderScope.Settings),
+            sessionRenderScopes(
+                setOf(UiSessionUpdateGroup.FlightData),
+                fullSnapshot = false,
+            ),
+        )
+    }
+
+    @Test
+    fun settingsUpdatesRefreshTheShellAndDedicatedSettingsOwner() {
+        assertEquals(
+            setOf(SessionRenderScope.Shell, SessionRenderScope.Settings),
+            sessionRenderScopes(
+                setOf(UiSessionUpdateGroup.Settings),
+                fullSnapshot = false,
+            ),
+        )
+    }
+
+    @Test
     fun mixedUpdatesInvalidateBothRenderOwners() {
         assertEquals(
             setOf(SessionRenderScope.Shell, SessionRenderScope.HighRate),

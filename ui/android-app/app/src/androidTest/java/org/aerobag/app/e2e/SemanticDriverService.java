@@ -30,11 +30,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /** Test-only semantic driver that remains independent of Aerobag's process lifecycle. */
 public final class SemanticDriverService extends AccessibilityService {
     private static final int DRIVER_PORT = 19_191;
     private static final long ACTION_ACCEPT_TIMEOUT_MS = 2_000;
+    private static final long ACTION_RETRY_POLL_MS = 50;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong accessibilityEventSequence = new AtomicLong();
@@ -116,6 +120,12 @@ public final class SemanticDriverService extends AccessibilityService {
                     200
                 );
                 return;
+            case "/query":
+                handleQuery(socket, path);
+                return;
+            case "/await-event":
+                handleAwaitEvent(socket, path);
+                return;
             case "/set-text":
                 handleSetText(socket, path);
                 return;
@@ -138,10 +148,40 @@ public final class SemanticDriverService extends AccessibilityService {
         respondAction(socket, changed, "text action rejected\n");
     }
 
+    private void handleQuery(Socket socket, String path) throws IOException {
+        Map<String, String> query = queryOf(path);
+        String tag = query.getOrDefault("tag", "");
+        boolean prefix = "true".equals(query.getOrDefault("prefix", "false"));
+        respond(
+            socket.getOutputStream(),
+            "application/json; charset=utf-8",
+            renderNodeQuery(tag, prefix).toString() + "\n",
+            200
+        );
+    }
+
+    private void handleAwaitEvent(Socket socket, String path) throws IOException {
+        long timeoutMs;
+        try {
+            timeoutMs = Long.parseLong(queryOf(path).getOrDefault("timeout_ms", "250"));
+        } catch (NumberFormatException error) {
+            timeoutMs = 250;
+        }
+        timeoutMs = Math.max(1, Math.min(1_000, timeoutMs));
+        long sequence = accessibilityEventSequence.get();
+        boolean changed = awaitAccessibilityEventAfter(sequence, timeoutMs);
+        respond(
+            socket.getOutputStream(),
+            "text/plain; charset=utf-8",
+            changed ? "changed\n" : "unchanged\n",
+            200
+        );
+    }
+
     private void handleClick(Socket socket, String path) throws IOException {
         String tag = queryOf(path).getOrDefault("tag", "");
         boolean clicked = !tag.isEmpty() && awaitAcceptedClickAction(tag);
-        respondAction(socket, clicked, "click action rejected\n");
+        respondAction(socket, clicked, "click action rejected for " + tag + "\n");
     }
 
     private void handleScroll(Socket socket, String path) throws IOException {
@@ -243,6 +283,85 @@ public final class SemanticDriverService extends AccessibilityService {
         return output.toString();
     }
 
+    private JSONArray renderNodeQuery(String tag, boolean prefix) {
+        JSONArray output = new JSONArray();
+        if (tag.isEmpty()) return output;
+        List<AccessibilityNodeInfo> roots = roots(true);
+        try {
+            for (AccessibilityNodeInfo root : roots) collectMatchingNodes(root, tag, prefix, output);
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode semantic query result", error);
+        } finally {
+            recycleAll(roots);
+        }
+        return output;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void collectMatchingNodes(
+        AccessibilityNodeInfo node,
+        String tag,
+        boolean prefix,
+        JSONArray output
+    ) throws JSONException {
+        String nodeTag = node.getViewIdResourceName();
+        if (nodeTag != null && (prefix ? nodeTag.startsWith(tag) : nodeTag.equals(tag))) {
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            JSONObject value = new JSONObject();
+            value.put("resource-id", nodeTag);
+            value.put("text", nodeLabel(node));
+            value.put("enabled", Boolean.toString(node.isEnabled()));
+            value.put("clickable", Boolean.toString(node.isClickable()));
+            value.put("visible", Boolean.toString(node.isVisibleToUser()));
+            value.put("selected", Boolean.toString(node.isSelected()));
+            value.put("checked", Boolean.toString(node.isChecked()));
+            value.put("checkable", Boolean.toString(node.isCheckable()));
+            value.put("focused", Boolean.toString(node.isFocused()));
+            value.put("scrollable", Boolean.toString(node.isScrollable()));
+            value.put("state-description", stringValue(node.getStateDescription()));
+            value.put("bounds", bounds.toShortString());
+            output.put(value);
+        }
+        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+            AccessibilityNodeInfo child = node.getChild(childIndex);
+            if (child == null) continue;
+            try {
+                collectMatchingNodes(child, tag, prefix, output);
+            } finally {
+                child.recycle();
+            }
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String nodeLabel(AccessibilityNodeInfo node) {
+        StringBuilder label = new StringBuilder();
+        appendLabel(label, node);
+        return label.toString().trim().replaceAll("\\s+", " ");
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void appendLabel(StringBuilder output, AccessibilityNodeInfo node) {
+        String text = stringValue(node.getText());
+        String description = stringValue(node.getContentDescription());
+        if (!text.isEmpty()) output.append(text).append(' ');
+        if (!description.isEmpty()) output.append(description).append(' ');
+        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+            AccessibilityNodeInfo child = node.getChild(childIndex);
+            if (child == null) continue;
+            try {
+                appendLabel(output, child);
+            } finally {
+                child.recycle();
+            }
+        }
+    }
+
+    private static String stringValue(CharSequence value) {
+        return value == null ? "" : value.toString();
+    }
+
     private boolean awaitAcceptedTextAction(String tag, String value) {
         long deadlineNanos = System.nanoTime()
             + TimeUnit.MILLISECONDS.toNanos(ACTION_ACCEPT_TIMEOUT_MS);
@@ -251,10 +370,14 @@ public final class SemanticDriverService extends AccessibilityService {
             if (setRenderedText(tag, value)) return true;
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) return false;
-            if (!awaitAccessibilityEventAfter(
+            awaitAccessibilityEventAfter(
                 eventSequence,
-                TimeUnit.NANOSECONDS.toMillis(remainingNanos)
-            )) return false;
+                Math.min(
+                    ACTION_RETRY_POLL_MS,
+                    Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos))
+                )
+            );
+            if (Thread.currentThread().isInterrupted()) return false;
         }
     }
 
@@ -278,10 +401,14 @@ public final class SemanticDriverService extends AccessibilityService {
             if (clickRenderedNode(tag)) return true;
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) return false;
-            if (!awaitAccessibilityEventAfter(
+            awaitAccessibilityEventAfter(
                 eventSequence,
-                TimeUnit.NANOSECONDS.toMillis(remainingNanos)
-            )) return false;
+                Math.min(
+                    ACTION_RETRY_POLL_MS,
+                    Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos))
+                )
+            );
+            if (Thread.currentThread().isInterrupted()) return false;
         }
     }
 
@@ -416,13 +543,14 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static boolean clickNode(AccessibilityNodeInfo node, String tag) {
+    private boolean clickNode(AccessibilityNodeInfo node, String tag) {
         if (tag.equals(node.getViewIdResourceName())) {
             if (!node.refresh() || !tag.equals(node.getViewIdResourceName())) return false;
-            return node.isVisibleToUser()
-                && node.isEnabled()
-                && node.isClickable()
-                && node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            return dispatchTapGesture(bounds);
         }
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
             AccessibilityNodeInfo child = node.getChild(childIndex);
@@ -434,6 +562,41 @@ public final class SemanticDriverService extends AccessibilityService {
             }
         }
         return false;
+    }
+
+    private boolean dispatchTapGesture(Rect bounds) {
+        float x = bounds.exactCenterX();
+        float y = bounds.exactCenterY();
+        Path path = new Path();
+        path.moveTo(x, y);
+        GestureDescription gesture = new GestureDescription.Builder()
+            .addStroke(new GestureDescription.StrokeDescription(path, 0, 50))
+            .build();
+        CountDownLatch completed = new CountDownLatch(1);
+        final boolean[] succeeded = {false};
+        boolean accepted = dispatchGesture(
+            gesture,
+            new GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription description) {
+                    succeeded[0] = true;
+                    completed.countDown();
+                }
+
+                @Override
+                public void onCancelled(GestureDescription description) {
+                    completed.countDown();
+                }
+            },
+            null
+        );
+        if (!accepted) return false;
+        try {
+            return completed.await(2, TimeUnit.SECONDS) && succeeded[0];
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     @SuppressWarnings("deprecation")

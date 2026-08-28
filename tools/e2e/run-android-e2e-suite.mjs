@@ -61,7 +61,9 @@ import {
 } from "./release-journey-implementations.mjs";
 import { RELEASE_JOURNEYS } from "./release-journey-registry.mjs";
 import { executeReleaseJourney } from "./release-journey-runtime.mjs";
-import { AndroidSemanticJourneyDriver } from "./semantic-journey-driver.mjs";
+import {
+  AndroidSemanticJourneyDriver, editSemanticText,
+} from "./semantic-journey-driver.mjs";
 import {
   assertConditionRemains,
   E2E_TIMING,
@@ -454,7 +456,14 @@ async function centerChartOnDestination(serial, result, route) {
   const destination = routeDestination(route);
   if (!destination) return;
   const driver = nativeSemanticDriver(serial);
-  await driver.enterText("chart-search-input", destination);
+  await editSemanticText(
+    driver,
+    `enter chart destination ${destination}`,
+    "chart-search-input",
+    destination,
+    {},
+    { transition: (description, contract) => nativeTransition(result, description, contract) },
+  );
   let evidence = null;
   await nativeTransition(result, `chart centered on destination ${destination}`, {
     ready: async () => {
@@ -462,7 +471,10 @@ async function centerChartOnDestination(serial, result, route) {
       return chartSearchInputText(xml) === destination &&
         findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${destination}`));
     },
-    act: async () => driver.performAction(`chart-search-suggestion-${destination}`),
+    act: async (readyElement) => driver.performAction(
+      `chart-search-suggestion-${destination}`,
+      readyElement,
+    ),
     complete: async () => {
       evidence = destinationCenterEvidence(dumpAndroid(serial), destination);
       return evidence.matched ? evidence : null;
@@ -481,7 +493,14 @@ async function centerChartOnDestination(serial, result, route) {
 
 async function inspectAirportFromChartSearch(serial, result, airportId) {
   const driver = nativeSemanticDriver(serial);
-  await driver.enterText("chart-search-input", airportId);
+  await editSemanticText(
+    driver,
+    `enter chart airport ${airportId}`,
+    "chart-search-input",
+    airportId,
+    {},
+    { transition: (description, contract) => nativeTransition(result, description, contract) },
+  );
   let evidence = null;
   await nativeTransition(result, `airport inspector opened for ${airportId}`, {
     ready: async () => {
@@ -489,7 +508,10 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
       return chartSearchInputText(xml) === airportId &&
         findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${airportId}`));
     },
-    act: async () => driver.performAction(`chart-search-suggestion-${airportId}`),
+    act: async (readyElement) => driver.performAction(
+      `chart-search-suggestion-${airportId}`,
+      readyElement,
+    ),
     complete: async () => {
       evidence = destinationCenterEvidence(dumpAndroid(serial), airportId);
       return evidence.matched ? evidence : null;
@@ -1549,14 +1571,44 @@ async function runOfflineColdStart(args) {
       recordCheck(result, "offline.chart", Boolean(raster), raster);
 
       await driver.openPage("charts");
-      await driver.chooseOption("plate-airport-button", georef.airport_id);
+      await nativeTransition(result, "open offline plate airport choices", {
+        ready: () => driver.readAction("plate-airport-button"),
+        act: () => driver.openChooser("plate-airport-button"),
+        complete: () => driver.readOption("plate-airport-button", georef.airport_id),
+      });
+      await nativeTransition(result, "select offline plate airport", {
+        ready: () => driver.readOption("plate-airport-button", georef.airport_id),
+        act: () => driver.selectOption("plate-airport-button", georef.airport_id),
+        complete: async () => {
+          const launcher = await driver.readElement("plate-airport-button");
+          return launcher?.text?.toUpperCase().includes(georef.airport_id.toUpperCase())
+            ? launcher
+            : null;
+        },
+      });
       const label = georef.label_contains.replace(/\s*\(GPS\)\s*/i, " ").replace(/\bRWY\s+/i, " ").replace(/\s+/g, " ").trim();
       const choices = await driver.readProjection("parity:tray-option:");
-      if (!choices.length) await driver.performAction("plate-chart-button");
+      if (!choices.length) {
+        await nativeTransition(result, "open offline plate choices", {
+          ready: () => driver.readElement("plate-chart-button"),
+          act: (readyElement) => driver.performAction("plate-chart-button", readyElement),
+          complete: async () => (await driver.readProjection("parity:tray-option:")).length > 0,
+        });
+      }
       const option = (await driver.readProjection("parity:tray-option:"))
         .find((entry) => entry.text.toUpperCase().includes(label.toUpperCase()));
       if (!option) throw new Error(`offline plate ${label} is unavailable`);
-      await driver.performAction(`tray-option:${option.id.replace(/^parity:tray-option:/, "")}`);
+      await nativeTransition(result, "select offline plate", {
+        ready: () => driver.readElement(option.id),
+        act: (readyElement) => driver.performAction(
+          `tray-option:${option.id.replace(/^parity:tray-option:/, "")}`,
+          readyElement,
+        ),
+        complete: async () => {
+          const launcher = await driver.readElement("plate-chart-button");
+          return launcher?.text?.toUpperCase().includes(label.toUpperCase()) ? launcher : null;
+        },
+      });
       const plate = await waitForNode(
         args.serial,
         (node) => androidTag(node).startsWith("parity:plate-viewport:chart:"),

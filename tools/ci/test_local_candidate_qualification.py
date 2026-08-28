@@ -41,25 +41,31 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertIn("cloud-stop", lane.command[4])
         self.assert_shell_is_valid(lane.command)
 
-    def test_android_shard_reuses_one_emulator_and_deletes_only_its_avd(self) -> None:
+    def test_android_priority_shard_matches_one_fresh_github_matrix_lane(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temp_dir,
             mock.patch.object(qualification, "git", return_value="12345678"),
         ):
             root = Path(temp_dir)
             lane = qualification.android_shard_lane(
-                2, root, root / "fixture.json", root / "apps", 5
+                "p1", 2, root, root / "fixture.json", root / "apps", 5
             )
 
         self.assertEqual(lane.env["AEROBAG_RELEASE_JOURNEY_REPETITIONS"], "5")
         self.assertEqual(lane.env["ANDROID_PACKAGE_SOURCE_DEVICE_PORT"], "18093")
-        self.assertIn("android-suite-shard p0 2 4", lane.command[4])
         self.assertIn("android-suite-shard p1 2 4", lane.command[4])
-        self.assertIn("android-suite-shard p2 2 4", lane.command[4])
+        self.assertNotIn("android-suite-shard p0", lane.command[4])
+        self.assertNotIn("android-suite-shard p2", lane.command[4])
         self.assertIn(
-            "avdmanager delete avd --name aerobag-local-12345678-s2",
+            'avdmanager delete avd --name "$AVD_INSTANCE_NAME"',
             lane.command[4],
         )
+        self.assertEqual(
+            lane.env["AEROBAG_ANDROID_BASELINE_ARCHIVE"],
+            str(root / "android-baseline-p1-s2.tar"),
+        )
+        self.assertEqual(lane.name, "e2e-android-p1-s2")
+        self.assertEqual(lane.env["PACKAGE_SOURCE_PORT"], "21206")
         self.assert_shell_is_valid(lane.command)
 
     def test_local_android_parallelism_does_not_assume_github_runner_isolation(self) -> None:

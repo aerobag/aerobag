@@ -42,6 +42,22 @@ class NativeUiSessionBoundaryTest {
             "NativeUiSession needs one central helper for every snapshot mutation.",
             sessionBody.contains("private fun runPagedSnapshot(commandName: String"),
         )
+        val commandBoundary = balancedBlockAfterMarker(
+            sessionBody,
+            "private fun <T> runNativeSessionCommand(",
+        )
+        assertTrue(
+            "Native mutation execution and revisioned update landing must remain one ordered operation.",
+            sessionBody.contains("private val sessionMutationLock = Any()") &&
+                commandBoundary.contains("synchronized(sessionMutationLock)"),
+        )
+        for (method in listOf("advanceInstalledArtifacts", "maintainNavDb")) {
+            assertTrue(
+                "$method must use the same ordered mutation-and-landing boundary.",
+                balancedBlockAfterMarker(sessionBody, "fun $method(")
+                    .contains("runNativeSessionCommand("),
+            )
+        }
         assertFalse(
             "Plain snapshot mutation paths erase HAD page faults and must not exist.",
             sessionBody.contains("runPlainSnapshot"),
@@ -288,8 +304,9 @@ class NativeUiSessionBoundaryTest {
         assertTrue(
             "Settings mutations must use the retained FIFO and leave Android's main thread.",
             runnerSource.contains("private val mutationQueue = Channel<SessionMutation>") &&
+                runnerSource.contains("private val mutationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)") &&
                 runnerSource.contains("for (mutation in mutationQueue)") &&
-                runnerSource.contains("withContext(Dispatchers.IO)") &&
+                runnerSource.contains("withContext(Dispatchers.Main.immediate)") &&
                 mainActivity.contains("uiSessionWorkRunner.submitSettingsAction(") &&
                 mainActivity.contains("uiSessionWorkRunner.submitAircraftLibraryAction(") &&
                 mainActivity.contains("uiSessionWorkRunner.submitDisclaimerAcceptance("),

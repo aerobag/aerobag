@@ -40,13 +40,22 @@ export class WebSemanticTransport {
       origin: this.origin,
       storageTypes: "all",
     });
+    await this.grantClipboardPermissions();
     await this.page.navigate(this.url);
     await this.page.waitForLoad();
   }
 
   async reload() {
+    await this.grantClipboardPermissions();
     await this.page.navigate(this.url);
     await this.page.waitForLoad();
+  }
+
+  async grantClipboardPermissions() {
+    await this.page.send("Browser.grantPermissions", {
+      origin: this.origin,
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    });
   }
 
   async exists(selector) {
@@ -301,10 +310,7 @@ export class WebSemanticTransport {
   }
 
   async copyTextTestId(testId) {
-    await this.page.send("Browser.grantPermissions", {
-      origin: this.origin,
-      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
-    });
+    await this.grantClipboardPermissions();
     const selected = await this.page.evaluate(`(() => {
       const element = [...document.querySelectorAll("[data-testid]")].find((candidate) =>
         candidate.dataset.testid === ${expressionArgument(testId)} &&
@@ -417,7 +423,7 @@ export class WebSemanticTransport {
     return this.page.evaluate(`(() => {
       const element = [...document.querySelectorAll(${expressionArgument(selector)})]
         .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
-      if (!(element instanceof HTMLElement)) return null;
+      if (!(element instanceof Element)) return null;
       const rect = element.getBoundingClientRect();
       return {
         test_id: element.dataset.testid ?? null,
@@ -445,7 +451,7 @@ export class WebSemanticTransport {
     const revealed = await this.page.evaluate(`(() => {
       const element = [...document.querySelectorAll(${expressionArgument(selector)})]
         .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
-      if (!(element instanceof HTMLElement)) return false;
+      if (!(element instanceof Element)) return false;
       element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
       return true;
     })()`);

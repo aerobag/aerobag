@@ -8,6 +8,9 @@ import {
   createJourneyResult, finishJourneyResult, recordJourneyCheck,
   recordJourneyStep, validateJourneyResult,
 } from "./journey-result.mjs";
+import {
+  editSemanticText, inspectSemanticMapAt, navigateSemanticPage,
+} from "./semantic-journey-driver.mjs";
 import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 
 export { E2E_TIMING } from "./transition-contract.mjs";
@@ -68,7 +71,17 @@ export function createJourneyRuntime({
   const completedAssertions = new Set();
   mkdirSync(artifactDir, { recursive: true });
 
-  return {
+  const runRecordedPhase = async (phaseId, operation, detail = undefined) => {
+    const startedAt = performance.now();
+    console.log(`[${journey.id}:${platform}] phase start: ${phaseId}`);
+    const value = await operation();
+    const durationMs = Math.round(performance.now() - startedAt);
+    console.log(`[${journey.id}:${platform}] phase pass: ${phaseId} (${durationMs}ms)`);
+    recordJourneyStep(result, phaseId, detail, durationMs);
+    return value;
+  };
+
+  const runtime = {
     journey,
     platform,
     driver,
@@ -87,14 +100,27 @@ export function createJourneyRuntime({
       return releaseJourneyFixtureUrl(platform, relativePath, fixtureOrigin);
     },
 
-    async step(actionId, operation, detail = undefined) {
-      const startedAt = performance.now();
-      console.log(`[${journey.id}:${platform}] step start: ${actionId}`);
-      const value = await operation();
-      const durationMs = Math.round(performance.now() - startedAt);
-      console.log(`[${journey.id}:${platform}] step pass: ${actionId} (${durationMs}ms)`);
-      recordJourneyStep(result, actionId, detail, durationMs);
-      return value;
+    async reset(phaseId = "app.reset") {
+      return runRecordedPhase(phaseId, () => driver.reset());
+    },
+
+    async resetApplicationData(phaseId = "app.reset-application-data") {
+      return runRecordedPhase(phaseId, () => driver.resetApplicationData());
+    },
+
+    async reload(phaseId = "app.reload") {
+      return runRecordedPhase(phaseId, () => driver.reload());
+    },
+
+    async revealElement(elementId, description = elementId) {
+      return runRecordedPhase(`reveal ${description}`, () => driver.revealElement(elementId));
+    },
+
+    async revealProjectionMatching(probe, needle, description = `${probe} ${needle}`) {
+      return runRecordedPhase(
+        `reveal ${description}`,
+        () => driver.revealProjectionMatching(probe, needle),
+      );
     },
 
     check(assertionId, pass, detail = undefined) {
@@ -115,29 +141,98 @@ export function createJourneyRuntime({
       intervalMs = E2E_TIMING.pollIntervalMs,
     ) {
       console.log(`[${journey.id}:${platform}] wait start: ${description} (limit ${timeoutMs}ms)`);
-      const observed = await observeUntil(description, operation, { timeoutMs, intervalMs });
+      const observed = await observeUntil(description, operation, {
+        timeoutMs,
+        intervalMs,
+        waitForNextProbe: driver.waitForObservation?.bind(driver) ?? null,
+      });
       console.log(`[${journey.id}:${platform}] wait pass: ${description} (${observed.durationMs}ms)`);
       return observed.value;
     },
 
     async transition(description, contract) {
+      const sessionRevisionBefore = await driver.readSessionRevision?.().catch(() => null) ?? null;
+      let timingRecord = null;
       console.log(
         `[${journey.id}:${platform}] transition start: ${description} ` +
           `(budget ${contract.responseTimeoutMs ?? E2E_TIMING.userResponseMs}ms)`,
       );
       const completed = await performTransition(description, {
         ...contract,
+        waitForObservation:
+          contract.waitForObservation ?? driver.waitForObservation?.bind(driver) ?? null,
         onTiming(timing) {
+          timing.session_revision_before = sessionRevisionBefore;
+          timingRecord = timing;
           result.diagnostics.user_transitions ??= [];
           result.diagnostics.user_transitions.push(timing);
           contract.onTiming?.(timing);
         },
+      }).catch(async (error) => {
+        if (timingRecord) {
+          timingRecord.session_revision_after =
+            await driver.readSessionRevision?.().catch(() => null) ?? null;
+        }
+        throw error;
       });
+      completed.timing.session_revision_after =
+        await driver.readSessionRevision?.().catch(() => null) ?? null;
       console.log(
         `[${journey.id}:${platform}] transition pass: ${description} ` +
           `(${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total)`,
       );
       return completed.value;
+    },
+
+    async openPage(pageId) {
+      return navigateSemanticPage(driver, pageId, {
+        observe: runtime.eventually,
+        transition: runtime.transition,
+      });
+    },
+
+    async editText(description, controlId, value, options = {}) {
+      return editSemanticText(driver, description, controlId, value, options, {
+        transition: runtime.transition,
+      });
+    },
+
+    async inspectMapAt(point) {
+      return inspectSemanticMapAt(driver, point, { transition: runtime.transition });
+    },
+
+    async action(description, actionId, contract, ...unexpectedArguments) {
+      if (unexpectedArguments.length > 0) {
+        throw new Error(`${description} action received unexpected positional arguments`);
+      }
+      if (typeof contract?.complete !== "function") {
+        throw new Error(`${description} must declare a semantic completion condition`);
+      }
+      return runtime.transition(description, {
+        ...contract,
+        ready: contract.ready ?? (() => driver.readAction(actionId)),
+        act: (readyElement) => driver.performAction(actionId, readyElement),
+        diagnose: contract.diagnose ?? (async () => ({
+          action: await driver.readAction(actionId),
+          session_revision: await driver.readSessionRevision?.().catch(() => null) ?? null,
+        })),
+      });
+    },
+
+    async chooseOption(description, launcherId, optionId, contract) {
+      if (typeof contract?.complete !== "function") {
+        throw new Error(`${description} must declare a semantic completion condition`);
+      }
+      await runtime.transition(`open ${description} choices`, {
+        ready: () => driver.readAction(launcherId),
+        act: (readyElement) => driver.openChooser(launcherId, readyElement),
+        complete: () => driver.readOption(launcherId, optionId),
+      });
+      return runtime.transition(description, {
+        ready: () => driver.readOption(launcherId, optionId),
+        act: (readyElement) => driver.selectOption(launcherId, optionId, readyElement),
+        complete: contract.complete,
+      });
     },
 
     async finish(error = null) {
@@ -162,6 +257,7 @@ export function createJourneyRuntime({
       return result;
     },
   };
+  return runtime;
 }
 
 export async function executeReleaseJourney(options, implementation) {

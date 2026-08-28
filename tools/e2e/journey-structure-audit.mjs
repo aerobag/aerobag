@@ -22,13 +22,13 @@ export const AUDITED_JOURNEY_FILES = Object.freeze([
 
 const MUTATING_DRIVER_METHODS = new Set([
   "back",
-  "chooseOption",
   "click",
   "drag",
   "enterText",
   "hover",
   "inspectMapAt",
   "openPage",
+  "openChooser",
   "performAction",
   "reload",
   "revealElement",
@@ -36,6 +36,7 @@ const MUTATING_DRIVER_METHODS = new Set([
   "reset",
   "resetApplicationData",
   "scanProjection",
+  "selectOption",
   "submit",
   "requestSubmit",
   "zoom",
@@ -64,8 +65,25 @@ const OBSERVATION_CALLBACK_ARGUMENTS = new Map([
 ]);
 const READ_ONLY_DRIVER_METHODS = new Set([
   "findProjectionMatching",
+  "readAction",
+  "readCurrentPage",
   "readElement",
+  "readNavigationAction",
   "readProjection",
+  "readOption",
+  "readSessionRevision",
+]);
+const RAW_DRIVER_METHODS = new Set([
+  "back",
+  "activateMapInspection",
+  "drag",
+  "enterText",
+  "hover",
+  "performAction",
+  "openChooser",
+  "selectOption",
+  "submit",
+  "zoom",
 ]);
 const TIMEOUT_ARGUMENTS = new Map([
   ["waitFor", 1],
@@ -93,6 +111,12 @@ function calledFunction(node) {
   return ts.isCallExpression(node) && ts.isIdentifier(node.expression)
     ? node.expression.text
     : null;
+}
+
+function isJourneyDriverCall(node) {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
+  const receiver = node.expression.expression.getText();
+  return receiver === "driver" || receiver.endsWith(".driver");
 }
 
 function isTimingClass(node, name) {
@@ -124,6 +148,46 @@ function sourceLocation(source, node) {
   return { line: location.line + 1, column: location.character + 1 };
 }
 
+function isTransitionActionCallback(node) {
+  let current = node.parent;
+  while (current) {
+    if (
+      (ts.isFunctionExpression(current) || ts.isArrowFunction(current)) &&
+      ts.isPropertyAssignment(current.parent) &&
+      ts.isIdentifier(current.parent.name) &&
+      current.parent.name.text === "act"
+    ) {
+      const contract = current.parent.parent;
+      const call = contract?.parent;
+      if (!ts.isObjectLiteralExpression(contract) || !ts.isCallExpression(call)) return false;
+      const called = calledFunction(call);
+      const method = calledMethod(call);
+      return called === "performTransition" || called === "nativeTransition" || called === "transition" ||
+        method === "transition";
+    }
+    if (
+      ts.isPropertyAssignment(current) &&
+      ts.isIdentifier(current.name) &&
+      current.name.text === "act"
+    ) {
+      const contract = current.parent;
+      const call = contract?.parent;
+      if (!ts.isObjectLiteralExpression(contract) || !ts.isCallExpression(call)) return false;
+      const called = calledFunction(call);
+      const method = calledMethod(call);
+      return called === "performTransition" || called === "nativeTransition" || called === "transition" ||
+        method === "transition";
+    }
+    if (
+      ts.isFunctionDeclaration(current) ||
+      ts.isMethodDeclaration(current) ||
+      ts.isFunctionExpression(current) || ts.isArrowFunction(current)
+    ) return false;
+    current = current.parent;
+  }
+  return false;
+}
+
 export function auditJourneyStructure(text, filename = "release-journey-implementations.mjs") {
   const source = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const functions = new Map();
@@ -138,7 +202,10 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
     const calls = new Set();
     visit(fn.body, (node) => {
       const method = calledMethod(node);
-      if (MUTATING_DRIVER_METHODS.has(method) || method === "step" || method === "transition") {
+      if (
+        MUTATING_DRIVER_METHODS.has(method) ||
+        ["step", "transition", "action", "chooseOption"].includes(method)
+      ) {
         mutatingFunctions.add(name);
       }
       if (containsDomMutation(node)) mutatingFunctions.add(name);
@@ -172,8 +239,7 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
       const called = calledFunction(child);
       if (
         MUTATING_DRIVER_METHODS.has(method) ||
-        method === "step" ||
-        method === "transition" ||
+        ["step", "transition", "action", "chooseOption"].includes(method) ||
         containsDomMutation(child) ||
         (called && (MUTATING_FUNCTIONS.has(called) || mutatingFunctions.has(called)))
       ) {
@@ -196,6 +262,24 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
     if (!ts.isCallExpression(node)) return;
     const method = calledMethod(node);
     const called = calledFunction(node);
+    if (method === "step") {
+      violations.push({
+        ...sourceLocation(source, node),
+        message: "generic journey steps are forbidden; use a semantic transition or a typed runtime phase",
+      });
+    }
+    if (
+      RAW_DRIVER_METHODS.has(method) &&
+      isJourneyDriverCall(node) &&
+      !isTransitionActionCallback(node)
+    ) {
+      violations.push({
+        ...sourceLocation(source, node),
+        message: method === "performAction"
+          ? "performAction must be the single act phase of a semantic transition"
+          : `${method} must be the act phase of a semantic transition`,
+      });
+    }
     const isObservation = OBSERVATION_METHODS.has(method) || OBSERVATION_FUNCTIONS.has(called);
     if (method === "eventually" && node.arguments[2] && ts.isNumericLiteral(node.arguments[2])) {
       violations.push({
@@ -230,9 +314,29 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
         `${observationName} callback`,
       );
     }
-    if (called === "performTransition" || called === "nativeTransition" || method === "transition") {
-      const contract = node.arguments[called === "nativeTransition" ? 2 : method === "transition" ? 1 : 1];
+    if (
+      called === "performTransition" || called === "nativeTransition" ||
+      method === "transition" || method === "action" || method === "chooseOption"
+    ) {
+      const contract = node.arguments[
+        called === "nativeTransition" ? 2
+          : method === "action" ? 2
+            : method === "chooseOption" ? 3
+              : 1
+      ];
       if (!contract || !ts.isObjectLiteralExpression(contract)) return;
+      if (
+        (method === "action" || method === "chooseOption") &&
+        !contract.properties.some((property) =>
+          ts.isPropertyAssignment(property) &&
+          ts.isIdentifier(property.name) &&
+          property.name.text === "complete")
+      ) {
+        violations.push({
+          ...sourceLocation(source, contract),
+          message: `${method} must declare a semantic completion condition`,
+        });
+      }
       for (const property of contract.properties) {
         if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) continue;
         if (property.name.text === "ready" || property.name.text === "complete") {

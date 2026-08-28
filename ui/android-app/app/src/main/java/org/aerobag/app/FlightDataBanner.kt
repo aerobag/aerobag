@@ -27,6 +27,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
@@ -200,7 +202,9 @@ internal fun FlightDataSettingsCell(
         uiTheme = uiTheme,
         cellWidth = FlightDataCellMinWidth,
         cellHeight = cellHeight,
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier
+            .semantics { selected = item.enabled }
+            .clickable(onClick = onClick),
         foregroundOverlay = if (item.enabled) {
             Color.Transparent
         } else {

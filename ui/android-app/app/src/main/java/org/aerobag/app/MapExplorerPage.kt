@@ -3154,6 +3154,7 @@ internal fun MapExplorerPage(
                 .testTag(
                     "parity:ownship-state:" +
                         "mode:${ownship.mode.name.lowercase()}:" +
+                        "source:${ownshipControls.sources.firstOrNull { it.active }?.sourceId ?: "none"}:" +
                         "draw:${ownship.drawAircraft}:" +
                         "position:${ownship.position?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "none"}:" +
                         "track:${ownship.trackDegTrue?.let { "%.1f".format(it) } ?: "none"}",

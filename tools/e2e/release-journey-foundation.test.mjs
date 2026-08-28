@@ -15,7 +15,9 @@ import {
   createJourneyResult, finishJourneyResult, recordJourneyCheck,
   recordJourneyStep, validateJourneyResult,
 } from "./journey-result.mjs";
-import { releaseJourneyFixtureUrl } from "./release-journey-runtime.mjs";
+import {
+  createJourneyRuntime, releaseJourneyFixtureUrl, summarizeFixtureRequests,
+} from "./release-journey-runtime.mjs";
 import { verifyProductSurfaceCoverage } from "./product-surface-coverage.mjs";
 import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-registry.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
@@ -34,20 +36,23 @@ import {
   webDistIndexSha256,
 } from "./serve-release-journey-fixture.mjs";
 import {
-  androidActionCandidates, androidElementEnabled, androidElementFallback,
+  androidActionCandidates, androidActionUsesSemanticActivation,
+  androidElementEnabled, androidElementFallback,
   androidActionUsesSubmit, AndroidSemanticJourneyDriver,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
   androidElementSemanticTag,
-  androidDataStatusRowsFromStateTag, androidPageTag, androidProjectionMayRequireVerticalScan, androidSemanticTag,
+  androidDataStatusRowsFromStateTag, androidPageTag, androidProjectionMayRequireVerticalScan,
+  androidPageIdFromStartupStateTag,
+  androidSemanticTag, androidSessionRevisionFromStateTag,
   androidTextControlNeedsTap,
-  androidZoomKeyCode, findTagOrPrefix,
+  androidZoomKeyCode, editSemanticText, findTagOrPrefix,
+  navigateSemanticPage,
   SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
-  validateSemanticDriver, WebSemanticJourneyDriver,
+  validateSemanticDriver, WebSemanticJourneyDriver, webTestIdSelector,
 } from "./semantic-journey-driver.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
 import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
-import { summarizeFixtureRequests } from "./release-journey-runtime.mjs";
 import {
   assertConditionRemains, E2E_TIMING, observeUntil, performTransition,
 } from "./transition-contract.mjs";
@@ -57,6 +62,33 @@ import {
 } from "./journey-structure-audit.mjs";
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient } from "../../ui/web-app/scripts/chrome-cdp.mjs";
+
+function withActionContract(runtime) {
+  runtime.openPage ??= (pageId) => runtime.driver.openPage(pageId);
+  runtime.reset ??= () => runtime.driver.reset();
+  runtime.resetApplicationData ??= () => runtime.driver.resetApplicationData();
+  runtime.reload ??= () => runtime.driver.reload();
+  runtime.revealElement ??= (elementId) => runtime.driver.revealElement(elementId);
+  runtime.revealProjectionMatching ??= (probe, needle) =>
+    runtime.driver.revealProjectionMatching(probe, needle);
+  runtime.editText ??= (_description, controlId, value, options = {}) =>
+    runtime.driver.enterText(controlId, value, options);
+  runtime.transition = async (description, contract) => {
+    await runtime.eventually(`${description} ready`, contract.ready);
+    await contract.act();
+    return runtime.eventually(`${description} complete`, contract.complete);
+  };
+  runtime.action = async (description, actionId, contract) => {
+    return runtime.transition(description, {
+      ...contract,
+      ready: contract.ready ?? (() => runtime.driver.readAction
+        ? runtime.driver.readAction(actionId)
+        : runtime.driver.readElement(actionId)),
+      act: () => runtime.driver.performAction(actionId),
+    });
+  };
+  return runtime;
+}
 
 test("release journey registry owns every assertion exactly once", () => {
   const index = validateJourneyRegistry();
@@ -132,7 +164,7 @@ test("replay seek gestures move toward the open side of the timeline", () => {
 test("status popup dismissal waits until the popup can receive Back", async () => {
   const events = [];
   let panelOpen = false;
-  const runtime = {
+  const runtime = withActionContract({
     driver: {
       async readElement(id) {
         events.push(`read:${id}:${panelOpen}`);
@@ -156,16 +188,20 @@ test("status popup dismissal waits until the popup can receive Back", async () =
       assert.ok(value, `${label} did not satisfy its postcondition`);
       return value;
     },
-  };
+  });
 
   assert.deepEqual(await openAndDismissDataStatus(runtime), { text: "1" });
   assert.deepEqual(events, [
     "read:data-status-launcher:false",
+    "eventually:open data status popup ready",
+    "read:data-status-launcher:false",
     "action:data-status-launcher",
-    "eventually:data status popup opened",
+    "eventually:open data status popup complete",
+    "read:data-status-panel:true",
+    "eventually:dismiss data status popup ready",
     "read:data-status-panel:true",
     "back:true",
-    "eventually:data status popup dismissed",
+    "eventually:dismiss data status popup complete",
     "read:data-status-panel:false",
   ]);
 });
@@ -174,18 +210,21 @@ test("TFR selection observes the target overlay before taking its final inspecto
   const events = [];
   let selections = 0;
   let overlayProbes = 0;
-  const runtime = {
+  let trayOpen = false;
+  const runtime = withActionContract({
     platform: "web",
     driver: {
       async openPage(id) { events.push(`page:${id}`); },
       async enterText(id, value) { events.push(`text:${id}:${value}`); },
       async readElement(id) {
         events.push(`read:${id}`);
+        if (id === "map-selection-tray") return trayOpen ? { id } : null;
         return id === "chart-search-suggestion-27W" ? { enabled: true } : null;
       },
       async performAction(id) {
         events.push(`action:${id}`);
         selections += 1;
+        trayOpen = true;
       },
       async readProjection(probe) {
         events.push(`projection:${probe}`);
@@ -198,7 +237,10 @@ test("TFR selection observes the target overlay before taking its final inspecto
         }
         return [];
       },
-      async back() { events.push("back"); },
+      async back() {
+        events.push("back");
+        trayOpen = false;
+      },
     },
     async eventually(label, probe) {
       events.push(`eventually:${label}`);
@@ -208,7 +250,7 @@ test("TFR selection observes the target overlay before taking its final inspecto
       }
       throw new Error(`${label} did not satisfy its postcondition`);
     },
-  };
+  });
 
   const result = await selectTfrFromPreparedMap(runtime, "27W");
   assert.equal(result.overlay.tfrs, 1);
@@ -238,6 +280,20 @@ test("a transition performs its user action exactly once while observing delayed
   assert.equal(actions, 1);
   assert.equal(completionProbes, 4);
   assert.deepEqual(result.value, { committed: true });
+});
+
+test("a transition rejects a postcondition that was already true before its action", async () => {
+  let actions = 0;
+  await assert.rejects(
+    () => performTransition("already complete", {
+      ready: async () => true,
+      act: async () => { actions += 1; },
+      complete: async () => ({ stale: true }),
+      intervalMs: 1,
+    }),
+    /completion was already satisfied before the action/,
+  );
+  assert.equal(actions, 0);
 });
 
 test("a user transition cannot borrow a long-running operation budget", async () => {
@@ -273,24 +329,71 @@ test("a transition does not accept a one-sample completion glitch", async () => 
     act: async () => {},
     complete: async () => {
       probes += 1;
-      return probes === 1 || probes >= 3 ? { committed: true } : null;
+      return probes === 2 || probes >= 4 ? { committed: true } : null;
     },
     readyTimeoutMs: 100,
     responseTimeoutMs: 100,
     intervalMs: 1,
   });
-  assert.equal(probes, 4);
+  assert.equal(probes, 5);
   assert.deepEqual(result.value, { committed: true });
 });
 
+test("a transition can wait on platform events instead of hot polling", async () => {
+  let probes = 0;
+  let waits = 0;
+  const result = await performTransition("event-driven completion", {
+    ready: async () => true,
+    act: async () => {},
+    complete: async () => (++probes >= 3 ? { rendered: true } : null),
+    waitForObservation: async () => { waits += 1; },
+    readyTimeoutMs: 100,
+    responseTimeoutMs: 100,
+    intervalMs: 1,
+  });
+  assert.deepEqual(result.value, { rendered: true });
+  assert.equal(waits, 2);
+});
+
 test("a blocked probe cannot report success after its observation budget", async () => {
-  await assert.rejects(
-    observeUntil("blocked probe", async () => {
+  let error = null;
+  try {
+    await observeUntil("blocked probe", async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return true;
-    }, { timeoutMs: 5, intervalMs: 1 }),
-    /blocked probe timed out/,
+    }, { timeoutMs: 5, intervalMs: 1 });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.match(error?.message ?? "", /blocked probe timed out/);
+  assert.equal(error.name, "ObservationTimeoutError");
+  assert.equal(error.diagnostics.attempts, 1);
+  assert.equal(error.diagnostics.last_value, true);
+});
+
+test("a failed transition records its phase and final diagnostic state", async () => {
+  const timings = [];
+  let state = "before";
+  await assert.rejects(
+    performTransition("missing render", {
+      ready: async () => true,
+      act: async () => { state = "model-updated"; return { accepted: true }; },
+      complete: async () => null,
+      diagnose: async () => ({ state }),
+      readyTimeoutMs: 30,
+      responseTimeoutMs: 20,
+      intervalMs: 1,
+      onTiming: (timing) => timings.push(timing),
+    }),
+    /missing render completed timed out/,
   );
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].outcome, "fail");
+  assert.equal(timings[0].failure_phase, "completion");
+  assert.equal(timings[0].ready_state, true);
+  assert.deepEqual(timings[0].action_result, { accepted: true });
+  assert.deepEqual(timings[0].diagnostic_state, { state: "model-updated" });
+  assert.ok(timings[0].observation.attempts > 0);
 });
 
 test("temporal behavior is sampled instead of hidden behind a sleep", async () => {
@@ -409,6 +512,7 @@ test("journey structure audit follows helper calls into observation loops", () =
   assert.deepEqual(
     violations.map((violation) => violation.message),
     [
+      "performAction must be the single act phase of a semantic transition",
       "raw eventually deadline is forbidden; use a named E2E_TIMING class",
       "eventually callback invokes mutating operation clickThing",
       "fixed delay is forbidden in journey function broken",
@@ -424,7 +528,56 @@ test("journey structure audit rejects text entry combined with submission", () =
   `;
   assert.deepEqual(
     auditJourneyStructure(source, "combined-entry.mjs").map((violation) => violation.message),
-    ["enterText must not also submit; model editing and submission as separate user actions"],
+    [
+      "enterText must be the act phase of a semantic transition",
+      "enterText must not also submit; model editing and submission as separate user actions",
+    ],
+  );
+});
+
+test("journey structure audit rejects generic mutation steps", () => {
+  const source = `
+    async function broken(runtime) {
+      await runtime.step("maybe click", () => runtime.driver.performAction("button"));
+    }
+  `;
+  assert.deepEqual(
+    auditJourneyStructure(source, "generic-step.mjs").map((violation) => violation.message),
+    [
+      "generic journey steps are forbidden; use a semantic transition or a typed runtime phase",
+      "performAction must be the single act phase of a semantic transition",
+    ],
+  );
+});
+
+test("journey structure audit requires raw gestures to name their completion", () => {
+  const source = `
+    async function broken(runtime) {
+      await runtime.driver.drag("map-surface", { x: 10, y: 20 });
+    }
+    async function sound(runtime) {
+      await runtime.transition("pan", {
+        ready: () => runtime.driver.readElement("map-surface"),
+        act: () => runtime.driver.drag("map-surface", { x: 10, y: 20 }),
+        complete: () => runtime.driver.readProjection("parity:viewport:"),
+      });
+    }
+  `;
+  assert.deepEqual(
+    auditJourneyStructure(source, "gesture-journey.mjs").map((violation) => violation.message),
+    ["drag must be the act phase of a semantic transition"],
+  );
+});
+
+test("journey structure audit requires action completion contracts", () => {
+  const source = `
+    async function broken(runtime) {
+      await runtime.action("open", "button", {});
+    }
+  `;
+  assert.deepEqual(
+    auditJourneyStructure(source, "action-contract.mjs").map((violation) => violation.message),
+    ["action must declare a semantic completion condition"],
   );
 });
 
@@ -524,7 +677,7 @@ test("hosted CI pins and fans out immutable release inputs", () => {
     lab,
     /local -a state_args=\(--clear-app-data --sync-all-available-packages\)/,
   );
-  assert.match(lab, /android_baseline_restore "\$ANDROID_BASELINE_SNAPSHOT"/);
+  assert.match(lab, /android_baseline_restore "\$ANDROID_BASELINE_ARCHIVE"/);
   assert.match(lab, /AEROBAG_RELEASE_JOURNEY_REUSE_FIXTURE:-1/);
   assert.match(lab, /--data '\{"reset":true\}'/);
   assert.match(lab, /aerobag-release-journey-lab-\$\{PORT\}/);
@@ -613,6 +766,10 @@ test("web reset stops the app before clearing persistent origin state", async ()
     ["send", "Storage.clearDataForOrigin", {
       origin: "http://fixture.test",
       storageTypes: "all",
+    }],
+    ["send", "Browser.grantPermissions", {
+      origin: "http://fixture.test",
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
     }],
     ["navigate", "http://fixture.test/app"],
     ["waitForLoad"],
@@ -730,6 +887,8 @@ test("Android journey suites bound blocked driver processes", () => {
   assert.match(lab, /android-suite-shard\)/);
   assert.match(lab, /android_shard_journeys/);
   assert.match(lab, /journey\.android_isolated/);
+  assert.doesNotMatch(lab, /while IFS= read -r journey/);
+  assert.match(lab, /mapfile -t journeys/);
   assert.match(
     lab,
     /timeout --foreground --kill-after=15s "\$\{ANDROID_JOURNEY_TIMEOUT_SECONDS\}s"/,
@@ -802,7 +961,7 @@ test("Android qualification isolates semantic tests from Google service instabil
   assert.match(native, /system-images;android-34;aosp_atd;x86_64/);
 });
 
-test("Android qualification snapshots packages without leaking live-feed state between profiles", () => {
+test("Android qualification archives packages without leaking live-feed state between profiles", () => {
   const workflow = readFileSync(
     new URL("../../.github/workflows/e2e-ci.yml", import.meta.url),
     "utf8",
@@ -813,14 +972,27 @@ test("Android qualification snapshots packages without leaking live-feed state b
   );
   assert.match(workflow, /fixture-start-web empty[\s\S]+android-baseline-save/);
   assert.match(localQualification, /fixture-start-web empty/);
+  assert.doesNotMatch(workflow, /AEROBAG_ANDROID_BASELINE_SNAPSHOT/);
+  assert.match(workflow, /AEROBAG_ANDROID_BASELINE_ARCHIVE/);
+  const lab = readFileSync(
+    new URL("./release_journey_lab.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(lab, /android_baseline_save\(\)[\s\S]+android_clear_baseline_live_feeds/);
+  assert.match(lab, /android_baseline_restore\(\)[\s\S]+android_clear_baseline_live_feeds/);
+  assert.match(lab, /find files\/live-feeds -type f -print/);
+  assert.match(lab, /exec-out run-as org\.aerobag\.app tar -C \. -cf - \./);
+  assert.match(lab, /shell pm clear org\.aerobag\.app/);
+  assert.doesNotMatch(lab, /emu avd snapshot (?:save|load)/);
 });
 
 test("procedure replacement waits for the picker transaction before reopening its row", async () => {
   let transitionSelected = false;
   let pickerReadCount = 0;
+  let rowOpen = false;
   const staleRow = { id: "parity:plan-procedure-row:I16R:uid:old" };
   const currentRow = { id: "parity:plan-procedure-row:I16R:uid:new" };
-  const runtime = {
+  const runtime = withActionContract({
     platform: "web",
     driver: {
       async findProjectionMatching(prefix, label) {
@@ -832,6 +1004,7 @@ test("procedure replacement waits for the picker transaction before reopening it
         return this.findProjectionMatching(prefix, label);
       },
       async readElement(id) {
+        if (id === "plan-row-tray-scrim") return rowOpen ? { id } : null;
         if (id === "plan-row-action-select_approach") return { enabled: true };
         if (id === "plan-procedure-picker") {
           pickerReadCount += 1;
@@ -852,6 +1025,8 @@ test("procedure replacement waits for the picker transaction before reopening it
         return [];
       },
       async performAction(id) {
+        if (id.startsWith("plan-row:")) rowOpen = true;
+        else if (id !== "plan-row-tray-scrim") rowOpen = false;
         if (id === "plan-procedure-transition:VECTORS") transitionSelected = true;
       },
     },
@@ -865,7 +1040,7 @@ test("procedure replacement waits for the picker transaction before reopening it
       }
       throw new Error(`eventually failed: ${label}`);
     },
-  };
+  });
 
   const selected = await selectProcedure(runtime, {
     airportId: "KPAE",
@@ -881,7 +1056,7 @@ test("forecast choice waits for one coherent action state before branching", asy
   let readyReads = 0;
   let readySelected = false;
   const actions = [];
-  const runtime = {
+  const runtime = withActionContract({
     platform: "web",
     driver: {
       async readElement(id) {
@@ -906,7 +1081,7 @@ test("forecast choice waits for one coherent action state before branching", asy
       }
       throw new Error("forecast state did not settle");
     },
-  };
+  });
 
   const result = await chooseForecastWindModel(runtime);
   assert.equal(result.downloaded, false);
@@ -990,6 +1165,136 @@ test("persistent Android semantic reads tolerate bounded emulator contention", (
   );
   assert.match(source, /semanticDriverRequest\(state\.port, "\/dump", 15\)/);
   assert.match(source, /semanticDriverRequest\(state\.port, `\/click\?\$\{query\}`, 5, "POST"\)/);
+  assert.match(source, /"--fail-with-body"/);
+});
+
+test("journey actions require a semantic completion condition", async () => {
+  const actions = [];
+  const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-action-contract-"));
+  const runtime = createJourneyRuntime({
+    journey: { id: "action-contract", assertions: [] },
+    platform: "web",
+    driver: {
+      async readElement(id) { return id === "button" ? { test_id: id } : null; },
+      async readAction(id) { return id === "button" ? { test_id: id } : null; },
+      async performAction(id) { actions.push(id); },
+      async captureFrame() {},
+    },
+    fixture: null,
+    artifactDir,
+  });
+  try {
+    await assert.rejects(
+      runtime.action("incomplete action", "button", {}),
+      /must declare a semantic completion condition/,
+    );
+    await assert.rejects(
+      runtime.action("extra timeout", "button", { complete: async () => true }, 10_000),
+      /unexpected positional arguments/,
+    );
+    let completionProbes = 0;
+    const value = await runtime.action("complete action", "button", {
+      complete: async () => {
+        completionProbes += 1;
+        return actions.length > 0 ? { state: "done" } : null;
+      },
+    });
+    assert.deepEqual(actions, ["button"]);
+    assert.deepEqual(value, { state: "done" });
+    assert.equal(completionProbes, 3);
+  } finally {
+    rmSync(artifactDir, { recursive: true, force: true });
+  }
+});
+
+test("semantic text editing acts on the exact readiness evidence", async () => {
+  const readyElement = { test_id: "route-input", enabled: true, value: "" };
+  let currentValue = "";
+  let actionEvidence = null;
+  const result = await editSemanticText({
+    async readElement() {
+      return { ...readyElement, value: currentValue };
+    },
+    async enterText(_controlId, value, _options, evidence) {
+      actionEvidence = evidence;
+      currentValue = value;
+    },
+  }, "edit route", "route-input", "KSEA KPAE");
+  assert.equal(actionEvidence.test_id, readyElement.test_id);
+  assert.equal(result.value, "KSEA KPAE");
+});
+
+test("journey runtime exposes typed phases instead of a generic step callback", async () => {
+  const calls = [];
+  const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-typed-phases-"));
+  const runtime = createJourneyRuntime({
+    journey: { id: "typed-phases", assertions: [] },
+    platform: "web",
+    driver: {
+      async reset() { calls.push("reset"); },
+      async resetApplicationData() { calls.push("reset-data"); },
+      async reload() { calls.push("reload"); },
+      async revealElement(id) { calls.push(`reveal:${id}`); return { id }; },
+      async revealProjectionMatching(probe, needle) {
+        calls.push(`projection:${probe}:${needle}`);
+        return { probe, needle };
+      },
+      async captureFrame() {},
+    },
+    fixture: null,
+    artifactDir,
+  });
+  try {
+    assert.equal(runtime.step, undefined);
+    await runtime.reset();
+    await runtime.resetApplicationData();
+    await runtime.reload();
+    await runtime.revealElement("button");
+    await runtime.revealProjectionMatching("row:", "KSEA");
+    assert.deepEqual(calls, [
+      "reset", "reset-data", "reload", "reveal:button", "projection:row::KSEA",
+    ]);
+  } finally {
+    rmSync(artifactDir, { recursive: true, force: true });
+  }
+});
+
+test("journey choices expose launcher and selection as two observed user actions", async () => {
+  const calls = [];
+  let state = "closed";
+  const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-choice-contract-"));
+  const runtime = createJourneyRuntime({
+    journey: { id: "choice-contract", assertions: [] },
+    platform: "web",
+    driver: {
+      async readAction(id) { return id === "launcher" && state === "closed" ? { id } : null; },
+      async openChooser(id) { calls.push(["open", id]); state = "open"; },
+      async readOption(launcher, option) {
+        return launcher === "launcher" && option === "choice" && state === "open"
+          ? { launcher, option }
+          : null;
+      },
+      async selectOption(launcher, option) {
+        calls.push(["select", launcher, option]);
+        state = "selected";
+      },
+      async captureFrame() {},
+    },
+    fixture: null,
+    artifactDir,
+  });
+  try {
+    const selected = await runtime.chooseOption("choose value", "launcher", "choice", {
+      complete: async () => state === "selected" ? { state } : null,
+    });
+    assert.deepEqual(calls, [
+      ["open", "launcher"],
+      ["select", "launcher", "choice"],
+    ]);
+    assert.deepEqual(selected, { state: "selected" });
+  } finally {
+    rmSync(artifactDir, { recursive: true, force: true });
+  }
 });
 
 test("chart search selection delivers one platform tap and observes its result", async () => {
@@ -1093,11 +1398,57 @@ test("Android altitude unavailability is semantically observable", () => {
   );
 });
 
+test("Android altitude departure basis exposes its core-projected value", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/AltitudePlannerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  assert.match(
+    source,
+    /parity:altitude-planner-departure-basis:\$\{departure\.basisLabel\}/,
+  );
+});
+
+test("Android flight-data settings expose their visible selected state", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/FlightDataBanner.kt",
+    import.meta.url,
+  ), "utf8");
+  assert.match(source, /semantics \{ selected = item\.enabled \}/);
+});
+
 test("Android semantic discovery scrolls horizontally for clipped control strips", () => {
   assert.equal(androidElementMayRequireHorizontalScroll("plan-control:undo"), true);
   assert.equal(androidElementMayRequireHorizontalScroll("altitude-planner-control:wind_model"), true);
   assert.equal(androidElementMayRequireHorizontalScroll("altitude-planner-departure-basis"), true);
   assert.equal(androidElementMayRequireHorizontalScroll("settings-toggle-debug_internet_adsb"), false);
+});
+
+test("Android page navigation requires visible semantic pages", () => {
+  const source = readFileSync(
+    new URL("./semantic-journey-driver.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /function visibleAndroidPage/);
+  assert.match(source, /visible page before navigation/);
+  assert.match(source, /requireVisible: true/);
+  assert.match(source, /export async function navigateSemanticPage/);
+});
+
+test("Android current-page discovery follows its single startup-state page identity", () => {
+  assert.equal(
+    androidPageIdFromStartupStateTag(
+      "parity:startup-state:ready:true:persisted_page:Home:session_revision:44",
+    ),
+    "home",
+  );
+  assert.equal(
+    androidPageIdFromStartupStateTag(
+      "parity:startup-state:ready:true:persisted_page:Plan:session_revision:45",
+    ),
+    "flight_plan",
+  );
+  assert.equal(androidPageIdFromStartupStateTag("parity:startup-state:ready:false"), null);
 });
 
 test("shared settings-choice probes translate to Android's core-owned row IDs", () => {
@@ -1215,7 +1566,65 @@ test("semantic drivers expose the platform-neutral journey operation set", () =>
     SEMANTIC_DRIVER_OPERATIONS.filter((operation) => typeof driver[operation] === "function"),
     SEMANTIC_DRIVER_OPERATIONS,
   );
-  assert.rejects(driver.openPage("map"), /does not implement openPage/);
+  assert.rejects(driver.openPage("map"), /does not implement readCurrentPage/);
+});
+
+test("shared semantic navigation records each required user gesture separately", async () => {
+  let pageId = "map";
+  const activated = [];
+  const transitions = [];
+  const driver = {
+    async readCurrentPage() { return { pageId }; },
+    async readNavigationAction(destination) { return { destination }; },
+    async activateNavigation(destination) {
+      activated.push(destination);
+      pageId = destination;
+    },
+  };
+  const transition = async (description, contract) => {
+    transitions.push(description);
+    assert.ok(await contract.ready());
+    assert.equal(await contract.complete(), null);
+    await contract.act();
+    return contract.complete();
+  };
+
+  assert.deepEqual(
+    await navigateSemanticPage(driver, "settings", {
+      observe: async (_description, probe) => probe(),
+      transition,
+    }),
+    { pageId: "settings" },
+  );
+  assert.deepEqual(activated, ["home", "settings"]);
+  assert.deepEqual(transitions, ["navigate to Home", "navigate to settings"]);
+});
+
+test("shared semantic navigation does not skip an explicit Home request", async () => {
+  let pageId = "map";
+  const activated = [];
+  const driver = {
+    async readCurrentPage() { return { pageId }; },
+    async readNavigationAction(destination) { return { destination }; },
+    async activateNavigation(destination) {
+      activated.push(destination);
+      pageId = destination;
+    },
+  };
+  const transition = async (_description, contract) => {
+    assert.equal(await contract.complete(), null);
+    await contract.act();
+    return contract.complete();
+  };
+
+  assert.deepEqual(
+    await navigateSemanticPage(driver, "home", {
+      observe: async (_description, probe) => probe(),
+      transition,
+    }),
+    { pageId: "home" },
+  );
+  assert.deepEqual(activated, ["home"]);
 });
 
 test("web back tolerates a tray that closes between discovery and click", async () => {
@@ -1227,6 +1636,37 @@ test("web back tolerates a tray that closes between discovery and click", async 
   });
   await driver.back();
   assert.deepEqual(keyEvents.map(({ payload }) => payload.type), ["keyDown", "keyUp"]);
+});
+
+test("web action readiness and delivery share the same semantic selector", async () => {
+  const selectors = [];
+  const clicks = [];
+  const transport = {
+    async firstExisting(candidates) {
+      selectors.push(candidates);
+      return '[data-testid="cloud-action-begin_setup"]';
+    },
+    async readElement(selector) {
+      return { test_id: selector, enabled: true, visible: true };
+    },
+    async click(selector) { clicks.push(selector); },
+  };
+  const driver = new WebSemanticJourneyDriver(transport);
+
+  assert.equal((await driver.readAction("begin_setup"))?.enabled, true);
+  await driver.performAction("begin_setup");
+  assert.equal(selectors.length, 2);
+  for (const candidates of selectors) {
+    assert.match(candidates.join("\n"), /cloud-action-begin_setup/);
+  }
+  assert.deepEqual(clicks, ['[data-testid="cloud-action-begin_setup"]']);
+});
+
+test("web semantic selectors preserve JSON-valued action identities", () => {
+  assert.equal(
+    webTestIdSelector('tray-option-{"target":{"kind":"existing"}}'),
+    '[data-testid="tray-option-{\\"target\\":{\\"kind\\":\\"existing\\"}}"]',
+  );
 });
 
 test("Android semantic aliases preserve shared search suggestion ids", () => {
@@ -1243,6 +1683,19 @@ test("Android aliases the shared ownship launcher to its Compose semantic tag", 
 test("Android exact search suggestions use the focused field submit action", () => {
   assert.equal(androidActionUsesSubmit("chart-search-suggestion:KSEA"), true);
   assert.equal(androidActionUsesSubmit("airport_info"), false);
+});
+
+test("Android activates full-screen scrims by semantic identity instead of their covered center", () => {
+  assert.equal(androidActionUsesSemanticActivation("plan-row-tray-scrim"), true);
+  assert.equal(androidActionUsesSemanticActivation("settings-button"), false);
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    service,
+    /node\.performAction\(AccessibilityNodeInfo\.ACTION_CLICK\)[\s\S]*dispatchTapGesture\(bounds\)/,
+  );
 });
 
 test("Android text entry does not retap an auto-focused Compose field", () => {
@@ -1289,6 +1742,38 @@ test("Android Cloud actions use exact selectors and require visible scroll reach
   ]) {
     assert.equal(androidElementMayRequireVerticalScroll(actionId), true, actionId);
   }
+});
+
+test("Android reveal phases require scrolled controls to be center-reachable", () => {
+  const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const revealMethod = source.slice(
+    source.lastIndexOf("  async revealElement(elementId)"),
+    source.indexOf("\n  async reload()", source.lastIndexOf("  async revealElement(elementId)")),
+  );
+  assert.match(
+    revealMethod,
+    /androidElementMayRequireVerticalScroll\(elementId\)[\s\S]*scrollUntilTag\(this\.serial, semanticTag, 8, true\)/,
+  );
+  assert.ok(
+    revealMethod.indexOf("androidElementMayRequireVerticalScroll(elementId)") <
+      revealMethod.indexOf("const existing = await this.readElement(elementId)"),
+  );
+});
+
+test("session revision acknowledgement is parsed from Android's persistent root projection", () => {
+  assert.equal(
+    androidSessionRevisionFromStateTag(
+      "parity:startup-state:ready:true:persisted_page:Map:session_revision:417",
+    ),
+    417,
+  );
+  assert.equal(androidSessionRevisionFromStateTag("parity:startup-state:ready:true"), null);
+});
+
+test("Android action readiness uses the same semantic identities as delivery", () => {
+  assert.deepEqual(androidActionCandidates("ownship-source-button"), ["parity:ownship-launcher"]);
+  assert.deepEqual(androidActionCandidates("plan-row:row-7"), ["parity:plan-row:row-7"]);
+  assert.deepEqual(androidActionCandidates("tray-option:Vectors"), ["parity:tray-option:Vectors"]);
 });
 
 test("Android offline-package state probes can reach lazy-list rows", () => {

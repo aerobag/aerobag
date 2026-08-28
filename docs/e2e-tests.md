@@ -167,8 +167,9 @@ does not contact a live-feed server.
 Journeys follow one deterministic state-transition shape:
 
 1. Observe that the intended control is rendered, reachable, and enabled.
-2. Deliver the user action exactly once.
-3. Observe the semantic or painted result without retrying the action.
+2. Prove that the intended postcondition is not already satisfied.
+3. Deliver the user action exactly once.
+4. Observe the semantic or painted result without retrying the action.
 
 Polling is allowed only for read-only observation. Scrolling a lazy list is an
 explicit action, not a side effect hidden in a probe. Behavior that must remain
@@ -178,10 +179,17 @@ budget; startup, resource loading, cloud convergence, and package sync use
 separate named budgets so increasing an external-operation allowance cannot
 hide an unresponsive button.
 
+There is no generic journey `step` escape hatch. User input must use a semantic
+transition. Non-interactive lifecycle work uses the typed reset/reload phases,
+and virtualized-list traversal uses the typed reveal phases. This keeps future
+journeys from hiding an unobserved click, retry loop, or sleep inside a
+convenience callback.
+
 The transition helper enforces that three-second ceiling at runtime. Action
 delivery and completion observation share that one budget; a slow driver call
 cannot consume three seconds and then receive a second three-second completion
-allowance. Longer
+allowance. A postcondition that was already true is rejected before input is
+delivered, preventing a no-op control from passing against stale UI. Longer
 waits are separate phases with names that expose what the test is actually
 waiting for: local resource computation, replay progression, an animation
 cycle, synthetic ownship progression, Android activity recreation, startup,
@@ -201,10 +209,17 @@ incidental contents. A missing prerequisite therefore fails fixture construction
 instead of spending a journey deadline waiting for an impossible UI state.
 
 Each hosted Android job still performs a real clean install, package sync, and
-startup-navigation journey. It then saves an emulator snapshot of that prepared
-state and restores it before each assigned behavior journey. The snapshot is
-created inside the job rather than uploaded across machines, so it cannot hide
-system-image or installation drift.
+startup-navigation journey. It then archives the stopped app's private data and
+restores that archive after `pm clear` before each assigned behavior journey.
+The archive is created inside the job rather than uploaded across machines, so
+it cannot hide system-image or installation drift. It contains no durable
+live-feed state; every profile must acquire only the products it publishes.
+
+This is an app-data checkpoint, not an emulator VM snapshot. VM snapshots also
+capture GPU surfaces, clocks, sockets, and running coroutines; repeated restores
+made otherwise healthy journeys observe black or stale windows. The archive
+retains the expensive installed cycle packages while every journey keeps a
+normally running emulator and starts a fresh app process.
 
 An Android behavior journey resets core state once during its bootstrap and
 accepts the mandatory disclaimer there. The journey relaunch preserves that
@@ -224,8 +239,16 @@ directly or add random coordinate jitter. Keeping the driver process alive
 removes the roughly two-second cost and process-race exposure of each standalone
 `uiautomator dump`. The action endpoint also closes the probe/action race: if
 Compose replaces a previously observed node, it waits on accessibility events
-until Android accepts one action against the currently rendered replacement.
-It never retries an action that Android accepted.
+until it can resolve the currently rendered replacement. The test-only service
+then dispatches one tap gesture at that node inside Android, preserving semantic
+targeting without a host-side coordinate round trip. It never retries an action
+that Android accepted. Completion probes wait on accessibility events between
+reads so full Compose hierarchy traversal cannot starve the UI being tested.
+
+Chooser interactions are two transitions, not one opaque driver operation: the
+launcher must expose the requested enabled option, then one selection action
+must produce the feature-specific result. This prevents a platform driver from
+hiding two clicks, a tray race, or a retry inside a convenience method.
 
 Web control actions verify that the rendered element is unobstructed and invoke
 its ordinary DOM activation in the same browser task. This preserves the real
@@ -233,6 +256,11 @@ application click handler while eliminating the race where a render moves a
 control between reading its coordinates and sending a later CDP pointer event.
 Spatial behavior such as map selection, pan, zoom, and slider gestures still
 uses browser pointer input because hit location is part of those contracts.
+
+Core session revision is exposed as a platform-neutral read-only projection.
+Journeys may use it to prove that a command with no immediate visual change was
+accepted by core, but must still assert any eventual user-visible, persisted,
+or remote effect in a separate named phase.
 
 Set `AEROBAG_RELEASE_JOURNEY_REPETITIONS=N` to require every selected journey
 to pass `N` times. Each repetition has separate diagnostics, and the suite

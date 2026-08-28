@@ -869,6 +869,10 @@ class NativeUiSession internal constructor(
     )
 
     private val landedUpdateCount = AtomicLong(0)
+    // Core serializes model mutations, but callers can arrive on independent
+    // Android workers. Preserve that same order through update landing so a
+    // later revision cannot overtake an earlier one in the Kotlin accumulator.
+    private val sessionMutationLock = Any()
     private val snapshotAccumulator = SessionUpdateAccumulator(
         initialSnapshot,
         UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
@@ -982,7 +986,7 @@ class NativeUiSession internal constructor(
         artifacts: List<InstalledPackageArtifact>,
         libraryCacheJson: String,
         plannedGcFilenames: Set<String>,
-    ): NavDbAdvanceUiResult {
+    ): NavDbAdvanceUiResult = requireNotNull(runNativeSessionCommand("navDbAdvance") {
         val store = requireNotNull(navKvStore) { "NAVDB advance requires a nav kv store" }
         val outcome = store.replaceInstalledArtifacts(
             artifacts,
@@ -993,15 +997,16 @@ class NativeUiSession internal constructor(
         val result = json.decodeFromJsonElement<WireNavDbAdvanceResult>(outcome.result)
         applyOptionalSessionUpdate(result.sessionUpdate)
         publishPagedInvalidations("navDbAdvance", outcome, snapshotAlreadyReturned = true)
-        return NavDbAdvanceUiResult(
+        NavDbAdvanceUiResult(
             adopted = result.disposition == "adopted",
             snapshot = snapshot,
             retainedArtifactFilenames = result.retained_artifact_filenames.toSet(),
             rejectionReason = result.rejection_reason,
         )
-    }
+    })
 
-    fun maintainNavDb(nowEpochMs: Long): NavDbMaintenanceUiResult {
+    fun maintainNavDb(nowEpochMs: Long): NavDbMaintenanceUiResult =
+        requireNotNull(runNativeSessionCommand("navDbMaintenance") {
         val outcome = navKvStore?.runPagedSessionOperation(
             operation = {
                 bridge.maintainNavDbInSessionAtEpochMsJson(handle, nowEpochMs)
@@ -1011,11 +1016,11 @@ class NativeUiSession internal constructor(
         val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
         applyOptionalSessionUpdate(result.sessionUpdate)
         publishPagedInvalidations("navDbMaintenance", outcome, snapshotAlreadyReturned = true)
-        return NavDbMaintenanceUiResult(
+        NavDbMaintenanceUiResult(
             shouldAttemptAdvance = result.action == "attempt_advance",
             snapshot = snapshot,
         )
-    }
+    })
 
     private fun runPagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val outcome = runNativeSessionCommand(commandName) {
@@ -1216,14 +1221,16 @@ class NativeUiSession internal constructor(
     }
 
     private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? =
-        try {
-            operation()
-        } catch (error: RuntimeException) {
-            if (!error.isNativeSessionCommandFailure()) {
-                throw error
+        synchronized(sessionMutationLock) {
+            try {
+                operation()
+            } catch (error: RuntimeException) {
+                if (!error.isNativeSessionCommandFailure()) {
+                    throw error
+                }
+                val refreshedSnapshot = refreshSnapshotAfterRejectedCommand(commandName, error)
+                throw NativeSessionCommandRejectedException(commandName, refreshedSnapshot, error)
             }
-            val refreshedSnapshot = refreshSnapshotAfterRejectedCommand(commandName, error)
-            throw NativeSessionCommandRejectedException(commandName, refreshedSnapshot, error)
         }
 
     private fun refreshSnapshotAfterRejectedCommand(commandName: String, error: RuntimeException): UiSessionSnapshot {

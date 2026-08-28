@@ -23,6 +23,29 @@ export const E2E_TIMING = Object.freeze({
   resourcePollIntervalMs: 250,
 });
 
+function diagnosticValue(value) {
+  if (value == null || typeof value === "string" || typeof value === "number" ||
+      typeof value === "boolean") return value;
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded.length <= 1_000 ? JSON.parse(encoded) : `${encoded.slice(0, 997)}...`;
+  } catch {
+    return String(value);
+  }
+}
+
+export class ObservationTimeoutError extends Error {
+  constructor(description, elapsedMs, diagnostics, lastError = null) {
+    super(
+      `${description} timed out after ${elapsedMs}ms` +
+        (lastError ? `: ${lastError.message}` : ""),
+    );
+    this.name = "ObservationTimeoutError";
+    this.diagnostics = diagnostics;
+    if (lastError) this.cause = lastError;
+  }
+}
+
 export async function observeUntil(
   description,
   probe,
@@ -30,6 +53,7 @@ export async function observeUntil(
     timeoutMs = E2E_TIMING.localReadyMs,
     intervalMs = E2E_TIMING.pollIntervalMs,
     consecutiveSuccesses = 1,
+    waitForNextProbe = null,
   } = {},
 ) {
   if (!Number.isInteger(consecutiveSuccesses) || consecutiveSuccesses < 1) {
@@ -40,9 +64,13 @@ export async function observeUntil(
   let lastError = null;
   let successfulSamples = 0;
   let successfulValue = null;
+  let lastValue = null;
+  let attempts = 0;
   while (performance.now() < deadline) {
     try {
+      attempts += 1;
       const value = await probe();
+      lastValue = diagnosticValue(value);
       const probeFinishedAt = performance.now();
       if (probeFinishedAt >= deadline) break;
       if (value) {
@@ -60,12 +88,29 @@ export async function observeUntil(
       successfulSamples = 0;
       successfulValue = null;
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const remainingMs = Math.max(0, deadline - performance.now());
+    if (remainingMs <= 0) break;
+    if (waitForNextProbe) {
+      await waitForNextProbe(Math.min(intervalMs, remainingMs));
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remainingMs)));
+    }
   }
   const elapsedMs = Math.round(performance.now() - startedAt);
-  throw new Error(
-    `${description} timed out after ${elapsedMs}ms` +
-      (lastError ? `: ${lastError.message}` : ""),
+  throw new ObservationTimeoutError(
+    description,
+    elapsedMs,
+    {
+      description,
+      elapsed_ms: elapsedMs,
+      timeout_ms: timeoutMs,
+      attempts,
+      successful_samples: successfulSamples,
+      required_successful_samples: consecutiveSuccesses,
+      last_value: lastValue,
+      last_error: lastError?.message ?? null,
+    },
+    lastError,
   );
 }
 
@@ -95,6 +140,8 @@ export async function performTransition(description, {
   ready,
   act,
   complete,
+  diagnose = null,
+  waitForObservation = null,
   readyTimeoutMs = E2E_TIMING.localReadyMs,
   responseTimeoutMs = E2E_TIMING.userResponseMs,
   intervalMs = E2E_TIMING.pollIntervalMs,
@@ -108,34 +155,109 @@ export async function performTransition(description, {
     );
   }
   const transitionStartedAt = performance.now();
-  const readyResult = await observeUntil(`${description} ready`, ready, {
-    timeoutMs: readyTimeoutMs,
-    intervalMs,
-  });
-  const actionStartedAt = performance.now();
-  await act(readyResult.value);
-  const actionDurationMs = Math.round(performance.now() - actionStartedAt);
-  const remainingResponseMs = responseTimeoutMs - (performance.now() - actionStartedAt);
-  if (remainingResponseMs <= 0) {
-    throw new Error(
-      `${description} action exceeded the ${responseTimeoutMs}ms user-response budget`,
-    );
-  }
-  const completion = await observeUntil(`${description} completed`, complete, {
-    timeoutMs: remainingResponseMs,
-    intervalMs,
-    consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
-  });
-  const responseDurationMs = Math.round(performance.now() - actionStartedAt);
   const timing = {
     description,
-    ready_ms: readyResult.durationMs,
-    action_ms: actionDurationMs,
+    outcome: "fail",
+    failure_phase: "ready",
+    ready_ms: null,
+    action_ms: null,
+    completion_ms: null,
+    response_ms: null,
+    total_ms: null,
+    response_budget_ms: responseTimeoutMs,
+    ready_state: null,
+    action_result: null,
+    observation: null,
+    diagnostic_state: null,
+  };
+  const recordFailure = async (phase, error = null) => {
+    timing.failure_phase = phase;
+    if (diagnose) {
+      try {
+        timing.diagnostic_state = diagnosticValue(await diagnose());
+      } catch (diagnosticError) {
+        timing.diagnostic_state = { diagnostic_error: diagnosticError.message };
+      }
+    }
+    onTiming?.(timing);
+    if (error) throw error;
+  };
+  let readyResult;
+  try {
+    readyResult = await observeUntil(`${description} ready`, ready, {
+      timeoutMs: readyTimeoutMs,
+      intervalMs,
+      waitForNextProbe: waitForObservation,
+    });
+    timing.ready_ms = readyResult.durationMs;
+    timing.ready_state = diagnosticValue(readyResult.value);
+  } catch (error) {
+    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.observation = error.diagnostics ?? null;
+    await recordFailure("ready", error);
+  }
+  let completionBeforeAction = null;
+  try {
+    completionBeforeAction = await complete();
+  } catch {
+    // Completion probes use the same absent-state convention as observeUntil:
+    // a missing postcondition may either return null or fail to read.
+  }
+  if (completionBeforeAction) {
+    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.observation = diagnosticValue(completionBeforeAction);
+    await recordFailure(
+      "precondition",
+      new Error(`${description} completion was already satisfied before the action`),
+    );
+  }
+  const actionStartedAt = performance.now();
+  let actionResult;
+  try {
+    actionResult = await act(readyResult.value);
+    timing.action_result = diagnosticValue(actionResult);
+  } catch (error) {
+    timing.action_ms = Math.round(performance.now() - actionStartedAt);
+    timing.response_ms = timing.action_ms;
+    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.observation = { error: error.message };
+    await recordFailure("action", error);
+  }
+  const actionDurationMs = Math.round(performance.now() - actionStartedAt);
+  timing.action_ms = actionDurationMs;
+  const remainingResponseMs = responseTimeoutMs - (performance.now() - actionStartedAt);
+  if (remainingResponseMs <= 0) {
+    timing.response_ms = actionDurationMs;
+    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    await recordFailure(
+      "action",
+      new Error(`${description} action exceeded the ${responseTimeoutMs}ms user-response budget`),
+    );
+  }
+  let completion;
+  try {
+    completion = await observeUntil(`${description} completed`, complete, {
+      timeoutMs: remainingResponseMs,
+      intervalMs,
+      consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
+      waitForNextProbe: waitForObservation,
+    });
+  } catch (error) {
+    timing.completion_ms = Math.round(performance.now() - actionStartedAt - actionDurationMs);
+    timing.response_ms = Math.round(performance.now() - actionStartedAt);
+    timing.total_ms = Math.round(performance.now() - transitionStartedAt);
+    timing.observation = error.diagnostics ?? null;
+    await recordFailure("completion", error);
+  }
+  const responseDurationMs = Math.round(performance.now() - actionStartedAt);
+  Object.assign(timing, {
+    outcome: "pass",
+    failure_phase: null,
     completion_ms: completion.durationMs,
     response_ms: responseDurationMs,
     total_ms: Math.round(performance.now() - transitionStartedAt),
-    response_budget_ms: responseTimeoutMs,
-  };
+    observation: diagnosticValue(completion.value),
+  });
   onTiming?.(timing);
   return { value: completion.value, timing };
 }

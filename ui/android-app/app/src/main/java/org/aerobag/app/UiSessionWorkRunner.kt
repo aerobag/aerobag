@@ -50,34 +50,36 @@ class UiSessionWorkRunner(
     private val bridge: NativeBridge = NativeBindings,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val mutationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val schedulerHandle = bridge.createUiSessionWorkScheduler()
     private val mutationQueue = Channel<SessionMutation>(Channel.UNLIMITED)
     private val payloads = mutableMapOf<Long, RetainedWork>()
     private val activeRequestIds = mutableSetOf<Long>()
     private var nextRequestId = 1L
+    @Volatile
     private var closed = false
     private var perfMetricsEnabled = false
 
     init {
-        scope.launch {
+        mutationScope.launch {
             for (mutation in mutationQueue) {
                 val startedAtMs = SystemClock.elapsedRealtime()
                 val outcome = runCatching {
-                    withContext(Dispatchers.IO) {
-                        mutation.operation(uiSession)
-                    }
+                    mutation.operation(uiSession)
                 }
-                if (closed) return@launch
-                outcome
-                    .onSuccess(mutation.onResult)
-                    .onFailure(mutation.onError)
-                if (perfMetricsEnabled) {
-                    Log.i(
-                        UiSessionWorkLogTag,
-                        "event=mutation_finished command=${mutation.commandName} " +
-                            "outcome=${if (outcome.isSuccess) "success" else "error"} " +
-                            "total_ms=${SystemClock.elapsedRealtime() - startedAtMs} main_thread=false",
-                    )
+                withContext(Dispatchers.Main.immediate) {
+                    if (closed) return@withContext
+                    outcome
+                        .onSuccess(mutation.onResult)
+                        .onFailure(mutation.onError)
+                    if (perfMetricsEnabled) {
+                        Log.i(
+                            UiSessionWorkLogTag,
+                            "event=mutation_finished command=${mutation.commandName} " +
+                                "outcome=${if (outcome.isSuccess) "success" else "error"} " +
+                                "total_ms=${SystemClock.elapsedRealtime() - startedAtMs} main_thread=false",
+                        )
+                    }
                 }
             }
         }
@@ -101,6 +103,7 @@ class UiSessionWorkRunner(
         }
         payloads.clear()
         activeRequestIds.clear()
+        mutationScope.cancel()
         scope.cancel()
         bridge.destroyUiSessionWorkScheduler(schedulerHandle)
     }

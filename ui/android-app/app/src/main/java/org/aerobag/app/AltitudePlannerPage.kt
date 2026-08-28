@@ -496,7 +496,7 @@ private fun DepartureEditorRow(
                     .width(ThumbSize * 1.45f)
                     .height(ThumbSize * 0.58f),
                 maxLines = 1,
-                testTag = "parity:altitude-planner-departure-basis",
+                testTag = "parity:altitude-planner-departure-basis:${departure.basisLabel}",
                 onClick = onToggleBasis,
             )
             DepartureLabel(departure.whenLabel)

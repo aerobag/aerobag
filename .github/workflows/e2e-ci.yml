@@ -239,7 +239,7 @@ jobs:
       PACKAGE_SOURCE_PORT: 18093
       AEROBAG_E2E_CLOUD_PORT: 18094
       AEROBAG_CLOUD_SERVER_BIN: ${{ github.workspace }}/.ci/release-e2e-apps/aerobag-cloud-serverd
-      AEROBAG_ANDROID_BASELINE_SNAPSHOT: aerobag-release-journey-baseline
+      AEROBAG_ANDROID_BASELINE_ARCHIVE: ${{ github.workspace }}/.ci/aerobag-release-journey-baseline.tar
       AEROBAG_ANDROID_SEMANTIC_DRIVER_REQUIRED: "1"
       AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64
       VNC_PORT: 5900
@@ -303,7 +303,7 @@ jobs:
           --release-fixture "$AEROBAG_RELEASE_JOURNEY_FIXTURE"
           --test shared.startup-navigation
       - name: Save prepared Android journey baseline
-        run: ./tools/e2e/release_journey_lab.sh android-baseline-save "$AEROBAG_ANDROID_BASELINE_SNAPSHOT"
+        run: ./tools/e2e/release_journey_lab.sh android-baseline-save "$AEROBAG_ANDROID_BASELINE_ARCHIVE"
       - name: Run Android ${{ matrix.priority }} shard ${{ matrix.shard }} journeys
         run: ./tools/e2e/release_journey_lab.sh android-suite-shard "${{ matrix.priority }}" "${{ matrix.shard }}" 4
       - name: Stop Android and journey services

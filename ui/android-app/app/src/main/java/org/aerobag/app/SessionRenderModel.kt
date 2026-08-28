@@ -28,6 +28,7 @@ internal val HighRateSessionUpdateGroups = setOf(
 internal enum class SessionRenderScope {
     Shell,
     HighRate,
+    Settings,
 }
 
 internal enum class RenderOwnerPublicationDisposition {
@@ -72,6 +73,13 @@ internal fun sessionRenderScopes(
     }
     if (fullSnapshot || changedGroups.any { it !in HighRateSessionUpdateGroups }) {
         add(SessionRenderScope.Shell)
+    }
+    if (
+        fullSnapshot ||
+        UiSessionUpdateGroup.FlightData in changedGroups ||
+        UiSessionUpdateGroup.Settings in changedGroups
+    ) {
+        add(SessionRenderScope.Settings)
     }
 }
 
@@ -124,9 +132,15 @@ internal class SessionRenderModel(initialSnapshot: UiSessionSnapshot) {
         revisionOf = UiSessionSnapshot::sessionRevision,
         project = HighRateSessionProjection::from,
     )
+    private val settingsOwner = VersionedRenderOwner(
+        initialSource = initialSnapshot,
+        revisionOf = UiSessionSnapshot::sessionRevision,
+        project = UiSessionSnapshot::settingsPageState,
+    )
 
     val shellSnapshotState: State<UiSessionSnapshot> = shellOwner.state
     val highRateProjectionState: State<HighRateSessionProjection> = highRateOwner.state
+    val settingsPageState = settingsOwner.state
     val currentRevision: Long
         get() = latestSnapshot.get().sessionRevision
 
@@ -143,6 +157,9 @@ internal class SessionRenderModel(initialSnapshot: UiSessionSnapshot) {
         }
         if (SessionRenderScope.Shell in scopes) {
             shellOwner.publish(snapshot)
+        }
+        if (SessionRenderScope.Settings in scopes) {
+            settingsOwner.publish(snapshot)
         }
     }
 

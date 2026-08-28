@@ -2419,6 +2419,7 @@ function OperationalApp() {
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
   const cloudPumpInFlightRef = useRef(false);
+  const cloudSuccessfulPutCountRef = useRef(0);
   const cloudEventStreamRef = useRef<{
     streamId: number;
     source: EventSource;
@@ -2623,6 +2624,14 @@ function OperationalApp() {
           response,
           Date.now(),
         );
+        if (
+          __AEROBAG_E2E_ENABLED__
+          && request.method === "put"
+          && response.result === "completed"
+          && response.status_code === 200
+        ) {
+          cloudSuccessfulPutCountRef.current += 1;
+        }
         applySessionSnapshot(nextSnapshot, "cloud_provider_completion");
       }
       throw new Error("cloud provider pump exceeded its bounded work batch");
@@ -2723,6 +2732,7 @@ function OperationalApp() {
         offline_package_preferences: JSON.parse(sessionSnapshot.offline_package_preferences_json),
         overall_status: sessionSnapshot.cloud_page_state.overall_status,
         event_stream_id: cloudEventStreamRef.current?.streamId ?? null,
+        successful_provider_put_count: cloudSuccessfulPutCountRef.current,
         flight_plan_rows: sessionSnapshot.app_ui_state.active_plan?.display_rows.map((row) => row.label) ?? [],
       }),
       setOfflinePackagePreferences: async (preferences: unknown) => {
@@ -2787,6 +2797,13 @@ function OperationalApp() {
       }
     };
   }, [pumpCloudProvider, reconcileCloudEventStream, uiSession]);
+
+  // A core mutation can enqueue cloud work from any feature. Start that work
+  // from the committed session revision instead of waiting for the polling
+  // backstop, which browsers may throttle when the page is not foregrounded.
+  useEffect(() => {
+    void pumpCloudProvider();
+  }, [pumpCloudProvider, sessionSnapshot.session_revision]);
 
   const performCloudPageAction = useCallback(async (
     actionId: CloudUiActionId,

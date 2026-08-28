@@ -2823,20 +2823,6 @@ async function cloudCrossfill(runtime) {
   const active = await waitForCloudActive(runtime);
   runtime.check("cloud.create-account", Boolean(createAccount?.enabled && active));
 
-  const syncNow = await revealCloudAction(runtime, "sync_now", "sync now action");
-  const revisionBeforeSync = await runtime.driver.readSessionRevision();
-  if (!Number.isFinite(revisionBeforeSync)) {
-    throw new Error("session revision is unavailable before cloud synchronization");
-  }
-  await runtime.action("synchronize cloud state now", "sync_now", {
-    complete: async () => {
-      const revision = await runtime.driver.readSessionRevision();
-      return revision > revisionBeforeSync ? revision : null;
-    },
-  });
-  await waitForCloudActive(runtime);
-  runtime.check("cloud.sync-now", Boolean(syncNow?.enabled));
-
   const backup = await revealCloudAction(runtime, "backup_setup_code", "backup setup code action");
   await runtime.action("show backup setup code", "backup_setup_code", {
     complete: async () => {
@@ -2890,6 +2876,27 @@ async function cloudCrossfill(runtime) {
     },
   });
   runtime.check("cloud.close-detail", Boolean(closeBackup?.enabled && closeAddDevice?.enabled));
+
+  // Account creation has automatic root-publication and event-stream work.
+  // Exercise the manual synchronization control after those workflows have
+  // settled so its revision acknowledgement belongs to this user action.
+  const revisionBeforeSync = await runtime.stable(
+    "settled cloud state before manual synchronization",
+    async () => {
+      const status = await runtime.driver.readElement(cloudStatusElementId(runtime));
+      if (!status?.text || !/Cloud active/i.test(status.text)) return null;
+      return runtime.driver.readSessionRevision();
+    },
+  );
+  const syncNow = await revealCloudAction(runtime, "sync_now", "sync now action");
+  await runtime.action("synchronize cloud state now", "sync_now", {
+    complete: async () => {
+      const revision = await runtime.driver.readSessionRevision();
+      return revision > revisionBeforeSync ? revision : null;
+    },
+  });
+  await waitForCloudActive(runtime);
+  runtime.check("cloud.sync-now", Boolean(syncNow?.enabled));
 
   try {
     const { launchCloudJourneyPeer } = await import("./cloud-journey-peer.mjs");

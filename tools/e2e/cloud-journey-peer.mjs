@@ -100,6 +100,7 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
     },
 
     async appendRoute(route) {
+      const writesBefore = Number((await this.state())?.successful_provider_put_count ?? 0);
       await driver.openPage("flight_plan");
       await editSemanticText(
         driver,
@@ -128,6 +129,10 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
             : null;
         },
       });
+      await this.waitForState(
+        (state) => Number(state.successful_provider_put_count ?? 0) > writesBefore,
+        `cloud journey peer publish route ${route}`,
+      );
       return result.value;
     },
 

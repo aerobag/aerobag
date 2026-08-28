@@ -100,6 +100,18 @@ export function sameMapViewport(left: MapViewportState, right: MapViewportState)
   );
 }
 
+export function committedViewportInvalidatesMapSelection(
+  committedViewport: MapViewportState,
+  interactionViewport: MapViewportState,
+  localViewportCommitPending: boolean,
+  gestureActive: boolean,
+): boolean {
+  if (gestureActive || localViewportCommitPending) {
+    return false;
+  }
+  return !sameMapViewport(committedViewport, interactionViewport);
+}
+
 export function isStaleMapFollowTargetViewport(
   targetViewport: MapViewportState,
   awaitedTargetViewport: MapViewportState | null,

@@ -337,14 +337,14 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
     if (submit || dismissKeyboard) {
       throw new Error("text editing cannot bundle submit or keyboard actions");
     }
-    if (readyElement?.test_id !== controlId || !readyElement.bounds || !readyElement.action_point) {
+    if (readyElement?.test_id !== controlId) {
       throw new Error(`web text control ${controlId} has no matching readiness evidence`);
     }
     await this.transport.enterText(webTestIdSelector(controlId), value, readyElement);
   }
 
   async submit(controlId, readyElement) {
-    if (readyElement?.test_id !== controlId || !readyElement.bounds || !readyElement.focused) {
+    if (readyElement?.test_id !== controlId || !readyElement.focused) {
       throw new Error(`web text control ${controlId} has no focused readiness evidence`);
     }
     await this.transport.submit(webTestIdSelector(controlId), readyElement);

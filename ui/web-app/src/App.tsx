@@ -123,6 +123,7 @@ import {
 import {
   applyPinchGesture,
   compassNeedleRotationDegrees,
+  committedViewportInvalidatesMapSelection,
   createPinchSnapshot,
   createInitialViewport,
   displayFrameCssTransform,
@@ -4733,6 +4734,11 @@ function MapPage(props: {
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const mapSelectionLayoutBasisRef = useRef({
+    width: 0,
+    height: 0,
+    uiSession,
+  });
   const mapUpDegRef = useRef(0);
   const previousMapOrientationModeRef = useRef(mapOrientationMode);
   const plannedMapUpDeg = resolveMapUpDegrees(
@@ -5386,7 +5392,24 @@ function MapPage(props: {
   }, [mapOverlay, mapOverlayFrame]);
 
   useLayoutEffect(() => {
-    mapSelectionRequestGenerationRef.current += 1;
+    const layoutBasis = mapSelectionLayoutBasisRef.current;
+    const viewportInvalidatesSelection = committedViewportInvalidatesMapSelection(
+      viewport,
+      viewportRef.current,
+      pendingReactViewportRef.current !== null,
+      gestureActiveRef.current,
+    );
+    const layoutInvalidatesSelection = layoutBasis.width !== surfaceSize.width
+      || layoutBasis.height !== surfaceSize.height
+      || layoutBasis.uiSession !== uiSession;
+    if (viewportInvalidatesSelection || layoutInvalidatesSelection) {
+      mapSelectionRequestGenerationRef.current += 1;
+    }
+    mapSelectionLayoutBasisRef.current = {
+      width: surfaceSize.width,
+      height: surfaceSize.height,
+      uiSession,
+    };
     committedViewportRef.current = viewport;
     if (activePointersRef.current.size === 0 && !pendingReactViewportRef.current) {
       viewportRef.current = viewport;

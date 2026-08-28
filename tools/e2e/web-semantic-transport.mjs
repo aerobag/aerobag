@@ -120,25 +120,11 @@ export class WebSemanticTransport {
           .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
         if (!element) return { status: "missing" };
         const expected = ${JSON.stringify(readyElement)};
-        const actualBounds = element.getBoundingClientRect();
         const currentPoint = ${EXPOSED_ELEMENT_POINT}(element);
         if (!currentPoint) return { status: "obstructed" };
-        if (expected) {
-          const bounds = expected.bounds;
-          const point = expected.action_point;
-          if (!bounds || !point ||
-              (expected.test_id !== null && expected.test_id !== undefined &&
-                element.dataset.testid !== expected.test_id) ||
-              Math.abs(actualBounds.left - bounds.left) > 1 ||
-              Math.abs(actualBounds.top - bounds.top) > 1 ||
-              Math.abs(actualBounds.width - bounds.width) > 1 ||
-              Math.abs(actualBounds.height - bounds.height) > 1) {
-            return { status: "stale-readiness", actualBounds, currentPoint };
-          }
-          const heldHit = document.elementFromPoint(point.x, point.y);
-          if (!(heldHit === element || element.contains(heldHit))) {
-            return { status: "stale-readiness", actualBounds, currentPoint, heldPoint: point };
-          }
+        if (expected?.test_id !== null && expected?.test_id !== undefined &&
+            element.dataset.testid !== expected.test_id) {
+          return { status: "unexpected-target", actual_test_id: element.dataset.testid ?? null };
         }
         if (typeof element.click !== "function") {
           return { status: "unsupported", tag: element.tagName };
@@ -229,15 +215,8 @@ export class WebSemanticTransport {
         .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return "missing";
       const expected = ${JSON.stringify(readyElement)};
-      const actual = input.getBoundingClientRect();
-      if (!expected?.bounds || !expected?.action_point ||
-          input.dataset.testid !== expected.test_id ||
-          Math.abs(actual.left - expected.bounds.left) > 1 ||
-          Math.abs(actual.top - expected.bounds.top) > 1 ||
-          Math.abs(actual.width - expected.bounds.width) > 1 ||
-          Math.abs(actual.height - expected.bounds.height) > 1) return "stale-readiness";
-      const heldHit = document.elementFromPoint(expected.action_point.x, expected.action_point.y);
-      if (!(heldHit === input || input.contains(heldHit))) return "stale-readiness";
+      if (!expected?.test_id || input.dataset.testid !== expected.test_id) return "unexpected-target";
+      if (!${EXPOSED_ELEMENT_POINT}(input)) return "obstructed";
       const prototype = input instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
@@ -256,15 +235,7 @@ export class WebSemanticTransport {
         .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return false;
       const expected = ${JSON.stringify(readyElement)};
-      const actual = input.getBoundingClientRect();
-      if (!expected?.bounds || !expected?.action_point ||
-          input.dataset.testid !== expected.test_id ||
-          Math.abs(actual.left - expected.bounds.left) > 1 ||
-          Math.abs(actual.top - expected.bounds.top) > 1 ||
-          Math.abs(actual.width - expected.bounds.width) > 1 ||
-          Math.abs(actual.height - expected.bounds.height) > 1) return false;
-      const heldHit = document.elementFromPoint(expected.action_point.x, expected.action_point.y);
-      return (heldHit === input || input.contains(heldHit)) && document.activeElement === input;
+      return input.dataset.testid === expected?.test_id && document.activeElement === input;
     })()`);
     if (!focused) throw new Error(`web text control readiness is stale for submit: ${selector}`);
     await this.page.send("Input.dispatchKeyEvent", {

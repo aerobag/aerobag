@@ -1043,7 +1043,7 @@ test("web reload replaces its page target without clearing persisted state", asy
   ]);
 });
 
-test("web controls retain exposed-point readiness and activate atomically without a coordinate round trip", async () => {
+test("web controls reacquire exposed semantic targets and activate atomically without a coordinate round trip", async () => {
   const evaluations = [];
   const page = {
     evaluate: async (expression) => {
@@ -1064,8 +1064,9 @@ test("web controls retain exposed-point readiness and activate atomically withou
   }), true);
   assert.equal(evaluations.length, 1);
   assert.match(evaluations[0], /elementFromPoint/);
-  assert.match(evaluations[0], /heldHit/);
-  assert.match(evaluations[0], /stale-readiness/);
+  assert.match(evaluations[0], /element\.dataset\.testid !== expected\.test_id/);
+  assert.doesNotMatch(evaluations[0], /expected\.bounds/);
+  assert.doesNotMatch(evaluations[0], /expected\.action_point/);
   assert.match(evaluations[0], /fractions = \[0\.5, 0\.1, 0\.9, 0\.3, 0\.7\]/);
   assert.match(evaluations[0], /element\.click\(\)/);
 });

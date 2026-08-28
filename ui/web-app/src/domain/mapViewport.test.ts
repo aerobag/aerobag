@@ -8,6 +8,7 @@ import { mapView } from "./mapTestFixtures";
 import {
   applyPinchGesture,
   compassNeedleRotationDegrees,
+  committedViewportInvalidatesMapSelection,
   createInitialViewport,
   createPinchSnapshot,
   dragViewport,
@@ -131,6 +132,48 @@ describe("mapViewport", () => {
 
     expect(sameMapViewport(viewport, { ...viewport, rotationDeg: 0 })).toBe(true);
     expect(sameMapViewport(viewport, { ...viewport, rotationDeg: 15 })).toBe(false);
+  });
+
+  it("does not invalidate a map click when React commits the viewport already used by input", () => {
+    const viewport = createInitialViewport(mapView);
+
+    expect(committedViewportInvalidatesMapSelection(viewport, viewport, false, false)).toBe(false);
+  });
+
+  it("does not treat an in-flight local gesture commit as an external viewport change", () => {
+    const interactionViewport = createInitialViewport(mapView);
+    const earlierGestureViewport = {
+      ...interactionViewport,
+      centerWorldX: interactionViewport.centerWorldX - 0.25,
+    };
+
+    expect(committedViewportInvalidatesMapSelection(
+      earlierGestureViewport,
+      interactionViewport,
+      true,
+      false,
+    )).toBe(false);
+    expect(committedViewportInvalidatesMapSelection(
+      earlierGestureViewport,
+      interactionViewport,
+      false,
+      true,
+    )).toBe(false);
+  });
+
+  it("invalidates a map click when an external viewport change actually moves the map", () => {
+    const interactionViewport = createInitialViewport(mapView);
+    const externalViewport = {
+      ...interactionViewport,
+      centerWorldY: interactionViewport.centerWorldY + 0.25,
+    };
+
+    expect(committedViewportInvalidatesMapSelection(
+      externalViewport,
+      interactionViewport,
+      false,
+      false,
+    )).toBe(true);
   });
 
   it("rejects stale map-follow targets while waiting for a follow-sync acknowledgement", () => {

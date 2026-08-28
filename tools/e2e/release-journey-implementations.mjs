@@ -2500,27 +2500,23 @@ async function replayTrackUp(runtime) {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
     return state?.status === "playing" && state.cursor > 0.2 ? state : null;
   });
-  await runtime.eventually("replay ownship entered track gap", async () => {
-    const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
-    return state?.mode === "replay" && state.draw && state.track === "none" ? state : null;
-  }, E2E_TIMING.replayProgressMs, 40);
-  const paused = await runtime.action("pause replay in track gap", "playback-play-toggle", {
-    complete: async () => {
-      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-      return state?.status === "paused" ? state : null;
-    },
-  });
-  const gap = await runtime.eventually("paused missing replay track sample", async () => {
-    const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
-    if (state?.track !== "none") return null;
-    const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
-    const up = Number(/:up:(-?[0-9.]+)/.exec(viewport ?? "")?.[1] ?? 0);
-    return { state, viewport, up };
-  });
   const rotated = await runtime.eventually("replay TRK-up rotation", async () => {
     const id = idOf(await runtime.driver.readProjection("parity:viewport:"));
     const up = Number(/:up:(-?[0-9.]+)/.exec(id ?? "")?.[1] ?? 0);
     return Math.abs(up) > 1 ? { id, up } : null;
+  });
+  const gap = await runtime.eventually("replay ownship entered track gap", async () => {
+    const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
+    if (state?.mode !== "replay" || !state.draw || state.track !== "none") return null;
+    const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
+    const up = Number(/:up:(-?[0-9.]+)/.exec(viewport ?? "")?.[1] ?? 0);
+    return { state, viewport, up };
+  }, E2E_TIMING.replayProgressMs, 40);
+  const paused = await runtime.action("pause replay after track gap observation", "playback-play-toggle", {
+    complete: async () => {
+      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+      return state?.status === "paused" ? state : null;
+    },
   });
   runtime.check("replay.rotation", Boolean(rotated), rotated?.id);
   runtime.check(

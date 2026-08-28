@@ -87,6 +87,29 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertEqual(lane.name, "e2e-android-baseline")
         self.assert_shell_is_valid(lane.command)
 
+    def test_gui_heavy_github_jobs_are_separate_local_phases(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(qualification, "git", return_value="12345678"),
+        ):
+            root = Path(temp_dir)
+            groups = qualification.initial_journey_lane_groups(
+                root,
+                root / "fixtures",
+                root / "fixture.json",
+                root / "apps",
+                5,
+            )
+
+        self.assertEqual(
+            [[lane.name for lane in lanes] for _, lanes in groups],
+            [
+                ["e2e-web-p0", "e2e-web-p1", "e2e-web-p2"],
+                ["e2e-web-nav-db-rollover"],
+                ["e2e-android-baseline"],
+            ],
+        )
+
     def test_local_receipt_is_bound_to_workflow_content(self) -> None:
         identity = qualification.workflow_identity()
 

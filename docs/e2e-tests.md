@@ -330,7 +330,12 @@ runner, or the journey lab changes. The local runner prepares the same one-time
 Android baseline artifact as GitHub, then runs two emulator lanes in parallel by
 default. `--android-workers` adjusts that bounded host parallelism; it does not
 change journey assignments or assertion coverage. Ordinary-CI and web lanes also
-run in parallel where their build outputs do not conflict.
+run in parallel where their build outputs do not conflict. The three web
+priority lanes run together, while NAV rollover and Android baseline preparation
+run as isolated local phases. GitHub gives those GUI-heavy jobs separate runners;
+serializing their local equivalents prevents shared-host scheduling stalls from
+being mistaken for application response failures without weakening any response
+budget or assertion.
 
 Use `--headless` to reproduce the hosted-runner display mode.
 

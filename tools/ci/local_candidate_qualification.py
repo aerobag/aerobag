@@ -722,6 +722,32 @@ def write_receipt(
     return path
 
 
+def initial_journey_lane_groups(
+    run_root: Path,
+    fixtures: Path,
+    fixture: Path,
+    apps: Path,
+    repetitions: int,
+) -> tuple[tuple[str, list[Lane]], ...]:
+    return (
+        (
+            "Running web priorities in parallel",
+            [
+                web_lane(priority, run_root, fixture, apps, repetitions)
+                for priority in PRIORITIES
+            ],
+        ),
+        (
+            "Running NAV rollover in an isolated local phase",
+            [auxiliary_lanes(run_root, fixtures)[0]],
+        ),
+        (
+            "Preparing the Android baseline in an isolated local phase",
+            [android_baseline_lane(run_root, fixture, apps)],
+        ),
+    )
+
+
 def main() -> int:
     args = parse_args()
     if args.repetitions < 1:
@@ -760,14 +786,14 @@ def main() -> int:
     print("Building one immutable app bundle and fixture", flush=True)
     fixtures, fixture, apps = prepare_inputs(run_root)
 
-    print("Running web priorities, NAV rollover, and Android baseline in parallel", flush=True)
-    web_and_nav = [
-        web_lane(priority, run_root, fixture, apps, args.repetitions)
-        for priority in PRIORITIES
-    ]
-    web_and_nav.append(auxiliary_lanes(run_root, fixtures)[0])
-    web_and_nav.append(android_baseline_lane(run_root, fixture, apps))
-    results.extend(run_lanes(web_and_nav, logs, min(args.jobs, len(web_and_nav))))
+    # GitHub gives these GUI-heavy jobs independent runners. Running them beside
+    # the web browsers on one host can pause every UI process at once and create
+    # failures that cannot occur between isolated hosted runners.
+    for label, lanes in initial_journey_lane_groups(
+        run_root, fixtures, fixture, apps, args.repetitions
+    ):
+        print(label, flush=True)
+        results.extend(run_lanes(lanes, logs, min(args.jobs, len(lanes))))
 
     android_lane_count = ANDROID_SHARDS
     android_workers = min(args.android_workers, android_lane_count)

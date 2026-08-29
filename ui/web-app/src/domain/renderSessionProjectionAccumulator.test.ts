@@ -28,7 +28,21 @@ describe("RenderSessionProjectionAccumulator", () => {
     );
 
     expect(() => accumulator.complete({ __aerobagSessionRevision: 8 }))
-      .toThrow("does not match landed revision 7");
+      .toThrow("has not landed; current revision is 7");
+  });
+
+  it("accepts a command response overtaken by a concurrent session mutation", () => {
+    const accumulator = new RenderSessionProjectionAccumulator(
+      asSnapshot(conformance.initial_snapshot),
+    );
+    const first = conformance.steps[0];
+    const second = conformance.steps[1];
+
+    accumulator.land({ kind: "update", value: first.update });
+    accumulator.land({ kind: "update", value: second.update });
+
+    expect(accumulator.complete({ __aerobagSessionRevision: 8 }))
+      .toEqual(second.expected_snapshot);
   });
 
   it("requires an explicit full snapshot to recover a projection gap", () => {

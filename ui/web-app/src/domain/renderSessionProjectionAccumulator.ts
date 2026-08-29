@@ -43,12 +43,17 @@ export class RenderSessionProjectionAccumulator {
   }
 
   complete(marker: WorkerSessionSnapshotMarker): UiSessionSnapshot {
-    if (!marker || marker.__aerobagSessionRevision !== this.currentSnapshot.session_revision) {
+    const responseRevision = marker?.__aerobagSessionRevision;
+    const landedRevision = this.currentSnapshot.session_revision;
+    if (!Number.isSafeInteger(responseRevision) || responseRevision > landedRevision) {
       throw new Error(
-        `worker session response revision ${marker?.__aerobagSessionRevision ?? "missing"} `
-          + `does not match landed revision ${this.currentSnapshot.session_revision}`,
+        `worker session response revision ${responseRevision ?? "missing"} `
+          + `has not landed; current revision is ${landedRevision}`,
       );
     }
+    // Concurrent session calls can commit in order but deliver the later call's
+    // response first. Its projection is already the newest coherent view, so an
+    // overtaken response must return that view rather than abort its caller.
     return this.currentSnapshot;
   }
 }

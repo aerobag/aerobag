@@ -2556,11 +2556,18 @@ async function selectReplaySource(runtime) {
 
 async function loadReplayFixture(runtime) {
   const tracePath = runtime.fixtureUrl(runtime.capability("replay_trace"));
+  const traceUrl = runtime.platform === "web"
+    ? (() => {
+        const url = new URL(tracePath);
+        url.searchParams.set("aerobag_e2e_abort_once", runtime.artifactDir);
+        return url.href;
+      })()
+    : tracePath;
   await selectReplaySource(runtime);
   await runtime.editText(
     "enter replay trace location",
     "playback-source-input",
-    tracePath,
+    traceUrl,
   );
   await runtime.eventually("replay trace ready to load", async () => {
     const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));

@@ -157,6 +157,7 @@ import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateO
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
 import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
+import { fetchTextResource } from "./domain/fetchTextResource";
 import { NexradFrameImageCache } from "./domain/nexradFrameCache";
 import {
   RASTER_TILE_LOAD_RECOVERY_DELAY_MS,
@@ -8752,6 +8753,7 @@ function PlaybackWidget(props: {
     onDisabledAction,
   } = props;
   const [isBusy, setIsBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [scrubCursorSeconds, setScrubCursorSeconds] = useState<number | null>(null);
   const seekRequestIdRef = useRef(0);
   const scrubRef = useRef<HTMLDivElement | null>(null);
@@ -8826,13 +8828,16 @@ function PlaybackWidget(props: {
       return;
     }
     setIsBusy(true);
+    setLoadError(null);
     try {
-      const response = await fetch(sourcePath);
-      if (!response.ok) {
-        throw new Error(`trace load failed: ${response.status}`);
+      const fetched = await fetchTextResource(sourcePath);
+      if (fetched.attempts > 1) {
+        debugLog("playback.load.transport_recovered", {
+          source_path: sourcePath,
+          attempts: fetched.attempts,
+        });
       }
-      const traceJson = await response.text();
-      const nextSnapshot = await uiSession.loadPlaybackTrace(sourcePath, traceJson);
+      const nextSnapshot = await uiSession.loadPlaybackTrace(sourcePath, fetched.text);
       debugLog("playback.load.result", {
         source_path: sourcePath,
         playback_panel_visible: nextSnapshot.playback_panel_state.visible,
@@ -8845,6 +8850,7 @@ function PlaybackWidget(props: {
       onSnapshotChange(nextSnapshot);
     } catch (error) {
       console.error(error);
+      setLoadError(errorMessage(error));
       debugLog("playback.load.error", {
         source_path: sourcePath,
         message: errorMessage(error),
@@ -8948,7 +8954,10 @@ function PlaybackWidget(props: {
           className="playbackWidgetInput"
           data-testid="playback-source-input"
           value={sourcePath}
-          onChange={(event) => onSourcePathChange(event.target.value)}
+          onChange={(event) => {
+            setLoadError(null);
+            onSourcePathChange(event.target.value);
+          }}
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
@@ -8971,6 +8980,11 @@ function PlaybackWidget(props: {
           LOAD
         </button>
       </div>
+      {loadError ? (
+        <p className="playbackWidgetError" role="alert" data-testid="playback-load-error">
+          Trace load failed: {loadError}
+        </p>
+      ) : null}
       <div className="playbackWidgetRow">
         <button
           type="button"

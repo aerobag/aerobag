@@ -2954,6 +2954,14 @@ button {
   font-size: calc(var(--thumb) * 0.16);
 }
 
+.playbackWidgetError {
+  margin: 0;
+  color: color-mix(in srgb, var(--theme-data-status-warning-stroke) 30%, black);
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .playbackWidgetButton {
   height: calc(var(--thumb) * 0.42);
   padding: 0 calc(var(--thumb) * 0.14);

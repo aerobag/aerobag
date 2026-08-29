@@ -232,6 +232,7 @@ export function fixtureServerConfiguration(args) {
 export function createReleaseJourneyFixtureServer(args) {
   const config = fixtureServerConfiguration(args);
   const recentRequests = [];
+  const abortedTransportFaults = new Set();
   const control = {
     publication: "primary",
     artifact_fault: "none",
@@ -270,6 +271,13 @@ export function createReleaseJourneyFixtureServer(args) {
     }
     const url = new URL(request.url ?? "/", "http://fixture.invalid");
     const pathname = decodeURIComponent(url.pathname);
+    const transportFaultId = url.searchParams.get("aerobag_e2e_abort_once");
+    if (pathname.startsWith("/release-journey/") && transportFaultId &&
+        !abortedTransportFaults.has(transportFaultId) && request.method !== "HEAD") {
+      abortedTransportFaults.add(transportFaultId);
+      request.socket.destroy();
+      return;
+    }
     if (request.method === "POST" && pathname === "/__control") {
       let body = "";
       request.setEncoding("utf8");

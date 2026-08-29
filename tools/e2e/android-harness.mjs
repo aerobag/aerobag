@@ -26,7 +26,8 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 const ADB_TIMEOUT_MS = 20000;
 const APP_START_TIMEOUT_MS = 60000;
 const CLOCK_SET_TIMEOUT_MS = 15000;
-const SEMANTIC_REQUEST_TIMEOUT_SECONDS = 0.75;
+const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.75;
+const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
 const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
@@ -118,7 +119,7 @@ export function setAndroidSemanticText(serial, tag, value, expectedBounds, seman
   }
   const query = new URLSearchParams({ tag, value, bounds: expectedBounds, path: semanticPath });
   const response = semanticDriverRequest(
-    state.port, `/set-text?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
+    state.port, `/set-text?${query}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST",
   );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
@@ -145,7 +146,7 @@ export function clickAndroidSemanticNode(
     state_description: stateDescription ?? "",
   });
   const response = semanticDriverRequest(
-    state.port, `/click?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
+    state.port, `/click?${query}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST",
   );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
@@ -159,7 +160,7 @@ export function scrollAndroidSemanticNode(serial, bounds, direction) {
     : "backward";
   const query = new URLSearchParams({ bounds, direction: semanticDirection });
   const response = semanticDriverRequest(
-    state.port, `/scroll?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
+    state.port, `/scroll?${query}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST",
   );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
@@ -187,7 +188,7 @@ export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first =
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({ tag, prefix: String(prefix), first: String(first) });
   const response = semanticDriverRequest(
-    state.port, `/query?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS,
+    state.port, `/query?${query}`, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
   );
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
@@ -203,7 +204,7 @@ export function queryAndroidExactProjection(serial, tag) {
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({ tag });
   const response = semanticDriverRequest(
-    state.port, `/exact-projection?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS,
+    state.port, `/exact-projection?${query}`, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
   );
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
@@ -220,7 +221,7 @@ function semanticDriverDump(serial) {
   // A blocked accessibility traversal is a failed transition, not a reason to
   // hide an emulator stall behind a journey-scale timeout.
   const response = semanticDriverRequest(
-    state.port, "/dump", SEMANTIC_REQUEST_TIMEOUT_SECONDS,
+    state.port, "/dump", SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
   );
   if (response.status === 0 && response.stdout.includes("<hierarchy")) {
     return response.stdout;

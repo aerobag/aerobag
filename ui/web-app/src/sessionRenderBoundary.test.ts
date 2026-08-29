@@ -15,6 +15,14 @@ describe("session render boundary", () => {
     expect(source).toContain("HIGH_RATE_SESSION_UPDATE_GROUPS");
   });
 
+  it("wakes cloud effects from core publications without a render or timer", () => {
+    expect(source).toContain("sessionRenderStore.subscribe(");
+    expect(source).toContain("CLOUD_EFFECT_SESSION_UPDATE_GROUPS");
+    expect(source).toContain("() => { void pumpCloudProvider(); }");
+    expect(source).toContain("new CoalescedAsyncRunner(");
+    expect(source).not.toContain("cloudPumpInFlightRef");
+  });
+
   it("keeps map viewport and query invalidations in page-owned stores", () => {
     expect(source).toContain("new RenderValueStore<MapViewportState | null>(null)");
     expect(source).toContain("new RenderValueStore(initialUiInvalidationRevisions())");

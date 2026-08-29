@@ -3041,7 +3041,12 @@ async function cloudCrossfill(runtime) {
 
     await peer.appendRoute("KSEA KPAE");
     await runtime.openPage("flight_plan");
-    const adoptedPlan = await waitForPlanIdents(runtime, ["KSEA", "KPAE"]);
+    let adoptedPlan;
+    try {
+      adoptedPlan = await waitForPlanIdents(runtime, ["KSEA", "KPAE"]);
+    } catch (error) {
+      throw new Error(`${error.message}; browser peer cloud state: ${JSON.stringify(await peer.state())}`);
+    }
     runtime.check("cloud.crossfill-plan", Boolean(adoptedPlan));
 
     const preferences = {

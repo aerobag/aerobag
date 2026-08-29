@@ -531,6 +531,21 @@ impl CloudEngine {
             // resume read-only synchronization from the current root.
             persistent.workflow = Some(CloudWorkflow::AcsReadRoot { purpose: *purpose });
         }
+        if persistent
+            .account
+            .as_ref()
+            .is_some_and(|account| account.tip.is_some())
+        {
+            // Runtime event-stream state is intentionally not persistent. Reconcile
+            // the authoritative root once after reconstruction so a recent poll
+            // timestamp cannot leave this process waiting on a stream-start race.
+            persistent.force_poll = true;
+            if matches!(persistent.workflow, Some(CloudWorkflow::AcsCreateSseTicket)) {
+                persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
+                    purpose: ReadPurpose::Poll,
+                });
+            }
+        }
         Self {
             persistent,
             action_revision: 0,
@@ -3682,6 +3697,32 @@ mod tests {
                 purpose: ReadPurpose::Link
             })
         );
+    }
+
+    #[test]
+    fn reconstructed_linked_engine_reconciles_a_peer_update_before_streaming() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let updated = plan(&["KRNT", "KPAE", "KPLU"]);
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut first = configured_engine();
+        let setup_code = create_account(&mut first, &mut provider, &initial, 1_000);
+        let (mut peer, _) = link_account(&mut provider, setup_code, 1_100);
+
+        // Persist the ordinary connected/quiescent shape: the last root poll is
+        // recent and only the runtime event-stream plan is active.
+        assert!(first.persistent.workflow.is_none());
+        assert!(first.acs_event_stream_plan.is_some());
+        let mut restarted = CloudEngine::new(first.persistent.clone());
+
+        peer.record_local_flight_plan_mutation(&initial, &updated, 1_200)
+            .unwrap();
+        assert!(pump_acs(&mut peer, &mut provider, 1_200).is_empty());
+
+        assert_eq!(
+            pump_acs(&mut restarted, &mut provider, 1_201),
+            vec![updated.clone()]
+        );
+        assert_eq!(restarted.cached_flight_plan(), Some(updated));
     }
 
     #[test]

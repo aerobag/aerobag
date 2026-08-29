@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { UiSessionProjectionPublication, UiSessionSnapshot } from "./appCoreAdapter";
 import {
+  CLOUD_EFFECT_SESSION_UPDATE_GROUPS,
   HIGH_RATE_SESSION_UPDATE_GROUPS,
   SHELL_SESSION_UPDATE_GROUPS,
   SessionRenderStore,
@@ -65,6 +66,16 @@ describe("SessionRenderStore", () => {
 
     expect(store.snapshot.session_revision).toBe(1);
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("wakes cloud effects directly from the core cloud publication", () => {
+    const store = new SessionRenderStore(snapshot(0));
+    const wakeProvider = vi.fn();
+    store.subscribe(CLOUD_EFFECT_SESSION_UPDATE_GROUPS, wakeProvider);
+
+    store.publish(update(1, ["flight_plan", "cloud"]));
+
+    expect(wakeProvider).toHaveBeenCalledOnce();
   });
 });
 

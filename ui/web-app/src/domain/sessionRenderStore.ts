@@ -17,6 +17,10 @@ export const HIGH_RATE_SESSION_UPDATE_GROUPS = [
   "flight_data",
 ] as const satisfies readonly UiSessionUpdateGroup[];
 
+export const CLOUD_EFFECT_SESSION_UPDATE_GROUPS = [
+  "cloud",
+] as const satisfies readonly UiSessionUpdateGroup[];
+
 export const SHELL_SESSION_UPDATE_GROUPS = UI_SESSION_UPDATE_GROUPS.filter(
   (group) => !HIGH_RATE_SESSION_UPDATE_GROUPS.includes(group as typeof HIGH_RATE_SESSION_UPDATE_GROUPS[number]),
 );

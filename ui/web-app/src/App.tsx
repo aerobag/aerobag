@@ -156,6 +156,7 @@ import { resolveSituationOverlay } from "./domain/situationGeometry";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import { shouldLandCompletedCoalescedWork } from "./domain/coalescedViewportWork";
+import { CoalescedAsyncRunner } from "./domain/coalescedAsyncRunner";
 import { NexradFrameImageCache } from "./domain/nexradFrameCache";
 import {
   RASTER_TILE_LOAD_RECOVERY_DELAY_MS,
@@ -195,6 +196,7 @@ import {
 } from "./domain/debugLog";
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 import {
+  CLOUD_EFFECT_SESSION_UPDATE_GROUPS,
   HIGH_RATE_SESSION_UPDATE_GROUPS,
   NO_SESSION_UPDATE_GROUPS,
   RenderValueStore,
@@ -2418,8 +2420,12 @@ function OperationalApp() {
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
-  const cloudPumpInFlightRef = useRef(false);
-  const cloudSuccessfulPutCountRef = useRef(0);
+  const cloudPumpWorkRef = useRef<() => Promise<void>>(async () => {});
+  const cloudPumpRunnerRef = useRef<CoalescedAsyncRunner | null>(null);
+  const cloudPumpRunner = cloudPumpRunnerRef.current
+    ?? (cloudPumpRunnerRef.current = new CoalescedAsyncRunner(
+      () => cloudPumpWorkRef.current(),
+    ));
   const cloudEventStreamRef = useRef<{
     streamId: number;
     source: EventSource;
@@ -2608,11 +2614,10 @@ function OperationalApp() {
     };
   }, [sessionRenderStore]);
 
-  const pumpCloudProvider = useCallback(async () => {
-    if (!uiSession || cloudPumpInFlightRef.current) {
+  cloudPumpWorkRef.current = async () => {
+    if (!uiSession) {
       return;
     }
-    cloudPumpInFlightRef.current = true;
     try {
       for (let step = 0; step < 32; step += 1) {
         const request = await uiSession.takeCloudProviderRequest(Date.now());
@@ -2625,23 +2630,17 @@ function OperationalApp() {
           response,
           Date.now(),
         );
-        if (
-          __AEROBAG_E2E_ENABLED__
-          && request.method === "put"
-          && response.result === "completed"
-          && response.status_code === 200
-        ) {
-          cloudSuccessfulPutCountRef.current += 1;
-        }
         applySessionSnapshot(nextSnapshot, "cloud_provider_completion");
       }
       throw new Error("cloud provider pump exceeded its bounded work batch");
     } catch (error) {
       debugLog("cloud.provider_pump.failed", { error: errorMessage(error) });
-    } finally {
-      cloudPumpInFlightRef.current = false;
     }
-  }, [applySessionSnapshot, uiSession]);
+  };
+  const pumpCloudProvider = useCallback(
+    () => cloudPumpRunner.request(),
+    [cloudPumpRunner],
+  );
 
   const reconcileCloudEventStream = useCallback(async () => {
     if (!uiSession) {
@@ -2732,8 +2731,10 @@ function OperationalApp() {
       state: () => ({
         offline_package_preferences: JSON.parse(sessionSnapshot.offline_package_preferences_json),
         overall_status: sessionSnapshot.cloud_page_state.overall_status,
+        provider_status: sessionSnapshot.data_status_page_state.rows.find(
+          (row) => row.id === "cloud:provider",
+        ) ?? null,
         event_stream_id: cloudEventStreamRef.current?.streamId ?? null,
-        successful_provider_put_count: cloudSuccessfulPutCountRef.current,
         flight_plan_rows: sessionSnapshot.app_ui_state.active_plan?.display_rows.map((row) => row.label) ?? [],
       }),
       setOfflinePackagePreferences: async (preferences: unknown) => {
@@ -2773,6 +2774,7 @@ function OperationalApp() {
     pumpCloudProvider,
     sessionSnapshot.cloud_page_state.overall_status,
     sessionSnapshot.app_ui_state.active_plan,
+    sessionSnapshot.data_status_page_state,
     sessionSnapshot.offline_package_preferences_json,
     uiSession,
   ]);
@@ -2798,6 +2800,14 @@ function OperationalApp() {
       }
     };
   }, [pumpCloudProvider, reconcileCloudEventStream, uiSession]);
+
+  // Core's cloud publication is the wakeup edge for provider effects. Do not
+  // depend on a React render or a throttled background-page timer to publish
+  // a user mutation.
+  useEffect(() => sessionRenderStore.subscribe(
+    CLOUD_EFFECT_SESSION_UPDATE_GROUPS,
+    () => { void pumpCloudProvider(); },
+  ), [pumpCloudProvider, sessionRenderStore]);
 
   // A core mutation can enqueue cloud work from any feature. Start that work
   // from the committed session revision instead of waiting for the polling

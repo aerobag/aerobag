@@ -1578,19 +1578,20 @@ test("Android E2E can map an immutable APK port to an isolated host fixture", ()
   );
 });
 
-test("persistent Android semantic requests leave room for bounded observation recovery", () => {
+test("persistent Android semantic requests separate probes from bounded actions", () => {
   const source = readFileSync(
     new URL("./android-harness.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /SEMANTIC_REQUEST_TIMEOUT_SECONDS = 0\.75/);
+  assert.match(source, /SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0\.75/);
+  assert.match(source, /SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2\.25/);
   assert.match(
     source,
-    /state\.port, "\/dump", SEMANTIC_REQUEST_TIMEOUT_SECONDS/,
+    /state\.port, "\/dump", SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS/,
   );
   assert.match(
     source,
-    /state\.port, `\/click\?\$\{query\}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST"/,
+    /state\.port, `\/click\?\$\{query\}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST"/,
   );
   assert.match(source, /"--fail-with-body"/);
   assert.match(source, /semanticDriverRequestTimedOut\(response\)[\s\S]*new TransientObservationError/);

@@ -64,7 +64,15 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
     driver,
 
     async state() {
-      return page.evaluate("window.__aerobagE2e?.cloud?.state() ?? null");
+      return page.evaluate(`(() => {
+        const state = window.__aerobagE2e?.cloud?.state() ?? null;
+        if (!state) return null;
+        return {
+          ...state,
+          application_scripts: Array.from(document.scripts, (script) => script.src)
+            .filter(Boolean),
+        };
+      })()`);
     },
 
     async waitForState(predicate, description, timeoutMs = E2E_TIMING.cloudConsistencyMs) {
@@ -100,7 +108,6 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
     },
 
     async appendRoute(route) {
-      const writesBefore = Number((await this.state())?.successful_provider_put_count ?? 0);
       await driver.openPage("flight_plan");
       await editSemanticText(
         driver,
@@ -129,10 +136,6 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
             : null;
         },
       });
-      await this.waitForState(
-        (state) => Number(state.successful_provider_put_count ?? 0) > writesBefore,
-        `cloud journey peer publish route ${route}`,
-      );
       return result.value;
     },
 

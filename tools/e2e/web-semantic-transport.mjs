@@ -449,11 +449,17 @@ export class WebSemanticTransport {
     }
     if (prefix === "parity:raster-state:") {
       return this.page.evaluate(`(() => {
+        const layer = document.querySelector(".rasterTileLayer");
         const images = [...document.querySelectorAll(".rasterTileLayer .mapTileImage")];
-        const planned = document.querySelector(".rasterTileLayer")?.childElementCount ?? 0;
+        const planned = layer?.childElementCount ?? 0;
         const loaded = images.filter((image) => image.complete && image.naturalWidth > 0).length;
         const failed = images.filter((image) => image.complete && image.naturalWidth === 0).length;
-        return [{ id: \`parity:raster-state:planned:\${planned}:loaded:\${loaded}:failed:\${failed}\`, text: "", enabled: true, pressed: null }];
+        const metadata = /^parity:raster-state:plan:([^:]+):maps:([^:]+):planned:/.exec(
+          layer?.dataset.testid ?? "",
+        );
+        const plan = metadata?.[1] ?? "unknown";
+        const maps = metadata?.[2] ?? "none";
+        return [{ id: \`parity:raster-state:plan:\${plan}:maps:\${maps}:planned:\${planned}:loaded:\${loaded}:failed:\${failed}\`, text: "", enabled: true, pressed: null }];
       })()`);
     }
     const visibleControlsOnly = [

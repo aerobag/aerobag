@@ -391,7 +391,24 @@ internal data class NexradOverlayFrame(
 private data class RasterPlanFrame(
     val tiles: List<RenderTile> = emptyList(),
     val chartReferenceAction: WireChartReferenceAction? = null,
+    val planId: String = "none",
 )
+
+private fun rasterSemanticToken(value: String): String =
+    value.replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
+
+private fun rasterPlanId(mapId: String, viewport: MapViewportState): String =
+    buildString {
+        append(rasterSemanticToken(mapId))
+        append('_')
+        append(java.lang.Long.toHexString(viewport.centerWorldX.toBits()))
+        append('_')
+        append(java.lang.Long.toHexString(viewport.centerWorldY.toBits()))
+        append('_')
+        append(java.lang.Long.toHexString(viewport.zoom.toBits()))
+        append('_')
+        append(java.lang.Long.toHexString(viewport.rotationDeg.toBits()))
+    }
 
 private const val TerrainTileBitmapCacheMaxEntries = 256
 private const val NexradViewportRefreshThrottleMs = 1_000L
@@ -988,7 +1005,11 @@ internal fun MapExplorerPage(
                     sources = sources,
                 )
             }
-            RasterPlanFrame(renderTiles, plan.chart_reference_action)
+            RasterPlanFrame(
+                tiles = renderTiles,
+                chartReferenceAction = plan.chart_reference_action,
+                planId = rasterPlanId(selectedMapId, displayViewport),
+            )
         }
     }
     val tiles = rasterPlanFrame.tiles
@@ -3043,7 +3064,7 @@ internal fun MapExplorerPage(
                 .offset(x = 20.dp)
                 .size(1.dp)
                 .testTag(
-                    "parity:raster-state:planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
+                    "parity:raster-state:plan:${rasterPlanFrame.planId}:maps:${tiles.map { rasterSemanticToken(it.mapViewId) }.distinct().sorted().joinToString(",").ifEmpty { "none" }}:planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
                 ),
         )
         Box(

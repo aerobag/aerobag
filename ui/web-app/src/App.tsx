@@ -7637,7 +7637,7 @@ function MapPage(props: {
           <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
             <div
               className="rasterTileLayer"
-              data-testid={`parity:raster-state:planned:${tiles.length}`}
+              data-testid={`parity:raster-state:plan:${rasterTilePlanLandingTimingRef.current?.id ?? 0}:maps:${[...new Set(tiles.map((tile) => tile.mapViewId))].sort().map(encodeURIComponent).join(",") || "none"}:planned:${tiles.length}`}
               aria-hidden="true"
               style={rasterTileTransform ? { transform: rasterTileTransform, transformOrigin: "0 0" } : undefined}
             >

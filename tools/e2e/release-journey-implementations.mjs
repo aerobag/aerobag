@@ -14,10 +14,16 @@ export function offlineSyncButtonIsIdle(button) {
     !/\b(?:APPLYING|SYNCING|CANCELING)\b/i.test(button.text ?? "");
 }
 
-function rasterCounts(entries) {
+export function rasterStateFromProjection(entries) {
   const id = idOf(entries);
-  const match = /planned:(\d+):loaded:(\d+):failed:(\d+)/.exec(id ?? "");
-  return match ? { planned: Number(match[1]), loaded: Number(match[2]), failed: Number(match[3]) } : null;
+  const match = /plan:([^:]+):maps:([^:]+):planned:(\d+):loaded:(\d+):failed:(\d+)/.exec(id ?? "");
+  return match ? {
+    planId: match[1],
+    mapIds: match[2] === "none" ? [] : match[2].split(",").map(decodeURIComponent),
+    planned: Number(match[3]),
+    loaded: Number(match[4]),
+    failed: Number(match[5]),
+  } : null;
 }
 
 function rasterRecoveryCount(entries) {
@@ -29,6 +35,10 @@ export function rasterPlanIsDisplayReady(counts, minimumLoadedRatio = 0.85) {
   if (!counts || counts.planned <= 0) return false;
   return counts.loaded / counts.planned >= minimumLoadedRatio ||
     counts.loaded + counts.failed >= counts.planned;
+}
+
+export function rasterPlanHasVisiblePaint(counts) {
+  return Boolean(counts && counts.planned > 0 && counts.loaded > 0);
 }
 
 function playbackState(entries) {
@@ -125,17 +135,44 @@ async function acceptDisclaimer(runtime, { required = false } = {}) {
   return true;
 }
 
-async function loadedMap(runtime) {
-  const raster = await runtime.eventually("loaded raster plan", async () => {
-    const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
-    return rasterPlanIsDisplayReady(counts) ? counts : null;
+async function selectedRasterMap(runtime) {
+  return runtime.eventually("selected raster map", async () => {
+    const id = idOf(await runtime.driver.readProjection("parity:map-family:"));
+    const match = /^parity:map-family:([^:]+):map:(.+)$/.exec(id ?? "");
+    return match ? { familyId: match[1], mapId: match[2] } : null;
+  });
+}
+
+async function loadedMap(runtime, { afterPlanId = null } = {}) {
+  const selected = await selectedRasterMap(runtime);
+  const firstPaint = await runtime.eventually("first visible raster paint", async () => {
+    const state = rasterStateFromProjection(
+      await runtime.driver.readProjection("parity:raster-state:"),
+    );
+    return state
+      && state.planId !== afterPlanId
+      && state.mapIds.includes(selected.mapId)
+      && rasterPlanHasVisiblePaint(state)
+      ? state
+      : null;
   }, E2E_TIMING.localRenderMs);
+  const raster = await runtime.eventually("settled raster plan", async () => {
+    const state = rasterStateFromProjection(
+      await runtime.driver.readProjection("parity:raster-state:"),
+    );
+    return state
+      && state.planId !== afterPlanId
+      && state.mapIds.includes(selected.mapId)
+      && rasterPlanIsDisplayReady(state)
+      ? state
+      : null;
+  }, E2E_TIMING.localResourceMs, E2E_TIMING.resourcePollIntervalMs);
   const vectors = await runtime.eventually("vector overlay", async () => {
     const id = idOf(await runtime.driver.readProjection("parity:vector-state:"));
     const count = Number(/features:(\d+)/.exec(id ?? "")?.[1] ?? 0);
     return count > 0 ? count : null;
   }, E2E_TIMING.localRenderMs);
-  return { raster, vectors };
+  return { firstPaint, raster, vectors };
 }
 
 async function rasterLoadRecovery(runtime) {
@@ -148,7 +185,7 @@ async function rasterLoadRecovery(runtime) {
   );
   const recovered = await runtime.transition("recover stalled raster image load", {
     ready: async () => {
-      const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
+      const counts = rasterStateFromProjection(await runtime.driver.readProjection("parity:raster-state:"));
       return rasterPlanIsDisplayReady(counts) && counts.failed === 0 ? counts : null;
     },
     act: () => runtime.driver.injectRasterLoadFault(),
@@ -156,7 +193,7 @@ async function rasterLoadRecovery(runtime) {
       const recoveryCount = rasterRecoveryCount(
         await runtime.driver.readProjection("parity:raster-recovery:"),
       );
-      const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
+      const counts = rasterStateFromProjection(await runtime.driver.readProjection("parity:raster-state:"));
       return recoveryCount > before
         && rasterPlanIsDisplayReady(counts)
         && counts.failed === 0
@@ -345,6 +382,9 @@ async function chartBasicUse(runtime) {
   });
   const initialViewport = await runtime.stable("settled chart viewport before pan", async () =>
     idOf(await runtime.driver.readProjection("parity:viewport:")));
+  const rasterBeforePan = rasterStateFromProjection(
+    await runtime.driver.readProjection("parity:raster-state:"),
+  );
   runtime.result.diagnostics.chart_pan_initial_viewport = initialViewport;
 
   let dragProbe = null;
@@ -361,7 +401,7 @@ async function chartBasicUse(runtime) {
   });
   if (dragProbe) runtime.result.diagnostics.chart_pan_gesture = dragProbe;
   runtime.check("chart.pan", pannedViewport !== initialViewport, `${initialViewport} -> ${pannedViewport}`);
-  const panned = await loadedMap(runtime);
+  const panned = await loadedMap(runtime, { afterPlanId: rasterBeforePan?.planId ?? null });
   runtime.check(
     "chart.raster-repaint",
     panned.raster.loaded > 0 && panned.raster.loaded / panned.raster.planned >= 0.85,
@@ -1254,7 +1294,7 @@ async function plateAdvisoriesAndReferences(runtime) {
   });
   await runtime.eventually("contextual TAC raster plan", async () => {
     const [entry] = await runtime.driver.readProjection("parity:raster-state:");
-    return (rasterCounts([entry])?.planned ?? 0) > 0 ? entry : null;
+    return (rasterStateFromProjection([entry])?.planned ?? 0) > 0 ? entry : null;
   }, E2E_TIMING.resourceMs);
   runtime.result.diagnostics.chart_reference_raster_state =
     await runtime.driver.readProjection("parity:raster-state:");
@@ -1773,6 +1813,9 @@ async function mapModesAndOverlays(runtime) {
     ? [...rasterFamilies.filter((familyId) => familyId !== initiallySelectedFamily), initiallySelectedFamily]
     : rasterFamilies;
   for (const familyId of orderedFamilies) {
+    const previousRaster = rasterStateFromProjection(
+      await runtime.driver.readProjection("parity:raster-state:"),
+    );
     const selected = await runtime.chooseOption(
       `${familyId} raster family selected`,
       "chart-family-button",
@@ -1787,12 +1830,14 @@ async function mapModesAndOverlays(runtime) {
     await dismissTrayOptions(runtime, `dismiss ${familyId} raster family choices`);
     if (familyId === "none") {
       const empty = await runtime.eventually("empty raster plan", async () => {
-        const counts = rasterCounts(await runtime.driver.readProjection("parity:raster-state:"));
-        return counts?.planned === 0 ? counts : null;
-      });
+        const counts = rasterStateFromProjection(
+          await runtime.driver.readProjection("parity:raster-state:"),
+        );
+        return counts?.planId !== previousRaster?.planId && counts?.planned === 0 ? counts : null;
+      }, E2E_TIMING.localRenderMs);
       runtime.check(RASTER_ASSERTIONS[familyId], Boolean(selected && empty), JSON.stringify(empty));
     } else {
-      const paint = await loadedMap(runtime);
+      const paint = await loadedMap(runtime, { afterPlanId: previousRaster?.planId ?? null });
       runtime.check(RASTER_ASSERTIONS[familyId], Boolean(selected && paint.raster.failed === 0), JSON.stringify(paint.raster));
     }
   }

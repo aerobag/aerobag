@@ -26,7 +26,9 @@ import {
   chooseForecastWindModel,
   openAndDismissDataStatus,
   offlineSyncButtonIsIdle,
+  rasterPlanHasVisiblePaint,
   rasterPlanIsDisplayReady,
+  rasterStateFromProjection,
   selectChartSearchSuggestion,
   selectProcedure,
   selectTfrFromPreparedMap,
@@ -1748,6 +1750,20 @@ test("chart search selection delivers one platform tap and observes its result",
 });
 
 test("raster readiness measures painted coverage without hiding reported failures", () => {
+  assert.deepEqual(
+    rasterStateFromProjection([{
+      id: "parity:raster-state:plan:42:maps:tac%3Anw,tac-reference:planned:18:loaded:14:failed:0",
+    }]),
+    {
+      planId: "42",
+      mapIds: ["tac:nw", "tac-reference"],
+      planned: 18,
+      loaded: 14,
+      failed: 0,
+    },
+  );
+  assert.equal(rasterPlanHasVisiblePaint({ planned: 18, loaded: 1, failed: 0 }), true);
+  assert.equal(rasterPlanHasVisiblePaint({ planned: 18, loaded: 0, failed: 0 }), false);
   assert.equal(rasterPlanIsDisplayReady({ planned: 18, loaded: 17, failed: 0 }), true);
   assert.equal(rasterPlanIsDisplayReady({ planned: 18, loaded: 2, failed: 0 }), false);
   assert.equal(rasterPlanIsDisplayReady({ planned: 18, loaded: 17, failed: 1 }), true);

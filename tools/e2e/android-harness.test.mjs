@@ -37,7 +37,10 @@ test("persistent semantic dumps refresh accessibility roots before traversal", (
     source,
     /refreshSubtree \|\| viewId\.startsWith\("parity:"\)[\s\S]*?if \(refreshThisSubtree\) node\.refresh\(\);/,
   );
-  assert.match(source, /appendNode\(output, child, childIndex, refreshThisSubtree\)/);
+  assert.match(
+    source,
+    /appendNode\(\s*output,\s*child,\s*childIndex,\s*semanticPath \+ "\/" \+ childIndex,\s*refreshThisSubtree\s*\)/,
+  );
   assert.match(source, /attribute\(output, "state-description", string\(node\.getStateDescription\(\)\)\);/);
 });
 

@@ -49,12 +49,12 @@ test(
   "Android restart discards the stopped process's semantic tree before accepting startup",
   async () => {
     const stale = {
-      "resource-id": "parity:startup-state:ready:true:process:old",
+      "resource-id": "parity:app-process:old",
       "semantic-path": "0/0/4",
       bounds: "[0,0][100,100]",
     };
     const fresh = {
-      "resource-id": "parity:startup-state:ready:false:process:new",
+      "resource-id": "parity:app-process:new",
       "semantic-path": "0/0/1",
       bounds: "[0,0][100,100]",
     };
@@ -71,7 +71,7 @@ test(
         started = true;
         events.push("start");
       },
-      readStartupNode: async () => (started ? afterStart.shift() : beforeStart.shift()),
+      readProcessNode: async () => (started ? afterStart.shift() : beforeStart.shift()),
       timeoutMs: 1_000,
       intervalMs: 0,
     });

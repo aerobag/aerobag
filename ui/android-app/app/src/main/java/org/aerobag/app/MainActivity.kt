@@ -22,6 +22,7 @@ import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
 import java.util.LinkedHashMap
+import java.util.UUID
 import java.net.HttpURLConnection
 import kotlin.math.roundToInt
 import androidx.annotation.DrawableRes
@@ -2070,6 +2071,7 @@ private const val DebugClearCoreSettingsExtra =
     "org.aerobag.app.extra.DEBUG_CLEAR_CORE_SETTINGS"
 private const val DebugClearUiPrefsExtra =
     "org.aerobag.app.extra.DEBUG_CLEAR_UI_PREFS"
+private val AndroidProcessSemanticId = UUID.randomUUID().toString()
 
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
@@ -2269,12 +2271,18 @@ class MainActivity : ComponentActivity() {
                         .semantics { testTagsAsResourceId = true },
                     color = Color(0xFFF3EFE4),
                 ) {
-                    AerobagApp(
-                        retainedModel = retainedModel,
-                        perfScenario = perfScenario,
-                        startupPerfTrace = startupPerfTrace,
-                        armLayerNavKvFault = armLayerNavKvFault,
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("parity:app-process:$AndroidProcessSemanticId"),
+                    ) {
+                        AerobagApp(
+                            retainedModel = retainedModel,
+                            perfScenario = perfScenario,
+                            startupPerfTrace = startupPerfTrace,
+                            armLayerNavKvFault = armLayerNavKvFault,
+                        )
+                    }
                 }
             }
         }

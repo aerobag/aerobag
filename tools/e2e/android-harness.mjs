@@ -835,17 +835,17 @@ export function grantAerobagRuntimePermissions(serial) {
   }
 }
 
-function firstAerobagStartupNode(serial) {
+function firstAerobagProcessNode(serial) {
   try {
     return queryAndroidSemanticNodes(
       serial,
-      "parity:startup-state:",
+      "parity:app-process:",
       { prefix: true, first: true },
     )[0] ?? null;
   } catch (error) {
     if (/curl: \(28\) Operation timed out/.test(error.message)) {
       throw new TransientObservationError(
-        "Android semantic startup query timed out",
+        "Android semantic process query timed out",
         error,
       );
     }
@@ -865,7 +865,7 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
   stopApp,
   prepareSemanticDriver,
   startApp,
-  readStartupNode,
+  readProcessNode,
   timeoutMs = E2E_TIMING.startupMs,
   intervalMs = E2E_TIMING.pollIntervalMs,
 }) {
@@ -873,7 +873,7 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
   await prepareSemanticDriver();
   await observeUntil(
     "previous Aerobag semantic UI removed",
-    async () => (await readStartupNode()) === null ? true : null,
+    async () => (await readProcessNode()) === null ? true : null,
     {
       timeoutMs,
       intervalMs,
@@ -883,7 +883,7 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
   await startApp();
   const observed = await observeUntil(
     "new Aerobag semantic UI visible",
-    () => readStartupNode(),
+    () => readProcessNode(),
     {
       timeoutMs,
       intervalMs,
@@ -919,7 +919,7 @@ export async function launchFreshAndroidApp(
       // command timeout on cold CI emulators. Semantic lifecycle is checked here.
       adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
     },
-    readStartupNode: () => firstAerobagStartupNode(serial),
+    readProcessNode: () => firstAerobagProcessNode(serial),
   });
 }
 

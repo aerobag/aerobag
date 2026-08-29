@@ -1577,22 +1577,28 @@ test("mandatory disclaimer response and application startup use separate budgets
   );
 });
 
-test("Android app restart observes a stable startup node without dumping the UI", () => {
+test("Android app restart observes a stable process node without dumping the UI", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const activity = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt", import.meta.url),
+    "utf8",
+  );
   const launch = harness.slice(
     harness.indexOf("export async function launchFreshAndroidApp"),
     harness.indexOf("export async function acceptDisclaimerIfPresent"),
   );
   assert.match(launch, /restartAndroidAppAcrossSemanticLifecycle\(/);
-  assert.match(launch, /firstAerobagStartupNode\(serial\)/);
+  assert.match(launch, /firstAerobagProcessNode\(serial\)/);
   assert.doesNotMatch(launch, /dumpAndroid\(/);
-  const startupProbe = harness.slice(
-    harness.indexOf("function firstAerobagStartupNode"),
+  const processProbe = harness.slice(
+    harness.indexOf("function firstAerobagProcessNode"),
     harness.indexOf("function semanticNodeIdentity"),
   );
-  assert.match(startupProbe, /parity:startup-state:/);
-  assert.match(startupProbe, /prefix: true, first: true/);
-  assert.match(startupProbe, /TransientObservationError/);
+  assert.match(processProbe, /parity:app-process:/);
+  assert.match(processProbe, /prefix: true, first: true/);
+  assert.match(processProbe, /TransientObservationError/);
+  assert.match(activity, /AndroidProcessSemanticId = UUID\.randomUUID\(\)\.toString\(\)/);
+  assert.match(activity, /testTag\("parity:app-process:\$AndroidProcessSemanticId"\)/);
   const lifecycle = harness.slice(
     harness.indexOf("export async function restartAndroidAppAcrossSemanticLifecycle"),
     harness.indexOf("export async function launchFreshAndroidApp"),

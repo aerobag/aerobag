@@ -482,6 +482,7 @@ def sequential_ci_lanes(run_root: Path) -> list[Lane]:
             ),
             env={
                 "AEROBAG_UI_TARGET_ROOT": str(ui_target),
+                "AEROBAG_WEB_WORKSPACE_DIR": str(ui_target / "web/workspace"),
                 "AEROBAG_ARTIFACT_READ_PATH": str(run_root / "no-artifacts"),
                 "AEROBAG_JUNIT_PATH": str(run_root / "web-results/junit.xml"),
             },
@@ -583,6 +584,9 @@ def web_lane(
     cloud_port = 21_100 + index
     state = run_root / f"lab-web-{priority}"
     env = {
+        "AEROBAG_WEB_WORKSPACE_DIR": str(
+            run_root / "release-ui-target/web/workspace"
+        ),
         "AEROBAG_RELEASE_JOURNEY_FIXTURE": str(fixture),
         "AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR": str(apps),
         "AEROBAG_RELEASE_JOURNEY_WEB_DIST": str(apps / "web-dist"),
@@ -634,6 +638,9 @@ def android_shard_lane(
         "EMULATOR_READ_ONLY": "0",
         "AVD_PACKAGE_PATH": "system-images;android-34;aosp_atd;x86_64",
         "AEROBAG_UI_TARGET_ROOT": str(target),
+        "AEROBAG_WEB_WORKSPACE_DIR": str(
+            run_root / "release-ui-target/web/workspace"
+        ),
         "AEROBAG_RELEASE_JOURNEY_FIXTURE": str(fixture),
         "AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR": str(apps),
         "AEROBAG_RELEASE_JOURNEY_WEB_DIST": str(apps / "web-dist"),
@@ -701,6 +708,9 @@ def android_baseline_lane(
         "EMULATOR_READ_ONLY": "0",
         "AVD_PACKAGE_PATH": "system-images;android-34;aosp_atd;x86_64",
         "AEROBAG_UI_TARGET_ROOT": str(run_root / "android-target-baseline"),
+        "AEROBAG_WEB_WORKSPACE_DIR": str(
+            run_root / "release-ui-target/web/workspace"
+        ),
         "AEROBAG_RELEASE_JOURNEY_FIXTURE": str(fixture),
         "AEROBAG_RELEASE_JOURNEY_APP_ARTIFACTS_DIR": str(apps),
         "AEROBAG_RELEASE_JOURNEY_WEB_DIST": str(apps / "web-dist"),
@@ -773,6 +783,9 @@ def native_lane(
         "ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
         "AEROBAG_ANDROID_CLOUD_DEVICE_PORT": "18094",
         "AEROBAG_UI_TARGET_ROOT": str(target),
+        "AEROBAG_WEB_WORKSPACE_DIR": str(
+            run_root / "release-ui-target/web/workspace"
+        ),
         "AEROBAG_TEST_ARTIFACTS_ROOT": str(fixtures),
         "AEROBAG_ANDROID_SMOKE_FIXTURE": str(
             fixtures / "e2e/android-smoke-publication/fixture.json"

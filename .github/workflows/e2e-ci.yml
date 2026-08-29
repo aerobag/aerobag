@@ -160,6 +160,7 @@ jobs:
         priority: ${{ fromJSON(needs.release-journey-fixture.outputs.priorities) }}
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
       AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
       AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
       AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST: "1"
@@ -224,6 +225,7 @@ jobs:
     timeout-minutes: 30
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
       AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
       AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
       AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST: "1"
@@ -242,6 +244,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web-app/package-lock.json
+      - name: Install browser harness dependencies
+        run: npm ci --prefix ui/web-app
       - name: Download immutable apps
         uses: actions/download-artifact@v5
         with:
@@ -324,6 +330,7 @@ jobs:
         shard: [0, 1, 2, 3]
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
       AEROBAG_RELEASE_JOURNEY_FIXTURE: ${{ github.workspace }}/.ci/release-journey-materialized/fixture.json
       AEROBAG_RELEASE_JOURNEY_WEB_DIST: ${{ github.workspace }}/.ci/release-e2e-apps/web-dist
       AEROBAG_RELEASE_JOURNEY_SERVE_WEB_DIST: "1"
@@ -435,6 +442,7 @@ jobs:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       AEROBAG_ANDROID_SMOKE_FIXTURE: ${{ github.workspace }}/.ci/test-artifacts/e2e/android-smoke-publication/fixture.json
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/ui/web-app
       ANDROID_TARGET_ABIS: x86_64
       AEROBAG_ANDROID_KEYSTORE: ${{ github.workspace }}/.ci/android-ci.keystore
       AEROBAG_ANDROID_KEYSTORE_PASSWORD: android
@@ -469,6 +477,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: ui/web-app/package-lock.json
+      - name: Install browser harness dependencies
+        run: npm ci --prefix ui/web-app
       - name: Install plate screenshot analyzer
         if: ${{ matrix.test == 'android.plate-first-render-smoke' }}
         run: |

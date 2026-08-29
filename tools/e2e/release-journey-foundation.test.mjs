@@ -72,13 +72,13 @@ import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { setAndroidWallClockAndWait } from "./android-harness.mjs";
 
-test("web tooling resolves dependencies from the staged target workspace", () => {
+test("web tooling resolves dependencies only from an explicit web workspace", () => {
   assert.equal(
     webWorkspaceDirectory(
       { AEROBAG_UI_TARGET_ROOT: "/tmp/aerobag-ui-target" },
       "/checkout",
     ),
-    "/tmp/aerobag-ui-target/web/workspace",
+    "/checkout/ui/web-app",
   );
   assert.equal(
     webWorkspaceDirectory(
@@ -96,6 +96,7 @@ test("web tooling resolves dependencies from the staged target workspace", () =>
   const runner = readFileSync(join(repoRoot, "ui/web-app/scripts/run-target-workspace.sh"), "utf8");
   assert.match(runner, /cp -a "\$WEB_SOURCE_DIR\/scripts" "\$WORKSPACE_DIR\/scripts"/);
   assert.doesNotMatch(runner, /ln -sfn "\$WEB_SOURCE_DIR\/scripts"/);
+  assert.match(runner, /AEROBAG_WEB_WORKSPACE_DIR="\$WORKSPACE_DIR"/);
 
   const qualifier = readFileSync(
     join(repoRoot, "tools/ci/local_candidate_qualification.py"),
@@ -931,7 +932,20 @@ test("hosted CI pins and fans out immutable release inputs", () => {
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_REPETITIONS/);
   assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_IMPLEMENTATIONS_ONLY: "1"/);
   assert.doesNotMatch(workflow, /ANDROID_SERIAL:\s*emulator-/);
-  assert.equal(workflow.match(/Install browser harness dependencies/g)?.length, 2);
+  assert.equal(workflow.match(/Install browser harness dependencies/g)?.length, 4);
+  for (const job of [
+    "release-journey-web",
+    "release-journey-android-baseline",
+    "release-journey-android",
+    "android-native",
+  ]) {
+    const start = workflow.indexOf(`  ${job}:`);
+    const rest = workflow.slice(start + 2);
+    const nextJob = rest.search(/^  [a-z0-9-]+:/m);
+    const section = nextJob < 0 ? rest : rest.slice(0, nextJob);
+    assert.match(section, /AEROBAG_WEB_WORKSPACE_DIR:/, `${job} names its web workspace`);
+    assert.match(section, /Install browser harness dependencies/, `${job} installs web dependencies`);
+  }
 
   const lab = readFileSync(
     new URL("./release_journey_lab.sh", import.meta.url),

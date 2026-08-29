@@ -247,6 +247,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
+      AEROBAG_WEB_WORKSPACE_DIR: ${{ github.workspace }}/.ci/ui-target/web/workspace
       AEROBAG_ARTIFACT_READ_PATH: ${{ github.workspace }}/.ci/no-artifacts
       AEROBAG_JUNIT_PATH: ${{ github.workspace }}/test-results/web/junit.xml
     steps:

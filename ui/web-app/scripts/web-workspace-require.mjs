@@ -12,9 +12,6 @@ export function webWorkspaceDirectory(environment = process.env, repoRoot = SOUR
   if (environment.AEROBAG_WEB_WORKSPACE_DIR) {
     return resolve(environment.AEROBAG_WEB_WORKSPACE_DIR);
   }
-  if (environment.AEROBAG_UI_TARGET_ROOT) {
-    return resolve(environment.AEROBAG_UI_TARGET_ROOT, "web", "workspace");
-  }
   return resolve(repoRoot, "ui", "web-app");
 }
 

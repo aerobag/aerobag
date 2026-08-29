@@ -254,8 +254,9 @@ export class NavKvStore {
       if (isCoreSourceAssertion(error)) {
         throw error;
       }
-      debugLog("nav_kv.root.missing", { reason: error instanceof Error ? error.message : String(error) });
-      return null;
+      const reason = error instanceof Error ? error.message : String(error);
+      debugLog("nav_kv.open.failed", { reason });
+      throw new Error(`failed to open published NAVDB candidate: ${reason}`, { cause: error });
     } finally {
       if (!finished) {
         wasm.nav_db_open_controller_destroy(controllerHandle);

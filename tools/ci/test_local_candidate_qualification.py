@@ -152,6 +152,39 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             self.assertEqual(selected, cache.resolve())
             self.assertIn("^{commit}", run.call_args.args[0][-1])
 
+    def test_local_qualification_copies_binaryen_archive_into_isolated_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "cached-binaryen.tar.gz"
+            source.write_bytes(b"pinned archive")
+            run_root = root / "candidate"
+
+            with mock.patch.dict(
+                qualification.os.environ,
+                {"AEROBAG_BINARYEN_ARCHIVE_CACHE": str(source)},
+            ):
+                destination = qualification.prepare_binaryen_archive(run_root)
+
+            self.assertEqual(
+                destination,
+                run_root / "release-ui-target/tools" / qualification.BINARYEN_ARCHIVE,
+            )
+            self.assertEqual(destination.read_bytes(), b"pinned archive")
+
+    def test_local_qualification_requires_a_cached_binaryen_archive(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.dict(
+                qualification.os.environ,
+                {"AEROBAG_BINARYEN_ARCHIVE_CACHE": f"{temp_dir}/missing.tar.gz"},
+            ),
+        ):
+            with self.assertRaisesRegex(
+                qualification.QualificationError,
+                "prime it once",
+            ):
+                qualification.prepare_binaryen_archive(Path(temp_dir) / "candidate")
+
     def test_android_baseline_qualifies_startup_once_before_shards(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temp_dir,

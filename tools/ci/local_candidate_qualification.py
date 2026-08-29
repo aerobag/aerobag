@@ -30,6 +30,7 @@ DEFAULT_REPETITIONS = 5
 ANDROID_SHARDS = 4
 DEFAULT_ANDROID_WORKERS = 2
 NEXTEST_VERSION = "0.9.140"
+BINARYEN_ARCHIVE = "binaryen-version_129-node.tar.gz"
 PRIORITIES = ("p0", "p1", "p2")
 NATIVE_TESTS = (
     "android.flight-plan-route-smoke",
@@ -301,6 +302,33 @@ def test_artifacts_repository_cache() -> Path | None:
     return None
 
 
+def prepare_binaryen_archive(run_root: Path) -> Path:
+    configured = os.environ.get("AEROBAG_BINARYEN_ARCHIVE_CACHE")
+    default_ui_target = (ROOT / (ROOT / "ui/target-root.txt").read_text().strip()).resolve()
+    candidates = (
+        [Path(configured)]
+        if configured
+        else [
+            default_ui_target / "tools" / BINARYEN_ARCHIVE,
+            ROOT / ".ci/ui-target/tools" / BINARYEN_ARCHIVE,
+        ]
+    )
+    source = next(
+        (candidate.expanduser().resolve() for candidate in candidates if candidate.is_file()),
+        None,
+    )
+    if source is None:
+        locations = ", ".join(str(candidate) for candidate in candidates)
+        raise QualificationError(
+            f"no cached Binaryen archive found at {locations}; prime it once with "
+            "ui/web-app/scripts/install-binaryen-wasm-opt.sh"
+        )
+    destination = run_root / "release-ui-target/tools" / BINARYEN_ARCHIVE
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return destination
+
+
 def run_lane(lane: Lane, log_dir: Path) -> LaneResult:
     log_path = log_dir / f"{lane.name}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -508,6 +536,7 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
             "ANDROID_TARGET_ABIS": "x86_64",
         }
     )
+    prepare_binaryen_archive(run_root)
     subprocess.run(
         [str(ROOT / "ui/web-app/scripts/install-binaryen-wasm-opt.sh")],
         cwd=ROOT,

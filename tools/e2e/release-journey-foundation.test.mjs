@@ -1004,7 +1004,6 @@ test("web reset replaces the old app target before clearing persistent origin st
       origin: "http://fixture.test",
       storageTypes: "all",
     }],
-    ["send", "Network.setCacheDisabled", { cacheDisabled: true }],
     ["send", "Browser.grantPermissions", {
       origin: "http://fixture.test",
       permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],

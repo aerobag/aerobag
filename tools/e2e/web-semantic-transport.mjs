@@ -68,9 +68,6 @@ export class WebSemanticTransport {
       origin: this.origin,
       storageTypes: "all",
     });
-    // A reset replaces the target. Do not let its first module imports inherit
-    // an entry whose producer belonged to the target that was just destroyed.
-    await this.page.send("Network.setCacheDisabled", { cacheDisabled: true });
     await this.grantClipboardPermissions();
     await this.page.navigate(this.url);
     await this.page.waitForLoad();

@@ -863,12 +863,12 @@ def initial_journey_lane_groups(
     repetitions: int,
 ) -> tuple[tuple[str, list[Lane]], ...]:
     return (
-        (
-            "Running web priorities in parallel",
-            [
-                web_lane(priority, run_root, fixture, apps, repetitions)
-                for priority in PRIORITIES
-            ],
+        *(
+            (
+                f"Running web priority {priority} in an isolated local phase",
+                [web_lane(priority, run_root, fixture, apps, repetitions)],
+            )
+            for priority in PRIORITIES
         ),
         (
             "Running NAV rollover in an isolated local phase",

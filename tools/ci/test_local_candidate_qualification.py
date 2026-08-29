@@ -217,7 +217,9 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertEqual(
             [[lane.name for lane in lanes] for _, lanes in groups],
             [
-                ["e2e-web-p0", "e2e-web-p1", "e2e-web-p2"],
+                ["e2e-web-p0"],
+                ["e2e-web-p1"],
+                ["e2e-web-p2"],
                 ["e2e-web-nav-db-rollover"],
                 ["e2e-android-baseline"],
             ],

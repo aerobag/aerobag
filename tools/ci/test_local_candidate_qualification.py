@@ -131,6 +131,27 @@ class LocalCandidateQualificationTests(unittest.TestCase):
                     root / "candidate", wrapper_cache, root / "empty-caches"
                 )
 
+    def test_local_qualification_selects_a_cache_with_the_pinned_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache = root / "fixtures.git"
+            subprocess.run(["git", "init", "--quiet", "--bare", str(cache)], check=True)
+            with (
+                mock.patch.dict(
+                    qualification.os.environ,
+                    {"AEROBAG_TEST_ARTIFACTS_REPOSITORY_CACHE": str(cache)},
+                ),
+                mock.patch.object(
+                    qualification.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as run,
+            ):
+                selected = qualification.test_artifacts_repository_cache()
+
+            self.assertEqual(selected, cache.resolve())
+            self.assertIn("^{commit}", run.call_args.args[0][-1])
+
     def test_android_baseline_qualifies_startup_once_before_shards(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temp_dir,

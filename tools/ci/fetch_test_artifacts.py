@@ -157,7 +157,12 @@ def validate_fixture(root: Path, fixture: Fixture) -> None:
             )
 
 
-def fetch(lock: Lock, fixture_names: list[str], destination: Path) -> None:
+def fetch(
+    lock: Lock,
+    fixture_names: list[str],
+    destination: Path,
+    repository_cache: Path | None = None,
+) -> None:
     unknown = sorted(set(fixture_names) - lock.fixtures.keys())
     if unknown:
         raise LockError(f"unknown fixtures: {', '.join(unknown)}")
@@ -170,6 +175,11 @@ def fetch(lock: Lock, fixture_names: list[str], destination: Path) -> None:
 
     run_git(destination, "init", "--quiet")
     run_git(destination, "remote", "add", "origin", lock.repository)
+    fetch_remote = "origin"
+    if repository_cache is not None:
+        cache = repository_cache.expanduser().resolve()
+        run_git(destination, "remote", "add", "cache", str(cache))
+        fetch_remote = "cache"
     run_git(destination, "sparse-checkout", "init", "--cone")
     run_git(
         destination,
@@ -183,7 +193,7 @@ def fetch(lock: Lock, fixture_names: list[str], destination: Path) -> None:
         "--quiet",
         "--depth=1",
         "--filter=blob:none",
-        "origin",
+        fetch_remote,
         lock.commit,
     )
     run_git(destination, "checkout", "--quiet", "--detach", "FETCH_HEAD")
@@ -207,10 +217,20 @@ def main() -> int:
     parser.add_argument("--fixture", action="append", required=True)
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--lock", type=Path, default=default_lock_path())
+    parser.add_argument(
+        "--repository-cache",
+        type=Path,
+        help="optional local Git repository containing the pinned fixture commit",
+    )
     args = parser.parse_args()
     try:
         lock = load_lock(args.lock)
-        fetch(lock, args.fixture, args.destination.resolve())
+        fetch(
+            lock,
+            args.fixture,
+            args.destination.resolve(),
+            args.repository_cache,
+        )
     except (LockError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

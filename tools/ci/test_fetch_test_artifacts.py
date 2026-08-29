@@ -97,6 +97,31 @@ class FetchTestArtifactsTest(unittest.TestCase):
         self.assertTrue((destination / "alpha" / "payload.dat").is_file())
         self.assertFalse((destination / "beta").exists())
 
+    def test_local_repository_cache_avoids_the_configured_remote(self) -> None:
+        lock_path = self.write_lock()
+        value = json.loads(lock_path.read_text(encoding="utf-8"))
+        value["repository"] = "https://invalid.example.test/fixtures.git"
+        lock_path.write_text(json.dumps(value), encoding="utf-8")
+        lock = fetch_test_artifacts.load_lock(lock_path)
+        destination = self.root / "cached-checkout"
+
+        fetch_test_artifacts.fetch(
+            lock,
+            ["alpha"],
+            destination,
+            repository_cache=self.source,
+        )
+
+        self.assertEqual(
+            self.commit,
+            subprocess.run(
+                ["git", "-C", str(destination), "rev-parse", "HEAD"],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            ).stdout.strip(),
+        )
+
     def test_rejects_manifest_contract_mismatch(self) -> None:
         lock = fetch_test_artifacts.load_lock(self.write_lock(contract_version=3))
 

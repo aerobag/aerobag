@@ -272,6 +272,35 @@ def prepare_gradle_caches(
     return wrapper_source, dependency_source
 
 
+def test_artifacts_repository_cache() -> Path | None:
+    commit = json.loads((ROOT / "test-artifacts.lock.json").read_text(encoding="utf-8"))[
+        "commit"
+    ]
+    configured = os.environ.get("AEROBAG_TEST_ARTIFACTS_REPOSITORY_CACHE")
+    candidates = (
+        [Path(configured)]
+        if configured
+        else [Path.home() / "aerobag-test-artifacts.git", ROOT.parent / "aerobag-test-artifacts"]
+    )
+    for candidate in candidates:
+        candidate = candidate.expanduser().resolve()
+        if not candidate.exists():
+            continue
+        result = subprocess.run(
+            ["git", "-C", str(candidate), "cat-file", "-e", f"{commit}^{{commit}}"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return candidate
+    if configured:
+        raise QualificationError(
+            f"configured test-artifact cache {configured} lacks pinned commit {commit}"
+        )
+    return None
+
+
 def run_lane(lane: Lane, log_dir: Path) -> LaneResult:
     log_path = log_dir / f"{lane.name}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -431,15 +460,19 @@ def sequential_ci_lanes(run_root: Path) -> list[Lane]:
 
 def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
     fixtures = run_root / "test-artifacts"
+    fetch_command = [
+        "python3", "tools/ci/fetch_test_artifacts.py",
+        "--fixture", "release-journey-publication",
+        "--fixture", "android-smoke-publication",
+        "--fixture", "android-rotation-live-feed",
+        "--fixture", "nav-db-advance",
+        "--destination", str(fixtures),
+    ]
+    repository_cache = test_artifacts_repository_cache()
+    if repository_cache is not None:
+        fetch_command.extend(["--repository-cache", str(repository_cache)])
     subprocess.run(
-        [
-            "python3", "tools/ci/fetch_test_artifacts.py",
-            "--fixture", "release-journey-publication",
-            "--fixture", "android-smoke-publication",
-            "--fixture", "android-rotation-live-feed",
-            "--fixture", "nav-db-advance",
-            "--destination", str(fixtures),
-        ],
+        fetch_command,
         cwd=ROOT,
         check=True,
     )

@@ -1329,6 +1329,10 @@ test("Android emulator launchers and journey lab derive one device identity", ()
   );
   assert.match(startStack, /service check package/);
   assert.match(startStack, /\^Service package: found\$/);
+  assert.match(
+    startStack,
+    /EMULATOR_DATA_PARTITION_SIZE="\$\{EMULATOR_DATA_PARTITION_SIZE:-8589934592\}"/,
+  );
 });
 
 test("Android qualification isolates semantic tests from Google service instability", () => {

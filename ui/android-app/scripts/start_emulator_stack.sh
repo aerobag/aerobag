@@ -35,7 +35,9 @@ VNC_CLIP="${VNC_CLIP:-1080x2400+0+0}"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/lib/android-sdk}}"
 EMULATOR_BIN="${EMULATOR_BIN:-$ANDROID_SDK_ROOT/emulator/emulator}"
 AVDMANAGER_BIN="${AVDMANAGER_BIN:-avdmanager}"
-EMULATOR_DATA_PARTITION_SIZE="${EMULATOR_DATA_PARTITION_SIZE:-17179869184}"
+# Eight GiB leaves ample room for offline-package fixtures without making a
+# fresh CI AVD require roughly 20 GiB of free host storage before it can boot.
+EMULATOR_DATA_PARTITION_SIZE="${EMULATOR_DATA_PARTITION_SIZE:-8589934592}"
 
 XVFB_PID_FILE="${STATE_DIR}/xvfb.pid"
 X11VNC_PID_FILE="${STATE_DIR}/x11vnc.pid"

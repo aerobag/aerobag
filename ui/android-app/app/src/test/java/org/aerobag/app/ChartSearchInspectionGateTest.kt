@@ -74,16 +74,17 @@ class ChartSearchInspectionGateTest {
     @Test
     fun indexedSelectionProjectionCarriesCategoryTargetAndCenterEvidence() {
         assertEquals(
-            "selected:KPLU:category:airport:centered:KPLU:offset-px:3",
+            "selected:KPLU:category:airport:text:KPLU · Elev 538 · 3nm Puyallup%2C WA:centered:KPLU:offset-px:3",
             buildMapSelectionProjectionState(
                 selectedLabel = "KPLU",
                 selectedCategoryId = "airport",
+                selectedText = "KPLU · Elev 538 · 3nm Puyallup, WA",
                 centerProbeTag = "parity:map-selection-center:KPLU:offset-px:3",
             ),
         )
         assertEquals(
-            "selected:none:category:none:centered:none:offset-px:none",
-            buildMapSelectionProjectionState(null, null, null),
+            "selected:none:category:none:text::centered:none:offset-px:none",
+            buildMapSelectionProjectionState(null, null, null, null),
         )
     }
 

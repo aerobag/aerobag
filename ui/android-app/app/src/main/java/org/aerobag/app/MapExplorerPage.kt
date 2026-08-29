@@ -164,8 +164,8 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -486,6 +486,7 @@ internal fun buildMapSelectionCenterProbeTag(
 internal fun buildMapSelectionProjectionState(
     selectedLabel: String?,
     selectedCategoryId: String?,
+    selectedText: String?,
     centerProbeTag: String?,
 ): String {
     val centerState = centerProbeTag
@@ -494,8 +495,30 @@ internal fun buildMapSelectionProjectionState(
         ?: "none:offset-px:none"
     return "selected:${selectedLabel?.let(::rasterSemanticToken) ?: "none"}:" +
         "category:${selectedCategoryId?.let(::rasterSemanticToken) ?: "none"}:" +
+        "text:${selectedText?.let(::rasterSemanticToken).orEmpty()}:" +
         "centered:$centerState"
 }
+
+internal fun mapSelectionHeaderDetailText(selectedItem: MapSelectionItem?): String =
+    selectedItem?.let { item ->
+        listOfNotNull(
+            item.description?.takeIf { it.isNotBlank() },
+            item.distance?.takeIf { it.isNotBlank() },
+        ).joinToString(" · ")
+    }.orEmpty()
+
+internal fun mapSelectionHeaderPrimaryText(selectedItem: MapSelectionItem?): String =
+    selectedItem?.let { item ->
+        listOf(item.label, mapSelectionHeaderDetailText(item))
+            .filter { it.isNotEmpty() }
+            .joinToString(" · ")
+    } ?: " "
+
+internal fun mapSelectionHeaderText(selectedItem: MapSelectionItem?): String =
+    listOf(
+        mapSelectionHeaderPrimaryText(selectedItem).trim(),
+        selectedItem?.secondaryDescription?.trim().orEmpty(),
+    ).filter { it.isNotEmpty() }.joinToString(" ")
 
 internal fun viewportOwnedByCenteredInspection(
     requestedViewport: MapViewportState,
@@ -2289,6 +2312,7 @@ internal fun MapExplorerPage(
         buildMapSelectionProjectionState(
             selectedLabel = selectedItem?.label,
             selectedCategoryId = selectedCategoryId,
+            selectedText = mapSelectionHeaderText(selectedItem),
             centerProbeTag = mapSelectionCenterProbeTag,
         )
     }
@@ -4964,11 +4988,12 @@ internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
         Text(
             text = buildAnnotatedString {
                 if (selectedItem != null) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(selectedItem.label) }
-                    listOfNotNull(
-                        selectedItem.description?.takeIf { it.isNotBlank() },
-                        selectedItem.distance?.takeIf { it.isNotBlank() },
-                    ).takeIf { it.isNotEmpty() }?.let { append(" · ${it.joinToString(" · ")}") }
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                        append(selectedItem.label)
+                    }
+                    mapSelectionHeaderDetailText(selectedItem)
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { append(" · $it") }
                 } else {
                     append(" ")
                 }

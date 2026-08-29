@@ -289,19 +289,19 @@ test("destination centering rejects stale trays and geographically displaced res
 
   const projection = (state) => [{ state }];
   assert.equal(destinationCenterProjectionEvidence(
-    projection("selected:KUKI:category:airport:centered:KUKI:offset-px:0"),
+    projection("selected:KUKI:category:airport:text:KUKI:centered:KUKI:offset-px:0"),
     "KPLU",
   ).matched, false);
   assert.equal(destinationCenterProjectionEvidence(
-    projection("selected:KPLU:category:navaid:centered:KPLU:offset-px:0"),
+    projection("selected:KPLU:category:navaid:text:KPLU:centered:KPLU:offset-px:0"),
     "KPLU",
   ).matched, false);
   assert.equal(destinationCenterProjectionEvidence(
-    projection("selected:KPLU:category:airport:centered:KPLU:offset-px:120"),
+    projection("selected:KPLU:category:airport:text:KPLU:centered:KPLU:offset-px:120"),
     "KPLU",
   ).matched, false);
   assert.deepEqual(destinationCenterProjectionEvidence(
-    projection("selected:KPLU:category:airport:centered:KPLU:offset-px:3"),
+    projection("selected:KPLU:category:airport:text:KPLU:centered:KPLU:offset-px:3"),
     "KPLU",
   ), {
     matched: true,

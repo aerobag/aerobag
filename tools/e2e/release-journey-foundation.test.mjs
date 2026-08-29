@@ -42,8 +42,7 @@ import {
   webDistIndexSha256,
 } from "./serve-release-journey-fixture.mjs";
 import {
-  androidActionCandidates,
-  androidElementEnabled,
+  androidActionCandidates, androidElementEnabled, androidMapSelectionEntryFromState,
   androidActionUsesSubmit, AndroidSemanticJourneyDriver,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
   androidElementSemanticTag,
@@ -2442,6 +2441,32 @@ test("projection observations are distinct from explicit UI traversal", () => {
   assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("scanProjection"));
   assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("findProjectionMatching"));
   assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("revealProjectionMatching"));
+});
+
+test("Android map-selection projections preserve dynamic visible inspector text", () => {
+  const kseaState =
+    "selected:KSEA:category:airport:text:KSEA · Elev 433 · 7nm Seattle%2C WA:centered:KSEA:offset-px:2";
+  assert.deepEqual(androidMapSelectionEntryFromState(kseaState, "KSEA"), {
+    id: "parity:map-selection-selected:KSEA",
+    text: "KSEA · Elev 433 · 7nm Seattle, WA",
+    enabled: true,
+    pressed: null,
+    state: kseaState,
+  });
+  assert.equal(androidMapSelectionEntryFromState(kseaState, "KPAE"), null);
+
+  const spotState =
+    "selected:SPOT:category:spot:text:SPOT · 2nm Terrain elevation 125 ft:centered:none:offset-px:none";
+  assert.equal(
+    androidMapSelectionEntryFromState(spotState)?.text,
+    "SPOT · 2nm Terrain elevation 125 ft",
+  );
+  assert.equal(
+    androidMapSelectionEntryFromState(
+      "selected:none:category:none:text::centered:none:offset-px:none",
+    ),
+    null,
+  );
 });
 
 test("Android action delivery cannot rediscover a different control after readiness", async () => {

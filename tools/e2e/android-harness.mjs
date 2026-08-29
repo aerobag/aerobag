@@ -608,15 +608,15 @@ export function destinationCenterEvidence(xml, destination, maxOffsetPx = 8) {
 
 export function destinationCenterProjectionEvidence(entries, destination, maxOffsetPx = 8) {
   const state = entries?.[0]?.state ?? "";
-  const match = /^selected:([^:]+):category:([^:]+):centered:([^:]+):offset-px:(\d+)$/.exec(state);
-  const offsetPx = match ? Number(match[4]) : Number.NaN;
+  const match = /^selected:([^:]+):category:([^:]+):text:([^:]*):centered:([^:]+):offset-px:(\d+)$/.exec(state);
+  const offsetPx = match ? Number(match[5]) : Number.NaN;
   return {
     matched: match !== null && match[1] === destination && match[2] === "airport" &&
-      match[3] === destination && Number.isFinite(offsetPx) && offsetPx <= maxOffsetPx,
+      match[4] === destination && Number.isFinite(offsetPx) && offsetPx <= maxOffsetPx,
     selected: match?.[1] ?? null,
     category: match?.[2] ?? null,
-    centered: match?.[3] ?? null,
-    probeTag: match ? `parity:map-selection-center:${match[3]}:offset-px:${match[4]}` : null,
+    centered: match?.[4] ?? null,
+    probeTag: match ? `parity:map-selection-center:${match[4]}:offset-px:${match[5]}` : null,
     offsetPx: Number.isFinite(offsetPx) ? offsetPx : null,
   };
 }

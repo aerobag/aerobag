@@ -26,6 +26,19 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
 ]);
 
+export function androidMapSelectionEntryFromState(state, expected = "") {
+  const match = /^selected:([^:]+):category:([^:]+):text:([^:]*):/.exec(state);
+  const selected = match?.[1] ?? "none";
+  if (selected === "none" || (expected !== "" && selected !== expected)) return null;
+  return {
+    id: `parity:map-selection-selected:${selected}`,
+    text: decodeURIComponent(match[3]),
+    enabled: true,
+    pressed: null,
+    state,
+  };
+}
+
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "reset", "resetApplicationData", "resetApplicationDataExpectingStartupFailure", "openPage", "readCurrentPage", "readPage", "readNavigationAction", "activateNavigation",
   "openChooser", "readOption", "selectOption",
@@ -1113,14 +1126,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         ANDROID_EXACT_SCALAR_PROJECTIONS.get("parity:map-selection-state:"),
       );
       const state = queried[0]?.["state-description"] ?? "";
-      const selected = /^selected:([^:]+):/.exec(state)?.[1] ?? "none";
-      return selected === expected ? [{
-        id: prefix,
-        text: "",
-        enabled: true,
-        pressed: null,
-        state,
-      }] : [];
+      const entry = androidMapSelectionEntryFromState(state, expected);
+      return entry ? [entry] : [];
     }
     if (ANDROID_EXACT_SCALAR_PROJECTIONS.has(prefix)) {
       const queried = queryAndroidExactProjection(

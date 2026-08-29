@@ -864,7 +864,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         requireVisible: true,
       },
     );
-    return node ? { pageId, node } : null;
+    if (!node) return null;
+    const current = visibleAndroidPage(this.serial);
+    return current?.pageId === pageId ? { pageId, node } : null;
   }
 
   async readNavigationAction(pageId) {

@@ -2224,6 +2224,13 @@ test("Android page navigation requires visible semantic pages", () => {
   assert.match(source, /visible page before navigation/);
   assert.match(source, /requireVisible: true/);
   assert.match(source, /export async function navigateSemanticPage/);
+  const androidDriver = source.slice(source.indexOf("export class AndroidSemanticJourneyDriver"));
+  const readPage = androidDriver.slice(
+    androidDriver.indexOf("async readPage(pageId)"),
+    androidDriver.indexOf("async readNavigationAction(pageId)"),
+  );
+  assert.match(readPage, /const current = visibleAndroidPage\(this\.serial\)/);
+  assert.match(readPage, /current\?\.pageId === pageId/);
 });
 
 test("Android current-page discovery follows the visible page before persisted state", () => {

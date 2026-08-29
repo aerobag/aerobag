@@ -588,6 +588,10 @@ impl CloudEngine {
                 self.acs_event_stream_connected = true;
                 self.acs_event_stream_consecutive_failures = 0;
                 self.acs_event_stream_next_retry_epoch_ms = None;
+                // Subscribe before reading the root. This closes the window in
+                // which a peer can publish after our last poll but before the
+                // notification stream is actually established.
+                self.persistent.force_poll = true;
                 if self
                     .persistent
                     .last_provider_failure
@@ -3723,6 +3727,46 @@ mod tests {
             vec![updated.clone()]
         );
         assert_eq!(restarted.cached_flight_plan(), Some(updated));
+    }
+
+    #[test]
+    fn connected_stream_reconciles_a_peer_update_that_preceded_subscription() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let updated = plan(&["KRNT", "KPAE", "KPLU"]);
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut source = configured_engine();
+        let setup_code = create_account(&mut source, &mut provider, &initial, 1_000);
+        let (mut peer, _) = link_account(&mut provider, setup_code, 1_100);
+        let stream_id = source
+            .event_stream_plan()
+            .expect("source event stream plan")
+            .stream_id;
+
+        // The peer publishes while the source has a stream plan but before its
+        // platform transport reports that the subscription is connected. No
+        // notification from that interval may be assumed to arrive.
+        peer.record_local_flight_plan_mutation(&initial, &updated, 1_200)
+            .unwrap();
+        assert!(pump_acs(&mut peer, &mut provider, 1_200).is_empty());
+        assert_eq!(source.cached_flight_plan(), Some(initial));
+
+        source
+            .report_event_stream_event(
+                CloudEventStreamEvent {
+                    stream_id,
+                    kind: CloudEventStreamEventKind::Connected,
+                    data: None,
+                    detail: None,
+                },
+                1_201,
+            )
+            .unwrap();
+
+        assert_eq!(
+            pump_acs(&mut source, &mut provider, 1_201),
+            vec![updated.clone()]
+        );
+        assert_eq!(source.cached_flight_plan(), Some(updated));
     }
 
     #[test]

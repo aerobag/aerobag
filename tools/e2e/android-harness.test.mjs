@@ -14,6 +14,7 @@ import {
   androidStartupProjection,
   androidStartupState,
   androidJourneyEpochMs,
+  androidSemanticNodeIsActionable,
   classifyAerobagLogcat,
   displayBoundsFromXml,
   destinationCenterEvidence,
@@ -91,6 +92,20 @@ test(
 test("cloud journeys use host time while deterministic data journeys use fixture time", () => {
   assert.equal(androidJourneyEpochMs("shared.cloud-crossfill", 100, 200), 200);
   assert.equal(androidJourneyEpochMs("shared.replay-track-up", 100, 200), 100);
+});
+
+test("Android semantic actions wait for their rendered surface to reach the screen", () => {
+  const button = {
+    enabled: "true",
+    clickable: "true",
+    visible: "true",
+    "center-reachable": "false",
+  };
+  assert.equal(androidSemanticNodeIsActionable(button), false);
+  assert.equal(androidSemanticNodeIsActionable({
+    ...button,
+    "center-reachable": "true",
+  }), true);
 });
 
 test("detects only a rendered Android input-method window", () => {

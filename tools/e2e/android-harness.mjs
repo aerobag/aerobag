@@ -765,6 +765,13 @@ export async function activateAndroidNode(serial, node) {
   return node;
 }
 
+export function androidSemanticNodeIsActionable(node) {
+  return node?.enabled === "true" &&
+    node?.clickable === "true" &&
+    node?.visible === "true" &&
+    node?.["center-reachable"] === "true";
+}
+
 export async function scrollUntilTag(serial, tag, maxSwipes = 8, requireReachable = false) {
   if (await scrollUntilTagInDirection(serial, tag, "down", maxSwipes, requireReachable)) {
     return true;
@@ -1040,7 +1047,11 @@ export async function acceptDisclaimerIfPresent(serial) {
     ready: async () => {
       const readyState = queryAndroidStartupProjection(serial);
       if (readyState?.disclaimer_required !== "true") return null;
-      return queryAndroidSemanticNodes(serial, "parity:disclaimer-accept-button")?.[0] ?? null;
+      const button = queryAndroidSemanticNodes(
+        serial,
+        "parity:disclaimer-accept-button",
+      )?.[0] ?? null;
+      return androidSemanticNodeIsActionable(button) ? button : null;
     },
     act: async (readyButton) => activateAndroidNode(serial, readyButton),
     complete: async () => {
@@ -1048,6 +1059,7 @@ export async function acceptDisclaimerIfPresent(serial) {
       return nextState?.disclaimer_required === "false" ? nextState : null;
     },
     responseTimeoutMs: E2E_TIMING.userResponseMs,
+    readyTimeoutMs: E2E_TIMING.startupMs,
   });
   await observeUntil("application startup after accepting mandatory disclaimer", () => {
     const nextState = queryAndroidStartupState(serial);

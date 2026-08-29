@@ -64,7 +64,7 @@ class ReleaseE2eAppVerificationTests(unittest.TestCase):
             self.make_bundle(root, "aerobag-semantic-driver/1")
             with self.assertRaisesRegex(
                 verifier.VerificationError,
-                "does not implement aerobag-semantic-driver/2",
+                "does not implement aerobag-semantic-driver/3",
             ):
                 verifier.verify_bundle(root)
 

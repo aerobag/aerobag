@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Aerobag contributors
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<resources>
+    <item name="e2e_ownship_state_projection" type="id" />
+    <item name="e2e_live_overlay_projection" type="id" />
+    <item name="e2e_nexrad_state_projection" type="id" />
+    <item name="e2e_playback_widget_projection" type="id" />
+    <item name="e2e_viewport_projection" type="id" />
+</resources>

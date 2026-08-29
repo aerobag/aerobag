@@ -59,20 +59,25 @@ test(
       "semantic-path": "0/0/1",
       bounds: "[0,0][100,100]",
     };
-    const beforeStart = [stale, stale, null, null];
+    const beforeStart = [stale, null, null, null];
     const afterStart = [fresh, fresh];
+    const operatingSystemStopped = [false, true, true];
     const events = [];
     let started = false;
+    const readProcessNode = async () => (started ? afterStart.shift() : beforeStart.shift());
 
     const observed = await restartAndroidAppAcrossSemanticLifecycle({
       stopApp: async () => events.push("stop"),
       prepareSemanticDriver: async () => events.push("prepare"),
       startApp: async () => {
         assert.deepEqual(beforeStart, []);
+        assert.deepEqual(operatingSystemStopped, []);
         started = true;
         events.push("start");
       },
-      readProcessNode: async () => (started ? afterStart.shift() : beforeStart.shift()),
+      readProcessNode,
+      readStoppedState: async () =>
+        (await readProcessNode()) === null && operatingSystemStopped.shift(),
       timeoutMs: 1_000,
       intervalMs: 0,
     });

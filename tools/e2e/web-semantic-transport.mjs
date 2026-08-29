@@ -229,6 +229,41 @@ export class WebSemanticTransport {
     if (result !== "edited") throw new Error(`web text control cannot be edited: ${selector}; ${result}`);
   }
 
+  async focusText(selector, readyElement) {
+    const result = await this.page.evaluate(`(() => {
+      const input = [...document.querySelectorAll(${expressionArgument(selector)})]
+        .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
+      if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
+        return { status: "missing" };
+      }
+      const expected = ${JSON.stringify(readyElement)};
+      if (!expected?.test_id || input.dataset.testid !== expected.test_id) {
+        return { status: "unexpected-target" };
+      }
+      if (!${EXPOSED_ELEMENT_POINT}(input)) return { status: "obstructed" };
+      let matchedClicks = 0;
+      const listener = (event) => {
+        if (event.target === input) matchedClicks += 1;
+      };
+      input.addEventListener("click", listener, true);
+      try {
+        input.click();
+        input.focus();
+      } finally {
+        input.removeEventListener("click", listener, true);
+      }
+      return {
+        status: document.activeElement === input ? "focused" : "focus-failed",
+        matched_clicks: matchedClicks,
+      };
+    })()`);
+    if (result.status !== "focused" || result.matched_clicks !== 1) {
+      throw new Error(
+        `web text control cannot be focused: ${selector}; ${JSON.stringify(result)}`,
+      );
+    }
+  }
+
   async submit(selector, readyElement) {
     const focused = await this.page.evaluate(`(() => {
       const input = [...document.querySelectorAll(${expressionArgument(selector)})]

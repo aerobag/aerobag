@@ -2604,12 +2604,16 @@ async function replayTrackUp(runtime) {
       return button?.pressed === "true" || button?.selected === true ? button : null;
     },
   });
-  await runtime.action("start replay playback", "playback-play-toggle", {
-    complete: async () => {
-      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-      return state?.status === "playing" ? state : null;
+  const playbackControl = await runtime.repeatableAction(
+    "start replay playback",
+    "playback-play-toggle",
+    {
+      complete: async () => {
+        const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+        return state?.status === "playing" ? state : null;
+      },
     },
-  });
+  );
   const initialOwnship = await runtime.eventually("initial replay ownship", async () => {
     const state = ownshipState(await runtime.driver.readProjection("parity:ownship-state:"));
     return state?.mode === "replay" && state.draw && state.position !== "none" ? state : null;
@@ -2634,12 +2638,16 @@ async function replayTrackUp(runtime) {
     const up = Number(/:up:(-?[0-9.]+)/.exec(viewport ?? "")?.[1] ?? 0);
     return { state, viewport, up };
   }, E2E_TIMING.replayProgressMs, 40);
-  const paused = await runtime.action("pause replay after track gap observation", "playback-play-toggle", {
-    complete: async () => {
-      const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
-      return state?.status === "paused" ? state : null;
+  const paused = await runtime.repeatAction(
+    "pause replay after track gap observation",
+    playbackControl.handle,
+    {
+      complete: async () => {
+        const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
+        return state?.status === "paused" ? state : null;
+      },
     },
-  });
+  );
   runtime.check("replay.rotation", Boolean(rotated), rotated?.id);
   runtime.check(
     "replay.track-gap",

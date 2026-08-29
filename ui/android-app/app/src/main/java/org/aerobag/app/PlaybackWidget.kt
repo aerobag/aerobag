@@ -332,11 +332,14 @@ internal fun PlaybackWidget(
     playbackUiState: PlaybackUiState,
     sourcePath: String,
     onSourcePathChange: (String) -> Unit,
+    onSourceFocusChange: (Boolean) -> Unit,
     onSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     val scope = rememberCoroutineScope()
     var isBusy by remember { mutableStateOf(false) }
@@ -372,14 +375,7 @@ internal fun PlaybackWidget(
         modifier =
             modifier
                 .widthIn(min = ThumbSize * 4.2f, max = ThumbSize * 7.8f)
-                .testTag(
-                    "parity:playback-widget:" +
-                        "status:${playbackUiState.status.name.lowercase()}:" +
-                        "cursor:${String.format("%.3f", committedCursorSeconds)}:" +
-                        "duration:${String.format("%.3f", durationSeconds)}:" +
-                        "rate:${String.format("%.2f", playbackUiState.rate)}:" +
-                        "gaps:${playbackUiState.gapSpans.size}",
-                )
+                .testTag("parity:playback-widget")
                 .consumePointerGestures(),
         shape = panelShape,
         color = Color(0xF0FCF8F1),
@@ -430,6 +426,7 @@ internal fun PlaybackWidget(
                         Modifier
                             .weight(1f)
                             .height(rowHeight)
+                            .onFocusChanged { state -> onSourceFocusChange(state.isFocused) }
                             .testTag("parity:playback-source-input")
                             .clip(RoundedCornerShape(ThumbRadius * 0.55f))
                             .background(Color.White)
@@ -444,6 +441,8 @@ internal fun PlaybackWidget(
                         { showDisabledActionToast(context, reason) }
                     },
                     onClick = {
+                        keyboardController?.hide()
+                        focusManager.clearFocus(force = true)
                         scope.launch {
                             isBusy = true
                             try {

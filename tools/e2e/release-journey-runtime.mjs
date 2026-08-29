@@ -75,6 +75,7 @@ export function createJourneyRuntime({
   });
   const expectedAssertions = new Set(journey.assertions);
   const completedAssertions = new Set();
+  const repeatableActionHandles = new WeakSet();
   mkdirSync(artifactDir, { recursive: true });
 
   const runRecordedPhase = async (phaseId, operation, detail = undefined) => {
@@ -244,6 +245,55 @@ export function createJourneyRuntime({
           action: await driver.readAction(actionId),
           session_revision: await driver.readSessionRevision?.().catch(() => null) ?? null,
         })),
+      });
+    },
+
+    async repeatableAction(description, actionId, contract) {
+      if (contract?.ready) {
+        throw new Error(
+          `${description} supplies custom action readiness; ` +
+            "action readiness must come from driver.readAction(actionId)",
+        );
+      }
+      if (typeof contract?.complete !== "function") {
+        throw new Error(`${description} must declare a semantic completion condition`);
+      }
+      let retainedTarget = null;
+      const value = await runtime.transition(description, {
+        ...contract,
+        ready: () => driver.readAction(actionId),
+        act: (readyElement) => {
+          retainedTarget = readyElement;
+          return driver.performAction(actionId, readyElement);
+        },
+      });
+      if (!retainedTarget) throw new Error(`${description} did not retain an action target`);
+      const handle = Object.freeze({ actionId, retainedTarget, platform });
+      repeatableActionHandles.add(handle);
+      return { value, handle };
+    },
+
+    async repeatAction(description, handle, contract) {
+      if (!repeatableActionHandles.has(handle) || handle?.platform !== platform) {
+        throw new Error(`${description} received an unknown repeatable action handle`);
+      }
+      if (contract?.ready) {
+        throw new Error(
+          `${description} supplies custom repeated-action readiness; ` +
+            "readiness must come from the retained rendered target",
+        );
+      }
+      if (typeof contract?.complete !== "function") {
+        throw new Error(`${description} must declare a semantic completion condition`);
+      }
+      return runtime.transition(description, {
+        ...contract,
+        ready: () => driver.readRepeatedAction(handle.actionId, handle.retainedTarget),
+        act: (readyElement) => driver.performRepeatedAction(
+          handle.actionId,
+          handle.retainedTarget,
+          readyElement,
+        ),
       });
     },
 

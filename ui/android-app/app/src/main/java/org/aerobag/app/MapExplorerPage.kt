@@ -257,6 +257,7 @@ import org.aerobag.app.domain.OwnshipSourceRegistration
 import org.aerobag.app.domain.OwnshipSourceStatusUpdate
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
+import org.aerobag.app.domain.PlaybackUiState
 import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
@@ -277,6 +278,7 @@ import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
+import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.VisibleAdsbTraffic
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
@@ -659,6 +661,993 @@ internal data class RasterTileLoadRequest(
     val pageTilePaintTiming: PageTilePaintTiming?,
 )
 
+@Composable
+private fun rememberRasterTileBitmapCache(
+    context: Context,
+    selectedMapId: String,
+    fastTiles: Boolean,
+    navDataEpoch: Long,
+    tiles: List<RenderTile>,
+    currentViewport: MapViewportState,
+    decodedTileBitmapCache: DecodedTileBitmapCache,
+    startupPerfTrace: AndroidStartupPerfTrace?,
+    pageTilePaintTiming: PageTilePaintTiming?,
+    onRasterContentReady: () -> Unit,
+    onPageTilePaintTimingComplete: (Long) -> Unit,
+): Map<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?> {
+    val loadGeneration = remember(selectedMapId, fastTiles, navDataEpoch) {
+        RasterTileLoadGeneration()
+    }
+    val tileBitmapCache = loadGeneration.bitmapCache
+    val visibleTileKeys = remember(tiles) {
+        tiles.mapTo(LinkedHashSet()) { tile -> renderTileKey(tile) }
+    }
+    val latestVisibleTileKeys = rememberUpdatedState(visibleTileKeys)
+    val latestNavDataEpoch = rememberUpdatedState(navDataEpoch)
+    val latestOnRasterContentReady = rememberUpdatedState(onRasterContentReady)
+    val latestOnPageTilePaintTimingComplete = rememberUpdatedState(onPageTilePaintTimingComplete)
+    val loaderScope = rememberCoroutineScope()
+    val loader = remember(context.applicationContext, loaderScope, navDataEpoch) {
+        RasterTileBitmapLoader(context.applicationContext, loaderScope)
+    }
+    val loadRequests = loadGeneration.requests
+    DisposableEffect(loader) {
+        onDispose(loader::close)
+    }
+    DisposableEffect(loadGeneration) {
+        onDispose(loadGeneration::close)
+    }
+    LaunchedEffect(tiles, selectedMapId, fastTiles, navDataEpoch, loadRequests) {
+        val staleLocalKeys = tileBitmapCache.keys.filter { key -> key !in visibleTileKeys }
+        staleLocalKeys.forEach { key -> tileBitmapCache.remove(key) }
+        var decodedCacheHits = 0
+        tiles.forEach { tile ->
+            val renderKey = renderTileKey(tile)
+            if (!tileBitmapCache.containsKey(renderKey)) {
+                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(tile, navDataEpoch))
+                if (bitmap != null) {
+                    tileBitmapCache[renderKey] = bitmap
+                    decodedCacheHits += 1
+                }
+            }
+        }
+        if (tiles.isNotEmpty() && tileBitmapCache.values.any { bitmap -> bitmap != null }) {
+            latestOnRasterContentReady.value()
+        }
+        val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
+        perfLogInfo(TileBudgetLogTag) {
+            val decodedCacheStats = decodedTileBitmapCache.stats()
+            val (localBitmapEntries, localBitmapBytes) = rasterLocalBitmapCacheStats(tileBitmapCache)
+            "visible map=$selectedMapId total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size}/${localBitmapBytes}B localBitmaps=$localBitmapEntries pruned=${staleLocalKeys.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=$fastTiles groups=[${formatTileBudgetSummary(tiles)}]"
+        }
+        if (missingTiles.isEmpty()) {
+            if (tiles.isNotEmpty()) {
+                startupPerfTrace?.mark(
+                    "raster_cache_ready",
+                    detail = "tiles=${tiles.size}",
+                )
+            }
+            pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
+                withFrameNanos { }
+                perfLogInfo(TileBudgetLogTag) {
+                    "tile-paint-frame id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} cacheOnly=true"
+                }
+                latestOnPageTilePaintTimingComplete.value(timing.id)
+            }
+            return@LaunchedEffect
+        }
+        val (viewportLat, viewportLon) = viewportCenterLatLon(currentViewport)
+        val requestId = loadGeneration.beginRequest()
+        val request = RasterTileLoadRequest(
+            id = requestId,
+            mapId = selectedMapId,
+            zoom = currentViewport.zoom,
+            centerLat = viewportLat,
+            centerLon = viewportLon,
+            visibleTiles = tiles,
+            missingTiles = missingTiles,
+            pageTilePaintTiming = pageTilePaintTiming,
+        )
+        perfLogInfo(TileBudgetLogTag) {
+            "tile-load-request request=$requestId map=$selectedMapId zoom=${"%.2f".format(currentViewport.zoom)} center=${"%.3f".format(viewportLat)},${"%.3f".format(viewportLon)} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size}"
+        }
+        if (loadRequests.trySend(request).isFailure) {
+            Log.w(TileBudgetLogTag, "tile-load-request-drop request=$requestId map=$selectedMapId")
+        }
+    }
+    LaunchedEffect(loader, loadRequests, tileBitmapCache, navDataEpoch) {
+        val loadEpoch = navDataEpoch
+        for (initialRequest in loadRequests) {
+            var request = initialRequest
+            while (true) {
+                val loadStartMs = SystemClock.elapsedRealtime()
+                startupPerfTrace?.mark(
+                    "raster_load_started",
+                    detail = "tiles=${request.missingTiles.size}",
+                )
+                val generationId = TileLoadGenerationIds.incrementAndGet()
+                perfLogInfo(TileBudgetLogTag) {
+                    "generation-start gen=$generationId request=${request.id} map=${request.mapId} zoom=${"%.2f".format(request.zoom)} center=${"%.3f".format(request.centerLat)},${"%.3f".format(request.centerLon)} total=${request.visibleTiles.size} missing=${request.missingTiles.size} cache=${tileBitmapCache.size}"
+                }
+                var loadedThisPassCount = 0
+                var ignoredEpochCount = 0
+                var ignoredRequestCount = 0
+                var ignoredVisibilityCount = 0
+                val loadedTiles = try {
+                    loader.loadVisibleTileBitmaps(
+                        request.mapId,
+                        generationId,
+                        request.missingTiles,
+                    ) { loaded ->
+                        if (loadEpoch != latestNavDataEpoch.value) {
+                            ignoredEpochCount += 1
+                            return@loadVisibleTileBitmaps
+                        }
+                        if (!loadGeneration.isCurrentRequest(request.id)) {
+                            ignoredRequestCount += 1
+                            return@loadVisibleTileBitmaps
+                        }
+                        if (loaded.result.key !in latestVisibleTileKeys.value) {
+                            ignoredVisibilityCount += 1
+                            return@loadVisibleTileBitmaps
+                        }
+                        tileBitmapCache[loaded.result.key] = loaded.result.bitmap
+                        val bitmap = loaded.result.bitmap
+                        if (bitmap != null) {
+                            loadedThisPassCount += 1
+                            decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile, loadEpoch), bitmap, loaded.result.decodedBytes)
+                            startupPerfTrace?.mark(
+                                "raster_first_tile_loaded",
+                                loadStartMs,
+                                "readMs=${loaded.result.readMs} decodeMs=${loaded.result.decodeMs}",
+                            )
+                            latestOnRasterContentReady.value()
+                        } else {
+                            Log.w(
+                                TileBudgetLogTag,
+                                "generation-empty gen=$generationId request=${request.id} key=${loaded.result.key} ${formatTileRef(loaded.tile)}",
+                            )
+                        }
+                    }
+                } catch (error: CancellationException) {
+                    perfLogInfo(TileBudgetLogTag) {
+                        "generation-cancel gen=$generationId request=${request.id} map=${request.mapId} loaded=$loadedThisPassCount/${request.missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}"
+                    }
+                    throw error
+                }
+                if (request.visibleTiles.isNotEmpty() && tileBitmapCache.values.any { bitmap -> bitmap != null }) {
+                    val tileResults = loadedTiles.map { it.result }
+                    startupPerfTrace?.mark(
+                        "raster_tiles_loaded",
+                        loadStartMs,
+                        "loaded=$loadedThisPassCount requested=${request.missingTiles.size} " +
+                            "readMs=${tileResults.sumOf { it.readMs }} " +
+                            "decodeMs=${tileResults.sumOf { it.decodeMs }}",
+                    )
+                }
+                val staleRequest = !loadGeneration.isCurrentRequest(request.id)
+                val missingAfterLoad = request.visibleTiles.filter { tile ->
+                    !tileBitmapCache.containsKey(renderTileKey(tile))
+                }
+                val ignoredThisPassCount =
+                    ignoredEpochCount + ignoredRequestCount + ignoredVisibilityCount
+                if (
+                    !staleRequest &&
+                    (loadedTiles.size != request.missingTiles.size || ignoredThisPassCount > 0 || missingAfterLoad.isNotEmpty())
+                ) {
+                    Log.w(
+                        TileBudgetLogTag,
+                        "generation-incomplete gen=$generationId request=${request.id} map=${request.mapId} " +
+                            "results=${loadedTiles.size}/${request.missingTiles.size} loaded=$loadedThisPassCount " +
+                            "ignored=$ignoredThisPassCount(epoch=$ignoredEpochCount,request=$ignoredRequestCount,visibility=$ignoredVisibilityCount) " +
+                            "cacheMissing=${missingAfterLoad.size} " +
+                            "tiles=[${missingAfterLoad.joinToString(", ") { tile -> formatTileRef(tile) }}]",
+                    )
+                }
+                if (VerbosePerfLogs) {
+                    val tileResults = loadedTiles.map { it.result }
+                    val readElapsedMs = tileResults.sumOf { it.readMs }
+                    val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
+                    val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
+                    val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
+                    perfLogInfo(TileBudgetLogTag) {
+                        "generation-finish gen=$generationId request=${request.id} map=${request.mapId} stale=$staleRequest loaded=$loadedThisPassCount/${request.missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs} readMs=$readElapsedMs decodeMs=$decodeElapsedMs"
+                    }
+                    perfLogInfo(TileBudgetLogTag) {
+                        "batch map=${request.mapId} request=${request.id} stale=$staleRequest loaded=$loadedThisPassCount/${request.missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}"
+                    }
+                }
+                request.pageTilePaintTiming?.takeUnless { staleRequest }?.let { timing ->
+                    perfLogInfo(TileBudgetLogTag) {
+                        "tile-paint-cache id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} loadMs=${SystemClock.elapsedRealtime() - loadStartMs} loaded=$loadedThisPassCount/${request.missingTiles.size}"
+                    }
+                    withFrameNanos { }
+                    perfLogInfo(TileBudgetLogTag) {
+                        "tile-paint-frame id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs}"
+                    }
+                    latestOnPageTilePaintTimingComplete.value(timing.id)
+                }
+                if (VerbosePerfLogs) {
+                    val tileResults = loadedTiles.map { it.result }
+                    val readElapsedMs = tileResults.sumOf { it.readMs }
+                    val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
+                    val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
+                    val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
+                    val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
+                    val cacheLoadedCount = tileBitmapCache.values.count { it != null }
+                    val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
+                    val finalDecodedCacheStats = decodedTileBitmapCache.stats()
+                    val visibleTileByKey = request.visibleTiles.associateBy { renderTileKey(it) }
+                    val cacheCounts = linkedMapOf<String, Int>()
+                    tileBitmapCache.forEach { (key, bitmap) ->
+                        val tile = visibleTileByKey[key] ?: return@forEach
+                        val packageLabel = tile.sources.firstOrNull()?.packageName ?: tile.mapViewId
+                        val summaryKey = "$packageLabel@z${tile.zoom}:${if (bitmap != null) "loaded" else "empty"}"
+                        cacheCounts[summaryKey] = (cacheCounts[summaryKey] ?: 0) + 1
+                    }
+                    val cacheSummary = cacheCounts.entries
+                        .sortedBy { it.key }
+                        .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
+                    perfLogInfo(TileBudgetLogTag) {
+                        "cache map=${request.mapId} request=${request.id} stale=$staleRequest entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes decodedBytes=$loadedDecodedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs decodedLru=${finalDecodedCacheStats.entries}/${finalDecodedCacheStats.bytes}B groups=[$cacheSummary]"
+                    }
+                }
+                val nextRequest = loadRequests.tryReceive().getOrNull() ?: break
+                perfLogInfo(TileBudgetLogTag) {
+                    "tile-load-coalesce fromRequest=${request.id} toRequest=${nextRequest.id} map=${nextRequest.mapId}"
+                }
+                request = nextRequest
+            }
+        }
+    }
+    return tileBitmapCache
+}
+
+private data class NexradLayerState(
+    val frame: NexradOverlayFrame?,
+    val requestRender: () -> Unit,
+)
+
+@Composable
+private fun rememberNexradLayerState(
+    context: Context,
+    uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
+    viewport: MapViewportState,
+    surfaceSize: IntSize,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+    visible: Boolean,
+    enabled: Boolean,
+    mapVisible: Boolean,
+    liveFeedGeneration: Int,
+    devServerBaseUrl: String,
+): NexradLayerState {
+    var frame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
+    val renderRequests = remember(uiSession) { Channel<Unit>(Channel.CONFLATED) }
+    val viewportRefreshRequests = remember(uiSession) { Channel<Unit>(Channel.CONFLATED) }
+    val latestViewport = rememberUpdatedState(viewport)
+    val latestSurfaceSize = rememberUpdatedState(surfaceSize)
+    val latestSurfaceWidthPx = rememberUpdatedState(surfaceWidthPx)
+    val latestSurfaceHeightPx = rememberUpdatedState(surfaceHeightPx)
+    val latestVisible = rememberUpdatedState(mapVisible && visible)
+    val latestEnabled = rememberUpdatedState(enabled)
+    val latestDevServerBaseUrl = rememberUpdatedState(devServerBaseUrl)
+    val latestFrame = rememberUpdatedState(frame)
+    DisposableEffect(renderRequests, viewportRefreshRequests) {
+        onDispose {
+            renderRequests.close()
+            viewportRefreshRequests.close()
+        }
+    }
+    LaunchedEffect(uiSession, renderRequests) {
+        var animationJob: Job? = null
+        fun scheduleAnimation(deadlineEpochMs: Long?) {
+            animationJob?.cancel()
+            animationJob = null
+            if (deadlineEpochMs == null) return
+            animationJob = launch {
+                delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0))
+                renderRequests.trySend(Unit)
+            }
+        }
+        for (ignored in renderRequests) {
+            val effectStartMs = SystemClock.elapsedRealtime()
+            scheduleAnimation(null)
+            val currentSurfaceSize = latestSurfaceSize.value
+            if (currentSurfaceSize.width <= 0 || currentSurfaceSize.height <= 0) {
+                frame = null
+                perfLogInfo(MapLayerLogTag) { "nexrad skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                continue
+            }
+            if (!latestVisible.value || !latestEnabled.value) {
+                perfLogInfo(MapLayerLogTag) { "nexrad hidden cachedImages=${frame?.images?.size ?: 0} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                continue
+            }
+            val currentViewport = latestViewport.value
+            val currentSurfaceWidthPx = latestSurfaceWidthPx.value
+            val currentSurfaceHeightPx = latestSurfaceHeightPx.value
+            val currentDevServerBaseUrl = latestDevServerBaseUrl.value
+            try {
+                var imageBytes = 0L
+                var fetchMs = 0L
+                var decodeMs = 0L
+                val overlay = sessionWorkRunner.queryNexradOverlay(
+                    currentViewport,
+                    currentSurfaceSize.width.toDouble(),
+                    currentSurfaceSize.height.toDouble(),
+                ) { resource ->
+                    val fetchStartMs = SystemClock.elapsedRealtime()
+                    fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
+                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                    }
+                }
+                withContext(Dispatchers.IO) {
+                    prefetchNexradCacheResourcesBestEffort(
+                        resources = overlay.cachePlan?.fetchResources.orEmpty(),
+                        fetch = { planned ->
+                            sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
+                                val fetchStartMs = SystemClock.elapsedRealtime()
+                                fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
+                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                }
+                            }
+                        },
+                        reportFailure = { planned, error ->
+                            Log.w(
+                                "AerobagLayers",
+                                "NEXRAD background prefetch failed for ${planned.src}; continuing selected frame",
+                                error,
+                            )
+                        },
+                    )
+                }
+                if (overlay.tiles.isEmpty()) {
+                    scheduleAnimation(overlay.animation.nextUpdateEpochMs)
+                    frame = null
+                    perfLogInfo(MapLayerLogTag) {
+                        "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    }
+                    continue
+                }
+                val decodedImagesBySrc = LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+                var decodedImageBytes = 0L
+                val images = withContext(Dispatchers.IO) {
+                    overlay.tiles.map { tile ->
+                        val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
+                            val bytes = sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
+                                val fetchStartMs = SystemClock.elapsedRealtime()
+                                fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
+                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                }
+                            }
+                            imageBytes += bytes.size
+                            val decodeStartMs = SystemClock.elapsedRealtime()
+                            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                ?: error("failed to decode nexrad tile ${tile.src}")
+                            decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
+                            decoded.asImageBitmap().also { image ->
+                                decodedImageBytes += estimatedImageBitmapBytes(image)
+                            }
+                        }
+                        NexradOverlayImage(tile = tile, bitmap = bitmap)
+                    }
+                }
+                frame = NexradOverlayFrame(
+                    images = images,
+                    viewport = currentViewport,
+                    surfaceWidthPx = currentSurfaceWidthPx,
+                    surfaceHeightPx = currentSurfaceHeightPx,
+                    decodedImageCount = decodedImagesBySrc.size,
+                    decodedBytes = decodedImageBytes,
+                    selectedFrameIndex = overlay.animation.selectedFrameIndex,
+                    frameCount = overlay.animation.frameCount,
+                )
+                perfLogInfo(MapLayerLogTag) {
+                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                }
+                scheduleAnimation(overlay.animation.nextUpdateEpochMs)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
+            }
+        }
+    }
+    LaunchedEffect(uiSession, viewportRefreshRequests) {
+        for (ignored in viewportRefreshRequests) {
+            delay(NexradViewportRefreshThrottleMs)
+            val currentSurfaceSize = latestSurfaceSize.value
+            val currentFrame = latestFrame.value
+            if (
+                currentSurfaceSize.width > 0 &&
+                currentSurfaceSize.height > 0 &&
+                latestVisible.value &&
+                latestEnabled.value &&
+                currentFrame != null &&
+                currentFrame.images.isNotEmpty()
+            ) {
+                renderRequests.trySend(Unit)
+            }
+        }
+    }
+    LaunchedEffect(uiSession, viewport, mapVisible, visible, enabled) {
+        if (mapVisible && visible && enabled && latestFrame.value?.images?.isNotEmpty() == true) {
+            viewportRefreshRequests.trySend(Unit)
+        }
+    }
+    LaunchedEffect(uiSession, liveFeedGeneration, surfaceSize, visible, enabled, mapVisible, devServerBaseUrl) {
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+            frame = null
+            return@LaunchedEffect
+        }
+        if (mapVisible && visible && enabled) {
+            renderRequests.trySend(Unit)
+        }
+    }
+    return NexradLayerState(
+        frame = frame,
+        requestRender = { renderRequests.trySend(Unit) },
+    )
+}
+
+private data class TerrainLayerState(
+    val images: List<TerrainOverlayImage>,
+    val bitmapCache: LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>,
+    val requestRender: () -> Unit,
+)
+
+@Composable
+private fun rememberTerrainLayerState(
+    context: Context,
+    uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
+    viewport: MapViewportState,
+    surfaceSize: IntSize,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+    visible: Boolean,
+    mapVisible: Boolean,
+    devServerBaseUrl: String,
+    ownshipAltitudeBucketFt: Double?,
+    ownshipPosition: LatLonPoint?,
+    dataStatusState: UiDataStatusState,
+    ownshipLauncherLabel: String,
+): TerrainLayerState {
+    var images by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
+    var overlayError by remember(uiSession) { mutableStateOf<String?>(null) }
+    var lastQueryDiagnostics by remember(uiSession) { mutableStateOf(TerrainOverlayDiagnostics()) }
+    var noPaintStartedMs by remember(uiSession) { mutableLongStateOf(0L) }
+    var noPaintLastWarningMs by remember(uiSession) { mutableLongStateOf(0L) }
+    var staleNoPositionWarningLastMs by remember(uiSession) { mutableLongStateOf(0L) }
+    val bitmapCache = remember(uiSession) {
+        LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>(
+            TerrainTileBitmapCacheMaxEntries,
+            0.75f,
+            true,
+        )
+    }
+    val inFlightKeys = remember(uiSession) { mutableSetOf<String>() }
+    val renderRequests = remember(uiSession) { Channel<Unit>(Channel.CONFLATED) }
+    val latestViewport = rememberUpdatedState(viewport)
+    val latestSurfaceSize = rememberUpdatedState(surfaceSize)
+    val latestSurfaceWidthPx = rememberUpdatedState(surfaceWidthPx)
+    val latestSurfaceHeightPx = rememberUpdatedState(surfaceHeightPx)
+    val latestMapVisible = rememberUpdatedState(mapVisible)
+    val latestVisible = rememberUpdatedState(visible)
+    val latestImageCount = rememberUpdatedState(images.size)
+    val latestDiagnostics = rememberUpdatedState(lastQueryDiagnostics)
+    val latestOwnshipAltitudeBucketFt = rememberUpdatedState(ownshipAltitudeBucketFt)
+    val latestOwnshipPosition = rememberUpdatedState(ownshipPosition)
+    val latestDataStatus = rememberUpdatedState(dataStatusState)
+    val latestOwnshipLauncherLabel = rememberUpdatedState(ownshipLauncherLabel)
+    DisposableEffect(renderRequests) {
+        onDispose(renderRequests::close)
+    }
+    LaunchedEffect(uiSession) {
+        while (true) {
+            delay(10_000)
+            val nowMs = SystemClock.elapsedRealtime()
+            val currentSurfaceSize = latestSurfaceSize.value
+            val altitudeBucketFt = latestOwnshipAltitudeBucketFt.value
+            val position = latestOwnshipPosition.value
+            val diagnostics = latestDiagnostics.value
+            val noPositionTerrainWarning = latestDataStatus.value.boxes.firstOrNull { box ->
+                box.id == TerrainWarningStatusId && box.detail.contains(TerrainNoPositionWarningDetail)
+            }
+            if (position != null && altitudeBucketFt != null && noPositionTerrainWarning != null) {
+                if (staleNoPositionWarningLastMs == 0L || nowMs - staleNoPositionWarningLastMs >= 60_000L) {
+                    staleNoPositionWarningLastMs = nowMs
+                    Log.w(
+                        MapLayerLogTag,
+                        "terrain stale-no-position-warning-with-ownship " +
+                            "ownship=${position.lat},${position.lon} " +
+                            "ownshipAltitudeBucketFt=$altitudeBucketFt " +
+                            "ownshipLauncher=${latestOwnshipLauncherLabel.value} " +
+                            "warningDetail=${noPositionTerrainWarning.detail} " +
+                            "lastQueryAgeMs=${if (diagnostics.updatedAtMs > 0L) nowMs - diagnostics.updatedAtMs else null} " +
+                            "status=${diagnostics.status} frame=${diagnostics.frameKey} " +
+                            "requests=${diagnostics.requestCount} cached=${diagnostics.cachedCount} " +
+                            "inFlight=${diagnostics.inFlightCount} missing=${diagnostics.missingCount} " +
+                            "workBatch=${diagnostics.workBatchCount} queryAltitudeBucketFt=${diagnostics.altitudeBucketFt} " +
+                            "surface=${diagnostics.surfaceWidthPx}x${diagnostics.surfaceHeightPx} " +
+                            "zoom=${diagnostics.viewportZoom} " +
+                            "centerWorld=${diagnostics.viewportCenterWorldX},${diagnostics.viewportCenterWorldY} " +
+                            "error=${diagnostics.error}",
+                    )
+                }
+            } else {
+                staleNoPositionWarningLastMs = 0L
+            }
+            val shouldHaveTerrain =
+                latestMapVisible.value &&
+                    latestVisible.value &&
+                    currentSurfaceSize.width > 0 &&
+                    currentSurfaceSize.height > 0 &&
+                    position != null &&
+                    altitudeBucketFt != null
+            if (!shouldHaveTerrain || latestImageCount.value > 0) {
+                noPaintStartedMs = 0L
+                noPaintLastWarningMs = 0L
+                continue
+            }
+            if (noPaintStartedMs == 0L) {
+                noPaintStartedMs = nowMs
+                continue
+            }
+            val noPaintMs = nowMs - noPaintStartedMs
+            if (noPaintMs < 60_000L) continue
+            if (noPaintLastWarningMs != 0L && nowMs - noPaintLastWarningMs < 60_000L) continue
+            noPaintLastWarningMs = nowMs
+            Log.w(
+                MapLayerLogTag,
+                "terrain no-paint-with-altitude durationMs=$noPaintMs " +
+                    "ownship=${position.lat},${position.lon} " +
+                    "ownshipAltitudeBucketFt=$altitudeBucketFt " +
+                    "lastQueryAgeMs=${if (diagnostics.updatedAtMs > 0L) nowMs - diagnostics.updatedAtMs else null} " +
+                    "status=${diagnostics.status} frame=${diagnostics.frameKey} " +
+                    "requests=${diagnostics.requestCount} cached=${diagnostics.cachedCount} " +
+                    "inFlight=${diagnostics.inFlightCount} missing=${diagnostics.missingCount} " +
+                    "workBatch=${diagnostics.workBatchCount} queryAltitudeBucketFt=${diagnostics.altitudeBucketFt} " +
+                    "surface=${diagnostics.surfaceWidthPx}x${diagnostics.surfaceHeightPx} " +
+                    "zoom=${diagnostics.viewportZoom} " +
+                    "centerWorld=${diagnostics.viewportCenterWorldX},${diagnostics.viewportCenterWorldY} " +
+                    "error=${diagnostics.error}",
+            )
+        }
+    }
+    LaunchedEffect(uiSession, renderRequests, devServerBaseUrl) {
+        for (ignored in renderRequests) {
+            while (true) {
+                val effectStartMs = SystemClock.elapsedRealtime()
+                val currentSurfaceSize = latestSurfaceSize.value
+                if (!latestMapVisible.value || currentSurfaceSize.width <= 0 || currentSurfaceSize.height <= 0) {
+                    images = emptyList()
+                    overlayError = null
+                    perfLogInfo(MapLayerLogTag) { "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                    break
+                }
+                if (!latestVisible.value) {
+                    images = emptyList()
+                    overlayError = null
+                    perfLogInfo(MapLayerLogTag) { "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                    break
+                }
+                val currentViewport = latestViewport.value
+                val currentSurfaceWidthPx = latestSurfaceWidthPx.value
+                val currentSurfaceHeightPx = latestSurfaceHeightPx.value
+                val query = try {
+                    sessionWorkRunner.queryTerrainOverlay(
+                        currentViewport,
+                        currentSurfaceWidthPx.toDouble(),
+                        currentSurfaceHeightPx.toDouble(),
+                        bitmapCache.keys.toList(),
+                        inFlightKeys.toList(),
+                    ) { resource ->
+                        fetchTerrainCoreResource(context, resource, devServerBaseUrl)
+                    }
+                } catch (error: Throwable) {
+                    images = emptyList()
+                    overlayError = error.message ?: error::class.java.simpleName
+                    lastQueryDiagnostics = TerrainOverlayDiagnostics(
+                        updatedAtMs = SystemClock.elapsedRealtime(),
+                        status = "query-error",
+                        viewportZoom = currentViewport.zoom,
+                        viewportCenterWorldX = currentViewport.centerWorldX,
+                        viewportCenterWorldY = currentViewport.centerWorldY,
+                        surfaceWidthPx = currentSurfaceSize.width,
+                        surfaceHeightPx = currentSurfaceSize.height,
+                        error = overlayError,
+                    )
+                    Log.w("AerobagLayers", "terrain overlay unavailable", error)
+                    break
+                }
+                val queryMs = SystemClock.elapsedRealtime() - effectStartMs
+                lastQueryDiagnostics = query.toDiagnostics(
+                    updatedAtMs = SystemClock.elapsedRealtime(),
+                    viewport = currentViewport,
+                    surfaceSize = currentSurfaceSize,
+                )
+                if (query.status !is org.aerobag.app.domain.TerrainOverlayStatus.Ready) {
+                    images = emptyList()
+                    overlayError = null
+                    perfLogInfo(MapLayerLogTag) {
+                        "terrain not-ready status=${query.status::class.java.simpleName} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    }
+                    break
+                }
+                val frameKey = query.frameKey
+                val altitudeBucketFt = query.altitudeBucketFt
+                if (frameKey == null || altitudeBucketFt == null) {
+                    images = emptyList()
+                    overlayError = null
+                    perfLogInfo(MapLayerLogTag) {
+                        "terrain not-ready status=missing-frame queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    }
+                    break
+                }
+                if (query.schedule.frameComplete) {
+                    val completeImages = terrainImagesForCompleteQuery(bitmapCache, query)
+                    if (completeImages != null) {
+                        images = completeImages
+                        overlayError = null
+                        if (completeImages.isNotEmpty()) {
+                            noPaintStartedMs = 0L
+                            noPaintLastWarningMs = 0L
+                        }
+                    }
+                    perfLogInfo(MapLayerLogTag) {
+                        "terrain frame-ready frame=$frameKey requests=${query.tileRequests.size} images=${completeImages?.size ?: 0} cached=${query.schedule.cachedCount} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    }
+                    break
+                }
+                val workBatch = query.schedule.workBatch
+                if (workBatch.isEmpty()) {
+                    perfLogInfo(MapLayerLogTag) {
+                        "terrain waiting frame=$frameKey requests=${query.tileRequests.size} cached=${query.schedule.cachedCount} inFlight=${query.schedule.inFlightCount} missing=${query.schedule.missingCount} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    }
+                    break
+                }
+                val batchStartMs = SystemClock.elapsedRealtime()
+                var batchRendered = 0
+                var batchFetchMs = 0L
+                var batchRenderMs = 0L
+                var batchParseMs = 0L
+                var batchRawBytesTotal = 0L
+                for (request in workBatch) {
+                    if (!latestMapVisible.value || !latestVisible.value) break
+                    if (bitmapCache.containsKey(request.cacheKey) || inFlightKeys.contains(request.cacheKey)) continue
+                    var fetchMs = 0L
+                    var renderMs = 0L
+                    var parseMs = 0L
+                    var rawBytesTotal = 0L
+                    inFlightKeys += request.cacheKey
+                    try {
+                        val renderStartMs = SystemClock.elapsedRealtime()
+                        val rawBytes = sessionWorkRunner.renderTerrainOverlayTile(
+                            request,
+                            altitudeBucketFt,
+                        ) { resource ->
+                            val fetchStartMs = SystemClock.elapsedRealtime()
+                            fetchTerrainCoreResource(context, resource, devServerBaseUrl).also {
+                                fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                            }
+                        }.also {
+                            renderMs += SystemClock.elapsedRealtime() - renderStartMs
+                        }
+                        rawBytesTotal += rawBytes.size
+                        val parseStartMs = SystemClock.elapsedRealtime()
+                        val bitmap = parseTerrainRawRgba(rawBytes)
+                        parseMs += SystemClock.elapsedRealtime() - parseStartMs
+                        cacheTerrainBitmap(bitmapCache, request, bitmap)
+                        batchRendered += 1
+                        batchFetchMs += fetchMs
+                        batchRenderMs += renderMs
+                        batchParseMs += parseMs
+                        batchRawBytesTotal += rawBytesTotal
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        overlayError = error.message ?: error::class.java.simpleName
+                        lastQueryDiagnostics = query.toDiagnostics(
+                            updatedAtMs = SystemClock.elapsedRealtime(),
+                            viewport = currentViewport,
+                            surfaceSize = currentSurfaceSize,
+                            error = overlayError,
+                        )
+                        Log.w("AerobagLayers", "terrain overlay unavailable", error)
+                        break
+                    } finally {
+                        inFlightKeys -= request.cacheKey
+                    }
+                    yield()
+                }
+                perfLogInfo(MapLayerLogTag) {
+                    "terrain batch-rendered frame=$frameKey requests=${query.tileRequests.size} rendered=$batchRendered batch=${workBatch.size} cached=${query.schedule.cachedCount} missing=${query.schedule.missingCount} rawBytes=$batchRawBytesTotal queryMs=$queryMs fetchMs=$batchFetchMs renderMs=$batchRenderMs parseMs=$batchParseMs batchMs=${SystemClock.elapsedRealtime() - batchStartMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                }
+            }
+        }
+    }
+    LaunchedEffect(uiSession, viewport, surfaceSize, visible, mapVisible, devServerBaseUrl, ownshipAltitudeBucketFt, ownshipPosition != null) {
+        val effectStartMs = SystemClock.elapsedRealtime()
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapVisible) {
+            images = emptyList()
+            overlayError = null
+            perfLogInfo(MapLayerLogTag) { "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+            return@LaunchedEffect
+        }
+        if (!visible) {
+            images = emptyList()
+            overlayError = null
+            perfLogInfo(MapLayerLogTag) { "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+            return@LaunchedEffect
+        }
+        renderRequests.trySend(Unit)
+    }
+    return TerrainLayerState(
+        images = images,
+        bitmapCache = bitmapCache,
+        requestRender = { renderRequests.trySend(Unit) },
+    )
+}
+
+private fun emptyMapOverlay() = MapOverlayQueryResult(
+    visibleFeatures = emptyList(),
+    visibleMetars = emptyList(),
+    visiblePireps = emptyList(),
+    visibleTraffic = emptyList(),
+    trafficNextRefreshEpochMs = null,
+    airspacePaths = emptyList(),
+    tfrPaths = emptyList(),
+    airspaceLabels = emptyList(),
+    offlineRegions = emptyList(),
+)
+
+@Composable
+private fun rememberDisplayedMapOverlay(
+    context: Context,
+    uiSession: NativeUiSession,
+    sessionWorkRunner: UiSessionWorkRunner,
+    navDataEpoch: Long,
+    liveFeedGeneration: Int,
+    invalidationRevision: Int,
+    viewport: MapViewportState,
+    displayViewport: MapViewportState,
+    surfaceSize: IntSize,
+    overlayWidthPx: Float,
+    overlayHeightPx: Float,
+    displayWidthPx: Float,
+    displayHeightPx: Float,
+    densityScale: Float,
+    vectorsVisible: Boolean,
+    metarsVisible: Boolean,
+    trafficVisible: Boolean,
+    offlineRegionsVisible: Boolean,
+    devServerBaseUrl: String,
+    startupPerfTrace: AndroidStartupPerfTrace?,
+    onVectorContentReady: () -> Unit,
+): MapOverlayQueryResult {
+    var committedOverlay by remember(uiSession, navDataEpoch) { mutableStateOf(emptyMapOverlay()) }
+    var committedViewport by remember(uiSession, navDataEpoch) { mutableStateOf<MapViewportState?>(null) }
+    var committedSurface by remember(uiSession, navDataEpoch) { mutableStateOf<OverlaySurfaceUnits?>(null) }
+    var trafficRefreshTick by remember(uiSession) { mutableIntStateOf(0) }
+    val latestNavDataEpoch = rememberUpdatedState(navDataEpoch)
+    val latestOnVectorContentReady = rememberUpdatedState(onVectorContentReady)
+    LaunchedEffect(
+        uiSession,
+        navDataEpoch,
+        liveFeedGeneration,
+        invalidationRevision,
+        trafficRefreshTick,
+        viewport,
+        surfaceSize,
+        densityScale,
+        vectorsVisible,
+        metarsVisible,
+        trafficVisible,
+        offlineRegionsVisible,
+        devServerBaseUrl,
+    ) {
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) return@LaunchedEffect
+        val overlayStartMs = SystemClock.elapsedRealtime()
+        startupPerfTrace?.mark(
+            "vector_query_started",
+            detail = "surface=${surfaceSize.width}x${surfaceSize.height}",
+        )
+        val queryEpoch = navDataEpoch
+        sessionWorkRunner.submitOverlay(
+            viewport = viewport,
+            widthPx = overlayWidthPx.toDouble(),
+            heightPx = overlayHeightPx.toDouble(),
+            pointDisplayScale = densityScale.toDouble(),
+            fetchResource = { resource ->
+                fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
+            },
+            onResult = { outcome ->
+                if (queryEpoch != latestNavDataEpoch.value) return@submitOverlay
+                val overlay = outcome.overlay
+                perfLogInfo(MapLayerLogTag) {
+                    val (centerLat, centerLon) = viewportCenterLatLon(viewport)
+                    "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(viewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=$vectorsVisible metarsVisible=$metarsVisible offlineRegionsVisible=$offlineRegionsVisible features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}"
+                }
+                committedOverlay = overlay
+                committedViewport = viewport
+                committedSurface = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
+                latestOnVectorContentReady.value()
+                startupPerfTrace?.mark(
+                    "vector_query_completed",
+                    overlayStartMs,
+                    "features=${overlay.visibleFeatures.size}",
+                )
+            },
+            onError = { error ->
+                Log.e(MapLayerLogTag, "overlay failed: ${error.message ?: error::class.java.simpleName}", error)
+            },
+        )
+    }
+    LaunchedEffect(trafficVisible, committedOverlay.trafficNextRefreshEpochMs) {
+        val deadlineEpochMs = committedOverlay.trafficNextRefreshEpochMs
+        if (!trafficVisible || deadlineEpochMs == null) return@LaunchedEffect
+        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
+        trafficRefreshTick += 1
+    }
+    return remember(
+        committedOverlay,
+        committedViewport,
+        committedSurface,
+        displayViewport,
+        displayWidthPx,
+        displayHeightPx,
+    ) {
+        transformMapOverlayForDisplay(
+            overlay = committedOverlay,
+            fromViewport = committedViewport,
+            fromSurface = committedSurface,
+            toViewport = displayViewport,
+            toSurface = OverlaySurfaceUnits(displayWidthPx, displayHeightPx),
+        )
+    }
+}
+
+private data class MapRenderPaints(
+    val situationLabelStroke: Paint,
+    val situationLabelFill: Paint,
+    val tileLabel: Paint,
+    val tileLabelBackground: Paint,
+    val fixMarkerStrokeColor: Color,
+    val fixMarkerFillColor: Color,
+    val airportMarkerStrokeColor: Color,
+    val airportToweredFillColor: Color,
+    val airportUntoweredFillColor: Color,
+    val vorMarkerColor: Color,
+    val vorMarkerStrokeColor: Color,
+    val fixLabelStroke: Paint,
+    val airportLabelStroke: Paint,
+    val vorLabelFill: Paint,
+    val fixLabelFill: Paint,
+    val airportToweredLabelFill: Paint,
+    val airportUntoweredLabelFill: Paint,
+)
+
+@Composable
+private fun rememberMapRenderPaints(uiTheme: UiTheme): MapRenderPaints = remember(uiTheme) {
+    fun labelPaint(color: Int, style: Paint.Style, strokeWidth: Float = 0f) = Paint().apply {
+        isAntiAlias = true
+        this.color = color
+        this.style = style
+        strokeJoin = Paint.Join.ROUND
+        this.strokeWidth = strokeWidth
+        textAlign = Paint.Align.CENTER
+        textSize = 14f
+        typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
+    }
+    MapRenderPaints(
+        situationLabelStroke = labelPaint(
+            android.graphics.Color.argb(102, 0, 0, 0),
+            Paint.Style.STROKE,
+            strokeWidth = 5f,
+        ).apply { textSize = 16f },
+        situationLabelFill = labelPaint(
+            android.graphics.Color.WHITE,
+            Paint.Style.FILL,
+        ).apply { textSize = 16f },
+        tileLabel = Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.WHITE
+            textSize = 24f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        },
+        tileLabelBackground = Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(224, 14, 22, 28)
+        },
+        fixMarkerStrokeColor = Color(0xB3081218),
+        fixMarkerFillColor = uiTheme.aviation.intersectionCyan,
+        airportMarkerStrokeColor = Color(0xB3081218),
+        airportToweredFillColor = uiTheme.aviation.classBDBlue,
+        airportUntoweredFillColor = uiTheme.aviation.classCMagenta,
+        vorMarkerColor = uiTheme.aviation.classBDBlue,
+        vorMarkerStrokeColor = Color(0xD1081218),
+        fixLabelStroke = labelPaint(
+            android.graphics.Color.argb(179, 8, 18, 24),
+            Paint.Style.STROKE,
+            strokeWidth = 4f,
+        ),
+        airportLabelStroke = labelPaint(
+            android.graphics.Color.argb(179, 8, 18, 24),
+            Paint.Style.STROKE,
+            strokeWidth = 3f,
+        ),
+        vorLabelFill = labelPaint(android.graphics.Color.WHITE, Paint.Style.FILL),
+        fixLabelFill = labelPaint(android.graphics.Color.WHITE, Paint.Style.FILL),
+        airportToweredLabelFill = labelPaint(android.graphics.Color.WHITE, Paint.Style.FILL),
+        airportUntoweredLabelFill = labelPaint(android.graphics.Color.WHITE, Paint.Style.FILL),
+    )
+}
+
+@Composable
+private fun rememberRasterPlanFrame(
+    selectedMapId: String,
+    displayViewport: MapViewportState,
+    surfaceSize: IntSize,
+    surfaceWidthDp: Float,
+    surfaceHeightDp: Float,
+    mapDisplayScale: Double,
+    uiSession: NativeUiSession,
+    fastTiles: Boolean,
+    startupPerfTrace: AndroidStartupPerfTrace?,
+    pageTilePaintTiming: PageTilePaintTiming?,
+): RasterPlanFrame {
+    val json = remember { Json { ignoreUnknownKeys = true } }
+    return remember(selectedMapId, displayViewport, surfaceSize, mapDisplayScale, uiSession, fastTiles) {
+        if (surfaceSize.width == 0 || surfaceSize.height == 0) {
+            RasterPlanFrame()
+        } else {
+            val planStartMs = SystemClock.elapsedRealtime()
+            val plan = json.decodeFromString<WireRasterTilePlan>(
+                uiSession.queryRasterTilePlanJson(
+                    displayViewport,
+                    surfaceWidthDp.toDouble(),
+                    surfaceHeightDp.toDouble(),
+                    mapDisplayScale,
+                ),
+            )
+            val planMs = SystemClock.elapsedRealtime() - planStartMs
+            startupPerfTrace?.mark(
+                "raster_plan_ready",
+                planStartMs,
+                "tiles=${plan.tiles.size}",
+            )
+            pageTilePaintTiming?.let { timing ->
+                perfLogInfo(TileBudgetLogTag) {
+                    "tile-paint-plan id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=$fastTiles"
+                }
+            }
+            RasterPlanFrame(
+                tiles = plan.tiles.mapNotNull { tile ->
+                    val sources = (listOf(tile.primary) + tile.fallbacks)
+                        .mapNotNull { source -> source.toRenderTileSource() }
+                    if (sources.isEmpty()) {
+                        return@mapNotNull null
+                    }
+                    RenderTile(
+                        x = tile.x,
+                        yTms = tile.y_tms,
+                        leftPx = tile.left_px.toFloat(),
+                        topPx = tile.top_px.toFloat(),
+                        sizePx = tile.size_px.toFloat(),
+                        zoom = tile.source_zoom,
+                        mapViewId = tile.primary.map_view_id,
+                        sources = sources,
+                    )
+                },
+                chartReferenceAction = plan.chart_reference_action,
+                planId = rasterPlanId(selectedMapId, displayViewport),
+            )
+        }
+    }
+}
+
 private fun mapSelectionItemById(
     result: MapSelectionQueryResult,
     itemId: String?,
@@ -691,6 +1680,171 @@ internal data class MapExplorerActions(
     val onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
     val onOpenPlan: () -> Unit,
 )
+
+@Composable
+private fun RunMapSelectionPerfScenario(
+    perfScenario: AndroidPerfScenario?,
+    uiSession: NativeUiSession,
+    surfaceSize: IntSize,
+    selectedMapId: String,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+    densityScale: Double,
+    selectedMapMinZoom: Double,
+    interactiveMaxZoom: Double,
+    sessionWorkRunner: UiSessionWorkRunner,
+    context: Context,
+    devServerBaseUrl: String,
+    updateViewport: (MapViewportState) -> Unit,
+    onMapSelection: (MapSelectionUiState) -> Unit,
+) {
+    var started by remember(perfScenario?.id, uiSession) { mutableStateOf(false) }
+    LaunchedEffect(perfScenario?.id, uiSession, surfaceSize, selectedMapId) {
+        val scenario = perfScenario ?: return@LaunchedEffect
+        if (scenario.id != AndroidPerfScenarioMapSelectionFreeze || started) {
+            return@LaunchedEffect
+        }
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
+            return@LaunchedEffect
+        }
+        started = true
+        val watchdog = AndroidMainThreadStallWatchdog(scenario)
+        val frameGapMonitor = AndroidFrameGapMonitor(scenario)
+        watchdog.start()
+        frameGapMonitor.start()
+        val scenarioStartMs = SystemClock.elapsedRealtime()
+        try {
+            suspend fun forcePerfSelection(selectionViewport: MapViewportState, stepLabel: String) {
+                val clickStartedMs = SystemClock.elapsedRealtime()
+                val (lat, lon) = worldToLatLon(selectionViewport.centerWorldX, selectionViewport.centerWorldY)
+                Log.i(
+                    AndroidPerfScenarioTag,
+                    "selection_start scenario=${scenario.id} step=$stepLabel lat=${"%.5f".format(lat)} lon=${"%.5f".format(lon)}",
+                )
+                val result = sessionWorkRunner.queryMapSelection(
+                    viewport = selectionViewport,
+                    widthPx = surfaceWidthPx.toDouble(),
+                    heightPx = surfaceHeightPx.toDouble(),
+                    click = LatLonPoint(lat = lat, lon = lon),
+                    pointDisplayScale = densityScale,
+                    fetchResource = { resource ->
+                        fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
+                    },
+                )
+                val elapsedMs = SystemClock.elapsedRealtime() - clickStartedMs
+                val itemCount = result.categories.sumOf { it.items.size }
+                val logLine =
+                    "selection_done scenario=${scenario.id} elapsedMs=$elapsedMs thresholdMs=${scenario.slowSelectionThresholdMs} categories=${result.categories.size} items=$itemCount"
+                if (elapsedMs > scenario.slowSelectionThresholdMs) {
+                    Log.w(AndroidPerfScenarioTag, "threshold_violation kind=slow_selection $logLine")
+                } else {
+                    Log.i(AndroidPerfScenarioTag, logLine)
+                }
+                onMapSelection(
+                    MapSelectionUiState(
+                        point = Offset(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
+                        result = result,
+                        selectedItem = mapSelectionItemById(result, result.initialSelectedItemId),
+                    ),
+                )
+            }
+
+            Log.i(
+                AndroidPerfScenarioTag,
+                "start scenario=${scenario.id} surface=${surfaceSize.width}x${surfaceSize.height} density=$densityScale map=$selectedMapId",
+            )
+            val sfo = latLonToWorld(37.6213, -122.3790)
+            val baseViewport = MapViewportState(
+                centerWorldX = sfo.x,
+                centerWorldY = sfo.y,
+                zoom = clampZoom(9.8, selectedMapMinZoom, interactiveMaxZoom),
+            )
+            updateViewport(baseViewport)
+            delay(750)
+            val overlayCompletions = (0 until scenario.overlayFanout).map { worker ->
+                val completion = CompletableDeferred<Unit>()
+                val workerViewport = dragViewport(
+                    baseViewport.copy(zoom = baseViewport.zoom + ((worker % 5) - 2) * 0.04),
+                    (((worker % 6) - 3) * 120).toFloat(),
+                    (((worker % 7) - 3) * 100).toFloat(),
+                )
+                val overlayStartedMs = SystemClock.elapsedRealtime()
+                Log.i(
+                    AndroidPerfScenarioTag,
+                    "overlay_start scenario=${scenario.id} worker=$worker zoom=${"%.2f".format(workerViewport.zoom)}",
+                )
+                sessionWorkRunner.submitOverlay(
+                    viewport = workerViewport,
+                    widthPx = surfaceWidthPx.toDouble(),
+                    heightPx = surfaceHeightPx.toDouble(),
+                    pointDisplayScale = densityScale,
+                    fetchResource = { resource ->
+                        fetchMapOverlayCoreResource(context.applicationContext, resource, devServerBaseUrl)
+                    },
+                    onResult = { outcome ->
+                        val overlay = outcome.overlay
+                        Log.i(
+                            AndroidPerfScenarioTag,
+                            "overlay_done scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} labels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size}",
+                        )
+                        completion.complete(Unit)
+                    },
+                    onError = { error ->
+                        Log.w(
+                            AndroidPerfScenarioTag,
+                            "overlay_failed scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: ${error.message}",
+                            error,
+                        )
+                        completion.complete(Unit)
+                    },
+                    onDropped = { reason ->
+                        Log.i(
+                            AndroidPerfScenarioTag,
+                            "overlay_dropped scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: $reason",
+                        )
+                        completion.complete(Unit)
+                    },
+                )
+                completion
+            }
+            delay(75)
+            forcePerfSelection(baseViewport, "after_overlay_burst")
+            var lastViewport = baseViewport
+            repeat(90) { step ->
+                val dxPx = (((step % 12) - 6) * 42).toFloat()
+                val dyPx = (((step % 10) - 5) * 38).toFloat()
+                val zoom = baseViewport.zoom + ((step % 5) - 2) * 0.03
+                lastViewport = dragViewport(baseViewport.copy(zoom = zoom), dxPx, dyPx)
+                updateViewport(lastViewport)
+                if (step == 24) {
+                    forcePerfSelection(lastViewport, step.toString())
+                }
+                delay(35)
+            }
+            overlayCompletions.awaitAll()
+            delay(1_500)
+            Log.i(
+                AndroidPerfScenarioTag,
+                "done scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
+            )
+        } catch (error: CancellationException) {
+            Log.i(
+                AndroidPerfScenarioTag,
+                "cancelled scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
+            )
+            throw error
+        } catch (error: Throwable) {
+            Log.e(
+                AndroidPerfScenarioTag,
+                "failed scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}: ${error.message}",
+                error,
+            )
+        } finally {
+            frameGapMonitor.stop()
+            watchdog.stop()
+        }
+    }
+}
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -742,11 +1896,9 @@ internal fun MapExplorerPage(
     val activity = context as? MainActivity
     val density = LocalDensity.current
     val navDataEpoch = sessionSnapshot.navDataEpoch
-    val latestNavDataEpoch = rememberUpdatedState(navDataEpoch)
     LaunchedEffect(navDataEpoch) {
         decodedTileBitmapCache.clear()
     }
-    val json = remember { Json { ignoreUnknownKeys = true } }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {
@@ -822,60 +1974,10 @@ internal fun MapExplorerPage(
             }
         }
     }
-    var committedMapOverlay by remember(uiSession, navDataEpoch) {
-        mutableStateOf(
-            MapOverlayQueryResult(
-                visibleFeatures = emptyList(),
-                visibleMetars = emptyList(),
-                visiblePireps = emptyList(),
-                visibleTraffic = emptyList(),
-                trafficNextRefreshEpochMs = null,
-                airspacePaths = emptyList(),
-                tfrPaths = emptyList(),
-                airspaceLabels = emptyList(),
-                offlineRegions = emptyList(),
-            ),
-        )
-    }
-    var committedOverlayViewport by remember(uiSession, navDataEpoch) { mutableStateOf<MapViewportState?>(null) }
-    var committedOverlaySurfaceUnits by remember(uiSession, navDataEpoch) { mutableStateOf<OverlaySurfaceUnits?>(null) }
-    var mapOverlayError by remember(uiSession, navDataEpoch) { mutableStateOf<String?>(null) }
-    var trafficRefreshTick by remember(uiSession) { mutableIntStateOf(0) }
-    var nexradFrame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
-    var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
-    var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
-    var terrainLastQueryDiagnostics by remember(uiSession) { mutableStateOf(TerrainOverlayDiagnostics()) }
-    var terrainNoPaintStartedMs by remember(uiSession) { mutableLongStateOf(0L) }
-    var terrainNoPaintLastWarningMs by remember(uiSession) { mutableLongStateOf(0L) }
-    var terrainStaleNoPositionWarningLastMs by remember(uiSession) { mutableLongStateOf(0L) }
     var startupVectorContentReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
     var startupVectorFrameReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
     var startupRasterContentReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
     var startupRasterFrameReady by remember(startupPerfTrace, uiSession) { mutableStateOf(false) }
-    val terrainTileBitmapCache = remember(uiSession) {
-        LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>(
-            TerrainTileBitmapCacheMaxEntries,
-            0.75f,
-            true,
-        )
-    }
-    val terrainTileInFlightKeys = remember(uiSession) { mutableSetOf<String>() }
-    val terrainRenderRequests = remember(uiSession) {
-        Channel<Unit>(Channel.CONFLATED)
-    }
-    val nexradRenderRequests = remember(uiSession) {
-        Channel<Unit>(Channel.CONFLATED)
-    }
-    val nexradViewportRefreshRequests = remember(uiSession) {
-        Channel<Unit>(Channel.CONFLATED)
-    }
-    DisposableEffect(terrainRenderRequests, nexradRenderRequests, nexradViewportRefreshRequests) {
-        onDispose {
-            terrainRenderRequests.close()
-            nexradRenderRequests.close()
-            nexradViewportRefreshRequests.close()
-        }
-    }
     var flightPlanRouteProjection by remember(uiSession) {
         mutableStateOf(
             FlightPlanRouteProjection(
@@ -948,25 +2050,38 @@ internal fun MapExplorerPage(
     val mapDisplayScale = density.density.toDouble().takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     val interactiveMaxZoom = physicalDisplayMaxZoom(selectedMap.maxZoom, mapDisplayScale)
     val mapLayerState = sessionSnapshot.mapLayerState
-    val terrainViewportState = rememberUpdatedState(currentViewport)
-    val terrainSurfaceSizeState = rememberUpdatedState(planningSurfaceSize)
-    val terrainSurfaceWidthPxState = rememberUpdatedState(planningEnvelope.x)
-    val terrainSurfaceHeightPxState = rememberUpdatedState(planningEnvelope.y)
-    val terrainMapVisibleState = rememberUpdatedState(page == AppPage.Map)
-    val nexradViewportState = rememberUpdatedState(currentViewport)
-    val nexradSurfaceSizeState = rememberUpdatedState(planningSurfaceSize)
-    val nexradSurfaceWidthPxState = rememberUpdatedState(planningEnvelope.x)
-    val nexradSurfaceHeightPxState = rememberUpdatedState(planningEnvelope.y)
-    val nexradVisibleState = rememberUpdatedState(page == AppPage.Map && mapLayerState.nexrad.visible)
-    val nexradEnabledState = rememberUpdatedState(mapLayerState.nexrad.enabled)
-    val nexradDevServerBaseUrlState = rememberUpdatedState(devServerBaseUrl)
-    val nexradFrameState = rememberUpdatedState(nexradFrame)
-    val terrainOverlayImageCountState = rememberUpdatedState(terrainOverlay.size)
-    val terrainLastQueryDiagnosticsState = rememberUpdatedState(terrainLastQueryDiagnostics)
-    val terrainOwnshipAltitudeBucketState = rememberUpdatedState(ownship.terrainAltitudeBucketFt)
-    val terrainOwnshipPositionState = rememberUpdatedState(ownship.position)
-    val terrainDataStatusState = rememberUpdatedState(sessionSnapshot.dataStatusState)
-    val terrainOwnshipLauncherLabelState = rememberUpdatedState(ownshipControls.launcherLabel)
+    val terrainLayerState = rememberTerrainLayerState(
+        context = context,
+        uiSession = uiSession,
+        sessionWorkRunner = sessionWorkRunner,
+        viewport = currentViewport,
+        surfaceSize = planningSurfaceSize,
+        surfaceWidthPx = planningEnvelope.x,
+        surfaceHeightPx = planningEnvelope.y,
+        visible = mapLayerState.terrainWarning.visible,
+        mapVisible = page == AppPage.Map,
+        devServerBaseUrl = devServerBaseUrl,
+        ownshipAltitudeBucketFt = ownship.terrainAltitudeBucketFt,
+        ownshipPosition = ownship.position,
+        dataStatusState = sessionSnapshot.dataStatusState,
+        ownshipLauncherLabel = ownshipControls.launcherLabel,
+    )
+    val terrainOverlay = terrainLayerState.images
+    val nexradLayerState = rememberNexradLayerState(
+        context = context,
+        uiSession = uiSession,
+        sessionWorkRunner = sessionWorkRunner,
+        viewport = currentViewport,
+        surfaceSize = planningSurfaceSize,
+        surfaceWidthPx = planningEnvelope.x,
+        surfaceHeightPx = planningEnvelope.y,
+        visible = mapLayerState.nexrad.visible,
+        enabled = mapLayerState.nexrad.enabled,
+        mapVisible = page == AppPage.Map,
+        liveFeedGeneration = liveFeedGeneration,
+        devServerBaseUrl = devServerBaseUrl,
+    )
+    val nexradFrame = nexradLayerState.frame
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     LaunchedEffect(startupPerfTrace, surfaceSize) {
@@ -980,54 +2095,18 @@ internal fun MapExplorerPage(
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
-    val rasterPlanFrame = remember(selectedMapId, displayViewport, surfaceSize, mapDisplayScale, uiSession, debugState.fastTiles) {
-        if (surfaceSize.width == 0 || surfaceSize.height == 0) {
-            RasterPlanFrame()
-        } else {
-            val planStartMs = SystemClock.elapsedRealtime()
-            val plan = json.decodeFromString<WireRasterTilePlan>(
-                uiSession.queryRasterTilePlanJson(
-                    displayViewport,
-                    surfaceWidthDp.toDouble(),
-                    surfaceHeightDp.toDouble(),
-                    mapDisplayScale,
-                ),
-            )
-            val planMs = SystemClock.elapsedRealtime() - planStartMs
-            startupPerfTrace?.mark(
-                "raster_plan_ready",
-                planStartMs,
-                "tiles=${plan.tiles.size}",
-            )
-            pageTilePaintTiming?.let { timing ->
-                perfLogInfo(TileBudgetLogTag) {
-                    "tile-paint-plan id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=${debugState.fastTiles}"
-                }
-            }
-            val renderTiles = plan.tiles.mapNotNull { tile ->
-                val sources = (listOf(tile.primary) + tile.fallbacks)
-                    .mapNotNull { source -> source.toRenderTileSource() }
-                if (sources.isEmpty()) {
-                    return@mapNotNull null
-                }
-                RenderTile(
-                    x = tile.x,
-                    yTms = tile.y_tms,
-                    leftPx = tile.left_px.toFloat(),
-                    topPx = tile.top_px.toFloat(),
-                    sizePx = tile.size_px.toFloat(),
-                    zoom = tile.source_zoom,
-                    mapViewId = tile.primary.map_view_id,
-                    sources = sources,
-                )
-            }
-            RasterPlanFrame(
-                tiles = renderTiles,
-                chartReferenceAction = plan.chart_reference_action,
-                planId = rasterPlanId(selectedMapId, displayViewport),
-            )
-        }
-    }
+    val rasterPlanFrame = rememberRasterPlanFrame(
+        selectedMapId = selectedMapId,
+        displayViewport = displayViewport,
+        surfaceSize = surfaceSize,
+        surfaceWidthDp = surfaceWidthDp,
+        surfaceHeightDp = surfaceHeightDp,
+        mapDisplayScale = mapDisplayScale,
+        uiSession = uiSession,
+        fastTiles = debugState.fastTiles,
+        startupPerfTrace = startupPerfTrace,
+        pageTilePaintTiming = pageTilePaintTiming,
+    )
     val tiles = rasterPlanFrame.tiles
     val chartReferenceAction = rasterPlanFrame.chartReferenceAction
     LaunchedEffect(startupPerfTrace, startupVectorContentReady) {
@@ -1080,83 +2159,6 @@ internal fun MapExplorerPage(
             detail = "visible=${mapLayerState.terrainWarning.visible} " +
                 "position=${ownship.position != null} altitude=${ownship.terrainAltitudeBucketFt != null}",
         )
-    }
-    val terrainVisibleState = rememberUpdatedState(mapLayerState.terrainWarning.visible)
-    LaunchedEffect(uiSession) {
-        while (true) {
-            delay(10_000)
-            val nowMs = SystemClock.elapsedRealtime()
-            val latestSurfaceSize = terrainSurfaceSizeState.value
-            val altitudeBucketFt = terrainOwnshipAltitudeBucketState.value
-            val ownshipPosition = terrainOwnshipPositionState.value
-            val diagnostics = terrainLastQueryDiagnosticsState.value
-            val noPositionTerrainWarning = terrainDataStatusState.value.boxes.firstOrNull { box ->
-                box.id == TerrainWarningStatusId && box.detail.contains(TerrainNoPositionWarningDetail)
-            }
-            if (ownshipPosition != null && altitudeBucketFt != null && noPositionTerrainWarning != null) {
-                if (terrainStaleNoPositionWarningLastMs == 0L || nowMs - terrainStaleNoPositionWarningLastMs >= 60_000L) {
-                    terrainStaleNoPositionWarningLastMs = nowMs
-                    Log.w(
-                        MapLayerLogTag,
-                        "terrain stale-no-position-warning-with-ownship " +
-                            "ownship=${ownshipPosition.lat},${ownshipPosition.lon} " +
-                            "ownshipAltitudeBucketFt=$altitudeBucketFt " +
-                            "ownshipLauncher=${terrainOwnshipLauncherLabelState.value} " +
-                            "warningDetail=${noPositionTerrainWarning.detail} " +
-                            "lastQueryAgeMs=${if (diagnostics.updatedAtMs > 0L) nowMs - diagnostics.updatedAtMs else null} " +
-                            "status=${diagnostics.status} frame=${diagnostics.frameKey} " +
-                            "requests=${diagnostics.requestCount} cached=${diagnostics.cachedCount} " +
-                            "inFlight=${diagnostics.inFlightCount} missing=${diagnostics.missingCount} " +
-                            "workBatch=${diagnostics.workBatchCount} queryAltitudeBucketFt=${diagnostics.altitudeBucketFt} " +
-                            "surface=${diagnostics.surfaceWidthPx}x${diagnostics.surfaceHeightPx} " +
-                            "zoom=${diagnostics.viewportZoom} " +
-                            "centerWorld=${diagnostics.viewportCenterWorldX},${diagnostics.viewportCenterWorldY} " +
-                            "error=${diagnostics.error}",
-                    )
-                }
-            } else {
-                terrainStaleNoPositionWarningLastMs = 0L
-            }
-            val shouldHaveTerrain =
-                terrainMapVisibleState.value &&
-                    terrainVisibleState.value &&
-                    latestSurfaceSize.width > 0 &&
-                    latestSurfaceSize.height > 0 &&
-                    ownshipPosition != null &&
-                    altitudeBucketFt != null
-            if (!shouldHaveTerrain || terrainOverlayImageCountState.value > 0) {
-                terrainNoPaintStartedMs = 0L
-                terrainNoPaintLastWarningMs = 0L
-                continue
-            }
-            if (terrainNoPaintStartedMs == 0L) {
-                terrainNoPaintStartedMs = nowMs
-                continue
-            }
-            val noPaintMs = nowMs - terrainNoPaintStartedMs
-            if (noPaintMs < 60_000L) {
-                continue
-            }
-            if (terrainNoPaintLastWarningMs != 0L && nowMs - terrainNoPaintLastWarningMs < 60_000L) {
-                continue
-            }
-            terrainNoPaintLastWarningMs = nowMs
-            Log.w(
-                MapLayerLogTag,
-                "terrain no-paint-with-altitude durationMs=$noPaintMs " +
-                    "ownship=${ownshipPosition.lat},${ownshipPosition.lon} " +
-                    "ownshipAltitudeBucketFt=$altitudeBucketFt " +
-                    "lastQueryAgeMs=${if (diagnostics.updatedAtMs > 0L) nowMs - diagnostics.updatedAtMs else null} " +
-                    "status=${diagnostics.status} frame=${diagnostics.frameKey} " +
-                    "requests=${diagnostics.requestCount} cached=${diagnostics.cachedCount} " +
-                    "inFlight=${diagnostics.inFlightCount} missing=${diagnostics.missingCount} " +
-                    "workBatch=${diagnostics.workBatchCount} queryAltitudeBucketFt=${diagnostics.altitudeBucketFt} " +
-                    "surface=${diagnostics.surfaceWidthPx}x${diagnostics.surfaceHeightPx} " +
-                    "zoom=${diagnostics.viewportZoom} " +
-                    "centerWorld=${diagnostics.viewportCenterWorldX},${diagnostics.viewportCenterWorldY} " +
-                    "error=${diagnostics.error}",
-            )
-        }
     }
     val menuTrayOpen = chartTrayOpen || layerTrayOpen || openStatusControlId != null || situationTrayOpen
     val trayOptions = remember(mapFamilyOptions) {
@@ -1326,7 +2328,7 @@ internal fun MapExplorerPage(
 
     fun currentPerfCacheStats(): AndroidPerfCacheStats {
         val rasterStats = decodedTileBitmapCache.stats()
-        val (terrainEntries, terrainBytes) = terrainBitmapCacheStats(terrainTileBitmapCache)
+        val (terrainEntries, terrainBytes) = terrainBitmapCacheStats(terrainLayerState.bitmapCache)
         val (nexradEntries, nexradBytes) = nexradFrameStats(nexradFrame)
         return AndroidPerfCacheStats(
             rasterDecodedEntries = rasterStats.entries,
@@ -1338,150 +2340,24 @@ internal fun MapExplorerPage(
         )
     }
 
-    var perfScenarioStarted by remember(perfScenario?.id, uiSession) { mutableStateOf(false) }
-    LaunchedEffect(perfScenario?.id, uiSession, surfaceSize, selectedMapId) {
-        val scenario = perfScenario ?: return@LaunchedEffect
-        if (scenario.id != AndroidPerfScenarioMapSelectionFreeze || perfScenarioStarted) {
-            return@LaunchedEffect
-        }
-        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
-            return@LaunchedEffect
-        }
-        perfScenarioStarted = true
-        val watchdog = AndroidMainThreadStallWatchdog(scenario)
-        val frameGapMonitor = AndroidFrameGapMonitor(scenario)
-        watchdog.start()
-        frameGapMonitor.start()
-        val scenarioStartMs = SystemClock.elapsedRealtime()
-        try {
-            suspend fun forcePerfSelection(selectionViewport: MapViewportState, stepLabel: String) {
-                val clickStartedMs = SystemClock.elapsedRealtime()
-                val (lat, lon) = worldToLatLon(selectionViewport.centerWorldX, selectionViewport.centerWorldY)
-                Log.i(
-                    AndroidPerfScenarioTag,
-                    "selection_start scenario=${scenario.id} step=$stepLabel lat=${"%.5f".format(lat)} lon=${"%.5f".format(lon)}",
-                )
-                val result = sessionWorkRunner.queryMapSelection(
-                    viewport = selectionViewport,
-                    widthPx = surfaceWidthPx.toDouble(),
-                    heightPx = surfaceHeightPx.toDouble(),
-                    click = LatLonPoint(lat = lat, lon = lon),
-                    pointDisplayScale = density.density.toDouble(),
-                    fetchResource = { resource ->
-                        fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
-                    },
-                )
-                val elapsedMs = SystemClock.elapsedRealtime() - clickStartedMs
-                val itemCount = result.categories.sumOf { it.items.size }
-                val logLine =
-                    "selection_done scenario=${scenario.id} elapsedMs=$elapsedMs thresholdMs=${scenario.slowSelectionThresholdMs} categories=${result.categories.size} items=$itemCount"
-                if (elapsedMs > scenario.slowSelectionThresholdMs) {
-                    Log.w(AndroidPerfScenarioTag, "threshold_violation kind=slow_selection $logLine")
-                } else {
-                    Log.i(AndroidPerfScenarioTag, logLine)
-                }
-                mapSelection = MapSelectionUiState(
-                    point = Offset(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
-                    result = result,
-                    selectedItem = mapSelectionItemById(result, result.initialSelectedItemId),
-                )
-            }
-
-            Log.i(
-                AndroidPerfScenarioTag,
-                "start scenario=${scenario.id} surface=${surfaceSize.width}x${surfaceSize.height} density=${density.density} map=$selectedMapId",
-            )
-            val sfo = latLonToWorld(37.6213, -122.3790)
-            val baseViewport = MapViewportState(
-                centerWorldX = sfo.x,
-                centerWorldY = sfo.y,
-                zoom = clampZoom(9.8, selectedMap.minZoom, interactiveMaxZoom),
-            )
-            updateViewport(baseViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
-            delay(750)
-            val overlayCompletions = (0 until scenario.overlayFanout).map { worker ->
-                val completion = CompletableDeferred<Unit>()
-                val workerViewport = dragViewport(
-                    baseViewport.copy(zoom = baseViewport.zoom + ((worker % 5) - 2) * 0.04),
-                    (((worker % 6) - 3) * 120).toFloat(),
-                    (((worker % 7) - 3) * 100).toFloat(),
-                )
-                val overlayStartedMs = SystemClock.elapsedRealtime()
-                Log.i(
-                    AndroidPerfScenarioTag,
-                    "overlay_start scenario=${scenario.id} worker=$worker zoom=${"%.2f".format(workerViewport.zoom)}",
-                )
-                sessionWorkRunner.submitOverlay(
-                    viewport = workerViewport,
-                    widthPx = surfaceWidthPx.toDouble(),
-                    heightPx = surfaceHeightPx.toDouble(),
-                    pointDisplayScale = density.density.toDouble(),
-                    fetchResource = { resource ->
-                        fetchMapOverlayCoreResource(context.applicationContext, resource, devServerBaseUrl)
-                    },
-                    onResult = { outcome ->
-                        val overlay = outcome.overlay
-                        Log.i(
-                            AndroidPerfScenarioTag,
-                            "overlay_done scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} labels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size}",
-                        )
-                        completion.complete(Unit)
-                    },
-                    onError = { error ->
-                        Log.w(
-                            AndroidPerfScenarioTag,
-                            "overlay_failed scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: ${error.message}",
-                            error,
-                        )
-                        completion.complete(Unit)
-                    },
-                    onDropped = { reason ->
-                        Log.i(
-                            AndroidPerfScenarioTag,
-                            "overlay_dropped scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: $reason",
-                        )
-                        completion.complete(Unit)
-                    },
-                )
-                completion
-            }
-            delay(75)
-            forcePerfSelection(baseViewport, "after_overlay_burst")
-            var lastViewport = baseViewport
-            repeat(90) { step ->
-                val dxPx = (((step % 12) - 6) * 42).toFloat()
-                val dyPx = (((step % 10) - 5) * 38).toFloat()
-                val zoom = baseViewport.zoom + ((step % 5) - 2) * 0.03
-                lastViewport = dragViewport(baseViewport.copy(zoom = zoom), dxPx, dyPx)
-                updateViewport(lastViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
-                if (step == 24) {
-                    forcePerfSelection(lastViewport, step.toString())
-                }
-                delay(35)
-            }
-            overlayCompletions.awaitAll()
-            delay(1_500)
-            Log.i(
-                AndroidPerfScenarioTag,
-                "done scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
-            )
-        } catch (error: CancellationException) {
-            Log.i(
-                AndroidPerfScenarioTag,
-                "cancelled scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
-            )
-            throw error
-        } catch (error: Throwable) {
-            Log.e(
-                AndroidPerfScenarioTag,
-                "failed scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}: ${error.message}",
-                error,
-            )
-        } finally {
-            frameGapMonitor.stop()
-            watchdog.stop()
-        }
-    }
+    RunMapSelectionPerfScenario(
+        perfScenario = perfScenario,
+        uiSession = uiSession,
+        surfaceSize = surfaceSize,
+        selectedMapId = selectedMapId,
+        surfaceWidthPx = surfaceWidthPx,
+        surfaceHeightPx = surfaceHeightPx,
+        densityScale = density.density.toDouble(),
+        selectedMapMinZoom = selectedMap.minZoom,
+        interactiveMaxZoom = interactiveMaxZoom,
+        sessionWorkRunner = sessionWorkRunner,
+        context = context,
+        devServerBaseUrl = devServerBaseUrl,
+        updateViewport = { nextViewport ->
+            updateViewport(nextViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
+        },
+        onMapSelection = { selection -> mapSelection = selection },
+    )
 
     var memoryStressScenarioStarted by remember(perfScenario?.id, uiSession) { mutableStateOf(false) }
     LaunchedEffect(perfScenario?.id, uiSession, surfaceSize, selectedMapId) {
@@ -1580,8 +2456,8 @@ internal fun MapExplorerPage(
                     dyPx,
                 )
                 updateViewport(nextViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
-                nexradRenderRequests.trySend(Unit)
-                terrainRenderRequests.trySend(Unit)
+                nexradLayerState.requestRender()
+                terrainLayerState.requestRender()
                 delay(scenario.memorySampleIntervalMs)
                 val sample = logAndroidPerfMemorySample(
                     scenario,
@@ -1760,357 +2636,21 @@ internal fun MapExplorerPage(
     }
 
     val aircraftPlanViewPath = rememberAircraftPlanViewPath(sessionSnapshot.appUiState.aircraftPlanViewPath)
-    val outlinePaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.argb(102, 0, 0, 0)
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-    }
-    val fillPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
-        }
-    }
-    val labelStrokePaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.argb(102, 0, 0, 0)
-            style = Paint.Style.STROKE
-            strokeJoin = Paint.Join.ROUND
-            strokeWidth = 5f
-            textAlign = Paint.Align.CENTER
-            textSize = 16f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
-        }
-    }
-    val labelFillPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
-            textAlign = Paint.Align.CENTER
-            textSize = 16f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
-        }
-    }
-    val rasterTileLoadGeneration = remember(selectedMapId, debugState.fastTiles, navDataEpoch) {
-        RasterTileLoadGeneration()
-    }
-    val tileBitmapCache = rasterTileLoadGeneration.bitmapCache
-    val visibleTileKeys = remember(tiles) {
-        tiles.mapTo(LinkedHashSet()) { tile -> renderTileKey(tile) }
-    }
-    val latestVisibleTileKeysState = rememberUpdatedState(visibleTileKeys)
-    val rasterTileBitmapLoaderScope = rememberCoroutineScope()
+    val tileBitmapCache = rememberRasterTileBitmapCache(
+        context = context,
+        selectedMapId = selectedMapId,
+        fastTiles = debugState.fastTiles,
+        navDataEpoch = navDataEpoch,
+        tiles = tiles,
+        currentViewport = currentViewport,
+        decodedTileBitmapCache = decodedTileBitmapCache,
+        startupPerfTrace = startupPerfTrace,
+        pageTilePaintTiming = pageTilePaintTiming,
+        onRasterContentReady = { startupRasterContentReady = true },
+        onPageTilePaintTimingComplete = actions.onPageTilePaintTimingComplete,
+    )
     val airportInfoScope = rememberCoroutineScope()
-    val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope, navDataEpoch) {
-        RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
-    }
-    val rasterTileLoadRequests = rasterTileLoadGeneration.requests
-    DisposableEffect(rasterTileBitmapLoader) {
-        onDispose {
-            rasterTileBitmapLoader.close()
-        }
-    }
-    DisposableEffect(rasterTileLoadGeneration) {
-        onDispose {
-            rasterTileLoadGeneration.close()
-        }
-    }
-    LaunchedEffect(tiles, selectedMapId, debugState.fastTiles, navDataEpoch, rasterTileLoadRequests) {
-        val staleLocalKeys = tileBitmapCache.keys.filter { key -> key !in visibleTileKeys }
-        staleLocalKeys.forEach { key -> tileBitmapCache.remove(key) }
-        var decodedCacheHits = 0
-        tiles.forEach { tile ->
-            val renderKey = renderTileKey(tile)
-            if (!tileBitmapCache.containsKey(renderKey)) {
-                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(tile, navDataEpoch))
-                if (bitmap != null) {
-                    tileBitmapCache[renderKey] = bitmap
-                    decodedCacheHits += 1
-                }
-            }
-        }
-        if (tiles.isNotEmpty() && tileBitmapCache.values.any { bitmap -> bitmap != null }) {
-            startupRasterContentReady = true
-        }
-        val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
-        perfLogInfo(TileBudgetLogTag) {
-            val decodedCacheStats = decodedTileBitmapCache.stats()
-            val (localBitmapEntries, localBitmapBytes) = rasterLocalBitmapCacheStats(tileBitmapCache)
-            "visible map=$selectedMapId total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size}/${localBitmapBytes}B localBitmaps=$localBitmapEntries pruned=${staleLocalKeys.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]"
-        }
-        if (missingTiles.isEmpty()) {
-            if (tiles.isNotEmpty()) {
-                startupPerfTrace?.mark(
-                    "raster_cache_ready",
-                    detail = "tiles=${tiles.size}",
-                )
-            }
-            pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
-                withFrameNanos { }
-                perfLogInfo(TileBudgetLogTag) {
-                    "tile-paint-frame id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} cacheOnly=true"
-                }
-                actions.onPageTilePaintTimingComplete(timing.id)
-            }
-            return@LaunchedEffect
-        }
-        val (viewportLat, viewportLon) = viewportCenterLatLon(currentViewport)
-        val requestId = rasterTileLoadGeneration.beginRequest()
-        val request = RasterTileLoadRequest(
-            id = requestId,
-            mapId = selectedMapId,
-            zoom = currentViewport.zoom,
-            centerLat = viewportLat,
-            centerLon = viewportLon,
-            visibleTiles = tiles,
-            missingTiles = missingTiles,
-            pageTilePaintTiming = pageTilePaintTiming,
-        )
-        perfLogInfo(TileBudgetLogTag) {
-            "tile-load-request request=$requestId map=$selectedMapId zoom=${"%.2f".format(currentViewport.zoom)} center=${"%.3f".format(viewportLat)},${"%.3f".format(viewportLon)} total=${tiles.size} missing=${missingTiles.size} cache=${tileBitmapCache.size}"
-        }
-        if (rasterTileLoadRequests.trySend(request).isFailure) {
-            Log.w(TileBudgetLogTag, "tile-load-request-drop request=$requestId map=$selectedMapId")
-        }
-    }
-    LaunchedEffect(rasterTileBitmapLoader, rasterTileLoadRequests, tileBitmapCache, navDataEpoch) {
-        val loadEpoch = navDataEpoch
-        for (initialRequest in rasterTileLoadRequests) {
-            var request = initialRequest
-            while (true) {
-                val loadStartMs = SystemClock.elapsedRealtime()
-                startupPerfTrace?.mark(
-                    "raster_load_started",
-                    detail = "tiles=${request.missingTiles.size}",
-                )
-                val generationId = TileLoadGenerationIds.incrementAndGet()
-                perfLogInfo(TileBudgetLogTag) {
-                    "generation-start gen=$generationId request=${request.id} map=${request.mapId} zoom=${"%.2f".format(request.zoom)} center=${"%.3f".format(request.centerLat)},${"%.3f".format(request.centerLon)} total=${request.visibleTiles.size} missing=${request.missingTiles.size} cache=${tileBitmapCache.size}"
-                }
-                var loadedThisPassCount = 0
-                var ignoredEpochCount = 0
-                var ignoredRequestCount = 0
-                var ignoredVisibilityCount = 0
-                val loadedTiles = try {
-                    rasterTileBitmapLoader.loadVisibleTileBitmaps(
-                        request.mapId,
-                        generationId,
-                        request.missingTiles,
-                    ) { loaded ->
-                        if (loadEpoch != latestNavDataEpoch.value) {
-                            ignoredEpochCount += 1
-                            return@loadVisibleTileBitmaps
-                        }
-                        if (!rasterTileLoadGeneration.isCurrentRequest(request.id)) {
-                            ignoredRequestCount += 1
-                            return@loadVisibleTileBitmaps
-                        }
-                        if (loaded.result.key !in latestVisibleTileKeysState.value) {
-                            ignoredVisibilityCount += 1
-                            return@loadVisibleTileBitmaps
-                        }
-                        tileBitmapCache[loaded.result.key] = loaded.result.bitmap
-                        val bitmap = loaded.result.bitmap
-                        if (bitmap != null) {
-                            loadedThisPassCount += 1
-                            decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile, loadEpoch), bitmap, loaded.result.decodedBytes)
-                            startupPerfTrace?.mark(
-                                "raster_first_tile_loaded",
-                                loadStartMs,
-                                "readMs=${loaded.result.readMs} decodeMs=${loaded.result.decodeMs}",
-                            )
-                            startupRasterContentReady = true
-                        } else {
-                            Log.w(
-                                TileBudgetLogTag,
-                                "generation-empty gen=$generationId request=${request.id} key=${loaded.result.key} ${formatTileRef(loaded.tile)}",
-                            )
-                        }
-                    }
-                } catch (error: CancellationException) {
-                    perfLogInfo(TileBudgetLogTag) {
-                        "generation-cancel gen=$generationId request=${request.id} map=${request.mapId} loaded=$loadedThisPassCount/${request.missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}"
-                    }
-                    throw error
-                }
-                if (request.visibleTiles.isNotEmpty() && tileBitmapCache.values.any { bitmap -> bitmap != null }) {
-                    val tileResults = loadedTiles.map { it.result }
-                    startupPerfTrace?.mark(
-                        "raster_tiles_loaded",
-                        loadStartMs,
-                        "loaded=$loadedThisPassCount requested=${request.missingTiles.size} " +
-                            "readMs=${tileResults.sumOf { it.readMs }} " +
-                            "decodeMs=${tileResults.sumOf { it.decodeMs }}",
-                    )
-                }
-                val staleRequest = !rasterTileLoadGeneration.isCurrentRequest(request.id)
-                val missingAfterLoad = request.visibleTiles.filter { tile ->
-                    !tileBitmapCache.containsKey(renderTileKey(tile))
-                }
-                val ignoredThisPassCount =
-                    ignoredEpochCount + ignoredRequestCount + ignoredVisibilityCount
-                if (
-                    !staleRequest &&
-                    (loadedTiles.size != request.missingTiles.size || ignoredThisPassCount > 0 || missingAfterLoad.isNotEmpty())
-                ) {
-                    Log.w(
-                        TileBudgetLogTag,
-                        "generation-incomplete gen=$generationId request=${request.id} map=${request.mapId} " +
-                            "results=${loadedTiles.size}/${request.missingTiles.size} loaded=$loadedThisPassCount " +
-                            "ignored=$ignoredThisPassCount(epoch=$ignoredEpochCount,request=$ignoredRequestCount,visibility=$ignoredVisibilityCount) " +
-                            "cacheMissing=${missingAfterLoad.size} " +
-                            "tiles=[${missingAfterLoad.joinToString(", ") { tile -> formatTileRef(tile) }}]",
-                    )
-                }
-                if (VerbosePerfLogs) {
-                    val tileResults = loadedTiles.map { it.result }
-                    val readElapsedMs = tileResults.sumOf { it.readMs }
-                    val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
-                    val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
-                    val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
-                    perfLogInfo(TileBudgetLogTag) {
-                        "generation-finish gen=$generationId request=${request.id} map=${request.mapId} stale=$staleRequest loaded=$loadedThisPassCount/${request.missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs} readMs=$readElapsedMs decodeMs=$decodeElapsedMs"
-                    }
-                    perfLogInfo(TileBudgetLogTag) {
-                        "batch map=${request.mapId} request=${request.id} stale=$staleRequest loaded=$loadedThisPassCount/${request.missingTiles.size} bytes=$loadedBytes decodedBytes=$loadedDecodedBytes elapsedMs=${SystemClock.elapsedRealtime() - loadStartMs}"
-                    }
-                }
-                request.pageTilePaintTiming?.takeUnless { staleRequest }?.let { timing ->
-                    perfLogInfo(TileBudgetLogTag) {
-                        "tile-paint-cache id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} loadMs=${SystemClock.elapsedRealtime() - loadStartMs} loaded=$loadedThisPassCount/${request.missingTiles.size}"
-                    }
-                    withFrameNanos { }
-                    perfLogInfo(TileBudgetLogTag) {
-                        "tile-paint-frame id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs}"
-                    }
-                    actions.onPageTilePaintTimingComplete(timing.id)
-                }
-                if (VerbosePerfLogs) {
-                    val tileResults = loadedTiles.map { it.result }
-                    val readElapsedMs = tileResults.sumOf { it.readMs }
-                    val decodeElapsedMs = tileResults.sumOf { it.decodeMs }
-                    val loadedBytes = tileResults.sumOf { it.bytes.toLong() }
-                    val loadedDecodedBytes = tileResults.sumOf { it.decodedBytes }
-                    val loadElapsedMs = SystemClock.elapsedRealtime() - loadStartMs
-                    val cacheLoadedCount = tileBitmapCache.values.count { it != null }
-                    val cacheMissCount = tileBitmapCache.size - cacheLoadedCount
-                    val finalDecodedCacheStats = decodedTileBitmapCache.stats()
-                    val visibleTileByKey = request.visibleTiles.associateBy { renderTileKey(it) }
-                    val cacheCounts = linkedMapOf<String, Int>()
-                    tileBitmapCache.forEach { (key, bitmap) ->
-                        val tile = visibleTileByKey[key] ?: return@forEach
-                        val packageLabel = tile.sources.firstOrNull()?.packageName ?: tile.mapViewId
-                        val summaryKey = "$packageLabel@z${tile.zoom}:${if (bitmap != null) "loaded" else "empty"}"
-                        cacheCounts[summaryKey] = (cacheCounts[summaryKey] ?: 0) + 1
-                    }
-                    val cacheSummary = cacheCounts.entries
-                        .sortedBy { it.key }
-                        .joinToString(", ") { entry -> "${entry.key}=${entry.value}" }
-                    perfLogInfo(TileBudgetLogTag) {
-                        "cache map=${request.mapId} request=${request.id} stale=$staleRequest entries=${tileBitmapCache.size} loaded=$cacheLoadedCount empty=$cacheMissCount fetched=$loadedThisPassCount bytes=$loadedBytes decodedBytes=$loadedDecodedBytes loadMs=$loadElapsedMs readMs=$readElapsedMs decodeMs=$decodeElapsedMs decodedLru=${finalDecodedCacheStats.entries}/${finalDecodedCacheStats.bytes}B groups=[$cacheSummary]"
-                    }
-                }
-                val nextRequest = rasterTileLoadRequests.tryReceive().getOrNull() ?: break
-                perfLogInfo(TileBudgetLogTag) {
-                    "tile-load-coalesce fromRequest=${request.id} toRequest=${nextRequest.id} map=${nextRequest.mapId}"
-                }
-                request = nextRequest
-            }
-        }
-    }
-    val tileLabelPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            textSize = 24f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
-        }
-    }
-    val tileLabelBackgroundPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.argb(224, 14, 22, 28)
-        }
-    }
-    val fixMarkerStrokeColor = Color(0xB3081218)
-    val fixMarkerFillColor = uiTheme.aviation.intersectionCyan
-    val airportMarkerStrokeColor = Color(0xB3081218)
-    val airportToweredFillColor = uiTheme.aviation.classBDBlue
-    val airportUntoweredFillColor = uiTheme.aviation.classCMagenta
-    val vorMarkerColor = uiTheme.aviation.classBDBlue
-    val vorMarkerStrokeColor = Color(0xD1081218)
-    val fixLabelStrokePaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.argb(179, 8, 18, 24)
-            style = Paint.Style.STROKE
-            strokeJoin = Paint.Join.ROUND
-            strokeWidth = 4f
-            textAlign = Paint.Align.CENTER
-            textSize = 14f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
-        }
-    }
-    val airportLabelStrokePaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.argb(179, 8, 18, 24)
-            style = Paint.Style.STROKE
-            strokeJoin = Paint.Join.ROUND
-            strokeWidth = 3f
-            textAlign = Paint.Align.CENTER
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
-        }
-    }
-    val vorLabelFillPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
-            textAlign = Paint.Align.CENTER
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
-        }
-    }
-    val fixLabelFillPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
-            textAlign = Paint.Align.CENTER
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
-        }
-    }
-    val airportToweredLabelFillPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
-            textAlign = Paint.Align.CENTER
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
-        }
-    }
-    val airportUntoweredLabelFillPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.WHITE
-            style = Paint.Style.FILL
-            textAlign = Paint.Align.CENTER
-            textSize = 14f
-            typeface = Typeface.create(Typeface.DEFAULT_BOLD, Typeface.BOLD)
-        }
-    }
-
+    val mapRenderPaints = rememberMapRenderPaints(uiTheme)
     LaunchedEffect(selectedMapId) {
         chartTrayOpen = false
         layerTrayOpen = false
@@ -2184,405 +2724,29 @@ internal fun MapExplorerPage(
             updateViewport(nextViewport, MapViewportUpdateSource.Automatic, syncFollow = false)
         }
     }
-    LaunchedEffect(uiSession, navDataEpoch, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, trafficRefreshTick, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.traffic.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
-        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-            mapOverlayError = null
-            return@LaunchedEffect
-        }
-        val overlayWidthPx = planningEnvelope.x
-        val overlayHeightPx = planningEnvelope.y
-        val overlayStartMs = SystemClock.elapsedRealtime()
-        startupPerfTrace?.mark(
-            "vector_query_started",
-            detail = "surface=${surfaceSize.width}x${surfaceSize.height}",
-        )
-        val queryEpoch = navDataEpoch
-        sessionWorkRunner.submitOverlay(
-            viewport = currentViewport,
-            widthPx = overlayWidthPx.toDouble(),
-            heightPx = overlayHeightPx.toDouble(),
-            pointDisplayScale = density.density.toDouble(),
-            fetchResource = { resource ->
-                fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
-            },
-            onResult = { outcome ->
-                if (queryEpoch != latestNavDataEpoch.value) {
-                    return@submitOverlay
-                }
-                val overlay = outcome.overlay
-                perfLogInfo(MapLayerLogTag) {
-                    val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
-                    "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(currentViewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}"
-                }
-                committedMapOverlay = outcome.overlay
-                committedOverlayViewport = currentViewport
-                committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
-                mapOverlayError = null
-                startupVectorContentReady = true
-                startupPerfTrace?.mark(
-                    "vector_query_completed",
-                    overlayStartMs,
-                    "features=${overlay.visibleFeatures.size}",
-                )
-            },
-            onError = { error ->
-                mapOverlayError = error.message ?: error::class.java.simpleName
-                Log.e(MapLayerLogTag, "overlay failed: $mapOverlayError", error)
-            }
-        )
-    }
-    LaunchedEffect(mapLayerState.traffic.visible, committedMapOverlay.trafficNextRefreshEpochMs) {
-        val deadlineEpochMs = committedMapOverlay.trafficNextRefreshEpochMs
-        if (!mapLayerState.traffic.visible || deadlineEpochMs == null) {
-            return@LaunchedEffect
-        }
-        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
-        trafficRefreshTick += 1
-    }
-    LaunchedEffect(uiSession, nexradRenderRequests) {
-        var nexradAnimationJob: Job? = null
-        fun scheduleNexradAnimation(deadlineEpochMs: Long?) {
-            nexradAnimationJob?.cancel()
-            nexradAnimationJob = null
-            if (deadlineEpochMs == null) {
-                return
-            }
-            nexradAnimationJob = launch {
-                delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0))
-                nexradRenderRequests.trySend(Unit)
-            }
-        }
-        for (ignored in nexradRenderRequests) {
-            val effectStartMs = SystemClock.elapsedRealtime()
-            scheduleNexradAnimation(null)
-            val latestSurfaceSize = nexradSurfaceSizeState.value
-            if (latestSurfaceSize.width <= 0 || latestSurfaceSize.height <= 0) {
-                nexradFrame = null
-                perfLogInfo(MapLayerLogTag) { "nexrad skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-                continue
-            }
-            if (!nexradVisibleState.value || !nexradEnabledState.value) {
-                perfLogInfo(MapLayerLogTag) { "nexrad hidden cachedImages=${nexradFrame?.images?.size ?: 0} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-                continue
-            }
-            val latestViewport = nexradViewportState.value
-            val latestSurfaceWidthPx = nexradSurfaceWidthPxState.value
-            val latestSurfaceHeightPx = nexradSurfaceHeightPxState.value
-            val latestDevServerBaseUrl = nexradDevServerBaseUrlState.value
-            try {
-                var imageBytes = 0L
-                var fetchMs = 0L
-                var decodeMs = 0L
-                val overlay = sessionWorkRunner.queryNexradOverlay(
-                    latestViewport,
-                    latestSurfaceSize.width.toDouble(),
-                    latestSurfaceSize.height.toDouble(),
-                ) { resource ->
-                    val fetchStartMs = SystemClock.elapsedRealtime()
-                    fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
-                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                    }
-                }
-                withContext(Dispatchers.IO) {
-                    prefetchNexradCacheResourcesBestEffort(
-                        resources = overlay.cachePlan?.fetchResources.orEmpty(),
-                        fetch = { planned ->
-                            sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
-                                val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchNexradCoreResource(
-                                    context,
-                                    resource,
-                                    latestDevServerBaseUrl,
-                                ).also {
-                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                                }
-                            }
-                        },
-                        reportFailure = { planned, error ->
-                            Log.w(
-                                "AerobagLayers",
-                                "NEXRAD background prefetch failed for ${planned.src}; continuing selected frame",
-                                error,
-                            )
-                        },
-                    )
-                }
-                if (overlay.tiles.isEmpty()) {
-                    scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)
-                    nexradFrame = null
-                    perfLogInfo(MapLayerLogTag) {
-                        "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                    }
-                    continue
-                }
-                val decodedImagesBySrc = LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
-                var decodedImageBytes = 0L
-                val images = withContext(Dispatchers.IO) {
-                    overlay.tiles.map { tile ->
-                        val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
-                            val bytes = sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
-                                val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
-                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                                }
-                            }
-                            imageBytes += bytes.size
-                            val decodeStartMs = SystemClock.elapsedRealtime()
-                            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                ?: error("failed to decode nexrad tile ${tile.src}")
-                            decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
-                            decoded.asImageBitmap().also { image ->
-                                decodedImageBytes += estimatedImageBitmapBytes(image)
-                            }
-                        }
-                        NexradOverlayImage(tile = tile, bitmap = bitmap)
-                    }
-                }
-                nexradFrame = NexradOverlayFrame(
-                    images = images,
-                    viewport = latestViewport,
-                    surfaceWidthPx = latestSurfaceWidthPx,
-                    surfaceHeightPx = latestSurfaceHeightPx,
-                    decodedImageCount = decodedImagesBySrc.size,
-                    decodedBytes = decodedImageBytes,
-                    selectedFrameIndex = overlay.animation.selectedFrameIndex,
-                    frameCount = overlay.animation.frameCount,
-                )
-                perfLogInfo(MapLayerLogTag) {
-                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                }
-                scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
-            }
-        }
-    }
-    LaunchedEffect(uiSession, nexradViewportRefreshRequests) {
-        for (ignored in nexradViewportRefreshRequests) {
-            delay(NexradViewportRefreshThrottleMs)
-            val latestSurfaceSize = nexradSurfaceSizeState.value
-            val latestFrame = nexradFrameState.value
-            if (
-                latestSurfaceSize.width > 0 &&
-                latestSurfaceSize.height > 0 &&
-                nexradVisibleState.value &&
-                nexradEnabledState.value &&
-                latestFrame != null &&
-                latestFrame.images.isNotEmpty()
-            ) {
-                nexradRenderRequests.trySend(Unit)
-            }
-        }
-    }
-    LaunchedEffect(uiSession, currentViewport, page, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled) {
-        if (
-            page == AppPage.Map &&
-            mapLayerState.nexrad.visible &&
-            mapLayerState.nexrad.enabled &&
-            nexradFrameState.value?.images?.isNotEmpty() == true
-        ) {
-            nexradViewportRefreshRequests.trySend(Unit)
-        }
-    }
-    LaunchedEffect(uiSession, liveFeedGeneration, surfaceSize, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, page, devServerBaseUrl) {
-        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-            nexradFrame = null
-            return@LaunchedEffect
-        }
-        if (page == AppPage.Map && mapLayerState.nexrad.visible && mapLayerState.nexrad.enabled) {
-            nexradRenderRequests.trySend(Unit)
-        }
-    }
-    LaunchedEffect(uiSession, terrainRenderRequests, devServerBaseUrl) {
-        for (ignored in terrainRenderRequests) {
-            while (true) {
-                val effectStartMs = SystemClock.elapsedRealtime()
-                val latestSurfaceSize = terrainSurfaceSizeState.value
-                if (!terrainMapVisibleState.value || latestSurfaceSize.width <= 0 || latestSurfaceSize.height <= 0) {
-                    terrainOverlay = emptyList()
-                    terrainOverlayError = null
-                    perfLogInfo(MapLayerLogTag) { "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-                    break
-                }
-                if (!terrainVisibleState.value) {
-                    terrainOverlay = emptyList()
-                    terrainOverlayError = null
-                    perfLogInfo(MapLayerLogTag) { "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-                    break
-                }
-                val latestViewport = terrainViewportState.value
-                val latestSurfaceWidthPx = terrainSurfaceWidthPxState.value
-                val latestSurfaceHeightPx = terrainSurfaceHeightPxState.value
-                val query = try {
-                    sessionWorkRunner.queryTerrainOverlay(
-                        latestViewport,
-                        latestSurfaceWidthPx.toDouble(),
-                        latestSurfaceHeightPx.toDouble(),
-                        terrainTileBitmapCache.keys.toList(),
-                        terrainTileInFlightKeys.toList(),
-                    ) { resource ->
-                        fetchTerrainCoreResource(context, resource, devServerBaseUrl)
-                    }
-                } catch (error: Throwable) {
-                    terrainOverlay = emptyList()
-                    terrainOverlayError = error.message ?: error::class.java.simpleName
-                    terrainLastQueryDiagnostics = TerrainOverlayDiagnostics(
-                        updatedAtMs = SystemClock.elapsedRealtime(),
-                        status = "query-error",
-                        viewportZoom = latestViewport.zoom,
-                        viewportCenterWorldX = latestViewport.centerWorldX,
-                        viewportCenterWorldY = latestViewport.centerWorldY,
-                        surfaceWidthPx = latestSurfaceSize.width,
-                        surfaceHeightPx = latestSurfaceSize.height,
-                        error = terrainOverlayError,
-                    )
-                    Log.w("AerobagLayers", "terrain overlay unavailable", error)
-                    break
-                }
-                val queryMs = SystemClock.elapsedRealtime() - effectStartMs
-                terrainLastQueryDiagnostics = query.toDiagnostics(
-                    updatedAtMs = SystemClock.elapsedRealtime(),
-                    viewport = latestViewport,
-                    surfaceSize = latestSurfaceSize,
-                )
-                if (query.status !is org.aerobag.app.domain.TerrainOverlayStatus.Ready) {
-                    terrainOverlay = emptyList()
-                    terrainOverlayError = null
-                    perfLogInfo(MapLayerLogTag) {
-                        "terrain not-ready status=${query.status::class.java.simpleName} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                    }
-                    break
-                }
-                val frameKey = query.frameKey
-                val altitudeBucketFt = query.altitudeBucketFt
-                if (frameKey == null || altitudeBucketFt == null) {
-                    terrainOverlay = emptyList()
-                    terrainOverlayError = null
-                    perfLogInfo(MapLayerLogTag) {
-                        "terrain not-ready status=missing-frame queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                    }
-                    break
-                }
-                if (query.schedule.frameComplete) {
-                    val images = terrainImagesForCompleteQuery(terrainTileBitmapCache, query)
-                    if (images != null) {
-                        terrainOverlay = images
-                        terrainOverlayError = null
-                        if (images.isNotEmpty()) {
-                            terrainNoPaintStartedMs = 0L
-                            terrainNoPaintLastWarningMs = 0L
-                        }
-                    }
-                    perfLogInfo(MapLayerLogTag) {
-                        "terrain frame-ready frame=$frameKey requests=${query.tileRequests.size} images=${images?.size ?: 0} cached=${query.schedule.cachedCount} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                    }
-                    break
-                }
-                val workBatch = query.schedule.workBatch
-                if (workBatch.isEmpty()) {
-                    perfLogInfo(MapLayerLogTag) {
-                        "terrain waiting frame=$frameKey requests=${query.tileRequests.size} cached=${query.schedule.cachedCount} inFlight=${query.schedule.inFlightCount} missing=${query.schedule.missingCount} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                    }
-                    break
-                }
-                val batchStartMs = SystemClock.elapsedRealtime()
-                var batchRendered = 0
-                var batchFetchMs = 0L
-                var batchRenderMs = 0L
-                var batchParseMs = 0L
-                var batchRawBytesTotal = 0L
-                for (request in workBatch) {
-                    if (!terrainMapVisibleState.value || !terrainVisibleState.value) {
-                        break
-                    }
-                    if (terrainTileBitmapCache.containsKey(request.cacheKey) || terrainTileInFlightKeys.contains(request.cacheKey)) {
-                        continue
-                    }
-                    var fetchMs = 0L
-                    var renderMs = 0L
-                    var parseMs = 0L
-                    var rawBytesTotal = 0L
-                    terrainTileInFlightKeys += request.cacheKey
-                    try {
-                        val renderStartMs = SystemClock.elapsedRealtime()
-                        val rawBytes = sessionWorkRunner.renderTerrainOverlayTile(
-                            request,
-                            altitudeBucketFt,
-                        ) { resource ->
-                            val fetchStartMs = SystemClock.elapsedRealtime()
-                            fetchTerrainCoreResource(context, resource, devServerBaseUrl).also {
-                                fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                            }
-                        }.also {
-                            renderMs += SystemClock.elapsedRealtime() - renderStartMs
-                        }
-                        rawBytesTotal += rawBytes.size
-                        val parseStartMs = SystemClock.elapsedRealtime()
-                        val bitmap = parseTerrainRawRgba(rawBytes)
-                        parseMs += SystemClock.elapsedRealtime() - parseStartMs
-                        cacheTerrainBitmap(terrainTileBitmapCache, request, bitmap)
-                        batchRendered += 1
-                        batchFetchMs += fetchMs
-                        batchRenderMs += renderMs
-                        batchParseMs += parseMs
-                        batchRawBytesTotal += rawBytesTotal
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (error: Throwable) {
-                        terrainOverlayError = error.message ?: error::class.java.simpleName
-                        terrainLastQueryDiagnostics = query.toDiagnostics(
-                            updatedAtMs = SystemClock.elapsedRealtime(),
-                            viewport = latestViewport,
-                            surfaceSize = latestSurfaceSize,
-                            error = terrainOverlayError,
-                        )
-                        Log.w("AerobagLayers", "terrain overlay unavailable", error)
-                        break
-                    } finally {
-                        terrainTileInFlightKeys -= request.cacheKey
-                    }
-                    yield()
-                }
-                perfLogInfo(MapLayerLogTag) {
-                    "terrain batch-rendered frame=$frameKey requests=${query.tileRequests.size} rendered=$batchRendered batch=${workBatch.size} cached=${query.schedule.cachedCount} missing=${query.schedule.missingCount} rawBytes=$batchRawBytesTotal queryMs=$queryMs fetchMs=$batchFetchMs renderMs=$batchRenderMs parseMs=$batchParseMs batchMs=${SystemClock.elapsedRealtime() - batchStartMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-                }
-            }
-        }
-    }
-    LaunchedEffect(uiSession, currentViewport, surfaceSize, mapLayerState.terrainWarning.visible, page, devServerBaseUrl, ownship.terrainAltitudeBucketFt, ownship.position != null) {
-        val effectStartMs = SystemClock.elapsedRealtime()
-        if (surfaceSize.width <= 0 || surfaceSize.height <= 0 || page != AppPage.Map) {
-            terrainOverlay = emptyList()
-            terrainOverlayError = null
-            perfLogInfo(MapLayerLogTag) { "terrain skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-            return@LaunchedEffect
-        }
-        if (!mapLayerState.terrainWarning.visible) {
-            terrainOverlay = emptyList()
-            terrainOverlayError = null
-            perfLogInfo(MapLayerLogTag) { "terrain disabled elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-            return@LaunchedEffect
-        }
-        terrainRenderRequests.trySend(Unit)
-    }
-    val displayedMapOverlay = remember(
-        committedMapOverlay,
-        committedOverlayViewport,
-        committedOverlaySurfaceUnits,
-        displayViewport,
-        surfaceWidthPx,
-        surfaceHeightPx,
-    ) {
-        transformMapOverlayForDisplay(
-            overlay = committedMapOverlay,
-            fromViewport = committedOverlayViewport,
-            fromSurface = committedOverlaySurfaceUnits,
-            toViewport = displayViewport,
-            toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
-        )
-    }
+    val displayedMapOverlay = rememberDisplayedMapOverlay(
+        context = context,
+        uiSession = uiSession,
+        sessionWorkRunner = sessionWorkRunner,
+        navDataEpoch = navDataEpoch,
+        liveFeedGeneration = liveFeedGeneration,
+        invalidationRevision = uiInvalidationRevisions.mapOverlay,
+        viewport = currentViewport,
+        displayViewport = displayViewport,
+        surfaceSize = surfaceSize,
+        overlayWidthPx = planningEnvelope.x,
+        overlayHeightPx = planningEnvelope.y,
+        displayWidthPx = surfaceWidthPx,
+        displayHeightPx = surfaceHeightPx,
+        densityScale = density.density,
+        vectorsVisible = mapLayerState.vectors.visible,
+        metarsVisible = mapLayerState.metars.visible,
+        trafficVisible = mapLayerState.traffic.visible,
+        offlineRegionsVisible = mapLayerState.offlineRegions.visible,
+        devServerBaseUrl = devServerBaseUrl,
+        startupPerfTrace = startupPerfTrace,
+        onVectorContentReady = { startupVectorContentReady = true },
+    )
     LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradFrame, terrainOverlay) {
         if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return@LaunchedEffect
         if (!VerbosePerfLogs) return@LaunchedEffect
@@ -3064,13 +3228,16 @@ internal fun MapExplorerPage(
                 }
             },
     ) {
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_viewport_projection,
+            state =
+                "center-x:${currentViewport.centerWorldX.roundToInt()}:" +
+                    "center-y:${currentViewport.centerWorldY.roundToInt()}:" +
+                    "zoom:${(currentViewport.zoom * 1000).roundToInt()}:" +
+                    "up:${plannedMapUpDeg.roundToInt()}",
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .size(1.dp)
-                .testTag(
-                    "parity:viewport:center-x:${currentViewport.centerWorldX.roundToInt()}:center-y:${currentViewport.centerWorldY.roundToInt()}:zoom:${(currentViewport.zoom * 1000).roundToInt()}:up:${plannedMapUpDeg.roundToInt()}",
-                ),
+                .size(1.dp),
         )
         Box(
             modifier = Modifier
@@ -3096,8 +3263,8 @@ internal fun MapExplorerPage(
             tileRects = tileRects,
             tileBitmapCache = tileBitmapCache,
             tileLabels = debugState.tileLabels,
-            tileLabelPaint = tileLabelPaint,
-            tileLabelBackgroundPaint = tileLabelBackgroundPaint,
+            tileLabelPaint = mapRenderPaints.tileLabel,
+            tileLabelBackgroundPaint = mapRenderPaints.tileLabelBackground,
             nexradFrame = if (mapLayerState.nexrad.visible) nexradFrame else null,
             terrainOverlay = terrainOverlay,
             viewport = currentViewport,
@@ -3121,42 +3288,47 @@ internal fun MapExplorerPage(
                 .size(1.dp)
                 .testTag("parity:vector-state:features:${displayedMapOverlay.visibleFeatures.size}"),
         )
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_live_overlay_projection,
+            state =
+                "metars:${displayedMapOverlay.visibleMetars.size}:" +
+                    "pireps:${displayedMapOverlay.visiblePireps.size}:" +
+                    "obstacles:${displayedMapOverlay.visibleFeatures.count { it.symbolKind == "obstacle" }}:" +
+                    "tfrs:${displayedMapOverlay.tfrPaths.size}",
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .offset(x = 24.dp)
-                .size(1.dp)
-                .testTag(
-                    "parity:live-overlay:metars:${displayedMapOverlay.visibleMetars.size}:pireps:${displayedMapOverlay.visiblePireps.size}:obstacles:${displayedMapOverlay.visibleFeatures.count { it.symbolKind == "obstacle" }}:tfrs:${displayedMapOverlay.tfrPaths.size}",
-                ),
+                .size(1.dp),
         )
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_nexrad_state_projection,
+            state =
+                "tiles:${nexradFrame?.images?.size ?: 0}:" +
+                    "frame:${nexradFrame?.selectedFrameIndex ?: "none"}:" +
+                    "frames:${nexradFrame?.frameCount ?: 0}",
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .offset(x = 26.dp)
-                .size(1.dp)
-                .testTag(
-                    "parity:nexrad-state:tiles:${nexradFrame?.images?.size ?: 0}:frame:${nexradFrame?.selectedFrameIndex ?: "none"}:frames:${nexradFrame?.frameCount ?: 0}",
-                ),
+                .size(1.dp),
         )
         AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         MapFeatureOverlayLayer(
             displayedMapOverlay = displayedMapOverlay,
             uiTheme = uiTheme,
             densityScale = density.density,
-            fixMarkerStrokeColor = fixMarkerStrokeColor,
-            fixMarkerFillColor = fixMarkerFillColor,
-            airportMarkerStrokeColor = airportMarkerStrokeColor,
-            airportToweredFillColor = airportToweredFillColor,
-            airportUntoweredFillColor = airportUntoweredFillColor,
-            vorMarkerColor = vorMarkerColor,
-            vorMarkerStrokeColor = vorMarkerStrokeColor,
-            fixLabelStrokePaint = fixLabelStrokePaint,
-            airportLabelStrokePaint = airportLabelStrokePaint,
-            vorLabelFillPaint = vorLabelFillPaint,
-            fixLabelFillPaint = fixLabelFillPaint,
-            airportToweredLabelFillPaint = airportToweredLabelFillPaint,
-            airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+            fixMarkerStrokeColor = mapRenderPaints.fixMarkerStrokeColor,
+            fixMarkerFillColor = mapRenderPaints.fixMarkerFillColor,
+            airportMarkerStrokeColor = mapRenderPaints.airportMarkerStrokeColor,
+            airportToweredFillColor = mapRenderPaints.airportToweredFillColor,
+            airportUntoweredFillColor = mapRenderPaints.airportUntoweredFillColor,
+            vorMarkerColor = mapRenderPaints.vorMarkerColor,
+            vorMarkerStrokeColor = mapRenderPaints.vorMarkerStrokeColor,
+            fixLabelStrokePaint = mapRenderPaints.fixLabelStroke,
+            airportLabelStrokePaint = mapRenderPaints.airportLabelStroke,
+            vorLabelFillPaint = mapRenderPaints.vorLabelFill,
+            fixLabelFillPaint = mapRenderPaints.fixLabelFill,
+            airportToweredLabelFillPaint = mapRenderPaints.airportToweredLabelFill,
+            airportUntoweredLabelFillPaint = mapRenderPaints.airportUntoweredLabelFill,
             mapUpDeg = plannedMapUpDeg,
         )
         ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
@@ -3175,19 +3347,19 @@ internal fun MapExplorerPage(
             displayedMapOverlay = displayedMapOverlay,
             uiTheme = uiTheme,
             densityScale = density.density,
-            fixMarkerStrokeColor = fixMarkerStrokeColor,
-            fixMarkerFillColor = fixMarkerFillColor,
-            airportMarkerStrokeColor = airportMarkerStrokeColor,
-            airportToweredFillColor = airportToweredFillColor,
-            airportUntoweredFillColor = airportUntoweredFillColor,
-            vorMarkerColor = vorMarkerColor,
-            vorMarkerStrokeColor = vorMarkerStrokeColor,
-            fixLabelStrokePaint = fixLabelStrokePaint,
-            airportLabelStrokePaint = airportLabelStrokePaint,
-            vorLabelFillPaint = vorLabelFillPaint,
-            fixLabelFillPaint = fixLabelFillPaint,
-            airportToweredLabelFillPaint = airportToweredLabelFillPaint,
-            airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+            fixMarkerStrokeColor = mapRenderPaints.fixMarkerStrokeColor,
+            fixMarkerFillColor = mapRenderPaints.fixMarkerFillColor,
+            airportMarkerStrokeColor = mapRenderPaints.airportMarkerStrokeColor,
+            airportToweredFillColor = mapRenderPaints.airportToweredFillColor,
+            airportUntoweredFillColor = mapRenderPaints.airportUntoweredFillColor,
+            vorMarkerColor = mapRenderPaints.vorMarkerColor,
+            vorMarkerStrokeColor = mapRenderPaints.vorMarkerStrokeColor,
+            fixLabelStrokePaint = mapRenderPaints.fixLabelStroke,
+            airportLabelStrokePaint = mapRenderPaints.airportLabelStroke,
+            vorLabelFillPaint = mapRenderPaints.vorLabelFill,
+            fixLabelFillPaint = mapRenderPaints.fixLabelFill,
+            airportToweredLabelFillPaint = mapRenderPaints.airportToweredLabelFill,
+            airportUntoweredLabelFillPaint = mapRenderPaints.airportUntoweredLabelFill,
             flightPlanOnly = true,
             mapUpDeg = plannedMapUpDeg,
         )
@@ -3210,23 +3382,22 @@ internal fun MapExplorerPage(
         SituationOverlayLayer(
             situationOverlay = situationOverlay,
             densityScale = density.density,
-            labelStrokePaint = labelStrokePaint,
-            labelFillPaint = labelFillPaint,
+            labelStrokePaint = mapRenderPaints.situationLabelStroke,
+            labelFillPaint = mapRenderPaints.situationLabelFill,
             aircraftPlanViewPath = aircraftPlanViewPath,
         )
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_ownship_state_projection,
+            state =
+                "mode:${ownship.mode.name.lowercase()}:" +
+                    "source:${ownshipControls.sources.firstOrNull { it.active }?.sourceId ?: "none"}:" +
+                    "draw:${ownship.drawAircraft}:" +
+                    "position:${ownship.position?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "none"}:" +
+                    "track:${ownship.trackDegTrue?.let { "%.1f".format(it) } ?: "none"}",
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .offset(x = 24.dp)
-                .size(1.dp)
-                .testTag(
-                    "parity:ownship-state:" +
-                        "mode:${ownship.mode.name.lowercase()}:" +
-                        "source:${ownshipControls.sources.firstOrNull { it.active }?.sourceId ?: "none"}:" +
-                        "draw:${ownship.drawAircraft}:" +
-                        "position:${ownship.position?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "none"}:" +
-                        "track:${ownship.trackDegTrue?.let { "%.1f".format(it) } ?: "none"}",
-                ),
+                .offset(x = 26.dp)
+                .size(1.dp),
         )
         mapFollowProbeTag?.let { tag ->
             Box(
@@ -3376,25 +3547,29 @@ internal fun MapExplorerPage(
             },
         )
 
-        val primaryNavigationWidth = (ThumbSize * 5f) + (ThumbGap * 2f)
-        val playbackLeftRoomUnits = surfaceWidthDp / 2f - (primaryNavigationWidth.value / 2f) - (ThumbGap.value * 2f)
-        val playbackBottomPadding =
-            if (playbackLeftRoomUnits < ThumbSize.value * 2.8f) {
-                ThumbGap + ThumbSize + ThumbGap
-            } else {
-                ThumbGap
-            }
         if (playbackPanelState.visible) {
-            PlaybackWidget(
+            E2eProjectionView(
+                viewId = R.id.e2e_playback_widget_projection,
+                state =
+                    "status:${playbackUiState.status.name.lowercase()}:" +
+                        "cursor:${String.format("%.3f", playbackUiState.cursorSeconds)}:" +
+                        "duration:${String.format("%.3f", playbackUiState.durationSeconds)}:" +
+                        "rate:${String.format("%.2f", playbackUiState.rate)}:" +
+                        "gaps:${playbackUiState.gapSpans.size}",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 28.dp)
+                    .size(1.dp),
+            )
+            MapPlaybackWidgetOverlay(
+                surfaceWidthDp = surfaceWidthDp,
                 uiSession = uiSession,
                 playbackUiState = playbackUiState,
                 sourcePath = playbackSourcePath,
                 onSourcePathChange = actions.onPlaybackSourcePathChange,
                 onSnapshotChange = actions.onSessionSnapshotChange,
                 onSessionCommandFailure = actions.onSessionCommandFailure,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = ThumbGap, bottom = playbackBottomPadding),
+                modifier = Modifier.align(Alignment.BottomStart),
             )
         }
 
@@ -3513,6 +3688,52 @@ internal fun MapExplorerPage(
         )
 
     }
+}
+
+@Composable
+private fun MapPlaybackWidgetOverlay(
+    surfaceWidthDp: Float,
+    uiSession: NativeUiSession,
+    playbackUiState: PlaybackUiState,
+    sourcePath: String,
+    onSourcePathChange: (String) -> Unit,
+    onSnapshotChange: (UiSessionSnapshot) -> Unit,
+    onSessionCommandFailure: (Throwable) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    var playbackSourceFocused by remember { mutableStateOf(false) }
+    val primaryNavigationWidth = (ThumbSize * 5f) + (ThumbGap * 2f)
+    val playbackLeftRoomUnits = surfaceWidthDp / 2f - (primaryNavigationWidth.value / 2f) - (ThumbGap.value * 2f)
+    val playbackBottomPadding =
+        if (playbackLeftRoomUnits < ThumbSize.value * 2.8f) {
+            ThumbGap + ThumbSize + ThumbGap
+        } else {
+            ThumbGap
+        }
+    val playbackImePadding = with(density) { WindowInsets.ime.getBottom(this).toDp() }
+    val playbackKeyboardPadding =
+        if (!playbackSourceFocused) {
+            0.dp
+        } else if (playbackImePadding > 0.dp) {
+            playbackImePadding
+        } else {
+            (configuration.screenHeightDp * 0.38f).dp
+        }
+    val visiblePlaybackBottomPadding =
+        maxOf(playbackBottomPadding, playbackKeyboardPadding + ThumbGap)
+
+    PlaybackWidget(
+        uiSession = uiSession,
+        playbackUiState = playbackUiState,
+        sourcePath = sourcePath,
+        onSourcePathChange = onSourcePathChange,
+        onSourceFocusChange = { focused -> playbackSourceFocused = focused },
+        onSnapshotChange = onSnapshotChange,
+        onSessionCommandFailure = onSessionCommandFailure,
+        modifier = modifier.padding(start = ThumbGap, bottom = visiblePlaybackBottomPadding),
+    )
 }
 
 @Composable

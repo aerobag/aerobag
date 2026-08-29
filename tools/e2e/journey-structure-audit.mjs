@@ -375,17 +375,19 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
     }
     if (
       called === "performTransition" || called === "nativeTransition" ||
-      method === "transition" || method === "action" || method === "chooseOption"
+      method === "transition" || method === "action" || method === "repeatableAction" ||
+      method === "repeatAction" || method === "chooseOption"
     ) {
       const contract = node.arguments[
         called === "nativeTransition" ? 2
-          : method === "action" ? 2
+          : (method === "action" || method === "repeatableAction" || method === "repeatAction") ? 2
             : method === "chooseOption" ? 3
               : 1
       ];
       if (!contract || !ts.isObjectLiteralExpression(contract)) return;
       if (
-        (method === "action" || method === "chooseOption") &&
+        (method === "action" || method === "repeatableAction" ||
+          method === "repeatAction" || method === "chooseOption") &&
         !contract.properties.some((property) =>
           ts.isPropertyAssignment(property) &&
           ts.isIdentifier(property.name) &&
@@ -398,7 +400,10 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
       }
       for (const property of contract.properties) {
         if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) continue;
-        if (method === "action" && property.name.text === "ready") {
+        if (
+          (method === "action" || method === "repeatableAction" || method === "repeatAction") &&
+          property.name.text === "ready"
+        ) {
           violations.push({
             ...sourceLocation(source, property),
             message: "action readiness must come from driver.readAction(actionId)",

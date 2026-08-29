@@ -7,6 +7,7 @@ package org.aerobag.app.e2e;
 import android.accessibilityservice.AccessibilityService;
 import android.graphics.Rect;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
@@ -24,8 +25,11 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -33,17 +37,23 @@ import org.json.JSONObject;
 
 /** Test-only semantic driver that remains independent of Aerobag's process lifecycle. */
 public final class SemanticDriverService extends AccessibilityService {
+    private static final String LOG_TAG = "AerobagSemanticDriver";
+    private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/2";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong accessibilityEventSequence = new AtomicLong();
     private final Object accessibilityEventMonitor = new Object();
+    private final Map<String, String> exactNodePaths = new ConcurrentHashMap<>();
+    private final Map<String, Rect> exactNodeBounds = new ConcurrentHashMap<>();
     private ServerSocket server;
     private Thread serverThread;
+    private ExecutorService clientExecutor;
 
     @Override
     protected void onServiceConnected() {
         if (!running.compareAndSet(false, true)) return;
+        clientExecutor = Executors.newFixedThreadPool(4);
         serverThread = new Thread(this::serve, "aerobag-e2e-semantic-driver");
         serverThread.setDaemon(true);
         serverThread.start();
@@ -69,6 +79,7 @@ public final class SemanticDriverService extends AccessibilityService {
             } catch (IOException ignored) {}
         }
         if (serverThread != null) serverThread.interrupt();
+        if (clientExecutor != null) clientExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -80,15 +91,31 @@ public final class SemanticDriverService extends AccessibilityService {
         )) {
             server = socket;
             while (running.get()) {
-                try (Socket client = socket.accept()) {
-                    handleRequest(client);
-                }
+                Socket client = socket.accept();
+                clientExecutor.execute(() -> handleClient(client));
             }
         } catch (IOException error) {
-            if (running.get()) throw new RuntimeException(error);
+            if (running.get()) Log.e(LOG_TAG, "semantic server stopped", error);
         } finally {
             server = null;
             running.set(false);
+        }
+    }
+
+    private void handleClient(Socket client) {
+        try (client) {
+            try {
+                handleRequest(client);
+            } catch (IOException error) {
+                // A timed-out probe may close its socket while a changing
+                // accessibility tree is still being rendered.
+                if (running.get()) Log.w(LOG_TAG, "semantic client disconnected", error);
+            } catch (RuntimeException error) {
+                Log.e(LOG_TAG, "semantic request failed", error);
+                respondFailureBestEffort(client, error);
+            }
+        } catch (IOException error) {
+            if (running.get()) Log.w(LOG_TAG, "semantic client close failed", error);
         }
     }
 
@@ -122,6 +149,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 return;
             case "/query":
                 handleQuery(socket, path);
+                return;
+            case "/exact-projection":
+                handleExactProjection(socket, path);
                 return;
             case "/await-event":
                 handleAwaitEvent(socket, path);
@@ -160,6 +190,16 @@ public final class SemanticDriverService extends AccessibilityService {
             socket.getOutputStream(),
             "application/json; charset=utf-8",
             renderNodeQuery(tag, prefix, first).toString() + "\n",
+            200
+        );
+    }
+
+    private void handleExactProjection(Socket socket, String path) throws IOException {
+        String tag = queryOf(path).getOrDefault("tag", "");
+        respond(
+            socket.getOutputStream(),
+            "application/json; charset=utf-8",
+            renderExactProjection(tag).toString() + "\n",
             200
         );
     }
@@ -273,7 +313,11 @@ public final class SemanticDriverService extends AccessibilityService {
         int status
     ) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        String reason = status == 200 ? "OK" : status == 409 ? "Conflict" : "Not Found";
+        String reason = status == 200
+            ? "OK"
+            : status == 409
+                ? "Conflict"
+                : status == 500 ? "Internal Server Error" : "Not Found";
         output.write(("HTTP/1.1 " + status + " " + reason + "\r\n")
             .getBytes(StandardCharsets.US_ASCII));
         output.write(("Content-Type: " + contentType + "\r\n")
@@ -283,6 +327,17 @@ public final class SemanticDriverService extends AccessibilityService {
         output.write("Connection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
         output.write(bytes);
         output.flush();
+    }
+
+    private static void respondFailureBestEffort(Socket socket, RuntimeException error) {
+        try {
+            respond(
+                socket.getOutputStream(),
+                "text/plain; charset=utf-8",
+                "semantic request failed: " + error.getClass().getSimpleName() + "\n",
+                500
+            );
+        } catch (IOException ignored) {}
     }
 
     private String renderHierarchy() {
@@ -304,7 +359,9 @@ public final class SemanticDriverService extends AccessibilityService {
     private JSONArray renderNodeQuery(String tag, boolean prefix, boolean first) {
         JSONArray output = new JSONArray();
         if (tag.isEmpty()) return output;
-        List<AccessibilityNodeInfo> roots = roots(true);
+        if (!prefix && appendIndexedNodeQuery(tag, output)) return output;
+        if (!prefix && appendCachedNodeQuery(tag, output)) return output;
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
                 boolean matched = collectMatchingNodes(
@@ -328,8 +385,322 @@ public final class SemanticDriverService extends AccessibilityService {
         return output;
     }
 
+    private boolean appendIndexedNodeQuery(String tag, JSONArray output) {
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        try {
+            for (AccessibilityNodeInfo root : roots) {
+                List<AccessibilityNodeInfo> indexed = root.findAccessibilityNodeInfosByViewId(tag);
+                if (indexed == null) continue;
+                try {
+                    for (AccessibilityNodeInfo match : indexed) {
+                        match.refresh();
+                        if (!tag.equals(match.getViewIdResourceName())) continue;
+                        Rect bounds = new Rect();
+                        match.getBoundsInScreen(bounds);
+                        appendNodeQueryValue(output, match, centerReachable(match), "indexed");
+                        exactNodePaths.put(tag, "indexed");
+                        exactNodeBounds.put(tag, new Rect(bounds));
+                        return true;
+                    }
+                } finally {
+                    recycleAll(indexed);
+                }
+            }
+            return false;
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode indexed semantic query", error);
+        } finally {
+            recycleAll(roots);
+        }
+    }
+
+    private boolean appendCachedNodeQuery(String tag, JSONArray output) {
+        String semanticPath = exactNodePaths.get(tag);
+        Rect expectedBounds = exactNodeBounds.get(tag);
+        if (semanticPath == null || expectedBounds == null) return false;
+        AccessibilityNodeInfo node = nodeAtPath(semanticPath);
+        if (node != null) {
+            try {
+                node.refresh();
+                Rect bounds = new Rect();
+                node.getBoundsInScreen(bounds);
+                if (tag.equals(node.getViewIdResourceName()) && bounds.equals(expectedBounds)) {
+                    appendNodeQueryValue(
+                        output,
+                        node,
+                        centerReachable(node),
+                        semanticPath
+                    );
+                    return true;
+                }
+            } catch (JSONException error) {
+                throw new IllegalStateException("failed to encode cached semantic query", error);
+            } finally {
+                node.recycle();
+            }
+        }
+        if (appendCachedNodeQueryAtPoint(tag, expectedBounds, output)) return true;
+        exactNodePaths.remove(tag, semanticPath);
+        exactNodeBounds.remove(tag, expectedBounds);
+        return false;
+    }
+
+    private boolean appendCachedNodeQueryAtPoint(
+        String tag,
+        Rect expectedBounds,
+        JSONArray output
+    ) {
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        try {
+            for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+                if (appendCachedNodeQueryAtPoint(
+                    roots.get(rootIndex),
+                    tag,
+                    expectedBounds,
+                    Integer.toString(rootIndex),
+                    output
+                )) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to repair cached semantic query", error);
+        } finally {
+            recycleAll(roots);
+        }
+    }
+
     @SuppressWarnings("deprecation")
-    private static boolean collectMatchingNodes(
+    private boolean appendCachedNodeQueryAtPoint(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds,
+        String semanticPath,
+        JSONArray output
+    ) throws JSONException {
+        node.refresh();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return false;
+        if (tag.equals(node.getViewIdResourceName()) && bounds.equals(expectedBounds)) {
+            appendNodeQueryValue(output, node, centerReachable(node), semanticPath);
+            exactNodePaths.put(tag, semanticPath);
+            exactNodeBounds.put(tag, new Rect(bounds));
+            return true;
+        }
+        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
+            if (child == null) continue;
+            try {
+                if (appendCachedNodeQueryAtPoint(
+                    child,
+                    tag,
+                    expectedBounds,
+                    semanticPath + "/" + childIndex,
+                    output
+                )) {
+                    return true;
+                }
+            } finally {
+                child.recycle();
+            }
+        }
+        return false;
+    }
+
+    private JSONArray renderExactProjection(String tag) {
+        JSONArray output = new JSONArray();
+        if (tag.isEmpty()) return output;
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        try {
+            for (AccessibilityNodeInfo root : roots) {
+                List<AccessibilityNodeInfo> indexed = root.findAccessibilityNodeInfosByViewId(tag);
+                if (indexed == null) continue;
+                try {
+                    for (AccessibilityNodeInfo match : indexed) {
+                        appendExactProjectionValue(output, match);
+                    }
+                } finally {
+                    recycleAll(indexed);
+                }
+            }
+            if (output.length() > 0) return output;
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode indexed semantic projection", error);
+        } finally {
+            recycleAll(roots);
+        }
+        String cachedPath = exactNodePaths.get(tag);
+        if (cachedPath != null) {
+            AccessibilityNodeInfo cached = nodeAtPath(cachedPath);
+            if (cached != null) {
+                try {
+                    cached.refresh();
+                    if (tag.equals(cached.getViewIdResourceName())) {
+                        appendExactProjectionValue(output, cached);
+                        return output;
+                    }
+                } catch (JSONException error) {
+                    throw new IllegalStateException("failed to encode exact semantic projection", error);
+                } finally {
+                    cached.recycle();
+                }
+            }
+            Rect cachedBounds = exactNodeBounds.get(tag);
+            if (cachedBounds != null && appendExactProjectionAtPoint(tag, cachedBounds, output)) {
+                return output;
+            }
+            exactNodePaths.remove(tag, cachedPath);
+            exactNodeBounds.remove(tag);
+        }
+        roots = targetRoots(true);
+        try {
+            for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+                if (appendFirstExactProjection(
+                    roots.get(rootIndex),
+                    tag,
+                    Integer.toString(rootIndex),
+                    output
+                )) {
+                    break;
+                }
+            }
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode exact semantic projection", error);
+        } finally {
+            recycleAll(roots);
+        }
+        return output;
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean appendFirstExactProjection(
+        AccessibilityNodeInfo node,
+        String tag,
+        String semanticPath,
+        JSONArray output
+    ) throws JSONException {
+        node.refresh();
+        if (tag.equals(node.getViewIdResourceName())) {
+            appendExactProjectionValue(output, node);
+            exactNodePaths.put(tag, semanticPath);
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            exactNodeBounds.put(tag, bounds);
+            return true;
+        }
+        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
+            if (child == null) continue;
+            try {
+                if (appendFirstExactProjection(
+                    child,
+                    tag,
+                    semanticPath + "/" + childIndex,
+                    output
+                )) {
+                    return true;
+                }
+            } finally {
+                child.recycle();
+            }
+        }
+        return false;
+    }
+
+    private boolean appendExactProjectionAtPoint(
+        String tag,
+        Rect expectedBounds,
+        JSONArray output
+    ) {
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        try {
+            for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+                if (appendExactProjectionAtPoint(
+                    roots.get(rootIndex),
+                    tag,
+                    expectedBounds,
+                    Integer.toString(rootIndex),
+                    output
+                )) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode exact semantic projection", error);
+        } finally {
+            recycleAll(roots);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean appendExactProjectionAtPoint(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds,
+        String semanticPath,
+        JSONArray output
+    ) throws JSONException {
+        node.refresh();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return false;
+        if (tag.equals(node.getViewIdResourceName())) {
+            appendExactProjectionValue(output, node);
+            exactNodePaths.put(tag, semanticPath);
+            exactNodeBounds.put(tag, new Rect(bounds));
+            return true;
+        }
+        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
+            if (child == null) continue;
+            try {
+                if (appendExactProjectionAtPoint(
+                    child,
+                    tag,
+                    expectedBounds,
+                    semanticPath + "/" + childIndex,
+                    output
+                )) {
+                    return true;
+                }
+            } finally {
+                child.recycle();
+            }
+        }
+        return false;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void appendExactProjectionValue(
+        JSONArray output,
+        AccessibilityNodeInfo node
+    ) throws JSONException {
+        node.refresh();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        JSONObject value = new JSONObject();
+        value.put("resource-id", node.getViewIdResourceName());
+        value.put("text", directNodeLabel(node));
+        value.put("enabled", Boolean.toString(node.isEnabled()));
+        value.put("visible", Boolean.toString(node.isVisibleToUser()));
+        value.put("selected", Boolean.toString(node.isSelected()));
+        value.put("checked", Boolean.toString(node.isChecked()));
+        value.put("state-description", stringValue(node.getStateDescription()));
+        value.put("bounds", bounds.toShortString());
+        output.put(value);
+    }
+
+    private static String directNodeLabel(AccessibilityNodeInfo node) {
+        String text = stringValue(node.getText());
+        String description = stringValue(node.getContentDescription());
+        return (text + " " + description).trim().replaceAll("\\s+", " ");
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean collectMatchingNodes(
         AccessibilityNodeInfo node,
         String tag,
         boolean prefix,
@@ -350,13 +721,17 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean matched = false;
         if (nodeTag != null && (prefix ? nodeTag.startsWith(tag) : nodeTag.equals(tag))) {
             appendNodeQueryValue(output, node, centerReachable, semanticPath);
+            if (!prefix) {
+                exactNodePaths.put(tag, semanticPath);
+                exactNodeBounds.put(tag, new Rect(bounds));
+            }
             matched = true;
             if (!prefix || first) return true;
         }
         Rect childClip = new Rect(bounds);
         if (ancestorClip != null && !childClip.intersect(ancestorClip)) childClip.setEmpty();
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
                 boolean childMatched = collectMatchingNodes(
@@ -441,7 +816,7 @@ public final class SemanticDriverService extends AccessibilityService {
         if (!text.isEmpty()) output.append(text).append(' ');
         if (!description.isEmpty()) output.append(description).append(' ');
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
                 child.refresh();
@@ -462,13 +837,22 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect expectedBounds,
         String semanticPath
     ) {
-        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-        if (node == null) return false;
-        try {
-            return setMatchingNodeText(node, tag, value, expectedBounds);
-        } finally {
-            node.recycle();
+        // Setting the same requested value is idempotent. Compose can replace
+        // the virtual input node between readiness and delivery, so retry only
+        // the exact rendered field after a real accessibility-tree change.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long sequence = accessibilityEventSequence.get();
+            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+            if (node != null) {
+                try {
+                    if (setMatchingNodeText(node, tag, value, expectedBounds)) return true;
+                } finally {
+                    node.recycle();
+                }
+            }
+            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
         }
+        return false;
     }
 
     private boolean clickRenderedNode(
@@ -481,8 +865,11 @@ public final class SemanticDriverService extends AccessibilityService {
     ) {
         // Accessibility can reject an action on a stale node object without
         // delivering it. Re-resolve only the same rendered semantic state;
-        // the first accepted action ends the request.
+        // the first accepted action ends the request. Compose can publish the
+        // replacement virtual node asynchronously, so let a real tree-change
+        // event advance the provider before retrying.
         for (int attempt = 0; attempt < 3; attempt++) {
+            long sequence = accessibilityEventSequence.get();
             AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
             if (node == null) return false;
             try {
@@ -496,6 +883,7 @@ public final class SemanticDriverService extends AccessibilityService {
             } finally {
                 node.recycle();
             }
+            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
         }
         return false;
     }
@@ -523,6 +911,9 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect expectedBounds,
         String semanticPath
     ) {
+        AccessibilityNodeInfo indexed = findIndexedRenderedNode(tag, expectedBounds);
+        if (indexed != null) return indexed;
+
         AccessibilityNodeInfo node = nodeAtPath(semanticPath);
         if (node != null) {
             node.refresh();
@@ -534,11 +925,34 @@ public final class SemanticDriverService extends AccessibilityService {
         // recomposition. Resolve that case like a real tap: descend only
         // through nodes covering the readiness point, then require the same
         // semantic tag and exact bounds before delivering the action.
-        List<AccessibilityNodeInfo> roots = roots(true);
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
                 AccessibilityNodeInfo match = findRenderedNodeAtPoint(root, tag, expectedBounds);
                 if (match != null) return match;
+            }
+            return null;
+        } finally {
+            recycleAll(roots);
+        }
+    }
+
+    private AccessibilityNodeInfo findIndexedRenderedNode(String tag, Rect expectedBounds) {
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        try {
+            for (AccessibilityNodeInfo root : roots) {
+                List<AccessibilityNodeInfo> indexed = root.findAccessibilityNodeInfosByViewId(tag);
+                if (indexed == null) continue;
+                try {
+                    for (AccessibilityNodeInfo match : indexed) {
+                        match.refresh();
+                        if (matchesRenderedTarget(match, tag, expectedBounds)) {
+                            return AccessibilityNodeInfo.obtain(match);
+                        }
+                    }
+                } finally {
+                    recycleAll(indexed);
+                }
             }
             return null;
         } finally {
@@ -560,7 +974,7 @@ public final class SemanticDriverService extends AccessibilityService {
             return AccessibilityNodeInfo.obtain(node);
         }
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
                 AccessibilityNodeInfo match = findRenderedNodeAtPoint(child, tag, expectedBounds);
@@ -593,7 +1007,7 @@ public final class SemanticDriverService extends AccessibilityService {
         } catch (NumberFormatException error) {
             return null;
         }
-        List<AccessibilityNodeInfo> roots = roots(true);
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
         AccessibilityNodeInfo current = null;
         try {
             if (rootIndex < 0 || rootIndex >= roots.size()) return null;
@@ -609,7 +1023,7 @@ public final class SemanticDriverService extends AccessibilityService {
                 current.recycle();
                 return null;
             }
-            AccessibilityNodeInfo child = current.getChild(childIndex);
+            AccessibilityNodeInfo child = childAtOrNull(current, childIndex);
             current.recycle();
             if (child == null) return null;
             current = child;
@@ -618,7 +1032,7 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private boolean scrollRenderedNode(Rect bounds, int action) {
-        List<AccessibilityNodeInfo> roots = roots(true);
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
                 if (scrollNode(root, bounds, action)) return true;
@@ -630,6 +1044,14 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private List<AccessibilityNodeInfo> roots(boolean topFirst) {
+        return roots(topFirst, null);
+    }
+
+    private List<AccessibilityNodeInfo> targetRoots(boolean topFirst) {
+        return roots(topFirst, TARGET_PACKAGE);
+    }
+
+    private List<AccessibilityNodeInfo> roots(boolean topFirst, String requiredPackage) {
         List<AccessibilityWindowInfo> ordered = new ArrayList<>(getWindows());
         try {
             ordered.sort(Comparator.comparingInt(AccessibilityWindowInfo::getLayer));
@@ -640,15 +1062,27 @@ public final class SemanticDriverService extends AccessibilityService {
             for (AccessibilityWindowInfo window : ordered) {
                 AccessibilityNodeInfo root = window.getRoot();
                 if (root != null) {
-                    root.refresh();
-                    roots.add(root);
+                    if (requiredPackage == null || requiredPackage.equals(
+                        stringValue(root.getPackageName())
+                    )) {
+                        root.refresh();
+                        roots.add(root);
+                    } else {
+                        root.recycle();
+                    }
                 }
             }
             if (roots.isEmpty()) {
                 AccessibilityNodeInfo activeRoot = getRootInActiveWindow();
                 if (activeRoot != null) {
-                    activeRoot.refresh();
-                    roots.add(activeRoot);
+                    if (requiredPackage == null || requiredPackage.equals(
+                        stringValue(activeRoot.getPackageName())
+                    )) {
+                        activeRoot.refresh();
+                        roots.add(activeRoot);
+                    } else {
+                        activeRoot.recycle();
+                    }
                 }
             }
             return roots;
@@ -667,6 +1101,20 @@ public final class SemanticDriverService extends AccessibilityService {
         for (AccessibilityNodeInfo node : nodes) node.recycle();
     }
 
+    private static AccessibilityNodeInfo childAtOrNull(
+        AccessibilityNodeInfo node,
+        int childIndex
+    ) {
+        try {
+            if (childIndex < 0 || childIndex >= node.getChildCount()) return null;
+            return node.getChild(childIndex);
+        } catch (IndexOutOfBoundsException error) {
+            // Compose can replace its virtual child array between getChildCount
+            // and getChild. A changed tree is a stale lookup, not a driver crash.
+            return null;
+        }
+    }
+
     @SuppressWarnings("deprecation")
     private static boolean setMatchingNodeText(
         AccessibilityNodeInfo node,
@@ -679,12 +1127,7 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!bounds.equals(expectedBounds)) return false;
-        if (!node.isFocused()) {
-            if (!node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) return false;
-            if (!node.refresh()) return false;
-            node.getBoundsInScreen(bounds);
-            if (!bounds.equals(expectedBounds) || !node.isFocused()) return false;
-        }
+        if (!node.isFocused()) return false;
         Bundle arguments = new Bundle();
         arguments.putCharSequence(
             AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
@@ -716,7 +1159,7 @@ public final class SemanticDriverService extends AccessibilityService {
             return node.performAction(action);
         }
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
                 if (scrollNode(child, bounds, action)) return true;
@@ -797,7 +1240,7 @@ public final class SemanticDriverService extends AccessibilityService {
         );
         output.append('>');
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
+            AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
                 appendNode(

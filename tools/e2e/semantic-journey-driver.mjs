@@ -8,16 +8,26 @@ import {
   displayBoundsFromXml, dumpAndroid, findNode, findNodes,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
+  queryAndroidExactProjection,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
   scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
 } from "./android-harness.mjs";
 import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 
+const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
+  ["parity:live-overlay:", "org.aerobag.app:id/e2e_live_overlay_projection"],
+  ["parity:nexrad-state:", "org.aerobag.app:id/e2e_nexrad_state_projection"],
+  ["parity:ownship-state:", "org.aerobag.app:id/e2e_ownship_state_projection"],
+  ["parity:playback-widget:", "org.aerobag.app:id/e2e_playback_widget_projection"],
+  ["parity:viewport:", "org.aerobag.app:id/e2e_viewport_projection"],
+]);
+
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "reset", "resetApplicationData", "openPage", "readCurrentPage", "readPage", "readNavigationAction", "activateNavigation",
   "openChooser", "readOption", "selectOption",
   "inspectMapAt", "activateMapInspection", "performAction",
-  "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
+  "readRepeatedAction", "performRepeatedAction",
+  "focusText", "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
   "readAction", "readSessionRevision", "findProjectionMatching", "revealElement", "scanProjection",
   "readCloudActionRevision",
   "revealProjectionMatching", "reload",
@@ -57,10 +67,19 @@ export class SemanticJourneyDriver {
   async performAction(_actionId, _readyElement) {
     throw new Error(`${this.platform} driver does not implement performAction`);
   }
+  async readRepeatedAction(actionId, _retainedTarget) {
+    return this.readAction(actionId);
+  }
+  async performRepeatedAction(actionId, _retainedTarget, readyElement) {
+    return this.performAction(actionId, readyElement);
+  }
   async readAction(_actionId) { throw new Error(`${this.platform} driver does not implement readAction`); }
   async readSessionRevision() { throw new Error(`${this.platform} driver does not implement readSessionRevision`); }
   async readCloudActionRevision() {
     throw new Error(`${this.platform} driver does not implement readCloudActionRevision`);
+  }
+  async focusText(_controlId, _readyElement) {
+    throw new Error(`${this.platform} driver does not implement focusText`);
   }
   async enterText(_controlId, _value, _options, _readyElement) {
     throw new Error(`${this.platform} driver does not implement enterText`);
@@ -137,12 +156,25 @@ export async function editSemanticText(
   } = {},
 ) {
   const expected = String(value);
-  const current = await driver.readElement(controlId);
+  let current = await driver.readElement(controlId);
   if (current && semanticTextValue(current) === expected) return current;
+  if (!current?.focused) {
+    current = await transition(`${description} focus`, {
+      ready: async () => {
+        const element = await driver.readElement(controlId);
+        return element?.enabled && element.actionable !== false ? element : null;
+      },
+      act: (readyElement) => driver.focusText(controlId, readyElement),
+      complete: async () => {
+        const element = await driver.readElement(controlId);
+        return element?.focused ? element : null;
+      },
+    });
+  }
   return transition(description, {
     ready: async () => {
       const element = await driver.readElement(controlId);
-      return element?.enabled && element.actionable !== false ? element : null;
+      return element?.focused && element.enabled && element.actionable !== false ? element : null;
     },
     act: (readyElement) => driver.enterText(controlId, expected, options, readyElement),
     complete: async () => {
@@ -350,6 +382,13 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
       throw new Error(`web text control ${controlId} has no matching readiness evidence`);
     }
     await this.transport.enterText(webTestIdSelector(controlId), value, readyElement);
+  }
+
+  async focusText(controlId, readyElement) {
+    if (readyElement?.test_id !== controlId) {
+      throw new Error(`web text control ${controlId} has no matching focus evidence`);
+    }
+    await this.transport.focusText(webTestIdSelector(controlId), readyElement);
   }
 
   async submit(controlId, readyElement) {
@@ -882,6 +921,41 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     activateAndroidSemanticTag(this.serial, readyTag, readyElement);
   }
 
+  async readRepeatedAction(actionId, retainedTarget) {
+    const retainedTag = retainedTarget?.test_id ?? retainedTarget?.["resource-id"];
+    if (
+      !retainedTag ||
+      !androidActionCandidates(actionId).includes(retainedTag) ||
+      !readinessEvidenceMatchesTag(retainedTag, retainedTarget) ||
+      !retainedTarget.enabled
+    ) {
+      throw new Error(`Android repeated action ${actionId} has no retained exact target`);
+    }
+    return retainedTarget;
+  }
+
+  async performRepeatedAction(actionId, retainedTarget, readyElement) {
+    if (readyElement !== retainedTarget) {
+      throw new Error(`Android repeated action ${actionId} did not retain its readiness target`);
+    }
+    const retainedTag = retainedTarget?.test_id ?? retainedTarget?.["resource-id"];
+    if (
+      !retainedTag ||
+      !androidActionCandidates(actionId).includes(retainedTag) ||
+      !readinessEvidenceMatchesTag(retainedTag, retainedTarget)
+    ) {
+      throw new Error(`Android repeated action ${actionId} target no longer matches its identity`);
+    }
+    const bounds = rectOfBounds(retainedTarget.bounds);
+    adb(this.serial, [
+      "shell",
+      "input",
+      "tap",
+      String(Math.round(bounds.left + bounds.width / 2)),
+      String(Math.round(bounds.top + bounds.height / 2)),
+    ]);
+  }
+
   async readAction(actionId) {
     for (const candidate of androidActionCandidates(actionId)) {
       const node = queryFirstAndroidSemanticNode(
@@ -930,6 +1004,14 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     }
   }
 
+  async focusText(controlId, readyElement) {
+    const semanticTag = `parity:${controlId}`;
+    if (!readinessEvidenceMatchesTag(semanticTag, readyElement)) {
+      throw new Error(`Android text control ${controlId} has no matching focus evidence`);
+    }
+    activateAndroidSemanticTag(this.serial, semanticTag, readyElement);
+  }
+
   async submit(controlId, readyElement) {
     const semanticTag = `parity:${controlId}`;
     if (
@@ -966,6 +1048,19 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readProjection(probe) {
     const prefix = androidSemanticTag(probe);
+    if (ANDROID_EXACT_SCALAR_PROJECTIONS.has(prefix)) {
+      const queried = queryAndroidExactProjection(
+        this.serial,
+        ANDROID_EXACT_SCALAR_PROJECTIONS.get(prefix),
+      );
+      return queried.map((node) => ({
+        id: `${prefix}${node["state-description"] ?? ""}`,
+        text: node.text || "",
+        enabled: androidElementEnabled(node),
+        pressed: null,
+        state: node["state-description"] || null,
+      }));
+    }
     if (prefix === "parity:data-status-row:") {
       const stateNode = queryFirstAndroidSemanticNode(
         this.serial,

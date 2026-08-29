@@ -26,9 +26,9 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 const ADB_TIMEOUT_MS = 20000;
 const APP_START_TIMEOUT_MS = 60000;
 const CLOCK_SET_TIMEOUT_MS = 15000;
-const SEMANTIC_REQUEST_TIMEOUT_SECONDS = 2;
+const SEMANTIC_REQUEST_TIMEOUT_SECONDS = 0.75;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/2";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const SEMANTIC_DRIVER_SERVICE =
   `${SEMANTIC_DRIVER_PACKAGE}/org.aerobag.app.e2e.SemanticDriverService`;
@@ -102,6 +102,10 @@ function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
     timeout: (timeoutSeconds + 1) * 1000,
     maxBuffer: 16 * 1024 * 1024,
   });
+}
+
+function semanticDriverRequestTimedOut(response) {
+  return response.status === 28 || response.stderr.includes("Operation timed out");
 }
 
 export function setAndroidSemanticText(serial, tag, value, expectedBounds, semanticPath) {
@@ -186,7 +190,28 @@ export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first =
   );
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  if (semanticDriverRequestTimedOut(response)) {
+    throw new TransientObservationError(
+      `Android semantic tree was busy while querying ${tag}: ${detail}`,
+    );
+  }
   throw new Error(`persistent Android semantic query failed for ${tag}: ${detail}`);
+}
+
+export function queryAndroidExactProjection(serial, tag) {
+  const state = requiredSemanticDriver(serial);
+  const query = new URLSearchParams({ tag });
+  const response = semanticDriverRequest(
+    state.port, `/exact-projection?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS,
+  );
+  if (response.status === 0) return JSON.parse(response.stdout);
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  if (semanticDriverRequestTimedOut(response)) {
+    throw new TransientObservationError(
+      `Android exact semantic projection was busy while querying ${tag}: ${detail}`,
+    );
+  }
+  throw new Error(`persistent Android exact semantic projection failed for ${tag}: ${detail}`);
 }
 
 function semanticDriverDump(serial) {
@@ -536,6 +561,18 @@ export function currentAerobagPid(serial) {
   if (output.status !== 0) return null;
   const pid = output.stdout.trim().split(/\s+/)[0];
   return /^\d+$/.test(pid) ? Number(pid) : null;
+}
+
+export function androidAppLifecyclePresent(serial) {
+  if (currentAerobagPid(serial) !== null) return true;
+  const activities = adb(serial, ["shell", "dumpsys", "activity", "activities"]);
+  if (/^\s*\*?\s*Task\{[^\n]*\bA=\d+:org\.aerobag\.app\b/m.test(activities)) return true;
+  if (/^\s*\*?\s*Hist\s+#\d+: ActivityRecord\{[^\n]*\borg\.aerobag\.app\/\.MainActivity\b/m.test(activities)) {
+    return true;
+  }
+  const windows = adb(serial, ["shell", "dumpsys", "window", "windows"]);
+  return /^\s*Window #\d+ Window\{[^\n]*\borg\.aerobag\.app\/org\.aerobag\.app\.MainActivity\b/m
+    .test(windows);
 }
 
 export function saveAndroidRotationState(serial) {
@@ -899,14 +936,15 @@ export async function restartAndroidAppAcrossSemanticLifecycle({
   prepareSemanticDriver,
   startApp,
   readProcessNode,
+  readStoppedState = async () => (await readProcessNode()) === null,
   timeoutMs = E2E_TIMING.startupMs,
   intervalMs = E2E_TIMING.pollIntervalMs,
 }) {
   await stopApp();
   await prepareSemanticDriver();
   await observeUntil(
-    "previous Aerobag semantic UI removed",
-    async () => (await readProcessNode()) === null ? true : null,
+    "previous Aerobag process, task, window, and semantic UI removed",
+    async () => (await readStoppedState()) ? true : null,
     {
       timeoutMs,
       intervalMs,
@@ -945,7 +983,10 @@ export async function launchFreshAndroidApp(
     startArgs.push("--ez", DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA, "true");
   }
   await restartAndroidAppAcrossSemanticLifecycle({
-    stopApp: () => adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]),
+    // `force-stop` removes the task asynchronously. A delayed remove-task
+    // timeout can then kill the replacement process after `am start` returns.
+    // `stop-app` provides the process reset the journeys need without that race.
+    stopApp: () => adb(serial, ["shell", "am", "stop-app", ANDROID_PACKAGE]),
     prepareSemanticDriver: () => ensureAndroidSemanticDriver(serial),
     startApp: () => {
       // `am start -W` includes Android process startup and can exceed the generic
@@ -953,6 +994,8 @@ export async function launchFreshAndroidApp(
       adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
     },
     readProcessNode: () => firstAerobagProcessNode(serial),
+    readStoppedState: async () =>
+      firstAerobagProcessNode(serial) === null && !androidAppLifecyclePresent(serial),
   });
 }
 

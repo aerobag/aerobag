@@ -9,6 +9,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../../ui/android-app/scripts/emulator_identity.sh
 source "$ROOT/ui/android-app/scripts/emulator_identity.sh"
+# shellcheck source=../../ui/android-app/scripts/e2e_app_data.sh
+source "$ROOT/ui/android-app/scripts/e2e_app_data.sh"
 aerobag_source_instance_config "$ROOT/../INSTANCE_CONFIG"
 aerobag_configure_emulator_identity
 SERIAL="$ANDROID_SERIAL"
@@ -324,7 +326,7 @@ android_baseline_save() {
 }
 
 android_clear_baseline_live_feeds() {
-  adb -s "$SERIAL" shell am force-stop org.aerobag.app >/dev/null
+  aerobag_e2e_stop_app "$SERIAL"
   adb -s "$SERIAL" shell run-as org.aerobag.app rm -rf files/live-feeds
   adb -s "$SERIAL" shell run-as org.aerobag.app rm -f files/e2e-live-feed-promotion.pause
 }
@@ -360,8 +362,7 @@ android_baseline_restore() {
     exit 1
   }
   android_assert_baseline_archive_clean "$archive"
-  adb -s "$SERIAL" shell am force-stop org.aerobag.app >/dev/null
-  adb -s "$SERIAL" shell pm clear org.aerobag.app >/dev/null
+  aerobag_e2e_clear_app_data "$SERIAL"
   if ! adb -s "$SERIAL" shell test -f "$ANDROID_BASELINE_DEVICE_ARCHIVE"; then
     adb -s "$SERIAL" push "$archive" "$ANDROID_BASELINE_DEVICE_ARCHIVE" >/dev/null
   fi

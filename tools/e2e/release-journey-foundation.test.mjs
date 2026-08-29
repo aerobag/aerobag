@@ -1107,6 +1107,15 @@ test("web text actions retain exact readiness evidence", () => {
   assert.match(transport, /document\.activeElement === input/);
 });
 
+test("web text focus uses an editable-control contract instead of button activation", () => {
+  const transport = readFileSync(new URL("./web-semantic-transport.mjs", import.meta.url), "utf8");
+  const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  assert.match(transport, /async focusText\(selector, readyElement\)/);
+  assert.match(transport, /input instanceof HTMLInputElement \|\| input instanceof HTMLTextAreaElement/);
+  assert.match(transport, /document\.activeElement === input/);
+  assert.match(driver, /transport\.focusText\(webTestIdSelector\(controlId\), readyElement\)/);
+});
+
 test("web layer toggles expose the same selected state they paint", () => {
   const web = readFileSync(new URL("../../ui/web-app/src/App.tsx", import.meta.url), "utf8");
   assert.match(
@@ -1341,7 +1350,15 @@ test("Android qualification archives packages without leaking live-feed state be
   assert.match(lab, /android_baseline_restore\(\)[\s\S]+android_clear_baseline_live_feeds/);
   assert.match(lab, /find files\/live-feeds -type f -print/);
   assert.match(lab, /exec-out run-as org\.aerobag\.app tar -C \. -cf - \./);
-  assert.match(lab, /shell pm clear org\.aerobag\.app/);
+  assert.match(lab, /aerobag_e2e_clear_app_data "\$SERIAL"/);
+  assert.doesNotMatch(lab, /shell pm clear org\.aerobag\.app/);
+  const appData = readFileSync(
+    new URL("../../ui/android-app/scripts/e2e_app_data.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(appData, /shell am stop-app "\$AEROBAG_E2E_APP_PACKAGE"/);
+  assert.match(appData, /find \. -mindepth 1 -delete/);
+  assert.doesNotMatch(appData, /shell pm clear|shell am force-stop/);
   assert.doesNotMatch(lab, /emu avd snapshot (?:save|load)/);
 });
 
@@ -1535,12 +1552,12 @@ test("Android E2E can map an immutable APK port to an isolated host fixture", ()
   );
 });
 
-test("persistent Android semantic requests fail before the user-response budget", () => {
+test("persistent Android semantic requests leave room for bounded observation recovery", () => {
   const source = readFileSync(
     new URL("./android-harness.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /SEMANTIC_REQUEST_TIMEOUT_SECONDS = 2/);
+  assert.match(source, /SEMANTIC_REQUEST_TIMEOUT_SECONDS = 0\.75/);
   assert.match(
     source,
     /state\.port, "\/dump", SEMANTIC_REQUEST_TIMEOUT_SECONDS/,
@@ -1550,9 +1567,10 @@ test("persistent Android semantic requests fail before the user-response budget"
     /state\.port, `\/click\?\$\{query\}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST"/,
   );
   assert.match(source, /"--fail-with-body"/);
+  assert.match(source, /semanticDriverRequestTimedOut\(response\)[\s\S]*new TransientObservationError/);
 });
 
-test("persistent Android actions resolve the readiness target without a full-tree scan", () => {
+test("persistent Android actions resolve exact readiness evidence before bounded fallbacks", () => {
   const source = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
@@ -1570,7 +1588,48 @@ test("persistent Android actions resolve the readiness target without a full-tre
   assert.match(source, /for \(int attempt = 0; attempt < 3; attempt\+\+\)/);
   assert.match(source, /matchesExpectedActionState\(/);
   assert.match(source, /if \(clickMatchingNode\(node, tag, expectedBounds\)\) return true/);
-  assert.doesNotMatch(source, /findAccessibilityNodeInfosByViewId/);
+  assert.match(source, /if \(setMatchingNodeText\(node, tag, value, expectedBounds\)\) return true/);
+  const actionResolution = source.slice(
+    source.indexOf("private AccessibilityNodeInfo resolveRenderedNode("),
+    source.indexOf("private static boolean matchesRenderedTarget("),
+  );
+  assert.ok(
+    actionResolution.indexOf("findIndexedRenderedNode(tag, expectedBounds)") <
+      actionResolution.indexOf("nodeAtPath(semanticPath)"),
+    "indexed exact action lookup must precede path and point fallbacks",
+  );
+  assert.doesNotMatch(actionResolution, /collectMatchingNodes/);
+});
+
+test("rapid Android scalar projections use stable IDs instead of full-tree prefix scans", () => {
+  const driver = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  const playback = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/PlaybackWidget.kt", import.meta.url),
+    "utf8",
+  );
+  const journeyDriver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  assert.match(driver, /case "\/exact-projection"/);
+  assert.match(driver, /findAccessibilityNodeInfosByViewId\(tag\)/);
+  assert.match(driver, /exactNodePaths\.get\(tag\)/);
+  assert.match(driver, /nodeAtPath\(cachedPath\)/);
+  assert.match(driver, /tag\.equals\(cached\.getViewIdResourceName\(\)\)/);
+  assert.match(driver, /appendExactProjectionAtPoint\(tag, cachedBounds, output\)/);
+  assert.match(driver, /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/);
+  assert.match(driver, /exactNodePaths\.put\(tag, semanticPath\)/);
+  assert.match(playback, /\.testTag\("parity:playback-widget"\)/);
+  assert.match(journeyDriver, /e2e_live_overlay_projection/);
+  assert.match(journeyDriver, /e2e_nexrad_state_projection/);
+  assert.match(
+    journeyDriver,
+    /ANDROID_EXACT_SCALAR_PROJECTIONS\.has\(prefix\)[\s\S]*queryAndroidExactProjection/,
+  );
+  assert.match(journeyDriver, /"parity:ownship-state:"/);
+  assert.match(journeyDriver, /"parity:playback-widget:"/);
+  assert.match(journeyDriver, /"parity:viewport:"/);
+  assert.match(journeyDriver, /e2e_playback_widget_projection/);
 });
 
 test("mandatory disclaimer response and application startup use separate budgets", () => {
@@ -1611,6 +1670,8 @@ test("Android app restart observes a stable process node without dumping the UI"
     harness.indexOf("export async function acceptDisclaimerIfPresent"),
   );
   assert.match(launch, /restartAndroidAppAcrossSemanticLifecycle\(/);
+  assert.match(launch, /"am", "stop-app", ANDROID_PACKAGE/);
+  assert.doesNotMatch(launch, /"am", "force-stop", ANDROID_PACKAGE/);
   assert.match(launch, /firstAerobagProcessNode\(serial\)/);
   assert.doesNotMatch(launch, /dumpAndroid\(/);
   const processProbe = harness.slice(
@@ -1626,9 +1687,10 @@ test("Android app restart observes a stable process node without dumping the UI"
     harness.indexOf("export async function restartAndroidAppAcrossSemanticLifecycle"),
     harness.indexOf("export async function launchFreshAndroidApp"),
   );
-  assert.match(lifecycle, /previous Aerobag semantic UI removed/);
+  assert.match(lifecycle, /previous Aerobag process, task, window, and semantic UI removed/);
   assert.match(lifecycle, /new Aerobag semantic UI visible/);
   assert.match(lifecycle, /consecutiveSuccesses: E2E_TIMING\.transitionCompletionSamples/g);
+  assert.match(launch, /androidAppLifecyclePresent\(serial\)/);
 });
 
 test("package refresh completion observes a new catalog request", () => {
@@ -1726,20 +1788,81 @@ test("journey actions require a semantic completion condition", async () => {
   }
 });
 
+test("repeatable actions retain one proven target and reject forged handles", async () => {
+  const target = {
+    test_id: "parity:playback-play-toggle",
+    enabled: true,
+    bounds: "[10,20][30,40]",
+    semantic_path: "0/1/2",
+  };
+  const actions = [];
+  const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-repeatable-action-"));
+  const runtime = createJourneyRuntime({
+    journey: { id: "repeatable-action-contract", assertions: [] },
+    platform: "android",
+    driver: {
+      async readAction() { return target; },
+      async performAction(actionId, evidence) { actions.push(["initial", actionId, evidence]); },
+      async readRepeatedAction(actionId, evidence) {
+        assert.equal(actionId, "playback-play-toggle");
+        assert.equal(evidence, target);
+        return evidence;
+      },
+      async performRepeatedAction(actionId, retained, evidence) {
+        actions.push(["repeat", actionId, retained, evidence]);
+      },
+      async captureFrame() {},
+    },
+    fixture: null,
+    artifactDir,
+  });
+  try {
+    const first = await runtime.repeatableAction("play", "playback-play-toggle", {
+      complete: async () => actions.length === 1 ? "playing" : null,
+    });
+    assert.equal(first.value, "playing");
+    assert.equal(actions[0][2], target);
+
+    const second = await runtime.repeatAction("pause", first.handle, {
+      complete: async () => actions.length === 2 ? "paused" : null,
+    });
+    assert.equal(second, "paused");
+    assert.deepEqual(actions[1], [
+      "repeat", "playback-play-toggle", target, target,
+    ]);
+    await assert.rejects(
+      runtime.repeatAction("forged", { actionId: "playback-play-toggle" }, {
+        complete: async () => true,
+      }),
+      /unknown repeatable action handle/,
+    );
+  } finally {
+    rmSync(artifactDir, { recursive: true, force: true });
+  }
+});
+
 test("semantic text editing acts on the exact readiness evidence", async () => {
   const readyElement = { test_id: "route-input", enabled: true, value: "" };
   let currentValue = "";
+  let focused = false;
+  let focusEvidence = null;
   let actionEvidence = null;
   const result = await editSemanticText({
     async readElement() {
-      return { ...readyElement, value: currentValue };
+      return { ...readyElement, focused, value: currentValue };
+    },
+    async focusText(_controlId, evidence) {
+      focusEvidence = evidence;
+      focused = true;
     },
     async enterText(_controlId, value, _options, evidence) {
       actionEvidence = evidence;
       currentValue = value;
     },
   }, "edit route", "route-input", "KSEA KPAE");
+  assert.equal(focusEvidence.test_id, readyElement.test_id);
   assert.equal(actionEvidence.test_id, readyElement.test_id);
+  assert.equal(actionEvidence.focused, true);
   assert.equal(result.value, "KSEA KPAE");
 });
 
@@ -1934,6 +2057,20 @@ test("Android track-up memory is owned above the disposable map page", () => {
   assert.match(retained, /val mapOrientationMemory = MapOrientationMemory\(\)/);
   assert.match(mapPage, /mapOrientationMemory: MapOrientationMemory/);
   assert.doesNotMatch(mapPage, /remember \{ MapOrientationMemory\(\) \}/);
+});
+
+test("Android keeps the playback editor above the software keyboard", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  const playbackStart = source.indexOf("private fun MapPlaybackWidgetOverlay");
+  const playback = source.slice(playbackStart, source.indexOf("private fun RasterImageLayers", playbackStart));
+  assert.match(playback, /WindowInsets\.ime\.getBottom\(this\)\.toDp\(\)/);
+  assert.match(playback, /if \(!playbackSourceFocused\)/);
+  assert.match(playback, /configuration\.screenHeightDp \* 0\.38f/);
+  assert.match(playback, /onSourceFocusChange = \{ focused -> playbackSourceFocused = focused \}/);
+  assert.match(playback, /bottom = visiblePlaybackBottomPadding/);
 });
 
 test("Android airport-info popups export their semantic identity", () => {
@@ -2319,7 +2456,36 @@ test("Android activates every tagged control through one exact semantic action p
     service,
     /bounds\.equals\(expectedBounds\)[\s\S]*node\.performAction\(AccessibilityNodeInfo\.ACTION_CLICK\)/,
   );
+  assert.match(
+    service,
+    /if \(clickMatchingNode\(node, tag, expectedBounds\)\) return true;[\s\S]*awaitAccessibilityEventAfter\(sequence, 750\)/,
+  );
   assert.doesNotMatch(service, /dispatchTapGesture/);
+});
+
+test("Android semantic tree traversal absorbs concurrent Compose child replacement", () => {
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    service,
+    /childAtOrNull[\s\S]*catch \(IndexOutOfBoundsException error\)/,
+  );
+  assert.doesNotMatch(service, /AccessibilityNodeInfo child = (?:node|current)\.getChild\(/);
+});
+
+test("Android semantic driver isolates each client failure from its server loop", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  const serverLoop = source.slice(source.indexOf("private void serve()"), source.indexOf("private void handleRequest"));
+  assert.match(source, /Executors\.newFixedThreadPool\(4\)/);
+  assert.match(serverLoop, /clientExecutor\.execute\(\(\) -> handleClient\(client\)\)/);
+  assert.match(serverLoop, /try \{\s*handleRequest\(client\);\s*\} catch \(IOException error\)/);
+  assert.match(serverLoop, /catch \(RuntimeException error\)[\s\S]*respondFailureBestEffort\(client, error\)/);
+  assert.doesNotMatch(serverLoop, /catch \(IOException error\)[\s\S]*throw new RuntimeException\(error\);/);
 });
 
 test("Android semantic driver rejects stale protocol artifacts before a journey", () => {
@@ -2328,9 +2494,38 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/2/);
-  assert.match(service, /aerobag-semantic-driver\/2/);
+  assert.match(harness, /aerobag-semantic-driver\/3/);
+  assert.match(service, /aerobag-semantic-driver\/3/);
   assert.match(harness, /semantic driver protocol mismatch/);
+});
+
+test("Android exact semantic queries revalidate cached targets before traversing the tree", () => {
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  const query = service.slice(
+    service.indexOf("private JSONArray renderNodeQuery"),
+    service.indexOf("private JSONArray renderExactProjection"),
+  );
+  assert.match(query, /if \(!prefix && appendCachedNodeQuery\(tag, output\)\) return output;/);
+  assert.match(query, /nodeAtPath\(semanticPath\)/);
+  assert.match(query, /tag\.equals\(node\.getViewIdResourceName\(\)\) && bounds\.equals\(expectedBounds\)/);
+  assert.match(query, /centerReachable\(node\)/);
+  assert.match(query, /appendCachedNodeQueryAtPoint\(tag, expectedBounds, output\)/);
+  assert.match(query, /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/);
+  assert.match(query, /exactNodePaths\.remove\(tag, semanticPath\)/);
+  assert.match(query, /exactNodeBounds\.remove\(tag, expectedBounds\)/);
+});
+
+test("Android exact action discovery uses the accessibility view-id index", () => {
+  const service = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  assert.match(service, /if \(!prefix && appendIndexedNodeQuery\(tag, output\)\) return output;/);
+  assert.match(service, /findAccessibilityNodeInfosByViewId\(tag\)/);
+  assert.match(service, /AccessibilityNodeInfo indexed = findIndexedRenderedNode\(tag, expectedBounds\);/);
 });
 
 test("Android semantic actions preserve the separator between readiness bounds", () => {
@@ -2339,6 +2534,20 @@ test("Android semantic actions preserve the separator between readiness bounds",
     "utf8",
   );
   assert.match(service, /\.replace\("\]\[", " "\)/);
+});
+
+test("Android semantic text delivery retries an exact target replaced by Compose", () => {
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  const setText = service.slice(
+    service.indexOf("private boolean setRenderedText"),
+    service.indexOf("private boolean clickRenderedNode"),
+  );
+  assert.match(setText, /if \(node != null\)[\s\S]*setMatchingNodeText/);
+  assert.doesNotMatch(setText, /if \(node == null\) return false/);
+  assert.match(setText, /if \(attempt < 2\) awaitAccessibilityEventAfter\(sequence, 750\)/);
 });
 
 test("Android semantic lookup prefers an exact action over an earlier prefix match", () => {

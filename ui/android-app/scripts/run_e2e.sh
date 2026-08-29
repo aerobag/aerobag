@@ -10,6 +10,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 APP_DIR="$ROOT/ui/android-app"
 # shellcheck source=emulator_identity.sh
 source "$APP_DIR/scripts/emulator_identity.sh"
+# shellcheck source=e2e_app_data.sh
+source "$APP_DIR/scripts/e2e_app_data.sh"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 SKIP_INSTALL=0
@@ -219,7 +221,7 @@ fi
 
 if [[ "$CLEAR_APP_DATA" -eq 1 && "$SKIP_INSTALL" -eq 1 ]]; then
   echo "clear app data for clean E2E state"
-  adb -s "$ANDROID_SERIAL" shell pm clear org.aerobag.app >/dev/null
+  aerobag_e2e_clear_app_data "$ANDROID_SERIAL"
 fi
 
 echo "[2/2] android e2e"

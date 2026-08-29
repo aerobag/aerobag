@@ -12,7 +12,9 @@ import {
   scrollUntilTag, scrollUntilTagPrefix, swipe,
   scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
 } from "./android-harness.mjs";
-import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
+import {
+  E2E_TIMING, observeUntil, performTransition, TerminalObservationError,
+} from "./transition-contract.mjs";
 
 const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:live-overlay:", "org.aerobag.app:id/e2e_live_overlay_projection"],
@@ -275,11 +277,35 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async reset() {
-    await this.transport.reset();
+    await this.navigateToOperationalApp(() => this.transport.reset());
   }
 
   async resetApplicationData() {
-    await this.transport.reset();
+    await this.navigateToOperationalApp(() => this.transport.reset());
+  }
+
+  async navigateToOperationalApp(navigate) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await navigate();
+      const outcome = (await observeUntil(
+        "web application startup after navigation",
+        async () => {
+          const fatal = await this.readElement("startup-fatal-error");
+          if (fatal) return { kind: "fatal", detail: fatal.text || "unknown failure" };
+          const startup = await this.readProjection("parity:startup-state:");
+          return startup.some((entry) => entry.id.startsWith("parity:startup-state:ready:true"))
+            ? { kind: "ready" }
+            : null;
+        },
+        {
+          timeoutMs: E2E_TIMING.startupMs,
+          intervalMs: E2E_TIMING.pollIntervalMs,
+        },
+      )).value;
+      if (outcome.kind === "ready") return;
+      if (attempt === 0 && this.transport.hasCanceledStartupModuleRequest()) continue;
+      throw new TerminalObservationError("application startup failed", outcome.detail);
+    }
   }
 
   async readCurrentPage() {
@@ -497,7 +523,7 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async reload() {
-    await this.transport.reload();
+    await this.navigateToOperationalApp(() => this.transport.reload());
   }
 
   async back() {

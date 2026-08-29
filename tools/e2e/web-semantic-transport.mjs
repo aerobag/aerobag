@@ -89,6 +89,10 @@ export class WebSemanticTransport {
     });
   }
 
+  hasCanceledStartupModuleRequest() {
+    return this.page.hasCanceledStartupModuleRequest?.(this.origin) === true;
+  }
+
   async exists(selector) {
     return this.page.evaluate(`Boolean(document.querySelector(${expressionArgument(selector)}))`);
   }

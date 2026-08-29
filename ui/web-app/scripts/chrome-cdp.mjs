@@ -291,6 +291,23 @@ export class CdpPage {
     await this.loadPromise;
   }
 
+  hasCanceledStartupModuleRequest(origin) {
+    return this.diagnostics.some((entry) => {
+      if (entry.method !== "Network.loadingFailed" || entry.target !== "page" ||
+          entry.type !== "Script" || entry.errorText !== "net::ERR_ABORTED" ||
+          entry.canceled !== true || typeof entry.url !== "string") {
+        return false;
+      }
+      try {
+        const url = new URL(entry.url);
+        return url.origin === origin && url.pathname.startsWith("/assets/") &&
+          url.pathname.endsWith(".js");
+      } catch {
+        return false;
+      }
+    });
+  }
+
   async evaluate(expression) {
     const response = await this.send("Runtime.evaluate", {
       expression,

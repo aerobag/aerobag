@@ -1013,6 +1013,50 @@ test("web reset replaces the old app target before clearing persistent origin st
   ]);
 });
 
+test("web reset recovers one browser-canceled startup module without replaying an app action", async () => {
+  let resets = 0;
+  const transport = {
+    async reset() { resets += 1; },
+    async readElement(selector) {
+      return resets === 1 && selector.includes("startup-fatal-error")
+        ? { visible: true, text: "Failed to fetch dynamically imported module" }
+        : null;
+    },
+    async collectTestIds(prefix) {
+      return resets === 2 && prefix === "parity:startup-state:"
+        ? [{ id: "parity:startup-state:ready:true:page:Home" }]
+        : [];
+    },
+    hasCanceledStartupModuleRequest() { return resets === 1; },
+  };
+  const driver = new WebSemanticJourneyDriver(transport);
+
+  await driver.reset();
+
+  assert.equal(resets, 2);
+});
+
+test("web reset does not retry an application startup failure", async () => {
+  let resets = 0;
+  const transport = {
+    async reset() { resets += 1; },
+    async readElement(selector) {
+      return selector.includes("startup-fatal-error")
+        ? { visible: true, text: "generated WASM module is missing required exports" }
+        : null;
+    },
+    async collectTestIds() { return []; },
+    hasCanceledStartupModuleRequest() { return false; },
+  };
+  const driver = new WebSemanticJourneyDriver(transport);
+
+  await assert.rejects(
+    driver.reset(),
+    /application startup failed: generated WASM module is missing required exports/,
+  );
+  assert.equal(resets, 1);
+});
+
 test("closing a web page for reset observes destruction of its dedicated workers", async () => {
   const requests = [];
   let targetReads = 0;

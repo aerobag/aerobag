@@ -187,6 +187,7 @@ internal fun AltitudePlannerPage(
     }
 
     val userActionLoading = userActionsInFlight > 0 || pendingUserRefreshRevision != null
+    val interactionEnabled = !loading && !userActionLoading
 
     Box(
         modifier = Modifier
@@ -239,8 +240,12 @@ internal fun AltitudePlannerPage(
                                     openControlId = if (open) null else control.id
                                 },
                                 style = MenuDockStyle.AltitudePlanner,
-                                disabled = !control.enabled,
-                                disabledReason = control.disabledReason,
+                                disabled = !control.enabled || !interactionEnabled,
+                                disabledReason = if (interactionEnabled) {
+                                    control.disabledReason
+                                } else {
+                                    "Calculation in progress."
+                                },
                                 options = control.options.map { option ->
                                     MenuDockOption(
                                         key = option.actionUid,
@@ -258,10 +263,17 @@ internal fun AltitudePlannerPage(
                                     .width(ThumbSize * 2.2f)
                                     .height(ThumbSize),
                                 maxLines = 2,
-                                enabled = control.enabled,
+                                enabled = control.enabled && interactionEnabled,
                                 testTag = "parity:altitude-planner-control:${control.id}",
-                                onDisabledClick = control.disabledReason?.let { reason ->
-                                    { showDisabledActionToast(context, reason) }
+                                onDisabledClick = {
+                                    showDisabledActionToast(
+                                        context,
+                                        if (interactionEnabled) {
+                                            control.disabledReason ?: "Action unavailable."
+                                        } else {
+                                            "Calculation in progress."
+                                        },
+                                    )
                                 },
                                 onClick = { control.actionUid?.let(::performAction) },
                             )
@@ -304,6 +316,7 @@ internal fun AltitudePlannerPage(
             planner.forecast?.let { forecast ->
                 PlannerWindModelPanel(
                     rows = forecast.rows,
+                    interactionEnabled = interactionEnabled,
                     onAction = ::performAction,
                     onDisabledAction = { reason -> showDisabledActionToast(context, reason) },
                     modifier = Modifier.testTag("parity:altitude-planner-forecast"),
@@ -590,6 +603,7 @@ private val DepartureInputTextStyle = TextStyle(
 @Composable
 private fun PlannerWindModelPanel(
     rows: List<AltitudePlannerForecastRowUiView>,
+    interactionEnabled: Boolean,
     onAction: (String) -> Unit,
     onDisabledAction: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -636,12 +650,18 @@ private fun PlannerWindModelPanel(
                         CompactSquareButton(
                             label = action.label,
                             modifier = Modifier.fillMaxSize(),
-                            enabled = action.enabled || row.selected,
+                            enabled = interactionEnabled && (action.enabled || row.selected),
                             selected = row.selected,
                             maxLines = 2,
                             testTag = "parity:altitude-planner-wind-action:${row.id}",
-                            onDisabledClick = action.disabledReason?.let { reason ->
-                                { onDisabledAction(reason) }
+                            onDisabledClick = {
+                                onDisabledAction(
+                                    if (interactionEnabled) {
+                                        action.disabledReason ?: "Action unavailable."
+                                    } else {
+                                        "Calculation in progress."
+                                    },
+                                )
                             },
                             onClick = { action.actionUid?.let(onAction) },
                         )

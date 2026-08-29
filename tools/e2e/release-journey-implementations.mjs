@@ -2404,6 +2404,9 @@ function selectedSemantic(element) {
 }
 
 export async function chooseForecastWindModel(runtime) {
+  await runtime.eventually("altitude calculation completed", async () =>
+    (await runtime.driver.readElement("altitude-comparison-loading")) ? null : true,
+  E2E_TIMING.resourceMs);
   const noWindId = altitudeWindActionId(runtime, "no_wind");
   const readyId = altitudeWindActionId(runtime, "ready_forecast");
   const latestId = altitudeWindActionId(runtime, "latest_forecast");

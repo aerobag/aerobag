@@ -9219,6 +9219,8 @@ function AltitudePlannerPage(props: {
     })();
   };
 
+  const interactionEnabled = !loading;
+
   return (
     <section className="appPage altitudePlannerPage" data-testid="parity:page:altitude_planner">
       {openControlId ? (
@@ -9229,6 +9231,7 @@ function AltitudePlannerPage(props: {
         <div className="altitudePlannerControls" data-testid="altitude-planner-control-tray">
           {planner.controls.map((control) => {
             const disabledReason = disabledReasonText(control.disabled_reason);
+            const enabled = control.enabled && interactionEnabled;
             const hasOptions = (control.options?.length ?? 0) > 0;
             const open = openControlId === control.id;
             if (hasOptions) {
@@ -9239,8 +9242,8 @@ function AltitudePlannerPage(props: {
                   open={open}
                   onToggle={() => setOpenControlId(open ? null : control.id)}
                   ariaLabel={`${control.label.replace(/\n/g, " ")} options`}
-                  disabled={!control.enabled}
-                  disabledReason={disabledReason}
+                  disabled={!enabled}
+                  disabledReason={interactionEnabled ? disabledReason : "Calculation in progress."}
                   onDisabledAction={showDisabledAction}
                   style="wide"
                   launcherClassName="altitudePlannerButton"
@@ -9259,15 +9262,15 @@ function AltitudePlannerPage(props: {
               <button
                 key={control.id}
                 type="button"
-                className={`trayButton altitudePlannerButton${control.enabled ? "" : " isDisabled"}${open ? " isChecked" : ""}`}
+                className={`trayButton altitudePlannerButton${enabled ? "" : " isDisabled"}${open ? " isChecked" : ""}`}
                 data-testid={`altitude-planner-control-${control.id}`}
-                aria-disabled={control.enabled ? undefined : "true"}
-                title={disabledReason ?? undefined}
+                aria-disabled={enabled ? undefined : "true"}
+                title={interactionEnabled ? disabledReason ?? undefined : "Calculation in progress."}
                 onClick={() => {
-                  if (control.enabled && control.action_uid) {
+                  if (enabled && control.action_uid) {
                     performAction(control.action_uid);
-                  } else if (disabledReason) {
-                    showDisabledAction(disabledReason);
+                  } else {
+                    showDisabledAction(interactionEnabled ? disabledReason ?? "Action unavailable." : "Calculation in progress.");
                   }
                 }}
               >
@@ -9288,7 +9291,7 @@ function AltitudePlannerPage(props: {
                 type="text"
                 inputMode="text"
                 value={departureTimeInput}
-                disabled={!planner.departure.enabled}
+                disabled={!planner.departure.enabled || !interactionEnabled}
                 aria-label="Departure time"
                 onChange={(event) => setDepartureTimeInput(event.currentTarget.value)}
                 onFocus={() => { departureTimeFocused.current = true; }}
@@ -9307,6 +9310,7 @@ function AltitudePlannerPage(props: {
                 type="button"
                 className="trayButton altitudePlannerDepartureBasis"
                 data-testid="altitude-planner-departure-basis"
+                disabled={!planner.departure.enabled || !interactionEnabled}
                 onMouseDown={() => { suppressDepartureBlurSubmit.current = true; }}
                 onClick={toggleDepartureTimeBasis}
               >
@@ -9321,7 +9325,7 @@ function AltitudePlannerPage(props: {
                 type="text"
                 inputMode="text"
                 value={departureWhenInput}
-                disabled={!planner.departure.enabled}
+                disabled={!planner.departure.enabled || !interactionEnabled}
                 aria-label="Departure offset"
                 onChange={(event) => setDepartureWhenInput(event.currentTarget.value)}
                 onFocus={() => { departureWhenFocused.current = true; }}
@@ -9359,14 +9363,16 @@ function AltitudePlannerPage(props: {
                     {action ? (
                       <button
                         type="button"
-                        className={`trayButton altitudePlannerForecastAction${row.selected ? " isActive selectedControlHighlight" : ""}${action.enabled || row.selected ? "" : " isDisabled"}`}
+                        className={`trayButton altitudePlannerForecastAction${row.selected ? " isActive selectedControlHighlight" : ""}${interactionEnabled && (action.enabled || row.selected) ? "" : " isDisabled"}`}
                         data-testid={`altitude-planner-wind-action-${row.id}`}
                         aria-pressed={row.selected}
-                        aria-disabled={action.enabled || row.selected ? undefined : "true"}
-                        title={action.disabled_reason ?? undefined}
+                        aria-disabled={interactionEnabled && (action.enabled || row.selected) ? undefined : "true"}
+                        title={interactionEnabled ? action.disabled_reason ?? undefined : "Calculation in progress."}
                         onClick={() => {
-                          if (action.enabled && action.action_uid) {
+                          if (interactionEnabled && action.enabled && action.action_uid) {
                             performAction(action.action_uid);
+                          } else if (!interactionEnabled) {
+                            showDisabledAction("Calculation in progress.");
                           } else if (!row.selected && action.disabled_reason) {
                             showDisabledAction(action.disabled_reason);
                           }
@@ -9407,11 +9413,13 @@ function AltitudePlannerPage(props: {
                   className={`altitudeComparisonRow${row.selected ? " isSelected" : ""}${row.enabled ? "" : " isDisabled"}`}
                   data-testid={`altitude-comparison-row-${index}`}
                   aria-selected={row.selected ? "true" : "false"}
-                  aria-disabled={row.enabled ? undefined : "true"}
-                  title={row.disabled_reason ?? undefined}
+                  aria-disabled={interactionEnabled && row.enabled ? undefined : "true"}
+                  title={interactionEnabled ? row.disabled_reason ?? undefined : "Calculation in progress."}
                   onClick={() => {
-                    if (row.enabled && row.action_uid) {
+                    if (interactionEnabled && row.enabled && row.action_uid) {
                       performAction(row.action_uid);
+                    } else if (!interactionEnabled) {
+                      showDisabledAction("Calculation in progress.");
                     } else if (row.disabled_reason) {
                       showDisabledAction(row.disabled_reason);
                     }
@@ -9423,7 +9431,12 @@ function AltitudePlannerPage(props: {
             </div>
           ) : null}
           {loading && showUserActionSpinner ? (
-            <div className="altitudeComparisonLoading" role="status" aria-live="polite">
+            <div
+              className="altitudeComparisonLoading"
+              data-testid="altitude-comparison-loading"
+              role="status"
+              aria-live="polite"
+            >
               <span className="altitudeComparisonSpinner" aria-hidden="true" />
               <span>Calculating…</span>
             </div>

@@ -1415,6 +1415,7 @@ test("procedure replacement waits for the picker transaction before reopening it
 });
 
 test("forecast choice waits for one coherent action state before branching", async () => {
+  let calculationReads = 0;
   let readyReads = 0;
   let readySelected = false;
   const actions = [];
@@ -1422,6 +1423,10 @@ test("forecast choice waits for one coherent action state before branching", asy
     platform: "web",
     driver: {
       async readElement(id) {
+        if (id === "altitude-comparison-loading") {
+          calculationReads += 1;
+          return calculationReads < 3 ? { text: "Calculating…" } : null;
+        }
         if (id === "altitude-planner-wind-action-no_wind") return { enabled: true };
         if (id === "altitude-planner-wind-action-latest_forecast") return null;
         if (id === "altitude-planner-wind-action-ready_forecast") {
@@ -1447,6 +1452,7 @@ test("forecast choice waits for one coherent action state before branching", asy
 
   const result = await chooseForecastWindModel(runtime);
   assert.equal(result.downloaded, false);
+  assert.equal(calculationReads, 3);
   assert.deepEqual(actions, ["altitude-planner-wind-action-ready_forecast"]);
 });
 

@@ -186,9 +186,19 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String semanticPath = query.getOrDefault("path", "");
+        String expectedSelected = query.getOrDefault("selected", "");
+        String expectedChecked = query.getOrDefault("checked", "");
+        String expectedStateDescription = query.getOrDefault("state_description", "");
         Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
         boolean clicked = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
-            clickRenderedNode(tag, expectedBounds, semanticPath);
+            clickRenderedNode(
+                tag,
+                expectedBounds,
+                semanticPath,
+                expectedSelected,
+                expectedChecked,
+                expectedStateDescription
+            );
         respondAction(socket, clicked, "click action rejected for " + tag + "\n");
     }
 
@@ -461,14 +471,50 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    private boolean clickRenderedNode(String tag, Rect expectedBounds, String semanticPath) {
-        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-        if (node == null) return false;
-        try {
-            return clickMatchingNode(node, tag, expectedBounds);
-        } finally {
-            node.recycle();
+    private boolean clickRenderedNode(
+        String tag,
+        Rect expectedBounds,
+        String semanticPath,
+        String expectedSelected,
+        String expectedChecked,
+        String expectedStateDescription
+    ) {
+        // Accessibility can reject an action on a stale node object without
+        // delivering it. Re-resolve only the same rendered semantic state;
+        // the first accepted action ends the request.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+            if (node == null) return false;
+            try {
+                if (!matchesExpectedActionState(
+                    node,
+                    expectedSelected,
+                    expectedChecked,
+                    expectedStateDescription
+                )) return false;
+                if (clickMatchingNode(node, tag, expectedBounds)) return true;
+            } finally {
+                node.recycle();
+            }
         }
+        return false;
+    }
+
+    private static boolean matchesExpectedActionState(
+        AccessibilityNodeInfo node,
+        String expectedSelected,
+        String expectedChecked,
+        String expectedStateDescription
+    ) {
+        return matchesOptionalBoolean(expectedSelected, node.isSelected()) &&
+            matchesOptionalBoolean(expectedChecked, node.isChecked()) &&
+            (expectedStateDescription.isEmpty() || expectedStateDescription.equals(
+                stringValue(node.getStateDescription())
+            ));
+    }
+
+    private static boolean matchesOptionalBoolean(String expected, boolean actual) {
+        return expected.isEmpty() || Boolean.toString(actual).equals(expected);
     }
 
     @SuppressWarnings("deprecation")

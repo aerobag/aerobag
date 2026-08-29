@@ -713,6 +713,11 @@ function activateAndroidSemanticTag(serial, tag, readyElement = null) {
     tag,
     readyElement.bounds,
     readyElement.semantic_path,
+    {
+      selected: readyElement.selected,
+      checked: readyElement.checked,
+      stateDescription: readyElement.disabled_reason,
+    },
   )) {
     throw new Error(`Android semantic action ${tag} was rejected`);
   }

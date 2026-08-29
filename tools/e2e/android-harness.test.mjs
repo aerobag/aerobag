@@ -11,6 +11,7 @@ import {
   androidOfflinePackagesVisible,
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
+  androidStartupProjection,
   androidStartupState,
   androidJourneyEpochMs,
   classifyAerobagLogcat,
@@ -130,6 +131,16 @@ test("parses explicit Android startup acknowledgements", () => {
     disclaimer_required: "false",
     persisted_page: "Settings",
   });
+});
+
+test("disclaimer completion can observe core state before full startup readiness", () => {
+  const xml = `<hierarchy><node resource-id="parity:startup-state:ready:false:disclaimer_required:false:persisted_page:Map" /></hierarchy>`;
+  assert.deepEqual(androidStartupProjection(xml), {
+    ready: "false",
+    disclaimer_required: "false",
+    persisted_page: "Map",
+  });
+  assert.equal(androidStartupState(xml), null);
 });
 
 test("vertical scrolling skips flight-plan horizontal scrollers", () => {

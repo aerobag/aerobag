@@ -120,12 +120,25 @@ export function setAndroidSemanticText(serial, tag, value, expectedBounds, seman
   throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
 }
 
-export function clickAndroidSemanticNode(serial, tag, expectedBounds, semanticPath) {
+export function clickAndroidSemanticNode(
+  serial,
+  tag,
+  expectedBounds,
+  semanticPath,
+  { selected = null, checked = null, stateDescription = null } = {},
+) {
   const state = requiredSemanticDriver(serial);
   if (!expectedBounds || !semanticPath) {
     throw new Error(`persistent Android semantic click for ${tag} has no readiness path and bounds`);
   }
-  const query = new URLSearchParams({ tag, bounds: expectedBounds, path: semanticPath });
+  const query = new URLSearchParams({
+    tag,
+    bounds: expectedBounds,
+    path: semanticPath,
+    selected: selected == null ? "" : String(selected),
+    checked: checked == null ? "" : String(checked),
+    state_description: stateDescription ?? "",
+  });
   const response = semanticDriverRequest(
     state.port, `/click?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
   );
@@ -379,14 +392,24 @@ export function androidRuntimeUiVisible(xml) {
   ) !== null;
 }
 
-function startupStateFromNode(node) {
+function startupProjectionFromNode(node) {
   if (!node) return null;
   const fields = {};
   const components = androidTag(node).slice("parity:startup-state:".length).split(":");
   for (let index = 0; index + 1 < components.length; index += 2) {
     fields[components[index]] = components[index + 1];
   }
-  return fields.ready === "true" ? fields : null;
+  return fields;
+}
+
+function startupStateFromNode(node) {
+  const fields = startupProjectionFromNode(node);
+  return fields?.ready === "true" ? fields : null;
+}
+
+export function androidStartupProjection(xml) {
+  return startupProjectionFromNode(findNode(xml, (candidate) =>
+    androidTag(candidate).startsWith("parity:startup-state:")));
 }
 
 export function androidStartupState(xml) {
@@ -397,6 +420,12 @@ export function androidStartupState(xml) {
 export function queryAndroidStartupState(serial) {
   const nodes = queryAndroidSemanticNodes(serial, "parity:startup-state:", { prefix: true });
   return startupStateFromNode(nodes?.find((node) =>
+    androidTag(node).startsWith("parity:startup-state:")) ?? null);
+}
+
+function queryAndroidStartupProjection(serial) {
+  const nodes = queryAndroidSemanticNodes(serial, "parity:startup-state:", { prefix: true });
+  return startupProjectionFromNode(nodes?.find((node) =>
     androidTag(node).startsWith("parity:startup-state:")) ?? null);
 }
 
@@ -656,7 +685,11 @@ export async function activateAndroidNode(serial, node) {
   if (!tag || !node?.bounds || !node?.["semantic-path"]) {
     throw new Error("Android semantic action requires tagged readiness evidence");
   }
-  if (!clickAndroidSemanticNode(serial, tag, node.bounds, node["semantic-path"])) {
+  if (!clickAndroidSemanticNode(serial, tag, node.bounds, node["semantic-path"], {
+    selected: node.selected,
+    checked: node.checked,
+    stateDescription: node["state-description"],
+  })) {
     throw new Error(`Android semantic action ${tag} was rejected`);
   }
   return node;
@@ -928,23 +961,20 @@ export async function acceptDisclaimerIfPresent(serial) {
   if (!button) {
     return false;
   }
-  const initial = queryAndroidStartupState(serial);
+  const initial = queryAndroidStartupProjection(serial);
   if (initial?.disclaimer_required !== "true") {
     throw new Error("disclaimer is visible without a startup-state requirement");
   }
   await performTransition("accept mandatory disclaimer", {
     ready: async () => {
-      const readyState = queryAndroidStartupState(serial);
+      const readyState = queryAndroidStartupProjection(serial);
       if (readyState?.disclaimer_required !== "true") return null;
       return queryAndroidSemanticNodes(serial, "parity:disclaimer-accept-button")?.[0] ?? null;
     },
     act: async (readyButton) => activateAndroidNode(serial, readyButton),
     complete: async () => {
-      const nextButton = queryAndroidSemanticNodes(
-        serial,
-        "parity:disclaimer-accept-button",
-      )?.[0] ?? null;
-      return nextButton ? null : true;
+      const nextState = queryAndroidStartupProjection(serial);
+      return nextState?.disclaimer_required === "false" ? nextState : null;
     },
     responseTimeoutMs: E2E_TIMING.userResponseMs,
   });

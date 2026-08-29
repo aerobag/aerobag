@@ -1556,8 +1556,11 @@ test("persistent Android actions resolve the readiness target without a full-tre
     source,
     /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/,
   );
-  assert.match(source, /clickRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  assert.match(source, /clickRenderedNode\(\s*tag,\s*expectedBounds,\s*semanticPath,/);
   assert.match(source, /tag\.equals\(node\.getViewIdResourceName\(\)\)/);
+  assert.match(source, /for \(int attempt = 0; attempt < 3; attempt\+\+\)/);
+  assert.match(source, /matchesExpectedActionState\(/);
+  assert.match(source, /if \(clickMatchingNode\(node, tag, expectedBounds\)\) return true/);
   assert.doesNotMatch(source, /findAccessibilityNodeInfosByViewId/);
 });
 
@@ -1570,6 +1573,17 @@ test("mandatory disclaimer response and application startup use separate budgets
   assert.match(
     harness,
     /application startup after accepting mandatory disclaimer[\s\S]*E2E_TIMING\.startupMs/,
+  );
+  assert.match(
+    harness,
+    /accept mandatory disclaimer[\s\S]*?complete:[\s\S]*?disclaimer_required === "false"/,
+  );
+  assert.doesNotMatch(
+    harness.slice(
+      harness.indexOf("export async function acceptDisclaimerIfPresent"),
+      harness.indexOf("export function assertRuntimeIsAvailable"),
+    ),
+    /complete:[\s\S]*?parity:disclaimer-accept-button/,
   );
   assert.match(
     implementation,
@@ -2044,7 +2058,7 @@ test("projection observations are distinct from explicit UI traversal", () => {
   assert.ok(SEMANTIC_DRIVER_OPERATIONS.includes("revealProjectionMatching"));
 });
 
-test("Android action delivery cannot rediscover a control after readiness", async () => {
+test("Android action delivery cannot rediscover a different control after readiness", async () => {
   const source = readFileSync(
     new URL("./semantic-journey-driver.mjs", import.meta.url),
     "utf8",

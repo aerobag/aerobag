@@ -23,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -219,6 +220,17 @@ internal class RasterTileBitmapLoader(
         perfLogInfo(TileBudgetLogTag) {
             "load-start gen=$generationId map=$mapId missing=${missingTiles.size} workers=$MapTileLoadWorkerCount groups=[${formatTileBudgetSummary(missingTiles)}] first=${missingTiles.firstOrNull()?.let(::formatTileRef) ?: "none"}"
         }
+        val stallWatchdog = CoroutineScope(currentCoroutineContext()).launch {
+            delay(2_000L)
+            val pending = deferredResults.filterNot { work -> work.result.isCompleted }
+            if (pending.isNotEmpty()) {
+                Log.w(
+                    TileBudgetLogTag,
+                    "generation-stalled gen=$generationId map=$mapId pending=${pending.size}/${missingTiles.size} " +
+                        "tiles=[${pending.joinToString(", ") { work -> formatTileRef(work.tile) }}]",
+                )
+            }
+        }
         try {
             val droppedCount = queueMutex.withLock {
                 val dropped = pendingWork.size
@@ -252,6 +264,8 @@ internal class RasterTileBitmapLoader(
                 "load-cancel gen=$generationId map=$mapId missing=${missingTiles.size} elapsedMs=${SystemClock.elapsedRealtime() - batchStartMs}"
             }
             throw error
+        } finally {
+            stallWatchdog.cancel()
         }
     }
 }

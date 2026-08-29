@@ -394,6 +394,22 @@ private data class RasterPlanFrame(
     val planId: String = "none",
 )
 
+internal class RasterTileLoadGeneration {
+    val bitmapCache =
+        mutableStateMapOf<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
+    val requests = Channel<RasterTileLoadRequest>(Channel.CONFLATED)
+    private val nextRequestId = AtomicLong(1L)
+    private val latestRequestId = AtomicLong(0L)
+
+    fun beginRequest(): Long = nextRequestId.getAndIncrement().also(latestRequestId::set)
+
+    fun isCurrentRequest(requestId: Long): Boolean = latestRequestId.get() == requestId
+
+    fun close() {
+        requests.close()
+    }
+}
+
 private fun rasterSemanticToken(value: String): String =
     value.replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
 
@@ -632,7 +648,7 @@ private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
     )
 }
 
-private data class RasterTileLoadRequest(
+internal data class RasterTileLoadRequest(
     val id: Long,
     val mapId: String,
     val zoom: Double,
@@ -1782,9 +1798,10 @@ internal fun MapExplorerPage(
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
-    val tileBitmapCache = remember(selectedMapId, debugState.fastTiles, navDataEpoch) {
-        mutableStateMapOf<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
+    val rasterTileLoadGeneration = remember(selectedMapId, debugState.fastTiles, navDataEpoch) {
+        RasterTileLoadGeneration()
     }
+    val tileBitmapCache = rasterTileLoadGeneration.bitmapCache
     val visibleTileKeys = remember(tiles) {
         tiles.mapTo(LinkedHashSet()) { tile -> renderTileKey(tile) }
     }
@@ -1794,17 +1811,18 @@ internal fun MapExplorerPage(
     val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope, navDataEpoch) {
         RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
     }
-    val rasterTileLoadRequests = remember(navDataEpoch) { Channel<RasterTileLoadRequest>(Channel.CONFLATED) }
-    var nextRasterTileLoadRequestId by remember { mutableLongStateOf(1L) }
-    var latestRasterTileLoadRequestId by remember { mutableLongStateOf(0L) }
-    val latestRasterTileLoadRequestIdState = rememberUpdatedState(latestRasterTileLoadRequestId)
+    val rasterTileLoadRequests = rasterTileLoadGeneration.requests
     DisposableEffect(rasterTileBitmapLoader) {
         onDispose {
-            rasterTileLoadRequests.close()
             rasterTileBitmapLoader.close()
         }
     }
-    LaunchedEffect(tiles, selectedMapId, debugState.fastTiles, navDataEpoch) {
+    DisposableEffect(rasterTileLoadGeneration) {
+        onDispose {
+            rasterTileLoadGeneration.close()
+        }
+    }
+    LaunchedEffect(tiles, selectedMapId, debugState.fastTiles, navDataEpoch, rasterTileLoadRequests) {
         val staleLocalKeys = tileBitmapCache.keys.filter { key -> key !in visibleTileKeys }
         staleLocalKeys.forEach { key -> tileBitmapCache.remove(key) }
         var decodedCacheHits = 0
@@ -1844,8 +1862,7 @@ internal fun MapExplorerPage(
             return@LaunchedEffect
         }
         val (viewportLat, viewportLon) = viewportCenterLatLon(currentViewport)
-        val requestId = nextRasterTileLoadRequestId++
-        latestRasterTileLoadRequestId = requestId
+        val requestId = rasterTileLoadGeneration.beginRequest()
         val request = RasterTileLoadRequest(
             id = requestId,
             mapId = selectedMapId,
@@ -1863,7 +1880,7 @@ internal fun MapExplorerPage(
             Log.w(TileBudgetLogTag, "tile-load-request-drop request=$requestId map=$selectedMapId")
         }
     }
-    LaunchedEffect(rasterTileBitmapLoader, tileBitmapCache, selectedMapId, debugState.fastTiles, navDataEpoch) {
+    LaunchedEffect(rasterTileBitmapLoader, rasterTileLoadRequests, tileBitmapCache, navDataEpoch) {
         val loadEpoch = navDataEpoch
         for (initialRequest in rasterTileLoadRequests) {
             var request = initialRequest
@@ -1878,13 +1895,25 @@ internal fun MapExplorerPage(
                     "generation-start gen=$generationId request=${request.id} map=${request.mapId} zoom=${"%.2f".format(request.zoom)} center=${"%.3f".format(request.centerLat)},${"%.3f".format(request.centerLon)} total=${request.visibleTiles.size} missing=${request.missingTiles.size} cache=${tileBitmapCache.size}"
                 }
                 var loadedThisPassCount = 0
+                var ignoredEpochCount = 0
+                var ignoredRequestCount = 0
+                var ignoredVisibilityCount = 0
                 val loadedTiles = try {
                     rasterTileBitmapLoader.loadVisibleTileBitmaps(
                         request.mapId,
                         generationId,
                         request.missingTiles,
                     ) { loaded ->
-                        if (loadEpoch != latestNavDataEpoch.value || request.id != latestRasterTileLoadRequestIdState.value || loaded.result.key !in latestVisibleTileKeysState.value) {
+                        if (loadEpoch != latestNavDataEpoch.value) {
+                            ignoredEpochCount += 1
+                            return@loadVisibleTileBitmaps
+                        }
+                        if (!rasterTileLoadGeneration.isCurrentRequest(request.id)) {
+                            ignoredRequestCount += 1
+                            return@loadVisibleTileBitmaps
+                        }
+                        if (loaded.result.key !in latestVisibleTileKeysState.value) {
+                            ignoredVisibilityCount += 1
                             return@loadVisibleTileBitmaps
                         }
                         tileBitmapCache[loaded.result.key] = loaded.result.bitmap
@@ -1921,7 +1950,25 @@ internal fun MapExplorerPage(
                             "decodeMs=${tileResults.sumOf { it.decodeMs }}",
                     )
                 }
-                val staleRequest = request.id != latestRasterTileLoadRequestIdState.value
+                val staleRequest = !rasterTileLoadGeneration.isCurrentRequest(request.id)
+                val missingAfterLoad = request.visibleTiles.filter { tile ->
+                    !tileBitmapCache.containsKey(renderTileKey(tile))
+                }
+                val ignoredThisPassCount =
+                    ignoredEpochCount + ignoredRequestCount + ignoredVisibilityCount
+                if (
+                    !staleRequest &&
+                    (loadedTiles.size != request.missingTiles.size || ignoredThisPassCount > 0 || missingAfterLoad.isNotEmpty())
+                ) {
+                    Log.w(
+                        TileBudgetLogTag,
+                        "generation-incomplete gen=$generationId request=${request.id} map=${request.mapId} " +
+                            "results=${loadedTiles.size}/${request.missingTiles.size} loaded=$loadedThisPassCount " +
+                            "ignored=$ignoredThisPassCount(epoch=$ignoredEpochCount,request=$ignoredRequestCount,visibility=$ignoredVisibilityCount) " +
+                            "cacheMissing=${missingAfterLoad.size} " +
+                            "tiles=[${missingAfterLoad.joinToString(", ") { tile -> formatTileRef(tile) }}]",
+                    )
+                }
                 if (VerbosePerfLogs) {
                     val tileResults = loadedTiles.map { it.result }
                     val readElapsedMs = tileResults.sumOf { it.readMs }

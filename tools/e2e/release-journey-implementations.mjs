@@ -3075,7 +3075,27 @@ async function cloudCrossfill(runtime) {
     }
     await peer.appendRoute("KPLU");
     await runtime.openPage("flight_plan");
-    const postReconnectPlan = await waitForPlanIdents(runtime, ["KPLU"]);
+    let postReconnectPlan;
+    try {
+      postReconnectPlan = await waitForPlanIdents(runtime, ["KPLU"]);
+    } catch (error) {
+      let targetCloudState = null;
+      try {
+        await runtime.openPage("cloud");
+        targetCloudState = {
+          overall: await runtime.driver.readElement(cloudStatusElementId(runtime)),
+          linked: await runtime.driver.readElement(cloudPanelElementId(runtime, "linked")),
+          provider: await runtime.driver.readElement(cloudPanelElementId(runtime, "provider")),
+          plan: await runtime.driver.readProjection("parity:plan-row:"),
+        };
+      } catch (diagnosticError) {
+        targetCloudState = { diagnostic_error: diagnosticError.message };
+      }
+      throw new Error(
+        `${error.message}; target cloud state: ${JSON.stringify(targetCloudState ?? null)}; ` +
+        `browser peer cloud state: ${JSON.stringify(await peer.state())}`,
+      );
+    }
     runtime.check("cloud.reconnect", Boolean(postReconnectPlan));
   } finally {
     await peer?.close();

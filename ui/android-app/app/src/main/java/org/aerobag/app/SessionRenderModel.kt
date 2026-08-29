@@ -144,10 +144,6 @@ internal class SessionRenderModel(initialSnapshot: UiSessionSnapshot) {
     val currentRevision: Long
         get() = latestSnapshot.get().sessionRevision
 
-    fun observe(snapshot: UiSessionSnapshot) {
-        observeLatest(snapshot)
-    }
-
     fun publish(publication: NativeUiSession.SnapshotPublication) {
         val snapshot = publication.snapshot
         observeLatest(snapshot)

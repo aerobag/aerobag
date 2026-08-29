@@ -2904,7 +2904,6 @@ internal fun AerobagApp(
             },
         )
         val snapshotSubscription = uiSession.subscribeSnapshotPublications { publication ->
-            sessionRenderModel.observe(publication.snapshot)
             snapshotDelivery.submit(publication)
         }
         val invalidationSubscription = uiSession.subscribeInvalidations(::enqueueUiInvalidations)

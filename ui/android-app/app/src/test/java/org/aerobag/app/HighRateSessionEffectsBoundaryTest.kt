@@ -15,11 +15,17 @@ class HighRateSessionEffectsBoundaryTest {
         val source = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val renderModelSource = sourceFile("src/main/java/org/aerobag/app/SessionRenderModel.kt").readText()
         val helper = balancedBlockAfterMarker(source, "suspend fun runHighRateSessionCommand(")
+        val subscription = balancedBlockAfterMarker(
+            source,
+            "uiSession.subscribeSnapshotPublications",
+        )
 
         assertTrue(helper.contains("withContext(Dispatchers.Default)"))
         assertTrue(source.contains("operation: () -> Unit"))
         assertFalse(helper.contains("applySessionSnapshot"))
         assertTrue(renderModelSource.contains("if (latestSnapshot.get() === snapshot) return true"))
+        assertTrue(subscription.contains("snapshotDelivery.submit(publication)"))
+        assertFalse(subscription.contains("sessionRenderModel.observe"))
         for (command in listOf("refreshOwnshipSource", "tickPlayback", "tickBadAutopilot")) {
             assertTrue(source.contains("runHighRateSessionCommand(\"$command\""))
             assertFalse(source.contains("applyBackgroundSessionCommand(\"$command\""))

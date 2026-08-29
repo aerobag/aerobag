@@ -72,27 +72,36 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertEqual(qualification.ANDROID_SHARDS, 4)
         self.assertEqual(qualification.DEFAULT_ANDROID_WORKERS, 2)
 
-    def test_local_qualification_reuses_only_a_ready_gradle_wrapper_cache(self) -> None:
+    def test_local_qualification_reuses_ready_gradle_caches(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            cache = root / "shared-wrapper"
+            wrapper_cache = root / "gradle/wrapper"
+            dependency_cache = root / "gradle/caches"
             distribution, unpacked = qualification.gradle_wrapper_distribution()
-            installed = cache / "dists" / distribution / "cache-key"
+            installed = wrapper_cache / "dists" / distribution / "cache-key"
             (installed / unpacked).mkdir(parents=True)
             (installed / f"{distribution}.zip.ok").touch()
+            dependency_cache.mkdir(parents=True)
+            (dependency_cache / "modules-2").mkdir()
 
-            selected = qualification.prepare_gradle_wrapper_cache(
-                root / "candidate", cache
+            selected = qualification.prepare_gradle_caches(
+                root / "candidate", wrapper_cache, dependency_cache
             )
 
-            self.assertEqual(selected, cache.resolve())
+            self.assertEqual(
+                selected,
+                (wrapper_cache.resolve(), dependency_cache.resolve()),
+            )
             for target_root in ("ci-ui-target", "release-ui-target"):
-                link = (
+                wrapper_link = (
                     root / "candidate" / target_root
                     / "android/gradle-user-home/wrapper"
                 )
-                self.assertTrue(link.is_symlink())
-                self.assertEqual(link.resolve(), cache.resolve())
+                dependency_link = wrapper_link.parent / "caches"
+                self.assertTrue(wrapper_link.is_symlink())
+                self.assertEqual(wrapper_link.resolve(), wrapper_cache.resolve())
+                self.assertTrue(dependency_link.is_symlink())
+                self.assertEqual(dependency_link.resolve(), dependency_cache.resolve())
 
     def test_local_qualification_rejects_an_incomplete_gradle_wrapper_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -101,8 +110,25 @@ class LocalCandidateQualificationTests(unittest.TestCase):
                 qualification.QualificationError,
                 "prime it once",
             ):
-                qualification.prepare_gradle_wrapper_cache(
+                qualification.prepare_gradle_caches(
                     root / "candidate", root / "empty-wrapper"
+                )
+
+    def test_local_qualification_rejects_an_empty_gradle_dependency_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            wrapper_cache = root / "gradle/wrapper"
+            distribution, unpacked = qualification.gradle_wrapper_distribution()
+            installed = wrapper_cache / "dists" / distribution / "cache-key"
+            (installed / unpacked).mkdir(parents=True)
+            (installed / f"{distribution}.zip.ok").touch()
+
+            with self.assertRaisesRegex(
+                qualification.QualificationError,
+                "dependency cache.*prime it once",
+            ):
+                qualification.prepare_gradle_caches(
+                    root / "candidate", wrapper_cache, root / "empty-caches"
                 )
 
     def test_android_baseline_qualifies_startup_once_before_shards(self) -> None:

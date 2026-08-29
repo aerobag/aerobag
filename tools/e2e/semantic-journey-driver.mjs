@@ -678,7 +678,7 @@ export function androidActionCandidates(actionId) {
 }
 
 export function androidActionUsesSubmit(actionId) {
-  return actionId.startsWith("chart-search-suggestion:");
+  return androidSemanticTag(actionId).startsWith("parity:chart-search-suggestion:");
 }
 
 export function androidElementMayRequireVerticalScroll(elementId) {
@@ -808,13 +808,10 @@ export function androidPageIdFromStartupStateTag(tag) {
 }
 
 function visibleAndroidPage(serial) {
-  const state = queryAndroidSemanticNodes(
-    serial,
-    "parity:startup-state:",
-    { prefix: true },
-  ).find((node) => node.visible === "true");
-  const pageId = androidPageIdFromStartupStateTag(androidTag(state));
-  return pageId ? { pageId, node: state } : null;
+  const state = queryAndroidStartupProjection(serial);
+  const page = state?.page ?? state?.persisted_page;
+  const pageId = page ? ANDROID_PERSISTED_PAGE_IDS[page] ?? null : null;
+  return pageId ? { pageId, state } : null;
 }
 
 export function androidZoomKeyCode(amount) {

@@ -21,6 +21,7 @@ import {
 } from "./release-journey-runtime.mjs";
 import { verifyProductSurfaceCoverage } from "./product-surface-coverage.mjs";
 import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-registry.mjs";
+import { validateAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
   chooseForecastWindModel,
@@ -2277,6 +2278,12 @@ test("Android page navigation requires visible semantic pages", () => {
     androidDriver.indexOf("async readPage(pageId)"),
     androidDriver.indexOf("async readNavigationAction(pageId)"),
   );
+  const currentPage = source.slice(
+    source.indexOf("function visibleAndroidPage"),
+    source.indexOf("export function androidZoomKeyCode"),
+  );
+  assert.match(currentPage, /queryAndroidStartupProjection\(serial\)/);
+  assert.doesNotMatch(currentPage, /queryAndroidSemanticNodes/);
   assert.match(readPage, /const current = visibleAndroidPage\(this\.serial\)/);
   assert.match(readPage, /current\?\.pageId === pageId/);
 });
@@ -2401,6 +2408,24 @@ test("release fixture is capability-addressed and complete", () => {
   assert.equal(validateReleaseJourneyFixture(manifest).fixture, "release-journey-publication");
   delete manifest.capabilities.plate.notam;
   assert.throws(() => validateReleaseJourneyFixture(manifest), /plate\.notam/);
+});
+
+test("Android smoke fixture names a plate backed by its compact publication", () => {
+  const manifest = {
+    schema_version: 1,
+    fixture: "android-smoke-publication",
+    capabilities: {
+      plate: {
+        georeferenced: {
+          airport_id: "KPLU",
+          label_contains: "RNAV 35",
+        },
+      },
+    },
+  };
+  assert.equal(validateAndroidSmokeFixture(manifest), manifest);
+  delete manifest.capabilities.plate.georeferenced.label_contains;
+  assert.throws(() => validateAndroidSmokeFixture(manifest), /plate label/);
 });
 
 test("Android fixture URLs use keyboard-safe reversible paths", () => {
@@ -2569,6 +2594,7 @@ test("Android aliases the shared ownship launcher to its Compose semantic tag", 
 
 test("Android exact search suggestions use the focused field submit action", () => {
   assert.equal(androidActionUsesSubmit("chart-search-suggestion:KSEA"), true);
+  assert.equal(androidActionUsesSubmit("chart-search-suggestion-KSEA"), true);
   assert.equal(androidActionUsesSubmit("airport_info"), false);
 });
 

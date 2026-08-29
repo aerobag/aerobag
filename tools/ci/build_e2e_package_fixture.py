@@ -23,6 +23,7 @@ FIXTURE_SCHEMA_VERSION = 1
 FIXTURE_ID = "android-smoke-publication"
 PUBLICATION_ROOT = "e2e-v1"
 TPP_AIRPORT_ID = "PLU"
+TPP_PLATE_LABEL_CONTAINS = "RNAV 35"
 START_VALID = "2020-01-01"
 END_VALID = "2100-01-01"
 HASH_SUFFIX_RE = re.compile(r"_[0-9a-f]{64}\.zip$")
@@ -313,6 +314,14 @@ def build_fixture(source_publication: Path, output_root: Path, cycle: str) -> No
             "test_validity": {
                 "start": START_VALID,
                 "end": END_VALID,
+            },
+            "capabilities": {
+                "plate": {
+                    "georeferenced": {
+                        "airport_id": f"K{TPP_AIRPORT_ID}",
+                        "label_contains": TPP_PLATE_LABEL_CONTAINS,
+                    }
+                }
             },
             "packages": [
                 {

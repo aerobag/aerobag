@@ -433,6 +433,7 @@ jobs:
           - android.rotation-session-retention-regression
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
+      AEROBAG_ANDROID_SMOKE_FIXTURE: ${{ github.workspace }}/.ci/test-artifacts/e2e/android-smoke-publication/fixture.json
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
       ANDROID_TARGET_ABIS: x86_64
       AEROBAG_ANDROID_KEYSTORE: ${{ github.workspace }}/.ci/android-ci.keystore

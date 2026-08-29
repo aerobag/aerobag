@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,47 @@ class LocalCandidateQualificationTests(unittest.TestCase):
     def test_local_android_qualification_models_one_emulator_per_github_runner(self) -> None:
         self.assertEqual(qualification.ANDROID_SHARDS, 4)
         self.assertEqual(qualification.DEFAULT_ANDROID_WORKERS, 2)
+
+    def test_native_android_lane_maps_the_immutable_apk_device_port(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(qualification, "git", return_value="12345678"),
+        ):
+            root = Path(temp_dir)
+            lane = qualification.native_lane(
+                "android.flight-plan-route-smoke",
+                0,
+                root,
+                root / "fixtures",
+                root / "apps",
+                32123,
+            )
+
+        self.assertEqual(lane.env["PACKAGE_SOURCE_PORT"], "32123")
+        self.assertEqual(
+            lane.env["AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT"],
+            "18093",
+        )
+        self.assertEqual(lane.env["ANDROID_PACKAGE_SOURCE_DEVICE_PORT"], "18093")
+        self.assertEqual(lane.env["AEROBAG_ANDROID_CLOUD_DEVICE_PORT"], "18094")
+        self.assertEqual(
+            lane.env["AEROBAG_ANDROID_SMOKE_FIXTURE"],
+            str(root / "fixtures/e2e/android-smoke-publication/fixture.json"),
+        )
+
+    def test_available_loopback_ports_are_distinct_and_bindable(self) -> None:
+        ports = qualification.available_loopback_ports(5)
+
+        self.assertEqual(len(set(ports)), 5)
+        listeners = []
+        try:
+            for port in ports:
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                listener.bind(("127.0.0.1", port))
+                listeners.append(listener)
+        finally:
+            for listener in listeners:
+                listener.close()
 
     def test_local_qualification_rejects_insufficient_workspace_capacity(self) -> None:
         with mock.patch.object(

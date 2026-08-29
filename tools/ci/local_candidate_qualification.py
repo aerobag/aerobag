@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -741,9 +742,16 @@ def android_baseline_lane(
     )
 
 
-def native_lane(test_id: str, index: int, run_root: Path, fixtures: Path, apps: Path) -> Lane:
+def native_lane(
+    test_id: str,
+    index: int,
+    run_root: Path,
+    fixtures: Path,
+    apps: Path,
+    package_port: int | None = None,
+) -> Lane:
     vnc_port = 5_950 + index
-    package_port = 21_400 + index
+    package_port = package_port if package_port is not None else 21_400 + index
     target = run_root / f"native-target-{index}"
     avd = f"aerobag-local-native-{git('rev-parse', '--short=8', 'HEAD')}-{index}"
     env = {
@@ -760,8 +768,16 @@ def native_lane(test_id: str, index: int, run_root: Path, fixtures: Path, apps: 
             else "system-images;android-34;aosp_atd;x86_64"
         ),
         "PACKAGE_SOURCE_PORT": str(package_port),
+        # build_release_e2e_apps.sh compiles the immutable APK against this
+        # device-side port. Each emulator reverses it to its own host port.
+        "AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
+        "ANDROID_PACKAGE_SOURCE_DEVICE_PORT": "18093",
+        "AEROBAG_ANDROID_CLOUD_DEVICE_PORT": "18094",
         "AEROBAG_UI_TARGET_ROOT": str(target),
         "AEROBAG_TEST_ARTIFACTS_ROOT": str(fixtures),
+        "AEROBAG_ANDROID_SMOKE_FIXTURE": str(
+            fixtures / "e2e/android-smoke-publication/fixture.json"
+        ),
         "AEROBAG_ARTIFACT_READ_PATH": str(fixtures / "e2e/android-smoke-publication/published"),
         "AEROBAG_E2E_ARTIFACT_DIR": str(run_root / f"results-{test_id}"),
         "AEROBAG_E2E_APK": str(apps / "aerobag-release-e2e.apk"),
@@ -786,6 +802,20 @@ def native_lane(test_id: str, index: int, run_root: Path, fixtures: Path, apps: 
         env=env,
         timeout_seconds=3_600,
     )
+
+
+def available_loopback_ports(count: int) -> tuple[int, ...]:
+    """Choose distinct host ports for lanes that start immediately afterward."""
+    sockets: list[socket.socket] = []
+    try:
+        for _ in range(count):
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.bind(("127.0.0.1", 0))
+            sockets.append(listener)
+        return tuple(listener.getsockname()[1] for listener in sockets)
+    finally:
+        for listener in sockets:
+            listener.close()
 
 
 def auxiliary_lanes(run_root: Path, fixtures: Path) -> list[Lane]:
@@ -962,9 +992,12 @@ def main() -> int:
         f"Running native Android and Chrome lanes with {android_workers} local emulator worker(s)",
         flush=True,
     )
+    native_package_ports = available_loopback_ports(len(NATIVE_TESTS))
     native = [
-        native_lane(test_id, index, run_root, fixtures, apps)
-        for index, test_id in enumerate(NATIVE_TESTS)
+        native_lane(test_id, index, run_root, fixtures, apps, package_port)
+        for index, (test_id, package_port) in enumerate(
+            zip(NATIVE_TESTS, native_package_ports, strict=True)
+        )
     ]
     native.append(auxiliary_lanes(run_root, fixtures)[1])
     results.extend(run_lanes(native, logs, min(android_workers, len(native))))

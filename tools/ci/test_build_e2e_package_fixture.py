@@ -169,6 +169,13 @@ class BuildE2ePackageFixtureTest(unittest.TestCase):
         fixture = json.loads((output / "fixture.json").read_text())
         self.assertEqual(1, fixture["schema_version"])
         self.assertEqual(1, fixture["packages"][1]["plate_count"])
+        self.assertEqual(
+            {
+                "airport_id": "KPLU",
+                "label_contains": "RNAV 35",
+            },
+            fixture["capabilities"]["plate"]["georeferenced"],
+        )
 
     def test_refuses_to_replace_existing_output(self) -> None:
         output = self.root / "fixture"

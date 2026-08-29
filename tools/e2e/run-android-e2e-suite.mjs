@@ -57,6 +57,7 @@ import {
   waitForAndroidOrientation,
   waitForNode,
 } from "./android-harness.mjs";
+import { loadAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
 import { loadReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
   offlineSyncButtonIsIdle,
@@ -122,7 +123,7 @@ async function nativeTransition(result, description, contract) {
 
 function usage() {
   console.log(`Usage:
-  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--package-source-device-port 8083] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
+  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--package-source-device-port 8083] [--android-smoke-fixture fixture.json] [--release-fixture fixture.json] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
 
 Runs Android end-to-end UI tests against an installed Aerobag app.
 When a clean emulator starts on Offline Packages, the runner syncs the NW
@@ -140,6 +141,10 @@ function parseArgs(argv) {
       process.env.ANDROID_PACKAGE_SOURCE_DEVICE_PORT ?? "",
     syncOfflinePackages: true,
     syncAllAvailablePackages: false,
+    androidSmokeFixture: process.env.AEROBAG_ANDROID_SMOKE_FIXTURE ??
+      (process.env.AEROBAG_TEST_ARTIFACTS_ROOT
+        ? join(process.env.AEROBAG_TEST_ARTIFACTS_ROOT, "e2e/android-smoke-publication/fixture.json")
+        : ""),
     releaseFixture: process.env.AEROBAG_RELEASE_JOURNEY_FIXTURE ?? "",
     test: "",
     json: false,
@@ -162,6 +167,8 @@ function parseArgs(argv) {
       args.syncAllAvailablePackages = true;
     } else if (arg === "--test") {
       args.test = argv[++i] ?? "";
+    } else if (arg === "--android-smoke-fixture") {
+      args.androidSmokeFixture = argv[++i] ?? "";
     } else if (arg === "--release-fixture") {
       args.releaseFixture = argv[++i] ?? "";
     } else if (arg === "--json") {
@@ -864,7 +871,12 @@ async function openPlateFromAirportInspector(serial, result, airportId, expected
   await inspectAirportFromChartSearch(serial, result, airportId);
 
   const airportItemTag = `parity:map-selection-item:airport-${airportId}`;
-  if (findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, airportItemTag))) {
+  const inspector = dumpAndroid(serial);
+  const platesActionVisible = findNode(
+    inspector,
+    (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
+  ) !== null;
+  if (!platesActionVisible) {
     await nativeTransition(result, `airport ${airportId} selected in inspector`, {
       ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, airportItemTag)),
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
@@ -1499,10 +1511,10 @@ async function runMapFollowCtrGestureSmoke(args) {
 
 async function runPlateFirstRenderSmoke(args) {
   const { serial } = args;
-  if (!args.releaseFixture) {
-    throw new Error("android.plate-first-render-smoke requires --release-fixture");
+  if (!args.androidSmokeFixture) {
+    throw new Error("android.plate-first-render-smoke requires --android-smoke-fixture");
   }
-  const fixture = loadReleaseJourneyFixture(args.releaseFixture);
+  const fixture = loadAndroidSmokeFixture(args.androidSmokeFixture);
   const plateCapability = fixture.capabilities.plate.georeferenced;
   const result = createTestResult("android.plate-first-render-smoke");
   adb(serial, ["logcat", "-c"]);

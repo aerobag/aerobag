@@ -2437,12 +2437,22 @@ export async function chooseForecastWindModel(runtime) {
     }, E2E_TIMING.externalConsistencyMs);
   }
 
-  const selected = await runtime.action("select ready wind forecast", readyId, {
+  const response = await runtime.action("select ready wind forecast", readyId, {
     complete: async () => {
+      const value = await runtime.driver.readElement(readyId);
+      if (selectedSemantic(value)) return { selected: value, loading: null };
+      const loading = await runtime.driver.readElement("altitude-comparison-loading");
+      return loading ? { selected: null, loading } : null;
+    },
+  });
+  const selected = response.selected ?? await runtime.eventually(
+    "ready wind forecast selected",
+    async () => {
       const value = await runtime.driver.readElement(readyId);
       return selectedSemantic(value) ? value : null;
     },
-  });
+    E2E_TIMING.resourceMs,
+  );
   return { noWind, ready, selected, downloaded };
 }
 

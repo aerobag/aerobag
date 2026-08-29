@@ -1418,12 +1418,14 @@ test("forecast choice waits for one coherent action state before branching", asy
   let calculationReads = 0;
   let readyReads = 0;
   let readySelected = false;
+  let selectionCalculationInFlight = false;
   const actions = [];
   const runtime = withActionContract({
     platform: "web",
     driver: {
       async readElement(id) {
         if (id === "altitude-comparison-loading") {
+          if (selectionCalculationInFlight) return { text: "Calculating…" };
           calculationReads += 1;
           return calculationReads < 3 ? { text: "Calculating…" } : null;
         }
@@ -1438,10 +1440,16 @@ test("forecast choice waits for one coherent action state before branching", asy
       },
       async performAction(id) {
         actions.push(id);
-        if (id === "altitude-planner-wind-action-ready_forecast") readySelected = true;
+        if (id === "altitude-planner-wind-action-ready_forecast") {
+          selectionCalculationInFlight = true;
+        }
       },
     },
-    async eventually(_label, probe) {
+    async eventually(label, probe) {
+      if (label === "ready wind forecast selected") {
+        selectionCalculationInFlight = false;
+        readySelected = true;
+      }
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const value = await probe();
         if (value) return value;
@@ -1453,6 +1461,7 @@ test("forecast choice waits for one coherent action state before branching", asy
   const result = await chooseForecastWindModel(runtime);
   assert.equal(result.downloaded, false);
   assert.equal(calculationReads, 3);
+  assert.equal(result.selected.pressed, "true");
   assert.deepEqual(actions, ["altitude-planner-wind-action-ready_forecast"]);
 });
 

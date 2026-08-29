@@ -478,6 +478,19 @@ async function fixtureHealth(runtime) {
   return fetchFixtureJson(runtime, "/__health");
 }
 
+async function fixtureRequests(runtime) {
+  if (!runtime.fixtureOrigin) throw new Error("journey fixture origin is unavailable");
+  return fetchFixtureJson(runtime, "/__requests");
+}
+
+export function publicationCatalogRequestCount(requests) {
+  return requests.filter((request) =>
+    request.method === "GET" &&
+    ["/packages", "/packages/", "/packages/current_artifacts.json"].includes(
+      new URL(request.url, "http://fixture.invalid").pathname,
+    )).length;
+}
+
 async function fetchFixtureJson(runtime, path, options = {}) {
   const response = await fetch(new URL(path, runtime.fixtureOrigin), options);
   if (!response.ok) throw new Error(`${path} failed: HTTP ${response.status}`);
@@ -1521,10 +1534,15 @@ async function androidPackageMaintenance(runtime) {
   });
   try {
     await runtime.openPage("offline_packages");
+    const catalogRequestsBeforeRefresh = publicationCatalogRequestCount(
+      await fixtureRequests(runtime),
+    );
     await runtime.action("refresh offline package catalog", "offline-refresh-button", {
       complete: async () => {
-        const button = await runtime.driver.readElement("offline-refresh-button");
-        return /REFRESHING|CANCELING/i.test(button?.text ?? "") ? button : null;
+        const requests = await fixtureRequests(runtime);
+        return publicationCatalogRequestCount(requests) > catalogRequestsBeforeRefresh
+          ? requests
+          : null;
       },
     });
     await waitForOfflineSyncIdle(runtime, "updated package plan ready");

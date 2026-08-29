@@ -292,7 +292,18 @@ public final class SemanticDriverService extends AccessibilityService {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                collectMatchingNodes(root, tag, prefix, output, null);
+                if (prefix) {
+                    collectMatchingNodes(root, tag, true, output, null);
+                    continue;
+                }
+                List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(tag);
+                try {
+                    for (AccessibilityNodeInfo match : matches) {
+                        appendNodeQueryValue(output, match, centerReachable(match));
+                    }
+                } finally {
+                    recycleAll(matches);
+                }
             }
         } catch (JSONException error) {
             throw new IllegalStateException("failed to encode semantic query result", error);
@@ -320,21 +331,7 @@ public final class SemanticDriverService extends AccessibilityService {
             (ancestorClip == null || ancestorClip.contains(bounds.centerX(), bounds.centerY()));
         String nodeTag = node.getViewIdResourceName();
         if (nodeTag != null && (prefix ? nodeTag.startsWith(tag) : nodeTag.equals(tag))) {
-            JSONObject value = new JSONObject();
-            value.put("resource-id", nodeTag);
-            value.put("text", nodeLabel(node));
-            value.put("enabled", Boolean.toString(node.isEnabled()));
-            value.put("clickable", Boolean.toString(node.isClickable()));
-            value.put("visible", Boolean.toString(node.isVisibleToUser()));
-            value.put("center-reachable", Boolean.toString(centerReachable));
-            value.put("selected", Boolean.toString(node.isSelected()));
-            value.put("checked", Boolean.toString(node.isChecked()));
-            value.put("checkable", Boolean.toString(node.isCheckable()));
-            value.put("focused", Boolean.toString(node.isFocused()));
-            value.put("scrollable", Boolean.toString(node.isScrollable()));
-            value.put("state-description", stringValue(node.getStateDescription()));
-            value.put("bounds", bounds.toShortString());
-            output.put(value);
+            appendNodeQueryValue(output, node, centerReachable);
         }
         Rect childClip = new Rect(bounds);
         if (ancestorClip != null && !childClip.intersect(ancestorClip)) childClip.setEmpty();
@@ -347,6 +344,54 @@ public final class SemanticDriverService extends AccessibilityService {
                 child.recycle();
             }
         }
+    }
+
+    private static void appendNodeQueryValue(
+        JSONArray output,
+        AccessibilityNodeInfo node,
+        boolean centerReachable
+    ) throws JSONException {
+        node.refresh();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        JSONObject value = new JSONObject();
+        value.put("resource-id", node.getViewIdResourceName());
+        value.put("text", nodeLabel(node));
+        value.put("enabled", Boolean.toString(node.isEnabled()));
+        value.put("clickable", Boolean.toString(node.isClickable()));
+        value.put("visible", Boolean.toString(node.isVisibleToUser()));
+        value.put("center-reachable", Boolean.toString(centerReachable));
+        value.put("selected", Boolean.toString(node.isSelected()));
+        value.put("checked", Boolean.toString(node.isChecked()));
+        value.put("checkable", Boolean.toString(node.isCheckable()));
+        value.put("focused", Boolean.toString(node.isFocused()));
+        value.put("scrollable", Boolean.toString(node.isScrollable()));
+        value.put("state-description", stringValue(node.getStateDescription()));
+        value.put("bounds", bounds.toShortString());
+        output.put(value);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean centerReachable(AccessibilityNodeInfo node) {
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!node.isVisibleToUser() || bounds.isEmpty()) return false;
+        int centerX = bounds.centerX();
+        int centerY = bounds.centerY();
+        AccessibilityNodeInfo ancestor = node.getParent();
+        while (ancestor != null) {
+            AccessibilityNodeInfo next = null;
+            try {
+                Rect ancestorBounds = new Rect();
+                ancestor.getBoundsInScreen(ancestorBounds);
+                if (!ancestorBounds.contains(centerX, centerY)) return false;
+                next = ancestor.getParent();
+            } finally {
+                ancestor.recycle();
+            }
+            ancestor = next;
+        }
+        return true;
     }
 
     @SuppressWarnings("deprecation")
@@ -382,7 +427,14 @@ public final class SemanticDriverService extends AccessibilityService {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                if (setNodeText(root, tag, value, expectedBounds)) return true;
+                List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(tag);
+                try {
+                    for (AccessibilityNodeInfo match : matches) {
+                        if (setMatchingNodeText(match, value, expectedBounds)) return true;
+                    }
+                } finally {
+                    recycleAll(matches);
+                }
             }
             return false;
         } finally {
@@ -394,7 +446,14 @@ public final class SemanticDriverService extends AccessibilityService {
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                if (clickNode(root, tag, expectedBounds)) return true;
+                List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(tag);
+                try {
+                    for (AccessibilityNodeInfo match : matches) {
+                        if (clickMatchingNode(match, expectedBounds)) return true;
+                    }
+                } finally {
+                    recycleAll(matches);
+                }
             }
             return false;
         } finally {
@@ -453,62 +512,37 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static boolean setNodeText(
+    private static boolean setMatchingNodeText(
         AccessibilityNodeInfo node,
-        String tag,
         String value,
         Rect expectedBounds
     ) {
         node.refresh();
-        if (tag.equals(node.getViewIdResourceName())) {
-            Rect bounds = new Rect();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.equals(expectedBounds)) return false;
+        if (!node.isFocused()) {
+            if (!node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) return false;
+            if (!node.refresh()) return false;
             node.getBoundsInScreen(bounds);
-            if (!bounds.equals(expectedBounds)) return false;
-            if (!node.isFocused()) {
-                if (!node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) return false;
-                if (!node.refresh()) return false;
-                node.getBoundsInScreen(bounds);
-                if (!bounds.equals(expectedBounds) || !node.isFocused()) return false;
-            }
-            Bundle arguments = new Bundle();
-            arguments.putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                value
-            );
-            return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
+            if (!bounds.equals(expectedBounds) || !node.isFocused()) return false;
         }
-        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
-            if (child == null) continue;
-            try {
-                if (setNodeText(child, tag, value, expectedBounds)) return true;
-            } finally {
-                child.recycle();
-            }
-        }
-        return false;
+        Bundle arguments = new Bundle();
+        arguments.putCharSequence(
+            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+            value
+        );
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
     }
 
     @SuppressWarnings("deprecation")
-    private boolean clickNode(AccessibilityNodeInfo node, String tag, Rect expectedBounds) {
+    private boolean clickMatchingNode(AccessibilityNodeInfo node, Rect expectedBounds) {
         node.refresh();
-        if (tag.equals(node.getViewIdResourceName())) {
-            if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
-            Rect bounds = new Rect();
-            node.getBoundsInScreen(bounds);
-            if (!bounds.equals(expectedBounds)) return false;
-            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-        }
-        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
-            AccessibilityNodeInfo child = node.getChild(childIndex);
-            if (child == null) continue;
-            try {
-                if (clickNode(child, tag, expectedBounds)) return true;
-            } finally {
-                child.recycle();
-            }
-        }
-        return false;
+        if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.equals(expectedBounds) || !centerReachable(node)) return false;
+        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
     }
 
     @SuppressWarnings("deprecation")

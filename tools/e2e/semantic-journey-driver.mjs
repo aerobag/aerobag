@@ -14,7 +14,7 @@ import {
 import { E2E_TIMING, observeUntil, performTransition } from "./transition-contract.mjs";
 
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
-  "reset", "resetApplicationData", "openPage", "readCurrentPage", "readNavigationAction", "activateNavigation",
+  "reset", "resetApplicationData", "openPage", "readCurrentPage", "readPage", "readNavigationAction", "activateNavigation",
   "openChooser", "readOption", "selectOption",
   "inspectMapAt", "activateMapInspection", "performAction",
   "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
@@ -33,6 +33,10 @@ export class SemanticJourneyDriver {
   async resetApplicationData() { throw new Error(`${this.platform} driver does not implement resetApplicationData`); }
   async openPage(pageId) { return navigateSemanticPage(this, pageId); }
   async readCurrentPage() { throw new Error(`${this.platform} driver does not implement readCurrentPage`); }
+  async readPage(pageId) {
+    const current = await this.readCurrentPage();
+    return current?.pageId === pageId ? current : null;
+  }
   async readNavigationAction(_pageId) {
     throw new Error(`${this.platform} driver does not implement readNavigationAction`);
   }
@@ -100,10 +104,7 @@ export async function navigateSemanticPage(
     current = await transition("navigate to Home", {
       ready: () => driver.readNavigationAction("home"),
       act: (readyElement) => driver.activateNavigation("home", readyElement),
-      complete: async () => {
-        const page = await driver.readCurrentPage();
-        return page?.pageId === "home" ? page : null;
-      },
+      complete: () => driver.readPage("home"),
     });
   }
   if (pageId === "home") return current;
@@ -111,10 +112,7 @@ export async function navigateSemanticPage(
   return transition(`navigate to ${pageId}`, {
     ready: () => driver.readNavigationAction(pageId),
     act: (readyElement) => driver.activateNavigation(pageId, readyElement),
-    complete: async () => {
-      const page = await driver.readCurrentPage();
-      return page?.pageId === pageId ? page : null;
-    },
+    complete: () => driver.readPage(pageId),
   });
 }
 
@@ -790,6 +788,20 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readCurrentPage() {
     return visibleAndroidPage(this.serial);
+  }
+
+  async readPage(pageId) {
+    const tag = androidPageTag(pageId);
+    if (!tag) throw new Error(`Android page ${pageId} has no semantic page tag`);
+    const node = queryFirstAndroidSemanticNode(
+      this.serial,
+      tag,
+      {
+        allowPrefix: tag.endsWith(":"),
+        requireVisible: true,
+      },
+    );
+    return node ? { pageId, node } : null;
   }
 
   async readNavigationAction(pageId) {

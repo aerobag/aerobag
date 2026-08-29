@@ -26,6 +26,7 @@ import {
   chooseForecastWindModel,
   openAndDismissDataStatus,
   offlineSyncButtonIsIdle,
+  publicationCatalogRequestCount,
   rasterPlanHasVisiblePaint,
   rasterPlanIsDisplayReady,
   rasterStateFromProjection,
@@ -1535,6 +1536,29 @@ test("persistent Android semantic requests fail before the user-response budget"
   assert.match(source, /"--fail-with-body"/);
 });
 
+test("persistent Android exact actions use indexed accessibility lookup", () => {
+  const source = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    source.match(/findAccessibilityNodeInfosByViewId\(tag\)/g)?.length >= 3,
+    "query, text, and click paths must use Android's indexed view-ID lookup",
+  );
+  assert.doesNotMatch(source, /clickNode\([^\n]*tag/);
+  assert.doesNotMatch(source, /setNodeText\([^\n]*tag/);
+});
+
+test("package refresh completion observes a new catalog request", () => {
+  const requests = [
+    { method: "GET", url: "/__health" },
+    { method: "HEAD", url: "/packages/current_artifacts.json" },
+    { method: "GET", url: "/packages/current_artifacts.json" },
+    { method: "GET", url: "http://fixture.test/packages/" },
+  ];
+  assert.equal(publicationCatalogRequestCount(requests), 2);
+});
+
 test("journey actions require a semantic completion condition", async () => {
   const actions = [];
   const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-action-contract-"));
@@ -2020,6 +2044,9 @@ test("shared semantic navigation records each required user gesture separately",
   const transitions = [];
   const driver = {
     async readCurrentPage() { return { pageId }; },
+    async readPage(expectedPageId) {
+      return pageId === expectedPageId ? { pageId } : null;
+    },
     async readNavigationAction(destination) { return { destination }; },
     async activateNavigation(destination) {
       activated.push(destination);
@@ -2050,6 +2077,9 @@ test("shared semantic navigation does not skip an explicit Home request", async 
   const activated = [];
   const driver = {
     async readCurrentPage() { return { pageId }; },
+    async readPage(expectedPageId) {
+      return pageId === expectedPageId ? { pageId } : null;
+    },
     async readNavigationAction(destination) { return { destination }; },
     async activateNavigation(destination) {
       activated.push(destination);

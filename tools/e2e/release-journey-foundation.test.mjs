@@ -72,6 +72,20 @@ import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { setAndroidWallClockAndWait } from "./android-harness.mjs";
 
+function labMetadataEnvironment() {
+  const environment = {
+    AEROBAG_RELEASE_JOURNEY_REPETITIONS: "1",
+    AEROBAG_UI_TARGET_ROOT: tmpdir(),
+    VNC_PORT: "5900",
+  };
+  for (const name of ["HOME", "PATH", "TMPDIR"]) {
+    if (process.env[name]) {
+      environment[name] = process.env[name];
+    }
+  }
+  return environment;
+}
+
 test("web tooling resolves dependencies only from an explicit web workspace", () => {
   assert.equal(
     webWorkspaceDirectory(
@@ -211,6 +225,7 @@ test("Android cloud crossfill executes alone in its release shard", () => {
   const shardZero = spawnSync("bash", [script.pathname, "android-shard-list", "p1", "0", "4"], {
     cwd: new URL("../..", import.meta.url),
     encoding: "utf8",
+    env: labMetadataEnvironment(),
   });
   assert.equal(shardZero.status, 0, shardZero.stderr);
   assert.equal(shardZero.stdout.trim(), "shared.cloud-crossfill");
@@ -219,7 +234,11 @@ test("Android cloud crossfill executes alone in its release shard", () => {
     const result = spawnSync(
       "bash",
       [script.pathname, "android-shard-list", "p1", String(shard), "4"],
-      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+      {
+        cwd: new URL("../..", import.meta.url),
+        encoding: "utf8",
+        env: labMetadataEnvironment(),
+      },
     );
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /shared\.cloud-crossfill/);
@@ -1300,9 +1319,9 @@ test("release journey suites reject a journey id mistaken for a priority", () =>
     "shared.other-documents",
   ], {
     cwd: new URL("../..", import.meta.url).pathname,
-    env: process.env,
+    env: labMetadataEnvironment(),
   });
-  assert.equal(result.status, 2);
+  assert.equal(result.status, 2, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stderr.toString(), /invalid journey priority/);
 });
 

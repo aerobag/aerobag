@@ -103,12 +103,14 @@ function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
   });
 }
 
-export function setAndroidSemanticText(serial, tag, value, expectedBounds) {
+export function setAndroidSemanticText(serial, tag, value, expectedBounds, semanticPath) {
   const state = requiredSemanticDriver(serial);
-  if (!expectedBounds) {
-    throw new Error(`persistent Android semantic text action for ${tag} has no readiness bounds`);
+  if (!expectedBounds || !semanticPath) {
+    throw new Error(
+      `persistent Android semantic text action for ${tag} has no readiness path and bounds`,
+    );
   }
-  const query = new URLSearchParams({ tag, value, bounds: expectedBounds });
+  const query = new URLSearchParams({ tag, value, bounds: expectedBounds, path: semanticPath });
   const response = semanticDriverRequest(
     state.port, `/set-text?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
   );
@@ -117,12 +119,12 @@ export function setAndroidSemanticText(serial, tag, value, expectedBounds) {
   throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
 }
 
-export function clickAndroidSemanticNode(serial, tag, expectedBounds) {
+export function clickAndroidSemanticNode(serial, tag, expectedBounds, semanticPath) {
   const state = requiredSemanticDriver(serial);
-  if (!expectedBounds) {
-    throw new Error(`persistent Android semantic click for ${tag} has no readiness bounds`);
+  if (!expectedBounds || !semanticPath) {
+    throw new Error(`persistent Android semantic click for ${tag} has no readiness path and bounds`);
   }
-  const query = new URLSearchParams({ tag, bounds: expectedBounds });
+  const query = new URLSearchParams({ tag, bounds: expectedBounds, path: semanticPath });
   const response = semanticDriverRequest(
     state.port, `/click?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS, "POST",
   );
@@ -162,9 +164,9 @@ export function waitForAndroidSemanticEvent(serial, timeoutMs) {
   throw new Error(`persistent Android semantic event wait failed: ${detail}`);
 }
 
-export function queryAndroidSemanticNodes(serial, tag, { prefix = false } = {}) {
+export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first = false } = {}) {
   const state = requiredSemanticDriver(serial);
-  const query = new URLSearchParams({ tag, prefix: String(prefix) });
+  const query = new URLSearchParams({ tag, prefix: String(prefix), first: String(first) });
   const response = semanticDriverRequest(
     state.port, `/query?${query}`, SEMANTIC_REQUEST_TIMEOUT_SECONDS,
   );
@@ -650,10 +652,10 @@ export function tagExists(serial, tag) {
 
 export async function activateAndroidNode(serial, node) {
   const tag = androidTag(node);
-  if (!tag || !node?.bounds) {
+  if (!tag || !node?.bounds || !node?.["semantic-path"]) {
     throw new Error("Android semantic action requires tagged readiness evidence");
   }
-  if (!clickAndroidSemanticNode(serial, tag, node.bounds)) {
+  if (!clickAndroidSemanticNode(serial, tag, node.bounds, node["semantic-path"])) {
     throw new Error(`Android semantic action ${tag} was rejected`);
   }
   return node;
@@ -832,6 +834,19 @@ export function grantAerobagRuntimePermissions(serial) {
   }
 }
 
+function firstAerobagSemanticNodeDuringStartup(serial) {
+  try {
+    return queryAndroidSemanticNodes(
+      serial,
+      "parity:",
+      { prefix: true, first: true },
+    )[0] ?? null;
+  } catch (error) {
+    if (/curl: \(28\) Operation timed out/.test(error.message)) return null;
+    throw error;
+  }
+}
+
 export async function launchFreshAndroidApp(
   serial,
   { clearUiPrefs = true, clearCoreSettings = false, armLayerNavKvFault = false } = {},
@@ -854,10 +869,11 @@ export async function launchFreshAndroidApp(
   // `am start -W` includes Android process startup and can exceed the generic
   // command timeout on cold CI emulators. UI readiness is still checked below.
   adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
-  await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    return findNode(xml, (node) => node.package === ANDROID_PACKAGE) !== null;
-  }, 90000, "Aerobag app visible");
+  await waitFor(
+    () => firstAerobagSemanticNodeDuringStartup(serial),
+    E2E_TIMING.startupMs,
+    "Aerobag semantic UI visible",
+  );
 }
 
 export async function acceptDisclaimerIfPresent(serial) {
@@ -877,16 +893,21 @@ export async function acceptDisclaimerIfPresent(serial) {
     },
     act: async (readyButton) => activateAndroidNode(serial, readyButton),
     complete: async () => {
-      const nextState = queryAndroidStartupState(serial);
       const nextButton = queryAndroidSemanticNodes(
         serial,
         "parity:disclaimer-accept-button",
       )?.[0] ?? null;
-      return nextState?.disclaimer_required === "false" && !nextButton
-        ? nextState
-        : null;
+      return nextButton ? null : true;
     },
     responseTimeoutMs: E2E_TIMING.userResponseMs,
+  });
+  await observeUntil("application startup after accepting mandatory disclaimer", () => {
+    const nextState = queryAndroidStartupState(serial);
+    return nextState?.disclaimer_required === "false" ? nextState : null;
+  }, {
+    timeoutMs: E2E_TIMING.startupMs,
+    intervalMs: E2E_TIMING.resourcePollIntervalMs,
+    consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
   });
   return true;
 }

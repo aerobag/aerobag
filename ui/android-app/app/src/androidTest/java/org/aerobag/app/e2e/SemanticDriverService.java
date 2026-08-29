@@ -144,9 +144,10 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String value = query.getOrDefault("value", "");
+        String semanticPath = query.getOrDefault("path", "");
         Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
-        boolean changed = !tag.isEmpty() && expectedBounds != null &&
-            setRenderedText(tag, value, expectedBounds);
+        boolean changed = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
+            setRenderedText(tag, value, expectedBounds, semanticPath);
         respondAction(socket, changed, "text action rejected\n");
     }
 
@@ -154,10 +155,11 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         boolean prefix = "true".equals(query.getOrDefault("prefix", "false"));
+        boolean first = "true".equals(query.getOrDefault("first", "false"));
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
-            renderNodeQuery(tag, prefix).toString() + "\n",
+            renderNodeQuery(tag, prefix, first).toString() + "\n",
             200
         );
     }
@@ -183,9 +185,10 @@ public final class SemanticDriverService extends AccessibilityService {
     private void handleClick(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
+        String semanticPath = query.getOrDefault("path", "");
         Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
-        boolean clicked = !tag.isEmpty() && expectedBounds != null &&
-            clickRenderedNode(tag, expectedBounds);
+        boolean clicked = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
+            clickRenderedNode(tag, expectedBounds, semanticPath);
         respondAction(socket, clicked, "click action rejected for " + tag + "\n");
     }
 
@@ -276,9 +279,11 @@ public final class SemanticDriverService extends AccessibilityService {
         StringBuilder output = new StringBuilder();
         output.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
         output.append("<hierarchy rotation=\"0\">\n");
-        List<AccessibilityNodeInfo> roots = roots(false);
+        List<AccessibilityNodeInfo> roots = roots(true);
         try {
-            for (AccessibilityNodeInfo root : roots) appendNode(output, root, 0);
+            for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+                appendNode(output, roots.get(rootIndex), rootIndex, Integer.toString(rootIndex));
+            }
         } finally {
             recycleAll(roots);
         }
@@ -286,23 +291,23 @@ public final class SemanticDriverService extends AccessibilityService {
         return output.toString();
     }
 
-    private JSONArray renderNodeQuery(String tag, boolean prefix) {
+    private JSONArray renderNodeQuery(String tag, boolean prefix, boolean first) {
         JSONArray output = new JSONArray();
         if (tag.isEmpty()) return output;
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
-            for (AccessibilityNodeInfo root : roots) {
-                if (prefix) {
-                    collectMatchingNodes(root, tag, true, output, null);
-                    continue;
-                }
-                List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(tag);
-                try {
-                    for (AccessibilityNodeInfo match : matches) {
-                        appendNodeQueryValue(output, match, centerReachable(match));
-                    }
-                } finally {
-                    recycleAll(matches);
+            for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+                boolean matched = collectMatchingNodes(
+                    roots.get(rootIndex),
+                    tag,
+                    prefix,
+                    first,
+                    output,
+                    null,
+                    Integer.toString(rootIndex)
+                );
+                if (matched && (!prefix || first)) {
+                    break;
                 }
             }
         } catch (JSONException error) {
@@ -314,12 +319,14 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static void collectMatchingNodes(
+    private static boolean collectMatchingNodes(
         AccessibilityNodeInfo node,
         String tag,
         boolean prefix,
+        boolean first,
         JSONArray output,
-        Rect ancestorClip
+        Rect ancestorClip,
+        String semanticPath
     ) throws JSONException {
         // Compose can retain an accessibility node whose only changing field is
         // its test tag. Refresh every queried node so transition predicates see
@@ -330,8 +337,11 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean centerReachable = node.isVisibleToUser() && !bounds.isEmpty() &&
             (ancestorClip == null || ancestorClip.contains(bounds.centerX(), bounds.centerY()));
         String nodeTag = node.getViewIdResourceName();
+        boolean matched = false;
         if (nodeTag != null && (prefix ? nodeTag.startsWith(tag) : nodeTag.equals(tag))) {
-            appendNodeQueryValue(output, node, centerReachable);
+            appendNodeQueryValue(output, node, centerReachable, semanticPath);
+            matched = true;
+            if (!prefix || first) return true;
         }
         Rect childClip = new Rect(bounds);
         if (ancestorClip != null && !childClip.intersect(ancestorClip)) childClip.setEmpty();
@@ -339,23 +349,36 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
-                collectMatchingNodes(child, tag, prefix, output, childClip);
+                boolean childMatched = collectMatchingNodes(
+                    child,
+                    tag,
+                    prefix,
+                    first,
+                    output,
+                    childClip,
+                    semanticPath + "/" + childIndex
+                );
+                matched = matched || childMatched;
+                if (childMatched && (!prefix || first)) return true;
             } finally {
                 child.recycle();
             }
         }
+        return matched;
     }
 
     private static void appendNodeQueryValue(
         JSONArray output,
         AccessibilityNodeInfo node,
-        boolean centerReachable
+        boolean centerReachable,
+        String semanticPath
     ) throws JSONException {
         node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         JSONObject value = new JSONObject();
         value.put("resource-id", node.getViewIdResourceName());
+        value.put("semantic-path", semanticPath);
         value.put("text", nodeLabel(node));
         value.put("enabled", Boolean.toString(node.isEnabled()));
         value.put("clickable", Boolean.toString(node.isClickable()));
@@ -423,42 +446,129 @@ public final class SemanticDriverService extends AccessibilityService {
         return value == null ? "" : value.toString();
     }
 
-    private boolean setRenderedText(String tag, String value, Rect expectedBounds) {
+    private boolean setRenderedText(
+        String tag,
+        String value,
+        Rect expectedBounds,
+        String semanticPath
+    ) {
+        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+        if (node == null) return false;
+        try {
+            return setMatchingNodeText(node, tag, value, expectedBounds);
+        } finally {
+            node.recycle();
+        }
+    }
+
+    private boolean clickRenderedNode(String tag, Rect expectedBounds, String semanticPath) {
+        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+        if (node == null) return false;
+        try {
+            return clickMatchingNode(node, tag, expectedBounds);
+        } finally {
+            node.recycle();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private AccessibilityNodeInfo resolveRenderedNode(
+        String tag,
+        Rect expectedBounds,
+        String semanticPath
+    ) {
+        AccessibilityNodeInfo node = nodeAtPath(semanticPath);
+        if (node != null) {
+            node.refresh();
+            if (matchesRenderedTarget(node, tag, expectedBounds)) return node;
+            node.recycle();
+        }
+
+        // Compose may renumber semantics children during an unrelated
+        // recomposition. Resolve that case like a real tap: descend only
+        // through nodes covering the readiness point, then require the same
+        // semantic tag and exact bounds before delivering the action.
         List<AccessibilityNodeInfo> roots = roots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(tag);
-                try {
-                    for (AccessibilityNodeInfo match : matches) {
-                        if (setMatchingNodeText(match, value, expectedBounds)) return true;
-                    }
-                } finally {
-                    recycleAll(matches);
-                }
+                AccessibilityNodeInfo match = findRenderedNodeAtPoint(root, tag, expectedBounds);
+                if (match != null) return match;
             }
-            return false;
+            return null;
         } finally {
             recycleAll(roots);
         }
     }
 
-    private boolean clickRenderedNode(String tag, Rect expectedBounds) {
-        List<AccessibilityNodeInfo> roots = roots(true);
-        try {
-            for (AccessibilityNodeInfo root : roots) {
-                List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(tag);
-                try {
-                    for (AccessibilityNodeInfo match : matches) {
-                        if (clickMatchingNode(match, expectedBounds)) return true;
-                    }
-                } finally {
-                    recycleAll(matches);
-                }
+    @SuppressWarnings("deprecation")
+    private static AccessibilityNodeInfo findRenderedNodeAtPoint(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds
+    ) {
+        node.refresh();
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return null;
+        if (matchesRenderedTarget(node, tag, expectedBounds)) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+        for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+            AccessibilityNodeInfo child = node.getChild(childIndex);
+            if (child == null) continue;
+            try {
+                AccessibilityNodeInfo match = findRenderedNodeAtPoint(child, tag, expectedBounds);
+                if (match != null) return match;
+            } finally {
+                child.recycle();
             }
-            return false;
+        }
+        return null;
+    }
+
+    private static boolean matchesRenderedTarget(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds
+    ) {
+        if (!tag.equals(node.getViewIdResourceName())) return false;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        return bounds.equals(expectedBounds);
+    }
+
+    @SuppressWarnings("deprecation")
+    private AccessibilityNodeInfo nodeAtPath(String semanticPath) {
+        if (!semanticPath.matches("[0-9]+(?:/[0-9]+)*")) return null;
+        String[] components = semanticPath.split("/");
+        int rootIndex;
+        try {
+            rootIndex = Integer.parseInt(components[0]);
+        } catch (NumberFormatException error) {
+            return null;
+        }
+        List<AccessibilityNodeInfo> roots = roots(true);
+        AccessibilityNodeInfo current = null;
+        try {
+            if (rootIndex < 0 || rootIndex >= roots.size()) return null;
+            current = AccessibilityNodeInfo.obtain(roots.get(rootIndex));
         } finally {
             recycleAll(roots);
         }
+        for (int componentIndex = 1; componentIndex < components.length; componentIndex++) {
+            int childIndex;
+            try {
+                childIndex = Integer.parseInt(components[componentIndex]);
+            } catch (NumberFormatException error) {
+                current.recycle();
+                return null;
+            }
+            AccessibilityNodeInfo child = current.getChild(childIndex);
+            current.recycle();
+            if (child == null) return null;
+            current = child;
+        }
+        return current;
     }
 
     private boolean scrollRenderedNode(Rect bounds, int action) {
@@ -514,10 +624,12 @@ public final class SemanticDriverService extends AccessibilityService {
     @SuppressWarnings("deprecation")
     private static boolean setMatchingNodeText(
         AccessibilityNodeInfo node,
+        String tag,
         String value,
         Rect expectedBounds
     ) {
         node.refresh();
+        if (!tag.equals(node.getViewIdResourceName())) return false;
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!bounds.equals(expectedBounds)) return false;
@@ -536,8 +648,13 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private boolean clickMatchingNode(AccessibilityNodeInfo node, Rect expectedBounds) {
+    private boolean clickMatchingNode(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds
+    ) {
         node.refresh();
+        if (!tag.equals(node.getViewIdResourceName())) return false;
         if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
@@ -586,8 +703,13 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static void appendNode(StringBuilder output, AccessibilityNodeInfo node, int index) {
-        appendNode(output, node, index, false);
+    private static void appendNode(
+        StringBuilder output,
+        AccessibilityNodeInfo node,
+        int index,
+        String semanticPath
+    ) {
+        appendNode(output, node, index, semanticPath, false);
     }
 
     @SuppressWarnings("deprecation")
@@ -595,6 +717,7 @@ public final class SemanticDriverService extends AccessibilityService {
         StringBuilder output,
         AccessibilityNodeInfo node,
         int index,
+        String semanticPath,
         boolean refreshSubtree
     ) {
         String viewId = string(node.getViewIdResourceName());
@@ -604,6 +727,7 @@ public final class SemanticDriverService extends AccessibilityService {
         node.getBoundsInScreen(bounds);
         output.append("<node");
         attribute(output, "index", Integer.toString(index));
+        attribute(output, "semantic-path", semanticPath);
         attribute(output, "text", string(node.getText()));
         attribute(output, "resource-id", string(node.getViewIdResourceName()));
         attribute(output, "class", string(node.getClassName()));
@@ -630,14 +754,19 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo child = node.getChild(childIndex);
             if (child == null) continue;
             try {
-                appendNode(output, child, childIndex, refreshThisSubtree);
+                appendNode(
+                    output,
+                    child,
+                    childIndex,
+                    semanticPath + "/" + childIndex,
+                    refreshThisSubtree
+                );
             } finally {
                 child.recycle();
             }
         }
         output.append("</node>\n");
     }
-
     private static String string(CharSequence value) {
         return value == null ? "" : value.toString();
     }

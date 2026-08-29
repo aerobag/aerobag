@@ -676,6 +676,7 @@ function androidProjectedElement(node, elementId = androidTag(node)) {
       : null,
     state: androidTag(node).match(/:state:([^:]+)(?::|$)/)?.[1] ?? null,
     bounds: node.bounds,
+    semantic_path: node["semantic-path"],
     focused: node.focused === "true",
   };
 }
@@ -695,7 +696,9 @@ function queryFirstAndroidSemanticNode(
 
 function readinessEvidenceMatchesTag(expectedTag, readyElement) {
   const observedTag = readyElement?.test_id ?? readyElement?.["resource-id"];
-  return observedTag === expectedTag && Boolean(readyElement?.bounds);
+  return observedTag === expectedTag &&
+    Boolean(readyElement?.bounds) &&
+    Boolean(readyElement?.semantic_path);
 }
 
 function activateAndroidSemanticTag(serial, tag, readyElement = null) {
@@ -705,7 +708,12 @@ function activateAndroidSemanticTag(serial, tag, readyElement = null) {
   if (!readinessEvidenceMatchesTag(tag, readyElement)) {
     throw new Error(`Android semantic action ${tag} readiness evidence does not match`);
   }
-  if (!clickAndroidSemanticNode(serial, tag, readyElement.bounds)) {
+  if (!clickAndroidSemanticNode(
+    serial,
+    tag,
+    readyElement.bounds,
+    readyElement.semantic_path,
+  )) {
     throw new Error(`Android semantic action ${tag} was rejected`);
   }
 }
@@ -897,10 +905,20 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     if (submit || dismissKeyboard) {
       throw new Error("text editing cannot bundle submit or keyboard actions");
     }
-    if (readyElement?.test_id !== semanticTag || !readyElement.bounds) {
+    if (
+      readyElement?.test_id !== semanticTag ||
+      !readyElement.bounds ||
+      !readyElement.semantic_path
+    ) {
       throw new Error(`Android text control ${controlId} has no matching readiness evidence`);
     }
-    if (!setAndroidSemanticText(this.serial, semanticTag, value, readyElement.bounds)) {
+    if (!setAndroidSemanticText(
+      this.serial,
+      semanticTag,
+      value,
+      readyElement.bounds,
+      readyElement.semantic_path,
+    )) {
       throw new Error(
         `Android semantic text action is unavailable for ${controlId}; refusing to retry a synthetic user edit`,
       );

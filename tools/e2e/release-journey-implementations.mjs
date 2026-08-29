@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { timelineSeekDeltaX } from "./gesture-geometry.mjs";
-import { E2E_TIMING, TerminalObservationError } from "./transition-contract.mjs";
+import {
+  E2E_TIMING, TerminalObservationError, TransientObservationError,
+} from "./transition-contract.mjs";
 
 function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
@@ -125,13 +127,12 @@ async function acceptDisclaimer(runtime, { required = false } = {}) {
     return false;
   }
   await runtime.action("accept mandatory disclaimer", "disclaimer-accept-button", {
-    complete: async () => {
-      const entries = await runtime.driver.readProjection("parity:startup-state:");
-      const fields = taggedFields(entries[0], "parity:startup-state:");
-      const button = await runtime.driver.readElement("disclaimer-accept-button");
-      return fields?.disclaimer_required === "false" && !button ? fields : null;
-    },
+    complete: async () => !(await runtime.driver.readElement("disclaimer-accept-button")) || null,
   });
+  const completed = await startupState(runtime);
+  if (completed.disclaimer_required !== "false") {
+    throw new Error("application startup retained mandatory disclaimer after acceptance");
+  }
   return true;
 }
 
@@ -475,12 +476,12 @@ async function setFixtureControl(runtime, update) {
 
 async function fixtureHealth(runtime) {
   if (!runtime.fixtureOrigin) throw new Error("journey fixture origin is unavailable");
-  return fetchFixtureJson(runtime, "/__health");
+  return fetchFixtureJson(runtime, "/__health", {}, { transientNetworkErrors: true });
 }
 
 async function fixtureRequests(runtime) {
   if (!runtime.fixtureOrigin) throw new Error("journey fixture origin is unavailable");
-  return fetchFixtureJson(runtime, "/__requests");
+  return fetchFixtureJson(runtime, "/__requests", {}, { transientNetworkErrors: true });
 }
 
 export function publicationCatalogRequestCount(requests) {
@@ -491,8 +492,34 @@ export function publicationCatalogRequestCount(requests) {
     )).length;
 }
 
-async function fetchFixtureJson(runtime, path, options = {}) {
-  const response = await fetch(new URL(path, runtime.fixtureOrigin), options);
+export function publicationArtifactRequestCount(requests, artifactFilename) {
+  return requests.filter((request) => {
+    const pathname = decodeURIComponent(
+      new URL(request.url, "http://fixture.invalid").pathname,
+    );
+    return request.method === "GET" &&
+      pathname.startsWith("/packages/") &&
+      pathname.endsWith(`/${artifactFilename}`);
+  }).length;
+}
+
+async function fetchFixtureJson(
+  runtime,
+  path,
+  options = {},
+  { transientNetworkErrors = false } = {},
+) {
+  let response;
+  try {
+    const headers = new Headers(options.headers);
+    headers.set("connection", "close");
+    response = await fetch(new URL(path, runtime.fixtureOrigin), { ...options, headers });
+  } catch (error) {
+    if (transientNetworkErrors) {
+      throw new TransientObservationError(`${path} transport failed`, error);
+    }
+    throw error;
+  }
   if (!response.ok) throw new Error(`${path} failed: HTTP ${response.status}`);
   return response.json();
 }
@@ -1528,12 +1555,13 @@ async function androidPackageMaintenance(runtime) {
   });
   runtime.check("settings.inactivity-sleep-timeout", Boolean(sleeps), sleeps?.test_id);
 
+  await runtime.openPage("offline_packages");
+  await waitForOfflineSyncIdle(runtime, "initial package plan ready");
   const updated = await setFixtureControl(runtime, {
     publication: "updated",
     artifact_fault: "drop",
   });
   try {
-    await runtime.openPage("offline_packages");
     const catalogRequestsBeforeRefresh = publicationCatalogRequestCount(
       await fixtureRequests(runtime),
     );
@@ -1546,10 +1574,17 @@ async function androidPackageMaintenance(runtime) {
       },
     });
     await waitForOfflineSyncIdle(runtime, "updated package plan ready");
+    const interruptedRequestsBefore = publicationArtifactRequestCount(
+      await fixtureRequests(runtime),
+      updated.updated_artifact_filename,
+    );
     await runtime.action("start interrupted offline package sync", "offline-sync-button", {
       complete: async () => {
-        const button = await runtime.driver.readElement("offline-sync-button");
-        return /APPLYING|CANCELING/i.test(button?.text ?? "") ? button : null;
+        const requests = await fixtureRequests(runtime);
+        return publicationArtifactRequestCount(requests, updated.updated_artifact_filename) >
+            interruptedRequestsBefore
+          ? requests
+          : null;
       },
     });
     await runtime.eventually("interrupted package request observed", async () => {
@@ -1564,10 +1599,17 @@ async function androidPackageMaintenance(runtime) {
     );
 
     await setFixtureControl(runtime, { artifact_fault: "none" });
+    const successfulRequestsBefore = publicationArtifactRequestCount(
+      await fixtureRequests(runtime),
+      updated.updated_artifact_filename,
+    );
     await runtime.action("start successful offline package sync", "offline-sync-button", {
       complete: async () => {
-        const button = await runtime.driver.readElement("offline-sync-button");
-        return /APPLYING|CANCELING/i.test(button?.text ?? "") ? button : null;
+        const requests = await fixtureRequests(runtime);
+        return publicationArtifactRequestCount(requests, updated.updated_artifact_filename) >
+            successfulRequestsBefore
+          ? requests
+          : null;
       },
     });
     const installed = await runtime.eventually("updated package installed", () =>

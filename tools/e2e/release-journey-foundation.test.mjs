@@ -26,6 +26,7 @@ import {
   chooseForecastWindModel,
   openAndDismissDataStatus,
   offlineSyncButtonIsIdle,
+  publicationArtifactRequestCount,
   publicationCatalogRequestCount,
   rasterPlanHasVisiblePaint,
   rasterPlanIsDisplayReady,
@@ -1536,17 +1537,54 @@ test("persistent Android semantic requests fail before the user-response budget"
   assert.match(source, /"--fail-with-body"/);
 });
 
-test("persistent Android exact actions use indexed accessibility lookup", () => {
+test("persistent Android actions resolve the readiness target without a full-tree scan", () => {
   const source = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
-  assert.ok(
-    source.match(/findAccessibilityNodeInfosByViewId\(tag\)/g)?.length >= 3,
-    "query, text, and click paths must use Android's indexed view-ID lookup",
+  assert.match(source, /value\.put\("semantic-path", semanticPath\)/);
+  assert.match(source, /private AccessibilityNodeInfo nodeAtPath\(String semanticPath\)/);
+  assert.match(source, /private AccessibilityNodeInfo resolveRenderedNode\(/);
+  assert.match(source, /private static AccessibilityNodeInfo findRenderedNodeAtPoint\(/);
+  assert.match(
+    source,
+    /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/,
   );
-  assert.doesNotMatch(source, /clickNode\([^\n]*tag/);
-  assert.doesNotMatch(source, /setNodeText\([^\n]*tag/);
+  assert.match(source, /clickRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  assert.match(source, /tag\.equals\(node\.getViewIdResourceName\(\)\)/);
+  assert.doesNotMatch(source, /findAccessibilityNodeInfosByViewId/);
+});
+
+test("mandatory disclaimer response and application startup use separate budgets", () => {
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const implementation = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    harness,
+    /application startup after accepting mandatory disclaimer[\s\S]*E2E_TIMING\.startupMs/,
+  );
+  assert.match(
+    implementation,
+    /accept mandatory disclaimer[\s\S]*const completed = await startupState\(runtime\)/,
+  );
+});
+
+test("Android app visibility stops at the first semantic root instead of dumping the UI", () => {
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const launch = harness.slice(
+    harness.indexOf("export async function launchFreshAndroidApp"),
+    harness.indexOf("export async function acceptDisclaimerIfPresent"),
+  );
+  assert.match(launch, /firstAerobagSemanticNodeDuringStartup\(serial\)/);
+  assert.doesNotMatch(launch, /dumpAndroid\(/);
+  const startupProbe = harness.slice(
+    harness.indexOf("function firstAerobagSemanticNodeDuringStartup"),
+    harness.indexOf("export async function launchFreshAndroidApp"),
+  );
+  assert.match(startupProbe, /prefix: true, first: true/);
+  assert.match(startupProbe, /Operation timed out/);
 });
 
 test("package refresh completion observes a new catalog request", () => {
@@ -1557,6 +1595,45 @@ test("package refresh completion observes a new catalog request", () => {
     { method: "GET", url: "http://fixture.test/packages/" },
   ];
   assert.equal(publicationCatalogRequestCount(requests), 2);
+});
+
+test("package sync completion observes artifact requests instead of transient labels", () => {
+  const requests = [
+    { method: "GET", url: "/packages/published/packages/updated%20artifact.zip" },
+    { method: "GET", url: "/packages/current_artifacts.json" },
+  ];
+  assert.equal(publicationArtifactRequestCount(requests, "updated artifact.zip"), 1);
+  const source = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const maintenance = source.slice(
+    source.indexOf("async function androidPackageMaintenance"),
+    source.indexOf("const DEBUG_ASSERTIONS"),
+  );
+  assert.match(maintenance, /start interrupted offline package sync[\s\S]*publicationArtifactRequestCount/);
+  assert.match(maintenance, /start successful offline package sync[\s\S]*publicationArtifactRequestCount/);
+  assert.doesNotMatch(maintenance, /APPLYING\|CANCELING/);
+  assert.ok(
+    maintenance.indexOf('runtime.openPage("offline_packages")') <
+      maintenance.indexOf('publication: "updated"'),
+  );
+});
+
+test("fixture reads tolerate transport resets but fixture mutations remain single-shot", () => {
+  const source = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const controls = source.slice(
+    source.indexOf("async function setFixtureControl"),
+    source.indexOf("export function publicationCatalogRequestCount"),
+  );
+  assert.match(controls, /fixtureHealth[\s\S]*transientNetworkErrors: true/);
+  assert.match(controls, /fixtureRequests[\s\S]*transientNetworkErrors: true/);
+  const mutation = controls.slice(0, controls.indexOf("async function fixtureHealth"));
+  assert.doesNotMatch(mutation, /transientNetworkErrors/);
+  assert.match(source, /headers\.set\("connection", "close"\)/);
 });
 
 test("journey actions require a semantic completion condition", async () => {

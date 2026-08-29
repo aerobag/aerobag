@@ -72,6 +72,39 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertEqual(qualification.ANDROID_SHARDS, 4)
         self.assertEqual(qualification.DEFAULT_ANDROID_WORKERS, 2)
 
+    def test_local_qualification_reuses_only_a_ready_gradle_wrapper_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache = root / "shared-wrapper"
+            distribution, unpacked = qualification.gradle_wrapper_distribution()
+            installed = cache / "dists" / distribution / "cache-key"
+            (installed / unpacked).mkdir(parents=True)
+            (installed / f"{distribution}.zip.ok").touch()
+
+            selected = qualification.prepare_gradle_wrapper_cache(
+                root / "candidate", cache
+            )
+
+            self.assertEqual(selected, cache.resolve())
+            for target_root in ("ci-ui-target", "release-ui-target"):
+                link = (
+                    root / "candidate" / target_root
+                    / "android/gradle-user-home/wrapper"
+                )
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.resolve(), cache.resolve())
+
+    def test_local_qualification_rejects_an_incomplete_gradle_wrapper_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with self.assertRaisesRegex(
+                qualification.QualificationError,
+                "prime it once",
+            ):
+                qualification.prepare_gradle_wrapper_cache(
+                    root / "candidate", root / "empty-wrapper"
+                )
+
     def test_android_baseline_qualifies_startup_once_before_shards(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temp_dir,

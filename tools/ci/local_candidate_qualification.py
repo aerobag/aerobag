@@ -201,6 +201,61 @@ def prepare_environment() -> None:
     )
 
 
+def gradle_wrapper_distribution() -> tuple[str, str]:
+    properties = (
+        ROOT / "ui/android-app/gradle/wrapper/gradle-wrapper.properties"
+    ).read_text(encoding="utf-8")
+    distribution_url = next(
+        (
+            line.split("=", 1)[1].strip()
+            for line in properties.splitlines()
+            if line.startswith("distributionUrl=")
+        ),
+        None,
+    )
+    if not distribution_url:
+        raise QualificationError("Gradle wrapper has no distributionUrl")
+    archive = distribution_url.rsplit("/", 1)[-1]
+    if not archive.endswith(".zip"):
+        raise QualificationError(f"unsupported Gradle wrapper distribution {archive}")
+    distribution = archive.removesuffix(".zip")
+    unpacked = distribution.removesuffix("-bin").removesuffix("-all")
+    return distribution, unpacked
+
+
+def prepare_gradle_wrapper_cache(
+    run_root: Path,
+    cache_root: Path | None = None,
+) -> Path:
+    configured_cache = os.environ.get("AEROBAG_GRADLE_WRAPPER_CACHE")
+    if cache_root is not None:
+        source = cache_root
+    elif configured_cache:
+        source = Path(configured_cache)
+    else:
+        source = Path.home() / ".gradle/wrapper"
+    source = source.expanduser().resolve()
+    distribution, unpacked = gradle_wrapper_distribution()
+    candidates = source.glob(f"dists/{distribution}/*")
+    ready = any(
+        (candidate / f"{distribution}.zip.ok").is_file()
+        and (candidate / unpacked).is_dir()
+        for candidate in candidates
+    )
+    if not ready:
+        raise QualificationError(
+            f"local Gradle wrapper cache {source} lacks {distribution}; "
+            "prime it once with GRADLE_USER_HOME=$HOME/.gradle "
+            "ui/android-app/gradlew --version"
+        )
+
+    for target_root in ("ci-ui-target", "release-ui-target"):
+        target = run_root / target_root / "android/gradle-user-home/wrapper"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source, target_is_directory=True)
+    return source
+
+
 def run_lane(lane: Lane, log_dir: Path) -> LaneResult:
     log_path = log_dir / f"{lane.name}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -773,6 +828,7 @@ def main() -> int:
     logs = run_root / "logs"
     results: list[LaneResult] = []
 
+    prepare_gradle_wrapper_cache(run_root)
     prepare_environment()
 
     print("Running ordinary CI lanes in parallel", flush=True)

@@ -119,6 +119,33 @@ function semanticDriverObservationUnavailable(response) {
   return semanticDriverRequestTimedOut(response) || semanticDriverRequestBusy(response);
 }
 
+function semanticDriverIdleRequest(port, timeoutMs, request = semanticDriverRequest) {
+  const query = new URLSearchParams({ timeout_ms: String(timeoutMs) });
+  return request(
+    port,
+    `/await-idle?${query}`,
+    Math.max(0.1, (timeoutMs + 100) / 1_000),
+  );
+}
+
+export function semanticDriverObservationRequest(
+  port,
+  path,
+  request = semanticDriverRequest,
+) {
+  let response = request(
+    port, path, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
+  );
+  if (!semanticDriverObservationUnavailable(response)) return response;
+
+  // Observation is idempotent. Drain the timed-out traversal before trying it
+  // once more, rather than letting repeated probes reacquire the single slot.
+  const idle = semanticDriverIdleRequest(port, 1_000, request);
+  if (idle.status !== 0 || idle.stdout.trim() !== "idle") return response;
+  response = request(port, path, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS);
+  return response;
+}
+
 export function semanticDriverActionRequest(
   port,
   path,
@@ -133,12 +160,7 @@ export function semanticDriverActionRequest(
     const remainingMs = deadline - performance.now();
     if (remainingMs <= 250) return response;
     const idleTimeoutMs = Math.max(1, Math.min(2_000, Math.floor(remainingMs - 250)));
-    const idleQuery = new URLSearchParams({ timeout_ms: String(idleTimeoutMs) });
-    const idle = request(
-      port,
-      `/await-idle?${idleQuery}`,
-      Math.max(0.1, (idleTimeoutMs + 100) / 1_000),
-    );
+    const idle = semanticDriverIdleRequest(port, idleTimeoutMs, request);
     if (idle.status !== 0 || idle.stdout.trim() !== "idle") return response;
     const retryMs = deadline - performance.now();
     if (retryMs <= 50) return response;
@@ -218,9 +240,7 @@ export function waitForAndroidSemanticEvent(serial, timeoutMs) {
 export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first = false } = {}) {
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({ tag, prefix: String(prefix), first: String(first) });
-  const response = semanticDriverRequest(
-    state.port, `/query?${query}`, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
-  );
+  const response = semanticDriverObservationRequest(state.port, `/query?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverObservationUnavailable(response)) {
@@ -234,9 +254,7 @@ export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first =
 export function queryAndroidExactProjection(serial, tag) {
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({ tag });
-  const response = semanticDriverRequest(
-    state.port, `/exact-projection?${query}`, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
-  );
+  const response = semanticDriverObservationRequest(state.port, `/exact-projection?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   if (semanticDriverObservationUnavailable(response)) {
@@ -251,9 +269,7 @@ function semanticDriverDump(serial) {
   const state = requiredSemanticDriver(serial);
   // A blocked accessibility traversal is a failed transition, not a reason to
   // hide an emulator stall behind a journey-scale timeout.
-  const response = semanticDriverRequest(
-    state.port, "/dump", SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
-  );
+  const response = semanticDriverObservationRequest(state.port, "/dump");
   if (response.status === 0 && response.stdout.includes("<hierarchy")) {
     return response.stdout;
   }
@@ -586,6 +602,21 @@ export function destinationCenterEvidence(xml, destination, maxOffsetPx = 8) {
     airportItemTag,
     selectedTag,
     probeTag: probe ? androidTag(probe) : null,
+    offsetPx: Number.isFinite(offsetPx) ? offsetPx : null,
+  };
+}
+
+export function destinationCenterProjectionEvidence(entries, destination, maxOffsetPx = 8) {
+  const state = entries?.[0]?.state ?? "";
+  const match = /^selected:([^:]+):category:([^:]+):centered:([^:]+):offset-px:(\d+)$/.exec(state);
+  const offsetPx = match ? Number(match[4]) : Number.NaN;
+  return {
+    matched: match !== null && match[1] === destination && match[2] === "airport" &&
+      match[3] === destination && Number.isFinite(offsetPx) && offsetPx <= maxOffsetPx,
+    selected: match?.[1] ?? null,
+    category: match?.[2] ?? null,
+    centered: match?.[3] ?? null,
+    probeTag: match ? `parity:map-selection-center:${match[3]}:offset-px:${match[4]}` : null,
     offsetPx: Number.isFinite(offsetPx) ? offsetPx : null,
   };
 }

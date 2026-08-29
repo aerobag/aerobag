@@ -72,6 +72,22 @@ class ChartSearchInspectionGateTest {
     }
 
     @Test
+    fun indexedSelectionProjectionCarriesCategoryTargetAndCenterEvidence() {
+        assertEquals(
+            "selected:KPLU:category:airport:centered:KPLU:offset-px:3",
+            buildMapSelectionProjectionState(
+                selectedLabel = "KPLU",
+                selectedCategoryId = "airport",
+                centerProbeTag = "parity:map-selection-center:KPLU:offset-px:3",
+            ),
+        )
+        assertEquals(
+            "selected:none:category:none:centered:none:offset-px:none",
+            buildMapSelectionProjectionState(null, null, null),
+        )
+    }
+
+    @Test
     fun centeredInspectorKeepsViewportOwnershipAgainstStaleParentUpdate() {
         val stale = MapViewportState(centerWorldX = 40.0, centerWorldY = 60.0, zoom = 8.0)
         val centered = MapViewportState(centerWorldX = 120.0, centerWorldY = 140.0, zoom = 11.0)

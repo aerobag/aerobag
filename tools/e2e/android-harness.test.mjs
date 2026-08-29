@@ -19,6 +19,7 @@ import {
   classifyAerobagLogcat,
   displayBoundsFromXml,
   destinationCenterEvidence,
+  destinationCenterProjectionEvidence,
   findHorizontalScrollSurface,
   findVerticalScrollSurface,
   findNode,
@@ -282,6 +283,31 @@ test("destination centering rejects stale trays and geographically displaced res
     matched: true,
     airportItemTag: "parity:map-selection-item:airport-KPLU",
     selectedTag: "parity:map-selection-selected:KPLU",
+    probeTag: "parity:map-selection-center:KPLU:offset-px:3",
+    offsetPx: 3,
+  });
+
+  const projection = (state) => [{ state }];
+  assert.equal(destinationCenterProjectionEvidence(
+    projection("selected:KUKI:category:airport:centered:KUKI:offset-px:0"),
+    "KPLU",
+  ).matched, false);
+  assert.equal(destinationCenterProjectionEvidence(
+    projection("selected:KPLU:category:navaid:centered:KPLU:offset-px:0"),
+    "KPLU",
+  ).matched, false);
+  assert.equal(destinationCenterProjectionEvidence(
+    projection("selected:KPLU:category:airport:centered:KPLU:offset-px:120"),
+    "KPLU",
+  ).matched, false);
+  assert.deepEqual(destinationCenterProjectionEvidence(
+    projection("selected:KPLU:category:airport:centered:KPLU:offset-px:3"),
+    "KPLU",
+  ), {
+    matched: true,
+    selected: "KPLU",
+    category: "airport",
+    centered: "KPLU",
     probeTag: "parity:map-selection-center:KPLU:offset-px:3",
     offsetPx: 3,
   });

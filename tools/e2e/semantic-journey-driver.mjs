@@ -22,6 +22,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:ownship-state:", "org.aerobag.app:id/e2e_ownship_state_projection"],
   ["parity:playback-widget:", "org.aerobag.app:id/e2e_playback_widget_projection"],
   ["parity:viewport:", "org.aerobag.app:id/e2e_viewport_projection"],
+  ["parity:map-selection-state:", "org.aerobag.app:id/e2e_map_selection_projection"],
   ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
 ]);
 
@@ -122,6 +123,14 @@ export async function navigateSemanticPage(
     })).value,
   } = {},
 ) {
+  const selectedPage = async (expectedPageId) => {
+    const selected = await driver.readCurrentPage();
+    return selected?.pageId === expectedPageId ? selected : null;
+  };
+  const renderedPage = (expectedPageId) => observe(
+    `rendered ${expectedPageId} page after navigation`,
+    () => driver.readPage(expectedPageId),
+  );
   let current = await observe("visible page before navigation", () => driver.readCurrentPage());
   if (current.pageId === pageId) return current;
 
@@ -130,17 +139,19 @@ export async function navigateSemanticPage(
       readinessSamples: 1,
       ready: () => driver.readNavigationAction("home"),
       act: (readyElement) => driver.activateNavigation("home", readyElement),
-      complete: () => driver.readPage("home"),
+      complete: () => selectedPage("home"),
     });
+    current = await renderedPage("home");
   }
   if (pageId === "home") return current;
 
-  return transition(`navigate to ${pageId}`, {
+  await transition(`navigate to ${pageId}`, {
     readinessSamples: 1,
     ready: () => driver.readNavigationAction(pageId),
     act: (readyElement) => driver.activateNavigation(pageId, readyElement),
-    complete: () => driver.readPage(pageId),
+    complete: () => selectedPage(pageId),
   });
+  return renderedPage(pageId);
 }
 
 function semanticTextValue(element) {
@@ -1095,6 +1106,22 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readProjection(probe) {
     const prefix = androidSemanticTag(probe);
+    if (prefix.startsWith("parity:map-selection-selected:")) {
+      const expected = prefix.slice("parity:map-selection-selected:".length);
+      const queried = queryAndroidExactProjection(
+        this.serial,
+        ANDROID_EXACT_SCALAR_PROJECTIONS.get("parity:map-selection-state:"),
+      );
+      const state = queried[0]?.["state-description"] ?? "";
+      const selected = /^selected:([^:]+):/.exec(state)?.[1] ?? "none";
+      return selected === expected ? [{
+        id: prefix,
+        text: "",
+        enabled: true,
+        pressed: null,
+        state,
+      }] : [];
+    }
     if (ANDROID_EXACT_SCALAR_PROJECTIONS.has(prefix)) {
       const queried = queryAndroidExactProjection(
         this.serial,

@@ -72,6 +72,7 @@ import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
   semanticDriverActionRequest,
+  semanticDriverObservationRequest,
   setAndroidWallClockAndWait,
 } from "./android-harness.mjs";
 
@@ -711,6 +712,39 @@ test("native Android journeys contain no mutations inside observation loops or f
   const path = new URL("./run-android-e2e-suite.mjs", import.meta.url);
   const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
   assert.deepEqual(violations, []);
+});
+
+test("native airport search transitions use indexed semantics instead of full hierarchy dumps", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  for (const [name, nextName] of [
+    ["centerChartOnDestination", "inspectAirportFromChartSearch"],
+    ["inspectAirportFromChartSearch", "dismissMapSelection"],
+  ]) {
+    const body = source.slice(
+      source.indexOf(`async function ${name}`),
+      source.indexOf(`async function ${nextName}`),
+    );
+    assert.doesNotMatch(body, /dumpAndroid\(/, `${name} must not walk the full accessibility tree`);
+    assert.match(body, /readProjection\("parity:map-selection-state:"\)/);
+  }
+});
+
+test("Android map-selection state uses one fixed indexed projection", () => {
+  const map = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  const ids = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/res/values/e2e_projection_ids.xml",
+    import.meta.url,
+  ), "utf8");
+  const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  assert.match(map, /viewId = R\.id\.e2e_map_selection_projection/);
+  assert.match(ids, /name="e2e_map_selection_projection"/);
+  assert.match(
+    driver,
+    /\["parity:map-selection-state:", "org\.aerobag\.app:id\/e2e_map_selection_projection"\]/,
+  );
 });
 
 test("native Android journeys cannot bypass transition contracts with raw adb input", () => {
@@ -1707,7 +1741,7 @@ test("persistent Android semantic requests separate probes from bounded actions"
   assert.match(source, /SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2\.25/);
   assert.match(
     source,
-    /state\.port, "\/dump", SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS/,
+    /semanticDriverObservationRequest\(state\.port, "\/dump"\)/,
   );
   assert.match(
     source,
@@ -2584,6 +2618,40 @@ test("shared semantic navigation does not skip an explicit Home request", async 
   assert.deepEqual(activated, ["home"]);
 });
 
+test("shared semantic navigation separates page selection from rendered readiness", async () => {
+  let selectedPage = "home";
+  let renderProbes = 0;
+  const driver = {
+    async readCurrentPage() { return { pageId: selectedPage }; },
+    async readPage(expectedPageId) {
+      renderProbes += 1;
+      return renderProbes >= 2 && selectedPage === expectedPageId
+        ? { pageId: expectedPageId, rendered: true }
+        : null;
+    },
+    async readNavigationAction(destination) { return { destination }; },
+    async activateNavigation(destination) { selectedPage = destination; },
+  };
+  const transition = async (_description, contract) => {
+    assert.ok(await contract.ready());
+    await contract.act();
+    return contract.complete();
+  };
+  const observe = async (_description, probe) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const value = await probe();
+      if (value) return value;
+    }
+    return null;
+  };
+
+  assert.deepEqual(
+    await navigateSemanticPage(driver, "map", { observe, transition }),
+    { pageId: "map", rendered: true },
+  );
+  assert.equal(renderProbes, 2);
+});
+
 test("web back tolerates a tray that closes between discovery and click", async () => {
   const keyEvents = [];
   const driver = new WebSemanticJourneyDriver({
@@ -2746,7 +2814,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
     harness.indexOf("export function setAndroidSemanticText"),
   );
   assert.match(actionRequest, /while \(semanticDriverRequestBusy\(response\)\)/);
-  assert.match(actionRequest, /\/await-idle/);
+  assert.match(actionRequest, /semanticDriverIdleRequest/);
   assert.doesNotMatch(actionRequest, /semanticDriverRequestTimedOut/);
   assert.equal((harness.match(/semanticDriverActionRequest\(state\.port/g) ?? []).length, 3);
 
@@ -2777,6 +2845,23 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   });
   assert.equal(timedOut.status, 28);
   assert.equal(timeoutRequests, 1);
+});
+
+test("Android semantic observations drain an abandoned traversal before one safe retry", () => {
+  const requests = [];
+  const responses = [
+    { status: 28, stdout: "", stderr: "Operation timed out" },
+    { status: 0, stdout: "idle\n", stderr: "" },
+    { status: 0, stdout: "[]\n", stderr: "" },
+  ];
+  const completed = semanticDriverObservationRequest(19191, "/query?tag=map", (...request) => {
+    requests.push(request);
+    return responses.shift();
+  });
+  assert.equal(completed.stdout, "[]\n");
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0][1], requests[2][1]);
+  assert.match(requests[1][1], /^\/await-idle\?/);
 });
 
 test("Android semantic driver rejects stale protocol artifacts before a journey", () => {

@@ -483,6 +483,20 @@ internal fun buildMapSelectionCenterProbeTag(
     return "parity:map-selection-center:$tagLabel:offset-px:$offsetPx"
 }
 
+internal fun buildMapSelectionProjectionState(
+    selectedLabel: String?,
+    selectedCategoryId: String?,
+    centerProbeTag: String?,
+): String {
+    val centerState = centerProbeTag
+        ?.removePrefix("parity:map-selection-center:")
+        ?.takeIf { it != centerProbeTag }
+        ?: "none:offset-px:none"
+    return "selected:${selectedLabel?.let(::rasterSemanticToken) ?: "none"}:" +
+        "category:${selectedCategoryId?.let(::rasterSemanticToken) ?: "none"}:" +
+        "centered:$centerState"
+}
+
 internal fun viewportOwnedByCenteredInspection(
     requestedViewport: MapViewportState,
     centeredInspectionViewport: MapViewportState?,
@@ -2265,6 +2279,19 @@ internal fun MapExplorerPage(
             null
         }
     }
+    val mapSelectionProjectionState = remember(mapSelection, mapSelectionCenterProbeTag) {
+        val selectedItem = mapSelection?.selectedItem
+        val selectedCategoryId = selectedItem?.let { selected ->
+            mapSelection?.result?.categories
+                ?.firstOrNull { category -> category.items.any { it.id == selected.id } }
+                ?.id
+        }
+        buildMapSelectionProjectionState(
+            selectedLabel = selectedItem?.label,
+            selectedCategoryId = selectedCategoryId,
+            centerProbeTag = mapSelectionCenterProbeTag,
+        )
+    }
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
@@ -3637,6 +3664,7 @@ internal fun MapExplorerPage(
                         MapSelectionTray(
                             state = selection,
                             centerProbeTag = mapSelectionCenterProbeTag,
+                            projectionState = mapSelectionProjectionState,
                             onBoundsChange = { mapSelectionTrayBounds = it },
                             modifier = Modifier
                                 .zIndex(OverlayPlaneModal)
@@ -4832,6 +4860,7 @@ internal fun MapSelectionTray(
     state: MapSelectionUiState,
     modifier: Modifier,
     centerProbeTag: String? = null,
+    projectionState: String,
     onBoundsChange: (Rect?) -> Unit = {},
     onSelectItem: (MapSelectionItem) -> Unit,
     onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
@@ -4855,6 +4884,11 @@ internal fun MapSelectionTray(
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
     ) {
         Column(modifier = Modifier.padding(ThumbGap * 0.7f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.55f)) {
+            E2eProjectionView(
+                viewId = R.id.e2e_map_selection_projection,
+                state = projectionState,
+                modifier = Modifier.size(1.dp),
+            )
             centerProbeTag?.let { tag ->
                 Box(modifier = Modifier.size(1.dp).testTag(tag))
             }

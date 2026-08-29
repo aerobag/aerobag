@@ -25,7 +25,7 @@ import {
   captureAndroidFailureDiagnostics,
   clearAerobagPersistedLiveFeeds,
   currentAerobagPid,
-  destinationCenterEvidence,
+  destinationCenterProjectionEvidence,
   dumpAndroid,
   findNode,
   findNodeByScrolling,
@@ -80,7 +80,6 @@ const CTR_STRESS_ROUTE = "KRNT KPDX";
 const ROTATION_ROUTE = "KRNT KPWT KPLU";
 const DEFAULT_PACKAGE_SOURCE_PORT = process.env.PACKAGE_SOURCE_PORT ?? "8083";
 const OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
-const CHART_SEARCH_INPUT_TAG = "parity:chart-search-input";
 const ROUTE_OVERLAY_PREFIX = "parity:flight-plan-route-overlay:";
 const MAP_FOLLOW_PREFIX = "parity:map-follow-state:";
 const BAD_AUTOPILOT_SOURCE_TAG = "parity:ownship-source:__bad_autopilot__";
@@ -482,12 +481,6 @@ async function ensureChartPage(serial, result) {
   recordStep(result, "chart page visible");
 }
 
-function chartSearchInputText(xml) {
-  const input = findNode(xml, (node) => hasAndroidTag(node, CHART_SEARCH_INPUT_TAG));
-  if (!input) return "";
-  return ((input.text ?? "") || androidNodeLabel(xml, input)).replace(/\s+/g, " ").trim();
-}
-
 async function centerChartOnDestination(serial, result, route) {
   const destination = routeDestination(route);
   if (!destination) return;
@@ -502,27 +495,25 @@ async function centerChartOnDestination(serial, result, route) {
   );
   let evidence = null;
   await nativeTransition(result, `chart centered on destination ${destination}`, {
-    ready: async () => {
-      const xml = dumpAndroid(serial);
-      return chartSearchInputText(xml) === destination &&
-        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${destination}`));
-    },
+    ready: () => driver.readElement(`chart-search-suggestion-${destination}`),
     act: async (readyElement) => driver.performAction(
       `chart-search-suggestion-${destination}`,
       readyElement,
     ),
     complete: async () => {
-      evidence = destinationCenterEvidence(dumpAndroid(serial), destination);
+      evidence = destinationCenterProjectionEvidence(
+        await driver.readProjection("parity:map-selection-state:"),
+        destination,
+      );
       return evidence.matched ? evidence : null;
     },
     responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
-  await dismissMapSelection(serial, result);
-  await waitForNode(
-    serial,
-    (node) => hasAndroidTag(node, "parity:map-surface"),
-    E2E_TIMING.localReadyMs,
+  await dismissMapSelection(serial, result, driver);
+  await observeUntil(
     "map semantics visible after destination search",
+    () => driver.readElement("map-surface"),
+    { waitForNextProbe: driver.waitForObservation.bind(driver) },
   );
   recordStep(result, "chart centered on destination", `${destination}, ${evidence.probeTag}`);
 }
@@ -539,17 +530,16 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
   );
   let evidence = null;
   await nativeTransition(result, `airport inspector opened for ${airportId}`, {
-    ready: async () => {
-      const xml = dumpAndroid(serial);
-      return chartSearchInputText(xml) === airportId &&
-        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${airportId}`));
-    },
+    ready: () => driver.readElement(`chart-search-suggestion-${airportId}`),
     act: async (readyElement) => driver.performAction(
       `chart-search-suggestion-${airportId}`,
       readyElement,
     ),
     complete: async () => {
-      evidence = destinationCenterEvidence(dumpAndroid(serial), airportId);
+      evidence = destinationCenterProjectionEvidence(
+        await driver.readProjection("parity:map-selection-state:"),
+        airportId,
+      );
       return evidence.matched ? evidence : null;
     },
     responseTimeoutMs: E2E_TIMING.userResponseMs,
@@ -557,20 +547,11 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
   recordStep(result, "airport inspector opened", `${airportId}, ${evidence.probeTag}`);
 }
 
-async function dismissMapSelection(serial, result) {
+async function dismissMapSelection(serial, result, driver = nativeSemanticDriver(serial)) {
   await nativeTransition(result, "map inspector dismissed", {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, "parity:map-selection-tray"),
-    ),
+    ready: () => driver.readElement("map-selection-tray"),
     act: async (_readyTray) => pressKey(serial, "KEYCODE_BACK"),
-    complete: async () => {
-      const nextXml = dumpAndroid(serial);
-      return findNode(
-        nextXml,
-        (node) => hasAndroidTag(node, "parity:map-selection-tray"),
-      ) === null ? nextXml : null;
-    },
+    complete: async () => (await driver.readElement("map-selection-tray")) === null,
   });
 }
 

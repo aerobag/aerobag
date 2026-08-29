@@ -8,7 +8,7 @@ import {
   displayBoundsFromXml, dumpAndroid, findNode, findNodes,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
-  queryAndroidExactProjection,
+  queryAndroidExactProjection, queryAndroidStartupProjection,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
   scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
 } from "./android-harness.mjs";
@@ -20,6 +20,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:ownship-state:", "org.aerobag.app:id/e2e_ownship_state_projection"],
   ["parity:playback-widget:", "org.aerobag.app:id/e2e_playback_widget_projection"],
   ["parity:viewport:", "org.aerobag.app:id/e2e_viewport_projection"],
+  ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
 ]);
 
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
@@ -121,6 +122,7 @@ export async function navigateSemanticPage(
 
   if (current.pageId !== "home") {
     current = await transition("navigate to Home", {
+      readinessSamples: 1,
       ready: () => driver.readNavigationAction("home"),
       act: (readyElement) => driver.activateNavigation("home", readyElement),
       complete: () => driver.readPage("home"),
@@ -129,6 +131,7 @@ export async function navigateSemanticPage(
   if (pageId === "home") return current;
 
   return transition(`navigate to ${pageId}`, {
+    readinessSamples: 1,
     ready: () => driver.readNavigationAction(pageId),
     act: (readyElement) => driver.activateNavigation(pageId, readyElement),
     complete: () => driver.readPage(pageId),
@@ -160,6 +163,7 @@ export async function editSemanticText(
   if (current && semanticTextValue(current) === expected) return current;
   if (!current?.focused) {
     current = await transition(`${description} focus`, {
+      readinessSamples: 1,
       ready: async () => {
         const element = await driver.readElement(controlId);
         return element?.enabled && element.actionable !== false ? element : null;
@@ -172,6 +176,7 @@ export async function editSemanticText(
     });
   }
   return transition(description, {
+    readinessSamples: 1,
     ready: async () => {
       const element = await driver.readElement(controlId);
       return element?.focused && element.enabled && element.actionable !== false ? element : null;
@@ -768,9 +773,9 @@ export function androidPageIdFromStartupStateTag(tag) {
 }
 
 function visibleAndroidPage(serial) {
-  const state = queryAndroidSemanticNodes(serial, "parity:startup-state:", { prefix: true })?.[0];
-  const pageId = androidPageIdFromStartupStateTag(androidTag(state));
-  return pageId && state?.visible === "true" ? { pageId, node: state } : null;
+  const state = queryAndroidStartupProjection(serial);
+  const pageId = ANDROID_PERSISTED_PAGE_IDS[state?.page ?? state?.persisted_page];
+  return pageId ? { pageId, node: state } : null;
 }
 
 export function androidZoomKeyCode(amount) {
@@ -970,8 +975,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async readSessionRevision() {
-    const node = queryFirstAndroidSemanticNode(this.serial, "parity:startup-state:");
-    return androidSessionRevisionFromStateTag(androidTag(node));
+    const revision = queryAndroidStartupProjection(this.serial)?.session_revision;
+    return revision == null ? null : Number(revision);
   }
 
   async enterText(

@@ -239,6 +239,7 @@ export function createJourneyRuntime({
       }
       return runtime.transition(description, {
         ...contract,
+        readinessSamples: 1,
         ready: () => driver.readAction(actionId),
         act: (readyElement) => driver.performAction(actionId, readyElement),
         diagnose: contract.diagnose ?? (async () => ({
@@ -261,6 +262,7 @@ export function createJourneyRuntime({
       let retainedTarget = null;
       const value = await runtime.transition(description, {
         ...contract,
+        readinessSamples: 1,
         ready: () => driver.readAction(actionId),
         act: (readyElement) => {
           retainedTarget = readyElement;
@@ -301,6 +303,7 @@ export function createJourneyRuntime({
       const rendered = await driver.readOption(launcherId, optionId);
       if (rendered) return rendered;
       return runtime.transition(`open ${description} choices`, {
+        readinessSamples: 1,
         ready: () => driver.readAction(launcherId),
         act: (readyElement) => driver.openChooser(launcherId, readyElement),
         complete: () => driver.readOption(launcherId, optionId),
@@ -312,6 +315,7 @@ export function createJourneyRuntime({
         throw new Error(`${description} must declare a semantic completion condition`);
       }
       return runtime.transition(description, {
+        readinessSamples: 1,
         ready: () => driver.readOption(launcherId, optionId),
         act: (readyElement) => driver.selectOption(launcherId, optionId, readyElement),
         complete,

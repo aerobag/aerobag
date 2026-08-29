@@ -531,6 +531,11 @@ function planRowUid(entry) {
 }
 
 async function planRows(runtime) {
+  if (runtime.platform === "android") {
+    const projection = (await runtime.driver.readProjection("parity:flight-plan-rows:"))[0];
+    const labels = projectionId(projection)?.slice("parity:flight-plan-rows:".length);
+    if (labels != null) return labels.split("\u001f").filter(Boolean).map((text) => ({ text }));
+  }
   return runtime.driver.readProjection("parity:plan-row:");
 }
 
@@ -630,14 +635,12 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
     if (trayStaysOpen && !observeResult) {
       throw new Error(`${actionId} ${label} must declare its visible row result`);
     }
-    const beforeRevision = trayStaysOpen ? await runtime.driver.readSessionRevision() : null;
     completion = await runtime.action(`${actionId} ${label}`, actionId, {
       complete: async () => {
         const open = (await runtime.driver.readProjection("parity:plan-row-action:")).length > 0;
         if (open !== trayStaysOpen) return null;
         if (!trayStaysOpen) return { open };
-        const revision = await runtime.driver.readSessionRevision();
-        return revision > beforeRevision ? { open, revision } : null;
+        return observeResult();
       },
     });
   } else {
@@ -658,7 +661,6 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
   }
   if (trayStaysOpen) {
     await dismissPlanRowTray(runtime);
-    completion = await runtime.eventually(`${actionId} ${label} visible row result`, observeResult);
   }
   return completion;
 }

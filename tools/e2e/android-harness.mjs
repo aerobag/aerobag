@@ -30,6 +30,7 @@ const SEMANTIC_REQUEST_TIMEOUT_SECONDS = 0.75;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
 const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
+const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
   `${SEMANTIC_DRIVER_PACKAGE}/org.aerobag.app.e2e.SemanticDriverService`;
 const semanticDrivers = new Map();
@@ -417,14 +418,25 @@ export function androidRuntimeUiVisible(xml) {
   ) !== null;
 }
 
-function startupProjectionFromNode(node) {
-  if (!node) return null;
+function startupProjectionFromValue(value) {
   const fields = {};
-  const components = androidTag(node).slice("parity:startup-state:".length).split(":");
+  const components = value.split(":");
   for (let index = 0; index + 1 < components.length; index += 2) {
     fields[components[index]] = components[index + 1];
   }
   return fields;
+}
+
+function startupProjectionFromNode(node) {
+  if (!node) return null;
+  return startupProjectionFromValue(
+    androidTag(node).slice("parity:startup-state:".length),
+  );
+}
+
+function startupProjectionFromExactNode(node) {
+  if (!node) return null;
+  return startupProjectionFromValue(node["state-description"] ?? "");
 }
 
 function startupStateFromNode(node) {
@@ -443,15 +455,35 @@ export function androidStartupState(xml) {
 }
 
 export function queryAndroidStartupState(serial) {
-  const nodes = queryAndroidSemanticNodes(serial, "parity:startup-state:", { prefix: true });
-  return startupStateFromNode(nodes?.find((node) =>
-    androidTag(node).startsWith("parity:startup-state:")) ?? null);
+  const fields = queryAndroidStartupProjection(serial);
+  return fields?.ready === "true" ? fields : null;
 }
 
-function queryAndroidStartupProjection(serial) {
-  const nodes = queryAndroidSemanticNodes(serial, "parity:startup-state:", { prefix: true });
-  return startupProjectionFromNode(nodes?.find((node) =>
-    androidTag(node).startsWith("parity:startup-state:")) ?? null);
+export function queryAndroidStartupProjection(serial) {
+  return startupProjectionFromExactNode(
+    queryAndroidExactProjection(serial, STARTUP_PROJECTION_ID)?.[0] ?? null,
+  );
+}
+
+export function queryAndroidRuntimeReadyForJourney(serial) {
+  const state = queryAndroidStartupState(serial);
+  return state?.disclaimer_required === "false" && state?.page !== "OfflinePackages"
+    ? state
+    : null;
+}
+
+export function queryAndroidOfflinePackagesVisible(serial) {
+  const startup = queryAndroidStartupProjection(serial);
+  if (startup?.page === "OfflinePackages") return true;
+  for (const tag of [
+    "parity:offline-library-panel",
+    "parity:offline-packages-panel",
+    "parity:offline-refresh-button",
+    "parity:offline-sync-button",
+  ]) {
+    if (queryAndroidSemanticNodes(serial, tag, { first: true })?.[0]) return true;
+  }
+  return false;
 }
 
 const MAP_LAYER_PARITY_IDS = Object.freeze({
@@ -1000,15 +1032,10 @@ export async function launchFreshAndroidApp(
 }
 
 export async function acceptDisclaimerIfPresent(serial) {
-  const button = queryAndroidSemanticNodes(serial, "parity:disclaimer-accept-button")?.[0] ?? null;
-  if (!button) {
-    return false;
-  }
   const initial = queryAndroidStartupProjection(serial);
-  if (initial?.disclaimer_required !== "true") {
-    throw new Error("disclaimer is visible without a startup-state requirement");
-  }
+  if (initial?.disclaimer_required !== "true") return false;
   await performTransition("accept mandatory disclaimer", {
+    readinessSamples: 1,
     ready: async () => {
       const readyState = queryAndroidStartupProjection(serial);
       if (readyState?.disclaimer_required !== "true") return null;
@@ -1033,8 +1060,7 @@ export async function acceptDisclaimerIfPresent(serial) {
 }
 
 export function assertRuntimeIsAvailable(serial) {
-  const xml = dumpAndroid(serial);
-  if (androidOfflinePackagesVisible(xml)) {
+  if (!queryAndroidRuntimeReadyForJourney(serial)) {
     throw new Error("offline packages page is visible; install a usable nav-db package before running Android E2E");
   }
 }

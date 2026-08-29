@@ -37,6 +37,8 @@ import {
   layerToggleTag,
   lockAndroidRotation,
   pressKey,
+  queryAndroidRuntimeReadyForJourney,
+  queryAndroidStartupProjection,
   rectOfBounds,
   renderedFlightPlanSignature,
   restoreAndroidRotationState,
@@ -254,14 +256,16 @@ async function ensureOfflinePackagesReady(
   }
 
   await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    return runtimeUiVisible(xml) || offlinePackagesVisible(xml) || disclaimerVisible(xml);
+    const startup = queryAndroidStartupProjection(serial);
+    return startup?.ready === "true" || startup?.page === "OfflinePackages"
+      ? startup
+      : null;
   }, E2E_TIMING.startupMs, "runtime or offline package UI ready");
 
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  if (androidRuntimeReadyForJourney(dumpAndroid(serial))) {
+  if (queryAndroidRuntimeReadyForJourney(serial)) {
     recordStep(result, "offline packages ready", "runtime already available");
     return;
   }
@@ -361,10 +365,11 @@ async function ensureOfflinePackagesReady(
 }
 
 async function waitForRuntime(serial, result) {
-  await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    return runtimeUiVisible(xml);
-  }, E2E_TIMING.startupMs, "runtime UI ready");
+  await waitFor(
+    () => queryAndroidRuntimeReadyForJourney(serial),
+    E2E_TIMING.startupMs,
+    "runtime UI ready",
+  );
   assertRuntimeIsAvailable(serial);
   recordStep(result, "runtime UI ready");
 }

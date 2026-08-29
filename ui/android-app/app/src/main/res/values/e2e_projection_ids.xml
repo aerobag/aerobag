@@ -10,4 +10,6 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <item name="e2e_nexrad_state_projection" type="id" />
     <item name="e2e_playback_widget_projection" type="id" />
     <item name="e2e_viewport_projection" type="id" />
+    <item name="e2e_startup_state_projection" type="id" />
+    <item name="e2e_flight_plan_rows_projection" type="id" />
 </resources>

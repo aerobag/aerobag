@@ -2624,38 +2624,50 @@ internal fun AerobagApp(
         CompositionLocalProvider(
             LocalNavigationPageOptions provides startupNavigationPageOptions,
         ) {
-            HomePage(
-                page = AppPage.OfflinePackages,
-                pageHistory = emptyList(),
-                uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
-                debugState = defaultUiDebugState(),
-                navElement = null,
-                onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
-                onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
-                onOpenRecentChartOrPlate = { requestRuntimeReload(AppPage.Map) },
-                offlinePackagesControllerHandle = offlinePackagesControllerHandle,
-                onOfflinePackageArtifactsChanged = { _, _ ->
-                    retainedModel.page = AppPage.OfflinePackages
-                    retainedModel.resetRuntime()
-                    Log.i("AerobagRuntime", "reloading runtime after bootstrap package sync")
-                    retainedModel.awaitStartupPreparation(
-                        context.applicationContext,
-                        startupPerfTrace,
-                    ).also { result ->
-                        Log.i(
-                            "AerobagRuntime",
-                            "bootstrap package sync runtime reload success=${result.isSuccess}",
-                        )
-                    }
-                    emptySet()
-                },
-                onOfflinePackageArtifactsCommitted = {
-                    runtimeFixture = checkNotNull(retainedModel.runtimeResult) {
-                        "bootstrap package adoption completed without a prepared runtime result"
-                    }
-                },
-                showPrimaryNavigation = false,
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                E2eProjectionView(
+                    viewId = R.id.e2e_startup_state_projection,
+                    state =
+                        "ready:false:disclaimer_required:false:" +
+                            "page:${AppPage.OfflinePackages.name}:" +
+                            "persisted_page:${retainedModel.page?.name ?: AppPage.OfflinePackages.name}",
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .size(1.dp),
+                )
+                HomePage(
+                    page = AppPage.OfflinePackages,
+                    pageHistory = emptyList(),
+                    uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
+                    debugState = defaultUiDebugState(),
+                    navElement = null,
+                    onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
+                    onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
+                    onOpenRecentChartOrPlate = { requestRuntimeReload(AppPage.Map) },
+                    offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                    onOfflinePackageArtifactsChanged = { _, _ ->
+                        retainedModel.page = AppPage.OfflinePackages
+                        retainedModel.resetRuntime()
+                        Log.i("AerobagRuntime", "reloading runtime after bootstrap package sync")
+                        retainedModel.awaitStartupPreparation(
+                            context.applicationContext,
+                            startupPerfTrace,
+                        ).also { result ->
+                            Log.i(
+                                "AerobagRuntime",
+                                "bootstrap package sync runtime reload success=${result.isSuccess}",
+                            )
+                        }
+                        emptySet()
+                    },
+                    onOfflinePackageArtifactsCommitted = {
+                        runtimeFixture = checkNotNull(retainedModel.runtimeResult) {
+                            "bootstrap package adoption completed without a prepared runtime result"
+                        }
+                    },
+                    showPrimaryNavigation = false,
+                )
+            }
         }
     }
     LaunchedEffect(runtimeFixture) {
@@ -2680,7 +2692,17 @@ internal fun AerobagApp(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(uiTheme.controls.chartSurfaceBg),
-                )
+                ) {
+                    E2eProjectionView(
+                        viewId = R.id.e2e_startup_state_projection,
+                        state =
+                            "ready:false:disclaimer_required:false:" +
+                                "page:Loading:persisted_page:${retainedModel.page?.name ?: AppPage.Map.name}",
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .size(1.dp),
+                    )
+                }
             }
         }
         return
@@ -3483,6 +3505,26 @@ internal fun AerobagApp(
                         "session_revision:${sessionSnapshot.sessionRevision}",
                 ),
         ) {
+            E2eProjectionView(
+                viewId = R.id.e2e_startup_state_projection,
+                state =
+                    "ready:true:" +
+                        "disclaimer_required:${sessionSnapshot.disclaimerState.required}:" +
+                        "page:${page.name}:" +
+                        "persisted_page:${persistedPage.name}:" +
+                        "session_revision:${sessionSnapshot.sessionRevision}",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_flight_plan_rows_projection,
+                state = sessionPlanUiState.displayRows.joinToString("\u001f") { it.label },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 1.dp)
+                    .size(1.dp),
+            )
             val bottomCornerControlsRaised = shouldRaiseBottomCornerControls(maxWidth)
             when (page) {
                 AppPage.Map -> {

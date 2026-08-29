@@ -246,8 +246,12 @@ export async function performTransition(description, {
   readyTimeoutMs = E2E_TIMING.localReadyMs,
   responseTimeoutMs = E2E_TIMING.userResponseMs,
   intervalMs = E2E_TIMING.pollIntervalMs,
+  readinessSamples = E2E_TIMING.transitionReadinessSamples,
   onTiming = null,
 }) {
+  if (!Number.isInteger(readinessSamples) || readinessSamples < 1) {
+    throw new Error(`${description} readinessSamples must be a positive integer`);
+  }
   if (responseTimeoutMs > E2E_TIMING.userResponseMs) {
     throw new Error(
       `${description} requests a ${responseTimeoutMs}ms user-response budget; ` +
@@ -288,7 +292,7 @@ export async function performTransition(description, {
     readyResult = await observeUntil(`${description} ready`, ready, {
       timeoutMs: readyTimeoutMs,
       intervalMs,
-      consecutiveSuccesses: E2E_TIMING.transitionReadinessSamples,
+      consecutiveSuccesses: readinessSamples,
       consecutiveValueKey: transitionReadinessKey,
       waitForNextProbe: waitForObservation,
     });

@@ -378,6 +378,32 @@ test("a transition waits for semantic control geometry to settle before acting",
   assert.deepEqual(result.value, { committed: true });
 });
 
+test("a transition may act after one readiness sample when delivery revalidates the target", async () => {
+  let readinessProbes = 0;
+  let actedWith = null;
+  const readyEvidence = {
+    test_id: "button",
+    enabled: true,
+    actionable: true,
+    bounds: { left: 10, top: 30, width: 80, height: 40 },
+  };
+  const result = await performTransition("revalidated semantic button", {
+    readinessSamples: 1,
+    ready: async () => {
+      readinessProbes += 1;
+      return readyEvidence;
+    },
+    act: async (evidence) => { actedWith = evidence; },
+    complete: async () => actedWith ? { committed: true } : null,
+    readyTimeoutMs: 100,
+    responseTimeoutMs: 100,
+    intervalMs: 1,
+  });
+  assert.equal(readinessProbes, 1);
+  assert.equal(actedWith, readyEvidence);
+  assert.deepEqual(result.value, { committed: true });
+});
+
 test("a transition rejects a postcondition that was already true before its action", async () => {
   let actions = 0;
   await assert.rejects(
@@ -1611,6 +1637,11 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
     "utf8",
   );
   const journeyDriver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const mainActivity = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt", import.meta.url),
+    "utf8",
+  );
   assert.match(driver, /case "\/exact-projection"/);
   assert.match(driver, /findAccessibilityNodeInfosByViewId\(tag\)/);
   assert.match(driver, /exactNodePaths\.get\(tag\)/);
@@ -1630,6 +1661,34 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(journeyDriver, /"parity:playback-widget:"/);
   assert.match(journeyDriver, /"parity:viewport:"/);
   assert.match(journeyDriver, /e2e_playback_widget_projection/);
+  assert.match(mainActivity, /R\.id\.e2e_startup_state_projection/);
+  assert.match(mainActivity, /R\.id\.e2e_flight_plan_rows_projection/);
+  assert.match(mainActivity, /sessionPlanUiState\.displayRows\.joinToString/);
+  assert.match(mainActivity, /parity:startup-state:ready:/);
+  assert.match(
+    harness,
+    /STARTUP_PROJECTION_ID = "org\.aerobag\.app:id\/e2e_startup_state_projection"/,
+  );
+  assert.match(
+    harness,
+    /queryAndroidStartupProjection[\s\S]*queryAndroidExactProjection\(serial, STARTUP_PROJECTION_ID/,
+  );
+  assert.match(journeyDriver, /e2e_flight_plan_rows_projection/);
+});
+
+test("semantic actions use revalidated one-sample readiness but coordinate reuse stays stable", () => {
+  const source = readFileSync(new URL("./release-journey-runtime.mjs", import.meta.url), "utf8");
+  const actionBody = source.slice(
+    source.indexOf("async action(description"),
+    source.indexOf("async repeatableAction(description"),
+  );
+  const repeatBody = source.slice(
+    source.indexOf("async repeatAction(description"),
+    source.indexOf("async openOption(description"),
+  );
+  assert.match(actionBody, /readinessSamples: 1/);
+  assert.doesNotMatch(repeatBody, /readinessSamples:/);
+  assert.match(repeatBody, /performRepeatedAction/);
 });
 
 test("mandatory disclaimer response and application startup use separate budgets", () => {

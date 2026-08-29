@@ -276,6 +276,16 @@ following action cannot race a still-moving lazy list. Completion probes wait
 on accessibility events between reads so full Compose hierarchy traversal
 cannot starve the UI being tested.
 
+Exact semantic actions may act after one readiness sample because delivery
+revalidates that sample's semantic identity, path, bounds, and enabled state.
+Gestures that reuse coordinates do not have that guarantee and retain the
+multi-sample settled-geometry requirement. Frequently sampled scalar state,
+including startup/page identity and complete flight-plan row order, is exposed
+through fixed native view IDs backed by the current core snapshot. These probes
+must use exact view-ID lookup rather than repeatedly traversing the Compose tree;
+journeys then use the specific projected postcondition instead of treating an
+unrelated session revision as proof that an action worked.
+
 The immutable app manifest names the semantic-driver protocol. Bundle creation
 opens the driver APK and verifies that its DEX implements that protocol; runtime
 startup repeats the handshake before any journey. Artifact skew therefore fails

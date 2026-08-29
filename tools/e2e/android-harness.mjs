@@ -110,6 +110,15 @@ function semanticDriverRequestTimedOut(response) {
   return response.status === 28 || response.stderr.includes("Operation timed out");
 }
 
+function semanticDriverRequestBusy(response) {
+  return response.stdout.includes("semantic request busy") ||
+    response.stderr.includes("503");
+}
+
+function semanticDriverObservationUnavailable(response) {
+  return semanticDriverRequestTimedOut(response) || semanticDriverRequestBusy(response);
+}
+
 export function setAndroidSemanticText(serial, tag, value, expectedBounds, semanticPath) {
   const state = requiredSemanticDriver(serial);
   if (!expectedBounds || !semanticPath) {
@@ -192,7 +201,7 @@ export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first =
   );
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequestTimedOut(response)) {
+  if (semanticDriverObservationUnavailable(response)) {
     throw new TransientObservationError(
       `Android semantic tree was busy while querying ${tag}: ${detail}`,
     );
@@ -208,7 +217,7 @@ export function queryAndroidExactProjection(serial, tag) {
   );
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  if (semanticDriverRequestTimedOut(response)) {
+  if (semanticDriverObservationUnavailable(response)) {
     throw new TransientObservationError(
       `Android exact semantic projection was busy while querying ${tag}: ${detail}`,
     );
@@ -227,7 +236,7 @@ function semanticDriverDump(serial) {
     return response.stdout;
   }
   const detail = response.error?.message || response.stderr.trim() || "request failed";
-  if (semanticDriverRequestTimedOut(response)) {
+  if (semanticDriverObservationUnavailable(response)) {
     throw new TransientObservationError(
       `Android semantic tree was busy while rendering the hierarchy: ${detail}`,
     );

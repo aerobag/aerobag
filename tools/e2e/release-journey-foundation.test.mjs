@@ -1645,14 +1645,17 @@ test("persistent Android semantic requests separate probes from bounded actions"
     /state\.port, `\/click\?\$\{query\}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST"/,
   );
   assert.match(source, /"--fail-with-body"/);
-  assert.match(source, /semanticDriverRequestTimedOut\(response\)[\s\S]*new TransientObservationError/);
+  assert.match(
+    source,
+    /semanticDriverObservationUnavailable\(response\)[\s\S]*new TransientObservationError/,
+  );
   const hierarchyDump = source.slice(
     source.indexOf("function semanticDriverDump"),
     source.indexOf("export async function ensureAndroidSemanticDriver"),
   );
   assert.match(
     hierarchyDump,
-    /semanticDriverRequestTimedOut\(response\)[\s\S]*new TransientObservationError/,
+    /semanticDriverObservationUnavailable\(response\)[\s\S]*new TransientObservationError/,
   );
 });
 
@@ -2639,6 +2642,24 @@ test("Android semantic driver isolates each client failure from its server loop"
   assert.match(serverLoop, /try \{\s*handleRequest\(client\);\s*\} catch \(IOException error\)/);
   assert.match(serverLoop, /catch \(RuntimeException error\)[\s\S]*respondFailureBestEffort\(client, error\)/);
   assert.doesNotMatch(serverLoop, /catch \(IOException error\)[\s\S]*throw new RuntimeException\(error\);/);
+});
+
+test("Android semantic probes cannot create an accessibility traversal herd", () => {
+  const service = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  assert.match(service, /AtomicBoolean semanticRequestActive/);
+  assert.match(service, /semanticRequestActive\.compareAndSet\(false, true\)/);
+  assert.match(service, /"semantic request busy\\n",\s*503/);
+  assert.match(service, /finally \{\s*if \(ownsSemanticRequest\) semanticRequestActive\.set\(false\)/);
+  assert.doesNotMatch(
+    service.slice(service.indexOf("private static boolean isSemanticEndpoint")),
+    /case [^\n]*"\/await-event"/,
+  );
+  assert.match(harness, /semanticDriverObservationUnavailable\(response\)/);
+  assert.match(harness, /response\.stdout\.includes\("semantic request busy"\)/);
 });
 
 test("Android semantic driver rejects stale protocol artifacts before a journey", () => {

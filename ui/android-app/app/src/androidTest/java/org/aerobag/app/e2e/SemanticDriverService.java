@@ -42,6 +42,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final int DRIVER_PORT = 19_191;
     private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean semanticRequestActive = new AtomicBoolean(false);
     private final AtomicLong accessibilityEventSequence = new AtomicLong();
     private final Object accessibilityEventMonitor = new Object();
     private final Map<String, String> exactNodePaths = new ConcurrentHashMap<>();
@@ -130,44 +131,74 @@ public final class SemanticDriverService extends AccessibilityService {
         consumeHeaders(reader);
         String path = request.length > 1 ? request[1] : "/";
         String endpoint = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
-        switch (endpoint) {
-            case "/health":
+        boolean ownsSemanticRequest = false;
+        if (isSemanticEndpoint(endpoint)) {
+            ownsSemanticRequest = semanticRequestActive.compareAndSet(false, true);
+            if (!ownsSemanticRequest) {
                 respond(
                     socket.getOutputStream(),
                     "text/plain; charset=utf-8",
-                    DRIVER_PROTOCOL + "\n",
-                    200
+                    "semantic request busy\n",
+                    503
                 );
                 return;
-            case "/dump":
-                respond(
-                    socket.getOutputStream(),
-                    "application/xml; charset=utf-8",
-                    renderHierarchy(),
-                    200
-                );
-                return;
-            case "/query":
-                handleQuery(socket, path);
-                return;
-            case "/exact-projection":
-                handleExactProjection(socket, path);
-                return;
-            case "/await-event":
-                handleAwaitEvent(socket, path);
-                return;
-            case "/set-text":
-                handleSetText(socket, path);
-                return;
-            case "/click":
-                handleClick(socket, path);
-                return;
-            case "/scroll":
-                handleScroll(socket, path);
-                return;
-            default:
-                respond(socket.getOutputStream(), "text/plain; charset=utf-8", "not found\n", 404);
+            }
         }
+        try {
+            switch (endpoint) {
+                case "/health":
+                    respond(
+                        socket.getOutputStream(),
+                        "text/plain; charset=utf-8",
+                        DRIVER_PROTOCOL + "\n",
+                        200
+                    );
+                    return;
+                case "/dump":
+                    respond(
+                        socket.getOutputStream(),
+                        "application/xml; charset=utf-8",
+                        renderHierarchy(),
+                        200
+                    );
+                    return;
+                case "/query":
+                    handleQuery(socket, path);
+                    return;
+                case "/exact-projection":
+                    handleExactProjection(socket, path);
+                    return;
+                case "/await-event":
+                    handleAwaitEvent(socket, path);
+                    return;
+                case "/set-text":
+                    handleSetText(socket, path);
+                    return;
+                case "/click":
+                    handleClick(socket, path);
+                    return;
+                case "/scroll":
+                    handleScroll(socket, path);
+                    return;
+                default:
+                    respond(
+                        socket.getOutputStream(),
+                        "text/plain; charset=utf-8",
+                        "not found\n",
+                        404
+                    );
+            }
+        } finally {
+            if (ownsSemanticRequest) semanticRequestActive.set(false);
+        }
+    }
+
+    private static boolean isSemanticEndpoint(String endpoint) {
+        return switch (endpoint) {
+            case "/dump", "/query", "/exact-projection", "/set-text", "/click", "/scroll" ->
+                true;
+            default -> false;
+        };
     }
 
     private void handleSetText(Socket socket, String path) throws IOException {
@@ -317,7 +348,9 @@ public final class SemanticDriverService extends AccessibilityService {
             ? "OK"
             : status == 409
                 ? "Conflict"
-                : status == 500 ? "Internal Server Error" : "Not Found";
+                : status == 500
+                    ? "Internal Server Error"
+                    : status == 503 ? "Service Unavailable" : "Not Found";
         output.write(("HTTP/1.1 " + status + " " + reason + "\r\n")
             .getBytes(StandardCharsets.US_ASCII));
         output.write(("Content-Type: " + contentType + "\r\n")

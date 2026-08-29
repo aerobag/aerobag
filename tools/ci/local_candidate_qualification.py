@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPETITIONS = 5
 ANDROID_SHARDS = 4
 DEFAULT_ANDROID_WORKERS = 2
+MINIMUM_FREE_BYTES = 14 * 1024 * 1024 * 1024
 NEXTEST_VERSION = "0.9.140"
 BINARYEN_ARCHIVE = "binaryen-version_129-node.tar.gz"
 PRIORITIES = ("p0", "p1", "p2")
@@ -149,6 +150,18 @@ def assert_clean_commit() -> str:
     if branch != "main":
         raise QualificationError(f"local candidate qualification requires main, not {branch}")
     return commit
+
+
+def require_qualification_capacity(path: Path) -> None:
+    free = shutil.disk_usage(path).free
+    if free < MINIMUM_FREE_BYTES:
+        required_gib = MINIMUM_FREE_BYTES / (1024**3)
+        available_gib = free / (1024**3)
+        raise QualificationError(
+            "local candidate qualification requires at least "
+            f"{required_gib:.0f} GiB free on {path}; "
+            f"{available_gib:.1f} GiB is available"
+        )
 
 
 def lane_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -902,6 +915,7 @@ def main() -> int:
     run_root = Path(tempfile.gettempdir()) / f"aerobag-local-candidate-{commit[:12]}"
     if run_root.exists():
         shutil.rmtree(run_root)
+    require_qualification_capacity(Path(tempfile.gettempdir()))
     run_root.mkdir(parents=True)
     logs = run_root / "logs"
     results: list[LaneResult] = []

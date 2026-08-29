@@ -72,6 +72,18 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertEqual(qualification.ANDROID_SHARDS, 4)
         self.assertEqual(qualification.DEFAULT_ANDROID_WORKERS, 2)
 
+    def test_local_qualification_rejects_insufficient_workspace_capacity(self) -> None:
+        with mock.patch.object(
+            qualification.shutil,
+            "disk_usage",
+            return_value=mock.Mock(free=1),
+        ):
+            with self.assertRaisesRegex(
+                qualification.QualificationError,
+                "requires at least 14 GiB free",
+            ):
+                qualification.require_qualification_capacity(Path("/tmp"))
+
     def test_local_qualification_reuses_ready_gradle_caches(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

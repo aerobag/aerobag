@@ -818,10 +818,12 @@ fn disk_pressure_scenario(policy: &AcsRuntimePolicy) -> anyhow::Result<AcsStatus
     let temp = TempDir::new()?;
     let mut config = policy.store_config(temp.path().join("cloud-storage"));
     fs::create_dir_all(&config.storage_root)?;
-    let free = fs2::available_space(&config.storage_root)?;
-    config.filesystem_free_bytes_warning = free.saturating_add(2);
-    config.filesystem_free_bytes_critical = free.saturating_add(1);
-    config.write_resume_min_filesystem_free_bytes = free.saturating_add(1);
+    // A threshold relative to a sampled free-space value races every other
+    // process deleting files on this filesystem. No real filesystem can
+    // satisfy this reserve, so the synthetic pressure remains deterministic.
+    config.filesystem_free_bytes_warning = u64::MAX;
+    config.filesystem_free_bytes_critical = u64::MAX - 1;
+    config.write_resume_min_filesystem_free_bytes = u64::MAX;
     let store = CloudStore::open(config)?;
     store.set_service_mode(AccountMode::ReadOnly, now_epoch_ms())?;
     ensure!(

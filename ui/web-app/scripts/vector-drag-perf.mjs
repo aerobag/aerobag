@@ -6,13 +6,13 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const require = createRequire(import.meta.url);
-const WebSocket = require("ws");
+import { requireWebDependency } from "./web-workspace-require.mjs";
+
+const WebSocket = requireWebDependency("ws");
 
 const args = parseArgs(process.argv.slice(2));
 const url = args.url ?? process.env.AEROBAG_PERF_URL ?? "http://127.0.0.1:8085/";

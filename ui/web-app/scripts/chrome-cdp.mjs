@@ -3,10 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
+import { requireWebDependency } from "./web-workspace-require.mjs";
 
-const require = createRequire(import.meta.url);
-const WebSocket = require("ws");
+const WebSocket = requireWebDependency("ws");
 
 export function launchChrome({
   chromeBin = process.env.CHROME_BIN ?? "google-chrome-stable",

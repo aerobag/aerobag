@@ -3,15 +3,20 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { CdpClient } from "./chrome-cdp.mjs";
 
-import {
+const repoRoot = path.resolve(
+  process.env.AEROBAG_REPO_ROOT ?? path.join(import.meta.dirname, "../../.."),
+);
+const {
   E2E_TIMING,
   observeUntil,
-} from "../../../tools/e2e/transition-contract.mjs";
+} = await import(pathToFileURL(
+  path.join(repoRoot, "tools/e2e/transition-contract.mjs"),
+).href);
 
 const args = parseArgs(process.argv.slice(2));
-const repoRoot = path.resolve(process.env.AEROBAG_REPO_ROOT ?? path.join(import.meta.dirname, "../../.."));
 const chromeBin = args.chrome ?? process.env.CHROME_BIN ?? "google-chrome-stable";
 const port = positiveInteger(args.port, 18084);
 const transitionDelaySeconds = positiveInteger(args["transition-seconds"], 45);

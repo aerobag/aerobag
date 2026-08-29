@@ -33,8 +33,13 @@ cp "$WEB_SOURCE_DIR/index.html" "$WORKSPACE_DIR/index.html"
 
 ln -sfn "$WEB_SOURCE_DIR/src" "$WORKSPACE_DIR/src"
 ln -sfn "$WEB_SOURCE_DIR/public" "$WORKSPACE_DIR/public"
-ln -sfn "$WEB_SOURCE_DIR/scripts" "$WORKSPACE_DIR/scripts"
 ln -sfn "$REPO_ROOT/ui/icons" "$WORKSPACE_DIR/icons"
+
+# Node resolves packages relative to a script's real path. Keep executable
+# scripts inside the workspace whose node_modules they consume instead of
+# symlinking them back into the source checkout.
+rm -rf "$WORKSPACE_DIR/scripts"
+cp -a "$WEB_SOURCE_DIR/scripts" "$WORKSPACE_DIR/scripts"
 
 INSTALL_POLICY="npm-ci-ignore-scripts-v1"
 SOURCE_LOCK_HASH="$INSTALL_POLICY:$(sha256sum "$WEB_SOURCE_DIR/package-lock.json" | awk '{print $1}')"

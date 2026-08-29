@@ -3,12 +3,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  requireWebDependency,
+  webWorkspaceDirectory,
+} from "../../ui/web-app/scripts/web-workspace-require.mjs";
 
-const require = createRequire(import.meta.url);
-const ts = require("../../ui/web-app/node_modules/typescript/lib/typescript.js");
+const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const ts = requireWebDependency("typescript");
+
+export { webWorkspaceDirectory };
 
 export const AUDITED_JOURNEY_FILES = Object.freeze([
   "tools/e2e/release-journey-implementations.mjs",
@@ -449,8 +454,7 @@ export function auditQualificationJourneys(repoRoot) {
 const invokedAsScript = process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsScript) {
-  const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-  const violations = auditQualificationJourneys(repoRoot);
+  const violations = auditQualificationJourneys(REPO_ROOT);
   for (const violation of violations) {
     console.error(
       `${violation.filename}:${violation.line}:${violation.column}: ${violation.message}`,

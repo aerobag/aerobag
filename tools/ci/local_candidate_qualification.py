@@ -210,7 +210,6 @@ def prepare_environment() -> None:
     ).strip().removeprefix("v").split(".", 1)[0]
     if node_major != "20":
         raise QualificationError(f"Node 20 is required, got major version {node_major}")
-    subprocess.run(["npm", "ci", "--prefix", "ui/web-app"], cwd=ROOT, check=True)
     subprocess.run(
         [str(ROOT / "tools/ci/install_wasm_bindgen.sh")], cwd=ROOT, check=True
     )

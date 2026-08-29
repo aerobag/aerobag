@@ -66,10 +66,43 @@ import {
 import {
   auditJourneyStructure,
   auditQualificationJourneys,
+  webWorkspaceDirectory,
 } from "./journey-structure-audit.mjs";
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { setAndroidWallClockAndWait } from "./android-harness.mjs";
+
+test("web tooling resolves dependencies from the staged target workspace", () => {
+  assert.equal(
+    webWorkspaceDirectory(
+      { AEROBAG_UI_TARGET_ROOT: "/tmp/aerobag-ui-target" },
+      "/checkout",
+    ),
+    "/tmp/aerobag-ui-target/web/workspace",
+  );
+  assert.equal(
+    webWorkspaceDirectory(
+      {
+        AEROBAG_UI_TARGET_ROOT: "/tmp/ignored-ui-target",
+        AEROBAG_WEB_WORKSPACE_DIR: "/tmp/explicit-web-workspace",
+      },
+      "/checkout",
+    ),
+    "/tmp/explicit-web-workspace",
+  );
+  assert.equal(webWorkspaceDirectory({}, "/checkout"), "/checkout/ui/web-app");
+
+  const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const runner = readFileSync(join(repoRoot, "ui/web-app/scripts/run-target-workspace.sh"), "utf8");
+  assert.match(runner, /cp -a "\$WEB_SOURCE_DIR\/scripts" "\$WORKSPACE_DIR\/scripts"/);
+  assert.doesNotMatch(runner, /ln -sfn "\$WEB_SOURCE_DIR\/scripts"/);
+
+  const qualifier = readFileSync(
+    join(repoRoot, "tools/ci/local_candidate_qualification.py"),
+    "utf8",
+  );
+  assert.doesNotMatch(qualifier, /npm[^\n]*ci[^\n]*--prefix[^\n]*ui\/web-app/);
+});
 
 function withActionContract(runtime) {
   runtime.openPage ??= (pageId) => runtime.driver.openPage(pageId);

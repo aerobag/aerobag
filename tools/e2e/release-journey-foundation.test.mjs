@@ -2214,10 +2214,10 @@ test("Android page navigation requires visible semantic pages", () => {
   assert.match(source, /export async function navigateSemanticPage/);
 });
 
-test("Android current-page discovery follows its single startup-state page identity", () => {
+test("Android current-page discovery follows the visible page before persisted state", () => {
   assert.equal(
     androidPageIdFromStartupStateTag(
-      "parity:startup-state:ready:true:persisted_page:Home:session_revision:44",
+      "parity:startup-state:ready:true:page:Home:persisted_page:Map:session_revision:44",
     ),
     "home",
   );

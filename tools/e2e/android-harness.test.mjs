@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   assertNoAerobagAnr,
   androidImeVisible,
+  androidInteractiveRuntime,
   androidOfflinePackagesVisible,
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
@@ -106,6 +107,24 @@ test("Android semantic actions wait for their rendered surface to reach the scre
     ...button,
     "center-reachable": "true",
   }), true);
+});
+
+test("Android runtime startup rejects a semantic tree whose surface is not reachable", () => {
+  const state = { ready: "true", disclaimer_required: "false", page: "Map" };
+  const home = {
+    enabled: "true",
+    clickable: "true",
+    visible: "true",
+    "center-reachable": "false",
+  };
+  assert.equal(androidInteractiveRuntime(state, home), null);
+  assert.deepEqual(androidInteractiveRuntime(state, {
+    ...home,
+    "center-reachable": "true",
+  }), {
+    state,
+    home: { ...home, "center-reachable": "true" },
+  });
 });
 
 test("detects only a rendered Android input-method window", () => {

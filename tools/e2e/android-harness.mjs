@@ -473,6 +473,36 @@ export function queryAndroidRuntimeReadyForJourney(serial) {
     : null;
 }
 
+export function androidInteractiveRuntime(state, home) {
+  return state?.ready === "true" &&
+    state?.disclaimer_required === "false" &&
+    androidSemanticNodeIsActionable(home)
+    ? { state, home }
+    : null;
+}
+
+export async function waitForAndroidInteractiveRuntime(
+  serial,
+  timeoutMs = E2E_TIMING.startupMs,
+) {
+  const observed = await observeUntil("painted interactive Android runtime", () => {
+    const state = queryAndroidStartupState(serial);
+    if (state?.disclaimer_required !== "false") return null;
+    const home = queryAndroidSemanticNodes(
+      serial,
+      "parity:button:HOME",
+      { first: true },
+    )[0] ?? null;
+    return androidInteractiveRuntime(state, home);
+  }, {
+    timeoutMs,
+    intervalMs: E2E_TIMING.pollIntervalMs,
+    consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
+    waitForNextProbe: (intervalMs) => waitForAndroidSemanticEvent(serial, intervalMs),
+  });
+  return observed.value;
+}
+
 export function queryAndroidOfflinePackagesVisible(serial) {
   const startup = queryAndroidStartupProjection(serial);
   if (startup?.page === "OfflinePackages") return true;

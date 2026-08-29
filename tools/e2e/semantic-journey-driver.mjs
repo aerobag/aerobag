@@ -768,13 +768,19 @@ function activateAndroidSemanticTag(serial, tag, readyElement = null) {
 }
 
 export function androidPageIdFromStartupStateTag(tag) {
+  const currentPage = tag.match(/:page:([^:]+)(?::|$)/)?.[1];
   const persistedPage = tag.match(/:persisted_page:([^:]+)(?::|$)/)?.[1];
-  return persistedPage ? ANDROID_PERSISTED_PAGE_IDS[persistedPage] ?? null : null;
+  const page = currentPage ?? persistedPage;
+  return page ? ANDROID_PERSISTED_PAGE_IDS[page] ?? null : null;
 }
 
 function visibleAndroidPage(serial) {
-  const state = queryAndroidStartupProjection(serial);
-  const pageId = ANDROID_PERSISTED_PAGE_IDS[state?.page ?? state?.persisted_page];
+  const state = queryAndroidSemanticNodes(
+    serial,
+    "parity:startup-state:",
+    { prefix: true },
+  ).find((node) => node.visible === "true");
+  const pageId = androidPageIdFromStartupStateTag(androidTag(state));
   return pageId ? { pageId, node: state } : null;
 }
 

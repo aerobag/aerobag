@@ -53,6 +53,7 @@ import {
   setAndroidRotation,
   shutdownAndroidSemanticDrivers,
   waitFor,
+  waitForAndroidInteractiveRuntime,
   waitForAndroidOrientation,
   waitForNode,
 } from "./android-harness.mjs";
@@ -370,8 +371,14 @@ async function waitForRuntime(serial, result) {
     E2E_TIMING.startupMs,
     "runtime UI ready",
   );
+  await waitForAndroidInteractiveRuntime(serial);
   assertRuntimeIsAvailable(serial);
   recordStep(result, "runtime UI ready");
+}
+
+async function launchInteractiveAndroidApp(serial, launch) {
+  await launch();
+  await waitForAndroidInteractiveRuntime(serial);
 }
 
 async function ensurePlanPage(serial, result) {
@@ -1564,18 +1571,24 @@ async function runSharedReleaseJourney(args, journey) {
     await waitForRuntime(args.serial, bootstrap);
 
     const driver = new AndroidSemanticJourneyDriver(args.serial, {
-      resetApp: () => launchReleaseJourneyAndroidApp(
-        args,
-        fixture,
-        // Bootstrap already reset core state and accepted the mandatory
-        // disclaimer. Preserve that agreement instead of manufacturing a
-        // second fresh install while retained background runtimes are active.
-        { clearUiPrefs: true, clearCoreSettings: false },
+      resetApp: () => launchInteractiveAndroidApp(
+        args.serial,
+        () => launchReleaseJourneyAndroidApp(
+          args,
+          fixture,
+          // Bootstrap already reset core state and accepted the mandatory
+          // disclaimer. Preserve that agreement instead of manufacturing a
+          // second fresh install while retained background runtimes are active.
+          { clearUiPrefs: true, clearCoreSettings: false },
+        ),
       ),
-      reloadApp: () => launchReleaseJourneyAndroidApp(
-        args,
-        fixture,
-        { clearUiPrefs: false, clearCoreSettings: false },
+      reloadApp: () => launchInteractiveAndroidApp(
+        args.serial,
+        () => launchReleaseJourneyAndroidApp(
+          args,
+          fixture,
+          { clearUiPrefs: false, clearCoreSettings: false },
+        ),
       ),
       resetApplicationData: async () => {
         adb(args.serial, ["shell", "pm", "clear", "org.aerobag.app"]);
@@ -1615,8 +1628,20 @@ async function runOfflineColdStart(args) {
     recordCheck(result, "offline.sync", runtimeUiVisible(dumpAndroid(args.serial)));
 
     const driver = new AndroidSemanticJourneyDriver(args.serial, {
-      resetApp: () => launchFreshAndroidApp(args.serial, { clearUiPrefs: true, clearCoreSettings: false }),
-      reloadApp: () => launchFreshAndroidApp(args.serial, { clearUiPrefs: false, clearCoreSettings: false }),
+      resetApp: () => launchInteractiveAndroidApp(
+        args.serial,
+        () => launchFreshAndroidApp(
+          args.serial,
+          { clearUiPrefs: true, clearCoreSettings: false },
+        ),
+      ),
+      reloadApp: () => launchInteractiveAndroidApp(
+        args.serial,
+        () => launchFreshAndroidApp(
+          args.serial,
+          { clearUiPrefs: false, clearCoreSettings: false },
+        ),
+      ),
     });
     const georef = fixture.capabilities.plate.georeferenced;
     await driver.openPage("flight_plan");

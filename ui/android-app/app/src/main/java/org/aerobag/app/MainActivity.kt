@@ -3501,6 +3501,7 @@ internal fun AerobagApp(
                 .testTag(
                     "parity:startup-state:ready:true:" +
                         "disclaimer_required:${sessionSnapshot.disclaimerState.required}:" +
+                        "page:${page.name}:" +
                         "persisted_page:${persistedPage.name}:" +
                         "session_revision:${sessionSnapshot.sessionRevision}",
                 ),

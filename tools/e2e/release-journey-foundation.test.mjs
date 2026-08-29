@@ -2785,8 +2785,18 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
+  const bundleBuilder = readFileSync(
+    new URL("../ci/build_release_e2e_apps.sh", import.meta.url),
+    "utf8",
+  );
+  const bundleVerifier = readFileSync(
+    new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
+    "utf8",
+  );
   assert.match(harness, /aerobag-semantic-driver\/4/);
   assert.match(service, /aerobag-semantic-driver\/4/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/4/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/4/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

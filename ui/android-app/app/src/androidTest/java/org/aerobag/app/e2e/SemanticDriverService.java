@@ -40,9 +40,10 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/4";
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean semanticRequestActive = new AtomicBoolean(false);
+    private final Object semanticRequestMonitor = new Object();
     private final AtomicLong accessibilityEventSequence = new AtomicLong();
     private final Object accessibilityEventMonitor = new Object();
     private final Map<String, String> exactNodePaths = new ConcurrentHashMap<>();
@@ -171,6 +172,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/await-event":
                     handleAwaitEvent(socket, path);
                     return;
+                case "/await-idle":
+                    handleAwaitIdle(socket, path);
+                    return;
                 case "/set-text":
                     handleSetText(socket, path);
                     return;
@@ -189,7 +193,12 @@ public final class SemanticDriverService extends AccessibilityService {
                     );
             }
         } finally {
-            if (ownsSemanticRequest) semanticRequestActive.set(false);
+            if (ownsSemanticRequest) {
+                synchronized (semanticRequestMonitor) {
+                    semanticRequestActive.set(false);
+                    semanticRequestMonitor.notifyAll();
+                }
+            }
         }
     }
 
@@ -249,6 +258,35 @@ public final class SemanticDriverService extends AccessibilityService {
             socket.getOutputStream(),
             "text/plain; charset=utf-8",
             changed ? "changed\n" : "unchanged\n",
+            200
+        );
+    }
+
+    private void handleAwaitIdle(Socket socket, String path) throws IOException {
+        long timeoutMs;
+        try {
+            timeoutMs = Long.parseLong(queryOf(path).getOrDefault("timeout_ms", "1000"));
+        } catch (NumberFormatException error) {
+            timeoutMs = 1000;
+        }
+        timeoutMs = Math.max(1, Math.min(2_000, timeoutMs));
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        synchronized (semanticRequestMonitor) {
+            while (semanticRequestActive.get()) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) break;
+                try {
+                    TimeUnit.NANOSECONDS.timedWait(semanticRequestMonitor, remainingNanos);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        respond(
+            socket.getOutputStream(),
+            "text/plain; charset=utf-8",
+            semanticRequestActive.get() ? "busy\n" : "idle\n",
             200
         );
     }

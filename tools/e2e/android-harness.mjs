@@ -29,7 +29,7 @@ const CLOCK_SET_TIMEOUT_MS = 15000;
 const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.75;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/3";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/4";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -119,6 +119,34 @@ function semanticDriverObservationUnavailable(response) {
   return semanticDriverRequestTimedOut(response) || semanticDriverRequestBusy(response);
 }
 
+export function semanticDriverActionRequest(
+  port,
+  path,
+  method = "POST",
+  request = semanticDriverRequest,
+) {
+  const deadline = performance.now() + SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS * 1_000;
+  let response = request(
+    port, path, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, method,
+  );
+  while (semanticDriverRequestBusy(response)) {
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 250) return response;
+    const idleTimeoutMs = Math.max(1, Math.min(2_000, Math.floor(remainingMs - 250)));
+    const idleQuery = new URLSearchParams({ timeout_ms: String(idleTimeoutMs) });
+    const idle = request(
+      port,
+      `/await-idle?${idleQuery}`,
+      Math.max(0.1, (idleTimeoutMs + 100) / 1_000),
+    );
+    if (idle.status !== 0 || idle.stdout.trim() !== "idle") return response;
+    const retryMs = deadline - performance.now();
+    if (retryMs <= 50) return response;
+    response = request(port, path, retryMs / 1_000, method);
+  }
+  return response;
+}
+
 export function setAndroidSemanticText(serial, tag, value, expectedBounds, semanticPath) {
   const state = requiredSemanticDriver(serial);
   if (!expectedBounds || !semanticPath) {
@@ -127,9 +155,7 @@ export function setAndroidSemanticText(serial, tag, value, expectedBounds, seman
     );
   }
   const query = new URLSearchParams({ tag, value, bounds: expectedBounds, path: semanticPath });
-  const response = semanticDriverRequest(
-    state.port, `/set-text?${query}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST",
-  );
+  const response = semanticDriverActionRequest(state.port, `/set-text?${query}`);
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
@@ -154,9 +180,7 @@ export function clickAndroidSemanticNode(
     checked: checked == null ? "" : String(checked),
     state_description: stateDescription ?? "",
   });
-  const response = semanticDriverRequest(
-    state.port, `/click?${query}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST",
-  );
+  const response = semanticDriverActionRequest(state.port, `/click?${query}`);
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
@@ -168,9 +192,7 @@ export function scrollAndroidSemanticNode(serial, bounds, direction) {
     ? "forward"
     : "backward";
   const query = new URLSearchParams({ bounds, direction: semanticDirection });
-  const response = semanticDriverRequest(
-    state.port, `/scroll?${query}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST",
-  );
+  const response = semanticDriverActionRequest(state.port, `/scroll?${query}`);
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
     return false;

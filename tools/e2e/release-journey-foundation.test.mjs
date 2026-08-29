@@ -70,7 +70,10 @@ import {
 } from "./journey-structure-audit.mjs";
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
-import { setAndroidWallClockAndWait } from "./android-harness.mjs";
+import {
+  semanticDriverActionRequest,
+  setAndroidWallClockAndWait,
+} from "./android-harness.mjs";
 
 function labMetadataEnvironment() {
   const environment = {
@@ -1708,7 +1711,7 @@ test("persistent Android semantic requests separate probes from bounded actions"
   );
   assert.match(
     source,
-    /state\.port, `\/click\?\$\{query\}`, SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS, "POST"/,
+    /semanticDriverActionRequest\(state\.port, `\/click\?\$\{query\}`\)/,
   );
   assert.match(source, /"--fail-with-body"/);
   assert.match(
@@ -2719,13 +2722,61 @@ test("Android semantic probes cannot create an accessibility traversal herd", ()
   assert.match(service, /AtomicBoolean semanticRequestActive/);
   assert.match(service, /semanticRequestActive\.compareAndSet\(false, true\)/);
   assert.match(service, /"semantic request busy\\n",\s*503/);
-  assert.match(service, /finally \{\s*if \(ownsSemanticRequest\) semanticRequestActive\.set\(false\)/);
+  assert.match(
+    service,
+    /finally \{\s*if \(ownsSemanticRequest\) \{\s*synchronized \(semanticRequestMonitor\) \{[\s\S]*semanticRequestActive\.set\(false\);[\s\S]*semanticRequestMonitor\.notifyAll\(\)/,
+  );
   assert.doesNotMatch(
     service.slice(service.indexOf("private static boolean isSemanticEndpoint")),
     /case [^\n]*"\/await-event"/,
   );
+  assert.doesNotMatch(
+    service.slice(service.indexOf("private static boolean isSemanticEndpoint")),
+    /case [^\n]*"\/await-idle"/,
+  );
+  assert.match(service, /semanticRequestMonitor\.notifyAll\(\)/);
   assert.match(harness, /semanticDriverObservationUnavailable\(response\)/);
   assert.match(harness, /response\.stdout\.includes\("semantic request busy"\)/);
+});
+
+test("Android semantic actions retry only an explicit busy non-delivery", () => {
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const actionRequest = harness.slice(
+    harness.indexOf("function semanticDriverActionRequest"),
+    harness.indexOf("export function setAndroidSemanticText"),
+  );
+  assert.match(actionRequest, /while \(semanticDriverRequestBusy\(response\)\)/);
+  assert.match(actionRequest, /\/await-idle/);
+  assert.doesNotMatch(actionRequest, /semanticDriverRequestTimedOut/);
+  assert.equal((harness.match(/semanticDriverActionRequest\(state\.port/g) ?? []).length, 3);
+
+  const requests = [];
+  const responses = [
+    { status: 22, stdout: "semantic request busy\n", stderr: "curl: HTTP 503" },
+    { status: 0, stdout: "idle\n", stderr: "" },
+    { status: 0, stdout: "ok\n", stderr: "" },
+  ];
+  const completed = semanticDriverActionRequest(
+    19191,
+    "/click?tag=parity%3Abutton%3AHOME",
+    "POST",
+    (...request) => {
+      requests.push(request);
+      return responses.shift();
+    },
+  );
+  assert.equal(completed.stdout, "ok\n");
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0][1], requests[2][1]);
+  assert.match(requests[1][1], /^\/await-idle\?/);
+
+  let timeoutRequests = 0;
+  const timedOut = semanticDriverActionRequest(19191, "/click?tag=timeout", "POST", () => {
+    timeoutRequests += 1;
+    return { status: 28, stdout: "", stderr: "Operation timed out" };
+  });
+  assert.equal(timedOut.status, 28);
+  assert.equal(timeoutRequests, 1);
 });
 
 test("Android semantic driver rejects stale protocol artifacts before a journey", () => {
@@ -2734,8 +2785,8 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/3/);
-  assert.match(service, /aerobag-semantic-driver\/3/);
+  assert.match(harness, /aerobag-semantic-driver\/4/);
+  assert.match(service, /aerobag-semantic-driver\/4/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

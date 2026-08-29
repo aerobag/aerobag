@@ -1599,6 +1599,14 @@ test("persistent Android semantic requests separate probes from bounded actions"
   );
   assert.match(source, /"--fail-with-body"/);
   assert.match(source, /semanticDriverRequestTimedOut\(response\)[\s\S]*new TransientObservationError/);
+  const hierarchyDump = source.slice(
+    source.indexOf("function semanticDriverDump"),
+    source.indexOf("export async function ensureAndroidSemanticDriver"),
+  );
+  assert.match(
+    hierarchyDump,
+    /semanticDriverRequestTimedOut\(response\)[\s\S]*new TransientObservationError/,
+  );
 });
 
 test("persistent Android actions resolve exact readiness evidence before bounded fallbacks", () => {

@@ -227,6 +227,11 @@ function semanticDriverDump(serial) {
     return response.stdout;
   }
   const detail = response.error?.message || response.stderr.trim() || "request failed";
+  if (semanticDriverRequestTimedOut(response)) {
+    throw new TransientObservationError(
+      `Android semantic tree was busy while rendering the hierarchy: ${detail}`,
+    );
+  }
   throw new Error(`persistent Android semantic driver failed: ${detail}`);
 }
 

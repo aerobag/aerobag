@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   E2E_TIMING, observeChangedValueUntilStable, observeUntil, performTransition,
+  TransientObservationError,
 } from "./transition-contract.mjs";
 
 export const ANDROID_PACKAGE = "org.aerobag.app";
@@ -834,17 +835,63 @@ export function grantAerobagRuntimePermissions(serial) {
   }
 }
 
-function firstAerobagSemanticNodeDuringStartup(serial) {
+function firstAerobagStartupNode(serial) {
   try {
     return queryAndroidSemanticNodes(
       serial,
-      "parity:",
+      "parity:startup-state:",
       { prefix: true, first: true },
     )[0] ?? null;
   } catch (error) {
-    if (/curl: \(28\) Operation timed out/.test(error.message)) return null;
+    if (/curl: \(28\) Operation timed out/.test(error.message)) {
+      throw new TransientObservationError(
+        "Android semantic startup query timed out",
+        error,
+      );
+    }
     throw error;
   }
+}
+
+function semanticNodeIdentity(node) {
+  return JSON.stringify({
+    tag: node?.["resource-id"] ?? null,
+    path: node?.["semantic-path"] ?? null,
+    bounds: node?.bounds ?? null,
+  });
+}
+
+export async function restartAndroidAppAcrossSemanticLifecycle({
+  stopApp,
+  prepareSemanticDriver,
+  startApp,
+  readStartupNode,
+  timeoutMs = E2E_TIMING.startupMs,
+  intervalMs = E2E_TIMING.pollIntervalMs,
+}) {
+  await stopApp();
+  await prepareSemanticDriver();
+  await observeUntil(
+    "previous Aerobag semantic UI removed",
+    async () => (await readStartupNode()) === null ? true : null,
+    {
+      timeoutMs,
+      intervalMs,
+      consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
+    },
+  );
+  await startApp();
+  const observed = await observeUntil(
+    "new Aerobag semantic UI visible",
+    () => readStartupNode(),
+    {
+      timeoutMs,
+      intervalMs,
+      consecutiveSuccesses: E2E_TIMING.transitionCompletionSamples,
+      consecutiveValueKey: semanticNodeIdentity,
+    },
+  );
+  return observed.value;
 }
 
 export async function launchFreshAndroidApp(
@@ -854,8 +901,6 @@ export async function launchFreshAndroidApp(
   adb(serial, ["wait-for-device"]);
   wakeAndUnlock(serial);
   grantAerobagRuntimePermissions(serial);
-  adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
-  await ensureAndroidSemanticDriver(serial);
   const startArgs = ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY];
   if (clearUiPrefs) {
     startArgs.push("--ez", DEBUG_CLEAR_UI_PREFS_EXTRA, "true");
@@ -866,14 +911,16 @@ export async function launchFreshAndroidApp(
   if (armLayerNavKvFault) {
     startArgs.push("--ez", DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA, "true");
   }
-  // `am start -W` includes Android process startup and can exceed the generic
-  // command timeout on cold CI emulators. UI readiness is still checked below.
-  adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
-  await waitFor(
-    () => firstAerobagSemanticNodeDuringStartup(serial),
-    E2E_TIMING.startupMs,
-    "Aerobag semantic UI visible",
-  );
+  await restartAndroidAppAcrossSemanticLifecycle({
+    stopApp: () => adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]),
+    prepareSemanticDriver: () => ensureAndroidSemanticDriver(serial),
+    startApp: () => {
+      // `am start -W` includes Android process startup and can exceed the generic
+      // command timeout on cold CI emulators. Semantic lifecycle is checked here.
+      adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
+    },
+    readStartupNode: () => firstAerobagStartupNode(serial),
+  });
 }
 
 export async function acceptDisclaimerIfPresent(serial) {

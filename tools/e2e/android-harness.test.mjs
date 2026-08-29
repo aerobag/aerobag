@@ -23,6 +23,7 @@ import {
   layerToggleNode,
   layerToggleTag,
   renderedFlightPlanSignature,
+  restartAndroidAppAcrossSemanticLifecycle,
   verticalScrollTargetIsReachable,
 } from "./android-harness.mjs";
 
@@ -43,6 +44,43 @@ test("persistent semantic dumps refresh accessibility roots before traversal", (
   );
   assert.match(source, /attribute\(output, "state-description", string\(node\.getStateDescription\(\)\)\);/);
 });
+
+test(
+  "Android restart discards the stopped process's semantic tree before accepting startup",
+  async () => {
+    const stale = {
+      "resource-id": "parity:startup-state:ready:true:process:old",
+      "semantic-path": "0/0/4",
+      bounds: "[0,0][100,100]",
+    };
+    const fresh = {
+      "resource-id": "parity:startup-state:ready:false:process:new",
+      "semantic-path": "0/0/1",
+      bounds: "[0,0][100,100]",
+    };
+    const beforeStart = [stale, stale, null, null];
+    const afterStart = [fresh, fresh];
+    const events = [];
+    let started = false;
+
+    const observed = await restartAndroidAppAcrossSemanticLifecycle({
+      stopApp: async () => events.push("stop"),
+      prepareSemanticDriver: async () => events.push("prepare"),
+      startApp: async () => {
+        assert.deepEqual(beforeStart, []);
+        started = true;
+        events.push("start");
+      },
+      readStartupNode: async () => (started ? afterStart.shift() : beforeStart.shift()),
+      timeoutMs: 1_000,
+      intervalMs: 0,
+    });
+
+    assert.deepEqual(events, ["stop", "prepare", "start"]);
+    assert.deepEqual(observed, fresh);
+    assert.deepEqual(afterStart, []);
+  },
+);
 
 test("cloud journeys use host time while deterministic data journeys use fixture time", () => {
   assert.equal(androidJourneyEpochMs("shared.cloud-crossfill", 100, 200), 200);

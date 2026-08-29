@@ -1571,20 +1571,29 @@ test("mandatory disclaimer response and application startup use separate budgets
   );
 });
 
-test("Android app visibility stops at the first semantic root instead of dumping the UI", () => {
+test("Android app restart observes a stable startup node without dumping the UI", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const launch = harness.slice(
     harness.indexOf("export async function launchFreshAndroidApp"),
     harness.indexOf("export async function acceptDisclaimerIfPresent"),
   );
-  assert.match(launch, /firstAerobagSemanticNodeDuringStartup\(serial\)/);
+  assert.match(launch, /restartAndroidAppAcrossSemanticLifecycle\(/);
+  assert.match(launch, /firstAerobagStartupNode\(serial\)/);
   assert.doesNotMatch(launch, /dumpAndroid\(/);
   const startupProbe = harness.slice(
-    harness.indexOf("function firstAerobagSemanticNodeDuringStartup"),
+    harness.indexOf("function firstAerobagStartupNode"),
+    harness.indexOf("function semanticNodeIdentity"),
+  );
+  assert.match(startupProbe, /parity:startup-state:/);
+  assert.match(startupProbe, /prefix: true, first: true/);
+  assert.match(startupProbe, /TransientObservationError/);
+  const lifecycle = harness.slice(
+    harness.indexOf("export async function restartAndroidAppAcrossSemanticLifecycle"),
     harness.indexOf("export async function launchFreshAndroidApp"),
   );
-  assert.match(startupProbe, /prefix: true, first: true/);
-  assert.match(startupProbe, /Operation timed out/);
+  assert.match(lifecycle, /previous Aerobag semantic UI removed/);
+  assert.match(lifecycle, /new Aerobag semantic UI visible/);
+  assert.match(lifecycle, /consecutiveSuccesses: E2E_TIMING\.transitionCompletionSamples/g);
 });
 
 test("package refresh completion observes a new catalog request", () => {

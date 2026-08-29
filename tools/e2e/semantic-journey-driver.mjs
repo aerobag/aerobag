@@ -26,7 +26,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
 ]);
 
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
-  "reset", "resetApplicationData", "openPage", "readCurrentPage", "readPage", "readNavigationAction", "activateNavigation",
+  "reset", "resetApplicationData", "resetApplicationDataExpectingStartupFailure", "openPage", "readCurrentPage", "readPage", "readNavigationAction", "activateNavigation",
   "openChooser", "readOption", "selectOption",
   "inspectMapAt", "activateMapInspection", "performAction",
   "readRepeatedAction", "performRepeatedAction",
@@ -44,6 +44,9 @@ export class SemanticJourneyDriver {
 
   async reset() { throw new Error(`${this.platform} driver does not implement reset`); }
   async resetApplicationData() { throw new Error(`${this.platform} driver does not implement resetApplicationData`); }
+  async resetApplicationDataExpectingStartupFailure() {
+    throw new Error(`${this.platform} driver does not implement resetApplicationDataExpectingStartupFailure`);
+  }
   async openPage(pageId) { return navigateSemanticPage(this, pageId); }
   async readCurrentPage() { throw new Error(`${this.platform} driver does not implement readCurrentPage`); }
   async readPage(pageId) {
@@ -282,6 +285,10 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async resetApplicationData() {
     await this.navigateToOperationalApp(() => this.transport.reset());
+  }
+
+  async resetApplicationDataExpectingStartupFailure() {
+    await this.transport.reset();
   }
 
   async navigateToOperationalApp(navigate) {
@@ -873,6 +880,10 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     } else {
       await this.reset();
     }
+  }
+
+  async resetApplicationDataExpectingStartupFailure() {
+    await this.resetApplicationData();
   }
 
   async readCurrentPage() {

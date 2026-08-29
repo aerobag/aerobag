@@ -74,6 +74,8 @@ function withActionContract(runtime) {
   runtime.openPage ??= (pageId) => runtime.driver.openPage(pageId);
   runtime.reset ??= () => runtime.driver.reset();
   runtime.resetApplicationData ??= () => runtime.driver.resetApplicationData();
+  runtime.resetApplicationDataExpectingStartupFailure ??= () =>
+    runtime.driver.resetApplicationDataExpectingStartupFailure();
   runtime.reload ??= () => runtime.driver.reload();
   runtime.revealElement ??= (elementId) => runtime.driver.revealElement(elementId);
   runtime.revealProjectionMatching ??= (probe, needle) =>
@@ -1991,6 +1993,7 @@ test("journey runtime exposes typed phases instead of a generic step callback", 
     driver: {
       async reset() { calls.push("reset"); },
       async resetApplicationData() { calls.push("reset-data"); },
+      async resetApplicationDataExpectingStartupFailure() { calls.push("reset-data-failure"); },
       async reload() { calls.push("reload"); },
       async revealElement(id) { calls.push(`reveal:${id}`); return { id }; },
       async revealProjectionMatching(probe, needle) {
@@ -2006,11 +2009,12 @@ test("journey runtime exposes typed phases instead of a generic step callback", 
     assert.equal(runtime.step, undefined);
     await runtime.reset();
     await runtime.resetApplicationData();
+    await runtime.resetApplicationDataExpectingStartupFailure();
     await runtime.reload();
     await runtime.revealElement("button");
     await runtime.revealProjectionMatching("row:", "KSEA");
     assert.deepEqual(calls, [
-      "reset", "reset-data", "reload", "reveal:button", "projection:row::KSEA",
+      "reset", "reset-data", "reset-data-failure", "reload", "reveal:button", "projection:row::KSEA",
     ]);
   } finally {
     rmSync(artifactDir, { recursive: true, force: true });

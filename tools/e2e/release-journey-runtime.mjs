@@ -115,6 +115,15 @@ export function createJourneyRuntime({
       return runRecordedPhase(phaseId, () => driver.resetApplicationData());
     },
 
+    async resetApplicationDataExpectingStartupFailure(
+      phaseId = "app.reset-application-data-expecting-startup-failure",
+    ) {
+      return runRecordedPhase(
+        phaseId,
+        () => driver.resetApplicationDataExpectingStartupFailure(),
+      );
+    },
+
     async reload(phaseId = "app.reload") {
       return runRecordedPhase(phaseId, () => driver.reload());
     },

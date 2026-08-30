@@ -39,7 +39,7 @@ import {
 import {
   decodeReleaseJourneyFixturePath,
   liveFeedEventsFromCurrent,
-  webDistIndexSha256,
+  webDistIndexSha256, webDistRelativeCandidates,
 } from "./serve-release-journey-fixture.mjs";
 import {
   androidActionCandidates, androidElementEnabled, androidMapSelectionEntryFromState,
@@ -52,6 +52,7 @@ import {
   androidZoomKeyCode, editSemanticText, findTagOrPrefix,
   establishRevealedElement, navigateSemanticPage,
   semanticActionReadinessSamples,
+  semanticTransitionCompletionSamples,
   SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
   validateSemanticDriver, WebSemanticJourneyDriver, webTestIdSelector,
 } from "./semantic-journey-driver.mjs";
@@ -364,6 +365,26 @@ test("chart search selection completes only after its inspector is rendered", ()
   assert.match(method, /complete: completedSelection/);
 });
 
+test("Android chart search relinquishes the IME before opening an inspector", () => {
+  const charts = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt", import.meta.url),
+    "utf8",
+  );
+  const search = charts.slice(charts.indexOf("internal fun AndroidChartSearchBox("));
+  assert.match(
+    search,
+    /\.clickable \{\s*focusManager\.clearFocus\(force = true\)\s*keyboardController\?\.hide\(\)\s*onSuggestionClick/,
+  );
+
+  const native = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const dismiss = native.slice(
+    native.indexOf("async function dismissMapSelection("),
+    native.indexOf("async function inspectRawTerrainSpot("),
+  );
+  assert.match(dismiss, /androidImeShown\(serial\)/);
+  assert.match(dismiss, /readElement\("map-selection-tray"\)/);
+});
+
 test("TFR selection observes the target overlay before taking its final inspector snapshot", async () => {
   const events = [];
   let selections = 0;
@@ -545,6 +566,17 @@ test("a transition does not accept a one-sample completion glitch", async () => 
   });
   assert.equal(probes, 5);
   assert.deepEqual(result.value, { committed: true });
+});
+
+test("an exact platform postcondition may complete after one observation", async () => {
+  let completed = false;
+  const result = await performTransition("exact completion", {
+    ready: async () => true,
+    act: async () => { completed = true; },
+    complete: async () => completed,
+    completionSamples: 1,
+  });
+  assert.equal(result.value, true);
 });
 
 test("a transition can wait on platform events instead of hot polling", async () => {
@@ -757,6 +789,16 @@ test("native airport search transitions use indexed semantics instead of full hi
   }
 });
 
+test("native plate opening does not click an already-selected exact airport twice", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const body = source.slice(
+    source.indexOf("async function openPlateFromAirportInspector"),
+    source.indexOf("async function ensureMapFollowEngaged"),
+  );
+  assert.doesNotMatch(body, /selected in inspector|map-selection-item:airport/);
+  assert.match(body, /plate folder opened for \$\{airportId\}/);
+});
+
 test("native map selection dismissal observes the fixed projection", () => {
   const native = readFileSync("tools/e2e/run-android-e2e-suite.mjs", "utf8");
   const body = native.slice(
@@ -764,7 +806,9 @@ test("native map selection dismissal observes the fixed projection", () => {
     native.indexOf("async function inspectRawTerrainSpot"),
   );
   assert.match(body, /readProjection\("parity:map-selection-state:"\)/);
-  assert.doesNotMatch(body, /readElement\("map-selection-tray"\)|dumpAndroid\(/);
+  assert.match(body, /readElement\("map-selection-tray"\)/);
+  assert.match(body, /androidImeShown\(serial\)/);
+  assert.doesNotMatch(body, /dumpAndroid\(/);
 });
 
 test("Android map-selection state uses one fixed bounded projection", () => {
@@ -1189,6 +1233,14 @@ test("fixture web identity changes with the exact built application", () => {
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test("production-shaped web serving resolves document routes before SPA fallback", () => {
+  assert.deepEqual(webDistRelativeCandidates("/"), ["index.html"]);
+  assert.deepEqual(webDistRelativeCandidates("/about"), ["about", "about.html", "index.html"]);
+  assert.deepEqual(webDistRelativeCandidates("/assets/app.js"), ["assets/app.js"]);
+  const about = readFileSync(new URL("../../ui/web-app/about.html", import.meta.url), "utf8");
+  assert.match(about, /data-testid="parity:page:about"/);
 });
 
 test("failure diagnostics summarize fixture traffic without discarding anomalies", () => {
@@ -1951,6 +2003,8 @@ test("persistent Android semantic requests separate probes from bounded actions"
     /semanticDriverActionRequest\(port, `\/tap-target\?\$\{query\}`\)/,
   );
   assert.match(source, /"--fail-with-body"/);
+  assert.match(source, /Android semantic driver IME registration/);
+  assert.match(source, /\["shell", "ime", "list", "-a", "-s"\]/);
   assert.match(
     source,
     /semanticDriverObservationUnavailable\(response\)[\s\S]*new TransientObservationError/,
@@ -1981,6 +2035,7 @@ test("persistent Android progress actions resolve exact readiness evidence befor
   assert.match(source, /tag\.equals\(node\.getViewIdResourceName\(\)\)/);
   assert.match(source, /for \(int attempt = 0; attempt < 3; attempt\+\+\)/);
   assert.match(source, /if \(setMatchingNodeProgress\(node, tag, value, expectedBounds\)\) return true/);
+  assert.match(source, /ProviderProjection projection = providerProjection\(tag, false\)/);
   const actionResolution = source.slice(
     source.indexOf("private AccessibilityNodeInfo resolveRenderedNode("),
     source.indexOf("private static boolean matchesRenderedTarget("),
@@ -2131,6 +2186,12 @@ test("Android coordinate actions settle geometry while atomic web actions use on
   assert.match(actionBody, /readinessSamples: semanticActionReadinessSamples\(driver\)/);
   assert.equal(semanticActionReadinessSamples({ platform: "android" }), E2E_TIMING.stableObservationSamples);
   assert.equal(semanticActionReadinessSamples({ platform: "web" }), 1);
+  assert.equal(semanticTransitionCompletionSamples({ platform: "android" }), 1);
+  assert.equal(
+    semanticTransitionCompletionSamples({ platform: "web" }),
+    E2E_TIMING.transitionCompletionSamples,
+  );
+  assert.match(source, /semanticTransitionCompletionSamples\(driver\)/);
   assert.doesNotMatch(repeatBody, /readinessSamples:/);
   assert.match(repeatBody, /performRepeatedAction/);
 });
@@ -4032,10 +4093,28 @@ test("Android Back remains idempotent when one dismissal closes nested overlays"
   const driver = new AndroidSemanticJourneyDriver("test", {
     resetApp: async () => {},
     pressBack: () => { presses += 1; },
+    softwareKeyboardShown: () => false,
   });
   await driver.back();
   await driver.back();
   assert.equal(presses, 2);
+});
+
+test("Android semantic Back cannot be intercepted by a retained software keyboard", () => {
+  const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const method = source.slice(
+    source.lastIndexOf("  async back()"),
+    source.lastIndexOf("  async captureFrame(path)"),
+  );
+  assert.match(method, /software keyboard hidden before Android Back/);
+  assert.match(method, /this\.softwareKeyboardShown\(\) \? null : true/);
+  assert.ok(method.indexOf("observeUntil") < method.indexOf("this.pressBackCallback()"));
+
+  const journeys = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(journeys, /dismiss retained chart search keyboard/);
 });
 
 test("Android flight-plan readiness uses its fixed page marker", () => {
@@ -4088,7 +4167,7 @@ test("Android indexed taps revalidate the app projection without traversing Comp
     renderedTapBounds.indexOf('semanticPath.startsWith("projection-provider:")'),
     renderedTapBounds.indexOf("AccessibilityNodeInfo node"),
   );
-  assert.match(indexedBranch, /providerProjection\(tag\)/);
+  assert.match(indexedBranch, /providerProjection\(tag, false\)/);
   assert.match(indexedBranch, /semanticPath\.equals\(value\.optString\("semantic-path"/);
   assert.match(indexedBranch, /expectedBounds\.equals\(currentBounds\)/);
   assert.doesNotMatch(indexedBranch, /resolveRenderedNode|targetRoots/);

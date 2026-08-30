@@ -61,6 +61,13 @@ export function webDistIndexSha256(webDist) {
   return createHash("sha256").update(readFileSync(join(webDist, "index.html"))).digest("hex");
 }
 
+export function webDistRelativeCandidates(pathname) {
+  if (pathname === "/") return ["index.html"];
+  const relative = pathname.slice(1);
+  if (extname(pathname)) return [relative];
+  return [...new Set([relative, `${relative}.html`, "index.html"])];
+}
+
 function contentType(path) {
   switch (extname(path).toLowerCase()) {
     case ".html": return "text/html; charset=utf-8";
@@ -436,9 +443,9 @@ export function createReleaseJourneyFixtureServer(args) {
       if (relative && sendFile(request, response, config.fixtureRoot, relative)) return;
     }
     if (config.webDist) {
-      const relative = pathname === "/" ? "index.html" : pathname.slice(1);
-      if (sendFile(request, response, config.webDist, relative)) return;
-      if (!extname(pathname) && sendFile(request, response, config.webDist, "index.html")) return;
+      for (const relative of webDistRelativeCandidates(pathname)) {
+        if (sendFile(request, response, config.webDist, relative)) return;
+      }
     }
     response.statusCode = 404;
     response.end("not found\n");

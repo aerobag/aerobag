@@ -896,6 +896,10 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private ProviderProjection providerProjection(String tag) {
+        return providerProjection(tag, true);
+    }
+
+    private ProviderProjection providerProjection(String tag, boolean verifyCenterReachable) {
         Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
             .buildUpon()
             .appendQueryParameter("resource_id", tag)
@@ -927,7 +931,10 @@ public final class SemanticDriverService extends AccessibilityService {
                 value.put("bounds", hasBounds ? bounds : "[0,0][1,1]");
                 value.put(
                     "center-reachable",
-                    Boolean.toString(parsedBounds != null && indexedCenterReachable(tag, parsedBounds))
+                    Boolean.toString(
+                        parsedBounds != null &&
+                        (!verifyCenterReachable || indexedCenterReachable(tag, parsedBounds))
+                    )
                 );
                 output.put(value);
             }
@@ -1689,7 +1696,9 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {
         if (semanticPath.startsWith("projection-provider:")) {
-            ProviderProjection projection = providerProjection(tag);
+            // Current provider geometry rejects stale actions, and the physical
+            // touch receipt proves which tagged control received the tap.
+            ProviderProjection projection = providerProjection(tag, false);
             if (!projection.handled || projection.values.length() != 1) return null;
             try {
                 JSONObject value = projection.values.getJSONObject(0);

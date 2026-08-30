@@ -10,7 +10,7 @@ import {
 } from "./journey-result.mjs";
 import {
   editSemanticText, inspectSemanticMapAt, navigateSemanticPage,
-  semanticActionReadinessSamples,
+  semanticActionReadinessSamples, semanticTransitionCompletionSamples,
 } from "./semantic-journey-driver.mjs";
 import {
   E2E_TIMING, observeUntil, observeValueUntilStable, performTransition,
@@ -192,6 +192,8 @@ export function createJourneyRuntime({
       );
       const completed = await performTransition(description, {
         ...contract,
+        completionSamples:
+          contract.completionSamples ?? semanticTransitionCompletionSamples(driver),
         waitForObservation:
           contract.waitForObservation ?? driver.waitForObservation?.bind(driver) ?? null,
         onTiming(timing) {

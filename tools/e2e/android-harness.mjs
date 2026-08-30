@@ -457,6 +457,17 @@ export async function ensureAndroidSemanticDriver(serial) {
       `persistent Android semantic driver package is not installed: ${SEMANTIC_DRIVER_PACKAGE}`,
     );
   }
+  await observeUntil("Android semantic driver IME registration", () => {
+    // `ime list -s` only reports enabled methods. Include disabled methods so
+    // registration can be observed before the following `ime enable` call.
+    const listed = adbBestEffort(serial, ["shell", "ime", "list", "-a", "-s"]);
+    return listed.status === 0 && listed.stdout.split(/\r?\n/).includes(SEMANTIC_DRIVER_IME)
+      ? true
+      : null;
+  }, {
+    timeoutMs: E2E_TIMING.localResourceMs,
+    intervalMs: E2E_TIMING.resourcePollIntervalMs,
+  });
   adb(serial, ["shell", "ime", "enable", SEMANTIC_DRIVER_IME]);
   adb(serial, ["shell", "ime", "set", SEMANTIC_DRIVER_IME]);
   const selectedIme = adb(serial, ["shell", "settings", "get", "secure", "default_input_method"])

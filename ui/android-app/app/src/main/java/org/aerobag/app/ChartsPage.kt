@@ -1503,8 +1503,10 @@ internal fun AndroidChartSearchBox(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     var e2eFocused by remember { mutableStateOf(false) }
     val submitAction = rememberCurrentAction {
+        focusManager.clearFocus(force = true)
         keyboardController?.hide()
         onSubmit()
     }
@@ -1611,6 +1613,7 @@ internal fun AndroidChartSearchBox(
                                     .height(ThumbSize)
                                     .testTag("parity:chart-search-suggestion:${suggestion.identifier}")
                                     .clickable {
+                                        focusManager.clearFocus(force = true)
                                         keyboardController?.hide()
                                         onSuggestionClick(suggestion)
                                     },

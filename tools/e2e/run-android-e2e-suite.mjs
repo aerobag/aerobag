@@ -15,6 +15,7 @@ import {
   acceptDisclaimerIfPresent,
   adb,
   adbBestEffort,
+  androidImeShown,
   androidNodeLabel,
   androidJourneyEpochMs,
   androidOfflinePackagesVisible,
@@ -102,6 +103,7 @@ function nativeSemanticDriver(serial) {
 async function nativeTransition(result, description, contract) {
   const completed = await performTransition(description, {
     ...contract,
+    completionSamples: contract.completionSamples ?? 1,
     onTiming(timing) {
       result.diagnostics.userTransitions ??= [];
       result.diagnostics.userTransitions.push(timing);
@@ -557,9 +559,11 @@ async function dismissMapSelection(serial, result, driver = nativeSemanticDriver
   const selectionState = async () =>
     (await driver.readProjection("parity:map-selection-state:"))[0]?.state ?? "";
   await nativeTransition(result, "map inspector dismissed", {
-    ready: async () => (await selectionState()).startsWith("selected:none:")
-      ? null
-      : { test_id: "parity:map-selection-state" },
+    ready: async () => {
+      if ((await selectionState()).startsWith("selected:none:")) return null;
+      if (androidImeShown(serial)) return null;
+      return driver.readElement("map-selection-tray");
+    },
     act: async (_readySelection) => pressKey(serial, "KEYCODE_BACK"),
     complete: async () => (await selectionState()).startsWith("selected:none:"),
   });
@@ -856,25 +860,7 @@ function labelContainsWords(label, expected) {
 async function openPlateFromAirportInspector(serial, result, airportId, expectedLabel) {
   await inspectAirportFromChartSearch(serial, result, airportId);
 
-  const airportItemTag = `parity:map-selection-item:airport-${airportId}`;
   const platesActionTag = "parity:map-selection-action:plates";
-  const inspectorBranch = (await observeUntil(
-    `airport ${airportId} inspector actions`,
-    () => {
-      const platesAction = queryExactAndroidNode(serial, platesActionTag);
-      if (platesAction) return { platesAction };
-      const airportItem = queryExactAndroidNode(serial, airportItemTag);
-      return airportItem ? { airportItem } : null;
-    },
-    { timeoutMs: E2E_TIMING.localReadyMs },
-  )).value;
-  if (inspectorBranch.airportItem) {
-    await nativeTransition(result, `airport ${airportId} selected in inspector`, {
-      ready: async () => queryExactAndroidNode(serial, airportItemTag),
-      act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => queryExactAndroidNode(serial, platesActionTag),
-    });
-  }
   await nativeTransition(result, `plate folder opened for ${airportId}`, {
     ready: async () => {
       const action = queryExactAndroidNode(serial, platesActionTag);

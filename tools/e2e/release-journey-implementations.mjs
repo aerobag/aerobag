@@ -440,19 +440,6 @@ async function chartBasicUse(runtime) {
   const zoomAfter = viewportZoomLevel([zoomedViewport]);
   runtime.check("chart.zoom", zoomAfter !== zoomBefore, `${zoomBefore} -> ${zoomAfter}`);
 
-  if (runtime.platform === "android") {
-    // Android's keyboard zoom shortcut is also delivered to a search field
-    // that retained focus after its suggestion was selected.
-    const keyboard = await runtime.driver.readElement("software-keyboard");
-    if (keyboard) {
-      await runtime.transition("dismiss retained chart search keyboard", {
-        ready: () => runtime.driver.readElement("software-keyboard"),
-        act: () => runtime.driver.back(),
-        complete: async () => (await runtime.driver.readElement("software-keyboard")) ? null : true,
-      });
-    }
-  }
-
   await runtime.openPage("flight_plan");
   await appendRoute(runtime, "KSEA KPAE");
   await planAction(runtime, "KPAE", "activate_leg");

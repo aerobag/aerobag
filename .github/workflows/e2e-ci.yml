@@ -364,6 +364,10 @@ jobs:
           path: .ci/release-e2e-apps
       - name: Verify immutable apps
         run: python3 tools/ci/verify_release_e2e_apps.py .ci/release-e2e-apps
+      - name: Install Android failure screenshot analyzer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3-pil
       - name: Download qualified Android baseline
         uses: actions/download-artifact@v5
         with:

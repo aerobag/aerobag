@@ -68,6 +68,12 @@ export function semanticActionReadinessSamples(driver) {
   return driver.platform === "android" ? E2E_TIMING.stableObservationSamples : 1;
 }
 
+export function semanticTransitionCompletionSamples(driver) {
+  // Android returns an exact typed postcondition. A second accessibility-tree
+  // traversal adds latency but does not add evidence that the action occurred.
+  return driver.platform === "android" ? 1 : E2E_TIMING.transitionCompletionSamples;
+}
+
 export class SemanticJourneyDriver {
   constructor(platform) {
     this.platform = platform;
@@ -964,6 +970,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     resetApplicationData = null,
     reloadApp = null,
     pressBack = null,
+    softwareKeyboardShown = null,
   }) {
     super("android");
     this.serial = serial;
@@ -971,6 +978,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     this.resetApplicationDataCallback = resetApplicationData;
     this.reloadAppCallback = reloadApp;
     this.pressBackCallback = pressBack ?? (() => pressKey(this.serial, "KEYCODE_BACK"));
+    this.softwareKeyboardShown = softwareKeyboardShown ?? (() => androidImeShown(this.serial));
     this.seededScalarProjections = new Set();
   }
 
@@ -1506,6 +1514,17 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async back() {
+    // Semantic Back dismisses an app surface. A delayed IME hide after text
+    // submission must not consume the same physical Back event first.
+    await observeUntil(
+      "software keyboard hidden before Android Back",
+      () => this.softwareKeyboardShown() ? null : true,
+      {
+        timeoutMs: E2E_TIMING.localReadyMs,
+        intervalMs: E2E_TIMING.resourcePollIntervalMs,
+        waitForNextProbe: (intervalMs) => this.waitForObservation(intervalMs),
+      },
+    );
     this.pressBackCallback();
   }
 

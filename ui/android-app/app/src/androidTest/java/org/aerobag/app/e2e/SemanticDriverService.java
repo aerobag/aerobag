@@ -5,7 +5,9 @@
 package org.aerobag.app.e2e;
 
 import android.accessibilityservice.AccessibilityService;
+import android.database.Cursor;
 import android.graphics.Rect;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
@@ -668,6 +670,8 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean indexedOnly,
         boolean boundedOnly
     ) {
+        ProviderProjection providerProjection = providerProjection(tag);
+        if (providerProjection.handled) return providerProjection.values;
         JSONArray output = new JSONArray();
         if (tag.isEmpty()) return output;
         List<AccessibilityNodeInfo> roots = targetRoots(true);
@@ -747,6 +751,53 @@ public final class SemanticDriverService extends AccessibilityService {
             recycleAll(roots);
         }
         return output;
+    }
+
+    private ProviderProjection providerProjection(String tag) {
+        Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
+            .buildUpon()
+            .appendQueryParameter("resource_id", tag)
+            .build();
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                return ProviderProjection.unhandled();
+            }
+            JSONArray output = new JSONArray();
+            if (cursor.getInt(cursor.getColumnIndexOrThrow("present")) != 0) {
+                JSONObject value = new JSONObject();
+                value.put("resource-id", cursor.getString(cursor.getColumnIndexOrThrow("resource_id")));
+                value.put(
+                    "semantic-path",
+                    "projection-provider:" + cursor.getLong(cursor.getColumnIndexOrThrow("revision"))
+                );
+                value.put("text", "");
+                value.put("enabled", "true");
+                value.put("visible", "true");
+                value.put("selected", "false");
+                value.put("checked", "false");
+                value.put("focused", "false");
+                value.put("state-description", cursor.getString(cursor.getColumnIndexOrThrow("state")));
+                value.put("bounds", "[0,0][1,1]");
+                output.put(value);
+            }
+            return new ProviderProjection(true, output);
+        } catch (IllegalArgumentException | SecurityException | JSONException error) {
+            return ProviderProjection.unhandled();
+        }
+    }
+
+    private static final class ProviderProjection {
+        final boolean handled;
+        final JSONArray values;
+
+        ProviderProjection(boolean handled, JSONArray values) {
+            this.handled = handled;
+            this.values = values;
+        }
+
+        static ProviderProjection unhandled() {
+            return new ProviderProjection(false, new JSONArray());
+        }
     }
 
     @SuppressWarnings("deprecation")

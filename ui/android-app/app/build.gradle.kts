@@ -381,6 +381,7 @@ android {
         buildConfigField("String", "AEROBAG_GIT_COMMIT", buildConfigStringLiteral(androidGitCommit))
         buildConfigField("boolean", "AEROBAG_BUILD_DIRTY", androidBuildDirty.toString())
         buildConfigField("boolean", "AEROBAG_E2E_ENABLED", androidE2eEnabled.toString())
+        manifestPlaceholders["e2eProjectionProviderEnabled"] = androidE2eEnabled.toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

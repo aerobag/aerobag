@@ -1950,7 +1950,26 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt", import.meta.url),
     "utf8",
   );
+  const projectionProvider = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionProvider.kt", import.meta.url),
+    "utf8",
+  );
+  const projectionView = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionView.kt", import.meta.url),
+    "utf8",
+  );
+  const manifest = readFileSync(
+    new URL("../../ui/android-app/app/src/main/AndroidManifest.xml", import.meta.url),
+    "utf8",
+  );
   assert.match(driver, /case "\/exact-projection"/);
+  assert.match(driver, /ProviderProjection providerProjection = providerProjection\(tag\)/);
+  assert.match(driver, /if \(providerProjection\.handled\) return providerProjection\.values/);
+  assert.ok(
+    driver.indexOf("ProviderProjection providerProjection = providerProjection(tag)") <
+      driver.indexOf("List<AccessibilityNodeInfo> roots = targetRoots(true)", driver.indexOf("private JSONArray renderExactProjection")),
+    "fixed projections must bypass accessibility before requesting any rendered roots",
+  );
   assert.match(driver, /findAccessibilityNodeInfosByViewId\(tag\)/);
   assert.match(driver, /exactNodePaths\.get\(tag\)/);
   assert.match(driver, /nodeAtPath\(cachedPath\)/);
@@ -1976,6 +1995,12 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(journeyDriver, /e2e_playback_widget_projection/);
   assert.match(mapExplorer, /R\.id\.e2e_map_follow_projection/);
   assert.doesNotMatch(mapExplorer, /\.testTag\(mapFollowProbeTag/);
+  assert.match(projectionView, /E2eProjectionRegistry\.publish\(resourceId, state, owner\)/);
+  assert.match(projectionView, /E2eProjectionRegistry\.remove\(resourceId, owner\)/);
+  assert.match(projectionProvider, /ConcurrentHashMap<String, Entry>/);
+  assert.match(projectionProvider, /viewId !in E2eProjectionRegistry\.KnownViewIds/);
+  assert.match(manifest, /android:enabled="\$\{e2eProjectionProviderEnabled\}"/);
+  assert.match(manifest, /android:readPermission="org\.aerobag\.app\.permission\.READ_E2E_PROJECTIONS"/);
   assert.match(charts, /R\.id\.e2e_plate_viewport_projection/);
   assert.doesNotMatch(charts, /\.testTag\(\s*"parity:plate-viewport:/);
   assert.match(mainActivity, /R\.id\.e2e_startup_state_projection/);
@@ -2809,7 +2834,8 @@ test("fixed E2E scalar projections stay above transient Compose overlays", () =>
   ), "utf8");
   assert.match(source, /\.requiredSize\(1\.dp\)/);
   assert.match(source, /\.zIndex\(Float\.MAX_VALUE\)/);
-  assert.match(source, /\.testTag\("org\.aerobag\.app:id\/\$resourceName"\)/);
+  assert.match(source, /val resourceId = "org\.aerobag\.app:id\/\$resourceName"/);
+  assert.match(source, /\.testTag\(resourceId\)/);
   assert.match(source, /testTagsAsResourceId = true/);
   assert.match(source, /stateDescription = state/);
 });

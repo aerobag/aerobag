@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
 
+    <permission
+        android:name="org.aerobag.app.permission.READ_E2E_PROJECTIONS"
+        android:protectionLevel="signature" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -45,6 +49,12 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+        <provider
+            android:name=".E2eProjectionProvider"
+            android:authorities="${applicationId}.e2e-projections"
+            android:enabled="${e2eProjectionProviderEnabled}"
+            android:exported="true"
+            android:readPermission="org.aerobag.app.permission.READ_E2E_PROJECTIONS" />
         <receiver
             android:name=".OfflinePackageSyncCancelReceiver"
             android:exported="false" />

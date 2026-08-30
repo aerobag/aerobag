@@ -10,10 +10,25 @@ import org.aerobag.app.domain.dragViewport
 import org.aerobag.app.domain.latLonToWorld
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChartSearchInspectionGateTest {
+    @Test
+    fun viewportProjectionPreservesSubWorldUnitPans() {
+        val first = buildViewportProjectionState(
+            MapViewportState(centerWorldX = 41.100, centerWorldY = 89.100, zoom = 11.392),
+            0.0,
+        )
+        val second = buildViewportProjectionState(
+            MapViewportState(centerWorldX = 41.350, centerWorldY = 89.350, zoom = 11.392),
+            0.0,
+        )
+
+        assertNotEquals(first, second)
+    }
+
     @Test
     fun newerSearchOrViewportInputRejectsStaleInspectionResult() {
         val gate = ChartSearchInspectionGate()
@@ -74,7 +89,7 @@ class ChartSearchInspectionGateTest {
     @Test
     fun indexedSelectionProjectionCarriesCategoryTargetAndCenterEvidence() {
         assertEquals(
-            "selected:KPLU:category:airport:text:KPLU · Elev 538 · 3nm Puyallup%2C WA:centered:KPLU:offset-px:3",
+            "selected:KPLU:category:airport:text:KPLU · Elev 538 · 3nm Puyallup%2C WA:centered:KPLU:offset-px:3:detail:none",
             buildMapSelectionProjectionState(
                 selectedLabel = "KPLU",
                 selectedCategoryId = "airport",
@@ -83,8 +98,12 @@ class ChartSearchInspectionGateTest {
             ),
         )
         assertEquals(
-            "selected:none:category:none:text::centered:none:offset-px:none",
+            "selected:none:category:none:text::centered:none:offset-px:none:detail:none",
             buildMapSelectionProjectionState(null, null, null, null),
+        )
+        assertTrue(
+            buildMapSelectionProjectionState(null, null, null, null, detailOpen = true)
+                .endsWith(":detail:open"),
         )
     }
 

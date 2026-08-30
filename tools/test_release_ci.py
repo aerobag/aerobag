@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import urllib.error
+from unittest import mock
 
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -44,6 +46,42 @@ def run(
 
 
 class ReleaseCiTests(unittest.TestCase):
+    def test_expired_installation_token_is_refreshed_through_helper(self) -> None:
+        def expired(_request: object, timeout: int) -> object:
+            self.assertEqual(timeout, 20)
+            raise urllib.error.HTTPError(
+                "https://api.github.test/runs",
+                401,
+                "expired",
+                hdrs=None,
+                fp=None,
+            )
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "GITHUB_TOKEN": "expired-token",
+                    "AEROBAG_GITHUB_TOKEN_HELPER": "/credentials/with-token",
+                },
+                clear=True,
+            ),
+            mock.patch.object(
+                release_ci,
+                "_github_json_via_token_helper",
+                return_value={"workflow_runs": []},
+            ) as refresh,
+        ):
+            runs = release_ci.github_workflow_runs(
+                "aerobag/aerobag",
+                "ci.yml",
+                COMMIT,
+                opener=expired,
+            )
+
+        self.assertEqual(runs, [])
+        refresh.assert_called_once()
+
     def test_candidate_requires_full_repeated_journey_run_for_exact_commit(self) -> None:
         candidate = run(workflow="e2e-ci.yml", branch="candidate-main", run_id=7)
         candidate["display_title"] = f"Candidate qualification {COMMIT}"

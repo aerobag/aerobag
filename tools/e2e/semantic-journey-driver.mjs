@@ -10,6 +10,7 @@ import {
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
   setAndroidSemanticProgress,
   queryAndroidExactProjection, queryAndroidStartupProjection,
+  semanticProjectionFields,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
   scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
 } from "./android-harness.mjs";
@@ -30,12 +31,12 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
 ]);
 
 export function androidMapSelectionEntryFromState(state, expected = "") {
-  const match = /^selected:([^:]+):category:([^:]+):text:([^:]*):/.exec(state);
-  const selected = match?.[1] ?? "none";
+  const fields = semanticProjectionFields(state);
+  const selected = fields.selected ?? "none";
   if (selected === "none" || (expected !== "" && selected !== expected)) return null;
   return {
     id: `parity:map-selection-selected:${selected}`,
-    text: decodeURIComponent(match[3]),
+    text: decodeURIComponent(fields.text ?? ""),
     enabled: true,
     pressed: null,
     state,
@@ -118,6 +119,8 @@ export class SemanticJourneyDriver {
   async hover(_elementId) { throw new Error(`${this.platform} driver does not implement hover`); }
   async copyText(_elementId) { throw new Error(`${this.platform} driver does not implement copyText`); }
   async readElement(_elementId) { throw new Error(`${this.platform} driver does not implement readElement`); }
+  async readTextElement(elementId) { return this.readElement(elementId); }
+  async readModal(modalId) { return this.readElement(modalId); }
   async revealElement(_elementId) { throw new Error(`${this.platform} driver does not implement revealElement`); }
   async readProjection(_probe) { throw new Error(`${this.platform} driver does not implement readProjection`); }
   async findProjectionMatching(_probe, _needle) { throw new Error(`${this.platform} driver does not implement findProjectionMatching`); }
@@ -194,18 +197,20 @@ export async function editSemanticText(
   } = {},
 ) {
   const expected = String(value);
-  let current = await driver.readElement(controlId);
+  const discoverTextElement = driver.readElement.bind(driver);
+  const readTextElement = driver.readTextElement?.bind(driver) ?? discoverTextElement;
+  let current = await discoverTextElement(controlId);
   if (current && semanticTextValue(current) === expected) return current;
   if (!current?.focused) {
     current = await transition(`${description} focus`, {
       readinessSamples: 1,
       ready: async () => {
-        const element = await driver.readElement(controlId);
+        const element = await discoverTextElement(controlId);
         return element?.enabled && element.actionable !== false ? element : null;
       },
       act: (readyElement) => driver.focusText(controlId, readyElement),
       complete: async () => {
-        const element = await driver.readElement(controlId);
+        const element = await readTextElement(controlId);
         return element?.focused ? element : null;
       },
     });
@@ -213,12 +218,12 @@ export async function editSemanticText(
   return transition(description, {
     readinessSamples: 1,
     ready: async () => {
-      const element = await driver.readElement(controlId);
+      const element = await readTextElement(controlId);
       return element?.focused && element.enabled && element.actionable !== false ? element : null;
     },
     act: (readyElement) => driver.enterText(controlId, expected, options, readyElement),
     complete: async () => {
-      const element = await driver.readElement(controlId);
+      const element = await readTextElement(controlId);
       return element && semanticTextValue(element) === expected ? element : null;
     },
   });
@@ -720,10 +725,6 @@ export function androidActionCandidates(actionId) {
   ];
 }
 
-export function androidActionUsesSubmit(actionId) {
-  return androidSemanticTag(actionId).startsWith("parity:chart-search-suggestion:");
-}
-
 export function androidElementMayRequireVerticalScroll(elementId) {
   const tag = androidSemanticTag(elementId);
   return ANDROID_CLOUD_ACTION_IDS.has(elementId) ||
@@ -929,6 +930,25 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     this.resetApplicationDataCallback = resetApplicationData;
     this.reloadAppCallback = reloadApp;
     this.pressBackCallback = pressBack ?? (() => pressKey(this.serial, "KEYCODE_BACK"));
+    this.seededScalarProjections = new Set();
+  }
+
+  readScalarProjection(prefix) {
+    const semanticTag = ANDROID_EXACT_SCALAR_PROJECTIONS.get(prefix);
+    const boundedOnly = this.seededScalarProjections.has(semanticTag);
+    let queried = queryAndroidExactProjection(
+      this.serial,
+      semanticTag,
+      { boundedOnly },
+    );
+    if (boundedOnly && queried.length === 0) {
+      // Compose popups are separate accessibility windows. Re-rendezvous once
+      // when the fixed projection moves between the page and popup window.
+      this.seededScalarProjections.delete(semanticTag);
+      queried = queryAndroidExactProjection(this.serial, semanticTag);
+    }
+    if (queried.length > 0) this.seededScalarProjections.add(semanticTag);
+    return queried;
   }
 
   async waitForObservation(intervalMs) {
@@ -1037,11 +1057,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async performAction(actionId, readyElement = null) {
-    if (androidActionUsesSubmit(actionId)) {
-      if (!readyElement) throw new Error(`Android submit action ${actionId} has no readiness evidence`);
-      pressKey(this.serial, "KEYCODE_ENTER");
-      return;
-    }
     const readyTag = readyElement?.test_id ?? readyElement?.["resource-id"];
     if (!readyTag) {
       throw new Error(`Android action ${actionId} has no readiness evidence`);
@@ -1152,10 +1167,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     pressKey(this.serial, "KEYCODE_ENTER");
   }
 
-  async drag(surfaceId, { x, y }) {
-    const node = findTagOrPrefix(dumpAndroid(this.serial), `parity:${surfaceId}`);
-    if (!node) throw new Error(`Android surface ${surfaceId} is not visible`);
-    const bounds = rectOfBounds(node.bounds);
+  async drag(surfaceId, { x, y }, readyElement) {
+    const semanticTag = `parity:${surfaceId}`;
+    if (!readinessEvidenceMatchesTag(semanticTag, readyElement) || !readyElement.bounds) {
+      throw new Error(`Android drag surface ${surfaceId} has no matching readiness evidence`);
+    }
+    const bounds = rectOfBounds(readyElement.bounds);
     // The chart's instrument grid occupies its center. Start shared map drags
     // on exposed chart pixels so the gesture reaches the map input layer.
     const startX = bounds.left + bounds.width * 0.75;
@@ -1192,19 +1209,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const prefix = androidSemanticTag(probe);
     if (prefix.startsWith("parity:map-selection-selected:")) {
       const expected = prefix.slice("parity:map-selection-selected:".length);
-      const queried = queryAndroidExactProjection(
-        this.serial,
-        ANDROID_EXACT_SCALAR_PROJECTIONS.get("parity:map-selection-state:"),
-      );
+      const queried = this.readScalarProjection("parity:map-selection-state:");
       const state = queried[0]?.["state-description"] ?? "";
       const entry = androidMapSelectionEntryFromState(state, expected);
       return entry ? [entry] : [];
     }
     if (ANDROID_EXACT_SCALAR_PROJECTIONS.has(prefix)) {
-      const queried = queryAndroidExactProjection(
-        this.serial,
-        ANDROID_EXACT_SCALAR_PROJECTIONS.get(prefix),
-      );
+      const queried = this.readScalarProjection(prefix);
       return queried.map((node) => ({
         id: `${prefix}${node["state-description"] ?? ""}`,
         text: node.text || "",
@@ -1368,6 +1379,24 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     );
     if (!queried) return null;
     return androidProjectedElement(queried, elementId);
+  }
+
+  async readTextElement(elementId) {
+    const semanticTag = androidElementSemanticTag(elementId);
+    const queried = queryAndroidExactProjection(
+      this.serial,
+      semanticTag,
+      { includeDescendantText: true, boundedOnly: true },
+    )[0];
+    return queried ? androidProjectedElement(queried, elementId) : null;
+  }
+
+  async readModal(modalId) {
+    const queried = this.readScalarProjection("parity:map-selection-state:");
+    const state = queried[0]?.["state-description"] ?? "";
+    return semanticProjectionFields(state).detail === "open"
+      ? { test_id: modalId, state }
+      : null;
   }
 
   async revealElement(elementId) {

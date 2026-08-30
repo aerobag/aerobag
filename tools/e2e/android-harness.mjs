@@ -279,9 +279,18 @@ export function queryAndroidSemanticNodes(
   throw new Error(`persistent Android semantic query failed for ${tag}: ${detail}`);
 }
 
-export function queryAndroidExactProjection(serial, tag) {
+export function queryAndroidExactProjection(
+  serial,
+  tag,
+  { includeDescendantText = false, indexedOnly = false, boundedOnly = false } = {},
+) {
   const state = requiredSemanticDriver(serial);
-  const query = new URLSearchParams({ tag });
+  const query = new URLSearchParams({
+    tag,
+    descendant_text: String(includeDescendantText),
+    indexed_only: String(indexedOnly),
+    bounded_only: String(boundedOnly),
+  });
   const response = semanticDriverObservationRequest(state.port, `/exact-projection?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
@@ -634,17 +643,29 @@ export function destinationCenterEvidence(xml, destination, maxOffsetPx = 8) {
   };
 }
 
+export function semanticProjectionFields(state) {
+  const components = String(state ?? "").split(":");
+  const fields = {};
+  for (let index = 0; index + 1 < components.length; index += 2) {
+    fields[components[index]] = components[index + 1];
+  }
+  return fields;
+}
+
 export function destinationCenterProjectionEvidence(entries, destination, maxOffsetPx = 8) {
   const state = entries?.[0]?.state ?? "";
-  const match = /^selected:([^:]+):category:([^:]+):text:([^:]*):centered:([^:]+):offset-px:(\d+)$/.exec(state);
-  const offsetPx = match ? Number(match[5]) : Number.NaN;
+  const fields = semanticProjectionFields(state);
+  const offsetToken = fields["offset-px"] ?? "";
+  const offsetPx = /^\d+$/.test(offsetToken) ? Number(offsetToken) : Number.NaN;
   return {
-    matched: match !== null && match[1] === destination && match[2] === "airport" &&
-      match[4] === destination && Number.isFinite(offsetPx) && offsetPx <= maxOffsetPx,
-    selected: match?.[1] ?? null,
-    category: match?.[2] ?? null,
-    centered: match?.[4] ?? null,
-    probeTag: match ? `parity:map-selection-center:${match[4]}:offset-px:${match[5]}` : null,
+    matched: fields.selected === destination && fields.category === "airport" &&
+      fields.centered === destination && Number.isFinite(offsetPx) && offsetPx <= maxOffsetPx,
+    selected: fields.selected ?? null,
+    category: fields.category ?? null,
+    centered: fields.centered ?? null,
+    probeTag: fields.centered && fields["offset-px"]
+      ? `parity:map-selection-center:${fields.centered}:offset-px:${fields["offset-px"]}`
+      : null,
     offsetPx: Number.isFinite(offsetPx) ? offsetPx : null,
   };
 }

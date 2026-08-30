@@ -2730,7 +2730,9 @@ internal fun AerobagApp(
     val situationRingCandidates = retainedCoreSession.situationRingCandidates
     val uiSession = retainedCoreSession.uiSession
     val uiSessionWorkRunner = retainedCoreSession.uiSessionWorkRunner
-    uiSessionWorkRunner.setPerfMetricsEnabled(perfScenario != null)
+    uiSessionWorkRunner.setPerfMetricsEnabled(
+        perfScenario != null || BuildConfig.AEROBAG_E2E_ENABLED,
+    )
     LaunchedEffect(uiSession, startupPerfTrace) {
         if (startupPerfTrace != null) {
             withFrameNanos { }

@@ -550,10 +550,14 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
 }
 
 async function dismissMapSelection(serial, result, driver = nativeSemanticDriver(serial)) {
+  const selectionState = async () =>
+    (await driver.readProjection("parity:map-selection-state:"))[0]?.state ?? "";
   await nativeTransition(result, "map inspector dismissed", {
-    ready: () => driver.readElement("map-selection-tray"),
-    act: async (_readyTray) => pressKey(serial, "KEYCODE_BACK"),
-    complete: async () => (await driver.readElement("map-selection-tray")) === null,
+    ready: async () => (await selectionState()).startsWith("selected:none:")
+      ? null
+      : { test_id: "parity:map-selection-state" },
+    act: async (_readySelection) => pressKey(serial, "KEYCODE_BACK"),
+    complete: async () => (await selectionState()).startsWith("selected:none:"),
   });
 }
 
@@ -974,20 +978,13 @@ async function dragMapWhileFollowing(serial, result) {
   let probe = null;
   try {
     probe = await nativeTransition(result, "map drag keeps CTR engaged with an offset ownship", {
-      ready: async () => {
-        const surface = queryAndroidSemanticNodes(
-          serial,
-          "parity:map-surface",
-          { first: true },
-        )[0] ?? null;
-        const followProbe = queryMapFollowProbe(serial);
-        return surface && followProbe ? { surface, followProbe } : null;
-      },
-      act: async ({ surface }) => {
-        const rect = rectOfBounds(surface.bounds);
-        const startX = rect.left + rect.width * 0.50;
-        const startY = rect.top + rect.height * 0.54;
-        const endX = rect.left + rect.width * 0.72;
+      ready: async () => queryMapFollowProbe(serial),
+      act: async (followProbe) => {
+        // The exact projection already identifies a safe point in the map viewport.
+        // Avoid traversing the map's high-fanout accessibility subtree for bounds.
+        const startX = followProbe.centerX;
+        const startY = followProbe.centerY;
+        const endX = startX + Math.max(120, startX * 0.44);
         await swipe(serial, startX, startY, endX, startY, 650);
       },
       complete: async () => {

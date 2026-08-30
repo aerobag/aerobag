@@ -173,7 +173,7 @@ if [[ -n "$APK_PATH" ]]; then
   echo "[1/2] install prebuilt APK: $APK_PATH"
   adb -s "$ANDROID_SERIAL" install -r "$APK_PATH" >/dev/null
 elif [[ "$SKIP_INSTALL" -eq 0 ]]; then
-  echo "[1/2] installDebug"
+  echo "[1/2] installRelease"
   (
     cd "$ROOT"
     env \
@@ -182,6 +182,7 @@ elif [[ "$SKIP_INSTALL" -eq 0 ]]; then
       ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
       AEROBAG_UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT" \
       AEROBAG_E2E_ENABLED=1 \
+      ANDROID_BUILD_RUST_RELEASE=1 \
       ANDROID_SERIAL="$ANDROID_SERIAL" \
       ANDROID_DEV_SERVER_BASE_URL="$ANDROID_DEV_SERVER_BASE_URL" \
       ANDROID_PACKAGE_SOURCE_BASE_URL="$ANDROID_PACKAGE_SOURCE_BASE_URL" \
@@ -192,10 +193,10 @@ elif [[ "$SKIP_INSTALL" -eq 0 ]]; then
       AEROBAG_ANDROID_KEY_ALIAS="$AEROBAG_ANDROID_KEY_ALIAS" \
       AEROBAG_ANDROID_KEY_PASSWORD="$AEROBAG_ANDROID_KEY_PASSWORD" \
       "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" --no-daemon -p "$APP_DIR" \
-        installDebug :app:assembleDebugAndroidTest
+        installRelease :app:assembleReleaseAndroidTest
   )
 else
-  echo "[1/2] skip installDebug"
+  echo "[1/2] skip installRelease"
 fi
 
 if [[ -z "$DRIVER_APK_PATH" && -n "$APK_PATH" ]]; then
@@ -205,7 +206,7 @@ if [[ -z "$DRIVER_APK_PATH" && -n "$APK_PATH" ]]; then
   fi
 fi
 if [[ -z "$DRIVER_APK_PATH" && "$SKIP_INSTALL" -eq 0 ]]; then
-  DRIVER_APK_PATH="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+  DRIVER_APK_PATH="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/androidTest/release/app-release-androidTest.apk"
 fi
 if [[ -n "$DRIVER_APK_PATH" ]]; then
   if [[ ! -f "$DRIVER_APK_PATH" ]]; then

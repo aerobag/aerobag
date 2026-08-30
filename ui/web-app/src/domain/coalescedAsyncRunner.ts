@@ -21,6 +21,14 @@ export class CoalescedAsyncRunner {
     return run;
   }
 
+  async whenIdle(): Promise<void> {
+    while (this.running) {
+      const running = this.running;
+      await running;
+      if (this.running === running) await Promise.resolve();
+    }
+  }
+
   private async drainRequests(): Promise<void> {
     while (this.requested) {
       this.requested = false;

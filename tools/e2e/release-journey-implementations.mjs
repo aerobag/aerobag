@@ -11,6 +11,10 @@ function idOf(entries) {
   return entries?.[0]?.id ?? entries?.[0] ?? null;
 }
 
+export function viewportGeometryId(entries) {
+  return idOf(entries)?.replace(/:up:-?[0-9.]+$/, "") ?? null;
+}
+
 export function offlineSyncButtonIsIdle(button) {
   return Boolean(button?.enabled) &&
     !/\b(?:APPLYING|SYNCING|CANCELING)\b/i.test(button.text ?? "");
@@ -391,8 +395,8 @@ async function chartBasicUse(runtime) {
   let dragProbe = null;
   const pannedViewport = await runtime.transition("chart pan", {
     ready: () => runtime.driver.readElement("map-surface"),
-    act: async () => {
-      dragProbe = await runtime.driver.drag("map-surface", { x: -360, y: 240 });
+    act: async (readyElement) => {
+      dragProbe = await runtime.driver.drag("map-surface", { x: -360, y: 240 }, readyElement);
     },
     complete: async () => {
       const current = idOf(await runtime.driver.readProjection("parity:viewport:"));
@@ -1191,7 +1195,7 @@ async function plateOperate(runtime) {
   const initialViewport = await runtime.stable("settled initial plate viewport", () => plateViewport(runtime));
   const pannedViewport = await runtime.transition("pan georeferenced plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
-    act: () => runtime.driver.drag("plate-surface", { x: -120, y: -100 }),
+    act: (readyElement) => runtime.driver.drag("plate-surface", { x: -120, y: -100 }, readyElement),
     complete: async () => {
       const value = await plateViewport(runtime);
       return value && value !== initialViewport ? value : null;
@@ -1233,7 +1237,7 @@ async function plateOperate(runtime) {
   );
   const lastPageViewport = await runtime.transition("scroll multi-page plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
-    act: () => runtime.driver.drag("plate-surface", { x: 0, y: -600 }),
+    act: (readyElement) => runtime.driver.drag("plate-surface", { x: 0, y: -600 }, readyElement),
     complete: async () => {
       const value = await plateViewport(runtime);
       return value && value !== firstPageViewport ? value : null;
@@ -1365,7 +1369,7 @@ async function plateAdvisoriesAndReferences(runtime) {
   });
   const scrolledLegend = await runtime.transition("scroll legend composite", {
     ready: () => runtime.driver.readElement("plate-surface"),
-    act: () => runtime.driver.drag("plate-surface", { x: 0, y: -600 }),
+    act: (readyElement) => runtime.driver.drag("plate-surface", { x: 0, y: -600 }, readyElement),
     complete: async () => {
       const value = await plateViewport(runtime);
       return value && value !== zoomedLegendViewport ? value : null;
@@ -1542,7 +1546,9 @@ async function androidPackageMaintenance(runtime) {
   );
   const dimmed = await runtime.transition("change display dim timeout", {
     ready: () => runtime.driver.readElement("parity:settings-slider:display_dim_timeout:2m"),
-    act: () => runtime.driver.drag("settings-slider:display_dim_timeout:2m", { x: -1_000, y: 0 }),
+    act: (readyElement) => runtime.driver.drag(
+      "settings-slider:display_dim_timeout:2m", { x: -1_000, y: 0 }, readyElement,
+    ),
     complete: () => runtime.driver.readElement("parity:settings-slider:display_dim_timeout:10s"),
   });
   runtime.check("settings.display-dim-timeout", Boolean(dimmed), dimmed?.test_id);
@@ -1552,7 +1558,9 @@ async function androidPackageMaintenance(runtime) {
   );
   const sleeps = await runtime.transition("change inactivity sleep timeout", {
     ready: () => runtime.driver.readElement("parity:settings-slider:inactivity_sleep_timeout:1h"),
-    act: () => runtime.driver.drag("settings-slider:inactivity_sleep_timeout:1h", { x: -1_000, y: 0 }),
+    act: (readyElement) => runtime.driver.drag(
+      "settings-slider:inactivity_sleep_timeout:1h", { x: -1_000, y: 0 }, readyElement,
+    ),
     complete: () => runtime.driver.readElement("parity:settings-slider:inactivity_sleep_timeout:30m"),
   });
   runtime.check("settings.inactivity-sleep-timeout", Boolean(sleeps), sleeps?.test_id);
@@ -2073,9 +2081,9 @@ async function openAirportInfo(runtime, airportId) {
 
 async function closeMapDetail(runtime, modalId) {
   await runtime.transition(`dismiss ${modalId}`, {
-    ready: () => runtime.driver.readElement(modalId),
+    ready: () => runtime.driver.readModal(modalId),
     act: () => runtime.driver.back(),
-    complete: async () => (await runtime.driver.readElement(modalId)) ? null : true,
+    complete: async () => (await runtime.driver.readModal(modalId)) ? null : true,
   });
   if (await runtime.driver.readElement("map-selection-tray")) {
     await runtime.transition("dismiss map detail inspector", {
@@ -2107,7 +2115,9 @@ async function airportInfo(runtime) {
     projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]));
   const scrolled = await runtime.transition("scroll airport info", {
     ready: () => runtime.driver.readElement(`airport-info-modal:${complexAirport}`),
-    act: () => runtime.driver.drag(`airport-info-modal:${complexAirport}`, { x: 0, y: -500 }),
+    act: (readyElement) => runtime.driver.drag(
+      `airport-info-modal:${complexAirport}`, { x: 0, y: -500 }, readyElement,
+    ),
     complete: async () => {
       const id = projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]);
       return id && id !== initialScroll ? id : null;
@@ -2200,12 +2210,14 @@ async function inspectorDetails(runtime) {
   }
   await disableCtrBeforeFreePan(runtime, "disable CTR before SPOT pan");
   const viewportBeforeSpotPan = await runtime.stable("settled viewport before SPOT pan", async () =>
-    idOf(await runtime.driver.readProjection("parity:viewport:")));
+    viewportGeometryId(await runtime.driver.readProjection("parity:viewport:")));
   await runtime.transition("pan before SPOT inspection", {
     ready: () => runtime.driver.readElement("map-surface"),
-    act: () => runtime.driver.drag("map-surface", { x: 360, y: 260 }),
+    act: (readyElement) => runtime.driver.drag(
+      "map-surface", { x: 360, y: 260 }, readyElement,
+    ),
     complete: async () => {
-      const viewport = idOf(await runtime.driver.readProjection("parity:viewport:"));
+      const viewport = viewportGeometryId(await runtime.driver.readProjection("parity:viewport:"));
       return viewport && viewport !== viewportBeforeSpotPan ? viewport : null;
     },
   });

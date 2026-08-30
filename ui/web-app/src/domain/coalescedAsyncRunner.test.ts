@@ -40,4 +40,28 @@ describe("CoalescedAsyncRunner", () => {
 
     expect(work).toHaveBeenCalledTimes(2);
   });
+
+  it("reports idle only after automatically queued follow-up work drains", async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let runner!: CoalescedAsyncRunner;
+    const work = vi.fn()
+      .mockImplementationOnce(async () => {
+        await firstBlocked;
+        void runner.request();
+      })
+      .mockResolvedValue(undefined);
+    runner = new CoalescedAsyncRunner(work);
+
+    void runner.request();
+    let idle = false;
+    const settled = runner.whenIdle().then(() => { idle = true; });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+
+    releaseFirst();
+    await settled;
+    expect(work).toHaveBeenCalledTimes(2);
+    expect(idle).toBe(true);
+  });
 });

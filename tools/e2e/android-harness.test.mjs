@@ -301,7 +301,7 @@ test("destination centering rejects stale trays and geographically displaced res
     "KPLU",
   ).matched, false);
   assert.deepEqual(destinationCenterProjectionEvidence(
-    projection("selected:KPLU:category:airport:text:KPLU:centered:KPLU:offset-px:3"),
+    projection("selected:KPLU:category:airport:text:KPLU:centered:KPLU:offset-px:3:detail:none"),
     "KPLU",
   ), {
     matched: true,
@@ -311,6 +311,14 @@ test("destination centering rejects stale trays and geographically displaced res
     probeTag: "parity:map-selection-center:KPLU:offset-px:3",
     offsetPx: 3,
   });
+  assert.equal(destinationCenterProjectionEvidence(
+    projection("selected:KPLU:category:airport:text:KPLU:centered:KPLU:offset-px:3:detail:none:future:value"),
+    "KPLU",
+  ).matched, true);
+  assert.equal(destinationCenterProjectionEvidence(
+    projection("selected:KPLU:category:airport:text:KPLU:centered:KPLU:offset-px::detail:none"),
+    "KPLU",
+  ).matched, false);
 });
 
 test("maps core layer IDs to Android's exported parity tags", () => {

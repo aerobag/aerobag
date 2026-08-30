@@ -1010,6 +1010,10 @@ def main() -> int:
         try:
             authentication_command = github_authentication_command(args)
             if authentication_command is not None:
+                os.environ.setdefault(
+                    "AEROBAG_GITHUB_TOKEN_HELPER",
+                    authentication_command[0],
+                )
                 os.execv(authentication_command[0], authentication_command)
             if getattr(args, "prequalify", False):
                 result = prequalify(DEFAULT_CONFIG)

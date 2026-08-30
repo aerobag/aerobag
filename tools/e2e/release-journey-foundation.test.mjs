@@ -43,7 +43,7 @@ import {
 } from "./serve-release-journey-fixture.mjs";
 import {
   androidActionCandidates, androidElementEnabled, androidMapSelectionEntryFromState,
-  androidActionUsesSubmit, AndroidSemanticJourneyDriver,
+  AndroidSemanticJourneyDriver,
   androidElementMayRequireHorizontalScroll, androidElementMayRequireVerticalScroll,
   androidElementSemanticTag,
   androidDataStatusRowsFromStateTag, androidPageTag, androidProjectionMayRequireVerticalScan,
@@ -699,6 +699,8 @@ test("Android behavior reset preserves bootstrap disclaimer agreement", () => {
 test("cloud peer follows the deterministic journey structure", () => {
   const source = readFileSync(new URL("./cloud-journey-peer.mjs", import.meta.url), "utf8");
   assert.deepEqual(auditJourneyStructure(source, "cloud-journey-peer.mjs"), []);
+  assert.match(source, /cloud\.awaitProviderIdle\(\)/);
+  assert.doesNotMatch(source, /pumpCloudProvider/);
 });
 
 test("Android pairing keeps its provider descriptor while the browser peer routes loopback", () => {
@@ -741,7 +743,17 @@ test("native airport search transitions use indexed semantics instead of full hi
   }
 });
 
-test("Android map-selection state uses one fixed indexed projection", () => {
+test("native map selection dismissal observes the fixed projection", () => {
+  const native = readFileSync("tools/e2e/run-android-e2e-suite.mjs", "utf8");
+  const body = native.slice(
+    native.indexOf("async function dismissMapSelection"),
+    native.indexOf("async function inspectRawTerrainSpot"),
+  );
+  assert.match(body, /readProjection\("parity:map-selection-state:"\)/);
+  assert.doesNotMatch(body, /readElement\("map-selection-tray"\)|dumpAndroid\(/);
+});
+
+test("Android map-selection state uses one fixed bounded projection", () => {
   const map = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
     import.meta.url,
@@ -752,10 +764,46 @@ test("Android map-selection state uses one fixed indexed projection", () => {
   ), "utf8");
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   assert.match(map, /viewId = R\.id\.e2e_map_selection_projection/);
+  assert.equal(
+    [...map.matchAll(/viewId = R\.id\.e2e_map_selection_projection/g)].length,
+    2,
+    "the map and its separate popup accessibility window must expose the same projection",
+  );
   assert.match(ids, /name="e2e_map_selection_projection"/);
   assert.match(
     driver,
     /\["parity:map-selection-state:", "org\.aerobag\.app:id\/e2e_map_selection_projection"\]/,
+  );
+  assert.match(map, /detail:\$\{if \(detailOpen\) "open" else "none"\}/);
+  assert.match(
+    driver,
+    /async readModal\(modalId\)[\s\S]*readScalarProjection\("parity:map-selection-state:"\)/,
+  );
+});
+
+test("inspector SPOT gestures ignore moving-ownship map rotation", () => {
+  const source = readFileSync(new URL("./release-journey-implementations.mjs", import.meta.url), "utf8");
+  const journey = source.slice(
+    source.indexOf("async function inspectorDetails"),
+    source.indexOf("async function flightPlanEditing"),
+  );
+  const spotPhase = journey.slice(
+    journey.indexOf('await runtime.openPage("map");', journey.indexOf("inspector.plates")),
+    journey.indexOf('runtime.check("inspector.spot-fallback"'),
+  );
+  assert.match(spotPhase, /viewportGeometryId\(await runtime\.driver\.readProjection\("parity:viewport:"\)\)/);
+  assert.doesNotMatch(spotPhase, /selectStationaryPlanPreview/);
+});
+
+test("viewport geometry identity excludes orientation but preserves pan changes", async () => {
+  const { viewportGeometryId } = await import("./release-journey-implementations.mjs");
+  assert.equal(
+    viewportGeometryId([{ id: "parity:viewport:center-x-milli:41100:center-y-milli:89100:zoom:11392:up:27" }]),
+    "parity:viewport:center-x-milli:41100:center-y-milli:89100:zoom:11392",
+  );
+  assert.notEqual(
+    viewportGeometryId([{ id: "parity:viewport:center-x-milli:41100:center-y-milli:89100:zoom:11392:up:27" }]),
+    viewportGeometryId([{ id: "parity:viewport:center-x-milli:41350:center-y-milli:89100:zoom:11392:up:27" }]),
   );
 });
 
@@ -1276,6 +1324,22 @@ test("CDP navigation errors fail immediately instead of becoming UI readiness ti
   await assert.rejects(page.waitForLoad(), /without a successful navigation/);
 });
 
+test("CDP semantic activation can carry browser user-gesture authority", async () => {
+  const requests = [];
+  const client = {
+    onEvent() {},
+    send: async (method, args) => {
+      requests.push([method, args]);
+      return { result: { value: true } };
+    },
+  };
+  const page = new CdpPage(client, "session-1", "page-1");
+
+  assert.equal(await page.evaluate("true", { userGesture: true }), true);
+  assert.equal(requests[0][0], "Runtime.evaluate");
+  assert.equal(requests[0][1].userGesture, true);
+});
+
 test("web reload replaces its page target without clearing persisted state", async () => {
   const calls = [];
   const oldPage = {};
@@ -1309,8 +1373,8 @@ test("web reload replaces its page target without clearing persisted state", asy
 test("web controls reacquire exposed semantic targets and activate atomically without a coordinate round trip", async () => {
   const evaluations = [];
   const page = {
-    evaluate: async (expression) => {
-      evaluations.push(expression);
+    evaluate: async (expression, options) => {
+      evaluations.push([expression, options]);
       return {
         status: "activated",
         probe: { click: 1, matched: 1, actionable_clicks: 1 },
@@ -1326,12 +1390,13 @@ test("web controls reacquire exposed semantic targets and activate atomically wi
     action_point: { x: 50, y: 25 },
   }), true);
   assert.equal(evaluations.length, 1);
-  assert.match(evaluations[0], /elementFromPoint/);
-  assert.match(evaluations[0], /element\.dataset\.testid !== expected\.test_id/);
-  assert.doesNotMatch(evaluations[0], /expected\.bounds/);
-  assert.doesNotMatch(evaluations[0], /expected\.action_point/);
-  assert.match(evaluations[0], /fractions = \[0\.5, 0\.1, 0\.9, 0\.3, 0\.7\]/);
-  assert.match(evaluations[0], /element\.click\(\)/);
+  assert.match(evaluations[0][0], /elementFromPoint/);
+  assert.match(evaluations[0][0], /element\.dataset\.testid !== expected\.test_id/);
+  assert.doesNotMatch(evaluations[0][0], /expected\.bounds/);
+  assert.doesNotMatch(evaluations[0][0], /expected\.action_point/);
+  assert.match(evaluations[0][0], /fractions = \[0\.5, 0\.1, 0\.9, 0\.3, 0\.7\]/);
+  assert.match(evaluations[0][0], /element\.click\(\)/);
+  assert.deepEqual(evaluations[0][1], { userGesture: true });
 });
 
 test("web text actions retain exact readiness evidence", () => {
@@ -1787,6 +1852,10 @@ test("Android E2E can map an immutable APK port to an isolated host fixture", ()
     source,
     /"tcp:\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT\}" "tcp:\$\{PACKAGE_SOURCE_PORT\}"/,
   );
+  assert.match(source, /installRelease :app:assembleReleaseAndroidTest/);
+  assert.match(source, /ANDROID_BUILD_RUST_RELEASE=1/);
+  assert.match(source, /outputs\/apk\/androidTest\/release\/app-release-androidTest\.apk/);
+  assert.doesNotMatch(source, /assembleDebugAndroidTest|app-debug-androidTest\.apk/);
   assert.match(
     emulatorSource,
     /ANDROID_PACKAGE_SOURCE_DEVICE_PORT="\$\{ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-\$PACKAGE_SOURCE_PORT\}"/,
@@ -1882,7 +1951,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(driver, /exactNodePaths\.get\(tag\)/);
   assert.match(driver, /nodeAtPath\(cachedPath\)/);
   assert.match(driver, /tag\.equals\(cached\.getViewIdResourceName\(\)\)/);
-  assert.match(driver, /appendExactProjectionAtPoint\(tag, cachedBounds, output\)/);
+  assert.match(
+    driver,
+    /appendExactProjectionAtPoint\([\s\S]*tag,[\s\S]*cachedBounds,[\s\S]*output,[\s\S]*includeDescendantText/,
+  );
   assert.match(driver, /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/);
   assert.match(driver, /exactNodePaths\.put\(tag, semanticPath\)/);
   assert.match(playback, /\.testTag\("parity:playback-widget"\)/);
@@ -2161,6 +2233,33 @@ test("semantic text editing acts on the exact readiness evidence", async () => {
   assert.equal(actionEvidence.test_id, readyElement.test_id);
   assert.equal(actionEvidence.focused, true);
   assert.equal(result.value, "KSEA KPAE");
+});
+
+test("semantic text editing discovers once before bounded completion reads", () => {
+  const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const method = source.slice(
+    source.indexOf("export async function editSemanticText"),
+    source.indexOf("export async function inspectSemanticMapAt"),
+  );
+  assert.match(method, /let current = await discoverTextElement\(controlId\)/);
+  assert.match(method, /complete: async \(\) => \{[\s\S]*readTextElement\(controlId\)/);
+});
+
+test("Android text completion uses exact indexed state instead of a reachable tree walk", () => {
+  const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const method = source.slice(
+    source.lastIndexOf("  async readTextElement(elementId)"),
+    source.lastIndexOf("  async readModal(modalId)"),
+  );
+  assert.match(method, /queryAndroidExactProjection/);
+  assert.match(method, /boundedOnly: true/);
+  assert.doesNotMatch(method, /queryFirstAndroidSemanticNode|dumpAndroid/);
+  const service = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  assert.match(service, /value\.put\("focused", Boolean\.toString\(node\.isFocused\(\)\)\)/);
+  assert.match(service, /value\.put\("semantic-path", semanticPath\)/);
 });
 
 test("journey runtime exposes typed phases instead of a generic step callback", async () => {
@@ -2560,6 +2659,81 @@ test("Android map-selection projections preserve dynamic visible inspector text"
   );
 });
 
+test("Android observes a named map selection through its bounded scalar projection", () => {
+  const source = readFileSync(
+    new URL("./semantic-journey-driver.mjs", import.meta.url),
+    "utf8",
+  );
+  const selectionBranch = source.slice(
+    source.indexOf('if (prefix.startsWith("parity:map-selection-selected:"))'),
+    source.indexOf('if (ANDROID_EXACT_SCALAR_PROJECTIONS.has(prefix))'),
+  );
+  assert.match(selectionBranch, /this\.readScalarProjection\("parity:map-selection-state:"\)/);
+  assert.doesNotMatch(selectionBranch, /queryAndroidExactProjection\(this\.serial, prefix/);
+});
+
+test("Android modal presence and absence use only the fixed scalar projection", () => {
+  const source = readFileSync(
+    new URL("./semantic-journey-driver.mjs", import.meta.url),
+    "utf8",
+  );
+  const method = source.slice(
+    source.lastIndexOf("  async readModal(modalId)"),
+    source.lastIndexOf("  async revealElement(elementId)"),
+  );
+  assert.match(method, /this\.readScalarProjection\("parity:map-selection-state:"\)/);
+  assert.doesNotMatch(method, /queryFirstAndroidSemanticNode|dumpAndroid/);
+});
+
+test("fixed E2E scalar projections stay above transient Compose overlays", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionView.kt",
+    import.meta.url,
+  ), "utf8");
+  assert.match(source, /\.requiredSize\(1\.dp\)/);
+  assert.match(source, /\.zIndex\(Float\.MAX_VALUE\)/);
+  assert.match(source, /\.testTag\("org\.aerobag\.app:id\/\$resourceName"\)/);
+  assert.match(source, /testTagsAsResourceId = true/);
+  assert.match(source, /stateDescription = state/);
+});
+
+test("map scalar projections occupy distinct accessibility bounds", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  const mapBody = source.slice(
+    source.indexOf("viewId = R.id.e2e_viewport_projection"),
+    source.indexOf("MapPlaybackWidgetOverlay("),
+  );
+  const positions = new Map();
+  for (const projection of [
+    "viewport", "live_overlay", "nexrad_state", "map_selection",
+    "ownship_state", "map_follow", "playback_widget",
+  ]) {
+    const body = mapBody.slice(mapBody.indexOf(`viewId = R.id.e2e_${projection}_projection`));
+    const nextProjection = body.indexOf("viewId = R.id.e2e_", 1);
+    const call = nextProjection < 0 ? body : body.slice(0, nextProjection);
+    const offset = /\.offset\(x = (\d+)\.dp\)/.exec(call)?.[1];
+    assert.ok(offset, `${projection} must have an explicit accessibility slot`);
+    assert.equal(positions.has(offset), false, `${projection} overlaps ${positions.get(offset)} at ${offset}.dp`);
+    positions.set(offset, projection);
+  }
+});
+
+test("Android scalar projections traverse once and then use only their proven path", () => {
+  const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const method = source.slice(
+    source.indexOf("  readScalarProjection(prefix)"),
+    source.indexOf("  async waitForObservation(intervalMs)"),
+  );
+  assert.match(method, /this\.seededScalarProjections\.has\(semanticTag\)/);
+  assert.match(method, /\{ boundedOnly \}/);
+  assert.match(method, /if \(boundedOnly && queried\.length === 0\)/);
+  assert.match(method, /this\.seededScalarProjections\.delete\(semanticTag\)/);
+  assert.match(method, /if \(queried\.length > 0\) this\.seededScalarProjections\.add\(semanticTag\)/);
+});
+
 test("Android action delivery cannot rediscover a different control after readiness", async () => {
   const source = readFileSync(
     new URL("./semantic-journey-driver.mjs", import.meta.url),
@@ -2576,6 +2750,17 @@ test("Android action delivery cannot rediscover a different control after readin
     () => driver.performAction("playback-play-toggle"),
     /has no readiness evidence/,
   );
+});
+
+test("Android drag delivery reuses exact readiness geometry", () => {
+  const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const method = source.slice(
+    source.lastIndexOf("  async drag(surfaceId"),
+    source.lastIndexOf("  async setProgress(controlId"),
+  );
+  assert.match(method, /readinessEvidenceMatchesTag\(semanticTag, readyElement\)/);
+  assert.match(method, /rectOfBounds\(readyElement\.bounds\)/);
+  assert.doesNotMatch(method, /dumpAndroid|findTagOrPrefix|queryAndroid/);
 });
 
 test("product surface manifest exactly follows core-projected branches", () => {
@@ -2848,15 +3033,10 @@ test("Android aliases the shared ownship launcher to its Compose semantic tag", 
   assert.equal(androidElementSemanticTag("ownship-source-button"), "parity:ownship-launcher");
 });
 
-test("Android exact search suggestions use the focused field submit action", () => {
-  assert.equal(androidActionUsesSubmit("chart-search-suggestion:KSEA"), true);
-  assert.equal(androidActionUsesSubmit("chart-search-suggestion-KSEA"), true);
-  assert.equal(androidActionUsesSubmit("airport_info"), false);
-});
-
 test("Android activates every tagged control through one exact semantic action path", () => {
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(driver, /ActionUsesSemanticActivation/);
+  assert.doesNotMatch(driver, /androidActionUsesSubmit|Android submit action/);
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
@@ -2870,6 +3050,17 @@ test("Android activates every tagged control through one exact semantic action p
     /if \(clickMatchingNode\(node, tag, expectedBounds\)\) return true;[\s\S]*awaitAccessibilityEventAfter\(sequence, 750\)/,
   );
   assert.doesNotMatch(service, /dispatchTapGesture/);
+});
+
+test("Android release journeys retain session-work timing evidence", () => {
+  const source = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /setPerfMetricsEnabled\([\s\S]*perfScenario != null \|\| BuildConfig\.AEROBAG_E2E_ENABLED/,
+  );
 });
 
 test("Android semantic tree traversal absorbs concurrent Compose child replacement", () => {
@@ -3064,6 +3255,33 @@ test("Android layer regression observes exact controls instead of dumping the hi
   );
   assert.match(layerJourney, /queryLayerToggleNode/);
   assert.doesNotMatch(layerJourney, /dumpAndroid\(/);
+});
+
+test("Android CTR gestures use the exact follow projection instead of traversing the map", () => {
+  const suite = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const dragJourney = suite.slice(
+    suite.indexOf("async function dragMapWhileFollowing"),
+    suite.indexOf("async function zoomMapOneStepWhileFollowing"),
+  );
+  assert.match(dragJourney, /ready: async \(\) => queryMapFollowProbe\(serial\)/);
+  assert.match(dragJourney, /followProbe\.centerX/);
+  assert.match(dragJourney, /followProbe\.centerY/);
+  assert.doesNotMatch(dragJourney, /queryAndroidSemanticNodes\(/);
+  assert.doesNotMatch(dragJourney, /dumpAndroid\(/);
+  assert.doesNotMatch(dragJourney, /parity:map-surface/);
+});
+
+test("Android terrain tile failures terminate the current render pass", () => {
+  const map = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  const batch = map.slice(
+    map.indexOf("var batchRendered = 0"),
+    map.indexOf("LaunchedEffect(uiSession, viewport", map.indexOf("var batchRendered = 0")),
+  );
+  assert.match(batch, /catch \(error: Throwable\) \{\s*batchFailed = true/);
+  assert.match(batch, /if \(batchFailed\) break/);
 });
 
 test("Android exact action discovery uses the accessibility view-id index", () => {

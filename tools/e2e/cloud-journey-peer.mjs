@@ -136,6 +136,7 @@ export async function launchCloudJourneyPeer({ url, referenceEpochMs, requestOri
             : null;
         },
       });
+      await page.evaluate("window.__aerobagE2e.cloud.awaitProviderIdle()");
       return result.value;
     },
 

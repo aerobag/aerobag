@@ -220,6 +220,7 @@ declare global {
       navDbMaintainAt?: (nowEpochMs: number) => Promise<void>;
       cloud?: {
         state: () => unknown;
+        awaitProviderIdle: () => Promise<void>;
         setOfflinePackagePreferences: (preferences: unknown) => Promise<void>;
         dropEventStream: () => Promise<void>;
       };
@@ -2730,6 +2731,7 @@ function OperationalApp() {
       return;
     }
     const cloud = {
+      awaitProviderIdle: () => cloudPumpRunner.whenIdle(),
       state: () => ({
         offline_package_preferences: JSON.parse(sessionSnapshot.offline_package_preferences_json),
         overall_status: sessionSnapshot.cloud_page_state.overall_status,
@@ -2745,7 +2747,7 @@ function OperationalApp() {
           Date.now(),
         );
         applySessionSnapshot(nextSnapshot, "e2e_offline_package_preferences");
-        await pumpCloudProvider();
+        await cloudPumpRunner.whenIdle();
       },
       dropEventStream: async () => {
         const current = cloudEventStreamRef.current;

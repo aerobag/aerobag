@@ -153,7 +153,7 @@ export class WebSemanticTransport {
           document.removeEventListener("click", listener, true);
         }
         return { status: "activated", probe };
-      })()`);
+      })()`, { userGesture: true });
     if (result.status === "missing" || result.status === "obstructed") return false;
     if (result.status !== "activated") {
       throw new Error(`web control cannot be activated: ${selector}; probe=${JSON.stringify(result)}`);

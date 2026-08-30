@@ -307,11 +307,12 @@ export class CdpPage {
     });
   }
 
-  async evaluate(expression) {
+  async evaluate(expression, { userGesture = false } = {}) {
     const response = await this.send("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
+      userGesture,
     });
     if (response.exceptionDetails) {
       throw new Error(

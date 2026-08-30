@@ -440,19 +440,19 @@ private const val PerfScenarioKorsStressAltitudeMslFt = 1_000.0
 internal class NexradRenderDeadlineState(
     private val failureRetryMs: Long = NexradRenderFailureRetryMs,
 ) {
-    var deadlineEpochMs: Long? = null
+    var deadlineElapsedRealtimeMs: Long? = null
         private set
 
     fun consumeWake() {
-        deadlineEpochMs = null
+        deadlineElapsedRealtimeMs = null
     }
 
-    fun renderCompleted(coreDeadlineEpochMs: Long?) {
-        deadlineEpochMs = coreDeadlineEpochMs
+    fun renderCompleted(nowElapsedRealtimeMs: Long, coreDelayMs: Long?) {
+        deadlineElapsedRealtimeMs = coreDelayMs?.coerceAtLeast(0L)?.let(nowElapsedRealtimeMs::plus)
     }
 
-    fun renderFailed(nowEpochMs: Long) {
-        deadlineEpochMs = nowEpochMs + failureRetryMs
+    fun renderFailed(nowElapsedRealtimeMs: Long) {
+        deadlineElapsedRealtimeMs = nowElapsedRealtimeMs + failureRetryMs
     }
 }
 
@@ -503,11 +503,21 @@ internal fun buildMapSelectionCenterProbeTag(
     return "parity:map-selection-center:$tagLabel:offset-px:$offsetPx"
 }
 
+internal fun buildViewportProjectionState(
+    viewport: MapViewportState,
+    mapUpDeg: Double,
+): String =
+    "center-x-milli:${(viewport.centerWorldX * 1_000.0).roundToInt()}:" +
+        "center-y-milli:${(viewport.centerWorldY * 1_000.0).roundToInt()}:" +
+        "zoom:${(viewport.zoom * 1_000.0).roundToInt()}:" +
+        "up:${mapUpDeg.roundToInt()}"
+
 internal fun buildMapSelectionProjectionState(
     selectedLabel: String?,
     selectedCategoryId: String?,
     selectedText: String?,
     centerProbeTag: String?,
+    detailOpen: Boolean = false,
 ): String {
     val centerState = centerProbeTag
         ?.removePrefix("parity:map-selection-center:")
@@ -516,7 +526,8 @@ internal fun buildMapSelectionProjectionState(
     return "selected:${selectedLabel?.let(::rasterSemanticToken) ?: "none"}:" +
         "category:${selectedCategoryId?.let(::rasterSemanticToken) ?: "none"}:" +
         "text:${selectedText?.let(::rasterSemanticToken).orEmpty()}:" +
-        "centered:$centerState"
+        "centered:$centerState:" +
+        "detail:${if (detailOpen) "open" else "none"}"
 }
 
 internal fun mapSelectionHeaderDetailText(selectedItem: MapSelectionItem?): String =
@@ -1000,11 +1011,11 @@ private fun rememberNexradLayerState(
     LaunchedEffect(uiSession, renderRequests) {
         val deadlineState = NexradRenderDeadlineState()
         while (true) {
-            val deadlineEpochMs = deadlineState.deadlineEpochMs
-            val request = if (deadlineEpochMs == null) {
+            val deadlineElapsedRealtimeMs = deadlineState.deadlineElapsedRealtimeMs
+            val request = if (deadlineElapsedRealtimeMs == null) {
                 renderRequests.receiveCatching()
             } else {
-                val delayMs = (deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0)
+                val delayMs = (deadlineElapsedRealtimeMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
                 if (delayMs == 0L) {
                     null
                 } else {
@@ -1063,7 +1074,10 @@ private fun rememberNexradLayerState(
                     )
                 }
                 if (overlay.tiles.isEmpty()) {
-                    deadlineState.renderCompleted(overlay.animation.nextUpdateEpochMs)
+                    deadlineState.renderCompleted(
+                        SystemClock.elapsedRealtime(),
+                        overlay.animation.nextUpdateDelayMs?.toLong(),
+                    )
                     frame = null
                     perfLogInfo(MapLayerLogTag) {
                         "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
@@ -1106,12 +1120,15 @@ private fun rememberNexradLayerState(
                 perfLogInfo(MapLayerLogTag) {
                     "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
-                deadlineState.renderCompleted(overlay.animation.nextUpdateEpochMs)
+                deadlineState.renderCompleted(
+                    SystemClock.elapsedRealtime(),
+                    overlay.animation.nextUpdateDelayMs?.toLong(),
+                )
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
-                deadlineState.renderFailed(System.currentTimeMillis())
+                deadlineState.renderFailed(SystemClock.elapsedRealtime())
             }
         }
     }
@@ -1375,6 +1392,7 @@ private fun rememberTerrainLayerState(
                 var batchRenderMs = 0L
                 var batchParseMs = 0L
                 var batchRawBytesTotal = 0L
+                var batchFailed = false
                 for (request in workBatch) {
                     if (!latestMapVisible.value || !latestVisible.value) break
                     if (bitmapCache.containsKey(request.cacheKey) || inFlightKeys.contains(request.cacheKey)) continue
@@ -1409,6 +1427,7 @@ private fun rememberTerrainLayerState(
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Throwable) {
+                        batchFailed = true
                         overlayError = error.message ?: error::class.java.simpleName
                         lastQueryDiagnostics = query.toDiagnostics(
                             updatedAtMs = SystemClock.elapsedRealtime(),
@@ -1426,6 +1445,7 @@ private fun rememberTerrainLayerState(
                 perfLogInfo(MapLayerLogTag) {
                     "terrain batch-rendered frame=$frameKey requests=${query.tileRequests.size} rendered=$batchRendered batch=${workBatch.size} cached=${query.schedule.cachedCount} missing=${query.schedule.missingCount} rawBytes=$batchRawBytesTotal queryMs=$queryMs fetchMs=$batchFetchMs renderMs=$batchRenderMs parseMs=$batchParseMs batchMs=${SystemClock.elapsedRealtime() - batchStartMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
+                if (batchFailed) break
             }
         }
     }
@@ -2338,6 +2358,7 @@ internal fun MapExplorerPage(
             selectedCategoryId = selectedCategoryId,
             selectedText = mapSelectionHeaderText(selectedItem),
             centerProbeTag = mapSelectionCenterProbeTag,
+            detailOpen = mapSelection?.detailModal != null,
         )
     }
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
@@ -3305,13 +3326,10 @@ internal fun MapExplorerPage(
     ) {
         E2eProjectionView(
             viewId = R.id.e2e_viewport_projection,
-            state =
-                "center-x:${currentViewport.centerWorldX.roundToInt()}:" +
-                    "center-y:${currentViewport.centerWorldY.roundToInt()}:" +
-                    "zoom:${(currentViewport.zoom * 1000).roundToInt()}:" +
-                    "up:${plannedMapUpDeg.roundToInt()}",
+            state = buildViewportProjectionState(currentViewport, plannedMapUpDeg),
             modifier = Modifier
                 .align(Alignment.TopStart)
+                .offset(x = 30.dp)
                 .size(1.dp),
         )
         Box(
@@ -3383,7 +3401,15 @@ internal fun MapExplorerPage(
                     "frames:${nexradFrame?.frameCount ?: 0}",
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .offset(x = 26.dp)
+                .offset(x = 32.dp)
+                .size(1.dp),
+        )
+        E2eProjectionView(
+            viewId = R.id.e2e_map_selection_projection,
+            state = mapSelectionProjectionState,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = 28.dp)
                 .size(1.dp),
         )
         AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
@@ -3480,6 +3506,7 @@ internal fun MapExplorerPage(
                 state = tag.removePrefix("parity:map-follow-state:"),
                 modifier = Modifier
                     .align(Alignment.TopStart)
+                    .offset(x = 34.dp)
                     .size(1.dp),
             )
         }
@@ -3634,7 +3661,7 @@ internal fun MapExplorerPage(
                         "gaps:${playbackUiState.gapSpans.size}",
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .offset(x = 28.dp)
+                    .offset(x = 36.dp)
                     .size(1.dp),
             )
             MapPlaybackWidgetOverlay(
@@ -3665,6 +3692,13 @@ internal fun MapExplorerPage(
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scrim { mapSelection = null }
+                    E2eProjectionView(
+                        viewId = R.id.e2e_map_selection_projection,
+                        state = mapSelectionProjectionState,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .size(1.dp),
+                    )
                     if (selection.detailModal != null) {
                         selection.detailModal.airportInfo?.let { airportInfo ->
                             AirportInfoModal(
@@ -3713,7 +3747,6 @@ internal fun MapExplorerPage(
                         MapSelectionTray(
                             state = selection,
                             centerProbeTag = mapSelectionCenterProbeTag,
-                            projectionState = mapSelectionProjectionState,
                             onBoundsChange = { mapSelectionTrayBounds = it },
                             modifier = Modifier
                                 .zIndex(OverlayPlaneModal)
@@ -4909,7 +4942,6 @@ internal fun MapSelectionTray(
     state: MapSelectionUiState,
     modifier: Modifier,
     centerProbeTag: String? = null,
-    projectionState: String,
     onBoundsChange: (Rect?) -> Unit = {},
     onSelectItem: (MapSelectionItem) -> Unit,
     onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
@@ -4933,11 +4965,6 @@ internal fun MapSelectionTray(
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
     ) {
         Column(modifier = Modifier.padding(ThumbGap * 0.7f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.55f)) {
-            E2eProjectionView(
-                viewId = R.id.e2e_map_selection_projection,
-                state = projectionState,
-                modifier = Modifier.size(1.dp),
-            )
             centerProbeTag?.let { tag ->
                 Box(modifier = Modifier.size(1.dp).testTag(tag))
             }

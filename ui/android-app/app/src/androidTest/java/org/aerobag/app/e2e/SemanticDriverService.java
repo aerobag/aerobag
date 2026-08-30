@@ -257,11 +257,22 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private void handleExactProjection(Socket socket, String path) throws IOException {
-        String tag = queryOf(path).getOrDefault("tag", "");
+        Map<String, String> query = queryOf(path);
+        String tag = query.getOrDefault("tag", "");
+        boolean includeDescendantText = "true".equals(
+            query.getOrDefault("descendant_text", "false")
+        );
+        boolean indexedOnly = "true".equals(query.getOrDefault("indexed_only", "false"));
+        boolean boundedOnly = "true".equals(query.getOrDefault("bounded_only", "false"));
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
-            renderExactProjection(tag).toString() + "\n",
+            renderExactProjection(
+                tag,
+                includeDescendantText,
+                indexedOnly,
+                boundedOnly
+            ).toString() + "\n",
             200
         );
     }
@@ -638,7 +649,12 @@ public final class SemanticDriverService extends AccessibilityService {
         return false;
     }
 
-    private JSONArray renderExactProjection(String tag) {
+    private JSONArray renderExactProjection(
+        String tag,
+        boolean includeDescendantText,
+        boolean indexedOnly,
+        boolean boundedOnly
+    ) {
         JSONArray output = new JSONArray();
         if (tag.isEmpty()) return output;
         List<AccessibilityNodeInfo> roots = targetRoots(true);
@@ -648,13 +664,18 @@ public final class SemanticDriverService extends AccessibilityService {
                 if (indexed == null) continue;
                 try {
                     for (AccessibilityNodeInfo match : indexed) {
-                        appendExactProjectionValue(output, match);
+                        appendExactProjectionValue(
+                            output,
+                            match,
+                            "indexed",
+                            includeDescendantText
+                        );
                     }
                 } finally {
                     recycleAll(indexed);
                 }
             }
-            if (output.length() > 0) return output;
+            if (output.length() > 0 || indexedOnly) return output;
         } catch (JSONException error) {
             throw new IllegalStateException("failed to encode indexed semantic projection", error);
         } finally {
@@ -667,7 +688,12 @@ public final class SemanticDriverService extends AccessibilityService {
                 try {
                     cached.refresh();
                     if (tag.equals(cached.getViewIdResourceName())) {
-                        appendExactProjectionValue(output, cached);
+                        appendExactProjectionValue(
+                            output,
+                            cached,
+                            cachedPath,
+                            includeDescendantText
+                        );
                         return output;
                     }
                 } catch (JSONException error) {
@@ -677,12 +703,18 @@ public final class SemanticDriverService extends AccessibilityService {
                 }
             }
             Rect cachedBounds = exactNodeBounds.get(tag);
-            if (cachedBounds != null && appendExactProjectionAtPoint(tag, cachedBounds, output)) {
+            if (cachedBounds != null && appendExactProjectionAtPoint(
+                tag,
+                cachedBounds,
+                output,
+                includeDescendantText
+            )) {
                 return output;
             }
             exactNodePaths.remove(tag, cachedPath);
             exactNodeBounds.remove(tag);
         }
+        if (boundedOnly) return output;
         roots = targetRoots(true);
         try {
             for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
@@ -690,7 +722,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     roots.get(rootIndex),
                     tag,
                     Integer.toString(rootIndex),
-                    output
+                    output,
+                    includeDescendantText
                 )) {
                     break;
                 }
@@ -708,11 +741,12 @@ public final class SemanticDriverService extends AccessibilityService {
         AccessibilityNodeInfo node,
         String tag,
         String semanticPath,
-        JSONArray output
+        JSONArray output,
+        boolean includeDescendantText
     ) throws JSONException {
         node.refresh();
         if (tag.equals(node.getViewIdResourceName())) {
-            appendExactProjectionValue(output, node);
+            appendExactProjectionValue(output, node, semanticPath, includeDescendantText);
             exactNodePaths.put(tag, semanticPath);
             Rect bounds = new Rect();
             node.getBoundsInScreen(bounds);
@@ -727,7 +761,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     child,
                     tag,
                     semanticPath + "/" + childIndex,
-                    output
+                    output,
+                    includeDescendantText
                 )) {
                     return true;
                 }
@@ -741,7 +776,8 @@ public final class SemanticDriverService extends AccessibilityService {
     private boolean appendExactProjectionAtPoint(
         String tag,
         Rect expectedBounds,
-        JSONArray output
+        JSONArray output,
+        boolean includeDescendantText
     ) {
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
@@ -751,7 +787,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     tag,
                     expectedBounds,
                     Integer.toString(rootIndex),
-                    output
+                    output,
+                    includeDescendantText
                 )) {
                     return true;
                 }
@@ -770,14 +807,15 @@ public final class SemanticDriverService extends AccessibilityService {
         String tag,
         Rect expectedBounds,
         String semanticPath,
-        JSONArray output
+        JSONArray output,
+        boolean includeDescendantText
     ) throws JSONException {
         node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return false;
         if (tag.equals(node.getViewIdResourceName())) {
-            appendExactProjectionValue(output, node);
+            appendExactProjectionValue(output, node, semanticPath, includeDescendantText);
             exactNodePaths.put(tag, semanticPath);
             exactNodeBounds.put(tag, new Rect(bounds));
             return true;
@@ -791,7 +829,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     tag,
                     expectedBounds,
                     semanticPath + "/" + childIndex,
-                    output
+                    output,
+                    includeDescendantText
                 )) {
                     return true;
                 }
@@ -805,18 +844,22 @@ public final class SemanticDriverService extends AccessibilityService {
     @SuppressWarnings("deprecation")
     private static void appendExactProjectionValue(
         JSONArray output,
-        AccessibilityNodeInfo node
+        AccessibilityNodeInfo node,
+        String semanticPath,
+        boolean includeDescendantText
     ) throws JSONException {
         node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         JSONObject value = new JSONObject();
         value.put("resource-id", node.getViewIdResourceName());
-        value.put("text", directNodeLabel(node));
+        value.put("semantic-path", semanticPath);
+        value.put("text", includeDescendantText ? nodeLabel(node) : directNodeLabel(node));
         value.put("enabled", Boolean.toString(node.isEnabled()));
         value.put("visible", Boolean.toString(node.isVisibleToUser()));
         value.put("selected", Boolean.toString(node.isSelected()));
         value.put("checked", Boolean.toString(node.isChecked()));
+        value.put("focused", Boolean.toString(node.isFocused()));
         value.put("state-description", stringValue(node.getStateDescription()));
         value.put("bounds", bounds.toShortString());
         output.put(value);

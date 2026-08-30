@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +23,26 @@ DEFAULT_GITHUB_REPOSITORY = "aerobag/aerobag"
 
 class ReleaseCiError(RuntimeError):
     pass
+
+
+def _github_json_via_token_helper(url: str, helper: str) -> Any:
+    command = [
+        helper,
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "-H",
+        "X-GitHub-Api-Version: 2022-11-28",
+        url,
+    ]
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        return json.loads(result.stdout)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        raise ReleaseCiError(f"failed to refresh GitHub API credentials: {error}") from error
 
 
 @dataclass(frozen=True)
@@ -81,6 +102,13 @@ def github_workflow_runs(
     try:
         with opener(request, timeout=20) as response:
             document = json.load(response)
+    except urllib.error.HTTPError as error:
+        helper = os.environ.get("AEROBAG_GITHUB_TOKEN_HELPER")
+        if error.code != 401 or not helper:
+            raise ReleaseCiError(
+                f"failed to read GitHub workflow {workflow} for {commit}: {error}"
+            ) from error
+        document = _github_json_via_token_helper(url, helper)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
         raise ReleaseCiError(
             f"failed to read GitHub workflow {workflow} for {commit}: {error}"

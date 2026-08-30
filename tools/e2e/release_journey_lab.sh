@@ -11,9 +11,24 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/ui/android-app/scripts/emulator_identity.sh"
 # shellcheck source=../../ui/android-app/scripts/e2e_app_data.sh
 source "$ROOT/ui/android-app/scripts/e2e_app_data.sh"
-aerobag_source_instance_config "$ROOT/../INSTANCE_CONFIG"
-aerobag_configure_emulator_identity
-SERIAL="$ANDROID_SERIAL"
+SERIAL="${ANDROID_SERIAL:-}"
+
+configure_android_identity() {
+  aerobag_source_instance_config "${AEROBAG_INSTANCE_CONFIG:-$ROOT/../INSTANCE_CONFIG}"
+  aerobag_configure_emulator_identity
+  SERIAL="$ANDROID_SERIAL"
+}
+
+case "${1:-}" in
+  status)
+    configure_android_identity
+    ;;
+  android-compile|android-shard-list)
+    ;;
+  android-*)
+    configure_android_identity
+    ;;
+esac
 PORT="${PACKAGE_SOURCE_PORT:-18093}"
 CLOUD_PORT="${AEROBAG_E2E_CLOUD_PORT:-18094}"
 ANDROID_PACKAGE_PORT="${AEROBAG_ANDROID_PACKAGE_SOURCE_DEVICE_PORT:-$PORT}"

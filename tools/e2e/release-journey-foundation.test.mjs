@@ -75,8 +75,16 @@ import {
   setAndroidWallClockAndWait,
 } from "./android-harness.mjs";
 
+const LAB_METADATA_POISON_CONFIG = join(
+  tmpdir(),
+  `aerobag-release-lab-metadata-${process.pid}.sh`,
+);
+writeFileSync(LAB_METADATA_POISON_CONFIG, "exit 97\n");
+test.after(() => rmSync(LAB_METADATA_POISON_CONFIG, { force: true }));
+
 function labMetadataEnvironment() {
   const environment = {
+    AEROBAG_INSTANCE_CONFIG: LAB_METADATA_POISON_CONFIG,
     AEROBAG_RELEASE_JOURNEY_REPETITIONS: "1",
     AEROBAG_UI_TARGET_ROOT: tmpdir(),
     VNC_PORT: "5900",

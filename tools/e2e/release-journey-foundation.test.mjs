@@ -85,6 +85,10 @@ test.after(() => rmSync(LAB_METADATA_POISON_CONFIG, { force: true }));
 function labMetadataEnvironment() {
   const environment = {
     AEROBAG_INSTANCE_CONFIG: LAB_METADATA_POISON_CONFIG,
+    AEROBAG_RELEASE_JOURNEY_FIXTURE_SEARCH_ROOT: join(
+      tmpdir(),
+      `aerobag-missing-fixture-search-root-${process.pid}`,
+    ),
     AEROBAG_RELEASE_JOURNEY_REPETITIONS: "1",
     AEROBAG_UI_TARGET_ROOT: tmpdir(),
     VNC_PORT: "5900",

@@ -52,11 +52,19 @@ JOURNEY_REPETITIONS="${AEROBAG_RELEASE_JOURNEY_REPETITIONS:-1}"
 }
 
 latest_fixture() {
-  find /tmp -maxdepth 2 -path '/tmp/release-journey-publication-v*-materialized/fixture.json' \
+  local search_root="${AEROBAG_RELEASE_JOURNEY_FIXTURE_SEARCH_ROOT:-/tmp}"
+  find "$search_root" -maxdepth 2 \
+    -path "$search_root/release-journey-publication-v*-materialized/fixture.json" \
     -print 2>/dev/null | sort -V | tail -1
 }
 
-FIXTURE="${AEROBAG_RELEASE_JOURNEY_FIXTURE:-$(latest_fixture)}"
+FIXTURE="${AEROBAG_RELEASE_JOURNEY_FIXTURE:-}"
+
+resolve_fixture() {
+  if [[ -z "$FIXTURE" ]]; then
+    FIXTURE="$(latest_fixture)"
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -116,6 +124,7 @@ EOF
 }
 
 require_fixture() {
+  resolve_fixture
   if [[ -z "$FIXTURE" || ! -f "$FIXTURE" ]]; then
     echo "release journey fixture not found; set AEROBAG_RELEASE_JOURNEY_FIXTURE" >&2
     exit 1
@@ -502,6 +511,7 @@ run_repetitions() {
 command="${1:-}"
 case "$command" in
   status)
+    resolve_fixture
     echo "fixture=${FIXTURE:-<missing>}"
     echo "fixture_origin=$(fixture_origin)"
     echo "android_serial=$SERIAL"

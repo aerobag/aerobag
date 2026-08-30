@@ -50,7 +50,7 @@ import {
   androidPageIdFromStartupStateTag,
   androidSemanticTag, androidSessionRevisionFromStateTag,
   androidZoomKeyCode, editSemanticText, findTagOrPrefix,
-  navigateSemanticPage,
+  establishRevealedElement, navigateSemanticPage,
   SEMANTIC_DRIVER_OPERATIONS, SemanticJourneyDriver,
   validateSemanticDriver, WebSemanticJourneyDriver, webTestIdSelector,
 } from "./semantic-journey-driver.mjs";
@@ -59,7 +59,7 @@ import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 import {
   assertConditionRemains, E2E_TIMING, observeChangedValueUntilStable,
-  observeUntil, observeValueUntilStable, performTransition,
+  ObservationTimeoutError, observeUntil, observeValueUntilStable, performTransition,
   TerminalObservationError, TransientObservationError,
 } from "./transition-contract.mjs";
 import {
@@ -3019,6 +3019,7 @@ test("Android reveal phases generically require controls to be visible and cente
     source.lastIndexOf("  async revealElement(elementId)"),
     source.indexOf("\n  async reload()", source.lastIndexOf("  async revealElement(elementId)")),
   );
+  assert.match(revealMethod, /establishRevealedElement/);
   assert.match(revealMethod, /scrollUntilTagPrefix\(this\.serial, semanticTag, 20, true\)/);
   assert.doesNotMatch(revealMethod, /androidElementMayRequireVerticalScroll/);
   const readElementMethod = source.slice(
@@ -3026,6 +3027,27 @@ test("Android reveal phases generically require controls to be visible and cente
     source.lastIndexOf("  async revealElement(elementId)"),
   );
   assert.match(readElementMethod, /\{ requireVisible: true \}/);
+});
+
+test("Android reveal traversal re-rendezvous with exact semantic reachability", async () => {
+  let reachable = null;
+  let traversals = 0;
+  const result = await establishRevealedElement({
+    description: "settings-section-debug_diagnostics",
+    readReachable: async () => reachable,
+    traverse: async () => {
+      traversals += 1;
+      if (traversals === 2) reachable = { test_id: "settings-section-debug_diagnostics" };
+      return true;
+    },
+    observe: async (description, probe) => {
+      const value = await probe();
+      if (value) return { value, durationMs: 0 };
+      throw new ObservationTimeoutError(description, 3_000, {});
+    },
+  });
+  assert.equal(traversals, 2);
+  assert.equal(result?.test_id, "settings-section-debug_diagnostics");
 });
 
 test("session revision acknowledgement is parsed from Android's persistent root projection", () => {

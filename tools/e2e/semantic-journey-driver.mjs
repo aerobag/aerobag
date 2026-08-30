@@ -13,7 +13,8 @@ import {
   scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
 } from "./android-harness.mjs";
 import {
-  E2E_TIMING, observeUntil, performTransition, TerminalObservationError,
+  E2E_TIMING, ObservationTimeoutError, observeUntil, performTransition,
+  TerminalObservationError,
 } from "./transition-contract.mjs";
 
 const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
@@ -802,6 +803,33 @@ function readinessEvidenceMatchesTag(expectedTag, readyElement) {
     Boolean(readyElement?.semantic_path);
 }
 
+export async function establishRevealedElement({
+  description,
+  readReachable,
+  traverse,
+  attempts = 2,
+  observe = observeUntil,
+}) {
+  const initial = await readReachable();
+  if (initial) return initial;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!await traverse()) continue;
+    try {
+      return (await observe(
+        `${description} reachable after traversal`,
+        readReachable,
+        {
+          timeoutMs: E2E_TIMING.localReadyMs,
+          intervalMs: E2E_TIMING.pollIntervalMs,
+        },
+      )).value;
+    } catch (error) {
+      if (!(error instanceof ObservationTimeoutError)) throw error;
+    }
+  }
+  return readReachable();
+}
+
 function activateAndroidSemanticTag(serial, tag, readyElement = null) {
   if (!readyElement) {
     throw new Error(`Android semantic action ${tag} has no readiness evidence`);
@@ -1309,12 +1337,19 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const existing = reachable();
     if (existing) return existing;
     if (androidElementMayRequireHorizontalScroll(elementId)) {
-      await scrollHorizontallyUntilTag(this.serial, semanticTag, 8);
-      const horizontal = reachable();
+      const horizontal = await establishRevealedElement({
+        description: semanticTag,
+        readReachable: reachable,
+        traverse: () => scrollHorizontallyUntilTag(this.serial, semanticTag, 8),
+        attempts: 1,
+      });
       if (horizontal) return horizontal;
     }
-    if (!await scrollUntilTagPrefix(this.serial, semanticTag, 20, true)) return null;
-    return reachable();
+    return establishRevealedElement({
+      description: semanticTag,
+      readReachable: reachable,
+      traverse: () => scrollUntilTagPrefix(this.serial, semanticTag, 20, true),
+    });
   }
 
   async reload() {

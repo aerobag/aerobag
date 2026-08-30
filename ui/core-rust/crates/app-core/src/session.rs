@@ -867,6 +867,21 @@ fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
     session.data_status.clear(id)
 }
 
+fn sync_map_overlay_display_limit_status_records(
+    session: &mut UiSession,
+    records: &[DataStatusRecord],
+) -> bool {
+    let mut changed = false;
+    for id in crate::map_overlay::MAP_OVERLAY_DISPLAY_LIMIT_STATUS_IDS {
+        if let Some(record) = records.iter().find(|record| record.id == id) {
+            changed |= upsert_data_status_record(session, record.clone());
+        } else {
+            changed |= clear_data_status_record(session, id);
+        }
+    }
+    changed
+}
+
 fn sync_adsb_ownship_status_record(session: &mut UiSession) {
     if !session.coordinator.debug_state.internet_adsb || !adsb_ownship_selected(session) {
         clear_data_status_record(session, ADSB_OWNSHIP_STATUS_ID);
@@ -9449,9 +9464,15 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         && !display_traffic
     {
         let overlay = empty_map_overlay_query();
+        let status_changed =
+            sync_map_overlay_display_limit_status_records(session, &overlay.data_status_records);
         drop(session_guard);
-        return Ok(HadOperationOutcome::complete(
+        return Ok(HadOperationOutcome::complete_with_invalidations(
             serde_json::to_value(overlay).map_err(internal_json_error)?,
+            status_changed
+                .then_some(UiInvalidation::SessionSnapshot)
+                .into_iter()
+                .collect::<Vec<_>>(),
         ));
     }
     let mut supplemental_status_records = Vec::new();
@@ -9562,7 +9583,14 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     if !resources.is_empty() {
         return Ok(HadOperationOutcome::NeedResources { resources });
     }
-    let status_ms = 0;
+    let status_started_at = crate::core_clock_ms();
+    let status_changed =
+        sync_map_overlay_display_limit_status_records(session, &overlay.data_status_records);
+    let status_ms = elapsed_ms(status_started_at);
+    let invalidations = status_changed
+        .then_some(UiInvalidation::SessionSnapshot)
+        .into_iter()
+        .collect::<Vec<_>>();
     drop(session_guard);
     let to_value_started_at = crate::core_clock_ms();
     let overlay_value = serde_json::to_value(overlay).map_err(internal_json_error)?;
@@ -9585,10 +9613,13 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
             "resources_ms": resources_ms,
             "status_ms": status_ms,
             "to_value_ms": to_value_ms,
-            "invalidations": Vec::<UiInvalidation>::new(),
+            "invalidations": invalidations,
         }),
     );
-    Ok(HadOperationOutcome::complete(overlay_value))
+    Ok(HadOperationOutcome::complete_with_invalidations(
+        overlay_value,
+        invalidations,
+    ))
 }
 
 fn flight_plan_overlay_features(
@@ -21673,6 +21704,122 @@ mod tests {
                 .records()
                 .contains_key(METAR_STATION_IMPORTANCE_STATUS_ID));
         }
+    }
+
+    #[test]
+    fn weather_display_limit_enters_and_leaves_the_global_status_bucket() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let position = LatLon { lat: 0.0, lon: 0.0 };
+        {
+            let mut sessions = lock_sessions();
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
+            session.map.replace_overlay_config(
+                map_overlay_config_from_vector_manifest_json(
+                    r#"{
+                    "point_layers": {
+                        "airport": { "available_zooms": [9] },
+                        "fix": { "available_zooms": [9] },
+                        "nav": { "available_zooms": [9] },
+                        "metars": {
+                            "min_zoom": 5,
+                            "max_zoom": 7,
+                            "available_zooms": [5, 6, 7],
+                            "tile_path_template": "unused-by-live-feeds"
+                        }
+                    },
+                    "airspace": {
+                        "reference_tile_min_zoom": 0,
+                        "reference_tile_max_zoom": 0,
+                        "label_tile_min_zoom": 0,
+                        "label_tile_max_zoom": 0
+                    }
+                }"#,
+                )
+                .expect("overlay config"),
+                true,
+            );
+            session.map.set_layer_visibility(MapLayerId::Vectors, false);
+            session.map.set_layer_visibility(MapLayerId::Metars, true);
+            let mut metars_by_station = HashMap::new();
+            for index in 0..=crate::map_overlay::WEATHER_DISPLAY_FEATURE_LIMIT {
+                let station_id = format!("K{index:04}");
+                metars_by_station.insert(
+                    station_id.clone(),
+                    crate::MetarRecord {
+                        raw_text: format!(
+                            "METAR {station_id} 010000Z 00000KT 10SM CLR 10/08 A3000"
+                        ),
+                        observed_at_utc: Some("2026-08-30T00:00:00.000Z".to_string()),
+                        station_id,
+                        flight_category: Some("VFR".to_string()),
+                        clouds: None,
+                        longitude: position.lon,
+                        latitude: position.lat,
+                    },
+                );
+            }
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "dense".to_string(),
+                generated_at_utc: None,
+                observed_at_utc: None,
+                metar_count: Some(metars_by_station.len() as u32),
+                metars_by_station,
+            });
+            rebuild_metar_tile_cache(&mut session);
+        }
+
+        let dense = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: position,
+                zoom: 7.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            400.0,
+            400.0,
+        )
+        .expect("dense overlay");
+        let HadOperationOutcome::Complete { invalidations, .. } = dense else {
+            panic!("dense overlay should complete: {dense:?}");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        {
+            let slot = session_slot(init.handle).expect("session slot");
+            let mut session = slot.lock_running().expect("session");
+            assert!(session
+                .data_status
+                .contains(crate::map_overlay::WEATHER_DISPLAY_LIMIT_STATUS_ID));
+            let state = session.data_status.project_state().state;
+            assert!(state.boxes.iter().any(|status| {
+                status.id == crate::map_overlay::WEATHER_DISPLAY_LIMIT_STATUS_ID
+                    && status.severity == UiStatusSeverity::Warning
+            }));
+        }
+
+        let sparse = get_map_overlay_in_session(
+            init.handle,
+            MapViewport {
+                center: position,
+                zoom: 4.9,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            400.0,
+            400.0,
+        )
+        .expect("sparse overlay");
+        let HadOperationOutcome::Complete { invalidations, .. } = sparse else {
+            panic!("sparse overlay should complete: {sparse:?}");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        let slot = session_slot(init.handle).expect("session slot");
+        let session = slot.lock_running().expect("session");
+        assert!(!session
+            .data_status
+            .contains(crate::map_overlay::WEATHER_DISPLAY_LIMIT_STATUS_ID));
     }
 
     #[test]

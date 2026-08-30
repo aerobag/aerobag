@@ -49,7 +49,23 @@ const OBSTACLE_BELOW_OWNERSHIP_HIDE_FT: f64 = 1000.0;
 const OBSTACLE_CAUTION_LOWER_FT: f64 = 800.0;
 const OBSTACLE_DANGER_LOWER_FT: f64 = 200.0;
 const WEATHER_CAMERA_AIRPORT_BADGE_OFFSET_LOGICAL_PX: f64 = 14.0;
-const WEATHER_DISPLAY_FEATURE_LIMIT: usize = 1_000;
+pub(crate) const WEATHER_DISPLAY_FEATURE_LIMIT: usize = 1_000;
+const WEATHER_MIN_DISPLAY_ZOOM: f64 = 5.0;
+// Full observations routinely exceed the cap at z6 in an ordinary 1200x900
+// viewport. Keep the sparse station set through z6; z7 remains below the cap
+// for high-probability 1080p workloads while retaining the hard safety limit.
+const WEATHER_FULL_DETAIL_MIN_DISPLAY_ZOOM: f64 = 7.0;
+pub(crate) const VECTOR_DISPLAY_LIMIT_STATUS_ID: &str = "map_overlay:vector_display_feature_limit";
+pub(crate) const WEATHER_DISPLAY_LIMIT_STATUS_ID: &str = "map_overlay:metar_display_feature_limit";
+pub(crate) const AIRSPACE_DISPLAY_LIMIT_STATUS_ID: &str =
+    "map_overlay:airspace_display_feature_limit";
+pub(crate) const AIRSPACE_FEATHER_LIMIT_STATUS_ID: &str = "map_overlay:airspace_feather_limit";
+pub(crate) const MAP_OVERLAY_DISPLAY_LIMIT_STATUS_IDS: [&str; 4] = [
+    VECTOR_DISPLAY_LIMIT_STATUS_ID,
+    WEATHER_DISPLAY_LIMIT_STATUS_ID,
+    AIRSPACE_DISPLAY_LIMIT_STATUS_ID,
+    AIRSPACE_FEATHER_LIMIT_STATUS_ID,
+];
 const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 const UI_THUMB_SIZE_LOGICAL_PX: f64 = 56.0;
@@ -222,17 +238,32 @@ pub fn overlay_surface_decision(
         display_scale: metrics.display_scale,
         effective_display_zoom,
         point_tile_zoom: metrics.point_tile_zoom(),
-        metar_tile_zoom: config.metar_layer.as_ref().map(|layer| {
-            nearest_available_layer_zoom(
-                layer,
-                effective_display_zoom.floor().clamp(0.0, u32::MAX as f64) as u32,
-            )
-        }),
+        metar_tile_zoom: config
+            .metar_layer
+            .as_ref()
+            .and_then(|layer| weather_tile_zoom(layer, effective_display_zoom)),
         airspace_ref_zoom: (effective_display_zoom >= AIRSPACE_MIN_DISPLAY_ZOOM)
             .then(|| airspace_reference_zoom(effective_display_zoom, config)),
         airspace_label_zoom: (effective_display_zoom >= AIRSPACE_MIN_DISPLAY_ZOOM)
             .then(|| airspace_label_zoom(effective_display_zoom, config)),
     }
+}
+
+fn weather_tile_zoom(layer: &PointTileLayerConfig, effective_display_zoom: f64) -> Option<u32> {
+    if effective_display_zoom < WEATHER_MIN_DISPLAY_ZOOM {
+        return None;
+    }
+    if effective_display_zoom < WEATHER_FULL_DETAIL_MIN_DISPLAY_ZOOM {
+        return Some(nearest_available_layer_zoom(layer, layer.min_zoom));
+    }
+    Some(nearest_available_layer_zoom(
+        layer,
+        effective_display_zoom.floor().clamp(0.0, u32::MAX as f64) as u32,
+    ))
+}
+
+fn full_weather_detail_visible(metrics: MapSurfaceMetrics) -> bool {
+    metrics.effective_display_zoom() >= WEATHER_FULL_DETAIL_MIN_DISPLAY_ZOOM
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2438,7 +2469,7 @@ pub fn query_map_overlay_for_surface(
     let mut data_status_records = if vector_budget.omitted_after_cap > 0 {
         let omitted_summary = layer_counts_summary(&vector_budget.omitted_by_layer);
         vec![DataStatusRecord::new(
-            "map_overlay:vector_display_feature_limit",
+            VECTOR_DISPLAY_LIMIT_STATUS_ID,
             "VECTORS",
             Some("LIMIT".to_string()),
             UiStatusSeverity::Warning,
@@ -3006,6 +3037,7 @@ fn query_metar_overlay(
     let mut needed_tiles = Vec::new();
     let mut visible_metars = Vec::new();
     let mut visible_pireps = Vec::new();
+    let display_pireps = full_weather_detail_visible(*metrics);
     let mut limit_hit = false;
     let mut needed_seen = BTreeSet::new();
     for tile in
@@ -3051,7 +3083,7 @@ fn query_metar_overlay(
                 ) {
                     visible_metars.push(feature);
                 }
-            } else if record_ref.kind == "pirep" {
+            } else if record_ref.kind == "pirep" && display_pireps {
                 let Some(pireps) = pirep_payload else {
                     continue;
                 };
@@ -3082,13 +3114,13 @@ fn query_metar_overlay(
     }
     let data_status_records = if limit_hit {
         vec![DataStatusRecord::new(
-            "map_overlay:metar_display_feature_limit",
+            WEATHER_DISPLAY_LIMIT_STATUS_ID,
             "WX",
             Some("LIMIT".to_string()),
-            UiStatusSeverity::Info,
-            false,
+            UiStatusSeverity::Warning,
+            true,
             format!(
-                "display capped at {} visible weather features",
+                "Display budget reached; only the first {} visible weather observations were drawn.",
                 WEATHER_DISPLAY_FEATURE_LIMIT
             ),
         )]
@@ -3751,6 +3783,9 @@ fn query_pirep_selection_matches(
     pirep_payload: &PirepProductPayload,
 ) -> Vec<MapSelectionPointMatch> {
     let metrics = projection.map.metrics;
+    if !full_weather_detail_visible(*metrics) {
+        return Vec::new();
+    }
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
@@ -6669,11 +6704,11 @@ fn query_airspace_overlay(
     let mut data_status_records = Vec::new();
     if limit_hit {
         data_status_records.push(DataStatusRecord::new(
-            "map_overlay:airspace_display_feature_limit",
+            AIRSPACE_DISPLAY_LIMIT_STATUS_ID,
             "AIRSPACE",
             Some("LIMIT".to_string()),
-            UiStatusSeverity::Info,
-            false,
+            UiStatusSeverity::Warning,
+            true,
             format!(
                 "display capped at {} visible airspace features",
                 AIRSPACE_DISPLAY_FEATURE_LIMIT
@@ -6682,11 +6717,11 @@ fn query_airspace_overlay(
     }
     if decoration_budget.limit_hit {
         data_status_records.push(DataStatusRecord::new(
-            "map_overlay:airspace_feather_limit",
+            AIRSPACE_FEATHER_LIMIT_STATUS_ID,
             "AIRSPACE",
             Some("LIMIT".to_string()),
-            UiStatusSeverity::Info,
-            false,
+            UiStatusSeverity::Warning,
+            true,
             format!(
                 "display capped at {} airspace feather ticks",
                 AIRSPACE_FEATHER_LIMIT
@@ -8849,7 +8884,30 @@ mod tests {
                 )
             },
         );
-        assert!(low_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 5));
+        assert!(low_zoom.needed_metar_tiles.is_empty());
+
+        let sparse_zoom = super::query_map_overlay(
+            &MapViewport {
+                zoom: 6.2,
+                ..viewport
+            },
+            240.0,
+            240.0,
+            MapOverlayQuery {
+                display_metars: true,
+                ..MapOverlayQuery::new(
+                    &config,
+                    &vector_tiles,
+                    &obstacle_tiles,
+                    &metar_tiles,
+                    &airspaces,
+                )
+            },
+        );
+        assert!(sparse_zoom
+            .needed_metar_tiles
+            .iter()
+            .all(|tile| tile.z == 5));
 
         let high_zoom = super::query_map_overlay(
             &MapViewport {
@@ -8870,6 +8928,145 @@ mod tests {
             },
         );
         assert!(high_zoom.needed_metar_tiles.iter().all(|tile| tile.z == 7));
+    }
+
+    #[test]
+    fn low_zoom_weather_uses_sparse_metars_and_hides_pireps() {
+        let position = LatLon { lat: 0.0, lon: 0.0 };
+        let mut low_tile = metar_tile_for_position(5, position, "KAAA");
+        low_tile.records.push(MetarTileRecord {
+            kind: "pirep".to_string(),
+            id: "pirep:test".to_string(),
+        });
+        let mut high_tile = low_tile.clone();
+        let high_tile_address = metar_tile_for_position(7, position, "unused");
+        high_tile.z = high_tile_address.z;
+        high_tile.x = high_tile_address.x;
+        high_tile.y = high_tile_address.y;
+        let tile_cache = HashMap::from([
+            (
+                tile_key("metars", low_tile.z, low_tile.x, low_tile.y),
+                low_tile,
+            ),
+            (
+                tile_key("metars", high_tile.z, high_tile.x, high_tile.y),
+                high_tile,
+            ),
+        ]);
+        let metars = MetarProductPayload {
+            schema_version: 3,
+            version_label: "test".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            metar_count: Some(1),
+            metars_by_station: HashMap::from([(
+                "KAAA".to_string(),
+                test_metar_record("KAAA", position),
+            )]),
+        };
+        let pireps = PirepProductPayload {
+            schema_version: 3,
+            version_label: "test".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            pirep_count: Some(1),
+            pireps_by_id: HashMap::from([(
+                "pirep:test".to_string(),
+                PirepRecord {
+                    id: "pirep:test".to_string(),
+                    raw_text: "TEST PIREP".to_string(),
+                    observed_at_utc: None,
+                    report_type: Some("PIREP".to_string()),
+                    longitude: position.lon,
+                    latitude: position.lat,
+                    symbol: "generic".to_string(),
+                    icing: "none".to_string(),
+                    turbulence: "none".to_string(),
+                },
+            )]),
+        };
+        let config = test_map_overlay_config();
+        let vectors = HashMap::new();
+        let obstacles = HashMap::new();
+        let airspaces = HashMap::new();
+        let query = |zoom| {
+            super::query_map_overlay(
+                &MapViewport {
+                    center: position,
+                    zoom,
+                    rotation_deg: 0.0,
+                    pitch_deg: 0.0,
+                },
+                400.0,
+                400.0,
+                MapOverlayQuery {
+                    display_metars: true,
+                    metar_payload: Some(&metars),
+                    pirep_payload: Some(&pireps),
+                    ..MapOverlayQuery::new(&config, &vectors, &obstacles, &tile_cache, &airspaces)
+                },
+            )
+        };
+
+        let sparse = query(6.2);
+        assert_eq!(sparse.visible_metars.len(), 1);
+        assert!(sparse.visible_pireps.is_empty());
+
+        let detailed = query(7.0);
+        assert_eq!(detailed.visible_metars.len(), 1);
+        assert_eq!(detailed.visible_pireps.len(), 1);
+    }
+
+    #[test]
+    fn weather_display_cap_is_a_caution_status() {
+        let position = LatLon { lat: 0.0, lon: 0.0 };
+        let mut tile = metar_tile_for_position(7, position, "unused");
+        let mut metars_by_station = HashMap::new();
+        tile.records.clear();
+        for index in 0..=WEATHER_DISPLAY_FEATURE_LIMIT {
+            let station_id = format!("K{index:04}");
+            tile.records.push(MetarTileRecord {
+                kind: "metar".to_string(),
+                id: station_id.clone(),
+            });
+            metars_by_station.insert(station_id.clone(), test_metar_record(&station_id, position));
+        }
+        let tile_cache = HashMap::from([(tile_key("metars", tile.z, tile.x, tile.y), tile)]);
+        let metars = MetarProductPayload {
+            schema_version: 3,
+            version_label: "dense".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            metar_count: Some(metars_by_station.len() as u32),
+            metars_by_station,
+        };
+        let config = test_map_overlay_config();
+        let vectors = HashMap::new();
+        let obstacles = HashMap::new();
+        let airspaces = HashMap::new();
+        let result = super::query_map_overlay(
+            &MapViewport {
+                center: position,
+                zoom: 7.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            400.0,
+            400.0,
+            MapOverlayQuery {
+                display_metars: true,
+                metar_payload: Some(&metars),
+                ..MapOverlayQuery::new(&config, &vectors, &obstacles, &tile_cache, &airspaces)
+            },
+        );
+
+        let status = result
+            .data_status_records
+            .iter()
+            .find(|record| record.id == WEATHER_DISPLAY_LIMIT_STATUS_ID)
+            .expect("weather display cap status");
+        assert_eq!(status.severity, UiStatusSeverity::Warning);
+        assert!(status.drives_caution);
     }
 
     #[test]
@@ -10130,17 +10327,18 @@ mod tests {
     fn map_selection_hits_weather_in_repeated_world_copy() {
         let viewport = MapViewport {
             center: LatLon { lat: 0.0, lon: 0.0 },
-            zoom: 1.0,
+            zoom: 5.0,
             rotation_deg: 0.0,
             pitch_deg: 0.0,
         };
+        let width_px = 20_000.0;
         let config = test_map_overlay_config();
         let metar_zoom = nearest_available_layer_zoom(
             config.metar_layer.as_ref().expect("metar layer"),
             viewport.zoom.floor() as u32,
         );
         let display_tile =
-            visible_layer_display_tile_window("metars", metar_zoom, &viewport, 1024.0, 256.0)
+            visible_layer_display_tile_window("metars", metar_zoom, &viewport, width_px, 256.0)
                 .into_iter()
                 .find(|tile| tile.world_x_offset > 0.0)
                 .expect("expected repeated metar world copy");
@@ -10191,7 +10389,7 @@ mod tests {
         let mut availability = |_: &str| AirportPlateAvailability::default();
         let result = query_map_selection(
             &viewport,
-            1024.0,
+            width_px,
             256.0,
             MapSelectionQuery {
                 metar_payload: Some(&metars),

@@ -72,18 +72,30 @@ def parse_args() -> argparse.Namespace:
     operation.add_argument("--promote", action="store_true")
     operation.add_argument("--reconcile", action="store_true")
     operation.add_argument("--qualification-status", action="store_true")
-    return parser.parse_args()
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="promote a built, active staging release without qualification",
+    )
+    args = parser.parse_args()
+    if args.force and not args.promote:
+        parser.error("--force requires --promote")
+    return args
 
 
 def operation_requires_github_authentication(args: argparse.Namespace) -> bool:
-    return any(
-        getattr(args, name, False)
-        for name in (
-            "prequalify",
-            "candidate_status",
-            "stage",
-            "promote",
-            "qualification_status",
+    return (
+        any(
+            getattr(args, name, False)
+            for name in (
+                "prequalify",
+                "candidate_status",
+                "qualification_status",
+            )
+        )
+        or (
+            getattr(args, "promote", False)
+            and not getattr(args, "force", False)
         )
     )
 
@@ -548,9 +560,9 @@ def restore_operation_log(previous: str | None) -> None:
         os.environ[deployment.COMMAND_LOG_ENV] = previous
 
 
-def assert_staging_is_qualified(
+def assert_staging_is_ready(
     config: dict[str, Any], desired: releases.DesiredReleases
-) -> None:
+) -> tuple[releases.ObservedState, releases.ObservedRelease]:
     if desired.staging is None:
         raise ManagementError("there is no staging release to promote")
     observed = load_remote_observed(config)
@@ -563,6 +575,22 @@ def assert_staging_is_qualified(
             f"{desired.staging.tag} is not the currently active staging release"
         )
     record = observed.releases.get(desired.staging.tag)
+    if record is None or record.build_status != "passed":
+        raise ManagementError(
+            f"staging release {desired.staging.tag} has not completed its build"
+        )
+    if record.live_feed_endpoint is None or record.live_feed_status != "running":
+        raise ManagementError(
+            f"staging release {desired.staging.tag} does not have running live feeds"
+        )
+    return observed, record
+
+
+def assert_staging_is_qualified(
+    config: dict[str, Any], desired: releases.DesiredReleases
+) -> None:
+    observed, record = assert_staging_is_ready(config, desired)
+    assert desired.staging is not None
     if record is None or record.qualification_status != "passed":
         raise ManagementError(
             f"staging release {desired.staging.tag} has not passed qualification; "
@@ -659,13 +687,16 @@ def deploy(config_path: Path) -> None:
     )
 
 
-def activate_release_intent(config_path: Path) -> None:
+def activate_release_intent(
+    config_path: Path, *, force_production_tag: str | None = None
+) -> None:
     config = deployment.load_config(config_path)
     timed_operation(
         "Promoting release",
         lambda: deployment.activate_release_intent(
             config,
             progress=report_deployment_progress,
+            force_production_tag=force_production_tag,
         ),
     )
 
@@ -824,9 +855,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
                 "use --reconcile to check production state"
             )
 
-    run_stage_preflight()
     config = deployment.load_config(config_path)
-    assert_candidate_is_qualified(config, head)
     assert_remote_idle(config)
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
@@ -883,7 +912,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
     return result
 
 
-def promote(config_path: Path, releases_path: Path) -> int:
+def promote(config_path: Path, releases_path: Path, *, force: bool = False) -> int:
     assert_clean_checkout("promote")
     git("fetch", "--tags", "origin", capture=False)
     assert_main_not_behind(require_synchronized=True)
@@ -903,15 +932,27 @@ def promote(config_path: Path, releases_path: Path) -> int:
     )
     config = deployment.load_config(config_path)
     assert_remote_idle(config)
-    assert_staging_is_qualified(config, desired)
+    if force:
+        assert_staging_is_ready(config, desired)
+    else:
+        assert_staging_is_qualified(config, desired)
     old_text = serialize_release_document(document)
     new_text = serialize_release_document(proposed)
+    commit_message = (
+        f"Force-promote {candidate} without qualification"
+        if force
+        else f"Promote {candidate}"
+    )
     commands = [
         f"Modify deploy/releases.json to promote {candidate} and clear staging",
         "git add deploy/releases.json",
-        f'git commit -m "Promote {candidate}"',
+        f'git commit -m "{commit_message}"',
         "git push origin main",
-        "tools/prod_manage.py --reconcile",
+        (
+            f"Run one exact-tag forced reconciliation for {candidate}"
+            if force
+            else "tools/prod_manage.py --reconcile"
+        ),
     ]
     print_proposal(
         f"This command will promote {candidate} to production, running these commands:",
@@ -922,6 +963,12 @@ def promote(config_path: Path, releases_path: Path) -> int:
             "compatibility warning below describes the required manual edit."
         ),
     )
+    if force:
+        print_warning(
+            f"FORCED PROMOTION: staging qualification and exact-commit CI will be "
+            f"bypassed for {candidate}. The release must still be built and active "
+            "on staging."
+        )
     print_warning(compatibility_warning)
     print()
     if not confirmed():
@@ -931,9 +978,12 @@ def promote(config_path: Path, releases_path: Path) -> int:
     assert_remote_idle(config)
     write_atomic(releases_path, new_text)
     git("add", str(releases_path.relative_to(REPO_ROOT)), capture=False)
-    git("commit", "-m", f"Promote {candidate}", capture=False)
+    git("commit", "-m", commit_message, capture=False)
     git("push", "origin", "main", capture=False)
-    activate_release_intent(config_path)
+    activate_release_intent(
+        config_path,
+        force_production_tag=candidate if force else None,
+    )
     return reconcile(config_path, releases_path)
 
 
@@ -1022,7 +1072,11 @@ def main() -> int:
             elif args.stage:
                 result = stage(DEFAULT_CONFIG, DEFAULT_RELEASES)
             elif args.promote:
-                result = promote(DEFAULT_CONFIG, DEFAULT_RELEASES)
+                result = promote(
+                    DEFAULT_CONFIG,
+                    DEFAULT_RELEASES,
+                    force=getattr(args, "force", False),
+                )
             elif args.reconcile:
                 result = reconcile(DEFAULT_CONFIG, DEFAULT_RELEASES)
             else:

@@ -234,6 +234,56 @@ class ReconciliationPlannerTests(unittest.TestCase):
         self.assertEqual([action.kind for action in plan.actions], ["qualify_release"])
         self.assertIn("not qualified", plan.blocked_reason or "")
 
+    def test_exact_forced_staging_candidate_can_become_production(self) -> None:
+        old = self.observed_release("2026-08-15.1")
+        candidate = self.observed_release("2026-08-22.1", qualified=False)
+        observed = releases.ObservedState.empty()
+        observed.releases = {old.tag: old, candidate.tag: candidate}
+        observed.production = old.tag
+        observed.staging = candidate.tag
+
+        plan = releases.plan_reconciliation(
+            self.desired(candidate.tag, None, (old.tag,)),
+            observed,
+            force_production_tag=candidate.tag,
+        )
+
+        self.assertEqual(
+            [action.kind for action in plan.actions], ["activate_generation"]
+        )
+
+    def test_force_does_not_apply_to_a_different_tag(self) -> None:
+        old = self.observed_release("2026-08-15.1")
+        candidate = self.observed_release("2026-08-22.1", qualified=False)
+        observed = releases.ObservedState.empty()
+        observed.releases = {old.tag: old, candidate.tag: candidate}
+        observed.production = old.tag
+        observed.staging = candidate.tag
+
+        plan = releases.plan_reconciliation(
+            self.desired(candidate.tag, None, (old.tag,)),
+            observed,
+            force_production_tag="2026-08-23.1",
+        )
+
+        self.assertEqual([action.kind for action in plan.actions], ["qualify_release"])
+
+    def test_force_requires_candidate_to_be_active_on_staging(self) -> None:
+        old = self.observed_release("2026-08-15.1")
+        candidate = self.observed_release("2026-08-22.1", qualified=False)
+        observed = releases.ObservedState.empty()
+        observed.releases = {old.tag: old, candidate.tag: candidate}
+        observed.production = old.tag
+
+        plan = releases.plan_reconciliation(
+            self.desired(candidate.tag, None, (old.tag,)),
+            observed,
+            force_production_tag=candidate.tag,
+        )
+
+        self.assertEqual(plan.actions, [])
+        self.assertIn("not active on staging", plan.blocked_reason or "")
+
     def test_converged_state_is_a_no_op(self) -> None:
         production = self.observed_release("2026-08-22.1")
         old = self.observed_release("2026-08-15.1")

@@ -69,6 +69,21 @@ class DesiredStateMutationTests(unittest.TestCase):
             args = prod_manage.parse_args()
         self.assertTrue(args.qualification_status)
 
+        with mock.patch.object(
+            sys, "argv", ["prod_manage.py", "--promote", "--force"]
+        ):
+            args = prod_manage.parse_args()
+        self.assertTrue(args.promote)
+        self.assertTrue(args.force)
+
+    def test_force_is_only_valid_for_promotion(self) -> None:
+        with (
+            mock.patch.object(sys, "argv", ["prod_manage.py", "--stage", "--force"]),
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            prod_manage.parse_args()
+
 
 class GithubAuthenticationTests(unittest.TestCase):
     @staticmethod
@@ -80,6 +95,7 @@ class GithubAuthenticationTests(unittest.TestCase):
             "promote": False,
             "reconcile": False,
             "qualification_status": False,
+            "force": False,
         }
         defaults.update(values)
         return SimpleNamespace(**defaults)
@@ -91,6 +107,30 @@ class GithubAuthenticationTests(unittest.TestCase):
                 environ={},
             )
         )
+
+    def test_stage_and_forced_promotion_do_not_require_github_authentication(self) -> None:
+        self.assertIsNone(
+            prod_manage.github_authentication_command(
+                self.args(stage=True),
+                environ={},
+            )
+        )
+        self.assertIsNone(
+            prod_manage.github_authentication_command(
+                self.args(promote=True, force=True),
+                environ={},
+            )
+        )
+
+    def test_ordinary_promotion_still_requires_github_authentication(self) -> None:
+        with self.assertRaisesRegex(
+            prod_manage.ManagementError,
+            "GitHub authentication is required",
+        ):
+            prod_manage.github_authentication_command(
+                self.args(promote=True),
+                environ={"AEROBAG_GITHUB_TOKEN_HELPER": "/missing/with-token"},
+            )
 
     def test_existing_token_avoids_helper_reexec(self) -> None:
         self.assertIsNone(
@@ -380,6 +420,9 @@ class PromotionGateTests(unittest.TestCase):
             tag_object="1" * 40,
             commit="2" * 40,
             qualification_status=status,
+            build_status="passed",
+            live_feed_endpoint="http://127.0.0.1:8101",
+            live_feed_status="running",
         )
         return releases.ObservedState(
             production="2026-08-20.1",
@@ -460,6 +503,17 @@ class PromotionGateTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(prod_manage.ManagementError, "not the currently"):
                 prod_manage.assert_staging_is_qualified({}, self.desired())
+
+    def test_force_readiness_still_requires_a_completed_build(self) -> None:
+        observed = self.observed(status="pending")
+        observed.releases["2026-08-22.1"].build_status = "failed"
+        with mock.patch.object(
+            prod_manage,
+            "load_remote_observed",
+            return_value=observed,
+        ):
+            with self.assertRaisesRegex(prod_manage.ManagementError, "completed its build"):
+                prod_manage.assert_staging_is_ready({}, self.desired())
 
 
 class ReconciliationCompletionTests(unittest.TestCase):
@@ -658,7 +712,7 @@ class StageOrderingTests(unittest.TestCase):
 
         confirmed.assert_not_called()
 
-    def test_failed_preflight_aborts_before_prod_access_or_release_mutation(self) -> None:
+    def test_stage_does_not_run_optional_prequalification(self) -> None:
         document = desired_document()
 
         with (
@@ -668,16 +722,26 @@ class StageOrderingTests(unittest.TestCase):
                 prod_manage,
                 "run_stage_preflight",
                 side_effect=prod_manage.ManagementError("formatting failed"),
-            ),
-            mock.patch.object(prod_manage.deployment, "load_config") as load_config,
+            ) as preflight,
+            mock.patch.object(
+                prod_manage,
+                "assert_candidate_is_qualified",
+                side_effect=prod_manage.ManagementError("candidate failed"),
+            ) as candidate,
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "confirmed", return_value=False),
             mock.patch.object(prod_manage, "write_atomic") as write_atomic,
         ):
-            with self.assertRaisesRegex(prod_manage.ManagementError, "formatting failed"):
-                prod_manage.stage(
-                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
-                )
+            result = prod_manage.stage(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
 
-        load_config.assert_not_called()
+        self.assertEqual(result, 1)
+        preflight.assert_not_called()
+        candidate.assert_not_called()
         write_atomic.assert_not_called()
 
     def test_confirmed_stage_executes_the_printed_git_transaction_in_order(self) -> None:
@@ -712,10 +776,8 @@ class StageOrderingTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        preflight.assert_called_once_with()
-        candidate.assert_called_once_with(
-            {"github_repository": "aerobag/aerobag"}, "a" * 40
-        )
+        preflight.assert_not_called()
+        candidate.assert_not_called()
         self.assertEqual(idle.call_count, 2)
         mutation_calls = [
             args
@@ -743,7 +805,7 @@ class StageOrderingTests(unittest.TestCase):
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
         )
 
-    def test_stage_rejects_unqualified_commit_before_production_access(self) -> None:
+    def test_stage_does_not_consult_candidate_qualification(self) -> None:
         document = desired_document()
         with (
             mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
@@ -758,13 +820,18 @@ class StageOrderingTests(unittest.TestCase):
                 prod_manage,
                 "assert_candidate_is_qualified",
                 side_effect=prod_manage.ManagementError("candidate failed"),
-            ),
-            mock.patch.object(prod_manage, "assert_remote_idle") as idle,
+            ) as candidate,
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "next_release_name", return_value="2026-08-22.1"),
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "confirmed", return_value=False),
         ):
-            with self.assertRaisesRegex(prod_manage.ManagementError, "candidate failed"):
-                prod_manage.stage(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES)
+            result = prod_manage.stage(
+                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+            )
 
-        idle.assert_not_called()
+        self.assertEqual(result, 1)
+        candidate.assert_not_called()
 
 
 class ReconcileCommandTests(unittest.TestCase):
@@ -1014,10 +1081,51 @@ class PromoteCommandTests(unittest.TestCase):
                 ("push", "origin", "main"),
             ],
         )
-        activate.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+        activate.assert_called_once_with(
+            prod_manage.DEFAULT_CONFIG,
+            force_production_tag=None,
+        )
         self.assertIn("nav-db contract NAV9", print_warning.call_args.args[0])
         reconcile.assert_called_once_with(
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+        )
+
+    def test_forced_promotion_bypasses_only_qualification(self) -> None:
+        document = desired_document(staging="2026-08-22.1")
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=StageOrderingTests.clean_git),
+            mock.patch.object(
+                prod_manage, "load_release_document", return_value=document
+            ),
+            mock.patch.object(prod_manage.deployment, "load_config", return_value={}),
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "assert_staging_is_ready") as ready,
+            mock.patch.object(prod_manage, "assert_staging_is_qualified") as qualified,
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "confirmed", return_value=True),
+            mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(
+                prod_manage, "changed_contracts_after_promotion", return_value=()
+            ),
+            mock.patch.object(prod_manage, "print_warning") as warning,
+            mock.patch.object(prod_manage, "activate_release_intent") as activate,
+            mock.patch.object(prod_manage, "reconcile", return_value=0),
+        ):
+            result = prod_manage.promote(
+                prod_manage.DEFAULT_CONFIG,
+                prod_manage.DEFAULT_RELEASES,
+                force=True,
+            )
+
+        self.assertEqual(result, 0)
+        ready.assert_called_once()
+        qualified.assert_not_called()
+        activate.assert_called_once_with(
+            prod_manage.DEFAULT_CONFIG,
+            force_production_tag="2026-08-22.1",
+        )
+        self.assertTrue(
+            any("FORCED PROMOTION" in call.args[0] for call in warning.call_args_list)
         )
 
 

@@ -69,10 +69,11 @@ tools/prod_manage.py --candidate-status
 tools/prod_manage.py --stage
 tools/prod_manage.py --qualification-status
 tools/prod_manage.py --promote
+tools/prod_manage.py --promote --force
 tools/prod_manage.py --reconcile
 ```
 
-`--prequalify` is the mandatory gate before staging. It first runs the complete
+`--prequalify` is an optional early gate before staging. It first runs the complete
 ordinary-CI and release-journey workload locally against one immutable app
 bundle and pinned fixture. Independent Rust, web, and Android lanes run in
 parallel; twelve fresh Android priority/shard lanes mirror GitHub's matrix and
@@ -87,11 +88,10 @@ without changing release intent or contacting production. Failures are not
 retried into a green result. `--candidate-status` reports the ordinary-CI and
 candidate-journey results for the current commit.
 
-`--stage` refuses to proceed unless the current commit has passed both ordinary
-CI and the full candidate qualification. It then chooses the first unused UTC-date release name such as
-`2026-08-22.1`. It requires a clean synchronized `main`, a valid local
-qualification receipt, and green hosted candidate results before contacting
-production or mutating release intent. It then commits the staging assignment,
+`--stage` does not require prequalification; running `--prequalify` first is an
+optional way to catch failures before the slower release-tag round trip. It
+chooses the first unused UTC-date release name such as `2026-08-22.1`. It
+requires a clean synchronized `main`, then commits the staging assignment,
 creates an immutable annotated tag at that same commit, atomically pushes both,
 and reconciles production. Production remains on its current generation while
 the candidate builds, starts a separate live-feed daemon, and is qualified at
@@ -124,6 +124,14 @@ from the production and staging Git tags and identifies contracts changed by
 the candidate. This check is source-only and fails closed when a registry
 cannot be parsed. The command does not edit `sunset` or guess its retention
 deadline; use a complete manual desired-state edit to retain installed clients.
+
+`--promote --force` is the temporary operator escape hatch when qualification
+infrastructure is unavailable. It bypasses deployed-staging qualification and
+exact-commit GitHub CI only. The exact candidate must still have completed its
+build, have running live feeds, and be the active staging release. The forced
+tag is scoped to one controller invocation, and the promotion commit explicitly
+records that qualification was bypassed. An ordinary `--promote` remains
+fail-closed.
 
 `--reconcile` never edits, commits, tags, or pushes desired state. It first
 compares the checked-in assignments with observed state and the installed

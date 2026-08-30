@@ -987,6 +987,11 @@ CONTROLLER_TOOL_ROOT="$ARTIFACT_ROOT/release-controller/$CONTROLLER_REV"
 mkdir -p "$CONTROLLER_TOOL_ROOT"
 install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" "$CONTROLLER_TOOL_ROOT/preprocessor-cli"
 
+force_args=()
+if [ -n "${{AEROBAG_FORCE_PRODUCTION_TAG:-}}" ]; then
+  force_args=(--force-production-tag "$AEROBAG_FORCE_PRODUCTION_TAG")
+fi
+
 "$SOURCE_ROOT/tools/reconcile_prod_releases.py" \\
   --desired "$SOURCE_ROOT/{config['release_desired_state']}" \\
   --observed "$ARTIFACT_ROOT/state/releases-observed.json" \\
@@ -997,7 +1002,8 @@ install -m 0755 "$CARGO_TARGET_DIR/release/preprocessor-cli" "$CONTROLLER_TOOL_R
   --ui-target-root "$AEROBAG_UI_TARGET_ROOT" \\
   --live-port-base {config['release_live_port_base']} \\
   --legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev" \\
-  --refresh-products
+  --refresh-products \\
+  "${{force_args[@]}}"
 
 {CARGO_TARGET_PRUNE_SCRIPT}
 
@@ -2026,6 +2032,7 @@ def run_release_reconciliation(
     *,
     progress: ProgressReporter | None = None,
     dry_run: bool,
+    force_production_tag: str | None = None,
 ) -> None:
     """Start the controller and relay only its human-scale progress marker."""
 
@@ -2033,59 +2040,79 @@ def run_release_reconciliation(
     progress_path = (
         Path(config["artifact_root"]) / RECONCILIATION_PROGRESS_RELATIVE_PATH
     )
+    force_environment_command = (
+        "systemctl set-environment AEROBAG_FORCE_PRODUCTION_TAG="
+        + shell_quote(force_production_tag)
+        if force_production_tag is not None
+        else "systemctl unset-environment AEROBAG_FORCE_PRODUCTION_TAG"
+    )
     start_command = textwrap.dedent(
         f"""
         set -euo pipefail
         rm -f {shell_quote(progress_path)}
         systemctl reset-failed {unit} || true
+        {force_environment_command}
         systemctl start --no-block {unit}
         """
     ).strip()
-    run_ssh(config, start_command, dry_run=dry_run)
-    if dry_run:
-        return
-
-    last_progress = None
-    while True:
-        status_command = textwrap.dedent(
-            f"""
-            set -euo pipefail
-            active_state="$(systemctl show {unit} --property=ActiveState --value)"
-            result="$(systemctl show {unit} --property=Result --value)"
-            progress=''
-            if test -s {shell_quote(progress_path)}; then
-              progress="$(cat {shell_quote(progress_path)})"
-            fi
-            printf '%s\t%s\t%s\n' "$active_state" "$result" "$progress"
-            """
-        ).strip()
-        status = run_ssh(config, status_command, capture=True, dry_run=False)
-        try:
-            active_state, result, current_progress = status.stdout.rstrip("\n").split(
-                "\t", 2
-            )
-        except ValueError as error:
-            raise RuntimeError(
-                f"invalid release reconciliation status: {status.stdout!r}"
-            ) from error
-        if current_progress and current_progress != last_progress:
-            _report(progress, current_progress)
-            last_progress = current_progress
-        if active_state in {"active", "activating", "reloading", "deactivating"}:
-            time.sleep(1)
-            continue
-        if active_state == "inactive" and result == "success":
+    try:
+        run_ssh(config, start_command, dry_run=dry_run)
+        if dry_run:
             return
 
-        failure_command = textwrap.dedent(
-            f"""
-            systemctl status {unit} --no-pager >&2 || true
-            journalctl -u {unit} -n 100 --no-pager >&2 || true
-            exit 1
-            """
-        ).strip()
-        run_ssh(config, failure_command, dry_run=False)
-        raise AssertionError("failed service diagnostics unexpectedly returned")
+        last_progress = None
+        while True:
+            status_command = textwrap.dedent(
+                f"""
+                set -euo pipefail
+                active_state="$(systemctl show {unit} --property=ActiveState --value)"
+                result="$(systemctl show {unit} --property=Result --value)"
+                progress=''
+                if test -s {shell_quote(progress_path)}; then
+                  progress="$(cat {shell_quote(progress_path)})"
+                fi
+                printf '%s\t%s\t%s\n' "$active_state" "$result" "$progress"
+                """
+            ).strip()
+            status = run_ssh(config, status_command, capture=True, dry_run=False)
+            try:
+                active_state, result, current_progress = status.stdout.rstrip(
+                    "\n"
+                ).split("\t", 2)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"invalid release reconciliation status: {status.stdout!r}"
+                ) from error
+            if current_progress and current_progress != last_progress:
+                _report(progress, current_progress)
+                last_progress = current_progress
+            if active_state in {
+                "active",
+                "activating",
+                "reloading",
+                "deactivating",
+            }:
+                time.sleep(1)
+                continue
+            if active_state == "inactive" and result == "success":
+                return
+
+            failure_command = textwrap.dedent(
+                f"""
+                systemctl status {unit} --no-pager >&2 || true
+                journalctl -u {unit} -n 100 --no-pager >&2 || true
+                exit 1
+                """
+            ).strip()
+            run_ssh(config, failure_command, dry_run=False)
+            raise AssertionError("failed service diagnostics unexpectedly returned")
+    finally:
+        if force_production_tag is not None:
+            run_ssh(
+                config,
+                "systemctl unset-environment AEROBAG_FORCE_PRODUCTION_TAG",
+                dry_run=dry_run,
+            )
 
 
 def start_reconciled_runtime(
@@ -2227,6 +2254,7 @@ def activate_release_intent(
     *,
     progress: ProgressReporter | None = None,
     dry_run: bool = False,
+    force_production_tag: str | None = None,
 ) -> None:
     """Publish desired-state changes and run only the release controller."""
 
@@ -2237,7 +2265,12 @@ def activate_release_intent(
     try:
         sync_source_checkout(config, dry_run=dry_run)
         _report(progress, "Switching the production channel")
-        run_release_reconciliation(config, progress=progress, dry_run=dry_run)
+        run_release_reconciliation(
+            config,
+            progress=progress,
+            dry_run=dry_run,
+            force_production_tag=force_production_tag,
+        )
     finally:
         run_ssh(
             config,

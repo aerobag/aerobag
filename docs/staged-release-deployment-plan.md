@@ -54,9 +54,9 @@ timestamps and rejects unknown fields.
 make and apply its commits, but they do not introduce a second state model:
 
 - `tools/prod_manage.py --stage` is a desired-state change. It requires a clean
-  synchronized checkout and runs the repository's CI Rust-formatting check before
-  any production access or release mutation. It assigns a new immutable release
-  to staging, commits and tags that exact commit, then enters the reconciliation
+  synchronized checkout. Prequalification is an optional early check rather
+  than a staging prerequisite. The command assigns a new immutable release to
+  staging, commits and tags that exact commit, then enters the reconciliation
   workflow. If `HEAD` is already the assigned staging release, it exits locally
   and directs the operator to `--reconcile` instead of turning a change command
   into an implicit retry.
@@ -65,6 +65,9 @@ make and apply its commits, but they do not introduce a second state model:
   activation-only reconciliation. With no staging assignment it exits locally;
   it does not contact production merely to check whether an earlier promotion
   completed.
+- `tools/prod_manage.py --promote --force` explicitly waives qualification for
+  one exact-tag controller invocation. It still requires the built candidate
+  and its live-feed daemon to be active on staging.
 - `tools/prod_manage.py --reconcile` does not edit release intent. It installs
   or repairs the host and fully converges the checked-in assignments. When
   production is already converged it reports that state and performs no deploy.
@@ -380,7 +383,9 @@ switches production without rebuilding.
 committing and pushing desired state, it transfers the current controller and
 tag metadata, acquires the reconciliation lock, and invokes an activation-only
 controller mode. That mode rejects rather than repairs any missing build,
-qualification, package manifest, APK, web tree, or healthy candidate daemon.
+package manifest, APK, web tree, or healthy candidate daemon. It also rejects
+missing qualification unless the operator supplied the exact-tag `--force`
+waiver.
 It does not refresh products, install packages or toolchains, rebuild a release,
 or restart unrelated services. A failed precondition leaves the currently
 active channel untouched; the operator uses `--reconcile` to repair it before

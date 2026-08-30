@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--refresh-products", action="store_true")
+    parser.add_argument(
+        "--force-production-tag",
+        default=os.environ.get("AEROBAG_FORCE_PRODUCTION_TAG"),
+        help="allow this exact active staging tag to become production without qualification",
+    )
     return parser.parse_args()
 
 
@@ -174,6 +179,13 @@ class Controller:
         self.desired = releases.effective_desired_releases(
             releases.load_desired_releases(args.desired)
         )
+        if (
+            args.force_production_tag is not None
+            and args.force_production_tag != self.desired.production.tag
+        ):
+            raise RuntimeError(
+                "forced production tag does not match the desired production release"
+            )
         self.resolved = releases.resolve_desired_tags(self.source_root, self.desired)
         self.observed = releases.load_observed_state(args.observed)
         self.observed.desired_commit = _git(self.source_root, "rev-parse", "HEAD")
@@ -779,12 +791,17 @@ class Controller:
     def reconcile(self, *, plan_only: bool) -> int:
         for _ in range(100):
             self.adopt_legacy_production_if_exact()
-            plan = releases.plan_reconciliation(self.desired, self.observed)
+            plan = releases.plan_reconciliation(
+                self.desired,
+                self.observed,
+                force_production_tag=self.args.force_production_tag,
+            )
             print(
                 json.dumps(
                     {
                         "actions": [action.__dict__ for action in plan.actions],
                         "blocked_reason": plan.blocked_reason,
+                        "force_production_tag": self.args.force_production_tag,
                     },
                     sort_keys=True,
                 ),
@@ -823,7 +840,9 @@ def main() -> int:
             raise SystemExit("another release reconciliation is already running") from None
         controller = Controller(args)
         assignment_pending = not releases.plan_reconciliation(
-            controller.desired, controller.observed
+            controller.desired,
+            controller.observed,
+            force_production_tag=args.force_production_tag,
         ).converged
         run_gc, refresh_products = maintenance_policy(
             assignment_pending=assignment_pending,

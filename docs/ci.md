@@ -75,8 +75,11 @@ The release-journey registry in
 journeys. Ordinary pushes and pull requests run P0 journeys; nightly, manual,
 and release-tag runs execute P0, P1, and P2. Release tags use the workflow run
 title `Release qualification <tag>` and finish through one
-`Release qualification` aggregate job. `tools/prod_manage.py --promote`
-requires that exact-tag run and ordinary CI for the same commit.
+`Release qualification` aggregate job. An ordinary
+`tools/prod_manage.py --promote` requires that exact-tag run and ordinary CI for
+the same commit. The explicitly operator-invoked `--promote --force` escape
+hatch bypasses those two qualification checks but retains staging readiness
+checks.
 
 Python CI discovers every `test_*.py` under `tools/` and
 `product/preprocessor/scripts/` instead of maintaining a hand-copied file

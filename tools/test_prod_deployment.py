@@ -98,6 +98,11 @@ class ProductPublicationTests(unittest.TestCase):
             '--legacy-deployed-rev-file "$ARTIFACT_ROOT/state/legacy-deployed-rev"',
             script,
         )
+        self.assertIn(
+            'force_args=(--force-production-tag "$AEROBAG_FORCE_PRODUCTION_TAG")',
+            script,
+        )
+        self.assertIn('"${force_args[@]}"', script)
         self.assertNotIn("build_multi_version_publication.py", script)
         self.assertLess(
             script.index("Preparing release tooling"),
@@ -344,6 +349,34 @@ class ProductPublicationTests(unittest.TestCase):
             ],
         )
 
+    def test_forced_reconciliation_scopes_and_clears_exact_tag_override(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        completed = subprocess.CompletedProcess([], 0, "", None)
+        succeeded = subprocess.CompletedProcess(
+            [], 0, "inactive\tsuccess\tRelease reconciliation complete\n", None
+        )
+
+        def run_ssh(*_args, capture: bool = False, **_kwargs):
+            return succeeded if capture else completed
+
+        with mock.patch.object(deploy_prod, "run_ssh", side_effect=run_ssh) as ssh:
+            deploy_prod.run_release_reconciliation(
+                config,
+                dry_run=False,
+                force_production_tag="2026-08-23.1",
+            )
+
+        commands = [call.args[1] for call in ssh.call_args_list]
+        self.assertIn(
+            "systemctl set-environment "
+            "AEROBAG_FORCE_PRODUCTION_TAG=2026-08-23.1",
+            commands[0],
+        )
+        self.assertEqual(
+            commands[-1],
+            "systemctl unset-environment AEROBAG_FORCE_PRODUCTION_TAG",
+        )
+
     def test_promotion_only_syncs_intent_and_starts_release_controller(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
         with (
@@ -362,7 +395,12 @@ class ProductPublicationTests(unittest.TestCase):
 
         quiesce.assert_called_once_with(config, dry_run=False)
         sync_source.assert_called_once_with(config, dry_run=False)
-        reconcile.assert_called_once_with(config, progress=None, dry_run=False)
+        reconcile.assert_called_once_with(
+            config,
+            progress=None,
+            dry_run=False,
+            force_production_tag=None,
+        )
         run_ssh.assert_called_once_with(
             config,
             "systemctl start aerobag-build-product.timer",
@@ -370,6 +408,30 @@ class ProductPublicationTests(unittest.TestCase):
         )
         install_packages.assert_not_called()
         setup_android.assert_not_called()
+
+    def test_forced_promotion_passes_exact_tag_to_release_controller(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with (
+            mock.patch.object(deploy_prod, "assert_local_refs_exist"),
+            mock.patch.object(deploy_prod, "assert_clean_checkout"),
+            mock.patch.object(deploy_prod, "quiesce_release_reconciliation"),
+            mock.patch.object(deploy_prod, "sync_source_checkout"),
+            mock.patch.object(
+                deploy_prod, "run_release_reconciliation"
+            ) as reconcile,
+            mock.patch.object(deploy_prod, "run_ssh"),
+        ):
+            deploy_prod.activate_release_intent(
+                config,
+                force_production_tag="2026-08-23.1",
+            )
+
+        reconcile.assert_called_once_with(
+            config,
+            progress=None,
+            dry_run=False,
+            force_production_tag="2026-08-23.1",
+        )
 
     def test_promotion_restores_periodic_timer_when_intent_sync_fails(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)

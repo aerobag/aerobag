@@ -426,6 +426,8 @@ def _desired_sunset_tags(desired: DesiredReleases) -> list[str]:
 def plan_reconciliation(
     desired: DesiredReleases,
     observed: ObservedState,
+    *,
+    force_production_tag: str | None = None,
 ) -> ReconciliationPlan:
     production_tags = [desired.production.tag, *_desired_sunset_tags(desired)]
     for tag in production_tags:
@@ -438,7 +440,8 @@ def plan_reconciliation(
     production_tag = desired.production.tag
     if observed.production != production_tag:
         production_record = observed.releases[production_tag]
-        if production_record.qualification_status != "passed":
+        force_activation = force_production_tag == production_tag
+        if production_record.qualification_status != "passed" and not force_activation:
             if observed.staging != production_tag:
                 return ReconciliationPlan(
                     [],
@@ -447,6 +450,11 @@ def plan_reconciliation(
             return ReconciliationPlan(
                 [ReconcileAction("qualify_release", production_tag)],
                 f"production release {production_tag} is not qualified",
+            )
+        if force_activation and observed.staging != production_tag:
+            return ReconciliationPlan(
+                [],
+                f"forced production release {production_tag} is not active on staging",
             )
         return ReconciliationPlan([ReconcileAction("activate_generation", production_tag)])
 

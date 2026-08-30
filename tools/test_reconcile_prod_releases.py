@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,39 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import reconcile_prod_releases as controller  # noqa: E402
 import release_reconciler as releases  # noqa: E402
+
+
+class ForcedPromotionArgumentTests(unittest.TestCase):
+    def test_installed_wrapper_can_supply_force_tag_through_service_environment(
+        self,
+    ) -> None:
+        argv = [
+            "reconcile_prod_releases.py",
+            "--desired",
+            "desired.json",
+            "--observed",
+            "observed.json",
+            "--source-root",
+            "source",
+            "--artifact-root",
+            "artifacts",
+            "--cargo-target-dir",
+            "target",
+            "--controller-preprocessor",
+            "preprocessor-cli",
+            "--ui-target-root",
+            "ui-target",
+        ]
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.dict(
+                os.environ,
+                {"AEROBAG_FORCE_PRODUCTION_TAG": "2026-08-23.1"},
+            ),
+        ):
+            args = controller.parse_args()
+
+        self.assertEqual(args.force_production_tag, "2026-08-23.1")
 
 
 class MaintenancePolicyTests(unittest.TestCase):

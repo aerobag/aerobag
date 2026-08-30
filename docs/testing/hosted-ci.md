@@ -207,10 +207,10 @@ The local run builds one immutable app bundle, uses pinned fixtures, and require
 five successful repetitions per release journey.
 
 After that succeeds, the command pushes synchronized `main` under a
-`candidate-*` tag. The hosted run repeats the complete registry. `--stage`
-rejects a commit without both the exact-commit local receipt and hosted result,
-so expensive production reconciliation cannot precede either proof. The final
-release tag still runs one complete exact-tag qualification.
+`candidate-*` tag. The hosted run repeats the complete registry. This
+prequalification is optional: `--stage` may proceed directly when the operator
+prefers the release-tag qualification round trip. The final release tag still
+runs one complete exact-tag qualification.
 
 Within each Android matrix job, clean installation and package sync happen
 once. A job-local app-data archive then restores identical prepared state after

@@ -30,6 +30,7 @@ import com.google.android.gms.location.Priority
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.OwnshipSourcePowerState
+import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationSample
 
 class AerobagGpsService : Service() {
@@ -51,7 +52,12 @@ class AerobagGpsService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ActionApplyPausedState -> {
-                pauseFromCore()
+                pauseGps(postPausedNotification = true)
+                return START_NOT_STICKY
+            }
+            AndroidGpsPower.NotificationDismissedAction -> {
+                AndroidGpsPower.requestControl(this, SituationControlInput.Pause)
+                pauseGps(postPausedNotification = false)
                 return START_NOT_STICKY
             }
         }
@@ -117,12 +123,14 @@ class AerobagGpsService : Service() {
         stopSelf()
     }
 
-    private fun pauseFromCore() {
+    private fun pauseGps(postPausedNotification: Boolean) {
         AndroidGpsPower.markGpsPaused(this)
         fusedLocationClient.removeLocationUpdates(locationCallback)
         publishFinalStatus(AndroidGpsSource.pausedStatus())
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        postPausedNotification()
+        if (postPausedNotification) {
+            postPausedNotification()
+        }
         stopSelf()
     }
 
@@ -179,6 +187,9 @@ class AerobagGpsService : Service() {
             .setContentText("High-precision GPS active")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setDeleteIntent(
+                serviceIntent(AndroidGpsPower.NotificationDismissedAction, 3),
+            )
             .addAction(
                 R.drawable.notification_aircraft,
                 "Pause GPS",
@@ -223,6 +234,14 @@ class AerobagGpsService : Service() {
             Intent(this, MainActivity::class.java)
                 .setAction(action)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    private fun serviceIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, AerobagGpsService::class.java).setAction(action),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 

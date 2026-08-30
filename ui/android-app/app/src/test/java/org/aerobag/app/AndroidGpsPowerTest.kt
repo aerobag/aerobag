@@ -8,10 +8,23 @@ import org.aerobag.app.domain.OwnshipControlTone
 import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.OwnshipSourceMenuItem
 import org.aerobag.app.domain.OwnshipSourcePowerState
+import org.aerobag.app.domain.SituationControlInput
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AndroidGpsPowerTest {
+    @Test
+    fun dismissingActiveNotificationRequestsTheSameCorePauseAsItsButton() {
+        assertEquals(
+            SituationControlInput.Pause,
+            AndroidGpsPower.controlInput(AndroidGpsPower.PauseAction),
+        )
+        assertEquals(
+            SituationControlInput.Pause,
+            AndroidGpsPower.controlInput(AndroidGpsPower.NotificationDismissedAction),
+        )
+    }
+
     @Test
     fun registrationCarriesPersistedPowerStateIntoCore() {
         assertEquals(

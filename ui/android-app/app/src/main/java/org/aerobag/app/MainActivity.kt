@@ -2302,11 +2302,7 @@ class MainActivity : ComponentActivity() {
     private fun routeGpsPowerIntent(intent: Intent?) {
         val input = AndroidGpsPower.controlInput(intent) ?: return
         intent?.action = null
-        if (onSituationControlInput?.invoke(input) == true) {
-            AndroidGpsPower.clearPendingControl(this)
-        } else {
-            AndroidGpsPower.setPendingControl(this, input)
-        }
+        AndroidGpsPower.requestControl(this, input)
     }
 
     override fun onResume() {
@@ -3201,9 +3197,19 @@ internal fun AerobagApp(
         applyBackgroundSessionCommand("updateOwnshipSourceStatus", "AerobagOwnship") {
             uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
         }
-        AndroidGpsPower.consumePendingControl(appContext)?.let { input ->
-            applyBackgroundSessionCommand("applySituationControlInput", "AerobagOwnship") {
-                uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+        launch {
+            fun applyPendingGpsControl() {
+                val input = AndroidGpsPower.pendingControl(appContext) ?: return
+                val applied = applyBackgroundSessionCommand("applySituationControlInput", "AerobagOwnship") {
+                    uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+                }
+                if (applied) {
+                    AndroidGpsPower.acknowledgeControl(appContext, input)
+                }
+            }
+            applyPendingGpsControl()
+            AndroidGpsPower.controlRequests.collect {
+                applyPendingGpsControl()
             }
         }
         launch {

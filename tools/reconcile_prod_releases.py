@@ -312,16 +312,18 @@ class Controller:
     def validate_public_production(self) -> None:
         origin = self.args.public_origin.rstrip("/")
         current = self.artifact_root / "channel-current/production"
-        checks = (
+        checks = [
             ("/", current / "web/index.html"),
-            ("/about", current / "web/about.html"),
             (
                 "/packages/current_artifacts.json",
                 current / "packages/current_artifacts.json",
             ),
             ("/live-feeds/status.json", None),
             ("/downloads/android-apk.json", current / "downloads/android-apk.json"),
-        )
+        ]
+        about = current / "web/about.html"
+        if about.is_file():
+            checks.insert(1, ("/about", about))
         for path, expected_path in checks:
             url = origin + path
             with urllib.request.urlopen(url, timeout=30) as response:

@@ -88,6 +88,57 @@ class ProgressReportingTests(unittest.TestCase):
             self.assertEqual(list(path.parent.glob(".*.tmp")), [])
 
 
+class PublicProductionValidationTests(unittest.TestCase):
+    def test_about_is_required_only_when_the_immutable_release_contains_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current = root / "channel-current/production"
+            files = {
+                current / "web/index.html": b"index",
+                current / "packages/current_artifacts.json": b"packages",
+                current / "downloads/android-apk.json": b"apk",
+            }
+            for path, body in files.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(body)
+
+            instance = controller.Controller.__new__(controller.Controller)
+            instance.args = SimpleNamespace(public_origin="https://aerobag.test")
+            instance.artifact_root = root
+            requested: list[str] = []
+
+            def urlopen(url: str, timeout: int):
+                requested.append(url)
+                relative = url.removeprefix("https://aerobag.test")
+                bodies = {
+                    "/": b"index",
+                    "/packages/current_artifacts.json": b"packages",
+                    "/live-feeds/status.json": b"live",
+                    "/downloads/android-apk.json": b"apk",
+                    "/about": b"about",
+                }
+                response = mock.MagicMock()
+                response.__enter__.return_value = SimpleNamespace(
+                    status=200,
+                    read=lambda: bodies[relative],
+                )
+                return response
+
+            with mock.patch.object(
+                controller.urllib.request,
+                "urlopen",
+                side_effect=urlopen,
+            ):
+                instance.validate_public_production()
+                self.assertNotIn("https://aerobag.test/about", requested)
+
+                (current / "web/about.html").write_bytes(b"about")
+                requested.clear()
+                instance.validate_public_production()
+
+            self.assertIn("https://aerobag.test/about", requested)
+
+
 class LiveFeedAllocationTests(unittest.TestCase):
     def test_controller_creates_daemon_owned_release_namespace_parents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

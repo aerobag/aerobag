@@ -18,7 +18,7 @@ function sourceBetween(start: string, end: string): string {
 
 describe("Home navigation policy", () => {
   it("renders the core-owned button inventory through the disabled-action affordance", () => {
-    const homePage = sourceBetween("function HomePage(", "function AboutPage(");
+    const homePage = sourceBetween("function HomePage(", "function CloudQrCode(");
 
     expect(appSource).not.toContain("HOME_GRID_BUTTONS");
     expect(homePage).toContain("props.state.buttons.map");

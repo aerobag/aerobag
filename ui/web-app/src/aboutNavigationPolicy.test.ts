@@ -6,6 +6,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const aboutSource = readFileSync(new URL("../about.html", import.meta.url), "utf8");
+const viteSource = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 
 function sourceBetween(start: string, end: string): string {
   const startIndex = appSource.indexOf(start);
@@ -16,19 +18,23 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("About navigation policy", () => {
-  it("serves a direct about request without mounting the operational app", () => {
-    const entry = sourceBetween("export default function App()", "function OperationalApp()");
-
-    expect(entry).toContain('appPageForCurrentPath() === "about"');
-    expect(entry).toContain("<AboutPage />");
-    expect(entry).toContain("<OperationalApp />");
-    expect(entry).not.toContain("useEffect(");
+  it("builds About as a standalone HTML document", () => {
+    expect(aboutSource).toContain('data-aerobag-page="about"');
+    expect(aboutSource).toContain('id="about-page"');
+    expect(aboutSource).toContain("__AEROBAG_ABOUT_README_HTML__");
+    expect(aboutSource).toContain("__AEROBAG_NO_WARRANTY_HTML__");
+    expect(aboutSource).not.toContain('id="startup-shell"');
+    expect(aboutSource).not.toContain('id="root"');
+    expect(aboutSource).not.toContain("/src/main.tsx");
+    expect(viteSource).toContain('about: path.join(webSourceRoot, "about.html")');
+    expect(viteSource).toContain('requestPath === "/about"');
   });
 
-  it("opens the web app through document navigation without requiring a ready core session", () => {
-    const aboutPage = sourceBetween("function AboutPage(", "function formatApkSize(");
+  it("leaves the React application through a normal About link", () => {
+    const homePage = sourceBetween("function HomePage(", "function CloudQrCode(");
 
-    expect(aboutPage).toContain('href={urlForAppPage("home")}');
-    expect(aboutPage).not.toContain("onOpenApp");
+    expect(appSource).not.toContain("function AboutPage(");
+    expect(appSource).not.toContain("appPageForCurrentPath");
+    expect(homePage).toContain("href={disabled ? undefined : urlForAppPage(presentation.documentPage)}");
   });
 });

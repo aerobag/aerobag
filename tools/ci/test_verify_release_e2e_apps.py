@@ -30,6 +30,7 @@ class ReleaseE2eAppVerificationTests(unittest.TestCase):
         cloud.write_bytes(b"cloud")
         (root / "web-dist").mkdir()
         (root / "web-dist/index.html").write_text("app", encoding="utf-8")
+        (root / "web-dist/about.html").write_text("about", encoding="utf-8")
 
         def record(path: Path) -> dict[str, object]:
             return {

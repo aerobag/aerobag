@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { appPageForPath, appPageUrl } from "./webRouteUrl";
+import { appPageUrl } from "./webRouteUrl";
 
 describe("release-aware web routes", () => {
   it.each([
@@ -18,6 +18,5 @@ describe("release-aware web routes", () => {
   ])("keeps navigation in the current serving view", (current, about, home) => {
     expect(appPageUrl("about", current)).toBe(about);
     expect(appPageUrl("home", about)).toBe(home);
-    expect(appPageForPath(about)).toBe("about");
   });
 });

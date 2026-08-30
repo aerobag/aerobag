@@ -36,6 +36,8 @@ const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_
 const webE2eEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_E2E_ENABLED ?? "");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
+const aboutReadmePath = path.join(webSourceRoot, "src", "content", "about-readme.html");
+const noWarrantyPath = path.join(sharedRoot, "no-warranty.html");
 const productContractsPath = path.join(repoRoot, "crates", "product-contracts", "src", "lib.rs");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
 const requestLogPath = path.join("/tmp", "aerobag-web-requests.log");
@@ -308,6 +310,13 @@ function serveGeneratedWasm(
 
 function aerobagStaticPlugin(): Plugin {
   function installMiddlewares(server: { middlewares: { use: (...args: unknown[]) => void } }) {
+    server.middlewares.use((req: IncomingMessage, _res: ServerResponse, next: () => void) => {
+      const [requestPath, query] = (req.url ?? "").split("?", 2);
+      if (requestPath === "/about") {
+        req.url = `/about.html${query ? `?${query}` : ""}`;
+      }
+      next();
+    });
     // Vite otherwise serves this 20+ MiB development artifact uncompressed.
     server.middlewares.use(serveGeneratedWasm);
     server.middlewares.use("/__debug_log", (req, res, next) => {
@@ -399,9 +408,31 @@ function aerobagProductContractsPlugin(): Plugin {
   };
 }
 
+function aerobagAboutPagePlugin(): Plugin {
+  const apkMetadataUrl = `${downloadsBaseUrl?.replace(/\/+$/, "") || "/downloads"}/android-apk.json`;
+  const apkMetadataUrlLiteral = JSON.stringify(apkMetadataUrl).replaceAll("<", "\\u003c");
+  const noWarrantyHtml = fs.readFileSync(noWarrantyPath, "utf8");
+  const aboutReadmeHtml = fs.readFileSync(aboutReadmePath, "utf8");
+  return {
+    name: "aerobag-about-page",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html) {
+        if (!html.includes("__AEROBAG_ABOUT_README_HTML__")) {
+          return html;
+        }
+        return html
+          .replace("__AEROBAG_ANDROID_APK_METADATA_URL__", apkMetadataUrlLiteral)
+          .replace("__AEROBAG_NO_WARRANTY_HTML__", noWarrantyHtml)
+          .replace("__AEROBAG_ABOUT_README_HTML__", aboutReadmeHtml);
+      },
+    },
+  };
+}
+
 export default defineConfig({
   base: webPublicBaseUrl,
-  plugins: [aerobagProductContractsPlugin(), react(), aerobagStaticPlugin()],
+  plugins: [aerobagAboutPagePlugin(), aerobagProductContractsPlugin(), react(), aerobagStaticPlugin()],
   define: {
     __AEROBAG_DEBUG_LOG_ENABLED__: JSON.stringify(webDebugLogEnabled),
     __AEROBAG_E2E_ENABLED__: JSON.stringify(webE2eEnabled),
@@ -444,6 +475,12 @@ export default defineConfig({
       ? path.resolve(process.env.AEROBAG_WEB_DIST)
       : path.join(webTargetRoot, "dist"),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        app: path.join(webSourceRoot, "index.html"),
+        about: path.join(webSourceRoot, "about.html"),
+      },
+    },
   },
   worker: {
     format: "es",

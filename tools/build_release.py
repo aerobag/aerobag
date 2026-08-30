@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import shutil
@@ -20,6 +21,10 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+ABOUT_DOWNLOAD_PANEL_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_BEGIN -->"
+ABOUT_DOWNLOAD_PANEL_END = "<!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_END -->"
+ABOUT_DOWNLOAD_SCRIPT_BEGIN = "<!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_BEGIN -->"
+ABOUT_DOWNLOAD_SCRIPT_END = "<!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_END -->"
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,6 +169,75 @@ def collect_web_build_output(web_dist: Path, build_ui_root: Path) -> None:
         legacy_web_dist.rename(web_dist)
     if not web_dist.is_dir():
         raise RuntimeError("web build did not produce an isolated release tree")
+    for page in ("index.html", "about.html"):
+        if not (web_dist / page).is_file():
+            raise RuntimeError(f"web build did not produce {page}")
+
+
+def _replace_marked_region(
+    source: str,
+    begin: str,
+    end: str,
+    replacement: str,
+) -> str:
+    if source.count(begin) != 1 or source.count(end) != 1:
+        raise RuntimeError(f"About page is missing unique publication markers: {begin}")
+    prefix, remainder = source.split(begin, 1)
+    _discarded, suffix = remainder.split(end, 1)
+    return f"{prefix}{replacement}{suffix}"
+
+
+def finalize_static_about_page(path: Path, metadata: dict) -> None:
+    required_strings: dict[str, str] = {}
+    for key in ("apk_url", "filename", "git_commit", "version_name", "built_at_utc"):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(f"Android APK metadata has no {key}")
+        required_strings[key] = value
+    size_bytes = metadata.get("apk_size_bytes")
+    if (
+        isinstance(size_bytes, bool)
+        or not isinstance(size_bytes, int)
+        or size_bytes < 0
+    ):
+        raise RuntimeError("Android APK metadata has invalid apk_size_bytes")
+    apk_url = required_strings["apk_url"]
+    if not (apk_url.startswith("/") or apk_url.startswith("https://")):
+        raise RuntimeError("Android APK metadata has unsafe apk_url")
+    filename = required_strings["filename"]
+    if Path(filename).name != filename:
+        raise RuntimeError("Android APK metadata has unsafe filename")
+
+    megabytes = size_bytes / 1_000_000
+    apk_size = f"{megabytes:.0f} MB" if megabytes >= 10 else f"{megabytes:.1f} MB"
+    short_commit = required_strings["git_commit"][:8]
+
+    def escape(value: str) -> str:
+        return html.escape(value, quote=True)
+
+    version_name = required_strings["version_name"]
+    download_title = f"Download {filename} ({version_name}, {short_commit})"
+    panel = f"""<a id="android-apk" class="button" href="{escape(apk_url)}" title="{escape(download_title)}">Android APK</a>
+          <dl id="android-metadata" class="metadata">
+            <div><dt>APK size</dt><dd>{escape(apk_size)}</dd></div>
+            <div><dt>Android version</dt><dd>{escape(version_name)}</dd></div>
+            <div><dt>Build</dt><dd>{escape(short_commit)}</dd></div>
+            <div><dt>Published</dt><dd>{escape(required_strings['built_at_utc'])}</dd></div>
+          </dl>"""
+    source = path.read_text(encoding="utf-8")
+    source = _replace_marked_region(
+        source,
+        ABOUT_DOWNLOAD_PANEL_BEGIN,
+        ABOUT_DOWNLOAD_PANEL_END,
+        panel,
+    )
+    source = _replace_marked_region(
+        source,
+        ABOUT_DOWNLOAD_SCRIPT_BEGIN,
+        ABOUT_DOWNLOAD_SCRIPT_END,
+        "",
+    )
+    path.write_text(source, encoding="utf-8")
 
 
 def _load_existing_release(path: Path, tag: str, commit: str) -> bool:
@@ -263,6 +337,7 @@ def build_release(args: argparse.Namespace) -> Path:
         apk_metadata = json.loads(
             (downloads / "android-apk.json").read_text(encoding="utf-8")
         )
+        finalize_static_about_page(web_dist / "about.html", apk_metadata)
         apk_path = downloads / apk_metadata["filename"]
         metadata = {
             "schema_version": 1,

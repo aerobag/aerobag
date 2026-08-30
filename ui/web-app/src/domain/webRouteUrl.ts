@@ -12,10 +12,6 @@ export function appRouteBase(pathname: string): string {
   return release ?? "";
 }
 
-export function appPageForPath(pathname: string): "about" | null {
-  return pathname === `${appRouteBase(pathname)}/about` ? "about" : null;
-}
-
 export function appPageUrl(page: string, pathname: string): string {
   const base = appRouteBase(pathname);
   return page === "about" ? `${base}/about` : `${base}/`;

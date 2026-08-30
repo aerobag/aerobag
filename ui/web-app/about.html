@@ -1,0 +1,270 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 Aerobag contributors
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<html lang="en" data-aerobag-page="about">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="About Aerobag, an open-source flight planning tool and electronic flight bag." />
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <title>About Aerobag</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Segoe UI", system-ui, sans-serif;
+        color: #132129;
+        background: #8c9dad;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        padding: clamp(16px, 3vw, 42px);
+        background:
+          radial-gradient(circle at 78% 18%, rgba(246, 201, 91, 0.3), transparent 30%),
+          radial-gradient(circle at 18% 82%, rgba(90, 142, 164, 0.32), transparent 34%),
+          #8c9dad;
+      }
+
+      main {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        overflow: hidden;
+        border-radius: 22px;
+        background: #fefcf7;
+        box-shadow: 0 18px 48px rgba(7, 21, 33, 0.28);
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(180px, 360px) minmax(0, 1fr);
+        align-items: center;
+        gap: clamp(18px, 4vw, 48px);
+        padding: clamp(24px, 5vw, 54px);
+        color: #f7fbff;
+        background: linear-gradient(145deg, #071521, #14314a 62%, #2c5678);
+      }
+
+      .brand {
+        display: block;
+        width: 100%;
+        height: auto;
+        filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.28));
+      }
+
+      .actions {
+        display: grid;
+        gap: 14px;
+      }
+
+      .button {
+        display: grid;
+        min-height: 58px;
+        place-items: center;
+        border-radius: 12px;
+        padding: 10px 18px;
+        color: #f7fbff;
+        background: #234f77;
+        font-size: clamp(1rem, 2vw, 1.25rem);
+        font-weight: 900;
+        letter-spacing: 0.03em;
+        text-align: center;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      .button.secondary {
+        color: #132129;
+        background: #dce5ec;
+      }
+
+      .button[aria-disabled="true"] {
+        opacity: 0.56;
+        pointer-events: none;
+      }
+
+      .download-status {
+        min-height: 1.4em;
+        margin: -4px 0 0;
+        color: rgba(247, 251, 255, 0.76);
+        font-size: 0.9rem;
+        text-align: center;
+      }
+
+      .metadata {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px 18px;
+        margin: 0;
+        padding: 14px;
+        border-radius: 10px;
+        color: #132129;
+        background: rgba(255, 255, 255, 0.82);
+      }
+
+      .metadata div {
+        min-width: 0;
+      }
+
+      .metadata dt {
+        color: #52656d;
+        font-size: 0.72rem;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .metadata dd {
+        margin: 2px 0 0;
+        overflow: hidden;
+        font-size: 0.9rem;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      article {
+        padding: clamp(24px, 5vw, 58px);
+        font-size: clamp(1rem, 1.8vw, 1.2rem);
+        line-height: 1.55;
+      }
+
+      article > :first-child {
+        margin-top: 0;
+      }
+
+      article > :last-child {
+        margin-bottom: 0;
+      }
+
+      article h1 {
+        margin: 1.6em 0 0.45em;
+        color: #071521;
+        font-size: clamp(1.65rem, 4vw, 2.45rem);
+        line-height: 1.05;
+        letter-spacing: -0.035em;
+      }
+
+      article h2 {
+        margin: 1.4em 0 0.4em;
+        color: #14314a;
+      }
+
+      article p,
+      article ul {
+        margin: 0 0 1em;
+      }
+
+      article li + li {
+        margin-top: 0.4em;
+      }
+
+      article a {
+        color: #155d91;
+        font-weight: 700;
+      }
+
+      @media (max-width: 680px) {
+        body {
+          padding: 0;
+        }
+
+        main {
+          min-height: 100vh;
+          border-radius: 0;
+        }
+
+        header {
+          grid-template-columns: 1fr;
+        }
+
+        .brand {
+          width: min(100%, 360px);
+          margin: 0 auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="about-page">
+      <header>
+        <img class="brand" src="./logo.svg" alt="Aerobag" />
+        <div class="actions">
+          <!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_BEGIN -->
+          <a id="android-apk" class="button" aria-disabled="true">Android APK</a>
+          <p id="download-status" class="download-status">Checking Android download metadata…</p>
+          <dl id="android-metadata" class="metadata" hidden>
+            <div><dt>APK size</dt><dd id="apk-size"></dd></div>
+            <div><dt>Android version</dt><dd id="apk-version"></dd></div>
+            <div><dt>Build</dt><dd id="apk-build"></dd></div>
+            <div><dt>Published</dt><dd id="apk-published"></dd></div>
+          </dl>
+          <!-- AEROBAG_ANDROID_DOWNLOAD_PANEL_END -->
+          <a class="button secondary" href="./">Open Web App</a>
+        </div>
+      </header>
+      <article>
+        __AEROBAG_NO_WARRANTY_HTML__
+        __AEROBAG_ABOUT_README_HTML__
+      </article>
+    </main>
+    <!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_BEGIN -->
+    <script>
+      (() => {
+        const metadataUrl = __AEROBAG_ANDROID_APK_METADATA_URL__;
+        const apkLink = document.getElementById("android-apk");
+        const status = document.getElementById("download-status");
+        const metadataList = document.getElementById("android-metadata");
+        const setText = (id, value) => {
+          const node = document.getElementById(id);
+          if (node) node.textContent = value;
+        };
+        const formatApkSize = (bytes) => {
+          const megabytes = bytes / 1000000;
+          return `${megabytes >= 10 ? megabytes.toFixed(0) : megabytes.toFixed(1)} MB`;
+        };
+
+        fetch(metadataUrl, { cache: "no-cache" })
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const metadata = await response.json();
+            if (
+              typeof metadata.apk_url !== "string" ||
+              typeof metadata.filename !== "string" ||
+              typeof metadata.apk_size_bytes !== "number" ||
+              !Number.isFinite(metadata.apk_size_bytes) ||
+              metadata.apk_size_bytes < 0 ||
+              typeof metadata.git_commit !== "string" ||
+              typeof metadata.version_name !== "string" ||
+              typeof metadata.built_at_utc !== "string"
+            ) {
+              throw new Error("invalid Android download metadata");
+            }
+            const apkUrl = new URL(metadata.apk_url, window.location.href);
+            if (apkUrl.protocol !== "http:" && apkUrl.protocol !== "https:") {
+              throw new Error("invalid Android download URL");
+            }
+            apkLink.href = apkUrl.href;
+            apkLink.title = `Download ${metadata.filename} (${metadata.version_name}, ${metadata.git_commit.slice(0, 8)})`;
+            apkLink.removeAttribute("aria-disabled");
+            status.hidden = true;
+            setText("apk-size", formatApkSize(metadata.apk_size_bytes));
+            setText("apk-version", metadata.version_name);
+            setText("apk-build", metadata.git_commit.slice(0, 8));
+            setText("apk-published", metadata.built_at_utc);
+            metadataList.hidden = false;
+          })
+          .catch((error) => {
+            status.textContent = `Android APK metadata unavailable: ${error instanceof Error ? error.message : String(error)}`;
+          });
+      })();
+    </script>
+    <!-- AEROBAG_ANDROID_DOWNLOAD_SCRIPT_END -->
+  </body>
+</html>

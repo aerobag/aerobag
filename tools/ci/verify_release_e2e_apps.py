@@ -78,6 +78,8 @@ def verify_bundle(root: Path) -> None:
     verify_file(root, manifest.get("cloud_server"), "Cloud server")
     if not (root / "web-dist/index.html").is_file():
         raise VerificationError("web-dist/index.html is missing")
+    if not (root / "web-dist/about.html").is_file():
+        raise VerificationError("web-dist/about.html is missing")
 
 
 def main() -> int:

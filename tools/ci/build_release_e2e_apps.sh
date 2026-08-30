@@ -86,6 +86,7 @@ APK="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/release/app-release.a
 DRIVER_APK="$AEROBAG_UI_TARGET_ROOT/android/build/app/outputs/apk/androidTest/release/app-release-androidTest.apk"
 CLOUD_SERVER="$AEROBAG_UI_TARGET_ROOT/services/debug/aerobag-cloud-serverd"
 test -f "$WEB_DIST/index.html"
+test -f "$WEB_DIST/about.html"
 test -f "$APK"
 test -f "$DRIVER_APK"
 test -x "$CLOUD_SERVER"

@@ -302,6 +302,7 @@ class Controller:
         current = self.artifact_root / "channel-current/production"
         checks = (
             ("/", current / "web/index.html"),
+            ("/about", current / "web/about.html"),
             (
                 "/packages/current_artifacts.json",
                 current / "packages/current_artifacts.json",
@@ -673,6 +674,7 @@ class Controller:
         base = self.args.public_origin.rstrip("/") + "/staging"
         checks = {
             "web": (f"{base}/", release_root / "web/index.html"),
+            "about": (f"{base}/about", release_root / "web/about.html"),
             "packages": (
                 f"{base}/packages/current_artifacts.json",
                 self.artifact_root

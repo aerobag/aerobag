@@ -1391,6 +1391,15 @@ def nginx_config(config: dict[str, Any]) -> str:
         add_header Cache-Control "public, max-age=300";
     }}
 
+    location = /about {{
+        alias {channel_root}/production/web/about.html;
+        add_header Cache-Control "no-cache";
+    }}
+
+    location = /about/ {{
+        return 308 /about;
+    }}
+
     location = /staging {{
         return 302 /staging/;
     }}
@@ -1412,9 +1421,18 @@ def nginx_config(config: dict[str, Any]) -> str:
         rewrite ^ /staging/index.html last;
     }}
 
-    location ~ "^/staging/(?:index\\.html|about)$" {{
+    location = /staging/index.html {{
         alias {channel_root}/staging/web/index.html;
         add_header Cache-Control "no-cache";
+    }}
+
+    location = /staging/about {{
+        alias {channel_root}/staging/web/about.html;
+        add_header Cache-Control "no-cache";
+    }}
+
+    location = /staging/about/ {{
+        return 308 /staging/about;
     }}
 
     location /staging/ {{
@@ -1426,9 +1444,18 @@ def nginx_config(config: dict[str, Any]) -> str:
         rewrite ^/releases/([^/]+)/web/$ /releases/$1/web/index.html last;
     }}
 
-    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/(?:index\\.html|about)$" {{
+    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/index\\.html$" {{
         alias {channel_root}/releases/$1/web/index.html;
         add_header Cache-Control "no-cache";
+    }}
+
+    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/about$" {{
+        alias {channel_root}/releases/$1/web/about.html;
+        add_header Cache-Control "no-cache";
+    }}
+
+    location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/about/$" {{
+        return 308 /releases/$1/web/about;
     }}
 
     location /releases/ {{

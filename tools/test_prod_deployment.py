@@ -200,11 +200,18 @@ class ProductPublicationTests(unittest.TestCase):
         self.assertIn("/channel-current/staging/packages/", nginx)
         self.assertIn("/channel-current/releases/", nginx)
         self.assertIn(
+            "location = /about {\n        alias "
+            f"{config['artifact_root']}/channel-current/production/web/about.html;",
+            nginx,
+        )
+        self.assertIn(
             "location = /staging/ {\n        rewrite ^ /staging/index.html last;",
             nginx,
         )
         self.assertIn(
-            'location ~ "^/staging/(?:index\\.html|about)$" {', nginx
+            "location = /staging/about {\n        alias "
+            f"{config['artifact_root']}/channel-current/staging/web/about.html;",
+            nginx,
         )
         self.assertIn(
             'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/$" {',
@@ -215,7 +222,11 @@ class ProductPublicationTests(unittest.TestCase):
             nginx,
         )
         self.assertIn(
-            'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/(?:index\\.html|about)$" {',
+            'location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/web/about$" {',
+            nginx,
+        )
+        self.assertIn(
+            f"alias {config['artifact_root']}/channel-current/releases/$1/web/about.html;",
             nginx,
         )
         self.assertNotIn('location ~ "^/staging/(?:about)?$" {', nginx)

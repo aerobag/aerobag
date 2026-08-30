@@ -84,6 +84,7 @@ class ReleaseBuildTests(unittest.TestCase):
             legacy_output = isolated_ui / "web/dist"
             legacy_output.mkdir(parents=True)
             (legacy_output / "index.html").write_text("legacy", encoding="utf-8")
+            (legacy_output / "about.html").write_text("about", encoding="utf-8")
             release_web = root / "release/web"
 
             build_release.collect_web_build_output(release_web, isolated_ui)
@@ -92,7 +93,43 @@ class ReleaseBuildTests(unittest.TestCase):
                 (release_web / "index.html").read_text(encoding="utf-8"),
                 "legacy",
             )
+            self.assertEqual(
+                (release_web / "about.html").read_text(encoding="utf-8"),
+                "about",
+            )
             self.assertFalse(legacy_output.exists())
+
+    def test_release_about_page_embeds_apk_metadata_without_javascript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            about = Path(temporary) / "about.html"
+            about.write_text(
+                "before"
+                f"{build_release.ABOUT_DOWNLOAD_PANEL_BEGIN}dynamic panel"
+                f"{build_release.ABOUT_DOWNLOAD_PANEL_END}middle"
+                f"{build_release.ABOUT_DOWNLOAD_SCRIPT_BEGIN}<script>fetch()</script>"
+                f"{build_release.ABOUT_DOWNLOAD_SCRIPT_END}after",
+                encoding="utf-8",
+            )
+
+            build_release.finalize_static_about_page(
+                about,
+                {
+                    "apk_url": "/downloads/aerobag.apk",
+                    "filename": "aerobag.apk",
+                    "apk_size_bytes": 31_000_000,
+                    "git_commit": "0123456789abcdef",
+                    "version_name": "2026-08-30.1<&",
+                    "built_at_utc": "2026-08-30T17:00:00Z",
+                },
+            )
+
+            rendered = about.read_text(encoding="utf-8")
+            self.assertIn('href="/downloads/aerobag.apk"', rendered)
+            self.assertIn("31 MB", rendered)
+            self.assertIn("2026-08-30.1&lt;&amp;", rendered)
+            self.assertNotIn("<script", rendered)
+            self.assertNotIn("fetch()", rendered)
+            self.assertNotIn("AEROBAG_ANDROID_DOWNLOAD", rendered)
 
 
 if __name__ == "__main__":

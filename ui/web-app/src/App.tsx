@@ -38,7 +38,6 @@ import type {
   WeatherDetailUiView,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
-import aboutReadmeHtml from "./content/about-readme.html?raw";
 import noWarrantyHtml from "@shared/no-warranty.html?raw";
 import {
   airportCircleMarkerPath,
@@ -166,7 +165,7 @@ import {
   e2eRasterTileStallUrl,
   rasterTileLoadUrl,
 } from "./domain/rasterTileLoadRecovery";
-import { appPageForPath, appPageUrl } from "./domain/webRouteUrl";
+import { appPageUrl } from "./domain/webRouteUrl";
 import {
   clampImageViewport,
   clampImageZoom,
@@ -882,7 +881,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "altitude" | "charts" | "home" | "data" | "settings" | "cloud" | "about";
+type AppPage = "map" | "plan" | "altitude" | "charts" | "home" | "data" | "settings" | "cloud";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -1062,7 +1061,11 @@ const CHART_REFERENCE_ICON_SRC = "/icons/icons/chart-reference-icon.png?v=202607
 const NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS = 1_000;
 const HOME_GRID_COLUMN_COUNT = 3;
 
-function webHomeButtonPresentation(destination: UiHomeDestination): { page: AppPage | null; iconSrc?: string } {
+function webHomeButtonPresentation(destination: UiHomeDestination): {
+  page: AppPage | null;
+  iconSrc?: string;
+  documentPage?: "about";
+} {
   switch (destination) {
     case "chart":
       return { page: "map", iconSrc: PAGE_CHART_ICON_SRC };
@@ -1081,7 +1084,7 @@ function webHomeButtonPresentation(destination: UiHomeDestination): { page: AppP
     case "offline_packages":
       return { page: null, iconSrc: HOME_OFFLINE_PACKAGES_ICON_SRC };
     case "about":
-      return { page: "about", iconSrc: HOME_ABOUT_ICON_SRC };
+      return { page: null, iconSrc: HOME_ABOUT_ICON_SRC, documentPage: "about" };
   }
 }
 
@@ -1392,11 +1395,6 @@ function useNavigationPagePolicy(): NavigationPagePolicy {
 }
 
 const webUiStateStorageKey = "aerobag.web.uiState.v1";
-declare const __AEROBAG_DOWNLOADS_BASE_URL__: string | null;
-
-const androidApkMetadataPath = `${
-  __AEROBAG_DOWNLOADS_BASE_URL__?.replace(/\/+$/, "") || "/downloads"
-}/android-apk.json`;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
@@ -1413,16 +1411,6 @@ type PersistedWebUiState = {
   selectedAirportId?: string;
   selectedChartId?: string;
   recentAirportIds?: string[];
-};
-
-type AndroidApkDownloadMetadata = {
-  apk_url: string;
-  filename: string;
-  apk_size_bytes: number;
-  git_commit: string;
-  version_code: number;
-  version_name: string;
-  built_at_utc: string;
 };
 
 type FlightDataBannerEdge = "left" | "right";
@@ -1448,14 +1436,7 @@ type WebHistoryState = {
   stack?: AppViewSnapshot[];
 };
 
-function appPageForCurrentPath(): AppPage | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  return appPageForPath(window.location.pathname);
-}
-
-function urlForAppPage(page: AppPage): string {
+function urlForAppPage(page: AppPage | "about"): string {
   return appPageUrl(
     page,
     typeof window === "undefined" ? "/" : window.location.pathname,
@@ -2351,13 +2332,6 @@ const appThemeVars = {
 } as CSSProperties;
 
 export default function App() {
-  if (appPageForCurrentPath() === "about") {
-    return (
-      <main className="appShell" style={appThemeVars}>
-        <AboutPage />
-      </main>
-    );
-  }
   return <OperationalApp />;
 }
 
@@ -2366,7 +2340,7 @@ function OperationalApp() {
   const [sessionStartMs] = useState(() => Date.now());
   const initialDebugState = useMemo(defaultUiDebugState, []);
   const persistedUiState = useMemo(readPersistedWebUiState, []);
-  const initialPage = useMemo(() => appPageForCurrentPath() ?? persistedUiState.page ?? "map", [persistedUiState.page]);
+  const initialPage = useMemo(() => persistedUiState.page ?? "map", [persistedUiState.page]);
   const [page, setPage] = useState<AppPage>(initialPage);
   const [persistedPage, setPersistedPage] = useState<AppPage>(initialPage);
   const [mapOrientationMode, setMapOrientationMode] = useState<MapOrientationMode>(
@@ -3734,13 +3708,13 @@ function OperationalApp() {
 
   useEffect(() => {
     writePersistedWebUiState({
-      page: page === "about" ? undefined : page,
+      page,
       mapOrientationMode,
       selectedAirportId,
       selectedChartId,
       recentAirportIds,
     });
-    if (page !== "about") setPersistedPage(page);
+    setPersistedPage(page);
   }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId]);
 
   const navigationPageOptions = useMemo(
@@ -3956,16 +3930,13 @@ function OperationalApp() {
       return;
     }
     const shouldHideStartupShell =
-      page === "about" ||
       startupFatalError !== null ||
       sessionInitError !== null ||
       mapSelectorLoadError !== null ||
       chartPageStateLoadError !== null ||
       (appReady && planUiState !== null);
     if (shouldHideStartupShell) {
-      const reason = page === "about"
-        ? "about_page"
-        : startupFatalError !== null
+      const reason = startupFatalError !== null
         ? "startup_fatal_error"
         : sessionInitError !== null
           ? "session_init_error"
@@ -3976,15 +3947,7 @@ function OperationalApp() {
               : "app_ready";
       window.__aerobag_hide_startup_shell?.(reason);
     }
-  }, [appReady, chartPageStateLoadError, mapSelectorLoadError, page, planUiState, sessionInitError, startupFatalError]);
-
-  if (page === "about") {
-    return (
-      <main className="appShell" style={themeVars}>
-        <AboutPage />
-      </main>
-    );
-  }
+  }, [appReady, chartPageStateLoadError, mapSelectorLoadError, planUiState, sessionInitError, startupFatalError]);
 
   if (startupFatalError) {
     return (
@@ -12963,11 +12926,44 @@ function HomePage(props: {
           const presentation = webHomeButtonPresentation(button.destination);
           const disabledReason = disabledReasonText(button.disabled_reason);
           const disabled = !button.enabled;
+          const className = `chartButton chartButtonDouble homeButton${presentation.page === page ? " isOpen" : ""}${disabled ? " isDisabled" : ""}`;
+          const contents = (
+            <>
+              {presentation.iconSrc ? <img className="chartButtonIcon" src={presentation.iconSrc} alt="" aria-hidden="true" /> : null}
+              <span className="chartButtonLabel chartButtonLabelDouble">{button.label}</span>
+            </>
+          );
+          if (presentation.documentPage) {
+            return (
+              <a
+                key={button.destination}
+                className={className}
+                data-testid={`home-button-${button.destination}`}
+                href={disabled ? undefined : urlForAppPage(presentation.documentPage)}
+                aria-disabled={disabled ? "true" : undefined}
+                title={disabledReason ?? undefined}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+                onClick={(event) => {
+                  if (!disabled) {
+                    return;
+                  }
+                  event.preventDefault();
+                  if (disabledReason) {
+                    showDisabledAction(disabledReason);
+                  }
+                }}
+              >
+                {contents}
+              </a>
+            );
+          }
           return (
             <button
               key={button.destination}
               type="button"
-              className={`chartButton chartButtonDouble homeButton${presentation.page === page ? " isOpen" : ""}${disabled ? " isDisabled" : ""}`}
+              className={className}
               data-testid={`home-button-${button.destination}`}
               disabled={disabled && !disabledReason}
               aria-disabled={disabled ? "true" : undefined}
@@ -12988,8 +12984,7 @@ function HomePage(props: {
                 onSelectPage(presentation.page);
               }}
             >
-              {presentation.iconSrc ? <img className="chartButtonIcon" src={presentation.iconSrc} alt="" aria-hidden="true" /> : null}
-              <span className="chartButtonLabel chartButtonLabelDouble">{button.label}</span>
+              {contents}
             </button>
           );
         })}
@@ -13010,123 +13005,6 @@ function HomePage(props: {
       ) : null}
     </section>
   );
-}
-
-function AboutPage() {
-  const [metadata, setMetadata] = useState<AndroidApkDownloadMetadata | null>(null);
-  const [metadataError, setMetadataError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setMetadataError(null);
-    fetch(androidApkMetadataPath, { cache: "no-cache" })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        const parsed = await response.json() as Partial<AndroidApkDownloadMetadata>;
-        if (
-          typeof parsed.apk_url !== "string" ||
-          typeof parsed.filename !== "string" ||
-          typeof parsed.apk_size_bytes !== "number" ||
-          !Number.isFinite(parsed.apk_size_bytes) ||
-          parsed.apk_size_bytes < 0 ||
-          typeof parsed.git_commit !== "string" ||
-          typeof parsed.version_name !== "string" ||
-          typeof parsed.built_at_utc !== "string" ||
-          typeof parsed.version_code !== "number"
-        ) {
-          throw new Error("invalid android-apk metadata");
-        }
-        if (!cancelled) {
-          setMetadata(parsed as AndroidApkDownloadMetadata);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setMetadata(null);
-          setMetadataError(errorMessage(error));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const shortCommit = metadata?.git_commit.slice(0, 8) ?? "";
-  const apkSize = metadata ? formatApkSize(metadata.apk_size_bytes) : "";
-  const apkUnavailableTitle = loading
-    ? "Checking Android download metadata..."
-    : `Android APK is not published in this static tree${metadataError ? `: ${metadataError}` : "."}`;
-  return (
-    <section className="appPage aboutPage" data-testid="parity:page:about">
-      <div className="aboutPagePanel">
-        <div className="aboutActionRow">
-          <div className="aboutActionColumn">
-            {metadata ? (
-              <a
-                className="aboutActionButton"
-                href={metadata.apk_url}
-                title={`Download ${metadata.filename} (${metadata.version_name}, ${shortCommit})`}
-              >
-                Android APK
-              </a>
-            ) : (
-              <button type="button" className="aboutActionButton" disabled title={apkUnavailableTitle}>
-                Android APK
-              </button>
-            )}
-            {metadata ? (
-              <dl className="aboutMetadata">
-                <div>
-                  <dt>APK size</dt>
-                  <dd>{apkSize}</dd>
-                </div>
-                <div>
-                  <dt>Android Version</dt>
-                  <dd>{metadata.version_name}</dd>
-                </div>
-                <div>
-                  <dt>Build</dt>
-                  <dd>{shortCommit}</dd>
-                </div>
-                <div>
-                  <dt>Published</dt>
-                  <dd>{metadata.built_at_utc}</dd>
-                </div>
-              </dl>
-            ) : (
-              <p className="aboutDownloadUnavailable">{apkUnavailableTitle}</p>
-            )}
-          </div>
-          <div className="aboutActionColumn">
-            <a href={urlForAppPage("home")} className="aboutActionButton aboutWebActionButton">
-              Open Web App
-            </a>
-          </div>
-        </div>
-
-        <div className="aboutReadmeRegion">
-          <article
-            className="aboutReadmeContent"
-            dangerouslySetInnerHTML={{ __html: `${noWarrantyHtml}\n${aboutReadmeHtml}` }}
-          />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function formatApkSize(bytes: number): string {
-  const megabytes = bytes / 1_000_000;
-  return `${megabytes >= 10 ? megabytes.toFixed(0) : megabytes.toFixed(1)} MB`;
 }
 
 function CloudQrCode({ code }: { code: UiQrCode }) {

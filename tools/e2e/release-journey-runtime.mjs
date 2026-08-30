@@ -309,8 +309,16 @@ export function createJourneyRuntime({
     },
 
     async openOption(description, launcherId, optionId) {
-      const rendered = await driver.readOption(launcherId, optionId);
-      if (rendered) return rendered;
+      const visibleTarget = await runtime.eventually(
+        `${description} choice or launcher`,
+        async () => {
+          const rendered = await driver.readOption(launcherId, optionId);
+          if (rendered) return { kind: "option", element: rendered };
+          const launcher = await driver.readAction(launcherId);
+          return launcher ? { kind: "launcher", element: launcher } : null;
+        },
+      );
+      if (visibleTarget.kind === "option") return visibleTarget.element;
       return runtime.transition(`open ${description} choices`, {
         readinessSamples: 1,
         ready: () => driver.readAction(launcherId),

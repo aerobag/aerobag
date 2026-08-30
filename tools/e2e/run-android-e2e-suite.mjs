@@ -344,8 +344,8 @@ async function ensureOfflinePackagesReady(
     });
     recordStep(result, "offline package sync requested", "region nw");
     await waitFor(() => {
-      const nextXml = dumpAndroid(serial);
-      return runtimeUiVisible(nextXml) || disclaimerVisible(nextXml);
+      const startup = queryAndroidStartupProjection(serial);
+      return startup?.ready === "true" ? startup : null;
     }, E2E_TIMING.offlineSyncMs, "runtime loaded after offline package sync", E2E_TIMING.resourcePollIntervalMs);
     recordStep(result, "offline package sync completed", "runtime loaded");
   }
@@ -353,20 +353,21 @@ async function ensureOfflinePackagesReady(
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  xml = dumpAndroid(serial);
-  if (offlinePackagesVisible(xml) && runtimeUiVisible(xml)) {
+  const startup = queryAndroidStartupProjection(serial);
+  if (startup?.page === "OfflinePackages" && startup?.ready === "true") {
     await nativeTransition(result, "offline package page dismissed", {
-      ready: async () => findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, "parity:button:HOME"),
-      ),
+      ready: async () => queryAndroidSemanticNodes(
+        serial,
+        "parity:button:HOME",
+        { first: true },
+      )[0] ?? null,
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => androidRuntimeReadyForJourney(dumpAndroid(serial)),
+      complete: async () => queryAndroidRuntimeReadyForJourney(serial),
     });
     recordStep(result, "offline package page dismissed", "Home page visible");
   }
   await waitFor(
-    () => androidRuntimeReadyForJourney(dumpAndroid(serial)),
+    () => queryAndroidRuntimeReadyForJourney(serial),
     E2E_TIMING.startupMs,
     "runtime available after offline package sync",
   );

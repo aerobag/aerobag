@@ -2200,9 +2200,10 @@ test("journey runtime exposes typed phases instead of a generic step callback", 
   }
 });
 
-test("journey choices expose launcher and selection as two observed user actions", async () => {
+test("journey choices retry transient discovery before launcher and selection actions", async () => {
   const calls = [];
   let state = "closed";
+  let optionReads = 0;
   const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-choice-contract-"));
   const runtime = createJourneyRuntime({
     journey: { id: "choice-contract", assertions: [] },
@@ -2211,6 +2212,10 @@ test("journey choices expose launcher and selection as two observed user actions
       async readAction(id) { return id === "launcher" && state === "closed" ? { id } : null; },
       async openChooser(id) { calls.push(["open", id]); state = "open"; },
       async readOption(launcher, option) {
+        optionReads += 1;
+        if (optionReads === 1) {
+          throw new TransientObservationError("semantic tree busy");
+        }
         return launcher === "launcher" && option === "choice" && state === "open"
           ? { launcher, option }
           : null;
@@ -2232,10 +2237,23 @@ test("journey choices expose launcher and selection as two observed user actions
       ["open", "launcher"],
       ["select", "launcher", "choice"],
     ]);
+    assert.ok(optionReads >= 3);
     assert.deepEqual(selected, { state: "selected" });
   } finally {
     rmSync(artifactDir, { recursive: true, force: true });
   }
+});
+
+test("Android offline startup completion uses indexed projections instead of hierarchy dumps", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const completion = source.slice(
+    source.indexOf('recordStep(result, "offline package sync completed"'),
+    source.indexOf("async function waitForRuntime"),
+  );
+  assert.match(completion, /queryAndroidStartupProjection/);
+  assert.match(completion, /queryAndroidRuntimeReadyForJourney/);
+  assert.match(completion, /queryAndroidSemanticNodes/);
+  assert.doesNotMatch(completion, /dumpAndroid|androidRuntimeReadyForJourney/);
 });
 
 test("toggle choices acknowledge state on their visible chooser surface", async () => {

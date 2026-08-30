@@ -193,7 +193,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -206,6 +205,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
@@ -430,11 +430,31 @@ private fun rasterPlanId(mapId: String, viewport: MapViewportState): String =
 
 private const val TerrainTileBitmapCacheMaxEntries = 256
 private const val NexradViewportRefreshThrottleMs = 1_000L
+private const val NexradRenderFailureRetryMs = 1_000L
 private const val PerfScenarioKorsOwnshipSourceId = "perf:kors-terrain-ownship"
 private const val PerfScenarioKorsStressCenterLat = 48.6760
 private const val PerfScenarioKorsStressCenterLon = -122.8600
 private const val PerfScenarioKorsStressZoom = 10.8
 private const val PerfScenarioKorsStressAltitudeMslFt = 1_000.0
+
+internal class NexradRenderDeadlineState(
+    private val failureRetryMs: Long = NexradRenderFailureRetryMs,
+) {
+    var deadlineEpochMs: Long? = null
+        private set
+
+    fun consumeWake() {
+        deadlineEpochMs = null
+    }
+
+    fun renderCompleted(coreDeadlineEpochMs: Long?) {
+        deadlineEpochMs = coreDeadlineEpochMs
+    }
+
+    fun renderFailed(nowEpochMs: Long) {
+        deadlineEpochMs = nowEpochMs + failureRetryMs
+    }
+}
 
 internal fun buildMapFollowProbeTag(
     following: Boolean,
@@ -978,19 +998,22 @@ private fun rememberNexradLayerState(
         }
     }
     LaunchedEffect(uiSession, renderRequests) {
-        var animationJob: Job? = null
-        fun scheduleAnimation(deadlineEpochMs: Long?) {
-            animationJob?.cancel()
-            animationJob = null
-            if (deadlineEpochMs == null) return
-            animationJob = launch {
-                delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0))
-                renderRequests.trySend(Unit)
+        val deadlineState = NexradRenderDeadlineState()
+        while (true) {
+            val deadlineEpochMs = deadlineState.deadlineEpochMs
+            val request = if (deadlineEpochMs == null) {
+                renderRequests.receiveCatching()
+            } else {
+                val delayMs = (deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0)
+                if (delayMs == 0L) {
+                    null
+                } else {
+                    withTimeoutOrNull(delayMs) { renderRequests.receiveCatching() }
+                }
             }
-        }
-        for (ignored in renderRequests) {
+            if (request?.isClosed == true) break
+            deadlineState.consumeWake()
             val effectStartMs = SystemClock.elapsedRealtime()
-            scheduleAnimation(null)
             val currentSurfaceSize = latestSurfaceSize.value
             if (currentSurfaceSize.width <= 0 || currentSurfaceSize.height <= 0) {
                 frame = null
@@ -1040,7 +1063,7 @@ private fun rememberNexradLayerState(
                     )
                 }
                 if (overlay.tiles.isEmpty()) {
-                    scheduleAnimation(overlay.animation.nextUpdateEpochMs)
+                    deadlineState.renderCompleted(overlay.animation.nextUpdateEpochMs)
                     frame = null
                     perfLogInfo(MapLayerLogTag) {
                         "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
@@ -1083,11 +1106,12 @@ private fun rememberNexradLayerState(
                 perfLogInfo(MapLayerLogTag) {
                     "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
-                scheduleAnimation(overlay.animation.nextUpdateEpochMs)
+                deadlineState.renderCompleted(overlay.animation.nextUpdateEpochMs)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
+                deadlineState.renderFailed(System.currentTimeMillis())
             }
         }
     }

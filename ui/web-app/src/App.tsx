@@ -115,6 +115,7 @@ import {
   type UiQrCode,
 } from "./domain/appCoreAdapter";
 import { executeCloudHttpRequest } from "./domain/cloudProviderRuntime";
+import { performCloudUiActionWithPlatformEffect } from "./domain/cloudUiAction";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   flightPlanHistoryAriaKeyShortcuts,
@@ -2825,15 +2826,15 @@ function OperationalApp() {
     if (!uiSession) {
       return null;
     }
-    let nextSnapshot: UiSessionSnapshot;
-    nextSnapshot = await uiSession.performCloudUiAction(actionId, fields, Date.now());
-    applySessionSnapshot(nextSnapshot, `cloud_action_${actionId}`);
-    if (platformEffect?.kind === "copy_text") {
-      await navigator.clipboard.writeText(platformEffect.text);
-      return platformEffect.completion_label;
-    }
-    await pumpCloudProvider();
-    return null;
+    return performCloudUiActionWithPlatformEffect({
+      platformEffect,
+      performCoreAction: () => uiSession.performCloudUiAction(actionId, fields, Date.now()),
+      applySnapshot: (nextSnapshot) => {
+        applySessionSnapshot(nextSnapshot, `cloud_action_${actionId}`);
+      },
+      pumpCloudProvider,
+      writeClipboard: (text) => navigator.clipboard.writeText(text),
+    });
   }, [applySessionSnapshot, pumpCloudProvider, uiSession]);
   useEffect(() => {
     if (typeof window === "undefined") {

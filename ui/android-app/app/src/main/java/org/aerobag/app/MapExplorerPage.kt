@@ -3451,11 +3451,12 @@ internal fun MapExplorerPage(
                 .size(1.dp),
         )
         mapFollowProbeTag?.let { tag ->
-            Box(
+            E2eProjectionView(
+                viewId = R.id.e2e_map_follow_projection,
+                state = tag.removePrefix("parity:map-follow-state:"),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .size(1.dp)
-                    .testTag(tag),
+                    .size(1.dp),
             )
         }
         FlightDataBanner(

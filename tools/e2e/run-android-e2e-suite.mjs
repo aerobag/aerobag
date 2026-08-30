@@ -37,6 +37,8 @@ import {
   layerToggleTag,
   lockAndroidRotation,
   pressKey,
+  queryAndroidExactProjection,
+  queryAndroidSemanticNodes,
   queryAndroidRuntimeReadyForJourney,
   queryAndroidStartupProjection,
   rectOfBounds,
@@ -66,7 +68,7 @@ import {
 import { RELEASE_JOURNEYS } from "./release-journey-registry.mjs";
 import { executeReleaseJourney } from "./release-journey-runtime.mjs";
 import {
-  AndroidSemanticJourneyDriver, editSemanticText,
+  androidElementEnabled, AndroidSemanticJourneyDriver, editSemanticText,
 } from "./semantic-journey-driver.mjs";
 import {
   assertConditionRemains,
@@ -240,12 +242,19 @@ function runtimeUiVisible(xml) {
   return androidRuntimeUiVisible(xml);
 }
 
-function offlineSyncIsIdle(xml) {
-  const node = findNode(xml, (candidate) => hasAndroidTag(candidate, "parity:offline-sync-button"));
+function queryOfflineSyncButton(serial) {
+  return queryAndroidSemanticNodes(
+    serial,
+    "parity:offline-sync-button",
+    { first: true },
+  )[0] ?? null;
+}
+
+function queriedOfflineSyncIsIdle(node) {
   if (!node) return false;
   return offlineSyncButtonIsIdle({
-    enabled: node.enabled === "true",
-    text: androidNodeLabel(xml, node),
+    enabled: androidElementEnabled(node),
+    text: node.text ?? "",
   });
 }
 
@@ -321,22 +330,15 @@ async function ensureOfflinePackagesReady(
 
     await nativeTransition(result, "offline package sync requested", {
       ready: async () => {
-        const readyXml = dumpAndroid(serial);
-        if (!offlineSyncIsIdle(readyXml)) return null;
-        return findNode(
-          readyXml,
-          (node) => hasAndroidTag(node, "parity:offline-sync-button"),
-        );
+        const syncButton = queryOfflineSyncButton(serial);
+        return queriedOfflineSyncIsIdle(syncButton) ? syncButton : null;
       },
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
       complete: async () => {
-        const nextXml = dumpAndroid(serial);
-        if (runtimeUiVisible(nextXml) || disclaimerVisible(nextXml)) return nextXml;
-        const syncButton = findNode(
-          nextXml,
-          (node) => hasAndroidTag(node, "parity:offline-sync-button"),
-        );
-        return syncButton && !offlineSyncIsIdle(nextXml) ? syncButton : null;
+        const startup = queryAndroidStartupProjection(serial);
+        if (startup?.page !== "OfflinePackages") return startup;
+        const syncButton = queryOfflineSyncButton(serial);
+        return syncButton && !queriedOfflineSyncIsIdle(syncButton) ? syncButton : null;
       },
       readyTimeoutMs: E2E_TIMING.bulkOperationMs,
     });
@@ -634,15 +636,18 @@ function describeMapFollowProbe(probe) {
   return `following=${probe.following} offset=${mapFollowOffsetPx(probe).toFixed(0)}px zoom=${probe.zoomCenti} tag=${probe.tag}`;
 }
 
-function findMapFollowProbe(xml) {
-  const node = findNode(xml, (candidate) => androidTag(candidate).startsWith(MAP_FOLLOW_PREFIX));
-  if (!node) return null;
-  return parseMapFollowTag(androidTag(node));
+function queryMapFollowProbe(serial) {
+  const node = queryAndroidExactProjection(
+    serial,
+    "org.aerobag.app:id/e2e_map_follow_projection",
+  )[0] ?? null;
+  const state = node?.["state-description"];
+  return state ? parseMapFollowTag(`${MAP_FOLLOW_PREFIX}${state}`) : null;
 }
 
 async function waitForMapFollowProbe(serial, predicate, timeoutMs, message) {
   return (await observeUntil(message, async () => {
-    const probe = findMapFollowProbe(dumpAndroid(serial));
+    const probe = queryMapFollowProbe(serial);
     return probe !== null && predicate(probe) ? probe : null;
   }, { timeoutMs, intervalMs: E2E_TIMING.pollIntervalMs })).value;
 }
@@ -752,7 +757,7 @@ async function selectBadAutopilotSource(serial, result) {
   await nativeTransition(result, "Bad Autopilot ownship selected", {
     ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)),
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => findMapFollowProbe(dumpAndroid(serial)),
+    complete: async () => queryMapFollowProbe(serial),
     responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
 }
@@ -920,7 +925,7 @@ async function ensureMapFollowEngaged(serial, result) {
       ),
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
       complete: async () => {
-        const nextProbe = findMapFollowProbe(dumpAndroid(serial));
+        const nextProbe = queryMapFollowProbe(serial);
         return nextProbe?.following ? nextProbe : null;
       },
     });
@@ -935,7 +940,7 @@ async function ensureMapFollowEngaged(serial, result) {
 }
 
 async function disengageMapFollowForRouteVisibility(serial, result) {
-  const initialProbe = findMapFollowProbe(dumpAndroid(serial));
+  const initialProbe = queryMapFollowProbe(serial);
   if (!initialProbe) {
     recordStep(result, "CTR follow unavailable; already disengaged");
     return;
@@ -949,7 +954,7 @@ async function disengageMapFollowForRouteVisibility(serial, result) {
     ),
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
     complete: async () => {
-      const nextProbe = findMapFollowProbe(dumpAndroid(serial));
+      const nextProbe = queryMapFollowProbe(serial);
       return nextProbe && !nextProbe.following ? nextProbe : null;
     },
   });
@@ -970,12 +975,12 @@ async function dragMapWhileFollowing(serial, result) {
   try {
     probe = await nativeTransition(result, "map drag keeps CTR engaged with an offset ownship", {
       ready: async () => {
-        const readyXml = dumpAndroid(serial);
-        const surface = findNode(
-          readyXml,
-          (node) => hasAndroidTag(node, "parity:map-surface"),
-        );
-        const followProbe = findMapFollowProbe(readyXml);
+        const surface = queryAndroidSemanticNodes(
+          serial,
+          "parity:map-surface",
+          { first: true },
+        )[0] ?? null;
+        const followProbe = queryMapFollowProbe(serial);
         return surface && followProbe ? { surface, followProbe } : null;
       },
       act: async ({ surface }) => {
@@ -986,25 +991,25 @@ async function dragMapWhileFollowing(serial, result) {
         await swipe(serial, startX, startY, endX, startY, 650);
       },
       complete: async () => {
-        const nextProbe = findMapFollowProbe(dumpAndroid(serial));
+        const nextProbe = queryMapFollowProbe(serial);
         return nextProbe?.following && mapFollowOffsetPx(nextProbe) >= 80 ? nextProbe : null;
       },
       responseTimeoutMs: E2E_TIMING.userResponseMs,
     });
   } catch (error) {
-    probe = findMapFollowProbe(dumpAndroid(serial));
+    probe = queryMapFollowProbe(serial);
     throw new Error(`${error.message}; lastProbe=${describeMapFollowProbe(probe)}`);
   }
   const stable = await assertConditionRemains(
     "CTR offset remains stable after drag",
-    async () => findMapFollowProbe(dumpAndroid(serial)),
+    async () => queryMapFollowProbe(serial),
     (nextProbe) => Boolean(nextProbe?.following && mapFollowOffsetPx(nextProbe) >= 80),
     {
       durationMs: E2E_TIMING.stabilityMs,
       intervalMs: E2E_TIMING.stabilityPollIntervalMs,
     },
   );
-  const settled = findMapFollowProbe(dumpAndroid(serial));
+  const settled = queryMapFollowProbe(serial);
   const settledOffset = mapFollowOffsetPx(settled);
   recordCheck(
     result,
@@ -1023,10 +1028,10 @@ async function zoomMapOneStepWhileFollowing(serial, result, direction) {
   );
   const key = direction === "in" ? "KEYCODE_PLUS" : "KEYCODE_MINUS";
   const changed = await nativeTransition(result, `map zoom ${direction} keeps CTR engaged`, {
-    ready: async () => findMapFollowProbe(dumpAndroid(serial)),
+    ready: async () => queryMapFollowProbe(serial),
     act: async (_readyProbe) => pressKey(serial, key),
     complete: async () => {
-      const probe = findMapFollowProbe(dumpAndroid(serial));
+      const probe = queryMapFollowProbe(serial);
       const changedInDirection = direction === "in"
         ? probe?.zoomCenti > before.zoomCenti
         : probe?.zoomCenti < before.zoomCenti;
@@ -1038,13 +1043,13 @@ async function zoomMapOneStepWhileFollowing(serial, result, direction) {
 }
 
 async function zoomMapWhileFollowing(serial, result, { assertStable = false } = {}) {
-  const before = findMapFollowProbe(dumpAndroid(serial));
+  const before = queryMapFollowProbe(serial);
   await zoomMapOneStepWhileFollowing(serial, result, "in");
   const settled = await zoomMapOneStepWhileFollowing(serial, result, "in");
   if (assertStable) {
     await assertConditionRemains(
       "CTR offset remains stable after zoom",
-      async () => findMapFollowProbe(dumpAndroid(serial)),
+      async () => queryMapFollowProbe(serial),
       (probe) => Boolean(
         probe?.following &&
         mapFollowOffsetPx(probe) >= 80 &&

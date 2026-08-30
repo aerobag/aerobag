@@ -23,6 +23,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:ownship-state:", "org.aerobag.app:id/e2e_ownship_state_projection"],
   ["parity:playback-widget:", "org.aerobag.app:id/e2e_playback_widget_projection"],
   ["parity:viewport:", "org.aerobag.app:id/e2e_viewport_projection"],
+  ["parity:map-follow-state:", "org.aerobag.app:id/e2e_map_follow_projection"],
   ["parity:map-selection-state:", "org.aerobag.app:id/e2e_map_selection_projection"],
   ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
 ]);

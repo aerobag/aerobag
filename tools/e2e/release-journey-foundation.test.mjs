@@ -74,6 +74,7 @@ import {
   semanticDriverObservationRequest,
   setAndroidWallClockAndWait,
 } from "./android-harness.mjs";
+import { establishChromeRuntime } from "./run-android-chrome-livefeed-e2e.mjs";
 
 const LAB_METADATA_POISON_CONFIG = join(
   tmpdir(),
@@ -781,6 +782,46 @@ test("Android Chrome journey uses the shared named timing policy", () => {
   const path = new URL("./run-android-chrome-livefeed-e2e.mjs", import.meta.url);
   const violations = auditJourneyStructure(readFileSync(path, "utf8"), path.pathname);
   assert.deepEqual(violations, []);
+});
+
+test("Android Chrome launch recovers when a clean emulator kills its first browser process", async () => {
+  const attempts = [];
+  const failures = [];
+  const result = await establishChromeRuntime({
+    launchAttempt: async (attempt) => {
+      attempts.push(attempt);
+      if (attempt === 1) {
+        throw new TerminalObservationError(
+          "Android Chrome launch",
+          "browser process exited before its DevTools socket became ready",
+        );
+      }
+      return "ready";
+    },
+    onAttemptFailure: async (error, attempt) => failures.push([attempt, error.message]),
+  });
+
+  assert.equal(result, "ready");
+  assert.deepEqual(attempts, [1, 2]);
+  assert.deepEqual(failures, [[
+    1,
+    "Android Chrome launch: browser process exited before its DevTools socket became ready",
+  ]]);
+});
+
+test("Android Chrome launch fails after the bounded retry budget", async () => {
+  const attempts = [];
+  await assert.rejects(
+    establishChromeRuntime({
+      attempts: 2,
+      launchAttempt: async (attempt) => {
+        attempts.push(attempt);
+        throw new Error(`process loss ${attempt}`);
+      },
+    }),
+    /failed to become ready after 2 attempts \(attempt 1: process loss 1; attempt 2: process loss 2\)/,
+  );
+  assert.deepEqual(attempts, [1, 2]);
 });
 
 test("NAVDB rollover journey follows the deterministic journey structure", () => {
@@ -1832,6 +1873,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt", import.meta.url),
     "utf8",
   );
+  const mapExplorer = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt", import.meta.url),
+    "utf8",
+  );
   assert.match(driver, /case "\/exact-projection"/);
   assert.match(driver, /findAccessibilityNodeInfosByViewId\(tag\)/);
   assert.match(driver, /exactNodePaths\.get\(tag\)/);
@@ -1850,7 +1895,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(journeyDriver, /"parity:ownship-state:"/);
   assert.match(journeyDriver, /"parity:playback-widget:"/);
   assert.match(journeyDriver, /"parity:viewport:"/);
+  assert.match(journeyDriver, /"parity:map-follow-state:"/);
   assert.match(journeyDriver, /e2e_playback_widget_projection/);
+  assert.match(mapExplorer, /R\.id\.e2e_map_follow_projection/);
+  assert.doesNotMatch(mapExplorer, /\.testTag\(mapFollowProbeTag/);
   assert.match(mainActivity, /R\.id\.e2e_startup_state_projection/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_rows_projection/);
   assert.match(mainActivity, /sessionPlanUiState\.displayRows\.joinToString/);

@@ -31,6 +31,7 @@ const DEFAULT_WEB_PORT = 18082;
 const DEFAULT_LIVE_FEED_PORT = 18083;
 const DEFAULT_CDP_PORT = 9222;
 const CDP_COMMAND_TIMEOUT_MS = E2E_TIMING.localReadyMs;
+const CHROME_LAUNCH_ATTEMPTS = 3;
 const CHROME_PACKAGES = [
   "com.android.chrome",
   "com.chrome.beta",
@@ -695,26 +696,75 @@ function findChromePackage(serial) {
   throw new Error(`Android Chrome/Chromium package not found. Tried: ${CHROME_PACKAGES.join(", ")}`);
 }
 
-async function waitForChromeDevtoolsSocket(serial) {
-  await waitFor(
-    () => {
-      const sockets = adbBestEffort(
-        serial,
-        ["shell", "cat", "/proc/net/unix"],
-        { timeout: E2E_TIMING.localReadyMs },
-      );
-      return sockets.status === 0 && sockets.stdout.includes("@chrome_devtools_remote");
-    },
-    E2E_TIMING.startupMs,
-    "Android Chrome did not create chrome_devtools_remote",
-    E2E_TIMING.resourcePollIntervalMs,
+function chromeRuntimeState(serial, packageName) {
+  const processes = adbBestEffort(
+    serial,
+    ["shell", "pidof", packageName],
+    { timeout: E2E_TIMING.localReadyMs },
   );
+  const sockets = adbBestEffort(
+    serial,
+    ["shell", "cat", "/proc/net/unix"],
+    { timeout: E2E_TIMING.localReadyMs },
+  );
+  return {
+    process_running: processes.status === 0 && Boolean(processes.stdout.trim()),
+    process_ids: processes.status === 0 ? processes.stdout.trim() : "",
+    devtools_socket: sockets.status === 0 && sockets.stdout.includes("@chrome_devtools_remote"),
+  };
+}
+
+async function waitForChromeDevtoolsSocket(serial, packageName) {
+  let sawBrowserProcess = false;
+  await observeUntil(
+    "Android Chrome did not create chrome_devtools_remote",
+    () => {
+      const state = chromeRuntimeState(serial, packageName);
+      sawBrowserProcess ||= state.process_running;
+      if (sawBrowserProcess && !state.process_running) {
+        throw new TerminalObservationError(
+          "Android Chrome launch",
+          "browser process exited before its DevTools socket became ready",
+        );
+      }
+      return state.process_running && state.devtools_socket ? state : null;
+    },
+    {
+      timeoutMs: E2E_TIMING.localResourceMs,
+      intervalMs: E2E_TIMING.resourcePollIntervalMs,
+    },
+  );
+}
+
+export async function establishChromeRuntime({
+  attempts = CHROME_LAUNCH_ATTEMPTS,
+  launchAttempt,
+  onAttemptFailure = () => {},
+}) {
+  const failures = [];
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await launchAttempt(attempt);
+    } catch (error) {
+      failures.push(error);
+      if (attempt >= attempts) {
+        const details = failures
+          .map((failure, index) => `attempt ${index + 1}: ${failure.message}`)
+          .join("; ");
+        throw new Error(
+          `Android Chrome failed to become ready after ${attempts} attempts (${details})`,
+          { cause: error },
+        );
+      }
+      await onAttemptFailure(error, attempt);
+    }
+  }
+  throw new Error("Android Chrome launch attempts must be positive");
 }
 
 async function launchAndroidChrome(serial, url, cdpPort) {
   progress("locating Android Chrome package");
   const packageName = findChromePackage(serial);
-  progress(`launching ${packageName}`);
   wakeAndUnlock(serial);
   adbBestEffort(serial, ["shell", "am", "force-stop", packageName]);
   adbBestEffort(serial, ["forward", "--remove", `tcp:${cdpPort}`]);
@@ -723,25 +773,44 @@ async function launchAndroidChrome(serial, url, cdpPort) {
     "shell",
     "printf '%s\\n' 'chrome --disable-fre --no-first-run --no-default-browser-check' > /data/local/tmp/chrome-command-line",
   ]);
-  adb(serial, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url, packageName]);
-  progress("waiting for chrome_devtools_remote socket");
-  await waitForChromeDevtoolsSocket(serial);
-  progress(`forwarding Chrome CDP to tcp:${cdpPort}`);
-  adb(serial, ["forward", `tcp:${cdpPort}`, "localabstract:chrome_devtools_remote"]);
-  progress("waiting for Chrome CDP HTTP endpoint");
-  await waitFor(
-    async () => {
-      try {
-        await httpJson(`http://127.0.0.1:${cdpPort}/json/version`);
-        return true;
-      } catch (_error) {
-        return false;
-      }
+  await establishChromeRuntime({
+    launchAttempt: async (attempt) => {
+      progress(`launching ${packageName} (attempt ${attempt}/${CHROME_LAUNCH_ATTEMPTS})`);
+      adbBestEffort(serial, ["shell", "am", "force-stop", packageName]);
+      adbBestEffort(serial, ["forward", "--remove", `tcp:${cdpPort}`]);
+      adb(serial, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url, packageName]);
+      progress("waiting for Chrome browser process and DevTools socket");
+      await waitForChromeDevtoolsSocket(serial, packageName);
+      progress(`forwarding Chrome CDP to tcp:${cdpPort}`);
+      adb(serial, ["forward", `tcp:${cdpPort}`, "localabstract:chrome_devtools_remote"]);
+      progress("waiting for Chrome CDP HTTP endpoint");
+      await observeUntil(
+        `Android Chrome did not expose CDP on forwarded port ${cdpPort}`,
+        async () => {
+          const state = chromeRuntimeState(serial, packageName);
+          if (!state.process_running || !state.devtools_socket) {
+            throw new TerminalObservationError(
+              "Android Chrome launch",
+              "browser process or DevTools socket disappeared before CDP became ready",
+            );
+          }
+          try {
+            await httpJson(`http://127.0.0.1:${cdpPort}/json/version`);
+            return state;
+          } catch (_error) {
+            return null;
+          }
+        },
+        {
+          timeoutMs: E2E_TIMING.localReadyMs,
+          intervalMs: E2E_TIMING.resourcePollIntervalMs,
+        },
+      );
     },
-    E2E_TIMING.cloudConsistencyMs,
-    `Android Chrome did not expose CDP on forwarded port ${cdpPort}`,
-    E2E_TIMING.resourcePollIntervalMs,
-  );
+    onAttemptFailure: async (error, attempt) => {
+      progress(`Chrome launch attempt ${attempt} failed; relaunching: ${error.message}`);
+    },
+  });
   return { packageName };
 }
 

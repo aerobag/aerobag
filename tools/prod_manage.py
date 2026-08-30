@@ -21,7 +21,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
@@ -39,6 +39,9 @@ PRODUCT_CONTRACT_SOURCE = "crates/product-contracts/src/lib.rs"
 LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
 LOCAL_CANDIDATE_QUALIFICATION = (
     REPO_ROOT / "tools/ci/local_candidate_qualification.py"
+)
+DEFAULT_GITHUB_TOKEN_HELPER = Path(
+    "/root/aerobag-credentials/github-ci-reader/with-token"
 )
 
 
@@ -70,6 +73,45 @@ def parse_args() -> argparse.Namespace:
     operation.add_argument("--reconcile", action="store_true")
     operation.add_argument("--qualification-status", action="store_true")
     return parser.parse_args()
+
+
+def operation_requires_github_authentication(args: argparse.Namespace) -> bool:
+    return any(
+        getattr(args, name, False)
+        for name in (
+            "prequalify",
+            "candidate_status",
+            "stage",
+            "promote",
+            "qualification_status",
+        )
+    )
+
+
+def github_authentication_command(
+    args: argparse.Namespace,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> list[str] | None:
+    environment = os.environ if environ is None else environ
+    if not operation_requires_github_authentication(args):
+        return None
+    if environment.get("GITHUB_TOKEN"):
+        return None
+
+    helper = Path(
+        environment.get(
+            "AEROBAG_GITHUB_TOKEN_HELPER",
+            str(DEFAULT_GITHUB_TOKEN_HELPER),
+        )
+    )
+    if not helper.is_file() or not os.access(helper, os.X_OK):
+        raise ManagementError(
+            "GitHub authentication is required for release qualification; set "
+            "GITHUB_TOKEN or install an executable token helper at "
+            f"{helper} (override with AEROBAG_GITHUB_TOKEN_HELPER)"
+        )
+    return [str(helper), sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
 
 
 def run(
@@ -966,6 +1008,9 @@ def main() -> int:
     result = 2
     try:
         try:
+            authentication_command = github_authentication_command(args)
+            if authentication_command is not None:
+                os.execv(authentication_command[0], authentication_command)
             if getattr(args, "prequalify", False):
                 result = prequalify(DEFAULT_CONFIG)
             elif getattr(args, "candidate_status", False):

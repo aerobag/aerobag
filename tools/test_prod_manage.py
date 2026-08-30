@@ -70,6 +70,67 @@ class DesiredStateMutationTests(unittest.TestCase):
         self.assertTrue(args.qualification_status)
 
 
+class GithubAuthenticationTests(unittest.TestCase):
+    @staticmethod
+    def args(**values: bool) -> SimpleNamespace:
+        defaults = {
+            "prequalify": False,
+            "candidate_status": False,
+            "stage": False,
+            "promote": False,
+            "reconcile": False,
+            "qualification_status": False,
+        }
+        defaults.update(values)
+        return SimpleNamespace(**defaults)
+
+    def test_reconcile_does_not_require_github_authentication(self) -> None:
+        self.assertIsNone(
+            prod_manage.github_authentication_command(
+                self.args(reconcile=True),
+                environ={},
+            )
+        )
+
+    def test_existing_token_avoids_helper_reexec(self) -> None:
+        self.assertIsNone(
+            prod_manage.github_authentication_command(
+                self.args(prequalify=True),
+                environ={"GITHUB_TOKEN": "installation-token"},
+            )
+        )
+
+    def test_qualification_reexecs_through_configured_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            helper = Path(temp_dir) / "with-token"
+            helper.write_text("#!/bin/sh\n", encoding="utf-8")
+            helper.chmod(0o700)
+            with mock.patch.object(
+                sys,
+                "argv",
+                ["prod_manage.py", "--prequalify"],
+            ):
+                command = prod_manage.github_authentication_command(
+                    self.args(prequalify=True),
+                    environ={"AEROBAG_GITHUB_TOKEN_HELPER": str(helper)},
+                )
+
+        self.assertEqual(command[0], str(helper))
+        self.assertEqual(command[1], sys.executable)
+        self.assertEqual(command[2], str(Path(prod_manage.__file__).resolve()))
+        self.assertEqual(command[3:], ["--prequalify"])
+
+    def test_qualification_fails_closed_without_token_or_helper(self) -> None:
+        with self.assertRaisesRegex(
+            prod_manage.ManagementError,
+            "GitHub authentication is required",
+        ):
+            prod_manage.github_authentication_command(
+                self.args(candidate_status=True),
+                environ={"AEROBAG_GITHUB_TOKEN_HELPER": "/missing/with-token"},
+            )
+
+
 class OperationLogTests(unittest.TestCase):
     @staticmethod
     def reconcile_args() -> SimpleNamespace:

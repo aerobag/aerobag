@@ -2402,16 +2402,59 @@ test("journey choices retry transient discovery before launcher and selection ac
   }
 });
 
-test("Android offline startup completion uses indexed projections instead of hierarchy dumps", () => {
+test("Android offline startup completion uses fixed and exact projections instead of hierarchy dumps", () => {
   const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
-  const completion = source.slice(
-    source.indexOf('recordStep(result, "offline package sync completed"'),
+  const bootstrap = source.slice(
+    source.indexOf("async function ensureOfflinePackagesReady"),
     source.indexOf("async function waitForRuntime"),
   );
-  assert.match(completion, /queryAndroidStartupProjection/);
-  assert.match(completion, /queryAndroidRuntimeReadyForJourney/);
-  assert.match(completion, /queryAndroidSemanticNodes/);
-  assert.doesNotMatch(completion, /dumpAndroid|androidRuntimeReadyForJourney/);
+  assert.match(bootstrap, /queryAndroidStartupProjection/);
+  assert.match(bootstrap, /queryAndroidRuntimeReadyForJourney/);
+  assert.match(bootstrap, /queryExactAndroidNode/);
+  assert.match(bootstrap, /state\?\.page === "OfflinePackages"/);
+  assert.doesNotMatch(
+    bootstrap,
+    /dumpAndroid|queryAndroidSemanticNodes|androidRuntimeReadyForJourney/,
+  );
+});
+
+test("Android plate first-open journey uses exact projections for semantic rendezvous", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const firstPaint = source.slice(
+    source.indexOf("async function waitForPlateImagePainted"),
+    source.indexOf("function labelContainsWords"),
+  );
+  const plateOpen = source.slice(
+    source.indexOf("async function openPlateFromAirportInspector"),
+    source.indexOf("async function ensureMapFollowEngaged"),
+  );
+  for (const implementation of [firstPaint, plateOpen]) {
+    assert.match(implementation, /queryExactAndroidNode/);
+    assert.doesNotMatch(implementation, /dumpAndroid|queryAndroidSemanticNodes/);
+  }
+});
+
+test("Android plate raster qualification isolates the noisy Google image from GNSS", () => {
+  const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const journey = source.slice(
+    source.indexOf("async function runPlateFirstRenderSmoke"),
+    source.indexOf("async function launchReleaseJourneyAndroidApp"),
+  );
+  assert.match(
+    journey,
+    /"cmd", "location", "set-location-enabled", "false"[\s\S]*launchFreshAndroidApp/,
+  );
+});
+
+test("Android disclaimer bootstrap observes startup before querying its popup action", () => {
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const disclaimer = harness.slice(
+    harness.indexOf("export async function acceptDisclaimerIfPresent"),
+    harness.indexOf("export function assertRuntimeIsAvailable"),
+  );
+  assert.match(disclaimer, /observeUntil\("initial mandatory disclaimer state"/);
+  assert.match(disclaimer, /queryAndroidSemanticNodes/);
+  assert.doesNotMatch(disclaimer, /dumpAndroid/);
 });
 
 test("toggle choices acknowledge state on their visible chooser surface", async () => {

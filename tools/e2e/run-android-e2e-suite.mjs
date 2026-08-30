@@ -21,7 +21,6 @@ import {
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
   androidTag,
-  assertRuntimeIsAvailable,
   captureAndroidFailureDiagnostics,
   clearAerobagPersistedLiveFeeds,
   currentAerobagPid,
@@ -242,11 +241,11 @@ function runtimeUiVisible(xml) {
 }
 
 function queryOfflineSyncButton(serial) {
-  return queryAndroidSemanticNodes(
-    serial,
-    "parity:offline-sync-button",
-    { first: true },
-  )[0] ?? null;
+  return queryExactAndroidNode(serial, "parity:offline-sync-button", true);
+}
+
+function queryExactAndroidNode(serial, tag, includeDescendantText = false) {
+  return queryAndroidExactProjection(serial, tag, { includeDescendantText })[0] ?? null;
 }
 
 function queriedOfflineSyncIsIdle(node) {
@@ -255,6 +254,21 @@ function queriedOfflineSyncIsIdle(node) {
     enabled: androidElementEnabled(node),
     text: node.text ?? "",
   });
+}
+
+async function observeAndroidStartupState(
+  serial,
+  description,
+  timeoutMs = E2E_TIMING.startupMs,
+  accept = (startup) => startup?.ready === "true" || startup?.page === "OfflinePackages",
+) {
+  return (await observeUntil(description, () => {
+    const startup = queryAndroidStartupProjection(serial);
+    return accept(startup) ? startup : null;
+  }, {
+    timeoutMs,
+    intervalMs: E2E_TIMING.resourcePollIntervalMs,
+  })).value;
 }
 
 async function ensureOfflinePackagesReady(
@@ -270,17 +284,16 @@ async function ensureOfflinePackagesReady(
     ]);
   }
 
-  await waitFor(() => {
-    const startup = queryAndroidStartupProjection(serial);
-    return startup?.ready === "true" || startup?.page === "OfflinePackages"
-      ? startup
-      : null;
-  }, E2E_TIMING.startupMs, "runtime or offline package UI ready");
+  let startup = await observeAndroidStartupState(
+    serial,
+    "runtime or offline package UI ready",
+  );
 
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
+    startup = await observeAndroidStartupState(serial, "startup state after disclaimer");
   }
-  if (queryAndroidRuntimeReadyForJourney(serial)) {
+  if (startup.ready === "true" && startup.page !== "OfflinePackages") {
     recordStep(result, "offline packages ready", "runtime already available");
     return;
   }
@@ -288,78 +301,71 @@ async function ensureOfflinePackagesReady(
     throwWithUi(serial, "offline packages are required but sync is disabled");
   }
 
-  await waitFor(() => {
-    const nextXml = dumpAndroid(serial);
-    return findNode(nextXml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-  }, E2E_TIMING.bulkOperationMs, "offline package planner", E2E_TIMING.resourcePollIntervalMs);
+  await observeAndroidStartupState(
+    serial,
+    "offline package planner",
+    E2E_TIMING.bulkOperationMs,
+    (state) => state?.page === "OfflinePackages",
+  );
   recordStep(result, "offline package planner visible");
 
-  let xml = dumpAndroid(serial);
-  if (findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"))) {
-    if (!syncAllAvailablePackages) {
-      for (const regionId of OFFLINE_REGION_IDS) {
-        if (regionId === "nw") continue;
-        const tag = `parity:offline-region:${regionId}:toggle`;
-        await scrollUntilTag(serial, tag, 6);
-        const before = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag));
-        const selected = before?.selected === "true" || before?.checked === "true";
-        if (selected) {
-          await nativeTransition(result, `offline region ${regionId} deselected`, {
-            ready: async () => {
-              const readyNode = findNode(
-                dumpAndroid(serial),
-                (node) => hasAndroidTag(node, tag),
-              );
-              return readyNode &&
-                (readyNode.selected === "true" || readyNode.checked === "true")
-                ? readyNode
-                : null;
-            },
-            act: async (readyNode) => activateAndroidNode(serial, readyNode),
-            complete: async () => {
-              const after = findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag));
-              return after && after.selected !== "true" && after.checked !== "true"
-                ? after
-                : null;
-            },
-          });
-        }
+  if (!syncAllAvailablePackages) {
+    for (const regionId of OFFLINE_REGION_IDS) {
+      if (regionId === "nw") continue;
+      const tag = `parity:offline-region:${regionId}:toggle`;
+      await scrollUntilTag(serial, tag, 6);
+      const before = queryExactAndroidNode(serial, tag);
+      const selected = before?.selected === "true" || before?.checked === "true";
+      if (selected) {
+        await nativeTransition(result, `offline region ${regionId} deselected`, {
+          ready: async () => {
+            const readyNode = queryExactAndroidNode(serial, tag);
+            return readyNode &&
+              (readyNode.selected === "true" || readyNode.checked === "true")
+              ? readyNode
+              : null;
+          },
+          act: async (readyNode) => activateAndroidNode(serial, readyNode),
+          complete: async () => {
+            const after = queryExactAndroidNode(serial, tag);
+            return after && after.selected !== "true" && after.checked !== "true"
+              ? after
+              : null;
+          },
+        });
       }
     }
-
-    await nativeTransition(result, "offline package sync requested", {
-      ready: async () => {
-        const syncButton = queryOfflineSyncButton(serial);
-        return queriedOfflineSyncIsIdle(syncButton) ? syncButton : null;
-      },
-      act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => {
-        const startup = queryAndroidStartupProjection(serial);
-        if (startup?.page !== "OfflinePackages") return startup;
-        const syncButton = queryOfflineSyncButton(serial);
-        return syncButton && !queriedOfflineSyncIsIdle(syncButton) ? syncButton : null;
-      },
-      readyTimeoutMs: E2E_TIMING.bulkOperationMs,
-    });
-    recordStep(result, "offline package sync requested", "region nw");
-    await waitFor(() => {
-      const startup = queryAndroidStartupProjection(serial);
-      return startup?.ready === "true" ? startup : null;
-    }, E2E_TIMING.offlineSyncMs, "runtime loaded after offline package sync", E2E_TIMING.resourcePollIntervalMs);
-    recordStep(result, "offline package sync completed", "runtime loaded");
   }
+
+  await nativeTransition(result, "offline package sync requested", {
+    ready: async () => {
+      const syncButton = queryOfflineSyncButton(serial);
+      return queriedOfflineSyncIsIdle(syncButton) ? syncButton : null;
+    },
+    act: async (readyNode) => activateAndroidNode(serial, readyNode),
+    complete: async () => {
+      const startup = queryAndroidStartupProjection(serial);
+      if (startup?.page !== "OfflinePackages") return startup;
+      const syncButton = queryOfflineSyncButton(serial);
+      return syncButton && !queriedOfflineSyncIsIdle(syncButton) ? syncButton : null;
+    },
+    readyTimeoutMs: E2E_TIMING.bulkOperationMs,
+  });
+  recordStep(result, "offline package sync requested", "region nw");
+  startup = await observeAndroidStartupState(
+    serial,
+    "runtime loaded after offline package sync",
+    E2E_TIMING.offlineSyncMs,
+    (state) => state?.ready === "true",
+  );
+  recordStep(result, "offline package sync completed", "runtime loaded");
 
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  const startup = queryAndroidStartupProjection(serial);
   if (startup?.page === "OfflinePackages" && startup?.ready === "true") {
     await nativeTransition(result, "offline package page dismissed", {
-      ready: async () => queryAndroidSemanticNodes(
-        serial,
-        "parity:button:HOME",
-        { first: true },
-      )[0] ?? null,
+      ready: async () => queryExactAndroidNode(serial, "parity:button:HOME", true),
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
       complete: async () => queryAndroidRuntimeReadyForJourney(serial),
     });
@@ -380,7 +386,6 @@ async function waitForRuntime(serial, result) {
     "runtime UI ready",
   );
   await waitForAndroidInteractiveRuntime(serial);
-  assertRuntimeIsAvailable(serial);
   recordStep(result, "runtime UI ready");
 }
 
@@ -390,7 +395,11 @@ async function launchInteractiveAndroidApp(serial, launch) {
 }
 
 async function ensurePlanPage(serial, result) {
-  assertRuntimeIsAvailable(serial);
+  await waitFor(
+    () => queryAndroidRuntimeReadyForJourney(serial),
+    E2E_TIMING.localReadyMs,
+    "runtime available before opening flight plan",
+  );
   await nativeSemanticDriver(serial).openPage("flight_plan");
   recordStep(result, "plan page visible");
 }
@@ -478,7 +487,11 @@ async function activateDestinationLeg(serial, result, route) {
 }
 
 async function ensureChartPage(serial, result) {
-  assertRuntimeIsAvailable(serial);
+  await waitFor(
+    () => queryAndroidRuntimeReadyForJourney(serial),
+    E2E_TIMING.localReadyMs,
+    "runtime available before opening chart",
+  );
   await nativeSemanticDriver(serial).openPage("map");
   recordStep(result, "chart page visible");
 }
@@ -834,8 +847,7 @@ async function waitForPlateImagePainted(serial, result) {
   let lastStats = null;
   let lastCrop = null;
   await waitFor(() => {
-    const xml = dumpAndroid(serial);
-    const surface = findNode(xml, (node) => hasAndroidTag(node, PLATE_SURFACE_TAG));
+    const surface = queryExactAndroidNode(serial, PLATE_SURFACE_TAG);
     if (!surface) return false;
     lastCrop = cropPlateSurface(rectOfBounds(surface.bounds));
     lastStats = analyzePngCrop(screencapPng(serial), lastCrop);
@@ -861,34 +873,31 @@ async function openPlateFromAirportInspector(serial, result, airportId, expected
   await inspectAirportFromChartSearch(serial, result, airportId);
 
   const airportItemTag = `parity:map-selection-item:airport-${airportId}`;
-  const inspector = dumpAndroid(serial);
-  const platesActionVisible = findNode(
-    inspector,
-    (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
-  ) !== null;
-  if (!platesActionVisible) {
+  const platesActionTag = "parity:map-selection-action:plates";
+  const inspectorBranch = (await observeUntil(
+    `airport ${airportId} inspector actions`,
+    () => {
+      const platesAction = queryExactAndroidNode(serial, platesActionTag);
+      if (platesAction) return { platesAction };
+      const airportItem = queryExactAndroidNode(serial, airportItemTag);
+      return airportItem ? { airportItem } : null;
+    },
+    { timeoutMs: E2E_TIMING.localReadyMs },
+  )).value;
+  if (inspectorBranch.airportItem) {
     await nativeTransition(result, `airport ${airportId} selected in inspector`, {
-      ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, airportItemTag)),
+      ready: async () => queryExactAndroidNode(serial, airportItemTag),
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
-      ),
+      complete: async () => queryExactAndroidNode(serial, platesActionTag),
     });
   }
   await nativeTransition(result, `plate folder opened for ${airportId}`, {
     ready: async () => {
-      const action = findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
-      );
+      const action = queryExactAndroidNode(serial, platesActionTag);
       return action?.enabled === "true" ? action : null;
     },
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, "parity:plate-folder-button"),
-    ),
+    complete: async () => queryExactAndroidNode(serial, "parity:plate-folder-button"),
   });
   recordStep(result, "plate folder opened", airportId);
 
@@ -901,15 +910,9 @@ async function openPlateFromAirportInspector(serial, result, airportId, expected
   if (!tile) throwWithUi(serial, `plate folder does not contain ${expectedLabel}`);
   const tileTag = androidTag(tile);
   await nativeTransition(result, `fixture plate opened ${expectedLabel}`, {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, tileTag),
-    ),
+    ready: async () => queryExactAndroidNode(serial, tileTag, true),
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, PLATE_SURFACE_TAG),
-    ),
+    complete: async () => queryExactAndroidNode(serial, PLATE_SURFACE_TAG),
   });
   recordStep(result, "fixture plate opened", tileTag.slice(PLATE_FOLDER_TILE_PREFIX.length));
 }
@@ -1521,6 +1524,9 @@ async function runPlateFirstRenderSmoke(args) {
   const fixture = loadAndroidSmokeFixture(args.androidSmokeFixture);
   const plateCapability = fixture.capabilities.plate.georeferenced;
   const result = createTestResult("android.plate-first-render-smoke");
+  // The Google APIs image is required for raster rendering, but its first-boot
+  // GNSS service can deadlock system_server. Plates do not depend on location.
+  adb(serial, ["shell", "cmd", "location", "set-location-enabled", "false"]);
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
   recordStep(result, "app launched", serial || "default adb device");

@@ -1198,7 +1198,11 @@ export async function launchFreshAndroidApp(
 }
 
 export async function acceptDisclaimerIfPresent(serial) {
-  const initial = queryAndroidStartupProjection(serial);
+  const initial = (await observeUntil("initial mandatory disclaimer state", () =>
+    queryAndroidStartupProjection(serial), {
+    timeoutMs: E2E_TIMING.startupMs,
+    intervalMs: E2E_TIMING.resourcePollIntervalMs,
+  })).value;
   if (initial?.disclaimer_required !== "true") return false;
   await performTransition("accept mandatory disclaimer", {
     readinessSamples: 1,

@@ -30,6 +30,7 @@ cp "$WEB_SOURCE_DIR/package-lock.json" "$WORKSPACE_DIR/package-lock.json"
 cp "$WEB_SOURCE_DIR/tsconfig.json" "$WORKSPACE_DIR/tsconfig.json"
 cp "$WEB_SOURCE_DIR/vite.config.ts" "$WORKSPACE_DIR/vite.config.ts"
 cp "$WEB_SOURCE_DIR/index.html" "$WORKSPACE_DIR/index.html"
+cp "$WEB_SOURCE_DIR/about.html" "$WORKSPACE_DIR/about.html"
 
 ln -sfn "$WEB_SOURCE_DIR/src" "$WORKSPACE_DIR/src"
 ln -sfn "$WEB_SOURCE_DIR/public" "$WORKSPACE_DIR/public"

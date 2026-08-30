@@ -26,7 +26,7 @@ describe("About navigation policy", () => {
     expect(aboutSource).not.toContain('id="startup-shell"');
     expect(aboutSource).not.toContain('id="root"');
     expect(aboutSource).not.toContain("/src/main.tsx");
-    expect(viteSource).toContain('about: path.join(webSourceRoot, "about.html")');
+    expect(viteSource).toContain('about: path.join(workspaceRoot, "about.html")');
     expect(viteSource).toContain('requestPath === "/about"');
   });
 

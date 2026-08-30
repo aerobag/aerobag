@@ -839,6 +839,22 @@ def prequalify(config_path: Path) -> int:
     )
 
 
+def staging_failure_message(config: dict[str, Any], tag: str) -> str:
+    fallback = f"Staging deployment {tag} FAILED"
+    try:
+        observed = load_remote_observed(config)
+    except Exception:
+        return fallback
+    record = observed.releases.get(tag)
+    if record is None or record.build_status != "passed":
+        return f"Staging build {tag} FAILED"
+    if observed.staging != tag:
+        return f"Staging activation {tag} FAILED"
+    if record.qualification_status != "passed":
+        return f"Staging qualification {tag} FAILED"
+    return fallback
+
+
 def stage(config_path: Path, releases_path: Path) -> int:
     assert_clean_checkout("stage")
     git("fetch", "--tags", "origin", capture=False)
@@ -903,11 +919,17 @@ def stage(config_path: Path, releases_path: Path) -> int:
             f"release {tag} is committed to origin, but its GitHub mirror push failed; "
             f"retry: git push --atomic {github_url} main {tag}"
         ) from error
-    result = reconcile(config_path, releases_path)
+    try:
+        result = reconcile(config_path, releases_path)
+    except Exception:
+        print_warning(staging_failure_message(config, tag))
+        raise
     if result == 0:
-        print(
-            "Staging deployment checks passed. Full exact-tag journey qualification "
-            "runs in GitHub; inspect it with tools/prod_manage.py --qualification-status."
+        print_success(f"Staging build {tag} SUCCEEDED")
+        print_success(
+            "Staging deployment checks passed. Full exact-tag journey "
+            "qualification runs in GitHub; inspect it with "
+            "tools/prod_manage.py --qualification-status."
         )
     return result
 

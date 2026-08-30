@@ -770,6 +770,7 @@ class StageOrderingTests(unittest.TestCase):
             mock.patch.object(prod_manage, "confirmed", return_value=True),
             mock.patch.object(prod_manage, "write_atomic") as write_atomic,
             mock.patch.object(prod_manage, "reconcile", return_value=0) as reconcile,
+            mock.patch.object(prod_manage, "print_success") as success,
         ):
             result = prod_manage.stage(
                 prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
@@ -804,6 +805,57 @@ class StageOrderingTests(unittest.TestCase):
         reconcile.assert_called_once_with(
             prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
         )
+        self.assertTrue(
+            any(
+                "Staging build 2026-08-22.1 SUCCEEDED" in call.args[0]
+                for call in success.call_args_list
+            )
+        )
+
+    def test_failed_stage_build_prints_explicit_red_result_before_reraising(self) -> None:
+        document = desired_document()
+        failed = releases.ObservedRelease(
+            tag="2026-08-22.1",
+            tag_object="b" * 40,
+            commit="a" * 40,
+            build_status="failed",
+        )
+        with (
+            mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+            mock.patch.object(
+                prod_manage.deployment,
+                "load_config",
+                return_value={"github_repository": "aerobag/aerobag"},
+            ),
+            mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "load_release_document", return_value=document),
+            mock.patch.object(
+                prod_manage, "next_release_name", return_value="2026-08-22.1"
+            ),
+            mock.patch.object(prod_manage, "print_proposal"),
+            mock.patch.object(prod_manage, "confirmed", return_value=True),
+            mock.patch.object(prod_manage, "write_atomic"),
+            mock.patch.object(
+                prod_manage,
+                "reconcile",
+                side_effect=subprocess.CalledProcessError(1, ["ssh"]),
+            ),
+            mock.patch.object(
+                prod_manage,
+                "load_remote_observed",
+                return_value=releases.ObservedState(
+                    releases={failed.tag: failed}
+                ),
+            ),
+            mock.patch.object(prod_manage, "print_warning") as warning,
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG,
+                    prod_manage.DEFAULT_RELEASES,
+                )
+
+        warning.assert_called_once_with("Staging build 2026-08-22.1 FAILED")
 
     def test_stage_does_not_consult_candidate_qualification(self) -> None:
         document = desired_document()

@@ -20,7 +20,9 @@ const uiTargetRoot = process.env.AEROBAG_UI_TARGET_ROOT
   : path.resolve(repoRoot, configuredTargetRoot);
 const webSourceRoot = path.join(repoRoot, "ui", "web-app");
 const webTargetRoot = path.join(uiTargetRoot, "web");
-const workspaceRoot = path.join(webTargetRoot, "workspace");
+const workspaceRoot = process.env.AEROBAG_WEB_WORKSPACE_DIR
+  ? path.resolve(process.env.AEROBAG_WEB_WORKSPACE_DIR)
+  : path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
 const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
@@ -477,8 +479,8 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        app: path.join(webSourceRoot, "index.html"),
-        about: path.join(webSourceRoot, "about.html"),
+        app: path.join(workspaceRoot, "index.html"),
+        about: path.join(workspaceRoot, "about.html"),
       },
     },
   },

@@ -1946,6 +1946,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt", import.meta.url),
     "utf8",
   );
+  const charts = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt", import.meta.url),
+    "utf8",
+  );
   assert.match(driver, /case "\/exact-projection"/);
   assert.match(driver, /findAccessibilityNodeInfosByViewId\(tag\)/);
   assert.match(driver, /exactNodePaths\.get\(tag\)/);
@@ -1968,9 +1972,12 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(journeyDriver, /"parity:playback-widget:"/);
   assert.match(journeyDriver, /"parity:viewport:"/);
   assert.match(journeyDriver, /"parity:map-follow-state:"/);
+  assert.match(journeyDriver, /"parity:plate-viewport:"/);
   assert.match(journeyDriver, /e2e_playback_widget_projection/);
   assert.match(mapExplorer, /R\.id\.e2e_map_follow_projection/);
   assert.doesNotMatch(mapExplorer, /\.testTag\(mapFollowProbeTag/);
+  assert.match(charts, /R\.id\.e2e_plate_viewport_projection/);
+  assert.doesNotMatch(charts, /\.testTag\(\s*"parity:plate-viewport:/);
   assert.match(mainActivity, /R\.id\.e2e_startup_state_projection/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_rows_projection/);
   assert.match(mainActivity, /sessionPlanUiState\.displayRows\.joinToString/);
@@ -1984,6 +1991,21 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
     /queryAndroidStartupProjection[\s\S]*queryAndroidExactProjection\(serial, STARTUP_PROJECTION_ID/,
   );
   assert.match(journeyDriver, /e2e_flight_plan_rows_projection/);
+});
+
+test("plate journeys rendezvous with the selected chart instead of arbitrary viewport stability", () => {
+  const implementations = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    implementations,
+    /initializedPlateViewport[\s\S]*plateViewport\(runtime, chartId\)/,
+  );
+  assert.match(implementations, /const chartId = plateChartId\(chart\)/);
+  assert.match(implementations, /const multiId = plateChartId\(multi\)/);
+  assert.match(implementations, /const legendChartId = plateChartId\(legendOption\)/);
+  assert.doesNotMatch(implementations, /settled (?:initial plate|legend) viewport/);
 });
 
 test("semantic actions use revalidated one-sample readiness but coordinate reuse stays stable", () => {
@@ -2245,14 +2267,14 @@ test("semantic text editing discovers once before bounded completion reads", () 
   assert.match(method, /complete: async \(\) => \{[\s\S]*readTextElement\(controlId\)/);
 });
 
-test("Android text completion uses exact indexed state instead of a reachable tree walk", () => {
+test("Android text completion reacquires an exact input moved by the keyboard", () => {
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const method = source.slice(
     source.lastIndexOf("  async readTextElement(elementId)"),
     source.lastIndexOf("  async readModal(modalId)"),
   );
   assert.match(method, /queryAndroidExactProjection/);
-  assert.match(method, /boundedOnly: true/);
+  assert.doesNotMatch(method, /boundedOnly: true/);
   assert.doesNotMatch(method, /queryFirstAndroidSemanticNode|dumpAndroid/);
   const service = readFileSync(new URL(
     "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
@@ -2260,6 +2282,43 @@ test("Android text completion uses exact indexed state instead of a reachable tr
   ), "utf8");
   assert.match(service, /value\.put\("focused", Boolean\.toString\(node\.isFocused\(\)\)\)/);
   assert.match(service, /value\.put\("semantic-path", semanticPath\)/);
+});
+
+test("Android text focus is an explicit accessibility focus action", () => {
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const journeyDriver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const service = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  assert.match(harness, /semanticDriverActionRequest\(state\.port, `\/focus\?\$\{query\}`\)/);
+  assert.match(journeyDriver, /async focusText[\s\S]*focusAndroidSemanticNode\(/);
+  assert.match(service, /case "\/focus"/);
+  assert.match(
+    service,
+    /focusMatchingNode[\s\S]*node\.performAction\(AccessibilityNodeInfo\.ACTION_CLICK\)/,
+  );
+});
+
+test("journey failures retain bounded observation diagnostics", async () => {
+  const artifactDir = mkdtempSync(join(tmpdir(), "aerobag-observation-diagnostic-"));
+  const runtime = createJourneyRuntime({
+    journey: { id: "observation-diagnostic", assertions: [] },
+    platform: "test",
+    driver: { async captureFrame() {} },
+    fixture: null,
+    artifactDir,
+  });
+  try {
+    const error = new ObservationTimeoutError("selected viewport", 3000, {
+      attempts: 12,
+      last_value: "chart:expected",
+    });
+    const result = await runtime.finish(error);
+    assert.deepEqual(result.diagnostics.failure_observation, error.diagnostics);
+  } finally {
+    rmSync(artifactDir, { recursive: true, force: true });
+  }
 });
 
 test("journey runtime exposes typed phases instead of a generic step callback", async () => {
@@ -3123,7 +3182,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   assert.match(actionRequest, /while \(semanticDriverRequestBusy\(response\)\)/);
   assert.match(actionRequest, /semanticDriverIdleRequest/);
   assert.doesNotMatch(actionRequest, /semanticDriverRequestTimedOut/);
-  assert.equal((harness.match(/semanticDriverActionRequest\(state\.port/g) ?? []).length, 4);
+  assert.equal((harness.match(/semanticDriverActionRequest\(state\.port/g) ?? []).length, 5);
 
   const requests = [];
   const responses = [

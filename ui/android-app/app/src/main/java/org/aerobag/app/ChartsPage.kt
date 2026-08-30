@@ -777,15 +777,15 @@ internal fun ChartsPage(
                 }
             }
             if (currentViewport != null && selectedChart != null) {
-                Box(
+                E2eProjectionView(
+                    viewId = R.id.e2e_plate_viewport_projection,
+                    state = "chart:${selectedChart.id}" +
+                        ":zoom:${"%.3f".format(currentViewport.zoom)}" +
+                        ":left:${"%.1f".format(currentViewport.leftPx)}" +
+                        ":top:${"%.1f".format(currentViewport.topPx)}",
                     modifier = Modifier
-                        .size(1.dp)
-                        .testTag(
-                            "parity:plate-viewport:chart:${selectedChart.id}" +
-                                ":zoom:${"%.3f".format(currentViewport.zoom)}" +
-                                ":left:${"%.1f".format(currentViewport.leftPx)}" +
-                                ":top:${"%.1f".format(currentViewport.topPx)}",
-                        ),
+                        .align(Alignment.BottomStart)
+                        .padding(start = 3.dp, bottom = 3.dp),
                 )
             }
             if (plateFlightPlanOverlay.isNotEmpty()) {

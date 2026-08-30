@@ -870,6 +870,14 @@ function trayOptionId(entry) {
     .replace(/^tray-option-/, "");
 }
 
+function plateChartId(entry) {
+  return projectionId(entry)
+    .replace(/^parity:tray-option:/, "")
+    .replace(/^tray-option-/, "")
+    .replace(/^parity:plate-folder-tile:/, "")
+    .replace(/^plate-folder-tile:/, "");
+}
+
 async function visibleTrayOptions(runtime) {
   return runtime.driver.readProjection(runtime.platform === "web" ? "tray-option-" : "parity:tray-option:");
 }
@@ -1101,8 +1109,21 @@ async function procedureApproach(runtime) {
   runtime.check("procedure.approach.load-from-plate", true, load.text);
 }
 
-async function plateViewport(runtime) {
-  return projectionId((await runtime.driver.readProjection("parity:plate-viewport:"))[0]);
+async function plateViewport(runtime, expectedChartId = null) {
+  const entries = await runtime.driver.readProjection("parity:plate-viewport:");
+  const expected = expectedChartId == null ? null : `:chart:${expectedChartId}:zoom:`;
+  const entry = expected == null
+    ? entries[0]
+    : entries.find((candidate) => projectionId(candidate).includes(expected));
+  return projectionId(entry);
+}
+
+async function initializedPlateViewport(runtime, chartId, description) {
+  return runtime.eventually(
+    description,
+    () => plateViewport(runtime, chartId),
+    E2E_TIMING.localRenderMs,
+  );
 }
 
 async function selectPlateFolderTileMatching(runtime, needle) {
@@ -1150,7 +1171,7 @@ async function plateOperate(runtime) {
     .trim();
   const chart = await selectTrayOptionMatching(runtime, "plate-chart-button", georefDisplayLabel);
   runtime.check("plate.chart-selector", Boolean(chart), chart.text);
-  const chartId = trayOptionId(chart);
+  const chartId = plateChartId(chart);
 
   const selected = await runtime.eventually("named georeferenced plate selected", async () => {
     const control = await runtime.driver.readElement("plate-chart-button");
@@ -1192,7 +1213,11 @@ async function plateOperate(runtime) {
   }, E2E_TIMING.userResponseMs);
   runtime.check("plate.georeferenced-ownship", Boolean(ownship));
 
-  const initialViewport = await runtime.stable("settled initial plate viewport", () => plateViewport(runtime));
+  const initialViewport = await initializedPlateViewport(
+    runtime,
+    chartId,
+    "initialized selected plate viewport",
+  );
   const pannedViewport = await runtime.transition("pan georeferenced plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
     act: (readyElement) => runtime.driver.drag("plate-surface", { x: -120, y: -100 }, readyElement),
@@ -1232,8 +1257,11 @@ async function plateOperate(runtime) {
     await selectTrayOptionMatching(runtime, "plate-airport-button", multiPage.airport_id);
   }
   const multi = await selectTrayOptionMatching(runtime, "plate-chart-button", multiPage.label_contains);
-  const firstPageViewport = await runtime.stable(
-    "settled multi-page plate initial viewport", () => plateViewport(runtime),
+  const multiId = plateChartId(multi);
+  const firstPageViewport = await initializedPlateViewport(
+    runtime,
+    multiId,
+    "initialized selected multi-page plate viewport",
   );
   const lastPageViewport = await runtime.transition("scroll multi-page plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
@@ -1245,7 +1273,6 @@ async function plateOperate(runtime) {
   });
   runtime.check("plate.first-last-page", Boolean(lastPageViewport), `${firstPageViewport} -> ${lastPageViewport}`);
 
-  const multiId = trayOptionId(multi);
   await runtime.action("open multi-page plate folder", "plate-folder-button", {
     complete: async () => {
       const entries = await runtime.driver.readProjection(runtime.platform === "web"
@@ -1358,7 +1385,12 @@ async function plateAdvisoriesAndReferences(runtime) {
 
   const legendOption = await selectTrayOptionMatching(runtime, "plate-chart-button", legend.label_contains);
   runtime.check("plate.legend", Boolean(legendOption), legendOption.text);
-  const legendViewport = await runtime.stable("settled legend viewport", () => plateViewport(runtime));
+  const legendChartId = plateChartId(legendOption);
+  const legendViewport = await initializedPlateViewport(
+    runtime,
+    legendChartId,
+    "initialized selected legend viewport",
+  );
   const zoomedLegendViewport = await runtime.transition("zoom legend for composite scroll", {
     ready: () => runtime.driver.readElement("plate-surface"),
     act: () => runtime.driver.zoom("plate-surface", -360),

@@ -5,7 +5,7 @@
 import { writeFileSync } from "node:fs";
 import {
   adb, androidImeVisible, androidNodeLabel, androidTag, clickAndroidSemanticNode,
-  displayBoundsFromXml, dumpAndroid, findNode, findNodes,
+  displayBoundsFromXml, dumpAndroid, findNode, findNodes, focusAndroidSemanticNode,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
   setAndroidSemanticProgress,
@@ -26,6 +26,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:playback-widget:", "org.aerobag.app:id/e2e_playback_widget_projection"],
   ["parity:viewport:", "org.aerobag.app:id/e2e_viewport_projection"],
   ["parity:map-follow-state:", "org.aerobag.app:id/e2e_map_follow_projection"],
+  ["parity:plate-viewport:", "org.aerobag.app:id/e2e_plate_viewport_projection"],
   ["parity:map-selection-state:", "org.aerobag.app:id/e2e_map_selection_projection"],
   ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
 ]);
@@ -1152,7 +1153,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     if (!readinessEvidenceMatchesTag(semanticTag, readyElement)) {
       throw new Error(`Android text control ${controlId} has no matching focus evidence`);
     }
-    activateAndroidSemanticTag(this.serial, semanticTag, readyElement);
+    focusAndroidSemanticNode(
+      this.serial,
+      semanticTag,
+      readyElement.bounds,
+      readyElement.semantic_path,
+    );
   }
 
   async submit(controlId, readyElement) {
@@ -1386,7 +1392,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { includeDescendantText: true, boundedOnly: true },
+      { includeDescendantText: true },
     )[0];
     return queried ? androidProjectedElement(queried, elementId) : null;
   }

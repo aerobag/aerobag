@@ -363,6 +363,9 @@ export function createJourneyRuntime({
         }
       }
       if (error) {
+        if (error.diagnostics) {
+          result.diagnostics.failure_observation = error.diagnostics;
+        }
         try {
           const failureFrame = join(artifactDir, "failure.png");
           await driver.captureFrame(failureFrame);

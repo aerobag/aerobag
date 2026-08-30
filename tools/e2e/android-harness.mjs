@@ -227,6 +227,18 @@ export function clickAndroidSemanticNode(
   throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
 }
 
+export function focusAndroidSemanticNode(serial, tag, expectedBounds, semanticPath) {
+  const state = requiredSemanticDriver(serial);
+  if (!expectedBounds || !semanticPath) {
+    throw new Error(`persistent Android semantic focus for ${tag} has no readiness path and bounds`);
+  }
+  const query = new URLSearchParams({ tag, bounds: expectedBounds, path: semanticPath });
+  const response = semanticDriverActionRequest(state.port, `/focus?${query}`);
+  if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  throw new Error(`persistent Android semantic focus failed for ${tag}: ${detail}`);
+}
+
 export function scrollAndroidSemanticNode(serial, bounds, direction) {
   const state = requiredSemanticDriver(serial);
   const semanticDirection = direction === "down" || direction === "forward"

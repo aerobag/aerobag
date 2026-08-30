@@ -184,6 +184,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/click":
                     handleClick(socket, path);
                     return;
+                case "/focus":
+                    handleFocus(socket, path);
+                    return;
                 case "/scroll":
                     handleScroll(socket, path);
                     return;
@@ -207,7 +210,7 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private static boolean isSemanticEndpoint(String endpoint) {
         return switch (endpoint) {
-            case "/dump", "/query", "/exact-projection", "/set-text", "/set-progress", "/click", "/scroll" ->
+            case "/dump", "/query", "/exact-projection", "/set-text", "/set-progress", "/click", "/focus", "/scroll" ->
                 true;
             default -> false;
         };
@@ -342,6 +345,16 @@ public final class SemanticDriverService extends AccessibilityService {
                 expectedStateDescription
             );
         respondAction(socket, clicked, "click action rejected for " + tag + "\n");
+    }
+
+    private void handleFocus(Socket socket, String path) throws IOException {
+        Map<String, String> query = queryOf(path);
+        String tag = query.getOrDefault("tag", "");
+        String semanticPath = query.getOrDefault("path", "");
+        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
+        boolean focused = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
+            focusRenderedNode(tag, expectedBounds, semanticPath);
+        respondAction(socket, focused, "focus action rejected for " + tag + "\n");
     }
 
     private void handleScroll(Socket socket, String path) throws IOException {
@@ -1090,6 +1103,25 @@ public final class SemanticDriverService extends AccessibilityService {
         return false;
     }
 
+    private boolean focusRenderedNode(
+        String tag,
+        Rect expectedBounds,
+        String semanticPath
+    ) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long sequence = accessibilityEventSequence.get();
+            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+            if (node == null) return false;
+            try {
+                if (focusMatchingNode(node, tag, expectedBounds)) return true;
+            } finally {
+                node.recycle();
+            }
+            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
+        }
+        return false;
+    }
+
     private static boolean matchesExpectedActionState(
         AccessibilityNodeInfo node,
         String expectedSelected,
@@ -1373,6 +1405,23 @@ public final class SemanticDriverService extends AccessibilityService {
         node.getBoundsInScreen(bounds);
         if (!bounds.equals(expectedBounds) || !centerReachable(node)) return false;
         return node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean focusMatchingNode(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds
+    ) {
+        node.refresh();
+        if (!tag.equals(node.getViewIdResourceName())) return false;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.equals(expectedBounds) || !centerReachable(node)) return false;
+        if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
+        // Compose text fields transfer input focus through semantic activation.
+        // ACTION_FOCUS only moves accessibility focus and leaves the editor inactive.
+        return node.isFocused() || node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
     }
 
     @SuppressWarnings("deprecation")

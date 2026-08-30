@@ -4,7 +4,7 @@
 
 import { writeFileSync } from "node:fs";
 import {
-  adb, androidImeVisible, androidNodeLabel, androidTag, clickAndroidSemanticNode,
+  adb, androidImeShown, androidNodeLabel, androidSemanticTextReady, androidTag, clickAndroidSemanticNode,
   displayBoundsFromXml, dumpAndroid, findNode, findNodes, focusAndroidSemanticNode,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
@@ -30,6 +30,13 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:data-status-state:", "org.aerobag.app:id/e2e_data_status_projection"],
   ["parity:map-selection-state:", "org.aerobag.app:id/e2e_map_selection_projection"],
   ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
+  ["parity:plan-state:", "org.aerobag.app:id/e2e_flight_plan_state_projection"],
+  ["parity:flight-plan-overlay-state:", "org.aerobag.app:id/e2e_flight_plan_overlay_projection"],
+  ["parity:map-family:", "org.aerobag.app:id/e2e_map_family_projection"],
+  ["parity:raster-state:", "org.aerobag.app:id/e2e_raster_state_projection"],
+  ["parity:vector-state:", "org.aerobag.app:id/e2e_vector_state_projection"],
+  ["parity:flight-plan-route-overlay:", "org.aerobag.app:id/e2e_flight_plan_route_overlay_projection"],
+  ["parity:plan-append-route-state:", "org.aerobag.app:id/e2e_flight_plan_route_entry_projection"],
 ]);
 
 export function androidMapSelectionEntryFromState(state, expected = "") {
@@ -56,6 +63,10 @@ export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "revealProjectionMatching", "reload",
   "back", "captureFrame", "injectRasterLoadFault",
 ]);
+
+export function semanticActionReadinessSamples(driver) {
+  return driver.platform === "android" ? E2E_TIMING.stableObservationSamples : 1;
+}
 
 export class SemanticJourneyDriver {
   constructor(platform) {
@@ -608,8 +619,7 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
 const ANDROID_PAGE_TAGS = Object.freeze({
   map: "parity:map-surface",
   charts: "parity:page:plate",
-  // Compose merges the page container into the structured plan-state node.
-  flight_plan: "parity:plan-state:",
+  flight_plan: "parity:page:flight_plan",
   altitude_planner: "parity:page:altitude_planner",
   data_status: "parity:page:data_status",
   settings: "parity:page:settings",
@@ -686,6 +696,14 @@ const ANDROID_PLAN_CONTROL_IDS = Object.freeze({
   toggle_sequencing_suspension: "ToggleSequencingSuspension",
   restore_direct_to: "RestoreDirectTo",
 });
+const ANDROID_PLAN_ROW_ACTION_IDS = new Set([
+  "activate_leg", "add_airway", "direct_to", "insert_after", "insert_before",
+  "move_down", "move_up", "remove", "remove_all_above", "remove_procedure",
+  "select_approach", "select_arrival", "select_departure", "show_plate",
+]);
+const ANDROID_MAP_SELECTION_ACTION_IDS = new Set([
+  "airport_info", "direct_to", "plates", "tfr_text", "wx",
+]);
 
 const ANDROID_CLOUD_ACTION_IDS = new Set([
   "begin_setup", "begin_create", "back_setup", "scan_setup_code", "accept_setup_code",
@@ -718,13 +736,26 @@ export function androidActionCandidates(actionId) {
   if (ANDROID_CLOUD_ACTION_IDS.has(actionId)) {
     return [`parity:cloud-action:${actionId}`];
   }
+  const planControl = ANDROID_PLAN_CONTROL_IDS[actionId];
+  if (planControl) return [`parity:plan-control:${planControl}`];
+  if (ANDROID_PLAN_ROW_ACTION_IDS.has(actionId)) {
+    const planRow = `parity:plan-row-action:${actionId}`;
+    return actionId === "direct_to"
+      ? [`parity:map-selection-action:${actionId}`, planRow]
+      : [planRow];
+  }
+  if (ANDROID_MAP_SELECTION_ACTION_IDS.has(actionId)) {
+    return [`parity:map-selection-action:${actionId}`];
+  }
   return [
     androidSemanticTag(actionId),
-    `parity:${actionId}`,
     `parity:map-selection-action:${actionId}`,
     `parity:plan-row-action:${actionId}`,
-    `parity:plan-control:${ANDROID_PLAN_CONTROL_IDS[actionId] ?? actionId}`,
   ];
+}
+
+function androidActionCandidateMatches(actionId, tag) {
+  return androidActionCandidates(actionId).includes(tag);
 }
 
 export function androidElementMayRequireVerticalScroll(elementId) {
@@ -735,6 +766,7 @@ export function androidElementMayRequireVerticalScroll(elementId) {
     tag.startsWith("parity:offline-product:") ||
     tag.startsWith("parity:offline-region:") ||
     tag.startsWith("parity:offline-zoom-level") ||
+    tag === "parity:plan-append-route-input" ||
     tag === "parity:cloud-setup-code-output" ||
     tag.startsWith("parity:plan-airway-entry:") ||
     tag.startsWith("parity:plan-airway-exit:");
@@ -797,7 +829,9 @@ function androidProjectedElement(node, elementId = androidTag(node)) {
     expanded: elementId.startsWith("settings-section-")
       ? node.checked === "true" || node.selected === "true"
       : null,
-    state: androidTag(node).match(/:state:([^:]+)(?::|$)/)?.[1] ?? null,
+    state: androidTag(node).match(/:state:([^:]+)(?::|$)/)?.[1] ??
+      node["state-description"]?.match(/(?:^|:)state:([^:]+)(?::|$)/)?.[1] ??
+      null,
     bounds: node.bounds,
     semantic_path: node["semantic-path"],
     focused: node.focused === "true",
@@ -808,21 +842,26 @@ function queryFirstAndroidSemanticNode(
   serial,
   tag,
   {
-    allowPrefix = true,
+    allowPrefix = false,
     requireVisible = false,
     requireReachable = false,
     includeDescendantText = true,
+    renderedOnly = false,
   } = {},
 ) {
   const choose = (nodes) => nodes?.find((node) =>
     (!requireVisible || node.visible === "true") &&
     (!requireReachable || node["center-reachable"] === "true")) ?? null;
-  const exact = choose(queryAndroidSemanticNodes(serial, tag, { includeDescendantText }));
+  const exact = choose(queryAndroidExactProjection(
+    serial,
+    tag,
+    { includeDescendantText, renderedOnly },
+  ));
   if (exact || !allowPrefix) return exact;
   return choose(queryAndroidSemanticNodes(
     serial,
     tag,
-    { prefix: true, includeDescendantText },
+    { prefix: true, first: true, includeDescendantText },
   ));
 }
 
@@ -992,6 +1031,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   async readPage(pageId) {
     const tag = androidPageTag(pageId);
     if (!tag) throw new Error(`Android page ${pageId} has no semantic page tag`);
+    const current = visibleAndroidPage(this.serial);
+    if (current?.pageId !== pageId) return null;
     const node = queryFirstAndroidSemanticNode(
       this.serial,
       tag,
@@ -1001,9 +1042,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         includeDescendantText: false,
       },
     );
-    if (!node) return null;
-    const current = visibleAndroidPage(this.serial);
-    return current?.pageId === pageId ? { pageId, node } : null;
+    return node ? { pageId, node } : null;
   }
 
   async readNavigationAction(pageId) {
@@ -1033,11 +1072,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async readOption(launcherId, optionId) {
-    const node = queryFirstAndroidSemanticNode(
+    const node = queryAndroidExactProjection(
       this.serial,
       androidOptionTag(launcherId, optionId),
-      { requireVisible: true, requireReachable: true },
-    );
+      { providerOnly: true },
+    ).find((candidate) =>
+      candidate.visible === "true" && candidate["center-reachable"] === "true",
+    ) ?? null;
     if (!node || !androidElementEnabled(node)) return null;
     return androidProjectedElement(node);
   }
@@ -1070,7 +1111,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const retainedTag = retainedTarget?.test_id ?? retainedTarget?.["resource-id"];
     if (
       !retainedTag ||
-      !androidActionCandidates(actionId).includes(retainedTag) ||
+      !androidActionCandidateMatches(actionId, retainedTag) ||
       !readinessEvidenceMatchesTag(retainedTag, retainedTarget) ||
       !retainedTarget.enabled
     ) {
@@ -1086,7 +1127,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const retainedTag = retainedTarget?.test_id ?? retainedTarget?.["resource-id"];
     if (
       !retainedTag ||
-      !androidActionCandidates(actionId).includes(retainedTag) ||
+      !androidActionCandidateMatches(actionId, retainedTag) ||
       !readinessEvidenceMatchesTag(retainedTag, retainedTarget)
     ) {
       throw new Error(`Android repeated action ${actionId} target no longer matches its identity`);
@@ -1102,11 +1143,16 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async readAction(actionId) {
+    const renderedOnly = androidElementMayRequireHorizontalScroll(actionId);
     for (const candidate of androidActionCandidates(actionId)) {
       const node = queryFirstAndroidSemanticNode(
         this.serial,
         candidate,
-        { requireVisible: true, requireReachable: true },
+        {
+          requireVisible: true,
+          requireReachable: true,
+          renderedOnly,
+        },
       );
       if (!node || !androidElementEnabled(node)) continue;
       return androidProjectedElement(node);
@@ -1131,22 +1177,15 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     }
     if (
       readyElement?.test_id !== semanticTag ||
-      !readyElement.bounds ||
-      !readyElement.semantic_path
+      readyElement.focused !== true
     ) {
-      throw new Error(`Android text control ${controlId} has no matching readiness evidence`);
+      throw new Error(`Android text control ${controlId} has no focused readiness evidence`);
     }
-    if (!setAndroidSemanticText(
+    setAndroidSemanticText(
       this.serial,
       semanticTag,
       value,
-      readyElement.bounds,
-      readyElement.semantic_path,
-    )) {
-      throw new Error(
-        `Android semantic text action is unavailable for ${controlId}; refusing to retry a synthetic user edit`,
-      );
-    }
+    );
   }
 
   async focusText(controlId, readyElement) {
@@ -1204,9 +1243,11 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     );
   }
 
-  async zoom(surfaceId, amount) {
-    const node = findTagOrPrefix(dumpAndroid(this.serial), `parity:${surfaceId}`);
-    if (!node) throw new Error(`Android surface ${surfaceId} is not visible`);
+  async zoom(surfaceId, amount, readyElement = null) {
+    const semanticTag = `parity:${surfaceId}`;
+    if (!readinessEvidenceMatchesTag(semanticTag, readyElement)) {
+      throw new Error(`Android zoom surface ${surfaceId} has no matching readiness evidence`);
+    }
     adb(this.serial, [
       "shell", "input", "keyevent", androidZoomKeyCode(amount),
     ]);
@@ -1268,6 +1309,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         text: androidNodeLabel(xml, node) || node.text || "",
         enabled: androidElementEnabled(node),
         pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+        bounds: node.bounds ?? null,
       }));
     if (!androidProjectionMayRequireVerticalScan(probe)) return collect(dumpAndroid(this.serial));
 
@@ -1279,7 +1321,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         const xml = dumpAndroid(this.serial);
         const visible = collect(xml);
         for (const entry of visible) accumulated.set(entry.id, entry);
-        const signature = visible.map((entry) => entry.id).join("\n");
+        const signature = visible.map((entry) => `${entry.id}:${entry.bounds ?? ""}`).join("\n");
         unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
         previousSignature = signature;
         if (unchangedFrames >= 2) break;
@@ -1308,6 +1350,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         text: androidNodeLabel(xml, node) || node.text || "",
         enabled: androidElementEnabled(node),
         pressed: node.selected === "true" || node.checked === "true" ? "true" : "false",
+        bounds: node.bounds ?? null,
       }));
     const findMatch = (xml) => projectionEntries(xml)
       .find((entry) => entry.text.toUpperCase().includes(normalizedNeedle)) ?? null;
@@ -1336,7 +1379,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         const xml = dumpAndroid(this.serial);
         const match = findMatch(xml);
         if (match) return match;
-        const signature = projectionEntries(xml).map((entry) => entry.id).join("\n");
+        const signature = projectionEntries(xml)
+          .map((entry) => `${entry.id}:${entry.bounds ?? ""}`)
+          .join("\n");
         unchangedFrames = signature === previousSignature ? unchangedFrames + 1 : 0;
         previousSignature = signature;
         if (unchangedFrames >= 2) break;
@@ -1350,7 +1395,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readElement(elementId) {
     if (elementId === "software-keyboard") {
-      return androidImeVisible(dumpAndroid(this.serial)) ? {
+      return androidImeShown(this.serial) ? {
         test_id: elementId,
         text: "Android software keyboard",
         enabled: true,
@@ -1375,6 +1420,11 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         enabled: true,
       } : null;
     }
+    if (elementId === "plan-row-tray-scrim") {
+      const overlay = this.readScalarProjection("parity:flight-plan-overlay-state:")[0];
+      const state = semanticProjectionFields(overlay?.["state-description"] ?? "");
+      if (state.row_tray !== "open") return null;
+    }
     const semanticTag = androidElementSemanticTag(elementId);
     const queried = queryFirstAndroidSemanticNode(
       this.serial,
@@ -1395,24 +1445,30 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       semanticTag,
       { includeDescendantText: true },
     )[0];
-    return queried ? androidProjectedElement(queried, elementId) : null;
+    if (!queried) return null;
+    const projected = androidProjectedElement(queried, elementId);
+    return projected.focused && !androidSemanticTextReady(this.serial)
+      ? { ...projected, actionable: false }
+      : projected;
   }
 
   async readModal(modalId) {
     const queried = this.readScalarProjection("parity:map-selection-state:");
     const state = queried[0]?.["state-description"] ?? "";
-    return semanticProjectionFields(state).detail === "open"
+    const detailId = decodeURIComponent(semanticProjectionFields(state).detail ?? "none");
+    return detailId === modalId
       ? { test_id: modalId, state }
       : null;
   }
 
   async revealElement(elementId) {
     const semanticTag = androidElementSemanticTag(elementId);
+    const renderedOnly = androidElementMayRequireHorizontalScroll(elementId);
     const reachable = () => {
       const node = queryFirstAndroidSemanticNode(
         this.serial,
         semanticTag,
-        { requireVisible: true, requireReachable: true },
+        { requireVisible: true, requireReachable: true, renderedOnly },
       );
       return androidProjectedElement(node, elementId);
     };
@@ -1426,10 +1482,17 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       });
       if (horizontal) return horizontal;
     }
+    if (!androidElementMayRequireVerticalScroll(elementId)) {
+      return establishRevealedElement({
+        description: semanticTag,
+        readReachable: reachable,
+        traverse: async () => false,
+      });
+    }
     return establishRevealedElement({
       description: semanticTag,
       readReachable: reachable,
-      traverse: () => scrollUntilTagPrefix(this.serial, semanticTag, 20, true),
+      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true),
     });
   }
 

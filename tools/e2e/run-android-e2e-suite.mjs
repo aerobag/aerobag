@@ -32,7 +32,6 @@ import {
   hasAndroidTag,
   hasAndroidText,
   launchFreshAndroidApp,
-  layerToggleTag,
   lockAndroidRotation,
   pressKey,
   queryAndroidExactProjection,
@@ -82,9 +81,6 @@ const DEFAULT_PACKAGE_SOURCE_PORT = process.env.PACKAGE_SOURCE_PORT ?? "8083";
 const OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
 const ROUTE_OVERLAY_PREFIX = "parity:flight-plan-route-overlay:";
 const MAP_FOLLOW_PREFIX = "parity:map-follow-state:";
-const BAD_AUTOPILOT_SOURCE_TAG = "parity:ownship-source:__bad_autopilot__";
-const BAD_AUTOPILOT_DEBUG_TAG = "parity:settings-toggle:debug_bad_autopilot";
-const DEBUG_DIAGNOSTICS_SECTION_TAG = "parity:settings-section:debug_diagnostics";
 const PLATE_SURFACE_TAG = "parity:plate-surface";
 const PLATE_FOLDER_TILE_PREFIX = "parity:plate-folder-tile:";
 const E2E_ARTIFACT_DIR = process.env.AEROBAG_E2E_ARTIFACT_DIR ?? join(tmpdir(), "aerobag-e2e-artifacts");
@@ -454,6 +450,7 @@ async function appendRoute(serial, result, route, assertionId = "flightPlan.rout
 }
 
 async function activateDestinationLeg(serial, result, route) {
+  const driver = nativeSemanticDriver(serial);
   const destination = routeDestination(route);
   const shortDestination = destination.replace(/^K(?=[A-Z]{3}$)/, "");
   await nativeTransition(result, `destination row opened ${destination}`, {
@@ -466,17 +463,11 @@ async function activateDestinationLeg(serial, result, route) {
         }) ?? null;
     },
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => findNode(
-      dumpAndroid(serial),
-      (node) => androidTag(node).startsWith("parity:plan-row-action:activate_leg:enabled:true"),
-    ),
+    complete: () => driver.readElement("plan-row-tray-scrim"),
   });
   await nativeTransition(result, `destination leg activated ${destination}`, {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => androidTag(node).startsWith("parity:plan-row-action:activate_leg:enabled:true"),
-    ),
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
+    ready: () => driver.readAction("activate_leg"),
+    act: (readyAction) => driver.performAction("activate_leg", readyAction),
     complete: async () => findNode(
       dumpAndroid(serial),
       (node) => androidTag(node).startsWith("parity:plan-state:") &&
@@ -672,108 +663,101 @@ async function waitForMapFollowProbe(serial, predicate, timeoutMs, message) {
 async function ensureBadAutopilotDebugFlag(serial, result) {
   const driver = nativeSemanticDriver(serial);
   await driver.openPage("settings");
-  await scrollUntilTag(serial, DEBUG_DIAGNOSTICS_SECTION_TAG, 12);
-  let xml = dumpAndroid(serial);
-  if (!findNode(xml, (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG))) {
+  const sectionId = "settings-section-debug_diagnostics";
+  let section = await driver.revealElement(sectionId);
+  if (!section) {
     throwWithUi(serial, "Debug Diagnostics settings section is not visible");
   }
-  await nativeTransition(result, "Debug Diagnostics section opened", {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG),
-    ),
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => {
-      const section = findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, DEBUG_DIAGNOSTICS_SECTION_TAG),
-      );
-      return section?.checked === "true" || section?.selected === "true" ? section : null;
-    },
-  });
-  await scrollUntilTag(serial, BAD_AUTOPILOT_DEBUG_TAG, 6);
-  xml = dumpAndroid(serial);
-  let checkbox = findNode(xml, (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG));
+  if (section.expanded !== true) {
+    await nativeTransition(result, "Debug Diagnostics section opened", {
+      ready: () => driver.readElement(sectionId),
+      act: (readySection) => driver.performAction(sectionId, readySection),
+      complete: async () => {
+        section = await driver.readElement(sectionId);
+        return section?.expanded === true ? section : null;
+      },
+    });
+  }
+  const toggleId = "settings-toggle-debug_bad_autopilot";
+  let checkbox = await driver.revealElement(toggleId);
   if (!checkbox) {
     throwWithUi(serial, "Bad Autopilot debug flag is not visible");
   }
-  if (checkbox.checked !== "true") {
+  if (checkbox.checked !== true) {
     await nativeTransition(result, "Bad Autopilot debug flag enabled", {
-      ready: async () => findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG) && node.checked !== "true",
-      ),
-      act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, BAD_AUTOPILOT_DEBUG_TAG) && node.checked === "true",
-      ),
+      ready: () => driver.readElement(toggleId),
+      act: (readyToggle) => driver.performAction(toggleId, readyToggle),
+      complete: async () => {
+        checkbox = await driver.readElement(toggleId);
+        return checkbox?.checked === true ? checkbox : null;
+      },
     });
   }
   await driver.openPage("map");
   recordStep(result, "Bad Autopilot debug source enabled");
 }
 
-async function dismissOwnshipSourceTray(serial, result) {
-  await nativeTransition(result, "ownship source tray dismissed", {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => androidTag(node).startsWith("parity:ownship-source:"),
-    ),
-    act: async (_readySource) => pressKey(serial, "KEYCODE_BACK"),
+async function openBadAutopilotSourceTray(driver, result, description, requireOption = false) {
+  return nativeTransition(result, description, {
+    ready: () => driver.readAction("ownship-source-button"),
+    act: (readyLauncher) => driver.openChooser("ownship-source-button", readyLauncher),
     complete: async () => {
-      const nextXml = dumpAndroid(serial);
-      return findNode(
-        nextXml,
-        (node) => androidTag(node).startsWith("parity:ownship-source:"),
-      ) === null ? nextXml : null;
+      const option = await driver.readOption("ownship-source-button", "__bad_autopilot__");
+      if (option) return option;
+      if (requireOption) return null;
+      return (await driver.readAction("ownship-source-button")) === null
+        ? { test_id: "ownship-source-tray" }
+        : null;
     },
   });
 }
 
-async function ensureBadAutopilotAvailable(serial, result) {
-  await nativeTransition(result, "ownship source tray opened", {
-    ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:ownship-launcher")),
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => findNode(
-      dumpAndroid(serial),
-      (node) => androidTag(node).startsWith("parity:ownship-source:"),
-    ),
+async function dismissOwnshipSourceTray(serial, result) {
+  const driver = nativeSemanticDriver(serial);
+  await nativeTransition(result, "ownship source tray dismissed", {
+    ready: async () => (await driver.readAction("ownship-source-button")) === null
+      ? { test_id: "ownship-source-tray" }
+      : null,
+    act: (_readyTray) => driver.back(),
+    complete: () => driver.readAction("ownship-source-button"),
   });
-  if (findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG))) {
+}
+
+async function ensureBadAutopilotAvailable(serial, result) {
+  const driver = nativeSemanticDriver(serial);
+  await openBadAutopilotSourceTray(driver, result, "ownship source tray opened");
+  if (await driver.readOption("ownship-source-button", "__bad_autopilot__")) {
     await dismissOwnshipSourceTray(serial, result);
     recordStep(result, "Bad Autopilot source available");
     return;
   }
   await dismissOwnshipSourceTray(serial, result);
   await ensureBadAutopilotDebugFlag(serial, result);
-  await nativeTransition(result, "Bad Autopilot source available after enabling debug flag", {
-    ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:ownship-launcher")),
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)),
-  });
+  await openBadAutopilotSourceTray(
+    driver,
+    result,
+    "Bad Autopilot source available after enabling debug flag",
+    true,
+  );
   await dismissOwnshipSourceTray(serial, result);
   recordStep(result, "Bad Autopilot source available");
 }
 
 async function selectBadAutopilotSource(serial, result) {
-  await nativeTransition(result, "ownship source tray opened for selection", {
-    ready: async () => findNode(
-      dumpAndroid(serial),
-      (node) => hasAndroidTag(node, "parity:ownship-launcher"),
-    ),
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => {
-      const sourceNode = findNode(
-        dumpAndroid(serial),
-        (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG),
-      );
-      return sourceNode?.enabled === "true" ? sourceNode : null;
-    },
-  });
+  const driver = nativeSemanticDriver(serial);
+  await openBadAutopilotSourceTray(
+    driver,
+    result,
+    "ownship source tray opened for selection",
+    true,
+  );
   await nativeTransition(result, "Bad Autopilot ownship selected", {
-    ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, BAD_AUTOPILOT_SOURCE_TAG)),
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
+    ready: () => driver.readOption("ownship-source-button", "__bad_autopilot__"),
+    act: (readyOption) => driver.selectOption(
+      "ownship-source-button",
+      "__bad_autopilot__",
+      readyOption,
+    ),
     complete: async () => queryMapFollowProbe(serial),
     responseTimeoutMs: E2E_TIMING.userResponseMs,
   });
@@ -1072,16 +1056,12 @@ async function zoomMapWhileFollowing(serial, result, { assertStable = false } = 
   recordStep(result, "map zoom preserved CTR offset", `${before.zoomCenti} -> ${settled.zoomCenti}`);
 }
 
-function queryLayerToggleNode(serial, layerId) {
-  return queryAndroidSemanticNodes(
-    serial,
-    layerToggleTag(layerId),
-    { first: true, includeDescendantText: false },
-  )[0] ?? null;
+function queryLayerToggleNode(driver, layerId) {
+  return driver.readOption("layers-button", layerId);
 }
 
 function layerToggleIsOn(node) {
-  return node?.checked === "true";
+  return node?.selected === true;
 }
 
 async function openLayersTray(serial, result) {
@@ -1089,7 +1069,7 @@ async function openLayersTray(serial, result) {
   const visibleState = (await observeUntil(
     "Layers tray state",
     async () => {
-      const toggle = queryLayerToggleNode(serial, "terrain_warning");
+      const toggle = await queryLayerToggleNode(driver, "terrain_warning");
       if (toggle) return { open: true, node: toggle };
       const launcher = await driver.readElement("layers-button");
       return launcher ? { open: false, node: launcher } : null;
@@ -1100,13 +1080,13 @@ async function openLayersTray(serial, result) {
     await nativeTransition(result, "Layers tray opened", {
       ready: () => driver.readElement("layers-button"),
       act: async (readyNode) => driver.performAction("layers-button", readyNode),
-      complete: async () => queryLayerToggleNode(serial, "terrain_warning"),
+      complete: () => queryLayerToggleNode(driver, "terrain_warning"),
       waitForObservation: driver.waitForObservation.bind(driver),
     });
   } else {
     recordStep(result, "Layers tray opened");
   }
-  return queryLayerToggleNode(serial, "terrain_warning");
+  return queryLayerToggleNode(driver, "terrain_warning");
 }
 
 function rejectedLayerCommandCount(serial) {
@@ -1150,19 +1130,20 @@ async function runLayerToggleNavDbRegression(args) {
   await ensureBadAutopilotAvailable(serial, result);
   await selectBadAutopilotSource(serial, result);
 
+  const driver = nativeSemanticDriver(serial);
   let terrainToggle = await openLayersTray(serial, result);
-  let nexradToggle = queryLayerToggleNode(serial, "nexrad");
+  let nexradToggle = await queryLayerToggleNode(driver, "nexrad");
   recordCheck(result, "layers.terrainInitiallyOn", layerToggleIsOn(terrainToggle));
   recordCheck(result, "layers.nexradInitiallyOff", !layerToggleIsOn(nexradToggle));
 
   await nativeTransition(result, "Terrain disabled", {
     ready: async () => {
-      const toggle = queryLayerToggleNode(serial, "terrain_warning");
+      const toggle = await queryLayerToggleNode(driver, "terrain_warning");
       return layerToggleIsOn(toggle) ? toggle : null;
     },
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
+    act: (readyNode) => driver.selectOption("layers-button", "terrain_warning", readyNode),
     complete: async () => {
-      const toggle = queryLayerToggleNode(serial, "terrain_warning");
+      const toggle = await queryLayerToggleNode(driver, "terrain_warning");
       return toggle && !layerToggleIsOn(toggle) ? toggle : null;
     },
   });
@@ -1173,12 +1154,12 @@ async function runLayerToggleNavDbRegression(args) {
   recordCheck(result, "layers.terrainTurnedOff", !layerToggleIsOn(terrainToggle));
   await nativeTransition(result, "NEXRAD enabled", {
     ready: async () => {
-      const toggle = queryLayerToggleNode(serial, "nexrad");
+      const toggle = await queryLayerToggleNode(driver, "nexrad");
       return toggle && !layerToggleIsOn(toggle) ? toggle : null;
     },
-    act: async (readyNode) => activateAndroidNode(serial, readyNode),
+    act: (readyNode) => driver.selectOption("layers-button", "nexrad", readyNode),
     complete: async () => {
-      const toggle = queryLayerToggleNode(serial, "nexrad");
+      const toggle = await queryLayerToggleNode(driver, "nexrad");
       return layerToggleIsOn(toggle) ? toggle : null;
     },
   });
@@ -1186,7 +1167,7 @@ async function runLayerToggleNavDbRegression(args) {
   recordCheck(result, "layers.nexradCommandAccepted", rejectedLayerCommandCount(serial) === 0, screenshotPath);
   recordStep(result, "NEXRAD enabled without a session-command warning");
 
-  nexradToggle = queryLayerToggleNode(serial, "nexrad");
+  nexradToggle = await queryLayerToggleNode(driver, "nexrad");
   recordCheck(result, "layers.nexradTurnedOn", layerToggleIsOn(nexradToggle));
   result.status = "pass";
   result.finished_at = new Date().toISOString();

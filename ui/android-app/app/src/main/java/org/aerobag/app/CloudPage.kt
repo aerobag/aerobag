@@ -40,8 +40,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -262,6 +264,7 @@ private fun CloudPanelView(
     modifier: Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    var e2eSetupCodeFocused by remember(panel.id) { mutableStateOf(false) }
     val accent = when (panel.state) {
         UiCloudPanelState.Error, UiCloudPanelState.Caution -> uiTheme.controls.dataStatusWarningStroke
         UiCloudPanelState.Complete -> uiTheme.controls.buttonChecked
@@ -269,7 +272,8 @@ private fun CloudPanelView(
     }
     Column(
         modifier = modifier
-            .testTag("parity:cloud-panel:${panel.id}:state:${panel.state.name.lowercase()}")
+            .testTag("parity:cloud-panel:${panel.id}")
+            .semantics { stateDescription = "state:${panel.state.name.lowercase()}" }
             .border(2.dp, accent, RoundedCornerShape(ThumbRadius))
             .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
             .padding(ThumbSize * 0.22f),
@@ -329,6 +333,13 @@ private fun CloudPanelView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(ThumbSize * 1.8f)
+                    .e2eIndexedTextControl(
+                        semanticTag = "parity:cloud-setup-code-input",
+                        text = fields[control.fieldId].orEmpty(),
+                        enabled = true,
+                        focused = e2eSetupCodeFocused,
+                    )
+                    .onFocusChanged { state -> e2eSetupCodeFocused = state.isFocused }
                     .testTag("parity:cloud-setup-code-input"),
                 label = { Text(control.label) },
                 placeholder = { Text(control.placeholder) },

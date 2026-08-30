@@ -325,6 +325,18 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+internal fun flightPlanStateProjection(plan: FlightPlanUiState): String {
+    val activeRows = plan.displayRows
+        .filter { it.active }
+        .joinToString(",") { it.uid }
+        .ifEmpty { "none" }
+    val guidance = plan.guidance
+    return "rows:${plan.displayRows.size}" +
+        ":active:$activeRows" +
+        ":from:${guidance?.activeFromRowUid ?: "none"}" +
+        ":to:${guidance?.activeToRowUid ?: "none"}"
+}
+
 @Composable
 internal fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
@@ -375,17 +387,7 @@ internal fun FlightPlanPage(
             null
     }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
-    val planStateTestTag = run {
-        val activeRows = projectedPlanUiState.displayRows
-            .filter { it.active }
-            .joinToString(",") { it.uid }
-            .ifEmpty { "none" }
-        val guidance = projectedPlanUiState.guidance
-        "parity:plan-state:rows:${projectedPlanUiState.displayRows.size}" +
-            ":active:$activeRows" +
-            ":from:${guidance?.activeFromRowUid ?: "none"}" +
-            ":to:${guidance?.activeToRowUid ?: "none"}"
-    }
+    val planStateTestTag = "parity:plan-state:${flightPlanStateProjection(projectedPlanUiState)}"
     val guidance = projectedPlanUiState.guidance
     val planControls = projectedPlanUiState.controls
     val altitudePlanner = projectedPlanUiState.altitudePlanner
@@ -607,6 +609,10 @@ internal fun FlightPlanPage(
         airwayPicker = null
         procedurePicker = null
         airportInsert = null
+    }
+
+    BackHandler(enabled = overlayState !is FlightPlanOverlayState.None) {
+        closePanels()
     }
 
     fun submitRouteEntry() {
@@ -1286,7 +1292,7 @@ internal fun FlightPlanPage(
                                     active = false,
                                     enabled = action.enabled,
                                     disabledReason = action.disabledReason,
-                                    testTag = "parity:plan-row-action:${action.id}:enabled:${action.enabled}",
+                                    testTag = "parity:plan-row-action:${action.id}",
                                     width = waypointActionButtonWidth,
                                     trailingContent = if (hasActionSymbol(action.id)) {
                                         {
@@ -1494,6 +1500,7 @@ internal fun FlightPlanRouteEntryRow(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val submitAction = rememberCurrentAction(onSubmit)
+    var e2eFocused by remember { mutableStateOf(false) }
     val fieldShape = RoundedCornerShape(ThumbRadius * 0.82f)
     val neutralTextColor = uiTheme.controls.panelFg
     val recognizedTextColor = Color(0xFF12683C)
@@ -1510,13 +1517,13 @@ internal fun FlightPlanRouteEntryRow(
             ?: if (loading) "Checking..." else null
     Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .testTag(
-                "parity:plan-append-route-state:" +
-                    "can_commit:${preview.canCommit}:loading:$loading",
-            ),
+            .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
     ) {
+        E2eProjectionView(
+            viewId = R.id.e2e_flight_plan_route_entry_projection,
+            state = "can_commit:${preview.canCommit}:loading:$loading",
+        )
         BasicTextField(
             value = text,
             onValueChange = onTextChange,
@@ -1547,8 +1554,17 @@ internal fun FlightPlanRouteEntryRow(
             ),
             modifier =
                 Modifier
+                    .e2eIndexedTextControl(
+                        semanticTag = "parity:plan-append-route-input",
+                        text = text,
+                        enabled = !submitting,
+                        focused = e2eFocused,
+                    )
                     .testTag("parity:plan-append-route-input")
-                    .onFocusChanged { state -> onFocusChange(state.isFocused) }
+                    .onFocusChanged { state ->
+                        e2eFocused = state.isFocused
+                        onFocusChange(state.isFocused)
+                    }
                     .fillMaxWidth()
                     .height(ThumbSize)
                     .clip(fieldShape)

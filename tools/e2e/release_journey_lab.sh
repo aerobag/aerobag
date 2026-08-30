@@ -490,22 +490,59 @@ run_repetitions() {
   local platform="$1"
   local journey="$2"
   local iteration
+  local status
+  local renderer_retry
   for iteration in $(seq 1 "$JOURNEY_REPETITIONS"); do
     echo "=== $journey ($platform repeat $iteration/$JOURNEY_REPETITIONS) ==="
-    if [[ "$platform" == "android" ]]; then
-      if AEROBAG_E2E_REPEAT_INDEX="$iteration" run_android_test "$journey"; then
-        :
+    renderer_retry=0
+    while true; do
+      if [[ "$platform" == "android" ]]; then
+        if AEROBAG_E2E_REPEAT_INDEX="$iteration" run_android_test "$journey"; then
+          break
+        else
+          status=$?
+        fi
       else
-        return $?
+        if AEROBAG_E2E_REPEAT_INDEX="$iteration" run_web_test "$journey"; then
+          break
+        else
+          return $?
+        fi
       fi
-    else
-      if AEROBAG_E2E_REPEAT_INDEX="$iteration" run_web_test "$journey"; then
-        :
-      else
-        return $?
+
+      if [[ "$renderer_retry" == "0" ]] && android_renderer_recover "$journey" "$iteration"; then
+        renderer_retry=1
+        echo "retrying $journey once after confirmed Android renderer shutdown"
+        continue
       fi
-    fi
+      return "$status"
+    done
   done
+}
+
+android_renderer_recover() {
+  local journey="$1"
+  local iteration="$2"
+  local evidence_dir="$ARTIFACT_DIR/android-infrastructure-recovery/$journey/repeat-$iteration"
+  (
+    cd "$ROOT"
+    node --input-type=module - "$SERIAL" "$evidence_dir" <<'JS'
+import {
+  captureAndroidRendererFailureEvidence,
+  recoverAndroidRenderer,
+} from "./tools/e2e/android-harness.mjs";
+
+const [serial, artifactDir] = process.argv.slice(2);
+try {
+  const evidence = captureAndroidRendererFailureEvidence(serial, artifactDir);
+  if (!evidence.recoverable) process.exit(1);
+  recoverAndroidRenderer(serial);
+} catch (error) {
+  console.error(`Android renderer recovery probe failed: ${error.message}`);
+  process.exit(1);
+}
+JS
+  )
 }
 
 command="${1:-}"
@@ -797,7 +834,9 @@ const driver = new AndroidSemanticJourneyDriver(serial, { resetApp: async () => 
 const viewportProbe = surface === "plate-surface" ? "parity:plate-viewport:" : "parity:viewport:";
 const before = (await driver.readProjection(viewportProbe))[0]?.id;
 if (!before) throw new Error(`viewport is unavailable for ${surface}`);
-await driver.zoom(surface, Number(amount));
+const ready = await driver.readElement(surface);
+if (!ready) throw new Error(`zoom surface is unavailable: ${surface}`);
+await driver.zoom(surface, Number(amount), ready);
 await observeUntil(`${surface} zoom`, async () => {
   const current = (await driver.readProjection(viewportProbe))[0]?.id;
   return current && current !== before ? current : null;

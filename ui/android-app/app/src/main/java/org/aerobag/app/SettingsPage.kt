@@ -374,6 +374,10 @@ private fun SettingsPageSectionView(
                     shape = RoundedCornerShape(ThumbRadius * 0.65f),
                 )
                 .clickable { expanded = !expanded }
+                .e2eIndexedControl(
+                    semanticTag = "parity:settings-section:${section.id}",
+                    state = "enabled:true:selected:$expanded",
+                )
                 .testTag("parity:settings-section:${section.id}")
                 .semantics { selected = expanded }
                 .padding(horizontal = ThumbSize * 0.18f),

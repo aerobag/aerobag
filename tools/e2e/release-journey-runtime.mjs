@@ -10,6 +10,7 @@ import {
 } from "./journey-result.mjs";
 import {
   editSemanticText, inspectSemanticMapAt, navigateSemanticPage,
+  semanticActionReadinessSamples,
 } from "./semantic-journey-driver.mjs";
 import {
   E2E_TIMING, observeUntil, observeValueUntilStable, performTransition,
@@ -248,7 +249,7 @@ export function createJourneyRuntime({
       }
       return runtime.transition(description, {
         ...contract,
-        readinessSamples: 1,
+        readinessSamples: semanticActionReadinessSamples(driver),
         ready: () => driver.readAction(actionId),
         act: (readyElement) => driver.performAction(actionId, readyElement),
         diagnose: contract.diagnose ?? (async () => ({

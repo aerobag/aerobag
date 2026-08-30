@@ -5,6 +5,7 @@
 package org.aerobag.app
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -517,7 +518,7 @@ internal fun buildMapSelectionProjectionState(
     selectedCategoryId: String?,
     selectedText: String?,
     centerProbeTag: String?,
-    detailOpen: Boolean = false,
+    detailId: String? = null,
 ): String {
     val centerState = centerProbeTag
         ?.removePrefix("parity:map-selection-center:")
@@ -527,8 +528,16 @@ internal fun buildMapSelectionProjectionState(
         "category:${selectedCategoryId?.let(::rasterSemanticToken) ?: "none"}:" +
         "text:${selectedText?.let(::rasterSemanticToken).orEmpty()}:" +
         "centered:$centerState:" +
-        "detail:${if (detailOpen) "open" else "none"}"
+        "detail:${detailId?.let(::rasterSemanticToken) ?: "none"}"
 }
+
+internal fun mapSelectionDetailProjectionId(detail: MapSelectionDetailModalState?): String? =
+    when {
+        detail?.airportInfo != null -> "airport-info-modal:${detail.airportInfo.airportId}"
+        detail?.weatherDetail != null -> "weather-detail-modal"
+        detail != null -> "map-selection-detail-modal:${detail.title}"
+        else -> null
+    }
 
 internal fun mapSelectionHeaderDetailText(selectedItem: MapSelectionItem?): String =
     selectedItem?.let { item ->
@@ -2358,7 +2367,7 @@ internal fun MapExplorerPage(
             selectedCategoryId = selectedCategoryId,
             selectedText = mapSelectionHeaderText(selectedItem),
             centerProbeTag = mapSelectionCenterProbeTag,
-            detailOpen = mapSelection?.detailModal != null,
+            detailId = mapSelectionDetailProjectionId(mapSelection?.detailModal),
         )
     }
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
@@ -3114,6 +3123,10 @@ internal fun MapExplorerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .e2eIndexedControl(
+                semanticTag = "parity:map-surface",
+                state = "enabled:true",
+            )
             .testTag("parity:map-surface")
             .background(uiTheme.controls.chartSurfaceBg)
             .then(startupAttributionModifier)
@@ -3332,12 +3345,13 @@ internal fun MapExplorerPage(
                 .offset(x = 30.dp)
                 .size(1.dp),
         )
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_map_family_projection,
+            state = "$selectedFamilyId:map:$selectedMapId",
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .offset(x = 2.dp)
-                .size(1.dp)
-                .testTag("parity:map-family:$selectedFamilyId:map:$selectedMapId"),
+                .size(1.dp),
         )
         mapLayerState.options.forEachIndexed { index, option ->
             val state = mapLayerState.toggleState(option.layerId)
@@ -3365,21 +3379,23 @@ internal fun MapExplorerPage(
             surfaceHeightPx = surfaceHeightPx,
             mapUpDeg = plannedMapUpDeg,
         )
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_raster_state_projection,
+            state =
+                "plan:${rasterPlanFrame.planId}:maps:${tiles.map { rasterSemanticToken(it.mapViewId) }.distinct().sorted().joinToString(",").ifEmpty { "none" }}:" +
+                    "planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .offset(x = 20.dp)
-                .size(1.dp)
-                .testTag(
-                    "parity:raster-state:plan:${rasterPlanFrame.planId}:maps:${tiles.map { rasterSemanticToken(it.mapViewId) }.distinct().sorted().joinToString(",").ifEmpty { "none" }}:planned:${distinctRenderTileCount(tiles)}:loaded:${tileBitmapCache.values.count { it != null }}:failed:${tileBitmapCache.values.count { it == null }}",
-                ),
+                .size(1.dp),
         )
-        Box(
+        E2eProjectionView(
+            viewId = R.id.e2e_vector_state_projection,
+            state = "features:${displayedMapOverlay.visibleFeatures.size}",
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .offset(x = 22.dp)
-                .size(1.dp)
-                .testTag("parity:vector-state:features:${displayedMapOverlay.visibleFeatures.size}"),
+                .size(1.dp),
         )
         E2eProjectionView(
             viewId = R.id.e2e_live_overlay_projection,
@@ -3434,6 +3450,21 @@ internal fun MapExplorerPage(
         )
         ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
+        if (flightPlanRoute.isNotEmpty() && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+            E2eProjectionView(
+                viewId = R.id.e2e_flight_plan_route_overlay_projection,
+                state = flightPlanRouteOverlayProjectionState(
+                    flightPlanRoute = flightPlanRoute,
+                    viewport = displayViewport,
+                    surfaceWidthPx = surfaceWidthPx,
+                    surfaceHeightPx = surfaceHeightPx,
+                ),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 26.dp)
+                    .size(1.dp),
+            )
+        }
         RouteOverlayLayer(
             flightPlanRoute = flightPlanRoute,
             distanceAnnotations = flightPlanRouteDistanceAnnotations,
@@ -4616,8 +4647,8 @@ private fun RouteOverlayLayer(
             strokeWidth = 6f * densityScale
         }
     }
-    val visibleSegmentCount = remember(flightPlanRoute, viewport, surfaceWidthPx, surfaceHeightPx) {
-        countVisibleRouteSegments(
+    val projectionState = remember(flightPlanRoute, viewport, surfaceWidthPx, surfaceHeightPx) {
+        flightPlanRouteOverlayProjectionState(
             flightPlanRoute = flightPlanRoute,
             viewport = viewport,
             surfaceWidthPx = surfaceWidthPx,
@@ -4627,7 +4658,7 @@ private fun RouteOverlayLayer(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:flight-plan-route-overlay:segments:${flightPlanRoute.size}:visible:$visibleSegmentCount"),
+            .testTag("parity:flight-plan-route-overlay:$projectionState"),
     ) {
         val screenPaths = flightPlanRoute.map { segment ->
             segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
@@ -4701,6 +4732,20 @@ private fun RouteOverlayLayer(
         }
     }
 }
+
+private fun flightPlanRouteOverlayProjectionState(
+    flightPlanRoute: List<FlightPlanRouteSegment>,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+): String =
+    "segments:${flightPlanRoute.size}:visible:" +
+        countVisibleRouteSegments(
+            flightPlanRoute = flightPlanRoute,
+            viewport = viewport,
+            surfaceWidthPx = surfaceWidthPx,
+            surfaceHeightPx = surfaceHeightPx,
+        )
 
 private fun countVisibleRouteSegments(
     flightPlanRoute: List<FlightPlanRouteSegment>,
@@ -4952,6 +4997,10 @@ internal fun MapSelectionTray(
     val actionRows = actionSlots.chunked(3)
     Surface(
         modifier = modifier
+            .e2eIndexedControl(
+                semanticTag = "parity:map-selection-tray",
+                state = "enabled:true",
+            )
             .testTag("parity:map-selection-tray")
             .semantics { testTagsAsResourceId = true }
             .onGloballyPositioned { coordinates ->
@@ -5320,6 +5369,9 @@ internal fun AirportInfoModal(
                             label = fact.label,
                             value = fact.value,
                             nextInLabel = fact.nextInLabel,
+                            semanticTag = fact.actionId?.let {
+                                "parity:airport-info-time-toggle"
+                            },
                             onClick = when {
                             fact.actionId != null -> {
                                 { onTimeDisplayAction(fact.actionId) }
@@ -5327,12 +5379,24 @@ internal fun AirportInfoModal(
                             fact.linkUrl != null -> {
                                 {
                                     val uri = Uri.parse(fact.linkUrl)
-                                context.startActivity(
-                                    Intent(
-                                            if (uri.scheme == "tel") Intent.ACTION_DIAL else Intent.ACTION_VIEW,
+                                try {
+                                    context.startActivity(
+                                        Intent(
+                                            if (uri.scheme == "tel") {
+                                                Intent.ACTION_DIAL
+                                            } else {
+                                                Intent.ACTION_VIEW
+                                            },
                                             uri,
-                                    ),
-                                )
+                                        ),
+                                    )
+                                } catch (_: ActivityNotFoundException) {
+                                    Toast.makeText(
+                                        context,
+                                        "No application can open this link.",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
                             }
                             }
                             else -> null
@@ -5400,6 +5464,7 @@ private fun AirportInfoFact(
     label: String,
     value: String,
     nextInLabel: String? = null,
+    semanticTag: String? = null,
     onClick: (() -> Unit)? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -5423,10 +5488,18 @@ private fun AirportInfoFact(
                 modifier = if (onClick == null) {
                     Modifier.weight(1f)
                 } else {
-                    Modifier
-                        .weight(1f)
-                        .testTag("parity:airport-info-time-toggle")
-                        .clickable(onClick = onClick)
+                    val base = Modifier.weight(1f)
+                    val indexed = if (semanticTag == null) {
+                        base
+                    } else {
+                        base
+                            .e2eIndexedControl(
+                                semanticTag = semanticTag,
+                                state = "enabled:true:selected:false:text:${Uri.encode(value)}",
+                            )
+                            .testTag(semanticTag)
+                    }
+                    indexed.clickable(onClick = onClick)
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                 color = if (onClick == null) {
@@ -5786,6 +5859,12 @@ internal fun MapSelectionItemButton(
         Surface(
             modifier = Modifier
                 .fillMaxSize()
+                .e2eIndexedControl(
+                    semanticTag = testTag,
+                    state =
+                        "enabled:true:selected:$selected:" +
+                            "text:${android.net.Uri.encode(item.label)}",
+                )
                 .testTag(testTag)
                 .clickable(onClick = onClick),
             shape = RoundedCornerShape(ThumbRadius),
@@ -5956,6 +6035,12 @@ internal fun MapSelectionActionButton(
         modifier = Modifier
             .width(ThumbSize * 1.2f)
             .height(ThumbSize)
+            .e2eIndexedControl(
+                semanticTag = "parity:map-selection-action:${action.id}",
+                state =
+                    "enabled:${enabled && acceptsTap}:selected:${action.displayOnly}:" +
+                        "text:${android.net.Uri.encode(buttonLabel(action.label))}",
+            )
             .testTag("parity:map-selection-action:${action.id}")
             .alpha(if (action.label.isBlank()) 0f else 1f)
             .semantics {
@@ -6018,6 +6103,7 @@ internal fun AirportInsertPanel(
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val submitAction = rememberCurrentAction(onSubmit)
+    var e2eFocused by remember { mutableStateOf(false) }
     LaunchedEffect(state.rowUid, state.before) {
         focusRequester.requestFocus()
         keyboardController?.show()
@@ -6069,10 +6155,17 @@ internal fun AirportInsertPanel(
                         ),
                     modifier =
                         Modifier
+                            .e2eIndexedTextControl(
+                                semanticTag = "parity:plan-insert-airport-input",
+                                text = state.airportId,
+                                enabled = !state.loading,
+                                focused = e2eFocused,
+                            )
                             .testTag("parity:plan-insert-airport-input")
                             .weight(1f)
                             .height(ThumbSize)
                             .focusRequester(focusRequester)
+                            .onFocusChanged { focusState -> e2eFocused = focusState.isFocused }
                             .clip(RoundedCornerShape(ThumbRadius))
                             .background(Color.White)
                             .border(1.dp, Color(0x334E626C), RoundedCornerShape(ThumbRadius))

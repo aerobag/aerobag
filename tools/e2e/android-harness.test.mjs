@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   assertNoAerobagAnr,
+  androidImeShownFromDumpsys,
   androidImeVisible,
   androidInteractiveRuntime,
   androidOfflinePackagesVisible,
@@ -16,6 +17,7 @@ import {
   androidStartupState,
   androidJourneyEpochMs,
   androidSemanticNodeIsActionable,
+  classifyAndroidRendererFailure,
   classifyAerobagLogcat,
   displayBoundsFromXml,
   destinationCenterEvidence,
@@ -96,6 +98,122 @@ test("cloud journeys use host time while deterministic data journeys use fixture
   assert.equal(androidJourneyEpochMs("shared.replay-track-up", 100, 200), 100);
 });
 
+test("recovers only an entirely black screenshot with Android HWUI disabled", () => {
+  assert.equal(classifyAndroidRendererFailure({
+    drawingEnabled: "0",
+    maxChannel: 0,
+  }), true);
+  assert.equal(classifyAndroidRendererFailure({
+    drawingEnabled: "1",
+    maxChannel: 0,
+  }), false);
+  assert.equal(classifyAndroidRendererFailure({
+    drawingEnabled: "0",
+    maxChannel: 1,
+  }), false);
+  assert.equal(classifyAndroidRendererFailure({
+    drawingEnabled: "0",
+    maxChannel: Number.NaN,
+  }), false);
+});
+
+test("Android renderer recovery is bounded to one retry per journey repetition", () => {
+  const source = readFileSync(new URL("release_journey_lab.sh", import.meta.url), "utf8");
+  const repetitions = source.slice(
+    source.indexOf("run_repetitions()"),
+    source.indexOf("android_renderer_recover()"),
+  );
+  assert.match(repetitions, /renderer_retry=0/);
+  assert.match(
+    repetitions,
+    /\[\[ "\$renderer_retry" == "0" \]\] && android_renderer_recover/,
+  );
+  assert.match(repetitions, /renderer_retry=1[\s\S]*?continue/);
+  assert.match(repetitions, /return "\$status"/);
+});
+
+test("Android emulator readiness enables real HWUI drawing", () => {
+  const launcher = readFileSync(
+    new URL("../../ui/android-app/scripts/start_emulator_stack.sh", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    launcher,
+    /setprop debug\.hwui\.drawing_enabled 1/,
+    "ATD emulators must not qualify an all-black UI through semantics alone",
+  );
+  assert.match(
+    launcher,
+    /getprop debug\.hwui\.drawing_enabled[\s\S]*?!= "1"/,
+    "emulator readiness must verify that HWUI accepted the setting",
+  );
+});
+
+test("Android physical taps retry only after an explicit missing app touch receipt", () => {
+  const harness = readFileSync(new URL("android-harness.mjs", import.meta.url), "utf8");
+  const click = harness.slice(
+    harness.indexOf("export function clickAndroidSemanticNode"),
+    harness.indexOf("function androidPhysicalTapTarget"),
+  );
+  assert.match(click, /for \(let attempt = 0; attempt < 2; attempt \+= 1\)/);
+  assert.match(click, /awaitAndroidPhysicalTouch[\s\S]*?return true/);
+  assert.match(click, /physical tap was not received/);
+
+  const activity = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt",
+    import.meta.url,
+  ), "utf8");
+  const dispatch = activity.slice(
+    activity.indexOf("override fun dispatchTouchEvent"),
+    activity.indexOf("override fun dispatchKeyEvent"),
+  );
+  assert.match(dispatch, /val handled = super\.dispatchTouchEvent\(event\)/);
+  assert.match(dispatch, /event\.actionMasked == MotionEvent\.ACTION_UP/);
+  assert.match(dispatch, /E2eProjectionRegistry\.publishTouchReceipt/);
+
+  const indexedControl = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionView.kt",
+    import.meta.url,
+  ), "utf8");
+  assert.match(indexedControl, /awaitPointerEvent\(PointerEventPass\.Initial\)/);
+  assert.match(indexedControl, /!it\.previousPressed && it\.pressed/);
+  assert.match(indexedControl, /publishTouchReceipt\(semanticTag = semanticTag\)/);
+
+  const service = readFileSync(new URL(
+    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
+    import.meta.url,
+  ), "utf8");
+  assert.match(service, /case "\/await-touch"/);
+  assert.match(service, /receipt\.sequence > sequence && receipt\.handled/);
+  assert.match(service, /expectedBounds\.contains\(receipt\.rawX, receipt\.rawY\)/);
+  assert.match(service, /indexedCenterReachable[\s\S]*findRenderedNodeInInputWindow/);
+  assert.match(service, /AccessibilityNodeInfo root = getRootInActiveWindow\(\)/);
+  assert.match(service, /findRenderedNodeAtPoint\(root, tag, expectedBounds, true\)/);
+  assert.match(
+    service,
+    /findRenderedNodeInInputWindow\(\s*"parity:primary-navigation",\s*navigationBounds/,
+  );
+  assert.match(service, /if \(renderedNavigation == null\) return true/);
+
+  const mapExplorer = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  const airportInfoFact = mapExplorer.slice(
+    mapExplorer.indexOf("private fun AirportInfoFact("),
+    mapExplorer.indexOf("private fun AirportRunwayDiagram("),
+  );
+  const mapSelectionItemButton = mapExplorer.slice(
+    mapExplorer.indexOf("internal fun MapSelectionItemButton("),
+    mapExplorer.indexOf("internal fun MapSelectionItemIcon("),
+  );
+  assert.match(mapExplorer, /semanticTag = fact\.actionId\?\.let[\s\S]*airport-info-time-toggle/);
+  assert.match(airportInfoFact, /e2eIndexedControl/);
+  assert.match(airportInfoFact, /testTag\(semanticTag\)/);
+  assert.match(mapSelectionItemButton, /e2eIndexedControl\([\s\S]*semanticTag = testTag/);
+  assert.match(mapSelectionItemButton, /testTag\(testTag\)[\s\S]*clickable/);
+});
+
 test("Android semantic actions wait for their rendered surface to reach the screen", () => {
   const button = {
     enabled: "true",
@@ -135,6 +253,11 @@ test("detects only a rendered Android input-method window", () => {
   assert.equal(androidImeVisible(
     '<hierarchy><node package="org.aerobag.app" class="android.widget.EditText" /></hierarchy>',
   ), false);
+});
+
+test("reads Android's explicit input-method visibility state", () => {
+  assert.equal(androidImeShownFromDumpsys("Input method client state:\n  mInputShown=true\n"), true);
+  assert.equal(androidImeShownFromDumpsys("Input method client state:\n  mInputShown=false\n"), false);
 });
 
 function anrDialogXml(title, { waitEnabled = true } = {}) {

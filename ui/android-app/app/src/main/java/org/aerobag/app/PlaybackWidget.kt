@@ -346,6 +346,7 @@ internal fun PlaybackWidget(
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     val scope = rememberCoroutineScope()
     var isBusy by remember { mutableStateOf(false) }
+    var e2eSourceFocused by remember { mutableStateOf(false) }
     var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }
     var seekJob by remember { mutableStateOf<Job?>(null) }
     fun applyPlaybackCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
@@ -429,7 +430,16 @@ internal fun PlaybackWidget(
                         Modifier
                             .weight(1f)
                             .height(rowHeight)
-                            .onFocusChanged { state -> onSourceFocusChange(state.isFocused) }
+                            .e2eIndexedTextControl(
+                                semanticTag = "parity:playback-source-input",
+                                text = sourcePath,
+                                enabled = !isBusy,
+                                focused = e2eSourceFocused,
+                            )
+                            .onFocusChanged { state ->
+                                e2eSourceFocused = state.isFocused
+                                onSourceFocusChange(state.isFocused)
+                            }
                             .testTag("parity:playback-source-input")
                             .clip(RoundedCornerShape(ThumbRadius * 0.55f))
                             .background(Color.White)

@@ -20,5 +20,16 @@ SPDX-License-Identifier: AGPL-3.0-or-later
                 android:name="android.accessibilityservice"
                 android:resource="@xml/e2e_accessibility_service" />
         </service>
+        <service
+            android:name="org.aerobag.app.e2e.SemanticDriverInputMethodService"
+            android:exported="true"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/e2e_input_method" />
+        </service>
     </application>
 </manifest>

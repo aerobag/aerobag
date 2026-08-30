@@ -26,14 +26,16 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 const ADB_TIMEOUT_MS = 20000;
 const APP_START_TIMEOUT_MS = 60000;
 const CLOCK_SET_TIMEOUT_MS = 15000;
-const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.75;
+const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 2.9;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/6";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/14";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
   `${SEMANTIC_DRIVER_PACKAGE}/org.aerobag.app.e2e.SemanticDriverService`;
+const SEMANTIC_DRIVER_IME =
+  `${SEMANTIC_DRIVER_PACKAGE}/org.aerobag.app.e2e.SemanticDriverInputMethodService`;
 const semanticDrivers = new Map();
 
 export function adbArgs(serial, args) {
@@ -81,6 +83,62 @@ export function screencapPng(serial) {
     timeout: 20000,
     maxBuffer: 16 * 1024 * 1024,
   });
+}
+
+export function classifyAndroidRendererFailure({ drawingEnabled, maxChannel }) {
+  return String(drawingEnabled ?? "").trim() === "0" &&
+    Number.isFinite(maxChannel) && maxChannel === 0;
+}
+
+export function analyzeAndroidScreenshotBlackness(pngBytes) {
+  const script = `
+from PIL import Image
+from io import BytesIO
+import json
+import sys
+
+image = Image.open(BytesIO(sys.stdin.buffer.read())).convert("RGB")
+extrema = image.getextrema()
+print(json.dumps({
+    "width": image.width,
+    "height": image.height,
+    "max_channel": max(channel[1] for channel in extrema),
+}))
+`;
+  const result = spawnSync("python3", ["-c", script], {
+    input: pngBytes,
+    encoding: "utf8",
+    timeout: ADB_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(`Android screenshot analysis failed: ${result.stderr || result.stdout}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
+export function captureAndroidRendererFailureEvidence(serial, artifactDir) {
+  mkdirSync(artifactDir, { recursive: true });
+  const screenshot = screencapPng(serial);
+  const drawingEnabled = adb(serial, ["shell", "getprop", "debug.hwui.drawing_enabled"]).trim();
+  const screenshotStats = analyzeAndroidScreenshotBlackness(screenshot);
+  const evidence = {
+    drawing_enabled: drawingEnabled,
+    screenshot: screenshotStats,
+    entirely_black: screenshotStats.max_channel === 0,
+    recoverable: classifyAndroidRendererFailure({
+      drawingEnabled,
+      maxChannel: screenshotStats.max_channel,
+    }),
+  };
+  writeFileSync(join(artifactDir, "screenshot.png"), screenshot);
+  writeFileSync(join(artifactDir, "renderer-state.json"), `${JSON.stringify(evidence, null, 2)}\n`);
+  return evidence;
+}
+
+export function recoverAndroidRenderer(serial) {
+  adb(serial, ["shell", "setprop", "debug.hwui.drawing_enabled", "1"]);
+  adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
 }
 
 function requiredSemanticDriver(serial) {
@@ -133,17 +191,9 @@ export function semanticDriverObservationRequest(
   path,
   request = semanticDriverRequest,
 ) {
-  let response = request(
+  return request(
     port, path, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
   );
-  if (!semanticDriverObservationUnavailable(response)) return response;
-
-  // Observation is idempotent. Drain the timed-out traversal before trying it
-  // once more, rather than letting repeated probes reacquire the single slot.
-  const idle = semanticDriverIdleRequest(port, 1_000, request);
-  if (idle.status !== 0 || idle.stdout.trim() !== "idle") return response;
-  response = request(port, path, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS);
-  return response;
 }
 
 export function semanticDriverActionRequest(
@@ -169,18 +219,23 @@ export function semanticDriverActionRequest(
   return response;
 }
 
-export function setAndroidSemanticText(serial, tag, value, expectedBounds, semanticPath) {
+export function setAndroidSemanticText(serial, tag, value) {
   const state = requiredSemanticDriver(serial);
-  if (!expectedBounds || !semanticPath) {
-    throw new Error(
-      `persistent Android semantic text action for ${tag} has no readiness path and bounds`,
-    );
-  }
-  const query = new URLSearchParams({ tag, value, bounds: expectedBounds, path: semanticPath });
+  const query = new URLSearchParams({ tag, value });
   const response = semanticDriverActionRequest(state.port, `/set-text?${query}`);
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
+  throw new Error(`persistent Android IME text action failed for ${tag}: ${detail}`);
+}
+
+export function androidSemanticTextReady(serial) {
+  const state = requiredSemanticDriver(serial);
+  const response = semanticDriverRequest(state.port, "/ime-ready", 1);
+  if (response.status !== 0) {
+    const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+    throw new Error(`persistent Android IME readiness probe failed: ${detail}`);
+  }
+  return response.stdout.trim() === "ready";
 }
 
 export function setAndroidSemanticProgress(serial, tag, value, expectedBounds, semanticPath) {
@@ -207,24 +262,54 @@ export function clickAndroidSemanticNode(
   tag,
   expectedBounds,
   semanticPath,
-  { selected = null, checked = null, stateDescription = null } = {},
+  _expectedState = {},
 ) {
   const state = requiredSemanticDriver(serial);
   if (!expectedBounds || !semanticPath) {
     throw new Error(`persistent Android semantic click for ${tag} has no readiness path and bounds`);
   }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const target = androidPhysicalTapTarget(state.port, tag, expectedBounds, semanticPath);
+    adb(serial, [
+      "shell", "input", "tap",
+      String(Math.round(target.bounds.left + target.bounds.width / 2)),
+      String(Math.round(target.bounds.top + target.bounds.height / 2)),
+    ]);
+    if (awaitAndroidPhysicalTouch(
+      state.port, target.bounds, target.touchTag, target.touchSequence,
+    )) return true;
+  }
+  throw new Error(`persistent Android physical tap was not received by ${tag}`);
+}
+
+function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
   const query = new URLSearchParams({
     tag,
     bounds: expectedBounds,
     path: semanticPath,
-    selected: selected == null ? "" : String(selected),
-    checked: checked == null ? "" : String(checked),
-    state_description: stateDescription ?? "",
   });
-  const response = semanticDriverActionRequest(state.port, `/click?${query}`);
-  if (response.status === 0 && response.stdout.trim() === "ok") return true;
-  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  throw new Error(`persistent Android semantic click failed for ${tag}: ${detail}`);
+  const response = semanticDriverActionRequest(port, `/tap-target?${query}`);
+  if (response.status !== 0) {
+    const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+    throw new Error(`persistent Android physical tap failed for ${tag}: ${detail}`);
+  }
+  const target = JSON.parse(response.stdout);
+  return {
+    bounds: rectOfBounds(target.bounds),
+    touchTag: target.touch_tag ?? "",
+    touchSequence: Number(target.touch_sequence),
+  };
+}
+
+function awaitAndroidPhysicalTouch(port, bounds, tag, after) {
+  const query = new URLSearchParams({
+    bounds: `[${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}]`,
+    tag,
+    after: String(after),
+    timeout_ms: "500",
+  });
+  const response = semanticDriverRequest(port, `/await-touch?${query}`, 0.75);
+  return response.status === 0 && response.stdout.trim() === "received";
 }
 
 export function focusAndroidSemanticNode(serial, tag, expectedBounds, semanticPath) {
@@ -232,11 +317,13 @@ export function focusAndroidSemanticNode(serial, tag, expectedBounds, semanticPa
   if (!expectedBounds || !semanticPath) {
     throw new Error(`persistent Android semantic focus for ${tag} has no readiness path and bounds`);
   }
-  const query = new URLSearchParams({ tag, bounds: expectedBounds, path: semanticPath });
-  const response = semanticDriverActionRequest(state.port, `/focus?${query}`);
-  if (response.status === 0 && response.stdout.trim() === "ok") return true;
-  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  throw new Error(`persistent Android semantic focus failed for ${tag}: ${detail}`);
+  const target = androidPhysicalTapTarget(state.port, tag, expectedBounds, semanticPath);
+  adb(serial, [
+    "shell", "input", "tap",
+    String(Math.round(target.bounds.left + target.bounds.width / 2)),
+    String(Math.round(target.bounds.top + target.bounds.height / 2)),
+  ]);
+  return true;
 }
 
 export function scrollAndroidSemanticNode(serial, bounds, direction) {
@@ -252,6 +339,21 @@ export function scrollAndroidSemanticNode(serial, bounds, direction) {
   }
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   throw new Error(`persistent Android semantic scroll failed for ${bounds}: ${detail}`);
+}
+
+export function scrollAndroidSemanticSurface(serial, orientation, direction) {
+  const state = requiredSemanticDriver(serial);
+  const semanticDirection = direction === "down" || direction === "forward"
+    ? "forward"
+    : "backward";
+  const query = new URLSearchParams({ orientation, direction: semanticDirection });
+  const response = semanticDriverActionRequest(state.port, `/scroll?${query}`);
+  if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  if (response.stderr.includes("409") || response.stdout.includes("scroll action rejected")) {
+    return false;
+  }
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  throw new Error(`persistent Android ${orientation} semantic scroll failed: ${detail}`);
 }
 
 export function waitForAndroidSemanticEvent(serial, timeoutMs) {
@@ -294,7 +396,13 @@ export function queryAndroidSemanticNodes(
 export function queryAndroidExactProjection(
   serial,
   tag,
-  { includeDescendantText = false, indexedOnly = false, boundedOnly = false } = {},
+  {
+    includeDescendantText = false,
+    indexedOnly = false,
+    boundedOnly = false,
+    providerOnly = false,
+    renderedOnly = false,
+  } = {},
 ) {
   const state = requiredSemanticDriver(serial);
   const query = new URLSearchParams({
@@ -302,6 +410,8 @@ export function queryAndroidExactProjection(
     descendant_text: String(includeDescendantText),
     indexed_only: String(indexedOnly),
     bounded_only: String(boundedOnly),
+    provider_only: String(providerOnly),
+    rendered_only: String(renderedOnly),
   });
   const response = semanticDriverObservationRequest(state.port, `/exact-projection?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);
@@ -346,6 +456,13 @@ export async function ensureAndroidSemanticDriver(serial) {
     throw new Error(
       `persistent Android semantic driver package is not installed: ${SEMANTIC_DRIVER_PACKAGE}`,
     );
+  }
+  adb(serial, ["shell", "ime", "enable", SEMANTIC_DRIVER_IME]);
+  adb(serial, ["shell", "ime", "set", SEMANTIC_DRIVER_IME]);
+  const selectedIme = adb(serial, ["shell", "settings", "get", "secure", "default_input_method"])
+    .trim();
+  if (selectedIme !== SEMANTIC_DRIVER_IME) {
+    throw new Error(`Android semantic driver IME was not selected: ${selectedIme || "<empty>"}`);
   }
 
   if (current) {
@@ -487,6 +604,14 @@ export function androidImeVisible(xml) {
     const identity = `${node.package ?? ""} ${node.class ?? ""}`;
     return node.package !== ANDROID_PACKAGE && /(?:inputmethod|keyboard|latinime)/i.test(identity);
   }) !== null;
+}
+
+export function androidImeShownFromDumpsys(output) {
+  return /^\s*mInputShown=true\s*$/m.test(output);
+}
+
+export function androidImeShown(serial) {
+  return androidImeShownFromDumpsys(adb(serial, ["shell", "dumpsys", "input_method"]));
 }
 
 export function androidTag(node) {
@@ -1051,21 +1176,14 @@ export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
 
 async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requireReachable) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
-    const xml = dumpAndroid(serial);
-    if (requireReachable
-      ? verticalScrollTargetIsReachable(xml, tag)
-      : findNode(xml, (node) => hasAndroidTag(node, tag))) {
+    const target = queryAndroidExactProjection(serial, tag, { includeDescendantText: false })[0];
+    if (target && (!requireReachable || target["center-reachable"] === "true")) {
       return true;
     }
-    const scrollSurface =
-      findVerticalScrollSurface(xml) ??
-      findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"));
-    if (!scrollSurface?.bounds || !await scrollAndroidAndAwait(serial, scrollSurface.bounds, direction)) break;
+    if (!scrollAndroidSemanticSurface(serial, "vertical", direction)) break;
   }
-  const xml = dumpAndroid(serial);
-  return requireReachable
-    ? verticalScrollTargetIsReachable(xml, tag)
-    : findNode(xml, (node) => hasAndroidTag(node, tag)) !== null;
+  const target = queryAndroidExactProjection(serial, tag, { includeDescendantText: false })[0];
+  return Boolean(target && (!requireReachable || target["center-reachable"] === "true"));
 }
 
 export function pressKey(serial, keyCode) {

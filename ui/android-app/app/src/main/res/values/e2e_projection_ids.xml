@@ -16,4 +16,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
     <item name="e2e_data_status_projection" type="id" />
     <item name="e2e_startup_state_projection" type="id" />
     <item name="e2e_flight_plan_rows_projection" type="id" />
+    <item name="e2e_flight_plan_state_projection" type="id" />
+    <item name="e2e_flight_plan_overlay_projection" type="id" />
+    <item name="e2e_map_family_projection" type="id" />
+    <item name="e2e_raster_state_projection" type="id" />
+    <item name="e2e_vector_state_projection" type="id" />
+    <item name="e2e_flight_plan_route_overlay_projection" type="id" />
+    <item name="e2e_flight_plan_route_entry_projection" type="id" />
 </resources>

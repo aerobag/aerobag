@@ -101,9 +101,15 @@ class ChartSearchInspectionGateTest {
             "selected:none:category:none:text::centered:none:offset-px:none:detail:none",
             buildMapSelectionProjectionState(null, null, null, null),
         )
-        assertTrue(
-            buildMapSelectionProjectionState(null, null, null, null, detailOpen = true)
-                .endsWith(":detail:open"),
+        assertEquals(
+            "selected:none:category:none:text::centered:none:offset-px:none:detail:airport-info-modal%3AKPLU",
+            buildMapSelectionProjectionState(
+                null,
+                null,
+                null,
+                null,
+                detailId = "airport-info-modal:KPLU",
+            ),
         )
     }
 

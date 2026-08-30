@@ -46,8 +46,7 @@ XVFB_LOG="${STATE_DIR}/xvfb.log"
 X11VNC_LOG="${STATE_DIR}/x11vnc.log"
 EMULATOR_LOG="${STATE_DIR}/emulator.log"
 DISPLAY_READY_TIMEOUT="${DISPLAY_READY_TIMEOUT:-15}"
-ADB_DEVICE_READY_TIMEOUT="${ADB_DEVICE_READY_TIMEOUT:-120}"
-DISPLAY_CONFIGURATION_READY_TIMEOUT="${DISPLAY_CONFIGURATION_READY_TIMEOUT:-30}"
+EMULATOR_READY_TIMEOUT="${EMULATOR_READY_TIMEOUT:-300}"
 
 mkdir -p "$STATE_DIR"
 
@@ -204,8 +203,9 @@ else
 fi
 
 echo "waiting for adb device"
+emulator_ready_deadline=$((SECONDS + EMULATOR_READY_TIMEOUT))
 device_ready=0
-for _ in $(seq 1 "$ADB_DEVICE_READY_TIMEOUT"); do
+while (( SECONDS < emulator_ready_deadline )); do
   if [[ "$(adb -s "$ANDROID_SERIAL" get-state 2>/dev/null || true)" == "device" ]]; then
     device_ready=1
     break
@@ -218,17 +218,17 @@ for _ in $(seq 1 "$ADB_DEVICE_READY_TIMEOUT"); do
   sleep 1
 done
 if [[ "$device_ready" != "1" ]]; then
-  echo "emulator did not appear in adb within ${ADB_DEVICE_READY_TIMEOUT}s; see $EMULATOR_LOG" >&2
+  echo "emulator did not appear in adb within the ${EMULATOR_READY_TIMEOUT}s readiness budget; see $EMULATOR_LOG" >&2
   tail -120 "$EMULATOR_LOG" >&2 || true
   exit 1
 fi
 
-for _ in $(seq 1 180); do
+while (( SECONDS < emulator_ready_deadline )); do
   boot_completed="$(adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
   if [[ "$boot_completed" == "1" ]]; then
     echo "emulator boot completed"
     package_manager_ready=0
-    for _ in $(seq 1 120); do
+    while (( SECONDS < emulator_ready_deadline )); do
       if adb -s "$ANDROID_SERIAL" shell service check package 2>/dev/null \
         | tr -d '\r' | grep -q '^Service package: found$'; then
         package_manager_ready=1
@@ -237,20 +237,29 @@ for _ in $(seq 1 180); do
       sleep 1
     done
     if [[ "$package_manager_ready" != "1" ]]; then
-      echo "Android package-manager service did not become ready within 120s" >&2
+      echo "Android package-manager service did not become ready within the emulator readiness budget" >&2
       exit 1
     fi
     echo "waiting for final Android display configuration"
-    display_configuration_deadline=$((SECONDS + DISPLAY_CONFIGURATION_READY_TIMEOUT))
     while ! adb -s "$ANDROID_SERIAL" shell dumpsys window displays 2>/dev/null \
       | grep -Eq 'mAppBounds=Rect\(0, [1-9][0-9]* -'; do
-      if (( SECONDS >= display_configuration_deadline )); then
-        echo "Android display cutout did not initialize within ${DISPLAY_CONFIGURATION_READY_TIMEOUT}s" >&2
+      if (( SECONDS >= emulator_ready_deadline )); then
+        echo "Android display cutout did not initialize within the emulator readiness budget" >&2
         exit 1
       fi
       sleep 0.1
     done
     echo "Android display configuration ready"
+
+    # AOSP ATD images may boot with HWUI drawing disabled. Semantics still work in
+    # that state, so UI tests can otherwise interact with an entirely black screen.
+    adb -s "$ANDROID_SERIAL" shell setprop debug.hwui.drawing_enabled 1
+    if [[ "$(adb -s "$ANDROID_SERIAL" shell getprop debug.hwui.drawing_enabled | tr -d '\r')" != "1" ]]; then
+      echo "Android HWUI drawing could not be enabled" >&2
+      exit 1
+    fi
+    echo "Android HWUI drawing enabled"
+
     if [[ "$ANDROID_PACKAGE_SOURCE_REVERSE" == "1" ]]; then
       adb -s "$ANDROID_SERIAL" reverse \
         "tcp:${ANDROID_PACKAGE_SOURCE_DEVICE_PORT}" "tcp:${PACKAGE_SOURCE_PORT}" >/dev/null
@@ -269,5 +278,5 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 
-echo "emulator device appeared but boot did not complete within timeout" >&2
+echo "emulator device appeared but did not become fully ready within ${EMULATOR_READY_TIMEOUT}s" >&2
 exit 1

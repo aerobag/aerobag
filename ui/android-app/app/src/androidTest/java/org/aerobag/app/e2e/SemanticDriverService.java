@@ -22,6 +22,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -42,7 +43,11 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/6";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/14";
+    private static final String TOUCH_RECEIPT_RESOURCE_ID =
+        "org.aerobag.app:id/e2e_touch_receipt";
+    private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
+    private static final long EXACT_PROJECTION_TIME_LIMIT_NANOS = TimeUnit.MILLISECONDS.toNanos(750);
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean semanticRequestActive = new AtomicBoolean(false);
     private final Object semanticRequestMonitor = new Object();
@@ -180,14 +185,22 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/set-text":
                     handleSetText(socket, path);
                     return;
+                case "/ime-ready":
+                    respond(
+                        socket.getOutputStream(),
+                        "text/plain; charset=utf-8",
+                        SemanticDriverInputMethodService.focusedTextReady() ? "ready\n" : "not-ready\n",
+                        200
+                    );
+                    return;
                 case "/set-progress":
                     handleSetProgress(socket, path);
                     return;
-                case "/click":
-                    handleClick(socket, path);
+                case "/tap-target":
+                    handleTapTarget(socket, path);
                     return;
-                case "/focus":
-                    handleFocus(socket, path);
+                case "/await-touch":
+                    handleAwaitTouch(socket, path);
                     return;
                 case "/scroll":
                     handleScroll(socket, path);
@@ -212,7 +225,7 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private static boolean isSemanticEndpoint(String endpoint) {
         return switch (endpoint) {
-            case "/dump", "/query", "/exact-projection", "/set-text", "/set-progress", "/click", "/focus", "/scroll" ->
+            case "/dump", "/query", "/exact-projection", "/ime-ready", "/set-text", "/set-progress", "/tap-target", "/scroll" ->
                 true;
             default -> false;
         };
@@ -222,10 +235,7 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String value = query.getOrDefault("value", "");
-        String semanticPath = query.getOrDefault("path", "");
-        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
-        boolean changed = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
-            setRenderedText(tag, value, expectedBounds, semanticPath);
+        boolean changed = !tag.isEmpty() && replaceIndexedFocusedText(tag, value);
         respondAction(socket, changed, "text action rejected\n");
     }
 
@@ -269,6 +279,8 @@ public final class SemanticDriverService extends AccessibilityService {
         );
         boolean indexedOnly = "true".equals(query.getOrDefault("indexed_only", "false"));
         boolean boundedOnly = "true".equals(query.getOrDefault("bounded_only", "false"));
+        boolean providerOnly = "true".equals(query.getOrDefault("provider_only", "false"));
+        boolean renderedOnly = "true".equals(query.getOrDefault("rendered_only", "false"));
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
@@ -276,7 +288,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 tag,
                 includeDescendantText,
                 indexedOnly,
-                boundedOnly
+                boundedOnly,
+                providerOnly,
+                renderedOnly
             ).toString() + "\n",
             200
         );
@@ -329,47 +343,97 @@ public final class SemanticDriverService extends AccessibilityService {
         );
     }
 
-    private void handleClick(Socket socket, String path) throws IOException {
+    private void handleTapTarget(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String semanticPath = query.getOrDefault("path", "");
-        String expectedSelected = query.getOrDefault("selected", "");
-        String expectedChecked = query.getOrDefault("checked", "");
-        String expectedStateDescription = query.getOrDefault("state_description", "");
-        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
-        boolean clicked = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
-            clickRenderedNode(
-                tag,
-                expectedBounds,
-                semanticPath,
-                expectedSelected,
-                expectedChecked,
-                expectedStateDescription
+        Rect bounds = parseBounds(query.getOrDefault("bounds", ""));
+        Rect renderedBounds = !tag.isEmpty() && !semanticPath.isEmpty() &&
+            bounds != null && !bounds.isEmpty()
+                ? renderedTapBounds(tag, bounds, semanticPath)
+                : null;
+        if (renderedBounds == null) {
+            respond(
+                socket.getOutputStream(),
+                "text/plain; charset=utf-8",
+                "physical tap target rejected\n",
+                409
             );
-        respondAction(socket, clicked, "click action rejected for " + tag + "\n");
+            return;
+        }
+        JSONObject target = new JSONObject();
+        try {
+            String touchTag = semanticPath.startsWith("projection-provider:") ? tag : "";
+            target.put("bounds", renderedBounds.toShortString());
+            target.put("touch_tag", touchTag);
+            target.put("touch_sequence", currentTouchReceipt(touchTag).sequence);
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode physical tap target", error);
+        }
+        respond(
+            socket.getOutputStream(),
+            "application/json; charset=utf-8",
+            target.toString() + "\n",
+            200
+        );
     }
 
-    private void handleFocus(Socket socket, String path) throws IOException {
+    private void handleAwaitTouch(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
-        String tag = query.getOrDefault("tag", "");
-        String semanticPath = query.getOrDefault("path", "");
-        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
-        boolean focused = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
-            focusRenderedNode(tag, expectedBounds, semanticPath);
-        respondAction(socket, focused, "focus action rejected for " + tag + "\n");
+        long after;
+        long timeoutMs;
+        try {
+            after = Long.parseLong(query.getOrDefault("after", "0"));
+            timeoutMs = Long.parseLong(query.getOrDefault("timeout_ms", "500"));
+        } catch (NumberFormatException error) {
+            after = 0;
+            timeoutMs = 500;
+        }
+        timeoutMs = Math.max(1, Math.min(750, timeoutMs));
+        Rect bounds = parseBounds(query.getOrDefault("bounds", ""));
+        String touchTag = query.getOrDefault("tag", "");
+        boolean received = bounds != null && awaitTouchAfter(after, bounds, touchTag, timeoutMs);
+        respond(
+            socket.getOutputStream(),
+            "text/plain; charset=utf-8",
+            received ? "received\n" : "unreceived\n",
+            200
+        );
     }
 
     private void handleScroll(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
         Rect bounds = parseBounds(query.getOrDefault("bounds", ""));
+        String orientation = query.getOrDefault("orientation", "");
         String direction = query.getOrDefault("direction", "");
         int action = "forward".equals(direction)
             ? AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
             : "backward".equals(direction)
                 ? AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 : 0;
-        boolean scrolled = bounds != null && action != 0 && scrollRenderedNode(bounds, action);
+        long eventSequence = accessibilityEventSequence.get();
+        boolean scrolled = action != 0 && (
+            bounds != null
+                ? scrollRenderedNode(bounds, action)
+                : scrollFirstRenderedSurface(orientation, action)
+        );
+        if (scrolled) awaitAccessibilityQuietAfter(eventSequence, 150, 750);
         respondAction(socket, scrolled, "scroll action rejected\n");
+    }
+
+    private void awaitAccessibilityQuietAfter(long sequence, long quietMs, long timeoutMs) {
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        long observedSequence = sequence;
+        while (System.nanoTime() < deadlineNanos) {
+            long remainingMs = Math.max(
+                1,
+                TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime())
+            );
+            if (!awaitAccessibilityEventAfter(observedSequence, Math.min(quietMs, remainingMs))) {
+                return;
+            }
+            observedSequence = accessibilityEventSequence.get();
+        }
     }
 
     private boolean awaitAccessibilityEventAfter(long sequence, long timeoutMs) {
@@ -387,6 +451,68 @@ public final class SemanticDriverService extends AccessibilityService {
             }
         }
         return true;
+    }
+
+    private boolean awaitTouchAfter(
+        long sequence,
+        Rect expectedBounds,
+        String touchTag,
+        long timeoutMs
+    ) {
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        do {
+            TouchReceipt receipt = currentTouchReceipt(touchTag);
+            boolean exactTaggedReceipt = !touchTag.isEmpty();
+            if (receipt.sequence > sequence && receipt.handled &&
+                (exactTaggedReceipt || expectedBounds.contains(receipt.rawX, receipt.rawY))) {
+                return true;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        } while (System.nanoTime() < deadlineNanos);
+        return false;
+    }
+
+    private TouchReceipt currentTouchReceipt(String touchTag) {
+        String resourceId = touchTag.isEmpty()
+            ? TOUCH_RECEIPT_RESOURCE_ID
+            : TOUCH_RECEIPT_RESOURCE_ID + ":" + Uri.encode(touchTag);
+        ProviderProjection projection = providerProjection(resourceId);
+        if (!projection.handled || projection.values.length() != 1) return TouchReceipt.Empty;
+        try {
+            JSONObject value = projection.values.getJSONObject(0);
+            Map<String, String> fields = projectionStateFields(
+                value.optString("state-description", "")
+            );
+            return new TouchReceipt(
+                Long.parseLong(fields.getOrDefault("sequence", "0")),
+                Integer.parseInt(fields.getOrDefault("x", "-1")),
+                Integer.parseInt(fields.getOrDefault("y", "-1")),
+                Boolean.parseBoolean(fields.getOrDefault("handled", "false"))
+            );
+        } catch (JSONException | NumberFormatException error) {
+            return TouchReceipt.Empty;
+        }
+    }
+
+    private static final class TouchReceipt {
+        static final TouchReceipt Empty = new TouchReceipt(0, -1, -1, false);
+
+        final long sequence;
+        final int rawX;
+        final int rawY;
+        final boolean handled;
+
+        TouchReceipt(long sequence, int rawX, int rawY, boolean handled) {
+            this.sequence = sequence;
+            this.rawX = rawX;
+            this.rawY = rawY;
+            this.handled = handled;
+        }
     }
 
     private static Map<String, String> queryOf(String path) {
@@ -668,12 +794,16 @@ public final class SemanticDriverService extends AccessibilityService {
         String tag,
         boolean includeDescendantText,
         boolean indexedOnly,
-        boolean boundedOnly
+        boolean boundedOnly,
+        boolean providerOnly,
+        boolean renderedOnly
     ) {
-        ProviderProjection providerProjection = providerProjection(tag);
+        ProviderProjection providerProjection = renderedOnly
+            ? ProviderProjection.unhandled()
+            : providerProjection(tag);
         if (providerProjection.handled) return providerProjection.values;
         JSONArray output = new JSONArray();
-        if (tag.isEmpty()) return output;
+        if (tag.isEmpty() || providerOnly) return output;
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
@@ -734,15 +864,27 @@ public final class SemanticDriverService extends AccessibilityService {
         if (boundedOnly) return output;
         roots = targetRoots(true);
         try {
-            for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
-                if (appendFirstExactProjection(
-                    roots.get(rootIndex),
-                    tag,
-                    Integer.toString(rootIndex),
-                    output,
-                    includeDescendantText
-                )) {
-                    break;
+            boolean found = appendFirstExactProjectionBreadthFirst(
+                roots,
+                tag,
+                output,
+                includeDescendantText
+            );
+            if (!found) {
+                long deadlineNanos = System.nanoTime() + (EXACT_PROJECTION_TIME_LIMIT_NANOS / 2);
+                int[] visited = {0};
+                for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+                    if (appendFirstExactProjectionDepthFirst(
+                        roots.get(rootIndex),
+                        tag,
+                        Integer.toString(rootIndex),
+                        output,
+                        includeDescendantText,
+                        deadlineNanos,
+                        visited
+                    )) {
+                        break;
+                    }
                 }
             }
         } catch (JSONException error) {
@@ -764,26 +906,118 @@ public final class SemanticDriverService extends AccessibilityService {
             }
             JSONArray output = new JSONArray();
             if (cursor.getInt(cursor.getColumnIndexOrThrow("present")) != 0) {
+                String state = cursor.getString(cursor.getColumnIndexOrThrow("state"));
+                Map<String, String> fields = projectionStateFields(state);
+                String bounds = cursor.getString(cursor.getColumnIndexOrThrow("bounds"));
+                boolean hasBounds = bounds != null && !bounds.isEmpty();
+                Rect parsedBounds = hasBounds ? parseBounds(bounds) : null;
                 JSONObject value = new JSONObject();
                 value.put("resource-id", cursor.getString(cursor.getColumnIndexOrThrow("resource_id")));
                 value.put(
                     "semantic-path",
                     "projection-provider:" + cursor.getLong(cursor.getColumnIndexOrThrow("revision"))
                 );
-                value.put("text", "");
-                value.put("enabled", "true");
-                value.put("visible", "true");
-                value.put("selected", "false");
-                value.put("checked", "false");
-                value.put("focused", "false");
-                value.put("state-description", cursor.getString(cursor.getColumnIndexOrThrow("state")));
-                value.put("bounds", "[0,0][1,1]");
+                value.put("text", Uri.decode(fields.getOrDefault("text", "")));
+                value.put("enabled", fields.getOrDefault("enabled", "true"));
+                value.put("visible", fields.getOrDefault("visible", "true"));
+                value.put("selected", fields.getOrDefault("selected", "false"));
+                value.put("checked", fields.getOrDefault("checked", "false"));
+                value.put("focused", fields.getOrDefault("focused", "false"));
+                value.put("state-description", state);
+                value.put("bounds", hasBounds ? bounds : "[0,0][1,1]");
+                value.put(
+                    "center-reachable",
+                    Boolean.toString(parsedBounds != null && indexedCenterReachable(tag, parsedBounds))
+                );
                 output.put(value);
             }
             return new ProviderProjection(true, output);
         } catch (IllegalArgumentException | SecurityException | JSONException error) {
             return ProviderProjection.unhandled();
         }
+    }
+
+    private boolean indexedCenterReachable(String tag, Rect bounds) {
+        AccessibilityNodeInfo rendered = findRenderedNodeInInputWindow(tag, bounds);
+        if (rendered == null) return false;
+        try {
+            if (!centerReachable(rendered)) return false;
+        } finally {
+            rendered.recycle();
+        }
+        Rect navigationBounds = indexedBounds("parity:primary-navigation");
+        if (navigationBounds == null || !navigationBounds.contains(bounds.centerX(), bounds.centerY())) {
+            return true;
+        }
+        AccessibilityNodeInfo renderedNavigation = findRenderedNodeInInputWindow(
+            "parity:primary-navigation",
+            navigationBounds
+        );
+        if (renderedNavigation == null) return true;
+        renderedNavigation.recycle();
+        // Navigation controls are legitimate targets inside the dock. Page
+        // controls extending behind the dock must be scrolled clear first.
+        return navigationBounds.contains(bounds);
+    }
+
+    @SuppressWarnings("deprecation")
+    private AccessibilityNodeInfo findRenderedNodeInInputWindow(
+        String tag,
+        Rect expectedBounds
+    ) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return null;
+        try {
+            if (!TARGET_PACKAGE.equals(stringValue(root.getPackageName()))) return null;
+            return findRenderedNodeAtPoint(root, tag, expectedBounds, true);
+        } finally {
+            root.recycle();
+        }
+    }
+
+    private Rect indexedBounds(String tag) {
+        Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
+            .buildUpon()
+            .appendQueryParameter("resource_id", tag)
+            .build();
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst() ||
+                cursor.getInt(cursor.getColumnIndexOrThrow("present")) == 0) {
+                return null;
+            }
+            return parseBounds(cursor.getString(cursor.getColumnIndexOrThrow("bounds")));
+        } catch (IllegalArgumentException | SecurityException error) {
+            return null;
+        }
+    }
+
+    private boolean replaceIndexedFocusedText(
+        String tag,
+        String value
+    ) {
+        ProviderProjection projection = providerProjection(tag);
+        if (!projection.handled || projection.values.length() != 1) return false;
+        try {
+            JSONObject current = projection.values.getJSONObject(0);
+            if (!"true".equals(current.optString("enabled", "false")) ||
+                !"true".equals(current.optString("focused", "false")) ||
+                !"true".equals(current.optString("center-reachable", "false"))) {
+                return false;
+            }
+            return SemanticDriverInputMethodService.replaceFocusedText(value);
+        } catch (JSONException error) {
+            return false;
+        }
+    }
+
+    private static Map<String, String> projectionStateFields(String state) {
+        Map<String, String> fields = new HashMap<>();
+        if (state == null) return fields;
+        String[] components = state.split(":");
+        for (int index = 0; index + 1 < components.length; index += 2) {
+            fields.put(components[index], components[index + 1]);
+        }
+        return fields;
     }
 
     private static final class ProviderProjection {
@@ -801,13 +1035,68 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private boolean appendFirstExactProjection(
+    private boolean appendFirstExactProjectionBreadthFirst(
+        List<AccessibilityNodeInfo> roots,
+        String tag,
+        JSONArray output,
+        boolean includeDescendantText
+    ) throws JSONException {
+        ArrayDeque<PathNode> pending = new ArrayDeque<>();
+        for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
+            pending.addLast(new PathNode(
+                AccessibilityNodeInfo.obtain(roots.get(rootIndex)),
+                Integer.toString(rootIndex)
+            ));
+        }
+        long deadlineNanos = System.nanoTime() + (EXACT_PROJECTION_TIME_LIMIT_NANOS / 2);
+        int visited = 0;
+        try {
+            while (!pending.isEmpty() && visited < EXACT_PROJECTION_NODE_LIMIT / 2 &&
+                System.nanoTime() < deadlineNanos) {
+                PathNode current = pending.removeFirst();
+                try {
+                    AccessibilityNodeInfo node = current.node;
+                    visited += 1;
+                    node.refresh();
+                    if (tag.equals(node.getViewIdResourceName())) {
+                        appendExactProjectionValue(output, node, current.semanticPath, includeDescendantText);
+                        exactNodePaths.put(tag, current.semanticPath);
+                        Rect bounds = new Rect();
+                        node.getBoundsInScreen(bounds);
+                        exactNodeBounds.put(tag, bounds);
+                        return true;
+                    }
+                    for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+                        AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
+                        if (child == null) continue;
+                        pending.addLast(new PathNode(
+                            child,
+                            current.semanticPath + "/" + childIndex
+                        ));
+                    }
+                } finally {
+                    current.node.recycle();
+                }
+            }
+            return false;
+        } finally {
+            recyclePathNodes(pending);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean appendFirstExactProjectionDepthFirst(
         AccessibilityNodeInfo node,
         String tag,
         String semanticPath,
         JSONArray output,
-        boolean includeDescendantText
+        boolean includeDescendantText,
+        long deadlineNanos,
+        int[] visited
     ) throws JSONException {
+        if (visited[0] >= EXACT_PROJECTION_NODE_LIMIT / 2 ||
+            System.nanoTime() >= deadlineNanos) return false;
+        visited[0] += 1;
         node.refresh();
         if (tag.equals(node.getViewIdResourceName())) {
             appendExactProjectionValue(output, node, semanticPath, includeDescendantText);
@@ -821,12 +1110,14 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
-                if (appendFirstExactProjection(
+                if (appendFirstExactProjectionDepthFirst(
                     child,
                     tag,
                     semanticPath + "/" + childIndex,
                     output,
-                    includeDescendantText
+                    includeDescendantText,
+                    deadlineNanos,
+                    visited
                 )) {
                     return true;
                 }
@@ -835,6 +1126,20 @@ public final class SemanticDriverService extends AccessibilityService {
             }
         }
         return false;
+    }
+
+    private static void recyclePathNodes(ArrayDeque<PathNode> nodes) {
+        while (!nodes.isEmpty()) nodes.removeFirst().node.recycle();
+    }
+
+    private static final class PathNode {
+        final AccessibilityNodeInfo node;
+        final String semanticPath;
+
+        PathNode(AccessibilityNodeInfo node, String semanticPath) {
+            this.node = node;
+            this.semanticPath = semanticPath;
+        }
     }
 
     private boolean appendExactProjectionAtPoint(
@@ -926,6 +1231,7 @@ public final class SemanticDriverService extends AccessibilityService {
         value.put("focused", Boolean.toString(node.isFocused()));
         value.put("state-description", stringValue(node.getStateDescription()));
         value.put("bounds", bounds.toShortString());
+        value.put("center-reachable", Boolean.toString(centerReachable(node)));
         output.put(value);
     }
 
@@ -1076,30 +1382,6 @@ public final class SemanticDriverService extends AccessibilityService {
         return value == null ? "" : value.toString();
     }
 
-    private boolean setRenderedText(
-        String tag,
-        String value,
-        Rect expectedBounds,
-        String semanticPath
-    ) {
-        // Setting the same requested value is idempotent. Compose can replace
-        // the virtual input node between readiness and delivery, so retry only
-        // the exact rendered field after a real accessibility-tree change.
-        for (int attempt = 0; attempt < 3; attempt++) {
-            long sequence = accessibilityEventSequence.get();
-            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-            if (node != null) {
-                try {
-                    if (setMatchingNodeText(node, tag, value, expectedBounds)) return true;
-                } finally {
-                    node.recycle();
-                }
-            }
-            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
-        }
-        return false;
-    }
-
     private boolean setRenderedProgress(
         String tag,
         float value,
@@ -1119,75 +1401,6 @@ public final class SemanticDriverService extends AccessibilityService {
             if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
         }
         return false;
-    }
-
-    private boolean clickRenderedNode(
-        String tag,
-        Rect expectedBounds,
-        String semanticPath,
-        String expectedSelected,
-        String expectedChecked,
-        String expectedStateDescription
-    ) {
-        // Accessibility can reject an action on a stale node object without
-        // delivering it. Re-resolve only the same rendered semantic state;
-        // the first accepted action ends the request. Compose can publish the
-        // replacement virtual node asynchronously, so let a real tree-change
-        // event advance the provider before retrying.
-        for (int attempt = 0; attempt < 3; attempt++) {
-            long sequence = accessibilityEventSequence.get();
-            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-            if (node == null) return false;
-            try {
-                if (!matchesExpectedActionState(
-                    node,
-                    expectedSelected,
-                    expectedChecked,
-                    expectedStateDescription
-                )) return false;
-                if (clickMatchingNode(node, tag, expectedBounds)) return true;
-            } finally {
-                node.recycle();
-            }
-            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
-        }
-        return false;
-    }
-
-    private boolean focusRenderedNode(
-        String tag,
-        Rect expectedBounds,
-        String semanticPath
-    ) {
-        for (int attempt = 0; attempt < 3; attempt++) {
-            long sequence = accessibilityEventSequence.get();
-            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-            if (node == null) return false;
-            try {
-                if (focusMatchingNode(node, tag, expectedBounds)) return true;
-            } finally {
-                node.recycle();
-            }
-            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
-        }
-        return false;
-    }
-
-    private static boolean matchesExpectedActionState(
-        AccessibilityNodeInfo node,
-        String expectedSelected,
-        String expectedChecked,
-        String expectedStateDescription
-    ) {
-        return matchesOptionalBoolean(expectedSelected, node.isSelected()) &&
-            matchesOptionalBoolean(expectedChecked, node.isChecked()) &&
-            (expectedStateDescription.isEmpty() || expectedStateDescription.equals(
-                stringValue(node.getStateDescription())
-            ));
-    }
-
-    private static boolean matchesOptionalBoolean(String expected, boolean actual) {
-        return expected.isEmpty() || Boolean.toString(actual).equals(expected);
     }
 
     @SuppressWarnings("deprecation")
@@ -1213,7 +1426,12 @@ public final class SemanticDriverService extends AccessibilityService {
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
-                AccessibilityNodeInfo match = findRenderedNodeAtPoint(root, tag, expectedBounds);
+                AccessibilityNodeInfo match = findRenderedNodeAtPoint(
+                    root,
+                    tag,
+                    expectedBounds,
+                    semanticPath.startsWith("projection-provider:")
+                );
                 if (match != null) return match;
             }
             return null;
@@ -1249,20 +1467,27 @@ public final class SemanticDriverService extends AccessibilityService {
     private static AccessibilityNodeInfo findRenderedNodeAtPoint(
         AccessibilityNodeInfo node,
         String tag,
-        Rect expectedBounds
+        Rect expectedBounds,
+        boolean acceptProjectedGeometry
     ) {
         node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return null;
-        if (matchesRenderedTarget(node, tag, expectedBounds)) {
+        if (matchesRenderedTarget(node, tag, expectedBounds) ||
+            (acceptProjectedGeometry && tag.equals(node.getViewIdResourceName()))) {
             return AccessibilityNodeInfo.obtain(node);
         }
         for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
             AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
             if (child == null) continue;
             try {
-                AccessibilityNodeInfo match = findRenderedNodeAtPoint(child, tag, expectedBounds);
+                AccessibilityNodeInfo match = findRenderedNodeAtPoint(
+                    child,
+                    tag,
+                    expectedBounds,
+                    acceptProjectedGeometry
+                );
                 if (match != null) return match;
             } finally {
                 child.recycle();
@@ -1324,6 +1549,46 @@ public final class SemanticDriverService extends AccessibilityService {
             }
             return false;
         } finally {
+            recycleAll(roots);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean scrollFirstRenderedSurface(String orientation, int action) {
+        if (!"vertical".equals(orientation) && !"horizontal".equals(orientation)) return false;
+        List<AccessibilityNodeInfo> roots = targetRoots(true);
+        ArrayDeque<AccessibilityNodeInfo> pending = new ArrayDeque<>();
+        try {
+            for (AccessibilityNodeInfo root : roots) {
+                pending.addLast(AccessibilityNodeInfo.obtain(root));
+            }
+            long deadlineNanos = System.nanoTime() + EXACT_PROJECTION_TIME_LIMIT_NANOS;
+            int visited = 0;
+            while (!pending.isEmpty() && visited < EXACT_PROJECTION_NODE_LIMIT &&
+                System.nanoTime() < deadlineNanos) {
+                AccessibilityNodeInfo node = pending.removeFirst();
+                try {
+                    visited += 1;
+                    node.refresh();
+                    Rect bounds = new Rect();
+                    node.getBoundsInScreen(bounds);
+                    boolean matchesOrientation = "vertical".equals(orientation)
+                        ? bounds.height() >= bounds.width()
+                        : bounds.width() > bounds.height();
+                    if (node.isScrollable() && matchesOrientation && node.performAction(action)) {
+                        return true;
+                    }
+                    for (int childIndex = 0; childIndex < node.getChildCount(); childIndex++) {
+                        AccessibilityNodeInfo child = childAtOrNull(node, childIndex);
+                        if (child != null) pending.addLast(child);
+                    }
+                } finally {
+                    node.recycle();
+                }
+            }
+            return false;
+        } finally {
+            recycleAll(new ArrayList<>(pending));
             recycleAll(roots);
         }
     }
@@ -1401,27 +1666,6 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static boolean setMatchingNodeText(
-        AccessibilityNodeInfo node,
-        String tag,
-        String value,
-        Rect expectedBounds
-    ) {
-        node.refresh();
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        if (!bounds.equals(expectedBounds)) return false;
-        if (!node.isFocused()) return false;
-        Bundle arguments = new Bundle();
-        arguments.putCharSequence(
-            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-            value
-        );
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
-    }
-
-    @SuppressWarnings("deprecation")
     private static boolean setMatchingNodeProgress(
         AccessibilityNodeInfo node,
         String tag,
@@ -1443,36 +1687,39 @@ public final class SemanticDriverService extends AccessibilityService {
         );
     }
 
-    @SuppressWarnings("deprecation")
-    private boolean clickMatchingNode(
-        AccessibilityNodeInfo node,
-        String tag,
-        Rect expectedBounds
-    ) {
-        node.refresh();
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        if (!bounds.equals(expectedBounds) || !centerReachable(node)) return false;
-        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-    }
-
-    @SuppressWarnings("deprecation")
-    private boolean focusMatchingNode(
-        AccessibilityNodeInfo node,
-        String tag,
-        Rect expectedBounds
-    ) {
-        node.refresh();
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        if (!bounds.equals(expectedBounds) || !centerReachable(node)) return false;
-        if (!node.isVisibleToUser() || !node.isEnabled() || !node.isClickable()) return false;
-        // Compose text fields transfer input focus through semantic activation.
-        // ACTION_FOCUS only moves accessibility focus and leaves the editor inactive.
-        return node.isFocused() || node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+    private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {
+        if (semanticPath.startsWith("projection-provider:")) {
+            ProviderProjection projection = providerProjection(tag);
+            if (!projection.handled || projection.values.length() != 1) return null;
+            try {
+                JSONObject value = projection.values.getJSONObject(0);
+                Rect currentBounds = parseBounds(value.optString("bounds", ""));
+                if (!semanticPath.equals(value.optString("semantic-path", "")) ||
+                    currentBounds == null || !expectedBounds.equals(currentBounds) ||
+                    !"true".equals(value.optString("enabled", "false")) ||
+                    !"true".equals(value.optString("visible", "false")) ||
+                    !"true".equals(value.optString("center-reachable", "false"))) {
+                    return null;
+                }
+                return currentBounds;
+            } catch (JSONException error) {
+                return null;
+            }
+        }
+        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+        if (node == null) return null;
+        Rect renderedBounds = new Rect();
+        try {
+            node.refresh();
+            node.getBoundsInScreen(renderedBounds);
+            if (!node.isVisibleToUser() || !node.isEnabled() || renderedBounds.isEmpty() ||
+                !centerReachable(node)) {
+                return null;
+            }
+        } finally {
+            node.recycle();
+        }
+        return renderedBounds;
     }
 
     @SuppressWarnings("deprecation")

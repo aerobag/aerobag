@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -1221,7 +1222,12 @@ internal fun PrimaryNavigationDock(
     val chartOrPlatePage = LocalNavigationPageOptions.current.options
         .any { it.page == currentPage && it.chartOrPlateReturnTarget }
     Row(
-        modifier = modifier.testTag("parity:primary-navigation"),
+        modifier = modifier
+            .e2eIndexedControl(
+                semanticTag = "parity:primary-navigation",
+                state = "enabled:true",
+            )
+            .testTag("parity:primary-navigation"),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1497,6 +1503,7 @@ internal fun AndroidChartSearchBox(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    var e2eFocused by remember { mutableStateOf(false) }
     val submitAction = rememberCurrentAction {
         keyboardController?.hide()
         onSubmit()
@@ -1532,13 +1539,22 @@ internal fun AndroidChartSearchBox(
                 ),
             modifier =
                 Modifier
+                    .e2eIndexedTextControl(
+                        semanticTag = "parity:chart-search-input",
+                        text = text,
+                        enabled = true,
+                        focused = e2eFocused,
+                    )
                     .testTag("parity:chart-search-input")
                     .width(ThumbSize * 2f)
                     .height(ThumbSize)
                     .clip(RoundedCornerShape(ThumbRadius))
                     .background(Color.White.copy(alpha = 0.96f))
                     .border(1.5.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
-                    .onFocusChanged { state -> if (state.isFocused) onFocus() }
+                    .onFocusChanged { state ->
+                        e2eFocused = state.isFocused
+                        if (state.isFocused) onFocus()
+                    }
                     .onPreviewKeyEvent { event ->
                         if (event.nativeKeyEvent.action == AndroidKeyEvent.ACTION_DOWN &&
                             event.nativeKeyEvent.keyCode == AndroidKeyEvent.KEYCODE_ENTER
@@ -2194,6 +2210,18 @@ internal fun MenuPanelRow(
         modifier = modifier
             .then(if (width != Dp.Unspecified) Modifier.width(width) else Modifier.fillMaxWidth())
             .height(ThumbSize)
+            .then(
+                if (testTag != null) {
+                    Modifier.e2eIndexedControl(
+                        semanticTag = testTag,
+                        state =
+                            "enabled:$enabled:selected:${active || isOn}:" +
+                                "text:${Uri.encode(renderedLabel)}",
+                    )
+                } else {
+                    Modifier
+                },
+            )
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .semantics { selected = active || isOn }
             .clip(rowShape)

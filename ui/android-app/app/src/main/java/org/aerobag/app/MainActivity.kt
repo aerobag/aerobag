@@ -2346,7 +2346,15 @@ class MainActivity : ComponentActivity() {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             noteDisplayUserActivity()
         }
-        return super.dispatchTouchEvent(event)
+        val handled = super.dispatchTouchEvent(event)
+        if (BuildConfig.AEROBAG_E2E_ENABLED && event.actionMasked == MotionEvent.ACTION_UP) {
+            E2eProjectionRegistry.publishTouchReceipt(
+                rawX = event.rawX.roundToInt(),
+                rawY = event.rawY.roundToInt(),
+                handled = handled,
+            )
+        }
+        return handled
     }
 
     override fun dispatchKeyEvent(event: AndroidKeyEvent): Boolean {
@@ -3531,6 +3539,27 @@ internal fun AerobagApp(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offset(x = 1.dp)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_flight_plan_state_projection,
+                state = flightPlanStateProjection(sessionPlanUiState),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 2.dp)
+                    .size(1.dp),
+            )
+            E2eProjectionView(
+                viewId = R.id.e2e_flight_plan_overlay_projection,
+                state = "row_tray:" +
+                    if (flightPlanOverlayController.state is FlightPlanOverlayState.RowTray) {
+                        "open"
+                    } else {
+                        "closed"
+                    },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = 3.dp)
                     .size(1.dp),
             )
             val bottomCornerControlsRaised = shouldRaiseBottomCornerControls(maxWidth)

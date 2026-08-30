@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -641,9 +642,16 @@ internal fun CompactSquareButton(
         backgroundColor = backgroundColor,
         selectedColor = selectedColor,
     )
+    val resolvedTestTag = testTag ?: "parity:button:$label"
     Surface(
         modifier = modifier
-            .testTag(testTag ?: "parity:button:$label")
+            .e2eIndexedControl(
+                semanticTag = resolvedTestTag,
+                state =
+                    "enabled:$enabled:selected:$selected:" +
+                        "text:${Uri.encode(renderedLabel)}",
+            )
+            .testTag(resolvedTestTag)
             .clickable(
                 enabled = enabled || onDisabledClick != null,
                 role = Role.Button,

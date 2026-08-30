@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Aerobag contributors
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:isDefault="false"
+    android:supportsSwitchingToNextInputMethod="false" />

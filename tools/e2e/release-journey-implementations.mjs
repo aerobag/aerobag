@@ -15,6 +15,11 @@ export function viewportGeometryId(entries) {
   return idOf(entries)?.replace(/:up:-?[0-9.]+$/, "") ?? null;
 }
 
+export function viewportZoomLevel(entries) {
+  const match = /:zoom:(-?[0-9.]+)(?::|$)/.exec(idOf(entries) ?? "");
+  return match ? Number(match[1]) : null;
+}
+
 export function offlineSyncButtonIsIdle(button) {
   return Boolean(button?.enabled) &&
     !/\b(?:APPLYING|SYNCING|CANCELING)\b/i.test(button.text ?? "");
@@ -227,10 +232,15 @@ async function disableCtrBeforeFreePan(runtime, description) {
 export async function selectChartSearchSuggestion(runtime, ident) {
   const suggestionProjection = `chart-search-suggestion-${ident}`;
   const selectedProjection = `parity:map-selection-selected:${ident}`;
-  const selected = await runtime.driver.readProjection(selectedProjection);
-  if (selected.length > 0) return selected[0];
+  const completedSelection = async () => {
+    const selected = (await runtime.driver.readProjection(selectedProjection))[0];
+    if (!selected) return null;
+    return (await runtime.driver.readElement("map-selection-tray")) ? selected : null;
+  };
+  const selected = await completedSelection();
+  if (selected) return selected;
   return runtime.action(`${ident} chart search selection`, suggestionProjection, {
-    complete: async () => (await runtime.driver.readProjection(selectedProjection))[0] ?? null,
+    complete: completedSelection,
   });
 }
 
@@ -414,15 +424,21 @@ async function chartBasicUse(runtime) {
   );
   runtime.check("chart.vector-repaint", panned.vectors > 0, String(panned.vectors));
 
+  const zoomBefore = viewportZoomLevel(
+    await runtime.driver.readProjection("parity:viewport:"),
+  );
+  if (zoomBefore == null) throw new Error("chart viewport did not report its zoom level");
   const zoomedViewport = await runtime.transition("chart zoom", {
     ready: () => runtime.driver.readElement("map-surface"),
-    act: () => runtime.driver.zoom("map-surface", -420),
+    act: (readyElement) => runtime.driver.zoom("map-surface", -420, readyElement),
     complete: async () => {
-      const current = idOf(await runtime.driver.readProjection("parity:viewport:"));
-      return current && current !== pannedViewport ? current : null;
+      const entries = await runtime.driver.readProjection("parity:viewport:");
+      const current = idOf(entries);
+      return current && viewportZoomLevel(entries) !== zoomBefore ? current : null;
     },
   });
-  runtime.check("chart.zoom", zoomedViewport !== pannedViewport, `${pannedViewport} -> ${zoomedViewport}`);
+  const zoomAfter = viewportZoomLevel([zoomedViewport]);
+  runtime.check("chart.zoom", zoomAfter !== zoomBefore, `${zoomBefore} -> ${zoomAfter}`);
 
   if (runtime.platform === "android") {
     // Android's keyboard zoom shortcut is also delivered to a search field
@@ -565,7 +581,7 @@ function routeEntryState(entries) {
 
 async function appendRoute(runtime, route) {
   await dismissPlanRowTray(runtime);
-  await runtime.revealElement("plan-append-route-input", "flight-plan route editor");
+  await revealRequiredElement(runtime, "plan-append-route-input", "flight-plan route editor");
   await runtime.editText(`enter route ${route}`, "plan-append-route-input", route);
   const destination = route.trim().split(/\s+/).at(-1);
   await runtime.transition(`append route ${route}`, {
@@ -620,9 +636,11 @@ async function openProcedureRow(runtime, procedureId) {
   return row;
 }
 
-async function dismissPlanRowTray(runtime) {
+export async function dismissPlanRowTray(runtime) {
   if (!(await runtime.driver.readElement("plan-row-tray-scrim"))) return;
-  await runtime.action("dismiss flight-plan row tray", "plan-row-tray-scrim", {
+  await runtime.transition("dismiss flight-plan row tray", {
+    ready: () => runtime.driver.readElement("plan-row-tray-scrim"),
+    act: () => runtime.driver.back(),
     complete: async () =>
       (await runtime.driver.readElement("plan-row-tray-scrim")) === null,
   });
@@ -1229,7 +1247,7 @@ async function plateOperate(runtime) {
   runtime.check("plate.pan", Boolean(pannedViewport), `${initialViewport} -> ${pannedViewport}`);
   const zoomedViewport = await runtime.transition("zoom georeferenced plate", {
     ready: () => runtime.driver.readElement("plate-surface"),
-    act: () => runtime.driver.zoom("plate-surface", -360),
+    act: (readyElement) => runtime.driver.zoom("plate-surface", -360, readyElement),
     complete: async () => {
       const value = await plateViewport(runtime);
       return value && value !== pannedViewport ? value : null;
@@ -1393,7 +1411,7 @@ async function plateAdvisoriesAndReferences(runtime) {
   );
   const zoomedLegendViewport = await runtime.transition("zoom legend for composite scroll", {
     ready: () => runtime.driver.readElement("plate-surface"),
-    act: () => runtime.driver.zoom("plate-surface", -360),
+    act: (readyElement) => runtime.driver.zoom("plate-surface", -360, readyElement),
     complete: async () => {
       const value = await plateViewport(runtime);
       return value && value !== legendViewport ? value : null;
@@ -1844,7 +1862,8 @@ function layerProbeId(runtime, layerId) {
 }
 
 async function selectedMapFamily(runtime, familyId) {
-  return (await runtime.driver.readProjection(`parity:map-family:${familyId}:`))[0] ?? null;
+  const selected = (await runtime.driver.readProjection("parity:map-family:"))[0] ?? null;
+  return projectionId(selected)?.startsWith(`parity:map-family:${familyId}:`) ? selected : null;
 }
 
 async function ensureMapFamily(runtime, familyId, description) {
@@ -1925,8 +1944,7 @@ async function mapModesAndOverlays(runtime) {
       familyId,
       {
       complete: async () => {
-        const entries = await runtime.driver.readProjection(`parity:map-family:${familyId}:`);
-        return entries[0] ?? null;
+        return selectedMapFamily(runtime, familyId);
       },
       },
     );
@@ -2108,7 +2126,7 @@ export async function selectTfrFromPreparedMap(runtime, airportId) {
 async function openAirportInfo(runtime, airportId) {
   await selectAirportFromMapSearch(runtime, airportId);
   return runtime.action(`${airportId} airport info`, "airport_info", {
-    complete: () => runtime.driver.readElement(`airport-info-modal:${airportId}`),
+    complete: () => runtime.driver.readModal(`airport-info-modal:${airportId}`),
   });
 }
 
@@ -2199,7 +2217,7 @@ async function inspectorDetails(runtime) {
   runtime.check("inspector.distance-live", Boolean(changedDistance), `${initialDistance} -> ${changedDistance}`);
 
   const info = await runtime.action("open inspector airport info", "airport_info", {
-    complete: () => runtime.driver.readElement("airport-info-modal:KSEA"),
+    complete: () => runtime.driver.readModal("airport-info-modal:KSEA"),
   });
   runtime.check("inspector.info", Boolean(info));
   await closeMapDetail(runtime, "airport-info-modal:KSEA");
@@ -2210,7 +2228,7 @@ async function inspectorDetails(runtime) {
   );
   const weather = weatherAction?.enabled
     ? await runtime.action("open inspector weather", "wx", {
-      complete: () => runtime.driver.readElement("weather-detail-modal"),
+      complete: () => runtime.driver.readModal("weather-detail-modal"),
     })
     : null;
   runtime.check("inspector.weather", Boolean(weatherAction && (weather || weatherAction.disabled_reason)), weatherAction?.text);
@@ -2407,13 +2425,18 @@ function altitudeControlId(runtime, controlId) {
     : `altitude-planner-control:${controlId}`;
 }
 
+function semanticTextSignature(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
 async function chooseDifferentAltitudeOption(runtime, controlId) {
   const launcherId = altitudeControlId(runtime, controlId);
   const before = await revealRequiredElement(runtime, launcherId, `${controlId} altitude control`);
   const opened = await runtime.action(`open ${controlId} choices`, launcherId, {
     complete: async () => {
       const directAfter = await runtime.driver.readElement(launcherId);
-      if (directAfter?.text && directAfter.text !== before?.text) {
+      if (directAfter?.text &&
+          semanticTextSignature(directAfter.text) !== semanticTextSignature(before?.text)) {
         return { directAfter, option: null };
       }
       const options = await runtime.driver.readProjection(runtime.platform === "web"
@@ -2434,7 +2457,10 @@ async function chooseDifferentAltitudeOption(runtime, controlId) {
     : projectionId(option), {
     complete: async () => {
       const value = await runtime.driver.readElement(launcherId);
-      return value?.text && value.text !== before?.text ? value : null;
+      return value?.text &&
+          semanticTextSignature(value.text) !== semanticTextSignature(before?.text)
+        ? value
+        : null;
     },
   });
   return { before, option, after };
@@ -2785,7 +2811,7 @@ async function preparedLiveFeeds(runtime) {
   ));
   if (!weatherAction.enabled) throw new Error(`KSEA weather is unavailable: ${weatherAction.text}`);
   await runtime.action("open prepared weather modal", "wx", {
-    complete: () => runtime.driver.readElement("weather-detail-modal"),
+    complete: () => runtime.driver.readModal("weather-detail-modal"),
   });
   const detail = await runtime.eventually("prepared weather detail", async () => {
       const modal = await runtime.driver.readElement("weather-detail-modal");
@@ -2868,9 +2894,14 @@ async function tfrMapDetail(runtime) {
   await runtime.action("open TFR item actions", tfrItemId, {
     complete: () => runtime.driver.readAction("tfr_text"),
   });
-  const detail = await runtime.action("open TFR text detail", "tfr_text", {
-    complete: () => runtime.driver.readElement("map-selection-detail-modal:TFR"),
+  await runtime.action("open TFR text detail", "tfr_text", {
+    complete: () => runtime.driver.readModal("map-selection-detail-modal:TFR"),
   });
+  const detail = await runtime.eventually(
+    "rendered TFR text detail",
+    () => runtime.driver.readElement("map-selection-detail-modal:TFR"),
+    E2E_TIMING.resourceMs,
+  );
   runtime.check(
     "livefeed.tfr-map-detail",
     Boolean(tfrItem && detail?.text && /TEMPORARY FLIGHT RESTRICTIONS/i.test(detail.text)),

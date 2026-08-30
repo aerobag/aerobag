@@ -203,6 +203,7 @@ class ProductPublicationTests(unittest.TestCase):
 
         self.assertIn("/channel-current/production/web", nginx)
         self.assertIn("/channel-current/staging/packages/", nginx)
+        self.assertEqual(nginx.count("default_type text/html;"), 3)
         self.assertIn("/channel-current/releases/", nginx)
         self.assertIn(
             "location = /about {\n        alias "

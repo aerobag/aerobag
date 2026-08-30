@@ -1399,6 +1399,7 @@ def nginx_config(config: dict[str, Any]) -> str:
 
     location = /about {{
         alias {channel_root}/production/web/about.html;
+        default_type text/html;
         add_header Cache-Control "no-cache";
     }}
 
@@ -1434,6 +1435,7 @@ def nginx_config(config: dict[str, Any]) -> str:
 
     location = /staging/about {{
         alias {channel_root}/staging/web/about.html;
+        default_type text/html;
         add_header Cache-Control "no-cache";
     }}
 
@@ -1457,6 +1459,7 @@ def nginx_config(config: dict[str, Any]) -> str:
 
     location ~ "^/releases/([A-Za-z0-9][A-Za-z0-9._-]{{0,79}})/web/about$" {{
         alias {channel_root}/releases/$1/web/about.html;
+        default_type text/html;
         add_header Cache-Control "no-cache";
     }}
 

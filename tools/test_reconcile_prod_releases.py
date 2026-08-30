@@ -117,10 +117,20 @@ class PublicProductionValidationTests(unittest.TestCase):
                     "/downloads/android-apk.json": b"apk",
                     "/about": b"about",
                 }
+                content_types = {
+                    "/": "text/html",
+                    "/about": "text/html",
+                    "/packages/current_artifacts.json": "application/json",
+                    "/live-feeds/status.json": "application/json",
+                    "/downloads/android-apk.json": "application/json",
+                }
                 response = mock.MagicMock()
                 response.__enter__.return_value = SimpleNamespace(
                     status=200,
                     read=lambda: bodies[relative],
+                    headers=SimpleNamespace(
+                        get_content_type=lambda: content_types[relative]
+                    ),
                 )
                 return response
 
@@ -137,6 +147,109 @@ class PublicProductionValidationTests(unittest.TestCase):
                 instance.validate_public_production()
 
             self.assertIn("https://aerobag.test/about", requested)
+
+    def test_staging_qualification_is_exact_http_contract_without_host_chrome(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release_root = root / "release"
+            expected = {
+                "https://aerobag.test/staging/": (
+                    release_root / "web/index.html",
+                    b"index",
+                    "text/html",
+                ),
+                "https://aerobag.test/staging/about": (
+                    release_root / "web/about.html",
+                    b"about",
+                    "text/html",
+                ),
+                "https://aerobag.test/staging/packages/current_artifacts.json": (
+                    root
+                    / "channel-current/staging/packages/current_artifacts.json",
+                    b"packages",
+                    "application/json",
+                ),
+                "https://aerobag.test/staging/live-feeds/status.json": (
+                    None,
+                    b"live",
+                    "application/json",
+                ),
+                "https://aerobag.test/staging/downloads/android-apk.json": (
+                    release_root / "downloads/android-apk.json",
+                    b"apk",
+                    "application/json",
+                ),
+            }
+            for path, body, _content_type in expected.values():
+                if path is not None:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(body)
+            (release_root / "release.json").write_text("{}", encoding="utf-8")
+            product_manifest = root / "product_artifacts.json"
+            product_manifest.write_text("{}", encoding="utf-8")
+
+            record = releases.ObservedRelease(
+                tag="candidate",
+                tag_object="a" * 40,
+                commit="b" * 40,
+                build_status="passed",
+                release_root=str(release_root),
+                product_manifest=str(product_manifest),
+            )
+            instance = controller.Controller.__new__(controller.Controller)
+            instance.args = SimpleNamespace(
+                public_origin="https://aerobag.test",
+                observed=root / "observed.json",
+            )
+            instance.artifact_root = root
+            instance.observed = releases.ObservedState(
+                releases={record.tag: record},
+                staging=record.tag,
+            )
+            content_types = {
+                url: expected_content_type
+                for url, (_path, _body, expected_content_type) in expected.items()
+            }
+            about_url = "https://aerobag.test/staging/about"
+            content_types[about_url] = "application/octet-stream"
+
+            def urlopen(url: str, timeout: int):
+                _path, body, _content_type = expected[url]
+                response = mock.MagicMock()
+                response.__enter__.return_value = SimpleNamespace(
+                    status=200,
+                    read=lambda: body,
+                    headers=SimpleNamespace(
+                        get_content_type=lambda: content_types[url]
+                    ),
+                )
+                return response
+
+            with (
+                mock.patch.object(
+                    controller.urllib.request,
+                    "urlopen",
+                    side_effect=urlopen,
+                ),
+                mock.patch.object(controller, "_run") as run,
+                mock.patch.object(
+                    controller.release_builder,
+                    "validate_release_directory",
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "unexpected content type",
+                ):
+                    instance.qualify(record.tag)
+                content_types[about_url] = "text/html"
+                instance.qualify(record.tag)
+
+            run.assert_not_called()
+            self.assertEqual(record.qualification_status, "passed")
+            self.assertTrue(Path(record.qualification_record or "").is_file())
 
 
 class LiveFeedAllocationTests(unittest.TestCase):

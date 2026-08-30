@@ -313,24 +313,34 @@ class Controller:
         origin = self.args.public_origin.rstrip("/")
         current = self.artifact_root / "channel-current/production"
         checks = [
-            ("/", current / "web/index.html"),
+            ("/", current / "web/index.html", "text/html"),
             (
                 "/packages/current_artifacts.json",
                 current / "packages/current_artifacts.json",
+                "application/json",
             ),
-            ("/live-feeds/status.json", None),
-            ("/downloads/android-apk.json", current / "downloads/android-apk.json"),
+            ("/live-feeds/status.json", None, "application/json"),
+            (
+                "/downloads/android-apk.json",
+                current / "downloads/android-apk.json",
+                "application/json",
+            ),
         ]
         about = current / "web/about.html"
         if about.is_file():
-            checks.insert(1, ("/about", about))
-        for path, expected_path in checks:
+            checks.insert(1, ("/about", about, "text/html"))
+        for path, expected_path, expected_content_type in checks:
             url = origin + path
             with urllib.request.urlopen(url, timeout=30) as response:
                 body = response.read()
                 if response.status != 200 or not body:
                     raise RuntimeError(
                         f"activated production channel failed validation at {url}"
+                    )
+                if response.headers.get_content_type() != expected_content_type:
+                    raise RuntimeError(
+                        f"activated production channel served unexpected content type "
+                        f"at {url}: {response.headers.get_content_type()}"
                     )
                 if expected_path is not None and hashlib.sha256(body).hexdigest() != _sha256(
                     expected_path
@@ -687,25 +697,40 @@ class Controller:
         release_builder.validate_release_directory(release_root, tag, record.commit)
         base = self.args.public_origin.rstrip("/") + "/staging"
         checks = {
-            "web": (f"{base}/", release_root / "web/index.html"),
-            "about": (f"{base}/about", release_root / "web/about.html"),
+            "web": (f"{base}/", release_root / "web/index.html", "text/html"),
+            "about": (
+                f"{base}/about",
+                release_root / "web/about.html",
+                "text/html",
+            ),
             "packages": (
                 f"{base}/packages/current_artifacts.json",
                 self.artifact_root
                 / "channel-current/staging/packages/current_artifacts.json",
+                "application/json",
             ),
-            "live_feeds": (f"{base}/live-feeds/status.json", None),
+            "live_feeds": (
+                f"{base}/live-feeds/status.json",
+                None,
+                "application/json",
+            ),
             "apk": (
                 f"{base}/downloads/android-apk.json",
                 release_root / "downloads/android-apk.json",
+                "application/json",
             ),
         }
         responses = {}
-        for name, (url, expected_path) in checks.items():
+        for name, (url, expected_path, expected_content_type) in checks.items():
             with urllib.request.urlopen(url, timeout=30) as response:
                 body = response.read()
                 if response.status != 200 or not body:
                     raise RuntimeError(f"staging qualification failed for {url}")
+                if response.headers.get_content_type() != expected_content_type:
+                    raise RuntimeError(
+                        f"staging qualification received unexpected content type "
+                        f"from {url}: {response.headers.get_content_type()}"
+                    )
                 if expected_path is not None and hashlib.sha256(body).hexdigest() != _sha256(
                     expected_path
                 ):
@@ -713,15 +738,6 @@ class Controller:
                         f"staging qualification received unexpected bytes from {url}"
                     )
                 responses[name] = hashlib.sha256(body).hexdigest()
-        _run(
-            [
-                "node",
-                str(self.source_root / "ui/web-app/scripts/release-web-smoke.mjs"),
-                "--url",
-                f"{base}/",
-            ],
-            cwd=self.source_root / "ui/web-app",
-        )
         qualification = {
             "schema_version": 1,
             "tag": tag,

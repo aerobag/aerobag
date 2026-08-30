@@ -2587,7 +2587,11 @@ async function setReplayRate(runtime, rate) {
   } else {
     return runtime.transition("set Android replay rate", {
       ready: () => runtime.driver.readElement("playback-rate-input"),
-      act: () => runtime.driver.drag("playback-rate-input", { x: -1_000, y: 0 }),
+      act: (readyElement) => runtime.driver.setProgress(
+        "playback-rate-input",
+        rate,
+        readyElement,
+      ),
       complete: async () => {
         const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
         return state && Math.abs(state.rate - rate) < 0.01 ? state : null;
@@ -2672,16 +2676,21 @@ async function replayTrackUp(runtime) {
   runtime.check("replay.play-pause", Boolean(playing && paused), `${playing.cursor} -> ${paused.cursor}`);
 
   const priorRate = paused.rate;
+  const nextRate = priorRate === 2 ? 3 : 2;
   if (runtime.platform === "web") {
     await runtime.editText(
       "change replay rate",
       "playback-rate-input",
-      priorRate === 2 ? "3" : "2",
+      String(nextRate),
     );
   } else {
     await runtime.transition("change Android replay rate", {
       ready: () => runtime.driver.readElement("playback-rate-input"),
-      act: () => runtime.driver.drag("playback-rate-input", { x: 80, y: 0 }),
+      act: (readyElement) => runtime.driver.setProgress(
+        "playback-rate-input",
+        nextRate,
+        readyElement,
+      ),
       complete: async () => {
         const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
         return state && Math.abs(state.rate - priorRate) > 0.01 ? state : null;
@@ -2695,12 +2704,17 @@ async function replayTrackUp(runtime) {
   runtime.check("replay.rate", Boolean(changedRate), `${priorRate} -> ${changedRate.rate}`);
 
   const priorCursor = changedRate.cursor;
+  const targetCursor = priorCursor < changedRate.duration * 0.5
+    ? changedRate.duration * 0.8
+    : changedRate.duration * 0.2;
   const sought = await runtime.transition("seek replay timeline", {
     ready: () => runtime.driver.readElement("playback-overview"),
-    act: () => runtime.driver.drag("playback-overview", {
-      x: timelineSeekDeltaX(priorCursor, changedRate.duration),
-      y: 0,
-    }),
+    act: (readyElement) => runtime.platform === "android"
+      ? runtime.driver.setProgress("playback-overview", targetCursor, readyElement)
+      : runtime.driver.drag("playback-overview", {
+        x: timelineSeekDeltaX(priorCursor, changedRate.duration),
+        y: 0,
+      }),
     complete: async () => {
       const state = playbackState(await runtime.driver.readProjection("parity:playback-widget:"));
       return state && Math.abs(state.cursor - priorCursor) > 0.1 ? state : null;

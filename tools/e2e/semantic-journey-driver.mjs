@@ -8,6 +8,7 @@ import {
   displayBoundsFromXml, dumpAndroid, findNode, findNodes,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
+  setAndroidSemanticProgress,
   queryAndroidExactProjection, queryAndroidStartupProjection,
   scrollUntilTag, scrollUntilTagPrefix, swipe,
   scrollHorizontallyUntilTag, waitFor, waitForAndroidSemanticEvent,
@@ -46,7 +47,7 @@ export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "openChooser", "readOption", "selectOption",
   "inspectMapAt", "activateMapInspection", "performAction",
   "readRepeatedAction", "performRepeatedAction",
-  "focusText", "enterText", "submit", "drag", "zoom", "hover", "copyText", "readElement", "readProjection",
+  "focusText", "enterText", "submit", "drag", "setProgress", "zoom", "hover", "copyText", "readElement", "readProjection",
   "readAction", "readSessionRevision", "findProjectionMatching", "revealElement", "scanProjection",
   "readCloudActionRevision",
   "revealProjectionMatching", "reload",
@@ -110,6 +111,9 @@ export class SemanticJourneyDriver {
     throw new Error(`${this.platform} driver does not implement submit`);
   }
   async drag(_surfaceId, _delta) { throw new Error(`${this.platform} driver does not implement drag`); }
+  async setProgress(_controlId, _value, _readyElement) {
+    throw new Error(`${this.platform} driver does not implement setProgress`);
+  }
   async zoom(_surfaceId, _amount) { throw new Error(`${this.platform} driver does not implement zoom`); }
   async hover(_elementId) { throw new Error(`${this.platform} driver does not implement hover`); }
   async copyText(_elementId) { throw new Error(`${this.platform} driver does not implement copyText`); }
@@ -800,14 +804,23 @@ function androidProjectedElement(node, elementId = androidTag(node)) {
 function queryFirstAndroidSemanticNode(
   serial,
   tag,
-  { allowPrefix = true, requireVisible = false, requireReachable = false } = {},
+  {
+    allowPrefix = true,
+    requireVisible = false,
+    requireReachable = false,
+    includeDescendantText = true,
+  } = {},
 ) {
   const choose = (nodes) => nodes?.find((node) =>
     (!requireVisible || node.visible === "true") &&
     (!requireReachable || node["center-reachable"] === "true")) ?? null;
-  const exact = choose(queryAndroidSemanticNodes(serial, tag));
+  const exact = choose(queryAndroidSemanticNodes(serial, tag, { includeDescendantText }));
   if (exact || !allowPrefix) return exact;
-  return choose(queryAndroidSemanticNodes(serial, tag, { prefix: true }));
+  return choose(queryAndroidSemanticNodes(
+    serial,
+    tag,
+    { prefix: true, includeDescendantText },
+  ));
 }
 
 function readinessEvidenceMatchesTag(expectedTag, readyElement) {
@@ -963,6 +976,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       {
         allowPrefix: tag.endsWith(":"),
         requireVisible: true,
+        includeDescendantText: false,
       },
     );
     if (!node) return null;
@@ -1152,6 +1166,20 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return { startX, startY, endX, endY };
   }
 
+  async setProgress(controlId, value, readyElement) {
+    const semanticTag = `parity:${controlId}`;
+    if (!readinessEvidenceMatchesTag(semanticTag, readyElement)) {
+      throw new Error(`Android progress control ${controlId} has no matching readiness evidence`);
+    }
+    setAndroidSemanticProgress(
+      this.serial,
+      semanticTag,
+      value,
+      readyElement.bounds,
+      readyElement.semantic_path,
+    );
+  }
+
   async zoom(surfaceId, amount) {
     const node = findTagOrPrefix(dumpAndroid(this.serial), `parity:${surfaceId}`);
     if (!node) throw new Error(`Android surface ${surfaceId} is not visible`);
@@ -1333,7 +1361,10 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryFirstAndroidSemanticNode(
       this.serial,
       semanticTag,
-      { requireVisible: true },
+      {
+        requireVisible: true,
+        includeDescendantText: elementId !== "map-surface",
+      },
     );
     if (!queried) return null;
     return androidProjectedElement(queried, elementId);

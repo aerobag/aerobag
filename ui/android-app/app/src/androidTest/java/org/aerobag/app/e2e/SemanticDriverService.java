@@ -40,7 +40,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/4";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/6";
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean semanticRequestActive = new AtomicBoolean(false);
     private final Object semanticRequestMonitor = new Object();
@@ -178,6 +178,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/set-text":
                     handleSetText(socket, path);
                     return;
+                case "/set-progress":
+                    handleSetProgress(socket, path);
+                    return;
                 case "/click":
                     handleClick(socket, path);
                     return;
@@ -204,7 +207,7 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private static boolean isSemanticEndpoint(String endpoint) {
         return switch (endpoint) {
-            case "/dump", "/query", "/exact-projection", "/set-text", "/click", "/scroll" ->
+            case "/dump", "/query", "/exact-projection", "/set-text", "/set-progress", "/click", "/scroll" ->
                 true;
             default -> false;
         };
@@ -221,15 +224,34 @@ public final class SemanticDriverService extends AccessibilityService {
         respondAction(socket, changed, "text action rejected\n");
     }
 
+    private void handleSetProgress(Socket socket, String path) throws IOException {
+        Map<String, String> query = queryOf(path);
+        String tag = query.getOrDefault("tag", "");
+        String semanticPath = query.getOrDefault("path", "");
+        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
+        float value;
+        try {
+            value = Float.parseFloat(query.getOrDefault("value", ""));
+        } catch (NumberFormatException error) {
+            value = Float.NaN;
+        }
+        boolean changed = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
+            Float.isFinite(value) && setRenderedProgress(tag, value, expectedBounds, semanticPath);
+        respondAction(socket, changed, "progress action rejected\n");
+    }
+
     private void handleQuery(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         boolean prefix = "true".equals(query.getOrDefault("prefix", "false"));
         boolean first = "true".equals(query.getOrDefault("first", "false"));
+        boolean includeDescendantText = !"false".equals(
+            query.getOrDefault("descendant_text", "true")
+        );
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
-            renderNodeQuery(tag, prefix, first).toString() + "\n",
+            renderNodeQuery(tag, prefix, first, includeDescendantText).toString() + "\n",
             200
         );
     }
@@ -427,11 +449,16 @@ public final class SemanticDriverService extends AccessibilityService {
         return output.toString();
     }
 
-    private JSONArray renderNodeQuery(String tag, boolean prefix, boolean first) {
+    private JSONArray renderNodeQuery(
+        String tag,
+        boolean prefix,
+        boolean first,
+        boolean includeDescendantText
+    ) {
         JSONArray output = new JSONArray();
         if (tag.isEmpty()) return output;
-        if (!prefix && appendIndexedNodeQuery(tag, output)) return output;
-        if (!prefix && appendCachedNodeQuery(tag, output)) return output;
+        if (!prefix && appendIndexedNodeQuery(tag, output, includeDescendantText)) return output;
+        if (!prefix && appendCachedNodeQuery(tag, output, includeDescendantText)) return output;
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (int rootIndex = 0; rootIndex < roots.size(); rootIndex++) {
@@ -442,7 +469,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     first,
                     output,
                     null,
-                    Integer.toString(rootIndex)
+                    Integer.toString(rootIndex),
+                    includeDescendantText
                 );
                 if (matched && (!prefix || first)) {
                     break;
@@ -456,7 +484,11 @@ public final class SemanticDriverService extends AccessibilityService {
         return output;
     }
 
-    private boolean appendIndexedNodeQuery(String tag, JSONArray output) {
+    private boolean appendIndexedNodeQuery(
+        String tag,
+        JSONArray output,
+        boolean includeDescendantText
+    ) {
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
@@ -468,7 +500,13 @@ public final class SemanticDriverService extends AccessibilityService {
                         if (!tag.equals(match.getViewIdResourceName())) continue;
                         Rect bounds = new Rect();
                         match.getBoundsInScreen(bounds);
-                        appendNodeQueryValue(output, match, centerReachable(match), "indexed");
+                        appendNodeQueryValue(
+                            output,
+                            match,
+                            centerReachable(match),
+                            "indexed",
+                            includeDescendantText
+                        );
                         exactNodePaths.put(tag, "indexed");
                         exactNodeBounds.put(tag, new Rect(bounds));
                         return true;
@@ -485,7 +523,11 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    private boolean appendCachedNodeQuery(String tag, JSONArray output) {
+    private boolean appendCachedNodeQuery(
+        String tag,
+        JSONArray output,
+        boolean includeDescendantText
+    ) {
         String semanticPath = exactNodePaths.get(tag);
         Rect expectedBounds = exactNodeBounds.get(tag);
         if (semanticPath == null || expectedBounds == null) return false;
@@ -500,7 +542,8 @@ public final class SemanticDriverService extends AccessibilityService {
                         output,
                         node,
                         centerReachable(node),
-                        semanticPath
+                        semanticPath,
+                        includeDescendantText
                     );
                     return true;
                 }
@@ -510,7 +553,12 @@ public final class SemanticDriverService extends AccessibilityService {
                 node.recycle();
             }
         }
-        if (appendCachedNodeQueryAtPoint(tag, expectedBounds, output)) return true;
+        if (appendCachedNodeQueryAtPoint(
+            tag,
+            expectedBounds,
+            output,
+            includeDescendantText
+        )) return true;
         exactNodePaths.remove(tag, semanticPath);
         exactNodeBounds.remove(tag, expectedBounds);
         return false;
@@ -519,7 +567,8 @@ public final class SemanticDriverService extends AccessibilityService {
     private boolean appendCachedNodeQueryAtPoint(
         String tag,
         Rect expectedBounds,
-        JSONArray output
+        JSONArray output,
+        boolean includeDescendantText
     ) {
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
@@ -529,7 +578,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     tag,
                     expectedBounds,
                     Integer.toString(rootIndex),
-                    output
+                    output,
+                    includeDescendantText
                 )) {
                     return true;
                 }
@@ -548,14 +598,21 @@ public final class SemanticDriverService extends AccessibilityService {
         String tag,
         Rect expectedBounds,
         String semanticPath,
-        JSONArray output
+        JSONArray output,
+        boolean includeDescendantText
     ) throws JSONException {
         node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return false;
         if (tag.equals(node.getViewIdResourceName()) && bounds.equals(expectedBounds)) {
-            appendNodeQueryValue(output, node, centerReachable(node), semanticPath);
+            appendNodeQueryValue(
+                output,
+                node,
+                centerReachable(node),
+                semanticPath,
+                includeDescendantText
+            );
             exactNodePaths.put(tag, semanticPath);
             exactNodeBounds.put(tag, new Rect(bounds));
             return true;
@@ -569,7 +626,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     tag,
                     expectedBounds,
                     semanticPath + "/" + childIndex,
-                    output
+                    output,
+                    includeDescendantText
                 )) {
                     return true;
                 }
@@ -778,7 +836,8 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean first,
         JSONArray output,
         Rect ancestorClip,
-        String semanticPath
+        String semanticPath,
+        boolean includeDescendantText
     ) throws JSONException {
         // Compose can retain an accessibility node whose only changing field is
         // its test tag. Refresh every queried node so transition predicates see
@@ -791,7 +850,13 @@ public final class SemanticDriverService extends AccessibilityService {
         String nodeTag = node.getViewIdResourceName();
         boolean matched = false;
         if (nodeTag != null && (prefix ? nodeTag.startsWith(tag) : nodeTag.equals(tag))) {
-            appendNodeQueryValue(output, node, centerReachable, semanticPath);
+            appendNodeQueryValue(
+                output,
+                node,
+                centerReachable,
+                semanticPath,
+                includeDescendantText
+            );
             if (!prefix) {
                 exactNodePaths.put(tag, semanticPath);
                 exactNodeBounds.put(tag, new Rect(bounds));
@@ -812,7 +877,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     first,
                     output,
                     childClip,
-                    semanticPath + "/" + childIndex
+                    semanticPath + "/" + childIndex,
+                    includeDescendantText
                 );
                 matched = matched || childMatched;
                 if (childMatched && (!prefix || first)) return true;
@@ -827,7 +893,8 @@ public final class SemanticDriverService extends AccessibilityService {
         JSONArray output,
         AccessibilityNodeInfo node,
         boolean centerReachable,
-        String semanticPath
+        String semanticPath,
+        boolean includeDescendantText
     ) throws JSONException {
         node.refresh();
         Rect bounds = new Rect();
@@ -835,7 +902,7 @@ public final class SemanticDriverService extends AccessibilityService {
         JSONObject value = new JSONObject();
         value.put("resource-id", node.getViewIdResourceName());
         value.put("semantic-path", semanticPath);
-        value.put("text", nodeLabel(node));
+        value.put("text", includeDescendantText ? nodeLabel(node) : directNodeLabel(node));
         value.put("enabled", Boolean.toString(node.isEnabled()));
         value.put("clickable", Boolean.toString(node.isClickable()));
         value.put("visible", Boolean.toString(node.isVisibleToUser()));
@@ -917,6 +984,27 @@ public final class SemanticDriverService extends AccessibilityService {
             if (node != null) {
                 try {
                     if (setMatchingNodeText(node, tag, value, expectedBounds)) return true;
+                } finally {
+                    node.recycle();
+                }
+            }
+            if (attempt < 2) awaitAccessibilityEventAfter(sequence, 750);
+        }
+        return false;
+    }
+
+    private boolean setRenderedProgress(
+        String tag,
+        float value,
+        Rect expectedBounds,
+        String semanticPath
+    ) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            long sequence = accessibilityEventSequence.get();
+            AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+            if (node != null) {
+                try {
+                    if (setMatchingNodeProgress(node, tag, value, expectedBounds)) return true;
                 } finally {
                     node.recycle();
                 }
@@ -1205,6 +1293,28 @@ public final class SemanticDriverService extends AccessibilityService {
             value
         );
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean setMatchingNodeProgress(
+        AccessibilityNodeInfo node,
+        String tag,
+        float value,
+        Rect expectedBounds
+    ) {
+        node.refresh();
+        if (!tag.equals(node.getViewIdResourceName())) return false;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.equals(expectedBounds) || !node.isVisibleToUser() || !node.isEnabled()) {
+            return false;
+        }
+        Bundle arguments = new Bundle();
+        arguments.putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value);
+        return node.performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(),
+            arguments
+        );
     }
 
     @SuppressWarnings("deprecation")

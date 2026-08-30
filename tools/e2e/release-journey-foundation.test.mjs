@@ -2932,7 +2932,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   assert.match(actionRequest, /while \(semanticDriverRequestBusy\(response\)\)/);
   assert.match(actionRequest, /semanticDriverIdleRequest/);
   assert.doesNotMatch(actionRequest, /semanticDriverRequestTimedOut/);
-  assert.equal((harness.match(/semanticDriverActionRequest\(state\.port/g) ?? []).length, 3);
+  assert.equal((harness.match(/semanticDriverActionRequest\(state\.port/g) ?? []).length, 4);
 
   const requests = [];
   const responses = [
@@ -2994,11 +2994,30 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/4/);
-  assert.match(service, /aerobag-semantic-driver\/4/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/4/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/4/);
+  assert.match(harness, /aerobag-semantic-driver\/6/);
+  assert.match(service, /aerobag-semantic-driver\/6/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/6/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/6/);
   assert.match(harness, /semantic driver protocol mismatch/);
+});
+
+test("Android replay sliders use accessible progress actions instead of timed swipes", () => {
+  const playbackWidget = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/PlaybackWidget.kt", import.meta.url),
+    "utf8",
+  );
+  const journeys = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const replaySlice = journeys.slice(
+    journeys.indexOf("async function setReplayRate"),
+    journeys.indexOf("async function preparedLiveFeeds"),
+  );
+  assert.equal((playbackWidget.match(/setProgress \{/g) ?? []).length, 2);
+  assert.match(replaySlice, /setProgress\(\s*"playback-rate-input"/);
+  assert.match(replaySlice, /setProgress\("playback-overview"/);
+  assert.doesNotMatch(replaySlice, /drag\("playback-rate-input"/);
 });
 
 test("Android exact semantic queries revalidate cached targets before traversing the tree", () => {
@@ -3010,14 +3029,41 @@ test("Android exact semantic queries revalidate cached targets before traversing
     service.indexOf("private JSONArray renderNodeQuery"),
     service.indexOf("private JSONArray renderExactProjection"),
   );
-  assert.match(query, /if \(!prefix && appendCachedNodeQuery\(tag, output\)\) return output;/);
+  assert.match(
+    query,
+    /if \(!prefix && appendCachedNodeQuery\(tag, output, includeDescendantText\)\) return output;/,
+  );
   assert.match(query, /nodeAtPath\(semanticPath\)/);
   assert.match(query, /tag\.equals\(node\.getViewIdResourceName\(\)\) && bounds\.equals\(expectedBounds\)/);
   assert.match(query, /centerReachable\(node\)/);
-  assert.match(query, /appendCachedNodeQueryAtPoint\(tag, expectedBounds, output\)/);
+  assert.match(query, /appendCachedNodeQueryAtPoint\([\s\S]*includeDescendantText[\s\S]*\)/);
   assert.match(query, /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/);
   assert.match(query, /exactNodePaths\.remove\(tag, semanticPath\)/);
   assert.match(query, /exactNodeBounds\.remove\(tag, expectedBounds\)/);
+});
+
+test("Android high-fanout presence probes do not aggregate descendant text", () => {
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  assert.match(harness, /descendant_text: String\(includeDescendantText\)/);
+  assert.match(driver, /includeDescendantText: elementId !== "map-surface"/);
+  assert.match(driver, /includeDescendantText: false/);
+  assert.match(service, /query\.getOrDefault\("descendant_text", "true"\)/);
+  assert.match(service, /includeDescendantText \? nodeLabel\(node\) : directNodeLabel\(node\)/);
+});
+
+test("Android layer regression observes exact controls instead of dumping the hierarchy", () => {
+  const suite = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const layerJourney = suite.slice(
+    suite.indexOf("async function runLayerToggleNavDbRegression"),
+    suite.indexOf("async function runFlightPlanRouteSmoke"),
+  );
+  assert.match(layerJourney, /queryLayerToggleNode/);
+  assert.doesNotMatch(layerJourney, /dumpAndroid\(/);
 });
 
 test("Android exact action discovery uses the accessibility view-id index", () => {
@@ -3025,7 +3071,10 @@ test("Android exact action discovery uses the accessibility view-id index", () =
     "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
     import.meta.url,
   ), "utf8");
-  assert.match(service, /if \(!prefix && appendIndexedNodeQuery\(tag, output\)\) return output;/);
+  assert.match(
+    service,
+    /if \(!prefix && appendIndexedNodeQuery\(tag, output, includeDescendantText\)\) return output;/,
+  );
   assert.match(service, /findAccessibilityNodeInfosByViewId\(tag\)/);
   assert.match(service, /AccessibilityNodeInfo indexed = findIndexedRenderedNode\(tag, expectedBounds\);/);
 });
@@ -3105,7 +3154,7 @@ test("Android reveal phases generically require controls to be visible and cente
     source.lastIndexOf("  async readElement(elementId)"),
     source.lastIndexOf("  async revealElement(elementId)"),
   );
-  assert.match(readElementMethod, /\{ requireVisible: true \}/);
+  assert.match(readElementMethod, /requireVisible: true/);
 });
 
 test("Android reveal traversal re-rendezvous with exact semantic reachability", async () => {

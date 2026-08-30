@@ -33,7 +33,6 @@ import {
   hasAndroidTag,
   hasAndroidText,
   launchFreshAndroidApp,
-  layerToggleNode,
   layerToggleTag,
   lockAndroidRotation,
   pressKey,
@@ -1073,23 +1072,41 @@ async function zoomMapWhileFollowing(serial, result, { assertStable = false } = 
   recordStep(result, "map zoom preserved CTR offset", `${before.zoomCenti} -> ${settled.zoomCenti}`);
 }
 
-function layerToggleIsOn(xml, layerId) {
-  return layerToggleNode(xml, layerId)?.checked === "true";
+function queryLayerToggleNode(serial, layerId) {
+  return queryAndroidSemanticNodes(
+    serial,
+    layerToggleTag(layerId),
+    { first: true, includeDescendantText: false },
+  )[0] ?? null;
+}
+
+function layerToggleIsOn(node) {
+  return node?.checked === "true";
 }
 
 async function openLayersTray(serial, result) {
-  let xml = dumpAndroid(serial);
-  if (!layerToggleNode(xml, "terrain_warning")) {
+  const driver = nativeSemanticDriver(serial);
+  const visibleState = (await observeUntil(
+    "Layers tray state",
+    async () => {
+      const toggle = queryLayerToggleNode(serial, "terrain_warning");
+      if (toggle) return { open: true, node: toggle };
+      const launcher = await driver.readElement("layers-button");
+      return launcher ? { open: false, node: launcher } : null;
+    },
+    { waitForNextProbe: driver.waitForObservation.bind(driver) },
+  )).value;
+  if (!visibleState.open) {
     await nativeTransition(result, "Layers tray opened", {
-      ready: async () => findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, "parity:layers-button")),
-      act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => layerToggleNode(dumpAndroid(serial), "terrain_warning"),
+      ready: () => driver.readElement("layers-button"),
+      act: async (readyNode) => driver.performAction("layers-button", readyNode),
+      complete: async () => queryLayerToggleNode(serial, "terrain_warning"),
+      waitForObservation: driver.waitForObservation.bind(driver),
     });
-    xml = dumpAndroid(serial);
   } else {
     recordStep(result, "Layers tray opened");
   }
-  return xml;
+  return queryLayerToggleNode(serial, "terrain_warning");
 }
 
 function rejectedLayerCommandCount(serial) {
@@ -1133,41 +1150,44 @@ async function runLayerToggleNavDbRegression(args) {
   await ensureBadAutopilotAvailable(serial, result);
   await selectBadAutopilotSource(serial, result);
 
-  let xml = await openLayersTray(serial, result);
-  recordCheck(result, "layers.terrainInitiallyOn", layerToggleIsOn(xml, "terrain_warning"));
-  recordCheck(result, "layers.nexradInitiallyOff", !layerToggleIsOn(xml, "nexrad"));
+  let terrainToggle = await openLayersTray(serial, result);
+  let nexradToggle = queryLayerToggleNode(serial, "nexrad");
+  recordCheck(result, "layers.terrainInitiallyOn", layerToggleIsOn(terrainToggle));
+  recordCheck(result, "layers.nexradInitiallyOff", !layerToggleIsOn(nexradToggle));
 
   await nativeTransition(result, "Terrain disabled", {
     ready: async () => {
-      const readyXml = dumpAndroid(serial);
-      return layerToggleIsOn(readyXml, "terrain_warning")
-        ? layerToggleNode(readyXml, "terrain_warning")
-        : null;
+      const toggle = queryLayerToggleNode(serial, "terrain_warning");
+      return layerToggleIsOn(toggle) ? toggle : null;
     },
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => !layerToggleIsOn(dumpAndroid(serial), "terrain_warning"),
+    complete: async () => {
+      const toggle = queryLayerToggleNode(serial, "terrain_warning");
+      return toggle && !layerToggleIsOn(toggle) ? toggle : null;
+    },
   });
   recordCheck(result, "layers.terrainCommandAccepted", rejectedLayerCommandCount(serial) === 0);
   recordStep(result, "Terrain disabled without a session-command warning");
 
-  xml = await openLayersTray(serial, result);
-  recordCheck(result, "layers.terrainTurnedOff", !layerToggleIsOn(xml, "terrain_warning"));
+  terrainToggle = await openLayersTray(serial, result);
+  recordCheck(result, "layers.terrainTurnedOff", !layerToggleIsOn(terrainToggle));
   await nativeTransition(result, "NEXRAD enabled", {
     ready: async () => {
-      const readyXml = dumpAndroid(serial);
-      return !layerToggleIsOn(readyXml, "nexrad")
-        ? layerToggleNode(readyXml, "nexrad")
-        : null;
+      const toggle = queryLayerToggleNode(serial, "nexrad");
+      return toggle && !layerToggleIsOn(toggle) ? toggle : null;
     },
     act: async (readyNode) => activateAndroidNode(serial, readyNode),
-    complete: async () => layerToggleIsOn(dumpAndroid(serial), "nexrad"),
+    complete: async () => {
+      const toggle = queryLayerToggleNode(serial, "nexrad");
+      return layerToggleIsOn(toggle) ? toggle : null;
+    },
   });
   const screenshotPath = captureLayerToggleRegressionScreenshot(serial, result);
   recordCheck(result, "layers.nexradCommandAccepted", rejectedLayerCommandCount(serial) === 0, screenshotPath);
   recordStep(result, "NEXRAD enabled without a session-command warning");
 
-  xml = dumpAndroid(serial);
-  recordCheck(result, "layers.nexradTurnedOn", layerToggleIsOn(xml, "nexrad"));
+  nexradToggle = queryLayerToggleNode(serial, "nexrad");
+  recordCheck(result, "layers.nexradTurnedOn", layerToggleIsOn(nexradToggle));
   result.status = "pass";
   result.finished_at = new Date().toISOString();
   return result;

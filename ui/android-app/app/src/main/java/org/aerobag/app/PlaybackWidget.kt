@@ -147,8 +147,11 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.text.TextStyle
@@ -701,6 +704,17 @@ internal fun PlaybackRateRail(
                 .border(1.dp, Color(0x24132129), shape)
                 .alpha(if (enabled) 1f else 0.45f)
                 .onSizeChanged { railSize = it }
+                .semantics {
+                    progressBarRangeInfo = ProgressBarRangeInfo(value, 0.25f..11f, 42)
+                    setProgress { requested ->
+                        if (!enabled) {
+                            false
+                        } else {
+                            onValueChange(requested.coerceIn(0.25f, 11f))
+                            true
+                        }
+                    }
+                }
                 .pointerInput(enabled, railSize, onDisabledClick) {
                     awaitEachGesture {
                         var activePointer: PointerId? = null
@@ -787,6 +801,21 @@ internal fun PlaybackOverview(
                 .background(Color(0xD1FFFFFF))
                 .border(1.dp, Color(0x1F132129), shape)
                 .onSizeChanged { overviewSize = it }
+                .semantics {
+                    progressBarRangeInfo =
+                        ProgressBarRangeInfo(
+                            cursorSeconds.toFloat(),
+                            0f..durationSeconds.toFloat().coerceAtLeast(0f),
+                        )
+                    setProgress { requested ->
+                        if (durationSeconds <= 0.0) {
+                            false
+                        } else {
+                            onScrub(requested.toDouble().coerceIn(0.0, durationSeconds), true)
+                            true
+                        }
+                    }
+                }
                 .pointerInput(durationSeconds, overviewSize) {
                     awaitEachGesture {
                         var activePointer: PointerId? = null

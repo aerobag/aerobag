@@ -29,7 +29,7 @@ const CLOCK_SET_TIMEOUT_MS = 15000;
 const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.75;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/4";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/6";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -183,6 +183,25 @@ export function setAndroidSemanticText(serial, tag, value, expectedBounds, seman
   throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
 }
 
+export function setAndroidSemanticProgress(serial, tag, value, expectedBounds, semanticPath) {
+  const state = requiredSemanticDriver(serial);
+  if (!expectedBounds || !semanticPath) {
+    throw new Error(
+      `persistent Android semantic progress action for ${tag} has no readiness path and bounds`,
+    );
+  }
+  const query = new URLSearchParams({
+    tag,
+    value: String(value),
+    bounds: expectedBounds,
+    path: semanticPath,
+  });
+  const response = semanticDriverActionRequest(state.port, `/set-progress?${query}`);
+  if (response.status === 0 && response.stdout.trim() === "ok") return true;
+  const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+  throw new Error(`persistent Android semantic progress action failed for ${tag}: ${detail}`);
+}
+
 export function clickAndroidSemanticNode(
   serial,
   tag,
@@ -237,9 +256,18 @@ export function waitForAndroidSemanticEvent(serial, timeoutMs) {
   throw new Error(`persistent Android semantic event wait failed: ${detail}`);
 }
 
-export function queryAndroidSemanticNodes(serial, tag, { prefix = false, first = false } = {}) {
+export function queryAndroidSemanticNodes(
+  serial,
+  tag,
+  { prefix = false, first = false, includeDescendantText = true } = {},
+) {
   const state = requiredSemanticDriver(serial);
-  const query = new URLSearchParams({ tag, prefix: String(prefix), first: String(first) });
+  const query = new URLSearchParams({
+    tag,
+    prefix: String(prefix),
+    first: String(first),
+    descendant_text: String(includeDescendantText),
+  });
   const response = semanticDriverObservationRequest(state.port, `/query?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();

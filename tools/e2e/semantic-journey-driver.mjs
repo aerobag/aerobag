@@ -323,10 +323,17 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
         "web application startup after navigation",
         async () => {
           const fatal = await this.readElement("startup-fatal-error");
-          if (fatal) return { kind: "fatal", detail: fatal.text || "unknown failure" };
+          if (fatal) {
+            return this.transport.hasCanceledStartupModuleRequest()
+              ? { kind: "canceled" }
+              : { kind: "fatal", detail: fatal.text || "unknown failure" };
+          }
           const startup = await this.readProjection("parity:startup-state:");
-          return startup.some((entry) => entry.id.startsWith("parity:startup-state:ready:true"))
-            ? { kind: "ready" }
+          if (startup.some((entry) => entry.id.startsWith("parity:startup-state:ready:true"))) {
+            return { kind: "ready" };
+          }
+          return this.transport.hasCanceledStartupModuleRequest()
+            ? { kind: "canceled" }
             : null;
         },
         {
@@ -335,7 +342,13 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
         },
       )).value;
       if (outcome.kind === "ready") return;
-      if (attempt === 0 && this.transport.hasCanceledStartupModuleRequest()) continue;
+      if (outcome.kind === "canceled") {
+        if (attempt === 0) continue;
+        throw new TerminalObservationError(
+          "application startup failed",
+          "browser canceled the startup module request twice",
+        );
+      }
       throw new TerminalObservationError("application startup failed", outcome.detail);
     }
   }

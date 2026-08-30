@@ -1134,11 +1134,7 @@ test("web reset recovers one browser-canceled startup module without replaying a
   let resets = 0;
   const transport = {
     async reset() { resets += 1; },
-    async readElement(selector) {
-      return resets === 1 && selector.includes("startup-fatal-error")
-        ? { visible: true, text: "Failed to fetch dynamically imported module" }
-        : null;
-    },
+    async readElement() { return null; },
     async collectTestIds(prefix) {
       return resets === 2 && prefix === "parity:startup-state:"
         ? [{ id: "parity:startup-state:ready:true:page:Home" }]
@@ -1150,6 +1146,23 @@ test("web reset recovers one browser-canceled startup module without replaying a
 
   await driver.reset();
 
+  assert.equal(resets, 2);
+});
+
+test("web reset fails after two browser-canceled startup modules", async () => {
+  let resets = 0;
+  const transport = {
+    async reset() { resets += 1; },
+    async readElement() { return null; },
+    async collectTestIds() { return []; },
+    hasCanceledStartupModuleRequest() { return true; },
+  };
+  const driver = new WebSemanticJourneyDriver(transport);
+
+  await assert.rejects(
+    driver.reset(),
+    /browser canceled the startup module request twice/,
+  );
   assert.equal(resets, 2);
 });
 

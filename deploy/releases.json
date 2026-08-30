@@ -3,6 +3,8 @@
     "tag": "2026-08-30.3"
   },
   "schema_version": 1,
-  "staging": null,
+  "staging": {
+    "tag": "2026-08-30.4"
+  },
   "sunset": []
 }

@@ -1774,6 +1774,7 @@ async function statusAndSettings(runtime) {
   await runtime.openPage("data_status");
   const statusRows = await runtime.eventually("expected data status projection", async () => {
     const rows = await runtime.driver.readProjection("parity:data-status-row:");
+    runtime.result.diagnostics.data_status_wait_rows = rows.map(projectionId);
     const complete = Object.keys(STATUS_ASSERTIONS).every((rowId) => {
       const severity = mixedStatusSeverity(runtime.platform, rowId);
       return rows.some((row) => {

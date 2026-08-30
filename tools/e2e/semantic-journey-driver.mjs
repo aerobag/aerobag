@@ -27,6 +27,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:viewport:", "org.aerobag.app:id/e2e_viewport_projection"],
   ["parity:map-follow-state:", "org.aerobag.app:id/e2e_map_follow_projection"],
   ["parity:plate-viewport:", "org.aerobag.app:id/e2e_plate_viewport_projection"],
+  ["parity:data-status-state:", "org.aerobag.app:id/e2e_data_status_projection"],
   ["parity:map-selection-state:", "org.aerobag.app:id/e2e_map_selection_projection"],
   ["parity:flight-plan-rows:", "org.aerobag.app:id/e2e_flight_plan_rows_projection"],
 ]);
@@ -1231,11 +1232,11 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       }));
     }
     if (prefix === "parity:data-status-row:") {
-      const stateNode = queryFirstAndroidSemanticNode(
-        this.serial,
-        "parity:data-status-state:",
-      );
-      if (stateNode) return androidDataStatusRowsFromStateTag(androidTag(stateNode));
+      const stateNode = this.readScalarProjection("parity:data-status-state:")[0];
+      const state = stateNode?.["state-description"] ?? "";
+      if (state) {
+        return androidDataStatusRowsFromStateTag(`parity:data-status-state:${state}`);
+      }
     }
     const queried = queryAndroidSemanticNodes(this.serial, prefix, { prefix: true });
     if (queried) {

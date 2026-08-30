@@ -2683,6 +2683,21 @@ test("Android exposes virtualized Data Status state without scrolling every card
       "parity:data-status-row:live_feed:notams:severity:stale",
     ],
   );
+  const page = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/DataStatusPage.kt", import.meta.url),
+    "utf8",
+  );
+  const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  assert.match(page, /E2eProjectionView\([\s\S]*R\.id\.e2e_data_status_projection/);
+  assert.doesNotMatch(page, /prefix = "parity:data-status-state:"/);
+  assert.match(
+    driver,
+    /\["parity:data-status-state:", "org\.aerobag\.app:id\/e2e_data_status_projection"\]/,
+  );
+  assert.match(
+    driver,
+    /readScalarProjection\("parity:data-status-state:"\)/,
+  );
 });
 
 test("projection observations are distinct from explicit UI traversal", () => {

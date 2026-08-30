@@ -367,15 +367,14 @@ internal fun DataStatusPage(
             .testTag("parity:page:data_status")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        Spacer(
+        E2eProjectionView(
+            viewId = R.id.e2e_data_status_projection,
+            state = state.rows.joinToString(separator = "|") { row ->
+                "${row.id}=${row.severity.name.lowercase()}"
+            },
             modifier = Modifier
-                .size(1.dp)
-                .testTag(
-                    state.rows.joinToString(
-                        prefix = "parity:data-status-state:",
-                        separator = "|",
-                    ) { row -> "${row.id}=${row.severity.name.lowercase()}" },
-                ),
+                .align(Alignment.BottomStart)
+                .padding(start = 7.dp, bottom = 3.dp),
         )
         PrimaryNavigationDock(
             currentPage = page,

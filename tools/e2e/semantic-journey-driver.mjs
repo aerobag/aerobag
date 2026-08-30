@@ -807,27 +807,28 @@ export async function establishRevealedElement({
   description,
   readReachable,
   traverse,
-  attempts = 2,
   observe = observeUntil,
 }) {
   const initial = await readReachable();
   if (initial) return initial;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!await traverse()) continue;
-    try {
-      return (await observe(
-        `${description} reachable after traversal`,
-        readReachable,
-        {
-          timeoutMs: E2E_TIMING.localReadyMs,
-          intervalMs: E2E_TIMING.pollIntervalMs,
-        },
-      )).value;
-    } catch (error) {
-      if (!(error instanceof ObservationTimeoutError)) throw error;
-    }
+  try {
+    return (await observe(
+      `${description} reachable after traversal`,
+      async () => {
+        const current = await readReachable();
+        if (current) return current;
+        if (!await traverse()) return null;
+        return readReachable();
+      },
+      {
+        timeoutMs: E2E_TIMING.localReadyMs,
+        intervalMs: E2E_TIMING.pollIntervalMs,
+      },
+    )).value;
+  } catch (error) {
+    if (!(error instanceof ObservationTimeoutError)) throw error;
+    return null;
   }
-  return readReachable();
 }
 
 function activateAndroidSemanticTag(serial, tag, readyElement = null) {
@@ -1341,7 +1342,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         description: semanticTag,
         readReachable: reachable,
         traverse: () => scrollHorizontallyUntilTag(this.serial, semanticTag, 8),
-        attempts: 1,
       });
       if (horizontal) return horizontal;
     }

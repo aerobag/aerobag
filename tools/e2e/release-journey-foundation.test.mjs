@@ -3040,10 +3040,12 @@ test("Android reveal traversal re-rendezvous with exact semantic reachability", 
       if (traversals === 2) reachable = { test_id: "settings-section-debug_diagnostics" };
       return true;
     },
-    observe: async (description, probe) => {
-      const value = await probe();
-      if (value) return { value, durationMs: 0 };
-      throw new ObservationTimeoutError(description, 3_000, {});
+    observe: async (_description, probe) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const value = await probe();
+        if (value) return { value, durationMs: 0 };
+      }
+      throw new Error("test probe did not establish reachability");
     },
   });
   assert.equal(traversals, 2);

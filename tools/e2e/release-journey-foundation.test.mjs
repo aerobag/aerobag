@@ -4262,6 +4262,12 @@ test("native Android deterministic ownship uses the shared typed chooser contrac
     chooser,
     /driver\.readOption\("ownship-source-button", "__bad_autopilot__"\)/,
   );
+  assert.match(
+    chooser,
+    /driver\.readOption\("ownship-source-button", "__direct_situation__"\)/,
+  );
+  assert.match(chooser, /if \(await driver\.readOption/);
+  assert.doesNotMatch(chooser, /readAction\("ownship-source-button"\)\) === null/);
   assert.match(chooser, /driver\.selectOption\(/);
   assert.doesNotMatch(chooser, /dumpAndroid|BAD_AUTOPILOT_SOURCE_TAG/);
 });

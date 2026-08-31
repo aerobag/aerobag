@@ -709,9 +709,7 @@ async function openBadAutopilotSourceTray(driver, result, description, requireOp
       const option = await driver.readOption("ownship-source-button", "__bad_autopilot__");
       if (option) return option;
       if (requireOption) return null;
-      return (await driver.readAction("ownship-source-button")) === null
-        ? { test_id: "ownship-source-tray" }
-        : null;
+      return driver.readOption("ownship-source-button", "__direct_situation__");
     },
   });
 }
@@ -719,11 +717,14 @@ async function openBadAutopilotSourceTray(driver, result, description, requireOp
 async function dismissOwnshipSourceTray(serial, result) {
   const driver = nativeSemanticDriver(serial);
   await nativeTransition(result, "ownship source tray dismissed", {
-    ready: async () => (await driver.readAction("ownship-source-button")) === null
-      ? { test_id: "ownship-source-tray" }
-      : null,
+    ready: () => driver.readOption("ownship-source-button", "__direct_situation__"),
     act: (_readyTray) => driver.back(),
-    complete: () => driver.readAction("ownship-source-button"),
+    complete: async () => {
+      if (await driver.readOption("ownship-source-button", "__direct_situation__")) {
+        return null;
+      }
+      return driver.readAction("ownship-source-button");
+    },
   });
 }
 

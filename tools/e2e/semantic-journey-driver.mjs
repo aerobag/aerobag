@@ -854,6 +854,7 @@ function queryFirstAndroidSemanticNode(
     includeDescendantText = true,
     renderedOnly = false,
     avoidNavigation = false,
+    providerOnly = false,
   } = {},
 ) {
   const choose = (nodes) => nodes?.find((node) =>
@@ -865,6 +866,7 @@ function queryFirstAndroidSemanticNode(
     {
       includeDescendantText,
       renderedOnly,
+      providerOnly,
       verifyReachable: requireReachable,
       avoidNavigation,
     },
@@ -1068,7 +1070,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const node = queryFirstAndroidSemanticNode(
       this.serial,
       tag,
-      { allowPrefix: false, requireVisible: true, requireReachable: true },
+      {
+        allowPrefix: false,
+        requireVisible: true,
+        requireReachable: true,
+        providerOnly: true,
+      },
     );
     return node && androidElementEnabled(node) ? androidProjectedElement(node) : null;
   }
@@ -1165,6 +1172,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
           requireVisible: true,
           requireReachable: true,
           renderedOnly,
+          providerOnly: !renderedOnly,
         },
       );
       if (!node || !androidElementEnabled(node)) continue;
@@ -1462,7 +1470,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { includeDescendantText: true, verifyReachable: true },
+      { includeDescendantText: true, providerOnly: true, verifyReachable: true },
     ).find((candidate) =>
       candidate.visible === "true" && candidate["center-reachable"] === "true",
     ) ?? null;

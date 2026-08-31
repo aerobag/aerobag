@@ -32,7 +32,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/22";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/23";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -608,14 +608,25 @@ export function dumpAndroid(serial) {
   throw new Error("persistent Android semantic driver has not been started");
 }
 
+export function androidSemanticDriverRequestState(serial) {
+  const state = requiredSemanticDriver(serial);
+  const response = semanticDriverRequest(state.port, "/request-state", 1);
+  if (response.status !== 0) {
+    const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+    throw new Error(`persistent Android semantic driver state failed: ${detail}`);
+  }
+  return response.stdout;
+}
+
 export function captureAndroidFailureDiagnostics(serial, artifactDir, label) {
   mkdirSync(artifactDir, { recursive: true });
   const captures = [
-    ["screenshot.png", () => screencapPng(serial)],
-    ["ui.xml", () => dumpAndroid(serial)],
+    ["semantic-driver.json", () => androidSemanticDriverRequestState(serial)],
     ["logcat.txt", () => adb(serial, ["logcat", "-d", "-v", "threadtime"], {
       maxBuffer: 16 * 1024 * 1024,
     })],
+    ["screenshot.png", () => screencapPng(serial)],
+    ["ui.xml", () => dumpAndroid(serial)],
     ["activity.txt", () => adb(serial, ["shell", "dumpsys", "activity", "activities"])],
     ["window.txt", () => adb(serial, ["shell", "dumpsys", "window", "windows"])],
   ];

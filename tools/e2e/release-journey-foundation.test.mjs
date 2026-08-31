@@ -3233,6 +3233,42 @@ test("Android chooser options use the authoritative app-owned control index", ()
   assert.match(service, /if \(tag\.isEmpty\(\) \|\| providerOnly\) return output/);
 });
 
+test("Android indexed action reads cannot fall through to accessibility traversal", () => {
+  const driver = readFileSync(new URL("semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const readAction = driver.slice(
+    driver.lastIndexOf("  async readAction(actionId)"),
+    driver.lastIndexOf("  async readSessionRevision()"),
+  );
+  assert.match(readAction, /providerOnly: !renderedOnly/);
+  assert.doesNotMatch(readAction, /dumpAndroid|queryAndroidSemanticNodes/);
+});
+
+test("Android projection-provider IPC is bounded and leaves failure evidence", () => {
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  const harness = readFileSync(new URL("android-harness.mjs", import.meta.url), "utf8");
+  const suite = readFileSync(new URL("run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const providerSnapshot = service.slice(
+    service.indexOf("private ProviderSnapshot providerSnapshot"),
+    service.indexOf("private boolean projectedCenterReachable"),
+  );
+  assert.match(providerSnapshot, /CancellationSignal cancellationSignal/);
+  assert.match(providerSnapshot, /PROVIDER_QUERY_TIMEOUT_MS/);
+  assert.match(providerSnapshot, /OperationCanceledException/);
+  assert.match(providerSnapshot, /ProviderSnapshot\.handledAbsent\(\)/);
+  assert.match(service, /case "\/request-state"/);
+  const captures = harness.slice(
+    harness.indexOf("export function captureAndroidFailureDiagnostics"),
+    harness.indexOf("export function decodeXml"),
+  );
+  assert.ok(captures.indexOf('"semantic-driver.json"') < captures.indexOf('"logcat.txt"'));
+  assert.ok(captures.indexOf('"logcat.txt"') < captures.indexOf('"ui.xml"'));
+  assert.match(suite, /captureAndroidFailureDiagnostics\(args\.serial, artifactDir, journey\.id\)/);
+  assert.match(suite, /persistJourneyResult\(error\.journeyResult, artifactDir\)/);
+});
+
 test("Android semantic taps validate current controls before one physical input tap", () => {
   const harness = readFileSync(
     new URL("android-harness.mjs", import.meta.url),
@@ -3975,10 +4011,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/22/);
-  assert.match(service, /aerobag-semantic-driver\/22/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/22/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/22/);
+  assert.match(harness, /aerobag-semantic-driver\/23/);
+  assert.match(service, /aerobag-semantic-driver\/23/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/23/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/23/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

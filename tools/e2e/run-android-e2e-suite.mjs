@@ -64,7 +64,7 @@ import {
   releaseJourneyImplementation,
 } from "./release-journey-implementations.mjs";
 import { RELEASE_JOURNEYS } from "./release-journey-registry.mjs";
-import { executeReleaseJourney } from "./release-journey-runtime.mjs";
+import { executeReleaseJourney, persistJourneyResult } from "./release-journey-runtime.mjs";
 import {
   androidElementEnabled, AndroidSemanticJourneyDriver, editSemanticText,
 } from "./semantic-journey-driver.mjs";
@@ -1591,14 +1591,24 @@ async function runSharedReleaseJourney(args, journey) {
     });
     const implementation = releaseJourneyImplementation(journey.id);
     if (!implementation) throw new Error(`${journey.id} has no implemented release journey`);
-    return await executeReleaseJourney({
-      journey,
-      platform: "android",
-      driver,
-      fixture,
-      fixtureOrigin: `http://127.0.0.1:${args.packageSourcePort}`,
-      artifactDir: join(E2E_ARTIFACT_DIR, journey.id),
-    }, implementation);
+    const artifactDir = join(E2E_ARTIFACT_DIR, journey.id);
+    try {
+      return await executeReleaseJourney({
+        journey,
+        platform: "android",
+        driver,
+        fixture,
+        fixtureOrigin: `http://127.0.0.1:${args.packageSourcePort}`,
+        artifactDir,
+      }, implementation);
+    } catch (error) {
+      if (error.journeyResult) {
+        const diagnostics = captureAndroidFailureDiagnostics(args.serial, artifactDir, journey.id);
+        error.journeyResult.artifacts.push(...diagnostics);
+        persistJourneyResult(error.journeyResult, artifactDir);
+      }
+      throw error;
+    }
   } finally {
     restoreClock();
   }

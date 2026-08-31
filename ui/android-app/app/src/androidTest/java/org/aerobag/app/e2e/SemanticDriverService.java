@@ -10,6 +10,8 @@ import android.graphics.Point;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.CancellationSignal;
+import android.os.OperationCanceledException;
 import android.util.Log;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -35,6 +37,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -45,11 +49,13 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/22";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/23";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
     private static final long EXACT_PROJECTION_TIME_LIMIT_NANOS = TimeUnit.MILLISECONDS.toNanos(750);
+    private static final long PROVIDER_QUERY_TIMEOUT_MS = 500;
+    private static final long SLOW_PROVIDER_QUERY_MS = 100;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean semanticRequestActive = new AtomicBoolean(false);
     private final Object semanticRequestMonitor = new Object();
@@ -57,14 +63,18 @@ public final class SemanticDriverService extends AccessibilityService {
     private final Object accessibilityEventMonitor = new Object();
     private final Map<String, String> exactNodePaths = new ConcurrentHashMap<>();
     private final Map<String, Rect> exactNodeBounds = new ConcurrentHashMap<>();
+    private final AtomicLong activeSemanticRequestStartedNanos = new AtomicLong();
+    private volatile String activeSemanticRequest = "";
     private ServerSocket server;
     private Thread serverThread;
     private ExecutorService clientExecutor;
+    private ScheduledExecutorService providerQueryTimeoutExecutor;
 
     @Override
     protected void onServiceConnected() {
         if (!running.compareAndSet(false, true)) return;
         clientExecutor = Executors.newFixedThreadPool(4);
+        providerQueryTimeoutExecutor = Executors.newSingleThreadScheduledExecutor();
         serverThread = new Thread(this::serve, "aerobag-e2e-semantic-driver");
         serverThread.setDaemon(true);
         serverThread.start();
@@ -91,6 +101,7 @@ public final class SemanticDriverService extends AccessibilityService {
         }
         if (serverThread != null) serverThread.interrupt();
         if (clientExecutor != null) clientExecutor.shutdownNow();
+        if (providerQueryTimeoutExecutor != null) providerQueryTimeoutExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -153,6 +164,8 @@ public final class SemanticDriverService extends AccessibilityService {
                 );
                 return;
             }
+            activeSemanticRequest = path;
+            activeSemanticRequestStartedNanos.set(System.nanoTime());
         }
         try {
             switch (endpoint) {
@@ -161,6 +174,14 @@ public final class SemanticDriverService extends AccessibilityService {
                         socket.getOutputStream(),
                         "text/plain; charset=utf-8",
                         DRIVER_PROTOCOL + "\n",
+                        200
+                    );
+                    return;
+                case "/request-state":
+                    respond(
+                        socket.getOutputStream(),
+                        "application/json; charset=utf-8",
+                        renderRequestState().toString() + "\n",
                         200
                     );
                     return;
@@ -218,11 +239,31 @@ public final class SemanticDriverService extends AccessibilityService {
         } finally {
             if (ownsSemanticRequest) {
                 synchronized (semanticRequestMonitor) {
+                    activeSemanticRequest = "";
+                    activeSemanticRequestStartedNanos.set(0);
                     semanticRequestActive.set(false);
                     semanticRequestMonitor.notifyAll();
                 }
             }
         }
+    }
+
+    private JSONObject renderRequestState() {
+        JSONObject state = new JSONObject();
+        long startedNanos = activeSemanticRequestStartedNanos.get();
+        try {
+            state.put("active", semanticRequestActive.get());
+            state.put("request", activeSemanticRequest);
+            state.put(
+                "elapsed_ms",
+                startedNanos == 0
+                    ? 0
+                    : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)
+            );
+        } catch (JSONException error) {
+            throw new IllegalStateException("failed to encode semantic request state", error);
+        }
+        return state;
     }
 
     private static boolean isSemanticEndpoint(String endpoint) {
@@ -924,49 +965,85 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean verifyCenterReachable,
         boolean avoidNavigation
     ) {
+        ProviderSnapshot snapshot = providerSnapshot(tag);
+        if (!snapshot.handled) return ProviderProjection.unhandled();
+        JSONArray output = new JSONArray();
+        if (!snapshot.present) return new ProviderProjection(true, output);
+        try {
+            Map<String, String> fields = projectionStateFields(snapshot.state);
+            boolean hasBounds = snapshot.bounds != null && !snapshot.bounds.isEmpty();
+            Rect parsedBounds = hasBounds ? parseBounds(snapshot.bounds) : null;
+            JSONObject value = new JSONObject();
+            value.put("resource-id", snapshot.resourceId);
+            value.put("semantic-path", "projection-provider:" + snapshot.revision);
+            value.put("text", Uri.decode(fields.getOrDefault("text", "")));
+            value.put("enabled", fields.getOrDefault("enabled", "true"));
+            value.put("visible", fields.getOrDefault("visible", "true"));
+            value.put("selected", fields.getOrDefault("selected", "false"));
+            value.put("checked", fields.getOrDefault("checked", "false"));
+            value.put("focused", fields.getOrDefault("focused", "false"));
+            value.put("state-description", snapshot.state);
+            value.put("bounds", hasBounds ? snapshot.bounds : "[0,0][1,1]");
+            value.put(
+                "center-reachable",
+                Boolean.toString(
+                    parsedBounds != null &&
+                    "true".equals(fields.getOrDefault("window-focus", "false")) &&
+                    (!verifyCenterReachable || projectedCenterReachable(parsedBounds)) &&
+                    (!avoidNavigation || projectedCenterClearOfNavigation(tag, parsedBounds))
+                )
+            );
+            output.put(value);
+            return new ProviderProjection(true, output);
+        } catch (JSONException error) {
+            return ProviderProjection.unhandled();
+        }
+    }
+
+    private ProviderSnapshot providerSnapshot(String tag) {
         Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
             .buildUpon()
             .appendQueryParameter("resource_id", tag)
             .build();
-        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+        CancellationSignal cancellationSignal = new CancellationSignal();
+        long startedNanos = System.nanoTime();
+        ScheduledFuture<?> cancellation = providerQueryTimeoutExecutor.schedule(
+            cancellationSignal::cancel,
+            PROVIDER_QUERY_TIMEOUT_MS,
+            TimeUnit.MILLISECONDS
+        );
+        try (Cursor cursor = getContentResolver().query(
+            uri,
+            null,
+            null,
+            null,
+            null,
+            cancellationSignal
+        )) {
             if (cursor == null || !cursor.moveToFirst()) {
-                return ProviderProjection.unhandled();
+                return ProviderSnapshot.unhandled();
             }
-            JSONArray output = new JSONArray();
-            if (cursor.getInt(cursor.getColumnIndexOrThrow("present")) != 0) {
-                String state = cursor.getString(cursor.getColumnIndexOrThrow("state"));
-                Map<String, String> fields = projectionStateFields(state);
-                String bounds = cursor.getString(cursor.getColumnIndexOrThrow("bounds"));
-                boolean hasBounds = bounds != null && !bounds.isEmpty();
-                Rect parsedBounds = hasBounds ? parseBounds(bounds) : null;
-                JSONObject value = new JSONObject();
-                value.put("resource-id", cursor.getString(cursor.getColumnIndexOrThrow("resource_id")));
-                value.put(
-                    "semantic-path",
-                    "projection-provider:" + cursor.getLong(cursor.getColumnIndexOrThrow("revision"))
-                );
-                value.put("text", Uri.decode(fields.getOrDefault("text", "")));
-                value.put("enabled", fields.getOrDefault("enabled", "true"));
-                value.put("visible", fields.getOrDefault("visible", "true"));
-                value.put("selected", fields.getOrDefault("selected", "false"));
-                value.put("checked", fields.getOrDefault("checked", "false"));
-                value.put("focused", fields.getOrDefault("focused", "false"));
-                value.put("state-description", state);
-                value.put("bounds", hasBounds ? bounds : "[0,0][1,1]");
-                value.put(
-                    "center-reachable",
-                    Boolean.toString(
-                        parsedBounds != null &&
-                        "true".equals(fields.getOrDefault("window-focus", "false")) &&
-                        (!verifyCenterReachable || projectedCenterReachable(parsedBounds)) &&
-                        (!avoidNavigation || projectedCenterClearOfNavigation(tag, parsedBounds))
-                    )
-                );
-                output.put(value);
+            return new ProviderSnapshot(
+                true,
+                cursor.getInt(cursor.getColumnIndexOrThrow("present")) != 0,
+                cursor.getString(cursor.getColumnIndexOrThrow("resource_id")),
+                cursor.getString(cursor.getColumnIndexOrThrow("state")),
+                cursor.getString(cursor.getColumnIndexOrThrow("bounds")),
+                cursor.getLong(cursor.getColumnIndexOrThrow("revision"))
+            );
+        } catch (OperationCanceledException error) {
+            Log.w(LOG_TAG, "projection provider timed out for " + tag);
+            // The provider owns this semantic namespace. Do not turn a bounded
+            // IPC miss into an expensive accessibility-tree fallback.
+            return ProviderSnapshot.handledAbsent();
+        } catch (IllegalArgumentException | SecurityException error) {
+            return ProviderSnapshot.unhandled();
+        } finally {
+            cancellation.cancel(false);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+            if (elapsedMs >= SLOW_PROVIDER_QUERY_MS) {
+                Log.w(LOG_TAG, "slow projection provider query tag=" + tag + " elapsed_ms=" + elapsedMs);
             }
-            return new ProviderProjection(true, output);
-        } catch (IllegalArgumentException | SecurityException | JSONException error) {
-            return ProviderProjection.unhandled();
         }
     }
 
@@ -995,19 +1072,8 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private Rect indexedBounds(String tag) {
-        Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
-            .buildUpon()
-            .appendQueryParameter("resource_id", tag)
-            .build();
-        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
-            if (cursor == null || !cursor.moveToFirst() ||
-                cursor.getInt(cursor.getColumnIndexOrThrow("present")) == 0) {
-                return null;
-            }
-            return parseBounds(cursor.getString(cursor.getColumnIndexOrThrow("bounds")));
-        } catch (IllegalArgumentException | SecurityException error) {
-            return null;
-        }
+        ProviderSnapshot snapshot = providerSnapshot(tag);
+        return snapshot.handled && snapshot.present ? parseBounds(snapshot.bounds) : null;
     }
 
     private boolean replaceIndexedFocusedText(
@@ -1037,6 +1103,39 @@ public final class SemanticDriverService extends AccessibilityService {
             fields.put(components[index], components[index + 1]);
         }
         return fields;
+    }
+
+    private static final class ProviderSnapshot {
+        final boolean handled;
+        final boolean present;
+        final String resourceId;
+        final String state;
+        final String bounds;
+        final long revision;
+
+        ProviderSnapshot(
+            boolean handled,
+            boolean present,
+            String resourceId,
+            String state,
+            String bounds,
+            long revision
+        ) {
+            this.handled = handled;
+            this.present = present;
+            this.resourceId = resourceId;
+            this.state = state;
+            this.bounds = bounds;
+            this.revision = revision;
+        }
+
+        static ProviderSnapshot unhandled() {
+            return new ProviderSnapshot(false, false, "", "", null, 0);
+        }
+
+        static ProviderSnapshot handledAbsent() {
+            return new ProviderSnapshot(true, false, "", "", null, 0);
+        }
     }
 
     private static final class ProviderProjection {

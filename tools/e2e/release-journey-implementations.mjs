@@ -896,7 +896,7 @@ async function dismissTrayOptions(runtime, description) {
   });
 }
 
-async function selectTrayOptionMatching(runtime, launcherId, needle) {
+export async function selectTrayOptionMatching(runtime, launcherId, needle) {
   const selected = await runtime.driver.readElement(launcherId);
   if (selected?.text?.toUpperCase().includes(needle.toUpperCase())) {
     if (launcherId === "plate-chart-button") {
@@ -919,6 +919,11 @@ async function selectTrayOptionMatching(runtime, launcherId, needle) {
     projection, needle, `${launcherId} option ${needle}`,
   );
   if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
+  const refreshed = await runtime.driver.readElement(launcherId);
+  if (refreshed?.text?.toUpperCase().includes(needle.toUpperCase())) {
+    await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
+    return refreshed;
+  }
   await runtime.action(`select ${needle} from ${launcherId}`, `tray-option:${trayOptionId(entry)}`, {
     complete: async () => {
       const launcher = await runtime.driver.readElement(launcherId);

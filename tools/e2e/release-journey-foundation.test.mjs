@@ -886,6 +886,55 @@ test("map selection actions wait through asynchronous inspector materialization"
   ]);
 });
 
+test("tray selection avoids a redundant click when the target materializes selected", async () => {
+  const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");
+  const calls = [];
+  let optionsOpen = false;
+  const option = { id: "parity:tray-option:KPAE", text: "KPAE", enabled: true };
+  const runtime = {
+    platform: "android",
+    driver: {
+      async readElement(id) {
+        assert.equal(id, "plate-airport-button");
+        return { text: optionsOpen ? "KPAE" : "SELECT AIRPORT" };
+      },
+      async readProjection(prefix) {
+        assert.equal(prefix, "parity:tray-option:");
+        return optionsOpen ? [option] : [];
+      },
+      async back() {
+        calls.push("dismiss");
+        optionsOpen = false;
+      },
+    },
+    async action(description, id, { complete }) {
+      calls.push(description);
+      assert.equal(id, "plate-airport-button");
+      optionsOpen = true;
+      return complete();
+    },
+    async revealProjectionMatching(prefix, needle) {
+      assert.equal(prefix, "parity:tray-option:");
+      assert.equal(needle, "KPAE");
+      return option;
+    },
+    async transition(description, { ready, act, complete }) {
+      calls.push(description);
+      assert.ok(await ready());
+      await act();
+      assert.equal(await complete(), true);
+    },
+  };
+
+  const selected = await selectTrayOptionMatching(runtime, "plate-airport-button", "KPAE");
+  assert.equal(selected.text, "KPAE");
+  assert.deepEqual(calls, [
+    "open plate-airport-button options",
+    "dismiss already-selected plate-airport-button options",
+    "dismiss",
+  ]);
+});
+
 test("viewport geometry identity excludes orientation but preserves pan changes", async () => {
   const {
     viewportGeometryId,

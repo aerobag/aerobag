@@ -1238,6 +1238,19 @@ test("NAVDB rollover scenarios never replace a publication under a live Vite ser
   assert.doesNotMatch(runScenario, /generatePublication\(/);
 });
 
+test("NAVDB rollover uses the shared pipe-based Chrome launcher", () => {
+  const rollover = readFileSync(
+    new URL("../../ui/web-app/scripts/nav-db-rollover-e2e.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(rollover, /import \{ CdpClient, launchChrome, stopProcess \} from "\.\/chrome-cdp\.mjs"/);
+  assert.match(rollover, /const chrome = await launchChrome\(\{[\s\S]*?chromeBin,[\s\S]*?userDataDir,/);
+  assert.match(rollover, /headless: !headed/);
+  assert.match(rollover, /connectToBrowser\(chrome\.endpoint\)/);
+  assert.match(rollover, /fs\.writeFileSync\(browserLogPath, chrome\.getStderr\(\), "utf8"\)/);
+  assert.doesNotMatch(rollover, /remote-debugging-port|DevTools listening on/);
+});
+
 test("hosted CI pins and fans out immutable release inputs", () => {
   const lock = JSON.parse(readFileSync(
     new URL("../../test-artifacts.lock.json", import.meta.url),

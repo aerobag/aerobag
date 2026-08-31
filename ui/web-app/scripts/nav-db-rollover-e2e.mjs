@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CdpClient } from "./chrome-cdp.mjs";
+import { CdpClient, launchChrome, stopProcess } from "./chrome-cdp.mjs";
 
 const repoRoot = path.resolve(
   process.env.AEROBAG_REPO_ROOT ?? path.join(import.meta.dirname, "../../.."),
@@ -76,12 +76,19 @@ async function runScenario(scenario) {
 
   const userDataDir = fs.mkdtempSync(path.join(workRoot, `chrome-${scenario}-`));
   const browserLogPath = path.join(scenarioRoot, "browser.log");
-  const chrome = await launchChrome(userDataDir, browserLogPath);
-  const browser = await connectToBrowser(chrome.wsUrl);
+  const chrome = await launchChrome({
+    chromeBin,
+    userDataDir,
+    width: 1440,
+    height: 1000,
+    headless: !headed,
+  });
+  let browser;
   let page;
   const consoleRows = [];
   const requestUrls = new Map();
   try {
+    browser = await connectToBrowser(chrome.endpoint);
     page = await browser.createTarget();
     await page.send("Page.enable");
     await page.send("Runtime.enable");
@@ -237,7 +244,8 @@ async function runScenario(scenario) {
     });
     throw error;
   } finally {
-    await browser.close();
+    fs.writeFileSync(browserLogPath, chrome.getStderr(), "utf8");
+    await browser?.close();
     await stopProcess(chrome.process);
   }
 }
@@ -619,54 +627,8 @@ function launchVite() {
   return child;
 }
 
-function launchChrome(userDataDir, browserLogPath) {
-  return new Promise((resolve, reject) => {
-    const logFd = fs.openSync(browserLogPath, "w");
-    const chromeArgs = [
-      "--no-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${userDataDir}`,
-      "--window-size=1440,1000",
-      "about:blank",
-    ];
-    if (!headed) {
-      chromeArgs.unshift("--headless=new");
-    }
-    const child = spawn(chromeBin, chromeArgs, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    const timer = setTimeout(() => {
-      reject(new Error(`timed out waiting for Chrome DevTools endpoint; stderr=${stderr}`));
-    }, 20_000);
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      stderr += text;
-      fs.writeSync(logFd, text);
-      const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) {
-        clearTimeout(timer);
-        resolve({ process: child, wsUrl: match[1] });
-      }
-    });
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once("exit", (code, signal) => {
-      fs.closeSync(logFd);
-      if (!stderr.includes("DevTools listening on")) {
-        clearTimeout(timer);
-        reject(new Error(`Chrome exited before DevTools was ready: code=${code} signal=${signal}`));
-      }
-    });
-  });
-}
-
-async function connectToBrowser(wsUrl) {
-  const client = new CdpClient(wsUrl);
+async function connectToBrowser(endpoint) {
+  const client = new CdpClient(endpoint);
   await client.open();
   await client.send("Browser.getVersion", {}, undefined, E2E_TIMING.startupMs);
   return {
@@ -764,31 +726,6 @@ async function waitForHttp(url) {
       return false;
     }
   }, E2E_TIMING.startupMs);
-}
-
-async function stopProcess(process) {
-  if (!process || process.exitCode !== null || process.killed) {
-    return;
-  }
-  process.kill("SIGTERM");
-  const exited = await processExitWithin(process, E2E_TIMING.userResponseMs);
-  if (!exited && process.exitCode === null) {
-    process.kill("SIGKILL");
-  }
-}
-
-function processExitWithin(process, timeoutMs) {
-  return new Promise((resolve) => {
-    const onExit = () => {
-      clearTimeout(timer);
-      resolve(true);
-    };
-    const timer = setTimeout(() => {
-      process.off("exit", onExit);
-      resolve(false);
-    }, timeoutMs);
-    process.once("exit", onExit);
-  });
 }
 
 function runChecked(command, commandArgs, options = {}) {

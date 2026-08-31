@@ -12,6 +12,7 @@ export function launchChrome({
   userDataDir,
   width = 1200,
   height = 1000,
+  headless = true,
   transport = "pipe",
   netLogPath = process.env.AEROBAG_CHROME_NET_LOG?.replace(
     "{repeat}",
@@ -31,8 +32,9 @@ export function launchChrome({
     const netLogArgs = netLogPath
       ? [`--log-net-log=${netLogPath}`, "--net-log-capture-mode=IncludeSensitive"]
       : [];
+    const headlessArgs = headless ? ["--headless=new"] : [];
     const child = spawn(chromeBin, [
-      "--headless=new",
+      ...headlessArgs,
       "--no-sandbox",
       "--disable-gpu",
       "--disable-dev-shm-usage",
@@ -69,6 +71,7 @@ export function launchChrome({
           },
           pipeWrite: child.stdio[3],
           pipeRead: child.stdio[4],
+          getStderr: () => stderr,
         });
       });
     }
@@ -78,7 +81,12 @@ export function launchChrome({
       const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
       if (match) {
         clearTimeout(timeout);
-        resolve({ process: child, endpoint: match[1], wsUrl: match[1] });
+        resolve({
+          process: child,
+          endpoint: match[1],
+          wsUrl: match[1],
+          getStderr: () => stderr,
+        });
       }
     });
     child.on("exit", (code, signal) => {

@@ -5,21 +5,26 @@
 package org.aerobag.app
 
 import android.net.Uri
+import android.view.MotionEvent
+import android.view.ViewTreeObserver
 import androidx.annotation.IdRes
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionOnScreen
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.motionEventSpy
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -62,6 +67,7 @@ internal fun E2eProjectionView(
 }
 
 /** Indexed geometry and state for a real Compose control used by release journeys. */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun Modifier.e2eIndexedControl(
     semanticTag: String,
@@ -70,25 +76,33 @@ internal fun Modifier.e2eIndexedControl(
     if (!BuildConfig.AEROBAG_E2E_ENABLED) return this
     val owner = remember(semanticTag) { Any() }
     val bounds = remember(semanticTag) { AtomicReference<String?>(null) }
+    val view = LocalView.current
+    var windowFocused by remember(view) { mutableStateOf(view.hasWindowFocus()) }
+    val publishedState = "$state:window-focus:$windowFocused"
     SideEffect {
-        E2eProjectionRegistry.publish(semanticTag, state, owner, bounds.get())
+        E2eProjectionRegistry.publish(semanticTag, publishedState, owner, bounds.get())
     }
-    DisposableEffect(semanticTag, owner) {
-        onDispose { E2eProjectionRegistry.remove(semanticTag, owner) }
-    }
-    return pointerInput(semanticTag, owner) {
-        awaitPointerEventScope {
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                if (event.changes.any { !it.previousPressed && it.pressed }) {
-                    E2eProjectionRegistry.publishTouchReceipt(semanticTag = semanticTag)
-                }
+    DisposableEffect(semanticTag, owner, view) {
+        val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+            windowFocused = hasFocus
+        }
+        val viewTreeObserver = view.viewTreeObserver
+        viewTreeObserver.addOnWindowFocusChangeListener(focusListener)
+        onDispose {
+            if (viewTreeObserver.isAlive) {
+                viewTreeObserver.removeOnWindowFocusChangeListener(focusListener)
             }
+            E2eProjectionRegistry.remove(semanticTag, owner)
+        }
+    }
+    return motionEventSpy { event ->
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            E2eProjectionRegistry.publishTouchReceipt(semanticTag = semanticTag)
         }
     }.onGloballyPositioned { coordinates ->
             val encoded = coordinates.toE2eBounds()
             bounds.set(encoded)
-            E2eProjectionRegistry.publish(semanticTag, state, owner, encoded)
+            E2eProjectionRegistry.publish(semanticTag, publishedState, owner, encoded)
         }
 }
 

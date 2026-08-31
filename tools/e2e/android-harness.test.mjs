@@ -182,8 +182,10 @@ test("Android physical taps use bounded preflight and exactly one delivered touc
     "../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionView.kt",
     import.meta.url,
   ), "utf8");
-  assert.match(indexedControl, /awaitPointerEvent\(PointerEventPass\.Initial\)/);
-  assert.match(indexedControl, /!it\.previousPressed && it\.pressed/);
+  assert.match(indexedControl, /motionEventSpy/);
+  assert.match(indexedControl, /event\.actionMasked == MotionEvent\.ACTION_DOWN/);
+  assert.match(indexedControl, /window-focus:\$windowFocused/);
+  assert.match(indexedControl, /OnWindowFocusChangeListener/);
   assert.match(indexedControl, /publishTouchReceipt\(semanticTag = semanticTag\)/);
 
   const service = readFileSync(new URL(
@@ -194,6 +196,7 @@ test("Android physical taps use bounded preflight and exactly one delivered touc
   assert.match(service, /receipt\.sequence > sequence && receipt\.handled/);
   assert.match(service, /expectedBounds\.contains\(receipt\.rawX, receipt\.rawY\)/);
   assert.match(service, /ProviderProjection projection = providerProjection\(tag, true\)/);
+  assert.match(service, /fields\.getOrDefault\("window-focus", "false"\)/);
   const providerTapStart = service.indexOf(
     'if (semanticPath.startsWith("projection-provider:"))',
   );

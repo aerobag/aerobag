@@ -45,7 +45,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/19";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/21";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -957,6 +957,7 @@ public final class SemanticDriverService extends AccessibilityService {
                     "center-reachable",
                     Boolean.toString(
                         parsedBounds != null &&
+                        "true".equals(fields.getOrDefault("window-focus", "false")) &&
                         (!verifyCenterReachable || projectedCenterReachable(parsedBounds)) &&
                         (!avoidNavigation || projectedCenterClearOfNavigation(tag, parsedBounds))
                     )

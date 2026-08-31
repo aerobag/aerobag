@@ -16,7 +16,7 @@ import sys
 import zipfile
 
 
-SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/17"
+SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/18"
 
 
 class VerificationError(RuntimeError):

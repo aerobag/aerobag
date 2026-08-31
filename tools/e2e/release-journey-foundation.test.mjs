@@ -2207,7 +2207,7 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(driver, /case "\/exact-projection"/);
   assert.match(
     driver,
-    /ProviderProjection providerProjection = renderedOnly[\s\S]*ProviderProjection\.unhandled\(\)[\s\S]*providerProjection\(tag, verifyReachable\)/,
+    /ProviderProjection providerProjection = renderedOnly[\s\S]*ProviderProjection\.unhandled\(\)[\s\S]*providerProjection\(tag, verifyReachable, avoidNavigation\)/,
   );
   assert.match(driver, /if \(providerProjection\.handled\) return providerProjection\.values/);
   assert.ok(
@@ -2990,12 +2990,13 @@ test("Android horizontal controls use rendered hit geometry instead of layout pr
   assert.match(readAction, /renderedOnly = androidElementMayRequireHorizontalScroll\(actionId\)/);
   assert.match(readAction, /renderedOnly,/);
   assert.match(reveal, /renderedOnly = androidElementMayRequireHorizontalScroll\(elementId\)/);
-  assert.match(reveal, /requireReachable: true, renderedOnly/);
+  assert.match(reveal, /requireReachable: true,[\s\S]*renderedOnly,[\s\S]*avoidNavigation/);
   assert.match(harness, /rendered_only: String\(renderedOnly\)/);
   assert.match(harness, /verify_reachable: String\(verifyReachable\)/);
+  assert.match(harness, /avoid_navigation: String\(avoidNavigation\)/);
   assert.match(
     service,
-    /renderedOnly\s*\? ProviderProjection\.unhandled\(\)\s*:\s*providerProjection\(tag, verifyReachable\)/,
+    /renderedOnly\s*\? ProviderProjection\.unhandled\(\)\s*:\s*providerProjection\(tag, verifyReachable, avoidNavigation\)/,
   );
 });
 
@@ -3008,7 +3009,9 @@ test("Android provider readiness never traverses the accessibility tree", () => 
     service.indexOf("private boolean projectedCenterReachable"),
     service.indexOf("private Rect indexedBounds"),
   );
-  assert.match(reachability, /getCurrentWindowMetrics\(\)[\s\S]*getBounds\(\)/);
+  assert.match(reachability, /physicalDisplayBounds\(\)/);
+  assert.match(service, /getDefaultDisplay\(\)\.getRealSize\(size\)/);
+  assert.match(reachability, /private boolean projectedCenterClearOfNavigation/);
   assert.match(reachability, /indexedBounds\("parity:primary-navigation"\)/);
   assert.match(reachability, /tag\.startsWith\("parity:button:"\)/);
   assert.doesNotMatch(reachability, /AccessibilityNodeInfo|getRootInActiveWindow|findRendered/);
@@ -3054,7 +3057,7 @@ test("Android first-node probes stop semantic traversal at the first match", () 
   assert.match(queryFirst, /queryAndroidExactProjection/);
   assert.match(
     queryFirst,
-    /\{ includeDescendantText, renderedOnly, verifyReachable: requireReachable \}/,
+    /includeDescendantText,[\s\S]*renderedOnly,[\s\S]*verifyReachable: requireReachable,[\s\S]*avoidNavigation/,
   );
   assert.doesNotMatch(queryFirst, /indexedOnly: true/);
   assert.match(queryFirst, /\{ prefix: true, first: true, includeDescendantText \}/);
@@ -3165,7 +3168,8 @@ test("Android journey controls publish indexed geometry through the private E2E 
   );
   assert.match(service, /semanticPath\.startsWith\("projection-provider:"\)/);
   assert.match(service, /currentBounds == null \|\| !expectedBounds\.equals\(currentBounds\)/);
-  assert.match(service, /projectedCenterReachable\(tag, parsedBounds\)/);
+  assert.match(service, /projectedCenterReachable\(parsedBounds\)/);
+  assert.match(service, /projectedCenterClearOfNavigation\(tag, parsedBounds\)/);
   assert.match(service, /indexedBounds\("parity:primary-navigation"\)/);
   assert.match(
     service,
@@ -3875,10 +3879,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/17/);
-  assert.match(service, /aerobag-semantic-driver\/17/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/17/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/17/);
+  assert.match(harness, /aerobag-semantic-driver\/18/);
+  assert.match(service, /aerobag-semantic-driver\/18/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/18/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/18/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

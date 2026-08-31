@@ -6,6 +6,7 @@ package org.aerobag.app.e2e;
 
 import android.accessibilityservice.AccessibilityService;
 import android.database.Cursor;
+import android.graphics.Point;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
@@ -44,7 +45,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/17";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/18";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -285,6 +286,9 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean verifyReachable = "true".equals(
             query.getOrDefault("verify_reachable", "false")
         );
+        boolean avoidNavigation = "true".equals(
+            query.getOrDefault("avoid_navigation", "false")
+        );
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
@@ -295,7 +299,8 @@ public final class SemanticDriverService extends AccessibilityService {
                 boundedOnly,
                 providerOnly,
                 renderedOnly,
-                verifyReachable
+                verifyReachable,
+                avoidNavigation
             ).toString() + "\n",
             200
         );
@@ -802,7 +807,8 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean boundedOnly,
         boolean providerOnly,
         boolean renderedOnly,
-        boolean verifyReachable
+        boolean verifyReachable,
+        boolean avoidNavigation
     ) {
         // Compose publishes indexed control geometry explicitly. Reading that
         // channel must not block behind an accessibility-tree traversal; the
@@ -810,7 +816,7 @@ public final class SemanticDriverService extends AccessibilityService {
         // rendered control. Unknown controls still use accessibility below.
         ProviderProjection providerProjection = renderedOnly
             ? ProviderProjection.unhandled()
-            : providerProjection(tag, verifyReachable);
+            : providerProjection(tag, verifyReachable, avoidNavigation);
         if (providerProjection.handled) return providerProjection.values;
         JSONArray output = new JSONArray();
         if (tag.isEmpty() || providerOnly) return output;
@@ -906,10 +912,18 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private ProviderProjection providerProjection(String tag) {
-        return providerProjection(tag, true);
+        return providerProjection(tag, true, false);
     }
 
     private ProviderProjection providerProjection(String tag, boolean verifyCenterReachable) {
+        return providerProjection(tag, verifyCenterReachable, false);
+    }
+
+    private ProviderProjection providerProjection(
+        String tag,
+        boolean verifyCenterReachable,
+        boolean avoidNavigation
+    ) {
         Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
             .buildUpon()
             .appendQueryParameter("resource_id", tag)
@@ -943,7 +957,8 @@ public final class SemanticDriverService extends AccessibilityService {
                     "center-reachable",
                     Boolean.toString(
                         parsedBounds != null &&
-                        (!verifyCenterReachable || projectedCenterReachable(tag, parsedBounds))
+                        (!verifyCenterReachable || projectedCenterReachable(parsedBounds)) &&
+                        (!avoidNavigation || projectedCenterClearOfNavigation(tag, parsedBounds))
                     )
                 );
                 output.put(value);
@@ -954,11 +969,13 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    private boolean projectedCenterReachable(String tag, Rect bounds) {
-        Rect displayBounds = getSystemService(WindowManager.class)
-            .getCurrentWindowMetrics()
-            .getBounds();
-        if (!displayBounds.contains(bounds.centerX(), bounds.centerY())) return false;
+    private boolean projectedCenterReachable(Rect bounds) {
+        Rect displayBounds = physicalDisplayBounds();
+        return displayBounds.contains(bounds.centerX(), bounds.centerY());
+    }
+
+    private boolean projectedCenterClearOfNavigation(String tag, Rect bounds) {
+        if (!projectedCenterReachable(bounds)) return false;
         Rect navigationBounds = indexedBounds("parity:primary-navigation");
         if (navigationBounds == null || !navigationBounds.contains(bounds.centerX(), bounds.centerY())) {
             return true;
@@ -967,6 +984,13 @@ public final class SemanticDriverService extends AccessibilityService {
         // Page controls whose center is under it must be scrolled clear before
         // action delivery verifies their rendered node.
         return tag.startsWith("parity:button:") && navigationBounds.contains(bounds);
+    }
+
+    @SuppressWarnings("deprecation")
+    private Rect physicalDisplayBounds() {
+        Point size = new Point();
+        getSystemService(WindowManager.class).getDefaultDisplay().getRealSize(size);
+        return new Rect(0, 0, size.x, size.y);
     }
 
     private Rect indexedBounds(String tag) {

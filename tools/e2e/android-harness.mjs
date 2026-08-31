@@ -31,7 +31,7 @@ const CLOCK_SET_TIMEOUT_MS = 15000;
 const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/17";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/18";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -432,6 +432,7 @@ export function queryAndroidExactProjection(
     providerOnly = false,
     renderedOnly = false,
     verifyReachable = false,
+    avoidNavigation = false,
   } = {},
 ) {
   const state = requiredSemanticDriver(serial);
@@ -443,6 +444,7 @@ export function queryAndroidExactProjection(
     provider_only: String(providerOnly),
     rendered_only: String(renderedOnly),
     verify_reachable: String(verifyReachable),
+    avoid_navigation: String(avoidNavigation),
   });
   const response = semanticDriverObservationRequest(state.port, `/exact-projection?${query}`);
   if (response.status === 0) return JSON.parse(response.stdout);

@@ -854,6 +854,7 @@ function queryFirstAndroidSemanticNode(
     requireReachable = false,
     includeDescendantText = true,
     renderedOnly = false,
+    avoidNavigation = false,
   } = {},
 ) {
   const choose = (nodes) => nodes?.find((node) =>
@@ -862,7 +863,12 @@ function queryFirstAndroidSemanticNode(
   const exact = choose(queryAndroidExactProjection(
     serial,
     tag,
-    { includeDescendantText, renderedOnly, verifyReachable: requireReachable },
+    {
+      includeDescendantText,
+      renderedOnly,
+      verifyReachable: requireReachable,
+      avoidNavigation,
+    },
   ));
   if (exact || !allowPrefix) return exact;
   return choose(queryAndroidSemanticNodes(
@@ -1480,11 +1486,17 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   async revealElement(elementId) {
     const semanticTag = androidElementSemanticTag(elementId);
     const renderedOnly = androidElementMayRequireHorizontalScroll(elementId);
+    const avoidNavigation = androidElementMayRequireVerticalScroll(elementId);
     const reachable = () => {
       const node = queryFirstAndroidSemanticNode(
         this.serial,
         semanticTag,
-        { requireVisible: true, requireReachable: true, renderedOnly },
+        {
+          requireVisible: true,
+          requireReachable: true,
+          renderedOnly,
+          avoidNavigation,
+        },
       );
       return androidProjectedElement(node, elementId);
     };

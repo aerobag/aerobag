@@ -44,7 +44,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/16";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/17";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -943,7 +943,7 @@ public final class SemanticDriverService extends AccessibilityService {
                     "center-reachable",
                     Boolean.toString(
                         parsedBounds != null &&
-                        (!verifyCenterReachable || indexedCenterReachable(tag, parsedBounds))
+                        (!verifyCenterReachable || projectedCenterReachable(tag, parsedBounds))
                     )
                 );
                 output.put(value);
@@ -954,42 +954,19 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    private boolean indexedCenterReachable(String tag, Rect bounds) {
-        AccessibilityNodeInfo rendered = findRenderedNodeInInputWindow(tag, bounds);
-        if (rendered == null) return false;
-        try {
-            if (!centerReachable(rendered)) return false;
-        } finally {
-            rendered.recycle();
-        }
+    private boolean projectedCenterReachable(String tag, Rect bounds) {
+        Rect displayBounds = getSystemService(WindowManager.class)
+            .getCurrentWindowMetrics()
+            .getBounds();
+        if (!displayBounds.contains(bounds.centerX(), bounds.centerY())) return false;
         Rect navigationBounds = indexedBounds("parity:primary-navigation");
         if (navigationBounds == null || !navigationBounds.contains(bounds.centerX(), bounds.centerY())) {
             return true;
         }
-        AccessibilityNodeInfo renderedNavigation = findRenderedNodeInInputWindow(
-            "parity:primary-navigation",
-            navigationBounds
-        );
-        if (renderedNavigation == null) return true;
-        renderedNavigation.recycle();
-        // Navigation controls are legitimate targets inside the dock. Page
-        // controls extending behind the dock must be scrolled clear first.
-        return navigationBounds.contains(bounds);
-    }
-
-    @SuppressWarnings("deprecation")
-    private AccessibilityNodeInfo findRenderedNodeInInputWindow(
-        String tag,
-        Rect expectedBounds
-    ) {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return null;
-        try {
-            if (!TARGET_PACKAGE.equals(stringValue(root.getPackageName()))) return null;
-            return findRenderedNodeAtPoint(root, tag, expectedBounds, true);
-        } finally {
-            root.recycle();
-        }
+        // The persistent navigation buttons are valid targets inside the dock.
+        // Page controls whose center is under it must be scrolled clear before
+        // action delivery verifies their rendered node.
+        return tag.startsWith("parity:button:") && navigationBounds.contains(bounds);
     }
 
     private Rect indexedBounds(String tag) {

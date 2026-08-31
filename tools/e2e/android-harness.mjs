@@ -31,7 +31,7 @@ const CLOCK_SET_TIMEOUT_MS = 15000;
 const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/16";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/17";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -273,12 +273,14 @@ export function clickAndroidSemanticNode(
   let currentBounds = expectedBounds;
   let currentPath = semanticPath;
   let target = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) waitForAndroidSemanticEvent(serial, 250);
     target = androidPhysicalTapTarget(state.port, tag, currentBounds, currentPath);
     if (target) break;
     const refreshed = queryAndroidExactProjection(
       serial, tag, { providerOnly: true },
     )[0] ?? null;
+    if (!refreshed) continue;
     if (!androidSemanticReadinessStateMatches(tag, refreshed, expectedState)) {
       throw new Error(`persistent Android semantic click target changed for ${tag}`);
     }

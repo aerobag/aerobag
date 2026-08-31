@@ -2207,7 +2207,7 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(driver, /case "\/exact-projection"/);
   assert.match(
     driver,
-    /ProviderProjection providerProjection = renderedOnly[\s\S]*ProviderProjection\.unhandled\(\)[\s\S]*providerProjection\(tag, false\)/,
+    /ProviderProjection providerProjection = renderedOnly[\s\S]*ProviderProjection\.unhandled\(\)[\s\S]*providerProjection\(tag, verifyReachable\)/,
   );
   assert.match(driver, /if \(providerProjection\.handled\) return providerProjection\.values/);
   assert.ok(
@@ -2999,6 +2999,22 @@ test("Android horizontal controls use rendered hit geometry instead of layout pr
   );
 });
 
+test("Android provider readiness never traverses the accessibility tree", () => {
+  const service = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
+    "utf8",
+  );
+  const reachability = service.slice(
+    service.indexOf("private boolean projectedCenterReachable"),
+    service.indexOf("private Rect indexedBounds"),
+  );
+  assert.match(reachability, /getCurrentWindowMetrics\(\)[\s\S]*getBounds\(\)/);
+  assert.match(reachability, /indexedBounds\("parity:primary-navigation"\)/);
+  assert.match(reachability, /tag\.startsWith\("parity:button:"\)/);
+  assert.doesNotMatch(reachability, /AccessibilityNodeInfo|getRootInActiveWindow|findRendered/);
+  assert.doesNotMatch(service, /findRenderedNodeInInputWindow/);
+});
+
 test("Android page navigation requires visible semantic pages", () => {
   const source = readFileSync(
     new URL("./semantic-journey-driver.mjs", import.meta.url),
@@ -3149,9 +3165,12 @@ test("Android journey controls publish indexed geometry through the private E2E 
   );
   assert.match(service, /semanticPath\.startsWith\("projection-provider:"\)/);
   assert.match(service, /currentBounds == null \|\| !expectedBounds\.equals\(currentBounds\)/);
-  assert.match(service, /indexedCenterReachable\(tag, parsedBounds\)/);
+  assert.match(service, /projectedCenterReachable\(tag, parsedBounds\)/);
   assert.match(service, /indexedBounds\("parity:primary-navigation"\)/);
-  assert.match(service, /return navigationBounds\.contains\(bounds\)/);
+  assert.match(
+    service,
+    /return tag\.startsWith\("parity:button:"\) && navigationBounds\.contains\(bounds\)/,
+  );
 });
 
 test("Android chooser options use the authoritative app-owned control index", () => {
@@ -3195,6 +3214,9 @@ test("Android semantic taps validate current controls before one physical input 
     "delivery may refresh a proven non-delivered target but must emit only one physical tap",
   );
   assert.match(click, /queryAndroidExactProjection\([\s\S]*providerOnly: true/);
+  assert.match(click, /for \(let attempt = 0; attempt < 4; attempt \+= 1\)/);
+  assert.match(click, /waitForAndroidSemanticEvent\(serial, 250\)/);
+  assert.match(click, /if \(!refreshed\) continue/);
   assert.doesNotMatch(service, /dispatchGesture|ACTION_CLICK/);
 });
 
@@ -3853,10 +3875,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/16/);
-  assert.match(service, /aerobag-semantic-driver\/16/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/16/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/16/);
+  assert.match(harness, /aerobag-semantic-driver\/17/);
+  assert.match(service, /aerobag-semantic-driver\/17/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/17/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/17/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

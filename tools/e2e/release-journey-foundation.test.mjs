@@ -2566,13 +2566,43 @@ test("semantic text editing acts on the exact readiness evidence", async () => {
   assert.equal(result.value, "KSEA KPAE");
 });
 
-test("semantic text editing discovers once before bounded completion reads", () => {
+test("semantic text editing uses action-ready reads before every mutation", async () => {
+  const readyElement = { test_id: "route-input", enabled: true, value: "" };
+  let focused = false;
+  let currentValue = "";
+  let broadReads = 0;
+  const focusEvidence = [];
+  const actionEvidence = [];
+  const result = await editSemanticText({
+    async readElement() {
+      broadReads += 1;
+      return { ...readyElement, focused: false, value: "stale" };
+    },
+    async readTextElement() {
+      return { ...readyElement, focused, value: currentValue };
+    },
+    async focusText(_controlId, evidence) {
+      focusEvidence.push(evidence);
+      focused = true;
+    },
+    async enterText(_controlId, value, _options, evidence) {
+      actionEvidence.push(evidence);
+      currentValue = value;
+    },
+  }, "edit route", "route-input", "KSEA KPAE");
+  assert.equal(broadReads, 0);
+  assert.equal(focusEvidence.length, 1);
+  assert.equal(actionEvidence.length, 1);
+  assert.equal(result.value, "KSEA KPAE");
+
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const method = source.slice(
     source.indexOf("export async function editSemanticText"),
     source.indexOf("export async function inspectSemanticMapAt"),
   );
-  assert.match(method, /let current = await discoverTextElement\(controlId\)/);
+  assert.doesNotMatch(method, /discoverTextElement/);
+  assert.match(method, /let current = await readTextElement\(controlId\)/);
+  assert.match(method, /ready: async \(\) => \{[\s\S]*readTextElement\(controlId\)/);
   assert.match(method, /complete: async \(\) => \{[\s\S]*readTextElement\(controlId\)/);
 });
 
@@ -2583,6 +2613,11 @@ test("Android text completion reacquires an exact input moved by the keyboard", 
     source.lastIndexOf("  async readModal(modalId)"),
   );
   assert.match(method, /queryAndroidExactProjection/);
+  assert.match(method, /verifyReachable: true/);
+  assert.match(
+    method,
+    /candidate\.visible === "true" && candidate\["center-reachable"\] === "true"/,
+  );
   assert.doesNotMatch(method, /boundedOnly: true/);
   assert.doesNotMatch(method, /queryFirstAndroidSemanticNode|dumpAndroid/);
   const service = readFileSync(new URL(

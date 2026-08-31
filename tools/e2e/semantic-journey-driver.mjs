@@ -216,16 +216,15 @@ export async function editSemanticText(
   } = {},
 ) {
   const expected = String(value);
-  const discoverTextElement = driver.readElement.bind(driver);
-  const readTextElement = driver.readTextElement?.bind(driver) ?? discoverTextElement;
-  let current = await discoverTextElement(controlId);
+  const readTextElement = driver.readTextElement?.bind(driver) ?? driver.readElement.bind(driver);
+  let current = await readTextElement(controlId);
   if (current && semanticTextValue(current) === expected) return current;
   if (!current?.focused) {
     current = await transition(`${description} focus`, {
       readinessSamples: 1,
       acceptPreexistingCompletion: true,
       ready: async () => {
-        const element = await discoverTextElement(controlId);
+        const element = await readTextElement(controlId);
         return element?.enabled && element.actionable !== false ? element : null;
       },
       act: (readyElement) => driver.focusText(controlId, readyElement),
@@ -1463,8 +1462,10 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { includeDescendantText: true },
-    )[0];
+      { includeDescendantText: true, verifyReachable: true },
+    ).find((candidate) =>
+      candidate.visible === "true" && candidate["center-reachable"] === "true",
+    ) ?? null;
     if (!queried) return null;
     const projected = androidProjectedElement(queried, elementId);
     return projected.focused && !androidSemanticTextReady(this.serial)

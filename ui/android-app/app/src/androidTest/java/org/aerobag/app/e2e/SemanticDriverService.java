@@ -5,7 +5,9 @@
 package org.aerobag.app.e2e;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.database.Cursor;
+import android.graphics.Path;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.net.Uri;
@@ -49,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/23";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/24";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -219,8 +221,8 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/set-progress":
                     handleSetProgress(socket, path);
                     return;
-                case "/tap-target":
-                    handleTapTarget(socket, path);
+                case "/tap":
+                    handleTap(socket, path);
                     return;
                 case "/await-touch":
                     handleAwaitTouch(socket, path);
@@ -268,7 +270,7 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private static boolean isSemanticEndpoint(String endpoint) {
         return switch (endpoint) {
-            case "/dump", "/query", "/exact-projection", "/ime-ready", "/set-text", "/set-progress", "/tap-target", "/scroll" ->
+            case "/dump", "/query", "/exact-projection", "/ime-ready", "/set-text", "/set-progress", "/tap", "/scroll" ->
                 true;
             default -> false;
         };
@@ -306,10 +308,15 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean includeDescendantText = !"false".equals(
             query.getOrDefault("descendant_text", "true")
         );
+        ProviderProjection providerProjection = prefix
+            ? providerProjectionPrefix(tag)
+            : ProviderProjection.unhandled();
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
-            renderNodeQuery(tag, prefix, first, includeDescendantText).toString() + "\n",
+            (providerProjection.handled
+                ? providerProjection.values
+                : renderNodeQuery(tag, prefix, first, includeDescendantText)).toString() + "\n",
             200
         );
     }
@@ -394,7 +401,7 @@ public final class SemanticDriverService extends AccessibilityService {
         );
     }
 
-    private void handleTapTarget(Socket socket, String path) throws IOException {
+    private void handleTap(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String semanticPath = query.getOrDefault("path", "");
@@ -421,12 +428,33 @@ public final class SemanticDriverService extends AccessibilityService {
         } catch (JSONException error) {
             throw new IllegalStateException("failed to encode physical tap target", error);
         }
+        if (!dispatchTapGesture(renderedBounds)) {
+            respond(
+                socket.getOutputStream(),
+                "text/plain; charset=utf-8",
+                "physical tap gesture rejected\n",
+                409
+            );
+            return;
+        }
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
             target.toString() + "\n",
             200
         );
+    }
+
+    private boolean dispatchTapGesture(Rect bounds) {
+        Path path = new Path();
+        path.moveTo(bounds.exactCenterX(), bounds.exactCenterY());
+        GestureDescription gesture = new GestureDescription.Builder()
+            .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
+            .build();
+        // Acceptance only means Android queued the gesture. The app-owned
+        // ACTION_UP receipt is the authoritative completion signal; waiting
+        // for this service's callback can lag behind an already-delivered tap.
+        return dispatchGesture(gesture, null, null);
     }
 
     private void handleAwaitTouch(Socket socket, String path) throws IOException {
@@ -440,7 +468,7 @@ public final class SemanticDriverService extends AccessibilityService {
             after = 0;
             timeoutMs = 500;
         }
-        timeoutMs = Math.max(1, Math.min(750, timeoutMs));
+        timeoutMs = Math.max(1, Math.min(2_500, timeoutMs));
         Rect bounds = parseBounds(query.getOrDefault("bounds", ""));
         String touchTag = query.getOrDefault("tag", "");
         boolean received = bounds != null && awaitTouchAfter(after, bounds, touchTag, timeoutMs);
@@ -966,6 +994,14 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean avoidNavigation
     ) {
         ProviderSnapshot snapshot = providerSnapshot(tag);
+        return providerProjection(snapshot, verifyCenterReachable, avoidNavigation);
+    }
+
+    private ProviderProjection providerProjection(
+        ProviderSnapshot snapshot,
+        boolean verifyCenterReachable,
+        boolean avoidNavigation
+    ) {
         if (!snapshot.handled) return ProviderProjection.unhandled();
         JSONArray output = new JSONArray();
         if (!snapshot.present) return new ProviderProjection(true, output);
@@ -990,7 +1026,7 @@ public final class SemanticDriverService extends AccessibilityService {
                     parsedBounds != null &&
                     "true".equals(fields.getOrDefault("window-focus", "false")) &&
                     (!verifyCenterReachable || projectedCenterReachable(parsedBounds)) &&
-                    (!avoidNavigation || projectedCenterClearOfNavigation(tag, parsedBounds))
+                    (!avoidNavigation || projectedCenterClearOfNavigation(snapshot.resourceId, parsedBounds))
                 )
             );
             output.put(value);
@@ -1000,10 +1036,36 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
+    private ProviderProjection providerProjectionPrefix(String prefix) {
+        ProviderSnapshotBatch batch = providerSnapshots("resource_id_prefix", prefix);
+        if (!batch.handled) return ProviderProjection.unhandled();
+        JSONArray output = new JSONArray();
+        for (ProviderSnapshot snapshot : batch.snapshots) {
+            ProviderProjection projection = providerProjection(snapshot, true, false);
+            if (!projection.handled) return ProviderProjection.unhandled();
+            for (int index = 0; index < projection.values.length(); index++) {
+                try {
+                    output.put(projection.values.getJSONObject(index));
+                } catch (JSONException error) {
+                    return ProviderProjection.unhandled();
+                }
+            }
+        }
+        return new ProviderProjection(true, output);
+    }
+
     private ProviderSnapshot providerSnapshot(String tag) {
+        ProviderSnapshotBatch batch = providerSnapshots("resource_id", tag);
+        if (!batch.handled) return ProviderSnapshot.unhandled();
+        return batch.snapshots.isEmpty()
+            ? ProviderSnapshot.handledAbsent()
+            : batch.snapshots.get(0);
+    }
+
+    private ProviderSnapshotBatch providerSnapshots(String parameter, String value) {
         Uri uri = Uri.parse("content://org.aerobag.app.e2e-projections/projection")
             .buildUpon()
-            .appendQueryParameter("resource_id", tag)
+            .appendQueryParameter(parameter, value)
             .build();
         CancellationSignal cancellationSignal = new CancellationSignal();
         long startedNanos = System.nanoTime();
@@ -1020,29 +1082,33 @@ public final class SemanticDriverService extends AccessibilityService {
             null,
             cancellationSignal
         )) {
-            if (cursor == null || !cursor.moveToFirst()) {
-                return ProviderSnapshot.unhandled();
+            if (cursor == null) {
+                return ProviderSnapshotBatch.unhandled();
             }
-            return new ProviderSnapshot(
-                true,
-                cursor.getInt(cursor.getColumnIndexOrThrow("present")) != 0,
-                cursor.getString(cursor.getColumnIndexOrThrow("resource_id")),
-                cursor.getString(cursor.getColumnIndexOrThrow("state")),
-                cursor.getString(cursor.getColumnIndexOrThrow("bounds")),
-                cursor.getLong(cursor.getColumnIndexOrThrow("revision"))
-            );
+            List<ProviderSnapshot> snapshots = new ArrayList<>();
+            while (cursor.moveToNext()) {
+                snapshots.add(new ProviderSnapshot(
+                    true,
+                    cursor.getInt(cursor.getColumnIndexOrThrow("present")) != 0,
+                    cursor.getString(cursor.getColumnIndexOrThrow("resource_id")),
+                    cursor.getString(cursor.getColumnIndexOrThrow("state")),
+                    cursor.getString(cursor.getColumnIndexOrThrow("bounds")),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("revision"))
+                ));
+            }
+            return new ProviderSnapshotBatch(true, snapshots);
         } catch (OperationCanceledException error) {
-            Log.w(LOG_TAG, "projection provider timed out for " + tag);
+            Log.w(LOG_TAG, "projection provider timed out for " + value);
             // The provider owns this semantic namespace. Do not turn a bounded
             // IPC miss into an expensive accessibility-tree fallback.
-            return ProviderSnapshot.handledAbsent();
+            return new ProviderSnapshotBatch(true, List.of());
         } catch (IllegalArgumentException | SecurityException error) {
-            return ProviderSnapshot.unhandled();
+            return ProviderSnapshotBatch.unhandled();
         } finally {
             cancellation.cancel(false);
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
             if (elapsedMs >= SLOW_PROVIDER_QUERY_MS) {
-                Log.w(LOG_TAG, "slow projection provider query tag=" + tag + " elapsed_ms=" + elapsedMs);
+                Log.w(LOG_TAG, "slow projection provider query value=" + value + " elapsed_ms=" + elapsedMs);
             }
         }
     }
@@ -1135,6 +1201,20 @@ public final class SemanticDriverService extends AccessibilityService {
 
         static ProviderSnapshot handledAbsent() {
             return new ProviderSnapshot(true, false, "", "", null, 0);
+        }
+    }
+
+    private static final class ProviderSnapshotBatch {
+        final boolean handled;
+        final List<ProviderSnapshot> snapshots;
+
+        ProviderSnapshotBatch(boolean handled, List<ProviderSnapshot> snapshots) {
+            this.handled = handled;
+            this.snapshots = snapshots;
+        }
+
+        static ProviderSnapshotBatch unhandled() {
+            return new ProviderSnapshotBatch(false, List.of());
         }
     }
 

@@ -48,6 +48,7 @@ internal object E2eProjectionRegistry {
         "parity:map-selection-tray",
         "parity:ownship-launcher",
         "parity:ownship-source:",
+        "parity:chart-search-suggestion:",
         "parity:map-selection-action:",
         "parity:chart-search-input",
         "parity:plan-append-route-input",
@@ -91,6 +92,14 @@ internal object E2eProjectionRegistry {
 
     fun read(resourceId: String): E2eProjectionSnapshot? = entries[resourceId]?.snapshot
 
+    fun readPrefix(resourceIdPrefix: String): List<Pair<String, E2eProjectionSnapshot>> =
+        entries.entries
+            .asSequence()
+            .filter { (resourceId, _) -> resourceId.startsWith(resourceIdPrefix) }
+            .map { (resourceId, entry) -> resourceId to entry.snapshot }
+            .sortedBy { (resourceId, _) -> resourceId }
+            .toList()
+
     fun publishTouchReceipt(
         rawX: Int = -1,
         rawY: Int = -1,
@@ -124,7 +133,18 @@ class E2eProjectionProvider : ContentProvider() {
         sortOrder: String?,
     ): Cursor? {
         if (!BuildConfig.AEROBAG_E2E_ENABLED || uri.path != "/projection") return null
-        val resourceId = uri.getQueryParameter("resource_id") ?: return null
+        val resourceId = uri.getQueryParameter("resource_id")
+        val resourceIdPrefix = uri.getQueryParameter("resource_id_prefix")
+        if ((resourceId == null) == (resourceIdPrefix == null)) return null
+        if (resourceIdPrefix != null) {
+            if (resourceIdPrefix !in E2eProjectionRegistry.KnownSemanticPrefixes) return null
+            return MatrixCursor(Columns).apply {
+                E2eProjectionRegistry.readPrefix(resourceIdPrefix).forEach { (id, snapshot) ->
+                    addRow(arrayOf(id, snapshot.state, snapshot.bounds, snapshot.revision, 1))
+                }
+            }
+        }
+        checkNotNull(resourceId)
         val snapshot = E2eProjectionRegistry.read(resourceId)
         val resourceName = resourceId.removePrefix("org.aerobag.app:id/")
         val viewId = context?.resources?.getIdentifier(resourceName, "id", context?.packageName) ?: 0

@@ -1610,12 +1610,19 @@ internal fun AndroidChartSearchBox(
                     }
                     suggestions.forEach { suggestion ->
                         val friendlyName = waypointSuggestionFriendlyName(suggestion)
+                        val semanticTag = "parity:chart-search-suggestion:${suggestion.identifier}"
                         Surface(
                             modifier =
                                 Modifier
                                     .fillMaxWidth()
                                     .height(ThumbSize)
-                                    .testTag("parity:chart-search-suggestion:${suggestion.identifier}")
+                                    .e2eIndexedControl(
+                                        semanticTag = semanticTag,
+                                        state =
+                                            "enabled:true:selected:false:" +
+                                                "text:${Uri.encode(listOfNotNull(suggestion.identifier, friendlyName).joinToString(" "))}",
+                                    )
+                                    .testTag(semanticTag)
                                     .clickable {
                                         focusManager.clearFocus(force = true)
                                         keyboardController?.hide()

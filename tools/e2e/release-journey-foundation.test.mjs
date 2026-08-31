@@ -2129,7 +2129,7 @@ test("persistent Android semantic requests separate probes from bounded actions"
   );
   assert.match(
     source,
-    /semanticDriverObservationRequest\(port, `\/tap-target\?\$\{query\}`\)/,
+    /semanticDriverActionRequest\(port, `\/tap\?\$\{query\}`\)/,
   );
   assert.match(source, /"--fail-with-body"/);
   assert.match(source, /Android semantic driver IME registration/);
@@ -2405,6 +2405,10 @@ test("Android app restart observes a stable process node without dumping the UI"
   assert.match(lifecycle, /new Aerobag semantic UI visible/);
   assert.match(lifecycle, /consecutiveSuccesses: E2E_TIMING\.transitionCompletionSamples/g);
   assert.match(launch, /androidAppLifecyclePresent\(serial\)/);
+  assert.doesNotMatch(
+    launch.slice(launch.indexOf("readStoppedState:")),
+    /firstAerobagProcessNode\(serial\)[\s\S]*?androidAppLifecyclePresent\(serial\)/,
+  );
 });
 
 test("package refresh completion observes a new catalog request", () => {
@@ -2643,18 +2647,19 @@ test("Android text completion reacquires an exact input moved by the keyboard", 
   assert.match(service, /value\.put\("semantic-path", semanticPath\)/);
 });
 
-test("Android text focus uses the same verified physical input path as a user", () => {
+test("Android text focus uses the same verified timed gesture path as a user", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const journeyDriver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const service = readFileSync(new URL(
     "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
     import.meta.url,
   ), "utf8");
-  assert.match(harness, /semanticDriverObservationRequest\(port, `\/tap-target\?\$\{query\}`\)/);
+  assert.match(harness, /semanticDriverActionRequest\(port, `\/tap\?\$\{query\}`\)/);
   assert.match(journeyDriver, /async focusText[\s\S]*focusAndroidSemanticNode\(/);
-  assert.match(service, /case "\/tap-target"/);
-  assert.match(service, /handleTapTarget[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/);
-  assert.match(harness, /"shell", "input", "tap"/);
+  assert.match(service, /case "\/tap"/);
+  assert.match(service, /handleTap[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/);
+  assert.match(service, /dispatchTapGesture[\s\S]*dispatchGesture/);
+  assert.doesNotMatch(harness, /"shell", "input", "tap"/);
   assert.doesNotMatch(service, /case "\/focus"|focusRenderedNode|focusMatchingNode/);
 });
 
@@ -3213,14 +3218,30 @@ test("Android journey controls publish indexed geometry through the private E2E 
   assert.match(mapExplorer, /semanticTag = "parity:map-surface"/);
   assert.match(provider, /KnownSemanticPrefixes/);
   assert.match(provider, /knownSemanticControl/);
+  assert.match(provider, /fun readPrefix\(resourceIdPrefix: String\)/);
+  assert.match(provider, /resourceIdPrefix !in E2eProjectionRegistry\.KnownSemanticPrefixes/);
+  assert.match(charts, /semanticTag = "parity:chart-search-suggestion:\$\{suggestion\.identifier\}"/);
+  assert.match(
+    charts,
+    /semanticTag = semanticTag,[\s\S]*text:\$\{Uri\.encode\(listOfNotNull\(suggestion\.identifier, friendlyName\)/,
+  );
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
   assert.match(service, /semanticPath\.startsWith\("projection-provider:"\)/);
+  const prefixQuery = service.slice(
+    service.indexOf("private void handleQuery"),
+    service.indexOf("private void handleExactProjection"),
+  );
+  assert.match(prefixQuery, /providerProjectionPrefix\(tag\)/);
+  assert.ok(
+    prefixQuery.indexOf("providerProjectionPrefix(tag)") < prefixQuery.indexOf("renderNodeQuery("),
+    "known prefix queries must bypass accessibility traversal",
+  );
   assert.match(service, /currentBounds == null \|\| !expectedBounds\.equals\(currentBounds\)/);
   assert.match(service, /projectedCenterReachable\(parsedBounds\)/);
-  assert.match(service, /projectedCenterClearOfNavigation\(tag, parsedBounds\)/);
+  assert.match(service, /projectedCenterClearOfNavigation\(snapshot\.resourceId, parsedBounds\)/);
   assert.match(service, /indexedBounds\("parity:primary-navigation"\)/);
   assert.match(
     service,
@@ -3272,7 +3293,7 @@ test("Android projection-provider IPC is bounded and leaves failure evidence", (
   assert.match(suite, /persistJourneyResult\(error\.journeyResult, artifactDir\)/);
 });
 
-test("Android semantic taps validate current controls before one physical input tap", () => {
+test("Android semantic taps validate current controls before one timed input gesture", () => {
   const harness = readFileSync(
     new URL("android-harness.mjs", import.meta.url),
     "utf8",
@@ -3298,17 +3319,17 @@ test("Android semantic taps validate current controls before one physical input 
   assert.match(providerTap, /providerProjection\(tag, true\)/);
   assert.match(providerTap, /return currentBounds/);
   assert.doesNotMatch(providerTap, /resolveRenderedNode|AccessibilityNodeInfo/);
-  assert.match(click, /"shell", "input", "tap"/);
-  assert.equal(
-    (click.match(/"shell", "input", "tap"/g) ?? []).length,
-    1,
-    "delivery may refresh a proven non-delivered target but must emit only one physical tap",
-  );
+  assert.doesNotMatch(click, /"shell", "input", "tap"/);
+  assert.equal((click.match(/target = androidPhysicalTapTarget/g) ?? []).length, 1);
   assert.match(click, /queryAndroidExactProjection\([\s\S]*providerOnly: true/);
   assert.match(click, /for \(let attempt = 0; attempt < 4; attempt \+= 1\)/);
   assert.match(click, /waitForAndroidSemanticEvent\(serial, 250\)/);
   assert.match(click, /if \(!refreshed\) continue/);
-  assert.doesNotMatch(service, /dispatchGesture|ACTION_CLICK/);
+  assert.match(service, /new GestureDescription\.StrokeDescription\(path, 0, 80\)/);
+  assert.match(service, /dispatchGesture/);
+  assert.doesNotMatch(service, /GestureResultCallback/);
+  assert.match(service, /ACTION_UP receipt is the authoritative completion signal/);
+  assert.doesNotMatch(service, /ACTION_CLICK/);
 });
 
 test("Android stale indexed targets separate semantic state from temporary actionability", () => {
@@ -3849,15 +3870,16 @@ test("Android activates every tagged control through one exact semantic action p
   );
   assert.match(
     service,
-    /handleTapTarget[\s\S]*bounds != null && !bounds\.isEmpty\(\)[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/,
+    /handleTap[\s\S]*bounds != null && !bounds\.isEmpty\(\)[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/,
   );
   assert.match(
     driver,
     /activateAndroidSemanticTag[\s\S]*clickAndroidSemanticNode/,
   );
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
-  assert.match(harness, /"shell", "input", "tap"/);
-  assert.doesNotMatch(service, /ACTION_CLICK|dispatchGesture/);
+  assert.doesNotMatch(harness, /"shell", "input", "tap"/);
+  assert.match(service, /dispatchTapGesture[\s\S]*dispatchGesture/);
+  assert.doesNotMatch(service, /ACTION_CLICK/);
 });
 
 test("Android release journeys retain session-work timing evidence", () => {
@@ -3933,7 +3955,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   assert.doesNotMatch(actionRequest, /semanticDriverRequestTimedOut/);
   assert.equal(
     (harness.match(/semanticDriverActionRequest\((?:state\.port|port),/g) ?? []).length,
-    4,
+    5,
   );
 
   const requests = [];
@@ -3944,7 +3966,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   ];
   const completed = semanticDriverActionRequest(
     19191,
-    "/tap-target?bounds=%5B0%2C0%5D%5B1%2C1%5D",
+    "/tap?bounds=%5B0%2C0%5D%5B1%2C1%5D",
     "POST",
     (...request) => {
       requests.push(request);
@@ -3957,7 +3979,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   assert.match(requests[1][1], /^\/await-idle\?/);
 
   let timeoutRequests = 0;
-  const timedOut = semanticDriverActionRequest(19191, "/tap-target?bounds=timeout", "POST", () => {
+  const timedOut = semanticDriverActionRequest(19191, "/tap?bounds=timeout", "POST", () => {
     timeoutRequests += 1;
     return { status: 28, stdout: "", stderr: "Operation timed out" };
   });
@@ -3981,6 +4003,26 @@ test("Android semantic observations recover one timed-out read without creating 
   assert.equal(requests[0][1], "/query?tag=map");
   assert.match(requests[1][1], /^\/await-idle\?/);
   assert.equal(requests[2][1], "/query?tag=map");
+});
+
+test("Android semantic observations wait for an action lock before probing IME readiness", () => {
+  const requests = [];
+  const responses = [
+    { status: 22, stdout: "semantic request busy\n", stderr: "curl: HTTP 503" },
+    { status: 0, stdout: "idle\n", stderr: "" },
+    { status: 0, stdout: "ready\n", stderr: "" },
+  ];
+  const completed = semanticDriverObservationRequest(19191, "/ime-ready", (...request) => {
+    requests.push(request);
+    return responses.shift();
+  });
+  assert.equal(completed.status, 0);
+  assert.equal(completed.stdout, "ready\n");
+  assert.deepEqual(
+    requests.map((request) => request[1]),
+    ["/ime-ready", requests[1][1], "/ime-ready"],
+  );
+  assert.match(requests[1][1], /^\/await-idle\?/);
 });
 
 test("Android semantic request watchdog accepts fractional network deadlines", () => {
@@ -4014,10 +4056,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/23/);
-  assert.match(service, /aerobag-semantic-driver\/23/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/23/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/23/);
+  assert.match(harness, /aerobag-semantic-driver\/24/);
+  assert.match(service, /aerobag-semantic-driver\/24/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/24/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/24/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -4185,7 +4227,7 @@ test("Android semantic text delivery uses the focused input connection without C
   assert.doesNotMatch(service, /ACTION_SET_TEXT|setRenderedText|setMatchingNodeText/);
   assert.match(driver, /projected\.focused && !androidSemanticTextReady\(this\.serial\)/);
   assert.match(driver, /readyElement\.focused !== true/);
-  assert.match(harness, /semanticDriverRequest\(state\.port, "\/ime-ready", 1\)/);
+  assert.match(harness, /semanticDriverObservationRequest\(state\.port, "\/ime-ready"\)/);
   assert.match(service, /SemanticDriverInputMethodService\.focusedTextReady\(\)/);
   const readiness = ime.slice(
     ime.indexOf("static boolean focusedTextReady()"),
@@ -4207,7 +4249,7 @@ test("Android click and focus delivery resolves the current Compose virtual node
     "utf8",
   );
   const tap = service.slice(
-    service.indexOf("private void handleTapTarget"),
+    service.indexOf("private void handleTap"),
     service.indexOf("private void handleScroll"),
   );
   assert.match(tap, /parseBounds[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/);

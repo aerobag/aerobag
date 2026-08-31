@@ -149,7 +149,7 @@ test("Android emulator readiness enables real HWUI drawing", () => {
   );
 });
 
-test("Android physical taps use bounded preflight and exactly one delivered touch", () => {
+test("Android physical taps use bounded preflight and one timed delivered gesture", () => {
   const harness = readFileSync(new URL("android-harness.mjs", import.meta.url), "utf8");
   const click = harness.slice(
     harness.indexOf("export function clickAndroidSemanticNode"),
@@ -159,11 +159,8 @@ test("Android physical taps use bounded preflight and exactly one delivered touc
   assert.match(click, /waitForAndroidSemanticEvent\(serial, 250\)/);
   assert.match(click, /if \(!refreshed\) continue/);
   assert.match(click, /if \(!androidSemanticReadinessStateMatches[\s\S]*continue/);
-  assert.equal(
-    click.match(/"shell", "input", "tap"/g)?.length,
-    1,
-    "preflight retries must never duplicate the physical tap",
-  );
+  assert.doesNotMatch(click, /"shell", "input", "tap"/);
+  assert.equal(click.match(/androidPhysicalTapTarget/g)?.length, 1);
   assert.match(click, /awaitAndroidPhysicalTouch[\s\S]*?return true/);
   assert.match(click, /physical tap was not received/);
 

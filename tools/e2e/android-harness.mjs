@@ -32,7 +32,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/23";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/24";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -249,9 +249,14 @@ export function setAndroidSemanticText(serial, tag, value) {
 
 export function androidSemanticTextReady(serial) {
   const state = requiredSemanticDriver(serial);
-  const response = semanticDriverRequest(state.port, "/ime-ready", 1);
+  const response = semanticDriverObservationRequest(state.port, "/ime-ready");
   if (response.status !== 0) {
     const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
+    if (semanticDriverObservationUnavailable(response)) {
+      throw new TransientObservationError(
+        `Android semantic driver was busy while probing IME readiness: ${detail}`,
+      );
+    }
     throw new Error(`persistent Android IME readiness probe failed: ${detail}`);
   }
   return response.stdout.trim() === "ready";
@@ -311,11 +316,6 @@ export function clickAndroidSemanticNode(
   if (!target) {
     throw new Error(`persistent Android physical tap target stayed stale for ${tag}`);
   }
-  adb(serial, [
-    "shell", "input", "tap",
-    String(Math.round(target.bounds.left + target.bounds.width / 2)),
-    String(Math.round(target.bounds.top + target.bounds.height / 2)),
-  ]);
   if (awaitAndroidPhysicalTouch(
     state.port, target.bounds, target.touchTag, target.touchSequence,
   )) return true;
@@ -353,9 +353,10 @@ function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
     bounds: expectedBounds,
     path: semanticPath,
   });
-  // Target validation is read-only. It may recover a timed-out projection
-  // read because no physical input has been emitted yet.
-  const response = semanticDriverObservationRequest(port, `/tap-target?${query}`);
+  // Submit DOWN and UP as one timed gesture. `adb shell input tap` waits for
+  // DOWN delivery before injecting UP, which turns a tap into a long press
+  // whenever the target app is rendering a slow frame.
+  const response = semanticDriverActionRequest(port, `/tap?${query}`);
   if (response.status !== 0) {
     if (response.stdout.trim() === "physical tap target rejected") return null;
     const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
@@ -374,9 +375,9 @@ function awaitAndroidPhysicalTouch(port, bounds, tag, after) {
     bounds: `[${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}]`,
     tag,
     after: String(after),
-    timeout_ms: "500",
+    timeout_ms: "2000",
   });
-  const response = semanticDriverRequest(port, `/await-touch?${query}`, 0.75);
+  const response = semanticDriverRequest(port, `/await-touch?${query}`, 2.5);
   return response.status === 0 && response.stdout.trim() === "received";
 }
 
@@ -1436,8 +1437,9 @@ export async function launchFreshAndroidApp(
       adb(serial, startArgs, { timeout: APP_START_TIMEOUT_MS });
     },
     readProcessNode: () => firstAerobagProcessNode(serial),
-    readStoppedState: async () =>
-      firstAerobagProcessNode(serial) === null && !androidAppLifecyclePresent(serial),
+    // The semantic projection provider lives in the target process. Querying it
+    // after `stop-app` would restart the process that this phase is proving gone.
+    readStoppedState: async () => !androidAppLifecyclePresent(serial),
   });
 }
 

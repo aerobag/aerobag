@@ -72,6 +72,7 @@ import {
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
+  androidSemanticReadinessStateMatches,
   semanticDriverActionRequest,
   semanticDriverObservationRequest,
   setAndroidWallClockAndWait,
@@ -2073,7 +2074,7 @@ test("persistent Android semantic requests separate probes from bounded actions"
     new URL("./android-harness.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 2\.9/);
+  assert.match(source, /SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0\.9/);
   assert.match(source, /SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2\.25/);
   assert.match(
     source,
@@ -2089,6 +2090,13 @@ test("persistent Android semantic requests separate probes from bounded actions"
   assert.match(
     source,
     /semanticDriverObservationUnavailable\(response\)[\s\S]*new TransientObservationError/,
+  );
+  const observationTimeoutSeconds = Number(
+    source.match(/SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = ([0-9.]+)/)?.[1],
+  );
+  assert.ok(
+    observationTimeoutSeconds * 1_000 <= E2E_TIMING.userResponseMs / 3,
+    "one semantic observation must leave room for retries inside a user transition",
   );
   const hierarchyDump = source.slice(
     source.indexOf("function semanticDriverDump"),
@@ -2167,7 +2175,7 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(driver, /case "\/exact-projection"/);
   assert.match(
     driver,
-    /ProviderProjection providerProjection = renderedOnly[\s\S]*ProviderProjection\.unhandled\(\)[\s\S]*providerProjection\(tag\)/,
+    /ProviderProjection providerProjection = renderedOnly[\s\S]*ProviderProjection\.unhandled\(\)[\s\S]*providerProjection\(tag, false\)/,
   );
   assert.match(driver, /if \(providerProjection\.handled\) return providerProjection\.values/);
   assert.ok(
@@ -2213,6 +2221,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(manifest, /android:enabled="\$\{e2eProjectionProviderEnabled\}"/);
   assert.match(manifest, /android:readPermission="org\.aerobag\.app\.permission\.READ_E2E_PROJECTIONS"/);
   assert.match(charts, /R\.id\.e2e_plate_viewport_projection/);
+  assert.match(
+    charts,
+    /MapCenterButton\([\s\S]*e2eIndexedControl\([\s\S]*semanticTag = "parity:center-here-button"/,
+  );
   assert.doesNotMatch(charts, /\.testTag\(\s*"parity:plate-viewport:/);
   assert.match(mainActivity, /R\.id\.e2e_startup_state_projection/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_rows_projection/);
@@ -2251,6 +2263,16 @@ test("plate journeys rendezvous with the selected chart instead of arbitrary vie
   assert.match(implementations, /const chartId = plateChartId\(chart\)/);
   assert.match(implementations, /const multiId = plateChartId\(multi\)/);
   assert.match(implementations, /const legendChartId = plateChartId\(legendOption\)/);
+  const multiPageScroll = implementations.slice(
+    implementations.indexOf("const firstPageViewport"),
+    implementations.indexOf('runtime.check("plate.first-last-page"'),
+  );
+  assert.match(
+    multiPageScroll,
+    /zoom multi-page plate for scrolling[\s\S]*scroll multi-page plate/,
+    "a fitted multi-page plate must be zoomed before scrolling can be required to move it",
+  );
+  assert.match(multiPageScroll, /value !== scrollableViewport/);
   assert.doesNotMatch(implementations, /settled (?:initial plate|legend) viewport/);
 });
 
@@ -2938,7 +2960,10 @@ test("Android horizontal controls use rendered hit geometry instead of layout pr
   assert.match(reveal, /renderedOnly = androidElementMayRequireHorizontalScroll\(elementId\)/);
   assert.match(reveal, /requireReachable: true, renderedOnly/);
   assert.match(harness, /rendered_only: String\(renderedOnly\)/);
-  assert.match(service, /renderedOnly\s*\? ProviderProjection\.unhandled\(\)\s*:\s*providerProjection\(tag\)/);
+  assert.match(
+    service,
+    /renderedOnly\s*\? ProviderProjection\.unhandled\(\)\s*:\s*providerProjection\(tag, false\)/,
+  );
 });
 
 test("Android page navigation requires visible semantic pages", () => {
@@ -3128,7 +3153,49 @@ test("Android semantic taps validate current controls before one physical input 
   assert.match(service, /renderedTapBounds\(tag, bounds, semanticPath\)/);
   assert.match(service, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
   assert.match(click, /"shell", "input", "tap"/);
+  assert.equal(
+    (click.match(/"shell", "input", "tap"/g) ?? []).length,
+    1,
+    "delivery may refresh a proven non-delivered target but must emit only one physical tap",
+  );
+  assert.match(click, /queryAndroidExactProjection\([\s\S]*providerOnly: true/);
   assert.doesNotMatch(service, /dispatchGesture|ACTION_CLICK/);
+});
+
+test("Android stale indexed targets can refresh only without changing semantic state", () => {
+  const current = {
+    "resource-id": "parity:button:HOME",
+    "semantic-path": "projection-provider:42",
+    bounds: "[10,20][30,40]",
+    visible: "true",
+    "center-reachable": "true",
+    enabled: "true",
+    selected: "false",
+    checked: "false",
+    "state-description": "enabled:true:selected:false:text:HOME",
+  };
+  const expected = {
+    enabled: true,
+    selected: false,
+    checked: false,
+    stateDescription: "enabled:true:selected:false:text:HOME",
+  };
+  assert.equal(
+    androidSemanticReadinessStateMatches("parity:button:HOME", current, expected),
+    true,
+  );
+  assert.equal(
+    androidSemanticReadinessStateMatches(
+      "parity:button:HOME", { ...current, selected: "true" }, expected,
+    ),
+    false,
+  );
+  assert.equal(
+    androidSemanticReadinessStateMatches(
+      "parity:button:HOME", { ...current, "resource-id": "parity:button:PLATE" }, expected,
+    ),
+    false,
+  );
 });
 
 test("Android current-page discovery follows the visible page before persisted state", () => {
@@ -3750,10 +3817,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/14/);
-  assert.match(service, /aerobag-semantic-driver\/14/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/14/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/14/);
+  assert.match(harness, /aerobag-semantic-driver\/15/);
+  assert.match(service, /aerobag-semantic-driver\/15/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/15/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/15/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -4235,7 +4302,7 @@ test("Android semantic action readiness requires a center-reachable control", ()
   assert.doesNotMatch(service, /awaitAccepted(?:Click|Text)Action|ACTION_RETRY/);
 });
 
-test("Android indexed taps revalidate the app projection without traversing Compose", () => {
+test("Android indexed taps revalidate app state and rendered reachability before delivery", () => {
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
@@ -4251,7 +4318,11 @@ test("Android indexed taps revalidate the app projection without traversing Comp
   assert.match(indexedBranch, /providerProjection\(tag, false\)/);
   assert.match(indexedBranch, /semanticPath\.equals\(value\.optString\("semantic-path"/);
   assert.match(indexedBranch, /expectedBounds\.equals\(currentBounds\)/);
-  assert.doesNotMatch(indexedBranch, /resolveRenderedNode|targetRoots/);
+  assert.match(indexedBranch, /resolveRenderedNode\([\s\S]*tag,[\s\S]*currentBounds,[\s\S]*semanticPath/);
+  assert.match(indexedBranch, /currentBounds\.contains\(renderedBounds\.centerX\(\), renderedBounds\.centerY\(\)\)/);
+  assert.match(indexedBranch, /renderedBounds\.contains\(currentBounds\.centerX\(\), currentBounds\.centerY\(\)\)/);
+  assert.match(indexedBranch, /rendered\.isVisibleToUser\(\)/);
+  assert.match(indexedBranch, /centerReachable\(rendered\)/);
   assert.match(renderedTapBounds, /!centerReachable\(node\)/);
 });
 

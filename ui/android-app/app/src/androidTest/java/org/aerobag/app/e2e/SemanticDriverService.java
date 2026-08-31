@@ -43,7 +43,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/14";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/15";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -798,9 +798,13 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean providerOnly,
         boolean renderedOnly
     ) {
+        // Compose publishes indexed control geometry explicitly. Reading that
+        // channel must not block behind an accessibility-tree traversal; the
+        // subsequent physical touch receipt proves that actions reached the
+        // rendered control. Unknown controls still use accessibility below.
         ProviderProjection providerProjection = renderedOnly
             ? ProviderProjection.unhandled()
-            : providerProjection(tag);
+            : providerProjection(tag, false);
         if (providerProjection.handled) return providerProjection.values;
         JSONArray output = new JSONArray();
         if (tag.isEmpty() || providerOnly) return output;
@@ -1710,7 +1714,26 @@ public final class SemanticDriverService extends AccessibilityService {
                     !"true".equals(value.optString("center-reachable", "false"))) {
                     return null;
                 }
-                return currentBounds;
+                AccessibilityNodeInfo rendered = resolveRenderedNode(
+                    tag,
+                    currentBounds,
+                    semanticPath
+                );
+                if (rendered == null) return null;
+                try {
+                    rendered.refresh();
+                    Rect renderedBounds = new Rect();
+                    rendered.getBoundsInScreen(renderedBounds);
+                    boolean sameTargetArea =
+                        currentBounds.contains(renderedBounds.centerX(), renderedBounds.centerY()) &&
+                        renderedBounds.contains(currentBounds.centerX(), currentBounds.centerY());
+                    return sameTargetArea && rendered.isVisibleToUser() &&
+                        rendered.isEnabled() && centerReachable(rendered)
+                            ? renderedBounds
+                            : null;
+                } finally {
+                    rendered.recycle();
+                }
             } catch (JSONException error) {
                 return null;
             }

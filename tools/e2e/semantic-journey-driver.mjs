@@ -919,6 +919,7 @@ function activateAndroidSemanticTag(serial, tag, readyElement = null) {
     readyElement.bounds,
     readyElement.semantic_path,
     {
+      enabled: readyElement.enabled,
       selected: readyElement.selected,
       checked: readyElement.checked,
       stateDescription: readyElement.disabled_reason,
@@ -1206,6 +1207,12 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       semanticTag,
       readyElement.bounds,
       readyElement.semantic_path,
+      {
+        enabled: readyElement.enabled,
+        selected: readyElement.selected,
+        checked: readyElement.checked,
+        stateDescription: readyElement.disabled_reason,
+      },
     );
   }
 

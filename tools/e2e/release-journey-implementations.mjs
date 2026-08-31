@@ -1273,15 +1273,27 @@ async function plateOperate(runtime) {
     multiId,
     "initialized selected multi-page plate viewport",
   );
-  const lastPageViewport = await runtime.transition("scroll multi-page plate", {
+  const scrollableViewport = await runtime.transition("zoom multi-page plate for scrolling", {
     ready: () => runtime.driver.readElement("plate-surface"),
-    act: (readyElement) => runtime.driver.drag("plate-surface", { x: 0, y: -600 }, readyElement),
+    act: (readyElement) => runtime.driver.zoom("plate-surface", -360, readyElement),
     complete: async () => {
       const value = await plateViewport(runtime);
       return value && value !== firstPageViewport ? value : null;
     },
   });
-  runtime.check("plate.first-last-page", Boolean(lastPageViewport), `${firstPageViewport} -> ${lastPageViewport}`);
+  const lastPageViewport = await runtime.transition("scroll multi-page plate", {
+    ready: () => runtime.driver.readElement("plate-surface"),
+    act: (readyElement) => runtime.driver.drag("plate-surface", { x: 0, y: -600 }, readyElement),
+    complete: async () => {
+      const value = await plateViewport(runtime);
+      return value && value !== scrollableViewport ? value : null;
+    },
+  });
+  runtime.check(
+    "plate.first-last-page",
+    Boolean(lastPageViewport),
+    `${firstPageViewport} -> ${scrollableViewport} -> ${lastPageViewport}`,
+  );
 
   await runtime.action("open multi-page plate folder", "plate-folder-button", {
     complete: async () => {

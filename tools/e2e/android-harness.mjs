@@ -26,10 +26,12 @@ export function androidJourneyEpochMs(journeyId, fixtureEpochMs, hostEpochMs = D
 const ADB_TIMEOUT_MS = 20000;
 const APP_START_TIMEOUT_MS = 60000;
 const CLOCK_SET_TIMEOUT_MS = 15000;
-const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 2.9;
+// A transient accessibility stall must leave time for the transition contract
+// to observe recovery. Indexed controls normally bypass this fallback entirely.
+const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/14";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/15";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -262,24 +264,50 @@ export function clickAndroidSemanticNode(
   tag,
   expectedBounds,
   semanticPath,
-  _expectedState = {},
+  expectedState = {},
 ) {
   const state = requiredSemanticDriver(serial);
   if (!expectedBounds || !semanticPath) {
     throw new Error(`persistent Android semantic click for ${tag} has no readiness path and bounds`);
   }
+  let currentBounds = expectedBounds;
+  let currentPath = semanticPath;
+  let target = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const target = androidPhysicalTapTarget(state.port, tag, expectedBounds, semanticPath);
-    adb(serial, [
-      "shell", "input", "tap",
-      String(Math.round(target.bounds.left + target.bounds.width / 2)),
-      String(Math.round(target.bounds.top + target.bounds.height / 2)),
-    ]);
-    if (awaitAndroidPhysicalTouch(
-      state.port, target.bounds, target.touchTag, target.touchSequence,
-    )) return true;
+    target = androidPhysicalTapTarget(state.port, tag, currentBounds, currentPath);
+    if (target) break;
+    const refreshed = queryAndroidExactProjection(
+      serial, tag, { providerOnly: true },
+    )[0] ?? null;
+    if (!androidSemanticReadinessStateMatches(tag, refreshed, expectedState)) {
+      throw new Error(`persistent Android semantic click target changed for ${tag}`);
+    }
+    currentBounds = refreshed.bounds;
+    currentPath = refreshed["semantic-path"];
   }
+  if (!target) {
+    throw new Error(`persistent Android physical tap target stayed stale for ${tag}`);
+  }
+  adb(serial, [
+    "shell", "input", "tap",
+    String(Math.round(target.bounds.left + target.bounds.width / 2)),
+    String(Math.round(target.bounds.top + target.bounds.height / 2)),
+  ]);
+  if (awaitAndroidPhysicalTouch(
+    state.port, target.bounds, target.touchTag, target.touchSequence,
+  )) return true;
   throw new Error(`persistent Android physical tap was not received by ${tag}`);
+}
+
+export function androidSemanticReadinessStateMatches(tag, node, expectedState = {}) {
+  const matches = (actual, expected) => expected == null || String(actual) === String(expected);
+  return node?.["resource-id"] === tag &&
+    Boolean(node.bounds) && Boolean(node["semantic-path"]) &&
+    node.visible === "true" && node["center-reachable"] === "true" &&
+    matches(node.enabled, expectedState.enabled) &&
+    matches(node.selected, expectedState.selected) &&
+    matches(node.checked, expectedState.checked) &&
+    matches(node["state-description"], expectedState.stateDescription);
 }
 
 function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
@@ -290,6 +318,7 @@ function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
   });
   const response = semanticDriverActionRequest(port, `/tap-target?${query}`);
   if (response.status !== 0) {
+    if (response.stdout.trim() === "physical tap target rejected") return null;
     const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
     throw new Error(`persistent Android physical tap failed for ${tag}: ${detail}`);
   }
@@ -312,18 +341,16 @@ function awaitAndroidPhysicalTouch(port, bounds, tag, after) {
   return response.status === 0 && response.stdout.trim() === "received";
 }
 
-export function focusAndroidSemanticNode(serial, tag, expectedBounds, semanticPath) {
-  const state = requiredSemanticDriver(serial);
-  if (!expectedBounds || !semanticPath) {
-    throw new Error(`persistent Android semantic focus for ${tag} has no readiness path and bounds`);
-  }
-  const target = androidPhysicalTapTarget(state.port, tag, expectedBounds, semanticPath);
-  adb(serial, [
-    "shell", "input", "tap",
-    String(Math.round(target.bounds.left + target.bounds.width / 2)),
-    String(Math.round(target.bounds.top + target.bounds.height / 2)),
-  ]);
-  return true;
+export function focusAndroidSemanticNode(
+  serial,
+  tag,
+  expectedBounds,
+  semanticPath,
+  expectedState = {},
+) {
+  return clickAndroidSemanticNode(
+    serial, tag, expectedBounds, semanticPath, expectedState,
+  );
 }
 
 export function scrollAndroidSemanticNode(serial, bounds, direction) {
@@ -1050,6 +1077,7 @@ export async function activateAndroidNode(serial, node) {
     throw new Error("Android semantic action requires tagged readiness evidence");
   }
   if (!clickAndroidSemanticNode(serial, tag, node.bounds, node["semantic-path"], {
+    enabled: node.enabled,
     selected: node.selected,
     checked: node.checked,
     stateDescription: node["state-description"],

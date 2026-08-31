@@ -1395,6 +1395,10 @@ internal fun MapCenterButton(
     Surface(
         modifier = Modifier
             .size(ThumbSize)
+            .e2eIndexedControl(
+                semanticTag = "parity:center-here-button",
+                state = "enabled:$enabled:selected:$selected:text:CTR",
+            )
             .testTag("parity:center-here-button")
             .semantics {
                 this.selected = selected

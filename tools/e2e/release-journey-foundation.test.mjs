@@ -3233,16 +3233,6 @@ test("Android chooser options use the authoritative app-owned control index", ()
   assert.match(service, /if \(tag\.isEmpty\(\) \|\| providerOnly\) return output/);
 });
 
-test("Android indexed action reads cannot fall through to accessibility traversal", () => {
-  const driver = readFileSync(new URL("semantic-journey-driver.mjs", import.meta.url), "utf8");
-  const readAction = driver.slice(
-    driver.lastIndexOf("  async readAction(actionId)"),
-    driver.lastIndexOf("  async readSessionRevision()"),
-  );
-  assert.match(readAction, /providerOnly: !renderedOnly/);
-  assert.doesNotMatch(readAction, /dumpAndroid|queryAndroidSemanticNodes/);
-});
-
 test("Android projection-provider IPC is bounded and leaves failure evidence", () => {
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),

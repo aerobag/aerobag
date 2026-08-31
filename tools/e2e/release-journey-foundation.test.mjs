@@ -4127,7 +4127,7 @@ test("Android reveal requires reachability and traverses only known scroll colle
     source.indexOf("\n  async reload()", source.lastIndexOf("  async revealElement(elementId)")),
   );
   assert.match(revealMethod, /establishRevealedElement/);
-  assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true\)/);
+  assert.match(revealMethod, /scrollUntilTag\(this\.serial, semanticTag, 20, true, true\)/);
   assert.match(revealMethod, /!androidElementMayRequireVerticalScroll\(elementId\)/);
   assert.match(revealMethod, /traverse: async \(\) => false/);
   const readElementMethod = source.slice(
@@ -4145,6 +4145,7 @@ test("Android vertical reveals use bounded semantic scrolling without hierarchy 
   );
   assert.match(method, /queryAndroidExactProjection/);
   assert.match(method, /verifyReachable: requireReachable/);
+  assert.match(method, /avoidNavigation/);
   assert.match(method, /scrollAndroidSemanticSurface\(serial, "vertical", direction\)/);
   assert.doesNotMatch(method, /dumpAndroid/);
   const service = readFileSync(

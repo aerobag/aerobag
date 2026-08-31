@@ -1520,7 +1520,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     return establishRevealedElement({
       description: semanticTag,
       readReachable: reachable,
-      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true),
+      traverse: () => scrollUntilTag(this.serial, semanticTag, 20, true, true),
     });
   }
 

@@ -1100,11 +1100,21 @@ export function androidSemanticNodeIsActionable(node) {
     node?.["center-reachable"] === "true";
 }
 
-export async function scrollUntilTag(serial, tag, maxSwipes = 8, requireReachable = false) {
-  if (await scrollUntilTagInDirection(serial, tag, "down", maxSwipes, requireReachable)) {
+export async function scrollUntilTag(
+  serial,
+  tag,
+  maxSwipes = 8,
+  requireReachable = false,
+  avoidNavigation = false,
+) {
+  if (await scrollUntilTagInDirection(
+    serial, tag, "down", maxSwipes, requireReachable, avoidNavigation,
+  )) {
     return true;
   }
-  return scrollUntilTagInDirection(serial, tag, "up", maxSwipes, requireReachable);
+  return scrollUntilTagInDirection(
+    serial, tag, "up", maxSwipes, requireReachable, avoidNavigation,
+  );
 }
 
 export async function scrollUntilTagPrefix(serial, tagPrefix, maxSwipes = 8, requireReachable = false) {
@@ -1219,12 +1229,23 @@ export async function scrollHorizontallyUntilTag(serial, tag, maxSwipes = 8) {
   return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
 }
 
-async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requireReachable) {
+async function scrollUntilTagInDirection(
+  serial,
+  tag,
+  direction,
+  maxSwipes,
+  requireReachable,
+  avoidNavigation,
+) {
   for (let attempt = 0; attempt < maxSwipes; attempt += 1) {
     const target = queryAndroidExactProjection(
       serial,
       tag,
-      { includeDescendantText: false, verifyReachable: requireReachable },
+      {
+        includeDescendantText: false,
+        verifyReachable: requireReachable,
+        avoidNavigation,
+      },
     )[0];
     if (target && (!requireReachable || target["center-reachable"] === "true")) {
       return true;
@@ -1234,7 +1255,11 @@ async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes, requ
   const target = queryAndroidExactProjection(
     serial,
     tag,
-    { includeDescendantText: false, verifyReachable: requireReachable },
+    {
+      includeDescendantText: false,
+      verifyReachable: requireReachable,
+      avoidNavigation,
+    },
   )[0];
   return Boolean(target && (!requireReachable || target["center-reachable"] === "true"));
 }

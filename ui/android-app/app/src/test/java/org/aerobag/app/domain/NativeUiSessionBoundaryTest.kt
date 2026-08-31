@@ -275,7 +275,7 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
-    fun settingsMutationsCannotBlockComposeInputCallbacks() {
+    fun uiSessionMutationsCannotBlockComposeInputCallbacks() {
         val sessionSource =
             sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
         val runnerSource =
@@ -286,6 +286,7 @@ class NativeUiSessionBoundaryTest {
             "performSettingsAction",
             "performAircraftLibraryAction",
             "acceptDisclaimer",
+            "performCloudUiAction",
         )) {
             val declaration = sessionSource.substringBefore("fun $method(").takeLast(80)
             assertTrue(
@@ -302,14 +303,22 @@ class NativeUiSessionBoundaryTest {
             )
         }
         assertTrue(
-            "Settings mutations must use the retained FIFO and leave Android's main thread.",
+            "UI mutations must use the retained FIFO and leave Android's main thread.",
             runnerSource.contains("private val mutationQueue = Channel<SessionMutation>") &&
                 runnerSource.contains("private val mutationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)") &&
                 runnerSource.contains("for (mutation in mutationQueue)") &&
                 runnerSource.contains("withContext(Dispatchers.Main.immediate)") &&
                 mainActivity.contains("uiSessionWorkRunner.submitSettingsAction(") &&
                 mainActivity.contains("uiSessionWorkRunner.submitAircraftLibraryAction(") &&
-                mainActivity.contains("uiSessionWorkRunner.submitDisclaimerAcceptance("),
+                mainActivity.contains("uiSessionWorkRunner.submitDisclaimerAcceptance(") &&
+                mainActivity.contains("uiSessionWorkRunner.submitCloudUiAction("),
+        )
+        val cloudPage = sourceFile("src/main/java/org/aerobag/app/CloudPage.kt").readText()
+        assertTrue(
+            "Cloud platform effects must wait until core accepts the scheduled mutation.",
+            cloudPage.contains("onAccepted: () -> Unit") &&
+                cloudPage.contains("onAction(action.id, values) onAccepted@{") &&
+                !cloudPage.contains("if (!onAction("),
         )
     }
 

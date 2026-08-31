@@ -36,6 +36,8 @@ import org.aerobag.app.domain.PagedSessionOperationMetricsSnapshot
 import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
 import org.aerobag.app.domain.UiSessionSnapshot
+import org.aerobag.app.generated.CloudUiActionId
+import org.aerobag.app.generated.CloudUiFieldValue
 import org.aerobag.app.generated.NexradOverlayQueryResult
 import org.aerobag.app.generated.UiSessionWorkCompletionDecision
 import org.aerobag.app.generated.UiSessionWorkKind
@@ -144,6 +146,22 @@ class UiSessionWorkRunner(
         submitMutation(
             commandName = "acceptDisclaimer",
             operation = { it.acceptDisclaimer(agreementId) },
+            onResult = onResult,
+            onError = onError,
+        )
+    }
+
+    fun submitCloudUiAction(
+        actionId: CloudUiActionId,
+        fields: List<CloudUiFieldValue>,
+        onResult: (UiSessionSnapshot) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
+        submitMutation(
+            commandName = "performCloudUiAction",
+            operation = {
+                it.performCloudUiAction(actionId, fields, System.currentTimeMillis())
+            },
             onResult = onResult,
             onError = onError,
         )

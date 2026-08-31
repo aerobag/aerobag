@@ -74,7 +74,11 @@ internal fun CloudPage(
     onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
-    onAction: (CloudUiActionId, List<CloudUiFieldValue>) -> Boolean,
+    onAction: (
+        CloudUiActionId,
+        List<CloudUiFieldValue>,
+        onAccepted: () -> Unit,
+    ) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -97,41 +101,48 @@ internal fun CloudPage(
     fun invoke(action: UiCloudAction) {
         copyStatus = ""
         val values = fields.map { CloudUiFieldValue(it.key, it.value) }
-        if (!onAction(action.id, values)) return
-        when (val effect = action.platformEffect) {
-            is CloudPlatformEffect.ScanQrCode -> {
-                qrScanner.startScan()
-                    .addOnSuccessListener { barcode ->
-                        if (!compositionActive.get()) return@addOnSuccessListener
-                        val setupCode = barcode.rawValue?.trim().orEmpty()
-                        if (setupCode.isNotEmpty()) {
-                            currentOnAction.value(
-                                effect.completionAction,
-                                listOf(CloudUiFieldValue(effect.fieldId, setupCode)),
-                            )
-                        } else {
+        val effect = action.platformEffect
+        onAction(action.id, values) onAccepted@{
+            if (!compositionActive.get()) return@onAccepted
+            when (effect) {
+                is CloudPlatformEffect.ScanQrCode -> {
+                    qrScanner.startScan()
+                        .addOnSuccessListener { barcode ->
+                            if (!compositionActive.get()) return@addOnSuccessListener
+                            val setupCode = barcode.rawValue?.trim().orEmpty()
+                            if (setupCode.isNotEmpty()) {
+                                currentOnAction.value(
+                                    effect.completionAction,
+                                    listOf(CloudUiFieldValue(effect.fieldId, setupCode)),
+                                    {},
+                                )
+                            } else {
+                                showActionToast(
+                                    context,
+                                    "The QR code contained no Device Setup Code.",
+                                    long = true,
+                                )
+                            }
+                        }
+                        .addOnFailureListener { error ->
+                            if (!compositionActive.get()) return@addOnFailureListener
                             showActionToast(
                                 context,
-                                "The QR code contained no Device Setup Code.",
+                                "Could not scan QR code: ${error.message ?: "scanner failed"}",
                                 long = true,
                             )
                         }
-                    }
-                    .addOnFailureListener { error ->
-                        if (!compositionActive.get()) return@addOnFailureListener
-                        showActionToast(
-                            context,
-                            "Could not scan QR code: ${error.message ?: "scanner failed"}",
-                            long = true,
-                        )
-                    }
+                }
+                is CloudPlatformEffect.CopyText -> {
+                    val clipboard =
+                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("Aerobag Device Setup Code", effect.text),
+                    )
+                    copyStatus = "Device Setup Code copied"
+                }
+                null -> Unit
             }
-            is CloudPlatformEffect.CopyText -> {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Aerobag Device Setup Code", effect.text))
-                copyStatus = "Device Setup Code copied"
-            }
-            null -> Unit
         }
     }
 

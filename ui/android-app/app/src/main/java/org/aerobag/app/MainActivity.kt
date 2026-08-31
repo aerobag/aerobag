@@ -3918,14 +3918,16 @@ internal fun AerobagApp(
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
-                        onAction = { actionId, fields ->
-                            applySessionCommand("performCloudUiAction") {
-                                uiSession.performCloudUiAction(
-                                    actionId,
-                                    fields,
-                                    System.currentTimeMillis(),
-                                )
-                            } != null
+                        onAction = { actionId, fields, onAccepted ->
+                            uiSessionWorkRunner.submitCloudUiAction(
+                                actionId = actionId,
+                                fields = fields,
+                                onResult = {
+                                    applySessionSnapshot(it)
+                                    onAccepted()
+                                },
+                                onError = ::recoverSessionCommandFailure,
+                            )
                         },
                     )
                 }

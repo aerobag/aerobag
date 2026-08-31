@@ -1798,6 +1798,7 @@ class NativeUiSession internal constructor(
         )
     }
 
+    @RawUiSessionWorkApi
     fun performCloudUiAction(
         actionId: CloudUiActionId,
         fields: List<CloudUiFieldValue>,

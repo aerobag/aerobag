@@ -183,7 +183,8 @@ test("Android physical taps use bounded preflight and exactly one delivered touc
     import.meta.url,
   ), "utf8");
   assert.match(indexedControl, /motionEventSpy/);
-  assert.match(indexedControl, /event\.actionMasked == MotionEvent\.ACTION_DOWN/);
+  assert.match(indexedControl, /event\.actionMasked == MotionEvent\.ACTION_UP/);
+  assert.doesNotMatch(indexedControl, /event\.actionMasked == MotionEvent\.ACTION_DOWN/);
   assert.match(indexedControl, /window-focus:\$windowFocused/);
   assert.match(indexedControl, /OnWindowFocusChangeListener/);
   assert.match(indexedControl, /publishTouchReceipt\(semanticTag = semanticTag\)/);

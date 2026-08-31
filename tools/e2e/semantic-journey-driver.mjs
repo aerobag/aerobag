@@ -221,7 +221,7 @@ export async function editSemanticText(
   if (current && semanticTextValue(current) === expected) return current;
   if (!current?.focused) {
     current = await transition(`${description} focus`, {
-      readinessSamples: 1,
+      readinessSamples: semanticActionReadinessSamples(driver),
       acceptPreexistingCompletion: true,
       ready: async () => {
         const element = await readTextElement(controlId);

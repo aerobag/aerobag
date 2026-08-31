@@ -96,7 +96,7 @@ internal fun Modifier.e2eIndexedControl(
         }
     }
     return motionEventSpy { event ->
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
             E2eProjectionRegistry.publishTouchReceipt(semanticTag = semanticTag)
         }
     }.onGloballyPositioned { coordinates ->

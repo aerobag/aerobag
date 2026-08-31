@@ -2602,6 +2602,7 @@ test("semantic text editing uses action-ready reads before every mutation", asyn
   );
   assert.doesNotMatch(method, /discoverTextElement/);
   assert.match(method, /let current = await readTextElement\(controlId\)/);
+  assert.match(method, /readinessSamples: semanticActionReadinessSamples\(driver\)/);
   assert.match(method, /ready: async \(\) => \{[\s\S]*readTextElement\(controlId\)/);
   assert.match(method, /complete: async \(\) => \{[\s\S]*readTextElement\(controlId\)/);
 });
@@ -3948,10 +3949,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/21/);
-  assert.match(service, /aerobag-semantic-driver\/21/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/21/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/21/);
+  assert.match(harness, /aerobag-semantic-driver\/22/);
+  assert.match(service, /aerobag-semantic-driver\/22/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/22/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/22/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

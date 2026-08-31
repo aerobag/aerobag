@@ -45,7 +45,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/18";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/19";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -1711,9 +1711,10 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {
         if (semanticPath.startsWith("projection-provider:")) {
-            // Current provider geometry rejects stale actions, and the physical
-            // touch receipt proves which tagged control received the tap.
-            ProviderProjection projection = providerProjection(tag, false);
+            // Current app-owned geometry rejects stale actions. The tagged
+            // physical touch receipt proves that the rendered control, rather
+            // than merely these coordinates, received the one emitted tap.
+            ProviderProjection projection = providerProjection(tag, true);
             if (!projection.handled || projection.values.length() != 1) return null;
             try {
                 JSONObject value = projection.values.getJSONObject(0);
@@ -1725,26 +1726,7 @@ public final class SemanticDriverService extends AccessibilityService {
                     !"true".equals(value.optString("center-reachable", "false"))) {
                     return null;
                 }
-                AccessibilityNodeInfo rendered = resolveRenderedNode(
-                    tag,
-                    currentBounds,
-                    semanticPath
-                );
-                if (rendered == null) return null;
-                try {
-                    rendered.refresh();
-                    Rect renderedBounds = new Rect();
-                    rendered.getBoundsInScreen(renderedBounds);
-                    boolean sameTargetArea =
-                        currentBounds.contains(renderedBounds.centerX(), renderedBounds.centerY()) &&
-                        renderedBounds.contains(currentBounds.centerX(), currentBounds.centerY());
-                    return sameTargetArea && rendered.isVisibleToUser() &&
-                        rendered.isEnabled() && centerReachable(rendered)
-                            ? renderedBounds
-                            : null;
-                } finally {
-                    rendered.recycle();
-                }
+                return currentBounds;
             } catch (JSONException error) {
                 return null;
             }

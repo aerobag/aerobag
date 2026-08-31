@@ -126,7 +126,7 @@ manifest = {
         "path": driver_apk.name,
         "size_bytes": driver_apk.stat().st_size,
         "sha256": hashlib.sha256(driver_apk.read_bytes()).hexdigest(),
-        "protocol": "aerobag-semantic-driver/18",
+        "protocol": "aerobag-semantic-driver/19",
     },
     "cloud_server": {
         "path": cloud_server.name,

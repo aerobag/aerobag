@@ -29,9 +29,10 @@ const CLOCK_SET_TIMEOUT_MS = 15000;
 // A transient accessibility stall must leave time for the transition contract
 // to observe recovery. Indexed controls normally bypass this fallback entirely.
 const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
+const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/18";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/19";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -193,9 +194,25 @@ export function semanticDriverObservationRequest(
   path,
   request = semanticDriverRequest,
 ) {
-  return request(
+  const deadline = performance.now() + SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS * 1_000;
+  let response = request(
     port, path, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
   );
+  while (semanticDriverObservationUnavailable(response)) {
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 150) return response;
+    const idleTimeoutMs = Math.max(1, Math.floor(remainingMs - 150));
+    const idle = semanticDriverIdleRequest(port, idleTimeoutMs, request);
+    if (idle.status !== 0 || idle.stdout.trim() !== "idle") return response;
+    const retryMs = deadline - performance.now();
+    if (retryMs <= 50) return response;
+    response = request(
+      port,
+      path,
+      Math.min(SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS, retryMs / 1_000),
+    );
+  }
+  return response;
 }
 
 export function semanticDriverActionRequest(
@@ -318,7 +335,9 @@ function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
     bounds: expectedBounds,
     path: semanticPath,
   });
-  const response = semanticDriverActionRequest(port, `/tap-target?${query}`);
+  // Target validation is read-only. It may recover a timed-out projection
+  // read because no physical input has been emitted yet.
+  const response = semanticDriverObservationRequest(port, `/tap-target?${query}`);
   if (response.status !== 0) {
     if (response.stdout.trim() === "physical tap target rejected") return null;
     const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();

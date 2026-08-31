@@ -193,8 +193,16 @@ test("Android physical taps use bounded preflight and exactly one delivered touc
   assert.match(service, /case "\/await-touch"/);
   assert.match(service, /receipt\.sequence > sequence && receipt\.handled/);
   assert.match(service, /expectedBounds\.contains\(receipt\.rawX, receipt\.rawY\)/);
-  assert.match(service, /ProviderProjection projection = providerProjection\(tag, false\)/);
-  assert.match(service, /AccessibilityNodeInfo rendered = resolveRenderedNode/);
+  assert.match(service, /ProviderProjection projection = providerProjection\(tag, true\)/);
+  const providerTapStart = service.indexOf(
+    'if (semanticPath.startsWith("projection-provider:"))',
+  );
+  const providerTap = service.slice(
+    providerTapStart,
+    service.indexOf('AccessibilityNodeInfo node = resolveRenderedNode', providerTapStart),
+  );
+  assert.doesNotMatch(providerTap, /resolveRenderedNode|AccessibilityNodeInfo/);
+  assert.match(providerTap, /return currentBounds/);
   assert.match(service, /getRootInActiveWindow\(\)/);
   assert.match(service, /findRenderedNodeAtPoint\([\s\S]*semanticPath\.startsWith\("projection-provider:"\)/);
 

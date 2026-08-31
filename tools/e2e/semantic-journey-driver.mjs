@@ -891,8 +891,6 @@ export async function establishRevealedElement({
   traverse,
   observe = observeUntil,
 }) {
-  const initial = await readReachable();
-  if (initial) return initial;
   try {
     return (await observe(
       `${description} reachable after traversal`,

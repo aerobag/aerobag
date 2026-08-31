@@ -2091,6 +2091,16 @@ async function selectAirportFromMapSearch(runtime, airportId) {
   });
 }
 
+export async function waitForMapSelectionAction(runtime, actionId, description) {
+  const testId = runtime.platform === "web"
+    ? `map-selection-action-${actionId}`
+    : `map-selection-action:${actionId}`;
+  return runtime.eventually(
+    description ?? `map selection ${actionId} action`,
+    () => runtime.driver.readElement(testId),
+  );
+}
+
 export async function selectTfrFromPreparedMap(runtime, airportId) {
   // Searching establishes the target viewport. Do not ask the resulting
   // selection snapshot about TFRs until the asynchronous overlay for that
@@ -2210,8 +2220,10 @@ async function inspectorDetails(runtime) {
   await closeMapDetail(runtime, "airport-info-modal:KSEA");
 
   await selectAirportFromMapSearch(runtime, "KSEA");
-  const weatherAction = await runtime.driver.readElement(
-    runtime.platform === "web" ? "map-selection-action-wx" : "map-selection-action:wx",
+  const weatherAction = await waitForMapSelectionAction(
+    runtime,
+    "wx",
+    "inspector weather action",
   );
   const weather = weatherAction?.enabled
     ? await runtime.action("open inspector weather", "wx", {
@@ -2230,8 +2242,10 @@ async function inspectorDetails(runtime) {
   }
 
   await selectAirportFromMapSearch(runtime, "KSEA");
-  const platesAction = await runtime.driver.readElement(
-    runtime.platform === "web" ? "map-selection-action-plates" : "map-selection-action:plates",
+  const platesAction = await waitForMapSelectionAction(
+    runtime,
+    "plates",
+    "inspector plates action",
   );
   const plate = platesAction?.enabled ? await runtime.action("open inspector plates", "plates", {
     complete: () => runtime.driver.readElement("page:plate"),
@@ -2793,9 +2807,7 @@ async function preparedLiveFeeds(runtime) {
   }, E2E_TIMING.resourceMs);
 
   await selectAirportFromMapSearch(runtime, "KSEA");
-  const weatherAction = await runtime.eventually("KSEA weather action", () => runtime.driver.readElement(
-    runtime.platform === "web" ? "map-selection-action-wx" : "map-selection-action:wx",
-  ));
+  const weatherAction = await waitForMapSelectionAction(runtime, "wx", "KSEA weather action");
   if (!weatherAction.enabled) throw new Error(`KSEA weather is unavailable: ${weatherAction.text}`);
   await runtime.action("open prepared weather modal", "wx", {
     complete: () => runtime.driver.readModal("weather-detail-modal"),

@@ -854,6 +854,38 @@ test("inspector SPOT gestures ignore moving-ownship map rotation", () => {
   assert.doesNotMatch(spotPhase, /selectStationaryPlanPreview/);
 });
 
+test("map selection actions wait through asynchronous inspector materialization", async () => {
+  const { waitForMapSelectionAction } = await import("./release-journey-implementations.mjs");
+  const reads = [];
+  let attempts = 0;
+  const runtime = {
+    platform: "android",
+    driver: {
+      async readElement(id) {
+        reads.push(id);
+        attempts += 1;
+        return attempts < 3 ? null : { test_id: id, enabled: true };
+      },
+    },
+    async eventually(description, observe) {
+      assert.equal(description, "inspector weather action");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const result = await observe();
+        if (result) return result;
+      }
+      throw new Error("action did not materialize");
+    },
+  };
+
+  const action = await waitForMapSelectionAction(runtime, "wx", "inspector weather action");
+  assert.equal(action.enabled, true);
+  assert.deepEqual(reads, [
+    "map-selection-action:wx",
+    "map-selection-action:wx",
+    "map-selection-action:wx",
+  ]);
+});
+
 test("viewport geometry identity excludes orientation but preserves pan changes", async () => {
   const {
     viewportGeometryId,

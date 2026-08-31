@@ -149,13 +149,20 @@ test("Android emulator readiness enables real HWUI drawing", () => {
   );
 });
 
-test("Android physical taps retry only after an explicit missing app touch receipt", () => {
+test("Android physical taps use bounded preflight and exactly one delivered touch", () => {
   const harness = readFileSync(new URL("android-harness.mjs", import.meta.url), "utf8");
   const click = harness.slice(
     harness.indexOf("export function clickAndroidSemanticNode"),
     harness.indexOf("function androidPhysicalTapTarget"),
   );
-  assert.match(click, /for \(let attempt = 0; attempt < 2; attempt \+= 1\)/);
+  assert.match(click, /for \(let attempt = 0; attempt < 4; attempt \+= 1\)/);
+  assert.match(click, /waitForAndroidSemanticEvent\(serial, 250\)/);
+  assert.match(click, /if \(!refreshed\) continue/);
+  assert.equal(
+    click.match(/"shell", "input", "tap"/g)?.length,
+    1,
+    "preflight retries must never duplicate the physical tap",
+  );
   assert.match(click, /awaitAndroidPhysicalTouch[\s\S]*?return true/);
   assert.match(click, /physical tap was not received/);
 
@@ -186,14 +193,10 @@ test("Android physical taps retry only after an explicit missing app touch recei
   assert.match(service, /case "\/await-touch"/);
   assert.match(service, /receipt\.sequence > sequence && receipt\.handled/);
   assert.match(service, /expectedBounds\.contains\(receipt\.rawX, receipt\.rawY\)/);
-  assert.match(service, /indexedCenterReachable[\s\S]*findRenderedNodeInInputWindow/);
-  assert.match(service, /AccessibilityNodeInfo root = getRootInActiveWindow\(\)/);
-  assert.match(service, /findRenderedNodeAtPoint\(root, tag, expectedBounds, true\)/);
-  assert.match(
-    service,
-    /findRenderedNodeInInputWindow\(\s*"parity:primary-navigation",\s*navigationBounds/,
-  );
-  assert.match(service, /if \(renderedNavigation == null\) return true/);
+  assert.match(service, /ProviderProjection projection = providerProjection\(tag, false\)/);
+  assert.match(service, /AccessibilityNodeInfo rendered = resolveRenderedNode/);
+  assert.match(service, /getRootInActiveWindow\(\)/);
+  assert.match(service, /findRenderedNodeAtPoint\([\s\S]*semanticPath\.startsWith\("projection-provider:"\)/);
 
   const mapExplorer = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",

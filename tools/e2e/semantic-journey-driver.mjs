@@ -861,7 +861,7 @@ function queryFirstAndroidSemanticNode(
   const exact = choose(queryAndroidExactProjection(
     serial,
     tag,
-    { includeDescendantText, renderedOnly },
+    { includeDescendantText, renderedOnly, verifyReachable: requireReachable },
   ));
   if (exact || !allowPrefix) return exact;
   return choose(queryAndroidSemanticNodes(

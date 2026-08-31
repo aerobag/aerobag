@@ -10,6 +10,7 @@ import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
@@ -43,7 +44,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/15";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/16";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -281,6 +282,9 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean boundedOnly = "true".equals(query.getOrDefault("bounded_only", "false"));
         boolean providerOnly = "true".equals(query.getOrDefault("provider_only", "false"));
         boolean renderedOnly = "true".equals(query.getOrDefault("rendered_only", "false"));
+        boolean verifyReachable = "true".equals(
+            query.getOrDefault("verify_reachable", "false")
+        );
         respond(
             socket.getOutputStream(),
             "application/json; charset=utf-8",
@@ -290,7 +294,8 @@ public final class SemanticDriverService extends AccessibilityService {
                 indexedOnly,
                 boundedOnly,
                 providerOnly,
-                renderedOnly
+                renderedOnly,
+                verifyReachable
             ).toString() + "\n",
             200
         );
@@ -796,7 +801,8 @@ public final class SemanticDriverService extends AccessibilityService {
         boolean indexedOnly,
         boolean boundedOnly,
         boolean providerOnly,
-        boolean renderedOnly
+        boolean renderedOnly,
+        boolean verifyReachable
     ) {
         // Compose publishes indexed control geometry explicitly. Reading that
         // channel must not block behind an accessibility-tree traversal; the
@@ -804,7 +810,7 @@ public final class SemanticDriverService extends AccessibilityService {
         // rendered control. Unknown controls still use accessibility below.
         ProviderProjection providerProjection = renderedOnly
             ? ProviderProjection.unhandled()
-            : providerProjection(tag, false);
+            : providerProjection(tag, verifyReachable);
         if (providerProjection.handled) return providerProjection.values;
         JSONArray output = new JSONArray();
         if (tag.isEmpty() || providerOnly) return output;
@@ -1222,7 +1228,7 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static void appendExactProjectionValue(
+    private void appendExactProjectionValue(
         JSONArray output,
         AccessibilityNodeInfo node,
         String semanticPath,
@@ -1342,12 +1348,16 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     @SuppressWarnings("deprecation")
-    private static boolean centerReachable(AccessibilityNodeInfo node) {
+    private boolean centerReachable(AccessibilityNodeInfo node) {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!node.isVisibleToUser() || bounds.isEmpty()) return false;
         int centerX = bounds.centerX();
         int centerY = bounds.centerY();
+        Rect displayBounds = getSystemService(WindowManager.class)
+            .getCurrentWindowMetrics()
+            .getBounds();
+        if (!displayBounds.contains(centerX, centerY)) return false;
         AccessibilityNodeInfo ancestor = node.getParent();
         while (ancestor != null) {
             AccessibilityNodeInfo next = null;

@@ -2960,9 +2960,10 @@ test("Android horizontal controls use rendered hit geometry instead of layout pr
   assert.match(reveal, /renderedOnly = androidElementMayRequireHorizontalScroll\(elementId\)/);
   assert.match(reveal, /requireReachable: true, renderedOnly/);
   assert.match(harness, /rendered_only: String\(renderedOnly\)/);
+  assert.match(harness, /verify_reachable: String\(verifyReachable\)/);
   assert.match(
     service,
-    /renderedOnly\s*\? ProviderProjection\.unhandled\(\)\s*:\s*providerProjection\(tag, false\)/,
+    /renderedOnly\s*\? ProviderProjection\.unhandled\(\)\s*:\s*providerProjection\(tag, verifyReachable\)/,
   );
 });
 
@@ -3003,7 +3004,10 @@ test("Android first-node probes stop semantic traversal at the first match", () 
   );
   assert.match(queryFirst, /allowPrefix = false/);
   assert.match(queryFirst, /queryAndroidExactProjection/);
-  assert.match(queryFirst, /\{ includeDescendantText, renderedOnly \}/);
+  assert.match(
+    queryFirst,
+    /\{ includeDescendantText, renderedOnly, verifyReachable: requireReachable \}/,
+  );
   assert.doesNotMatch(queryFirst, /indexedOnly: true/);
   assert.match(queryFirst, /\{ prefix: true, first: true, includeDescendantText \}/);
 });
@@ -3817,10 +3821,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/15/);
-  assert.match(service, /aerobag-semantic-driver\/15/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/15/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/15/);
+  assert.match(harness, /aerobag-semantic-driver\/16/);
+  assert.match(service, /aerobag-semantic-driver\/16/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/16/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/16/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -4082,6 +4086,7 @@ test("Android vertical reveals use bounded semantic scrolling without hierarchy 
     harness.indexOf("export function pressKey"),
   );
   assert.match(method, /queryAndroidExactProjection/);
+  assert.match(method, /verifyReachable: requireReachable/);
   assert.match(method, /scrollAndroidSemanticSurface\(serial, "vertical", direction\)/);
   assert.doesNotMatch(method, /dumpAndroid/);
   const service = readFileSync(
@@ -4290,6 +4295,11 @@ test("Android semantic action readiness requires a center-reachable control", ()
     source.lastIndexOf("  async readSessionRevision()"),
   );
   assert.match(readAction, /requireVisible: true,\s*requireReachable: true/);
+  const queryFirst = source.slice(
+    source.indexOf("function queryFirstAndroidSemanticNode"),
+    source.indexOf("function readinessEvidenceMatchesTag"),
+  );
+  assert.match(queryFirst, /verifyReachable: requireReachable/);
   const service = readFileSync(
     new URL(
       "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
@@ -4297,6 +4307,8 @@ test("Android semantic action readiness requires a center-reachable control", ()
     ),
     "utf8",
   );
+  assert.match(service, /getCurrentWindowMetrics\(\)[\s\S]*getBounds\(\)/);
+  assert.match(service, /displayBounds\.contains\(centerX, centerY\)/);
   assert.match(service, /ancestorClip\.contains\(bounds\.centerX\(\), bounds\.centerY\(\)\)/);
   assert.match(service, /"center-reachable"/);
   assert.doesNotMatch(service, /awaitAccepted(?:Click|Text)Action|ACTION_RETRY/);

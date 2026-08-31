@@ -162,7 +162,7 @@ function semanticDriverRequest(port, path, timeoutSeconds = 5, method = "GET") {
     `http://127.0.0.1:${port}${path}`,
   ], {
     encoding: "utf8",
-    timeout: (timeoutSeconds + 1) * 1000,
+    timeout: Math.ceil((timeoutSeconds + 1) * 1000),
     maxBuffer: 16 * 1024 * 1024,
   });
 }

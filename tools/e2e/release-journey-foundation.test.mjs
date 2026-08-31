@@ -3882,6 +3882,14 @@ test("Android semantic observations recover one timed-out read without creating 
   assert.equal(requests[2][1], "/query?tag=map");
 });
 
+test("Android semantic request watchdog accepts fractional network deadlines", () => {
+  const source = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("function semanticDriverRequest(");
+  const end = source.indexOf("\nfunction ", start + 1);
+  const implementation = source.slice(start, end);
+  assert.match(implementation, /timeout: Math\.ceil\(\(timeoutSeconds \+ 1\) \* 1000\)/);
+});
+
 test("revealed-element observation handles the initial probe through the bounded observer", () => {
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const start = source.indexOf("export async function establishRevealedElement");

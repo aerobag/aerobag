@@ -158,6 +158,7 @@ test("Android physical taps use bounded preflight and exactly one delivered touc
   assert.match(click, /for \(let attempt = 0; attempt < 4; attempt \+= 1\)/);
   assert.match(click, /waitForAndroidSemanticEvent\(serial, 250\)/);
   assert.match(click, /if \(!refreshed\) continue/);
+  assert.match(click, /if \(!androidSemanticReadinessStateMatches[\s\S]*continue/);
   assert.equal(
     click.match(/"shell", "input", "tap"/g)?.length,
     1,

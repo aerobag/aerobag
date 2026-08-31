@@ -298,9 +298,13 @@ export function clickAndroidSemanticNode(
       serial, tag, { providerOnly: true },
     )[0] ?? null;
     if (!refreshed) continue;
-    if (!androidSemanticReadinessStateMatches(tag, refreshed, expectedState)) {
-      throw new Error(`persistent Android semantic click target changed for ${tag}`);
+    if (!androidSemanticTargetStateMatches(tag, refreshed, expectedState)) {
+      throw new Error(
+        `persistent Android semantic click state changed for ${tag}: ` +
+          JSON.stringify({ expected: expectedState, current: refreshed }),
+      );
     }
+    if (!androidSemanticReadinessStateMatches(tag, refreshed, expectedState)) continue;
     currentBounds = refreshed.bounds;
     currentPath = refreshed["semantic-path"];
   }
@@ -318,15 +322,29 @@ export function clickAndroidSemanticNode(
   throw new Error(`persistent Android physical tap was not received by ${tag}`);
 }
 
-export function androidSemanticReadinessStateMatches(tag, node, expectedState = {}) {
+function normalizedAndroidSemanticStateDescription(value) {
+  if (value == null) return value;
+  return String(value)
+    .replace(/(?:^|:)window-focus:(?:true|false)(?=:|$)/g, "")
+    .replace(/^:/, "");
+}
+
+export function androidSemanticTargetStateMatches(tag, node, expectedState = {}) {
   const matches = (actual, expected) => expected == null || String(actual) === String(expected);
   return node?.["resource-id"] === tag &&
     Boolean(node.bounds) && Boolean(node["semantic-path"]) &&
-    node.visible === "true" && node["center-reachable"] === "true" &&
     matches(node.enabled, expectedState.enabled) &&
     matches(node.selected, expectedState.selected) &&
     matches(node.checked, expectedState.checked) &&
-    matches(node["state-description"], expectedState.stateDescription);
+    matches(
+      normalizedAndroidSemanticStateDescription(node["state-description"]),
+      normalizedAndroidSemanticStateDescription(expectedState.stateDescription),
+    );
+}
+
+export function androidSemanticReadinessStateMatches(tag, node, expectedState = {}) {
+  return androidSemanticTargetStateMatches(tag, node, expectedState) &&
+    node.visible === "true" && node["center-reachable"] === "true";
 }
 
 function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {

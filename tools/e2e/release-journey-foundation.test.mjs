@@ -73,6 +73,7 @@ import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
   androidSemanticReadinessStateMatches,
+  androidSemanticTargetStateMatches,
   semanticDriverActionRequest,
   semanticDriverObservationRequest,
   setAndroidWallClockAndWait,
@@ -3271,7 +3272,7 @@ test("Android semantic taps validate current controls before one physical input 
   assert.doesNotMatch(service, /dispatchGesture|ACTION_CLICK/);
 });
 
-test("Android stale indexed targets can refresh only without changing semantic state", () => {
+test("Android stale indexed targets separate semantic state from temporary actionability", () => {
   const current = {
     "resource-id": "parity:button:HOME",
     "semantic-path": "projection-provider:42",
@@ -3281,27 +3282,52 @@ test("Android stale indexed targets can refresh only without changing semantic s
     enabled: "true",
     selected: "false",
     checked: "false",
-    "state-description": "enabled:true:selected:false:text:HOME",
+    "state-description": "enabled:true:selected:false:text:HOME:window-focus:true",
   };
   const expected = {
     enabled: true,
     selected: false,
     checked: false,
-    stateDescription: "enabled:true:selected:false:text:HOME",
+    stateDescription: "enabled:true:selected:false:text:HOME:window-focus:false",
   };
+  assert.equal(
+    androidSemanticTargetStateMatches("parity:button:HOME", current, expected),
+    true,
+    "window focus is delivery metadata, not a semantic action-state change",
+  );
   assert.equal(
     androidSemanticReadinessStateMatches("parity:button:HOME", current, expected),
     true,
   );
   assert.equal(
-    androidSemanticReadinessStateMatches(
+    androidSemanticTargetStateMatches(
       "parity:button:HOME", { ...current, selected: "true" }, expected,
     ),
     false,
   );
   assert.equal(
-    androidSemanticReadinessStateMatches(
+    androidSemanticTargetStateMatches(
       "parity:button:HOME", { ...current, "resource-id": "parity:button:PLATE" }, expected,
+    ),
+    false,
+  );
+  assert.equal(
+    androidSemanticTargetStateMatches(
+      "parity:button:HOME",
+      { ...current, "state-description": "enabled:true:selected:false:text:PLATE:window-focus:true" },
+      expected,
+    ),
+    false,
+  );
+  assert.equal(
+    androidSemanticTargetStateMatches(
+      "parity:button:HOME", { ...current, "center-reachable": "false" }, expected,
+    ),
+    true,
+  );
+  assert.equal(
+    androidSemanticReadinessStateMatches(
+      "parity:button:HOME", { ...current, "center-reachable": "false" }, expected,
     ),
     false,
   );

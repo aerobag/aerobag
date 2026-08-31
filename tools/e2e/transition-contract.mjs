@@ -248,6 +248,7 @@ export async function performTransition(description, {
   intervalMs = E2E_TIMING.pollIntervalMs,
   readinessSamples = E2E_TIMING.transitionReadinessSamples,
   completionSamples = E2E_TIMING.transitionCompletionSamples,
+  acceptPreexistingCompletion = false,
   onTiming = null,
 }) {
   if (!Number.isInteger(readinessSamples) || readinessSamples < 1) {
@@ -315,6 +316,20 @@ export async function performTransition(description, {
     // a missing postcondition may either return null or fail to read.
   }
   if (completionBeforeAction) {
+    if (acceptPreexistingCompletion) {
+      Object.assign(timing, {
+        outcome: "pass",
+        failure_phase: null,
+        action_ms: 0,
+        completion_ms: 0,
+        response_ms: 0,
+        total_ms: Math.round(performance.now() - transitionStartedAt),
+        action_result: { skipped: "already-complete" },
+        observation: diagnosticValue(completionBeforeAction),
+      });
+      onTiming?.(timing);
+      return { value: completionBeforeAction, timing };
+    }
     timing.total_ms = Math.round(performance.now() - transitionStartedAt);
     timing.observation = diagnosticValue(completionBeforeAction);
     await recordFailure(

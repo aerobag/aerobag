@@ -223,6 +223,7 @@ export async function editSemanticText(
   if (!current?.focused) {
     current = await transition(`${description} focus`, {
       readinessSamples: 1,
+      acceptPreexistingCompletion: true,
       ready: async () => {
         const element = await discoverTextElement(controlId);
         return element?.enabled && element.actionable !== false ? element : null;

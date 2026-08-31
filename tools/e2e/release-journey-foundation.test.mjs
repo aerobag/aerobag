@@ -526,6 +526,38 @@ test("a transition rejects a postcondition that was already true before its acti
   assert.equal(actions, 0);
 });
 
+test("an ensure transition accepts state that converges before its action", async () => {
+  let actions = 0;
+  const result = await performTransition("ensure focused", {
+    ready: async () => ({ test_id: "editor", focused: false }),
+    act: async () => { actions += 1; },
+    complete: async () => ({ test_id: "editor", focused: true }),
+    acceptPreexistingCompletion: true,
+    intervalMs: 1,
+  });
+  assert.equal(actions, 0);
+  assert.equal(result.value.focused, true);
+  assert.deepEqual(result.timing.action_result, { skipped: "already-complete" });
+});
+
+test("only text-focus convergence may accept an already-complete transition", () => {
+  const journeys = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const driver = readFileSync(
+    new URL("./semantic-journey-driver.mjs", import.meta.url),
+    "utf8",
+  );
+  const editText = driver.slice(
+    driver.indexOf("export async function editSemanticText"),
+    driver.indexOf("export async function inspectSemanticMapAt"),
+  );
+  assert.doesNotMatch(journeys, /acceptPreexistingCompletion/);
+  assert.equal((driver.match(/acceptPreexistingCompletion/g) ?? []).length, 1);
+  assert.match(editText, /acceptPreexistingCompletion: true/);
+});
+
 test("a user transition cannot borrow a long-running operation budget", async () => {
   await assert.rejects(
     performTransition("slow button", {

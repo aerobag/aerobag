@@ -115,7 +115,7 @@ internal fun Modifier.e2eIndexedTextControl(
     focused: Boolean,
 ): Modifier = e2eIndexedControl(
     semanticTag = semanticTag,
-    state = "text:${Uri.encode(text)}:enabled:$enabled:focused:$focused",
+    state = "kind:text:text:${Uri.encode(text)}:enabled:$enabled:focused:$focused",
 )
 
 private fun LayoutCoordinates.toE2eBounds(): String {

@@ -583,6 +583,16 @@ internal fun PlaybackSmallButton(
         modifier =
             Modifier
                 .height(height)
+                .then(
+                    if (testTag == null) {
+                        Modifier
+                    } else {
+                        Modifier.e2eIndexedControl(
+                            semanticTag = testTag,
+                            state = "enabled:$enabled:selected:false:checked:false",
+                        )
+                    },
+                )
                 .then(if (testTag == null) Modifier else Modifier.testTag(testTag))
                 .then(if (icon == null) Modifier.widthIn(min = height * 2.05f) else Modifier.width(height))
                 .then(

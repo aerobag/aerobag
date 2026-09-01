@@ -1013,6 +1013,9 @@ public final class SemanticDriverService extends AccessibilityService {
             value.put("selected", fields.getOrDefault("selected", "false"));
             value.put("checked", fields.getOrDefault("checked", "false"));
             value.put("focused", fields.getOrDefault("focused", "false"));
+            value.put("set-text-action", Boolean.toString(
+                "text".equals(fields.getOrDefault("kind", ""))
+            ));
             value.put("state-description", snapshot.state);
             value.put("bounds", hasBounds ? snapshot.bounds : "[0,0][1,1]");
             value.put(

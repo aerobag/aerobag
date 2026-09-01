@@ -3242,7 +3242,7 @@ test("Android journey controls publish indexed geometry through the private E2E 
   );
   assert.match(projection, /fun Modifier\.e2eIndexedControl/);
   assert.match(projection, /fun Modifier\.e2eIndexedTextControl/);
-  assert.match(projection, /text:\$\{Uri\.encode\(text\)\}:enabled:\$enabled:focused:\$focused/);
+  assert.match(projection, /kind:text:text:\$\{Uri\.encode\(text\)\}:enabled:\$enabled:focused:\$focused/);
   assert.match(projection, /positionOnScreen\(\)/);
   assert.doesNotMatch(projection, /boundsInWindow\(\)/);
   assert.match(provider, /snapshot\.bounds/);
@@ -4273,11 +4273,45 @@ test("Android semantic text delivery revalidates one exact rendered accessibilit
   assert.match(service, /supportsAction\([\s\S]*AccessibilityNodeInfo\.ACTION_SET_TEXT/);
   assert.match(service, /ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE/);
   assert.match(service, /node\.performAction\(AccessibilityNodeInfo\.ACTION_SET_TEXT, arguments\)/);
-  assert.match(driver, /renderedOnly: true/);
+  assert.match(driver, /providerOnly: true/);
+  assert.match(service, /"text"\.equals\(fields\.getOrDefault\("kind", ""\)\)/);
   assert.match(driver, /projected\.focused && !projected\.supports_set_text/);
   assert.match(driver, /readyElement\.focused !== true/);
   assert.doesNotMatch(harness, /\/ime-ready/);
   assert.doesNotMatch(service, /SemanticDriverInputMethodService\.focusedTextReady/);
+});
+
+test("Android mandatory disclaimer publishes indexed action geometry", () => {
+  const activity = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt", import.meta.url),
+    "utf8",
+  );
+  const disclaimer = activity.slice(
+    activity.indexOf("internal fun DisclaimerConsentModal"),
+    activity.indexOf("internal data class UiInvalidationRevisions"),
+  );
+  assert.match(
+    disclaimer,
+    /e2eIndexedControl\(\s*semanticTag = "parity:disclaimer-accept-button"/,
+  );
+  assert.match(disclaimer, /testTag\("parity:disclaimer-accept-button"\)/);
+});
+
+test("Android playback buttons publish indexed action geometry", () => {
+  const playback = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/PlaybackWidget.kt", import.meta.url),
+    "utf8",
+  );
+  const button = playback.slice(
+    playback.indexOf("internal fun PlaybackSmallButton"),
+    playback.indexOf("internal fun PlaybackButtonIconCanvas"),
+  );
+  assert.match(
+    button,
+    /e2eIndexedControl\(\s*semanticTag = testTag/,
+  );
+  assert.match(button, /state = "enabled:\$enabled:selected:false:checked:false"/);
+  assert.match(button, /Modifier\.testTag\(testTag\)/);
 });
 
 test("Android click and focus delivery resolves the current Compose virtual node", () => {
@@ -4292,6 +4326,17 @@ test("Android click and focus delivery resolves the current Compose virtual node
   assert.match(tap, /parseBounds[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/);
   assert.match(service, /renderedTapBounds[\s\S]*resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
   assert.doesNotMatch(service, /clickRenderedNode|focusRenderedNode|clickMatchingNode|focusMatchingNode/);
+});
+
+test("Android action readiness requires app-indexed geometry", () => {
+  const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
+  const methodStart = driver.lastIndexOf("async readAction(actionId)");
+  const method = driver.slice(
+    methodStart,
+    driver.indexOf("async readSessionRevision()", methodStart),
+  );
+  assert.match(method, /queryFirstAndroidSemanticNode/);
+  assert.match(method, /providerOnly: true/);
 });
 
 test("Android semantic lookup prefers an exact action over an earlier prefix match", () => {
@@ -4351,7 +4396,7 @@ test("Android reveal requires reachability and traverses only known scroll colle
   assert.match(readElementMethod, /requireVisible: true/);
 });
 
-test("Android vertical reveals use bounded semantic scrolling without hierarchy dumps", () => {
+test("Android vertical reveals settle semantic scrolling before exposing a target", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const method = harness.slice(
     harness.indexOf("async function scrollUntilTagInDirection"),
@@ -4360,8 +4405,15 @@ test("Android vertical reveals use bounded semantic scrolling without hierarchy 
   assert.match(method, /queryAndroidExactProjection/);
   assert.match(method, /verifyReachable: requireReachable/);
   assert.match(method, /avoidNavigation/);
-  assert.match(method, /scrollAndroidSemanticSurface\(serial, "vertical", direction\)/);
-  assert.doesNotMatch(method, /dumpAndroid/);
+  assert.match(method, /await scrollAndroidSemanticSurfaceAndAwait/);
+  assert.doesNotMatch(method, /scrollAndroidSemanticSurface\(serial, "vertical", direction\)/);
+  const settleHelper = harness.slice(
+    harness.indexOf("async function scrollAndroidSemanticSurfaceAndAwait"),
+    harness.indexOf("export async function findNodeByScrolling"),
+  );
+  assert.match(settleHelper, /const before = dumpAndroid\(serial\)/);
+  assert.match(settleHelper, /awaitAndroidScrollProjectionSettled\(serial, before\)/);
+  assert.match(settleHelper, /observeChangedValueUntilStable/);
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",

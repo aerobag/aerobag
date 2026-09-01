@@ -1173,6 +1173,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
           requireVisible: true,
           requireReachable: true,
           renderedOnly,
+          providerOnly: true,
         },
       );
       if (!node || !androidElementEnabled(node)) continue;
@@ -1472,7 +1473,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { includeDescendantText: true, verifyReachable: true, renderedOnly: true },
+      { verifyReachable: true, providerOnly: true },
     ).find((candidate) =>
       candidate.visible === "true" && candidate["center-reachable"] === "true",
     ) ?? null;

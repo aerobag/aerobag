@@ -1202,6 +1202,16 @@ export function verticalScrollTargetIsReachable(xml, tag, { prefix = false } = {
 export async function scrollAndroidAndAwait(serial, bounds, direction) {
   const before = dumpAndroid(serial);
   if (!scrollAndroidSemanticNode(serial, bounds, direction)) return false;
+  return awaitAndroidScrollProjectionSettled(serial, before);
+}
+
+async function scrollAndroidSemanticSurfaceAndAwait(serial, orientation, direction) {
+  const before = dumpAndroid(serial);
+  if (!scrollAndroidSemanticSurface(serial, orientation, direction)) return false;
+  return awaitAndroidScrollProjectionSettled(serial, before);
+}
+
+async function awaitAndroidScrollProjectionSettled(serial, before) {
   try {
     await observeChangedValueUntilStable(
       "Android semantic scroll projection settled",
@@ -1289,7 +1299,9 @@ async function scrollUntilTagInDirection(
     if (target && (!requireReachable || target["center-reachable"] === "true")) {
       return true;
     }
-    if (!scrollAndroidSemanticSurface(serial, "vertical", direction)) break;
+    if (!await scrollAndroidSemanticSurfaceAndAwait(
+      serial, "vertical", direction,
+    )) break;
   }
   const target = queryAndroidExactProjection(
     serial,

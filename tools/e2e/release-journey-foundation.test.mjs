@@ -3092,6 +3092,22 @@ test("Android altitude departure basis keeps a stable action identity", () => {
   assert.doesNotMatch(source, /parity:altitude-planner-departure-basis:\$\{/);
 });
 
+test("Android altitude rows publish indexed action geometry and selection state", () => {
+  const source = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/AltitudePlannerPage.kt",
+    import.meta.url,
+  ), "utf8");
+  assert.match(
+    source,
+    /rowSemanticTag =\s*"parity:altitude-comparison-row:\$\{row\.actionUid \?: "disabled"\}"/,
+  );
+  assert.match(
+    source,
+    /e2eIndexedControl\(\s*semanticTag = rowSemanticTag,[\s\S]*"enabled:\$\{row\.enabled\}:selected:\$\{row\.selected\}:/,
+  );
+  assert.match(source, /\.testTag\(rowSemanticTag\)/);
+});
+
 test("Android flight-data settings expose their visible selected state", () => {
   const source = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/FlightDataBanner.kt",
@@ -3107,7 +3123,7 @@ test("Android semantic discovery scrolls horizontally for clipped control strips
   assert.equal(androidElementMayRequireHorizontalScroll("settings-toggle-debug_internet_adsb"), false);
 });
 
-test("Android horizontal controls use rendered hit geometry instead of layout projections", () => {
+test("Android horizontal reveals use rendered geometry before indexed action readiness", () => {
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const service = readFileSync(
@@ -3122,8 +3138,8 @@ test("Android horizontal controls use rendered hit geometry instead of layout pr
     driver.lastIndexOf("  async revealElement(elementId)"),
     driver.lastIndexOf("  async reload()"),
   );
-  assert.match(readAction, /renderedOnly = androidElementMayRequireHorizontalScroll\(actionId\)/);
-  assert.match(readAction, /renderedOnly,/);
+  assert.match(readAction, /providerOnly: true/);
+  assert.doesNotMatch(readAction, /renderedOnly/);
   assert.match(reveal, /renderedOnly = androidElementMayRequireHorizontalScroll\(elementId\)/);
   assert.match(reveal, /requireReachable: true,[\s\S]*renderedOnly,[\s\S]*avoidNavigation/);
   assert.match(harness, /rendered_only: String\(renderedOnly\)/);
@@ -3394,15 +3410,16 @@ test("Android semantic taps validate current controls before one timed input ges
   assert.match(service, /renderedTapBounds\(tag, bounds, semanticPath\)/);
   assert.match(service, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
   const providerTapStart = service.indexOf(
-    'if (semanticPath.startsWith("projection-provider:"))',
+    "private Rect renderedTapBounds",
   );
   const providerTap = service.slice(
     providerTapStart,
-    service.indexOf('AccessibilityNodeInfo node = resolveRenderedNode', providerTapStart),
+    service.indexOf("private boolean currentProviderTargetMatches", providerTapStart),
   );
   assert.match(providerTap, /currentProviderTargetMatches\(/);
-  assert.match(providerTap, /\? expectedBounds : null/);
-  assert.doesNotMatch(providerTap, /resolveRenderedNode|AccessibilityNodeInfo/);
+  assert.match(providerTap, /return null/);
+  assert.doesNotMatch(providerTap, /return expectedBounds/);
+  assert.match(service, /node\.getBoundsInScreen\(renderedBounds\)[\s\S]*return renderedBounds/);
   assert.doesNotMatch(click, /"shell", "input", "tap"/);
   assert.equal((click.match(/target = androidPhysicalTapTarget/g) ?? []).length, 1);
   assert.match(click, /queryAndroidExactProjection\([\s\S]*providerOnly: true/);
@@ -4769,8 +4786,8 @@ test("Android indexed taps revalidate app state and rendered reachability before
     renderedTapBounds.indexOf("AccessibilityNodeInfo node"),
   );
   assert.match(indexedBranch, /currentProviderTargetMatches\(/);
-  assert.match(indexedBranch, /\? expectedBounds : null/);
-  assert.doesNotMatch(indexedBranch, /resolveRenderedNode|AccessibilityNodeInfo/);
+  assert.match(indexedBranch, /return null/);
+  assert.doesNotMatch(indexedBranch, /return expectedBounds/);
   const currentProvider = renderedTapBounds.slice(
     renderedTapBounds.indexOf("private boolean currentProviderTargetMatches"),
   );
@@ -4778,6 +4795,10 @@ test("Android indexed taps revalidate app state and rendered reachability before
   assert.match(currentProvider, /semanticPath\.equals\(value\.optString\("semantic-path"/);
   assert.match(currentProvider, /expectedBounds\.equals\(currentBounds\)/);
   assert.match(currentProvider, /center-reachable/);
+  assert.match(renderedTapBounds, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  assert.match(service, /matchesProjectedTarget[\s\S]*Rect\.intersects\(bounds, expectedBounds\)/);
+  assert.match(renderedTapBounds, /node\.getBoundsInScreen\(renderedBounds\)/);
+  assert.match(renderedTapBounds, /return renderedBounds/);
   assert.match(renderedTapBounds, /!centerReachable\(node\)/);
 });
 

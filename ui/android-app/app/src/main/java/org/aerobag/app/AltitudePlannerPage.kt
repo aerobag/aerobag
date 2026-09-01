@@ -376,11 +376,19 @@ internal fun AltitudePlannerPage(
                                     row.selected -> uiTheme.controls.buttonChecked
                                     else -> uiTheme.controls.buttonUnchecked
                                 }
+                                val rowSemanticTag =
+                                    "parity:altitude-comparison-row:${row.actionUid ?: "disabled"}"
                                 Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(ThumbSize * 0.68f)
-                                        .testTag("parity:altitude-comparison-row:${row.actionUid ?: "disabled"}")
+                                        .e2eIndexedControl(
+                                            semanticTag = rowSemanticTag,
+                                            state =
+                                                "enabled:${row.enabled}:selected:${row.selected}:" +
+                                                    "text:${row.actionUid ?: "disabled"}",
+                                        )
+                                        .testTag(rowSemanticTag)
                                         .semantics { selected = row.selected }
                                         .clickable {
                                             val actionUid = row.actionUid

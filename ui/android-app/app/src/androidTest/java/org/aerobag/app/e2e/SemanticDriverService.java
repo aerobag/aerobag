@@ -1698,7 +1698,10 @@ public final class SemanticDriverService extends AccessibilityService {
         node.refresh();
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
-        if (!bounds.contains(expectedBounds.centerX(), expectedBounds.centerY())) return null;
+        boolean geometryMatches = acceptProjectedGeometry
+            ? Rect.intersects(bounds, expectedBounds)
+            : bounds.contains(expectedBounds.centerX(), expectedBounds.centerY());
+        if (!geometryMatches) return null;
         if (matchesRenderedTarget(node, tag, expectedBounds) ||
             (acceptProjectedGeometry && tag.equals(node.getViewIdResourceName()))) {
             return AccessibilityNodeInfo.obtain(node);
@@ -1740,7 +1743,7 @@ public final class SemanticDriverService extends AccessibilityService {
         if (!tag.equals(node.getViewIdResourceName())) return false;
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
-        return bounds.contains(expectedBounds.centerX(), expectedBounds.centerY());
+        return Rect.intersects(bounds, expectedBounds);
     }
 
     @SuppressWarnings("deprecation")
@@ -1959,18 +1962,18 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {
-        if (semanticPath.startsWith("projection-provider:")) {
-            // Current app-owned geometry rejects stale actions. The tagged
-            // physical touch receipt proves that the rendered control, rather
-            // than merely these coordinates, received the one emitted tap.
-            return currentProviderTargetMatches(
+        boolean projectedGeometry = semanticPath.startsWith("projection-provider:");
+        if (projectedGeometry && !currentProviderTargetMatches(
                 tag,
                 expectedBounds,
                 semanticPath,
                 false,
                 false
-            ) ? expectedBounds : null;
-        }
+            )) return null;
+
+        // The app-owned projection establishes semantic identity and rejects
+        // stale actions. Accessibility owns physical delivery geometry because
+        // Android may clip a control inside a scroll container after layout.
         AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
         if (node == null) return null;
         Rect renderedBounds = new Rect();

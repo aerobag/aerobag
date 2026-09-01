@@ -1164,7 +1164,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async readAction(actionId) {
-    const renderedOnly = androidElementMayRequireHorizontalScroll(actionId);
     for (const candidate of androidActionCandidates(actionId)) {
       const node = queryFirstAndroidSemanticNode(
         this.serial,
@@ -1172,7 +1171,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         {
           requireVisible: true,
           requireReachable: true,
-          renderedOnly,
           providerOnly: true,
         },
       );

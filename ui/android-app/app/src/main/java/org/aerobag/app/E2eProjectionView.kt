@@ -80,7 +80,9 @@ internal fun Modifier.e2eIndexedControl(
     var windowFocused by remember(view) { mutableStateOf(view.hasWindowFocus()) }
     val publishedState = "$state:window-focus:$windowFocused"
     SideEffect {
-        E2eProjectionRegistry.publish(semanticTag, publishedState, owner, bounds.get())
+        bounds.get()?.let { positionedBounds ->
+            E2eProjectionRegistry.publish(semanticTag, publishedState, owner, positionedBounds)
+        }
     }
     DisposableEffect(semanticTag, owner, view) {
         val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->

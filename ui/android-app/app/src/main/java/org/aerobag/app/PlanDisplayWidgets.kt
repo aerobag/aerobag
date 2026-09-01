@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -347,6 +348,12 @@ internal fun PlanHeaderRow(
                 column.label,
                 Modifier
                     .width(dataColumnWidth)
+                    .e2eIndexedControl(
+                        semanticTag = "parity:plan-column:${column.id}",
+                        state =
+                            "enabled:${column.actionId != null}:selected:false:" +
+                                "text:${Uri.encode(column.label)}",
+                    )
                     .testTag("parity:plan-column:${column.id}")
                     .semantics { stateDescription = column.label }
                     .then(column.actionId?.let { actionId ->

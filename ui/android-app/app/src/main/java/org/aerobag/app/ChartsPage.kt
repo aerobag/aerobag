@@ -1959,6 +1959,12 @@ private fun PlateProcedureNotamBadgeButton(
     Surface(
         modifier = modifier
             .size(badgeSize)
+            .e2eIndexedControl(
+                semanticTag = "parity:plate-notam:${badge.actionId}",
+                state =
+                    "enabled:true:selected:false:" +
+                        "text:${Uri.encode(badge.accessibilityLabel)}",
+            )
             .testTag("parity:plate-notam:${badge.actionId}")
             .semantics { contentDescription = badge.accessibilityLabel }
             .clickable(onClick = onClick),

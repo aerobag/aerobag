@@ -2264,6 +2264,10 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(projectionView, /E2eProjectionRegistry\.publish\(resourceId, state, owner\)/);
   assert.match(projectionView, /E2eProjectionRegistry\.remove\(resourceId, owner\)/);
   assert.match(
+    projectionView,
+    /bounds\.get\(\)\?\.let \{ positionedBounds ->[\s\S]*E2eProjectionRegistry\.publish\(semanticTag, publishedState, owner, positionedBounds\)/,
+  );
+  assert.match(
     projectionProvider,
     /ConcurrentHashMap<String, ConcurrentHashMap<Any, E2eProjectionSnapshot>>/,
   );
@@ -4368,6 +4372,33 @@ test("Android status launchers publish indexed action geometry", () => {
     /e2eIndexedControl\(\s*semanticTag = "parity:\$testTagPrefix-launcher"/,
   );
   assert.match(badge, /testTag\("parity:\$testTagPrefix-launcher"\)/);
+});
+
+test("Android flight-plan column and plate NOTAM actions publish indexed geometry", () => {
+  const plan = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/PlanDisplayWidgets.kt", import.meta.url),
+    "utf8",
+  );
+  const charts = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt", import.meta.url),
+    "utf8",
+  );
+  const header = plan.slice(
+    plan.indexOf("internal fun PlanHeaderRow("),
+    plan.indexOf("internal fun buildFlightPlanDisplayRows("),
+  );
+  const notam = charts.slice(
+    charts.indexOf("private fun PlateProcedureNotamBadgeButton("),
+    charts.indexOf("internal fun MenuDock("),
+  );
+  assert.match(
+    header,
+    /e2eIndexedControl\(\s*semanticTag = "parity:plan-column:\$\{column\.id\}"/,
+  );
+  assert.match(
+    notam,
+    /e2eIndexedControl\(\s*semanticTag = "parity:plate-notam:\$\{badge\.actionId\}"/,
+  );
 });
 
 test("Android click and focus delivery resolves the current Compose virtual node", () => {

@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SemanticDriverInputMethodService extends InputMethodService {
     private static volatile SemanticDriverInputMethodService active;
     private volatile boolean focusedTextConnectionReady;
+    private final AtomicBoolean readinessRefreshScheduled = new AtomicBoolean(false);
 
     @Override
     public void onCreate() {
@@ -85,7 +86,22 @@ public final class SemanticDriverInputMethodService extends InputMethodService {
 
     static boolean focusedTextReady() {
         SemanticDriverInputMethodService service = active;
-        return service != null && service.focusedTextConnectionReady;
+        if (service == null) return false;
+        if (!service.focusedTextConnectionReady) {
+            service.scheduleFocusedTextConnectionRefresh();
+        }
+        return service.focusedTextConnectionReady;
+    }
+
+    private void scheduleFocusedTextConnectionRefresh() {
+        if (!readinessRefreshScheduled.compareAndSet(false, true)) return;
+        getMainExecutor().execute(() -> {
+            try {
+                refreshFocusedTextConnection(getCurrentInputEditorInfo());
+            } finally {
+                readinessRefreshScheduled.set(false);
+            }
+        });
     }
 
     private void refreshFocusedTextConnection(EditorInfo editor) {

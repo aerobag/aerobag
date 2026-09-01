@@ -4236,7 +4236,11 @@ test("Android semantic text delivery uses the focused input connection without C
   assert.match(ime, /onStartInput\(EditorInfo attribute, boolean restarting\)/);
   assert.match(ime, /onFinishInput\(\)[\s\S]*focusedTextConnectionReady = false/);
   assert.match(readiness, /service\.focusedTextConnectionReady/);
-  assert.doesNotMatch(readiness, /CountDownLatch|getMainExecutor|await/);
+  assert.match(readiness, /scheduleFocusedTextConnectionRefresh/);
+  assert.match(readiness, /readinessRefreshScheduled\.compareAndSet\(false, true\)/);
+  assert.match(readiness, /getCurrentInputEditorInfo\(\)/);
+  assert.match(readiness, /readinessRefreshScheduled\.set\(false\)/);
+  assert.doesNotMatch(readiness, /CountDownLatch|await/);
   assert.match(ime, /getExtractedText\(request, 0\)/);
   assert.match(ime, /connection\.setSelection\(start, end\)/);
   assert.doesNotMatch(ime, /performContextMenuAction/);

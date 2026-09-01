@@ -203,13 +203,11 @@ test("Android physical taps use bounded preflight and one timed delivered gestur
     providerTapStart,
     service.indexOf("private boolean currentProviderTargetMatches", providerTapStart),
   );
-  assert.match(providerTap, /currentProviderTargetMatches\(/);
-  assert.match(providerTap, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
-  assert.match(providerTap, /node\.getBoundsInScreen\(renderedBounds\)/);
-  assert.match(providerTap, /return renderedBounds/);
-  assert.doesNotMatch(providerTap, /return expectedBounds/);
-  assert.match(service, /getRootInActiveWindow\(\)/);
-  assert.match(service, /findRenderedNodeAtPoint\([\s\S]*semanticPath\.startsWith\("projection-provider:"\)/);
+  const indexedProviderTap = providerTap.slice(0, providerTap.indexOf("AccessibilityNodeInfo node"));
+  assert.match(indexedProviderTap, /currentProviderTargetMatches\(/);
+  assert.match(indexedProviderTap, /return new Rect\(expectedBounds\)/);
+  assert.doesNotMatch(indexedProviderTap, /resolveRenderedNode/);
+  assert.doesNotMatch(indexedProviderTap, /getRootInActiveWindow\(\)/);
 
   const mapExplorer = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt",

@@ -20,7 +20,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.input.pointer.motionEventSpy
 import androidx.compose.ui.platform.LocalContext
@@ -121,7 +123,12 @@ internal fun Modifier.e2eIndexedTextControl(
 )
 
 private fun LayoutCoordinates.toE2eBounds(): String {
-    val topLeft = positionOnScreen()
-    return "[${topLeft.x.roundToInt()},${topLeft.y.roundToInt()}]" +
-        "[${(topLeft.x + size.width).roundToInt()},${(topLeft.y + size.height).roundToInt()}]"
+    val clippedWindowBounds = boundsInWindow()
+    val screenOffset = positionOnScreen() - positionInWindow()
+    val left = clippedWindowBounds.left + screenOffset.x
+    val top = clippedWindowBounds.top + screenOffset.y
+    val right = clippedWindowBounds.right + screenOffset.x
+    val bottom = clippedWindowBounds.bottom + screenOffset.y
+    return "[${left.roundToInt()},${top.roundToInt()}]" +
+        "[${right.roundToInt()},${bottom.roundToInt()}]"
 }

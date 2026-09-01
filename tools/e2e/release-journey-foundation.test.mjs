@@ -3291,7 +3291,8 @@ test("Android journey controls publish indexed geometry through the private E2E 
   assert.match(projection, /fun Modifier\.e2eIndexedTextControl/);
   assert.match(projection, /kind:text:text:\$\{Uri\.encode\(text\)\}:enabled:\$enabled:focused:\$focused/);
   assert.match(projection, /positionOnScreen\(\)/);
-  assert.doesNotMatch(projection, /boundsInWindow\(\)/);
+  assert.match(projection, /boundsInWindow\(\)/);
+  assert.match(projection, /positionInWindow\(\)/);
   assert.match(provider, /snapshot\.bounds/);
   assert.match(provider, /!knownSemanticControl && snapshot == null/);
   assert.match(provider, /if \(snapshot == null\) 0 else 1/);
@@ -3381,7 +3382,9 @@ test("Android projection-provider IPC is bounded and leaves failure evidence", (
   assert.match(providerSnapshot, /CancellationSignal cancellationSignal/);
   assert.match(providerSnapshot, /PROVIDER_QUERY_TIMEOUT_MS/);
   assert.match(providerSnapshot, /OperationCanceledException/);
-  assert.match(providerSnapshot, /ProviderSnapshot\.handledAbsent\(\)/);
+  assert.match(providerSnapshot, /throw new ProjectionProviderBusyException\(value\)/);
+  assert.match(service, /catch \(ProjectionProviderBusyException error\)[\s\S]*respondUnavailableBestEffort\(client\)/);
+  assert.match(service, /"projection provider busy\\n"[\s\S]*503/);
   assert.match(service, /case "\/request-state"/);
   const captures = harness.slice(
     harness.indexOf("export function captureAndroidFailureDiagnostics"),
@@ -3408,7 +3411,6 @@ test("Android semantic taps validate current controls before one timed input ges
   );
   assert.match(click, /new URLSearchParams\(\{\s*tag,\s*bounds: expectedBounds,\s*path: semanticPath/s);
   assert.match(service, /renderedTapBounds\(tag, bounds, semanticPath\)/);
-  assert.match(service, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
   const providerTapStart = service.indexOf(
     "private Rect renderedTapBounds",
   );
@@ -3416,9 +3418,11 @@ test("Android semantic taps validate current controls before one timed input ges
     providerTapStart,
     service.indexOf("private boolean currentProviderTargetMatches", providerTapStart),
   );
-  assert.match(providerTap, /currentProviderTargetMatches\(/);
-  assert.match(providerTap, /return null/);
-  assert.doesNotMatch(providerTap, /return expectedBounds/);
+  const indexedProviderTap = providerTap.slice(0, providerTap.indexOf("AccessibilityNodeInfo node"));
+  assert.match(indexedProviderTap, /currentProviderTargetMatches\(/);
+  assert.match(indexedProviderTap, /return null/);
+  assert.match(indexedProviderTap, /return new Rect\(expectedBounds\)/);
+  assert.doesNotMatch(indexedProviderTap, /resolveRenderedNode/);
   assert.match(service, /node\.getBoundsInScreen\(renderedBounds\)[\s\S]*return renderedBounds/);
   assert.doesNotMatch(click, /"shell", "input", "tap"/);
   assert.equal((click.match(/target = androidPhysicalTapTarget/g) ?? []).length, 1);
@@ -4158,10 +4162,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/25/);
-  assert.match(service, /aerobag-semantic-driver\/25/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/25/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/25/);
+  assert.match(harness, /aerobag-semantic-driver\/26/);
+  assert.match(service, /aerobag-semantic-driver\/26/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/26/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/26/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -4308,7 +4312,7 @@ test("Android semantic actions preserve the separator between readiness bounds",
   assert.match(service, /\.replace\("\]\[", " "\)/);
 });
 
-test("Android semantic text delivery revalidates one exact rendered accessibility action", () => {
+test("Android semantic text delivery revalidates the focused projection before using the IME", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const service = readFileSync(
@@ -4319,25 +4323,30 @@ test("Android semantic text delivery revalidates one exact rendered accessibilit
     service.indexOf("private boolean setRenderedText"),
     service.indexOf("private boolean setRenderedProgress"),
   );
+  const inputMethod = readFileSync(
+    new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverInputMethodService.java", import.meta.url),
+    "utf8",
+  );
   assert.match(harness, /ime", "set", SEMANTIC_DRIVER_IME/);
   assert.match(
     driver,
     /setAndroidSemanticText\([\s\S]*this\.serial,[\s\S]*semanticTag,[\s\S]*value,[\s\S]*readyElement\.bounds,[\s\S]*readyElement\.semantic_path/,
   );
-  assert.match(textDelivery, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  assert.match(textDelivery, /semanticPath\.startsWith\("projection-provider:"\)/);
   assert.match(textDelivery, /currentProviderTargetMatches\(/);
-  assert.match(textDelivery, /setMatchingNodeText\([\s\S]*projectedGeometry/);
-  assert.match(service, /findIndexedRenderedNode\([\s\S]*acceptProjectedGeometry/);
-  assert.match(service, /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/);
-  assert.match(service, /supportsAction\([\s\S]*AccessibilityNodeInfo\.ACTION_SET_TEXT/);
-  assert.match(service, /ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE/);
-  assert.match(service, /node\.performAction\(AccessibilityNodeInfo\.ACTION_SET_TEXT, arguments\)/);
+  assert.match(textDelivery, /SemanticDriverInputMethodService\.replaceFocusedText\(value\)/);
+  assert.doesNotMatch(textDelivery, /resolveRenderedNode|AccessibilityNodeInfo/);
+  assert.match(inputMethod, /getCurrentInputConnection\(\)/);
+  assert.match(inputMethod, /getExtractedText\(new ExtractedTextRequest\(\), 0\)/);
+  assert.match(inputMethod, /int start = current\.startOffset/);
+  assert.match(inputMethod, /setSelection\(start, start \+ current\.text\.length\(\)\)/);
+  assert.match(inputMethod, /commitText\(value, 1\)/);
   assert.match(driver, /providerOnly: true/);
   assert.match(service, /"text"\.equals\(fields\.getOrDefault\("kind", ""\)\)/);
   assert.match(driver, /projected\.focused && !projected\.supports_set_text/);
   assert.match(driver, /readyElement\.focused !== true/);
   assert.doesNotMatch(harness, /\/ime-ready/);
-  assert.doesNotMatch(service, /SemanticDriverInputMethodService\.focusedTextReady/);
+  assert.doesNotMatch(service, /ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE/);
 });
 
 test("Android mandatory disclaimer publishes indexed action geometry", () => {
@@ -4441,7 +4450,7 @@ test("Android flight-plan column and plate NOTAM actions publish indexed geometr
   );
 });
 
-test("Android click and focus delivery resolves the current Compose virtual node", () => {
+test("Android indexed click and focus delivery bypasses the accessibility tree", () => {
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
@@ -4451,7 +4460,16 @@ test("Android click and focus delivery resolves the current Compose virtual node
     service.indexOf("private void handleScroll"),
   );
   assert.match(tap, /parseBounds[\s\S]*renderedTapBounds\(tag, bounds, semanticPath\)/);
-  assert.match(service, /renderedTapBounds[\s\S]*resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  const renderedTapBounds = service.slice(
+    service.indexOf("private Rect renderedTapBounds"),
+    service.indexOf("private boolean currentProviderTargetMatches"),
+  );
+  const indexedBranch = renderedTapBounds.slice(
+    renderedTapBounds.indexOf('semanticPath.startsWith("projection-provider:")'),
+    renderedTapBounds.indexOf("AccessibilityNodeInfo node"),
+  );
+  assert.match(indexedBranch, /return new Rect\(expectedBounds\)/);
+  assert.doesNotMatch(indexedBranch, /resolveRenderedNode/);
   assert.doesNotMatch(service, /clickRenderedNode|focusRenderedNode|clickMatchingNode|focusMatchingNode/);
 });
 
@@ -4787,7 +4805,8 @@ test("Android indexed taps revalidate app state and rendered reachability before
   );
   assert.match(indexedBranch, /currentProviderTargetMatches\(/);
   assert.match(indexedBranch, /return null/);
-  assert.doesNotMatch(indexedBranch, /return expectedBounds/);
+  assert.match(indexedBranch, /return new Rect\(expectedBounds\)/);
+  assert.doesNotMatch(indexedBranch, /resolveRenderedNode/);
   const currentProvider = renderedTapBounds.slice(
     renderedTapBounds.indexOf("private boolean currentProviderTargetMatches"),
   );
@@ -4795,7 +4814,7 @@ test("Android indexed taps revalidate app state and rendered reachability before
   assert.match(currentProvider, /semanticPath\.equals\(value\.optString\("semantic-path"/);
   assert.match(currentProvider, /expectedBounds\.equals\(currentBounds\)/);
   assert.match(currentProvider, /center-reachable/);
-  assert.match(renderedTapBounds, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  assert.match(renderedTapBounds, /AccessibilityNodeInfo node = resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
   assert.match(service, /matchesProjectedTarget[\s\S]*Rect\.intersects\(bounds, expectedBounds\)/);
   assert.match(renderedTapBounds, /node\.getBoundsInScreen\(renderedBounds\)/);
   assert.match(renderedTapBounds, /return renderedBounds/);

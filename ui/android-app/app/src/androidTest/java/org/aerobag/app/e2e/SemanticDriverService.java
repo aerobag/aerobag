@@ -51,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/25";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/26";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -134,6 +134,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 // A timed-out probe may close its socket while a changing
                 // accessibility tree is still being rendered.
                 if (running.get()) Log.w(LOG_TAG, "semantic client disconnected", error);
+            } catch (ProjectionProviderBusyException error) {
+                Log.w(LOG_TAG, error.getMessage());
+                respondUnavailableBestEffort(client);
             } catch (RuntimeException error) {
                 Log.e(LOG_TAG, "semantic request failed", error);
                 respondFailureBestEffort(client, error);
@@ -659,6 +662,17 @@ public final class SemanticDriverService extends AccessibilityService {
         } catch (IOException ignored) {}
     }
 
+    private static void respondUnavailableBestEffort(Socket socket) {
+        try {
+            respond(
+                socket.getOutputStream(),
+                "text/plain; charset=utf-8",
+                "projection provider busy\n",
+                503
+            );
+        } catch (IOException ignored) {}
+    }
+
     private String renderHierarchy() {
         StringBuilder output = new StringBuilder();
         output.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
@@ -1021,7 +1035,7 @@ public final class SemanticDriverService extends AccessibilityService {
             value.put(
                 "center-reachable",
                 Boolean.toString(
-                    parsedBounds != null &&
+                    parsedBounds != null && !parsedBounds.isEmpty() &&
                     "true".equals(fields.getOrDefault("window-focus", "false")) &&
                     (!verifyCenterReachable || projectedCenterReachable(parsedBounds)) &&
                     (!avoidNavigation || projectedCenterClearOfNavigation(snapshot.resourceId, parsedBounds))
@@ -1096,10 +1110,10 @@ public final class SemanticDriverService extends AccessibilityService {
             }
             return new ProviderSnapshotBatch(true, snapshots);
         } catch (OperationCanceledException error) {
-            Log.w(LOG_TAG, "projection provider timed out for " + value);
-            // The provider owns this semantic namespace. Do not turn a bounded
-            // IPC miss into an expensive accessibility-tree fallback.
-            return new ProviderSnapshotBatch(true, List.of());
+            // The provider owns this semantic namespace. Report bounded IPC
+            // pressure as transient instead of lying that a control is absent
+            // or falling back to an accessibility-tree traversal.
+            throw new ProjectionProviderBusyException(value);
         } catch (IllegalArgumentException | SecurityException error) {
             return ProviderSnapshotBatch.unhandled();
         } finally {
@@ -1112,6 +1126,7 @@ public final class SemanticDriverService extends AccessibilityService {
     }
 
     private boolean projectedCenterReachable(Rect bounds) {
+        if (bounds.isEmpty()) return false;
         Rect displayBounds = physicalDisplayBounds();
         return displayBounds.contains(bounds.centerX(), bounds.centerY());
     }
@@ -1148,6 +1163,12 @@ public final class SemanticDriverService extends AccessibilityService {
             fields.put(components[index], components[index + 1]);
         }
         return fields;
+    }
+
+    private static final class ProjectionProviderBusyException extends RuntimeException {
+        ProjectionProviderBusyException(String resourceId) {
+            super("projection provider timed out for " + resourceId);
+        }
     }
 
     private static final class ProviderSnapshot {
@@ -1573,27 +1594,14 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect expectedBounds,
         String semanticPath
     ) {
-        boolean projectedGeometry = semanticPath.startsWith("projection-provider:");
-        if (projectedGeometry && !currentProviderTargetMatches(
+        if (!semanticPath.startsWith("projection-provider:") || !currentProviderTargetMatches(
             tag,
             expectedBounds,
             semanticPath,
             true,
             true
         )) return false;
-        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
-        if (node == null) return false;
-        try {
-            return setMatchingNodeText(
-                node,
-                tag,
-                value,
-                expectedBounds,
-                projectedGeometry
-            );
-        } finally {
-            node.recycle();
-        }
+        return SemanticDriverInputMethodService.replaceFocusedText(value);
     }
 
     private boolean setRenderedProgress(
@@ -1933,47 +1941,22 @@ public final class SemanticDriverService extends AccessibilityService {
         );
     }
 
-    @SuppressWarnings("deprecation")
-    private static boolean setMatchingNodeText(
-        AccessibilityNodeInfo node,
-        String tag,
-        String value,
-        Rect expectedBounds,
-        boolean acceptProjectedGeometry
-    ) {
-        node.refresh();
-        if (!tag.equals(node.getViewIdResourceName())) return false;
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
-        boolean geometryMatches = bounds.equals(expectedBounds) ||
-            (acceptProjectedGeometry &&
-                bounds.contains(expectedBounds.centerX(), expectedBounds.centerY()));
-        if (!geometryMatches || !node.isVisibleToUser() ||
-            !node.isEnabled() || !node.isFocused() ||
-            !supportsAction(node, AccessibilityNodeInfo.ACTION_SET_TEXT)) {
-            return false;
-        }
-        Bundle arguments = new Bundle();
-        arguments.putCharSequence(
-            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-            value
-        );
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
-    }
-
     private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {
         boolean projectedGeometry = semanticPath.startsWith("projection-provider:");
-        if (projectedGeometry && !currentProviderTargetMatches(
+        if (projectedGeometry) {
+            if (!currentProviderTargetMatches(
                 tag,
                 expectedBounds,
                 semanticPath,
                 false,
                 false
             )) return null;
+            return new Rect(expectedBounds);
+        }
 
-        // The app-owned projection establishes semantic identity and rejects
-        // stale actions. Accessibility owns physical delivery geometry because
-        // Android may clip a control inside a scroll container after layout.
+        // Non-indexed legacy targets still derive physical geometry from the
+        // accessibility tree. Indexed controls publish clipped screen bounds
+        // directly from Compose and return above without traversing this tree.
         AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
         if (node == null) return null;
         Rect renderedBounds = new Rect();

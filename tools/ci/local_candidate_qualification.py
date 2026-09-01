@@ -772,7 +772,7 @@ def native_lane(
         "AVD_INSTANCE_NAME": avd,
         "EMULATOR_READ_ONLY": "0",
         "AVD_PACKAGE_PATH": (
-            "system-images;android-34;google_apis;x86_64"
+            "system-images;android-34;google_atd;x86_64"
             if test_id == "android.plate-first-render-smoke"
             else "system-images;android-34;aosp_atd;x86_64"
         ),

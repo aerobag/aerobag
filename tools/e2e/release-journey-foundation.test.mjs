@@ -1009,6 +1009,7 @@ test("selected tray options retain option identity instead of returning launcher
     platform: "android",
     driver: {
       async readElement(id) {
+        if (id === "plate-folder-button") return { selected: false, checked: false };
         assert.equal(id, "plate-chart-button");
         return { test_id: "parity:plate-chart-button", text: "SEATTLE TAC LEGEND" };
       },
@@ -1021,6 +1022,10 @@ test("selected tray options retain option identity instead of returning launcher
         calls.push("dismiss");
         optionsOpen = false;
       },
+    },
+    async eventually(description, observe) {
+      assert.equal(description, "selected plate SEATTLE TAC LEGEND presentation");
+      return observe();
     },
     async action(description, id, { complete }) {
       calls.push(description);
@@ -1052,6 +1057,56 @@ test("selected tray options retain option identity instead of returning launcher
     "dismiss already-selected plate-chart-button options",
     "dismiss",
   ]);
+});
+
+test("selected plate waits for folder state and opens its tile", async () => {
+  const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");
+  const calls = [];
+  let folderReads = 0;
+  const tile = {
+    id: "parity:plate-folder-tile:chart-reference:tac:legend:seattle",
+    text: "SEATTLE TAC LEGEND",
+  };
+  const runtime = {
+    platform: "android",
+    driver: {
+      async readElement(id) {
+        if (id === "plate-chart-button") return { text: "SEATTLE TAC LEGEND" };
+        if (id === "plate-folder-button") {
+          folderReads += 1;
+          return folderReads < 2 ? null : { selected: true, checked: true };
+        }
+        throw new Error(`unexpected element ${id}`);
+      },
+      async readProjection(prefix) {
+        assert.equal(prefix, "parity:plate-folder-tile:");
+        return [tile];
+      },
+    },
+    async eventually(description, observe) {
+      if (description === "selected plate SEATTLE TAC LEGEND presentation") {
+        assert.equal(await observe(), null);
+        return observe();
+      }
+      assert.equal(description, "plate folder tile matching SEATTLE TAC LEGEND");
+      return observe();
+    },
+    async action(description, id, { complete }) {
+      calls.push([description, id]);
+      return complete();
+    },
+  };
+
+  const selected = await selectTrayOptionMatching(
+    runtime,
+    "plate-chart-button",
+    "SEATTLE TAC LEGEND",
+  );
+  assert.equal(selected, tile);
+  assert.deepEqual(calls, [[
+    "select plate SEATTLE TAC LEGEND",
+    "plate-folder-tile:chart-reference:tac:legend:seattle",
+  ]]);
 });
 
 test("projection identity is always a string for projection rows and rendered controls", () => {
@@ -1924,7 +1979,7 @@ test("Android qualification isolates semantic tests from Google service instabil
   const native = workflow.match(/  android-native:[\s\S]*?\n  android-chrome-live-feed:/)?.[0] ?? "";
   assert.match(aggregate, /AVD_PACKAGE_PATH: system-images;android-34;aosp_atd;x86_64/);
   assert.match(native, /matrix\.test == 'android\.plate-first-render-smoke'/);
-  assert.match(native, /system-images;android-34;google_apis;x86_64/);
+  assert.match(native, /system-images;android-34;google_atd;x86_64/);
   assert.match(native, /system-images;android-34;aosp_atd;x86_64/);
 });
 
@@ -2932,7 +2987,7 @@ test("Android plate first-open journey uses exact projections for semantic rende
   }
 });
 
-test("Android plate raster qualification isolates the noisy Google image from GNSS", () => {
+test("Android plate raster qualification isolates the Google ATD image from GNSS", () => {
   const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
   const journey = source.slice(
     source.indexOf("async function runPlateFirstRenderSmoke"),

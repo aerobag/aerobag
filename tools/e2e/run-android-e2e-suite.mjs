@@ -1496,8 +1496,8 @@ async function runPlateFirstRenderSmoke(args) {
   const fixture = loadAndroidSmokeFixture(args.androidSmokeFixture);
   const plateCapability = fixture.capabilities.plate.georeferenced;
   const result = createTestResult("android.plate-first-render-smoke");
-  // The Google APIs image is required for raster rendering, but its first-boot
-  // GNSS service can deadlock system_server. Plates do not depend on location.
+  // The Google ATD image is required for raster rendering, but its GNSS service
+  // can deadlock system_server. Plates do not depend on location.
   adb(serial, ["shell", "cmd", "location", "set-location-enabled", "false"]);
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });

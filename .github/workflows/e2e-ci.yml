@@ -452,7 +452,7 @@ jobs:
       AEROBAG_ANDROID_KEYSTORE_PASSWORD: android
       AEROBAG_ANDROID_KEY_ALIAS: androiddebugkey
       AEROBAG_ANDROID_KEY_PASSWORD: android
-      AVD_PACKAGE_PATH: ${{ matrix.test == 'android.plate-first-render-smoke' && 'system-images;android-34;google_apis;x86_64' || 'system-images;android-34;aosp_atd;x86_64' }}
+      AVD_PACKAGE_PATH: ${{ matrix.test == 'android.plate-first-render-smoke' && 'system-images;android-34;google_atd;x86_64' || 'system-images;android-34;aosp_atd;x86_64' }}
       PACKAGE_SOURCE_PORT: 18093
       VNC_PORT: 5900
     steps:

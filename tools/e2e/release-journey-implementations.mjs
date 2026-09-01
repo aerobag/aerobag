@@ -920,10 +920,12 @@ export async function selectTrayOptionMatching(runtime, launcherId, needle) {
   const selected = await runtime.driver.readElement(launcherId);
   if (selected?.text?.toUpperCase().includes(needle.toUpperCase())) {
     if (launcherId === "plate-chart-button") {
-      const folderTiles = await runtime.driver.readProjection(runtime.platform === "web"
-        ? "plate-folder-tile:"
-        : "parity:plate-folder-tile:");
-      if (folderTiles.some((entry) => entry.text?.toUpperCase().includes(needle.toUpperCase()))) {
+      const folderButton = await runtime.eventually(
+        `selected plate ${needle} presentation`,
+        () => runtime.driver.readElement("plate-folder-button"),
+        E2E_TIMING.localReadyMs,
+      );
+      if (folderButton.selected === true || folderButton.checked === true) {
         return selectPlateFolderTileMatching(runtime, needle);
       }
     }

@@ -4138,6 +4138,23 @@ test("web action readiness and delivery share the same semantic selector", async
   assert.deepEqual(clicks, ['[data-testid="cloud-action-begin_setup"]']);
 });
 
+test("web controls normalize aria-pressed into platform-neutral selection state", async () => {
+  const driver = new WebSemanticJourneyDriver({
+    async readElement() {
+      return {
+        test_id: "plate-folder-button",
+        visible: true,
+        pressed: "true",
+        selected: null,
+        checked: null,
+      };
+    },
+  });
+
+  const folder = await driver.readElement("plate-folder-button");
+  assert.equal(folder.selected, true);
+});
+
 test("web projection reveal makes an offscreen semantic item actionable before returning", async () => {
   const calls = [];
   const driver = Object.create(WebSemanticJourneyDriver.prototype);

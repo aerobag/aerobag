@@ -322,6 +322,15 @@ function webActionSelectors(actionId) {
   ];
 }
 
+function normalizeWebSemanticElement(element) {
+  return {
+    ...element,
+    selected: element.selected === true || element.selected === "true" ||
+      element.checked === true || element.checked === "true" ||
+      element.pressed === true || element.pressed === "true",
+  };
+}
+
 export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
   constructor(transport) {
     super("web");
@@ -576,9 +585,9 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async readElement(elementId) {
     const exact = await this.transport.readElement(webTestIdSelector(elementId));
-    if (exact?.visible) return exact;
+    if (exact?.visible) return normalizeWebSemanticElement(exact);
     const parity = await this.transport.readElement(webTestIdSelector(`parity:${elementId}`));
-    return parity?.visible ? parity : null;
+    return parity?.visible ? normalizeWebSemanticElement(parity) : null;
   }
 
   async revealElement(elementId) {

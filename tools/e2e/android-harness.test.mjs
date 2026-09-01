@@ -204,7 +204,8 @@ test("Android physical taps use bounded preflight and one timed delivered gestur
     service.indexOf('AccessibilityNodeInfo node = resolveRenderedNode', providerTapStart),
   );
   assert.doesNotMatch(providerTap, /resolveRenderedNode|AccessibilityNodeInfo/);
-  assert.match(providerTap, /return currentBounds/);
+  assert.match(providerTap, /currentProviderTargetMatches\(/);
+  assert.match(providerTap, /\? expectedBounds : null/);
   assert.match(service, /getRootInActiveWindow\(\)/);
   assert.match(service, /findRenderedNodeAtPoint\([\s\S]*semanticPath\.startsWith\("projection-provider:"\)/);
 

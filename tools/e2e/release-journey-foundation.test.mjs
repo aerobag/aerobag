@@ -3287,7 +3287,7 @@ test("Android journey controls publish indexed geometry through the private E2E 
     prefixQuery.indexOf("providerProjectionPrefix(tag)") < prefixQuery.indexOf("renderNodeQuery("),
     "known prefix queries must bypass accessibility traversal",
   );
-  assert.match(service, /currentBounds == null \|\| !expectedBounds\.equals\(currentBounds\)/);
+  assert.match(service, /currentBounds != null && expectedBounds\.equals\(currentBounds\)/);
   assert.match(service, /projectedCenterReachable\(parsedBounds\)/);
   assert.match(service, /projectedCenterClearOfNavigation\(snapshot\.resourceId, parsedBounds\)/);
   assert.match(service, /indexedBounds\("parity:primary-navigation"\)/);
@@ -3364,8 +3364,8 @@ test("Android semantic taps validate current controls before one timed input ges
     providerTapStart,
     service.indexOf('AccessibilityNodeInfo node = resolveRenderedNode', providerTapStart),
   );
-  assert.match(providerTap, /providerProjection\(tag, true\)/);
-  assert.match(providerTap, /return currentBounds/);
+  assert.match(providerTap, /currentProviderTargetMatches\(/);
+  assert.match(providerTap, /\? expectedBounds : null/);
   assert.doesNotMatch(providerTap, /resolveRenderedNode|AccessibilityNodeInfo/);
   assert.doesNotMatch(click, /"shell", "input", "tap"/);
   assert.equal((click.match(/target = androidPhysicalTapTarget/g) ?? []).length, 1);
@@ -4241,7 +4241,10 @@ test("Android exact action discovery uses the accessibility view-id index", () =
     /if \(!prefix && appendIndexedNodeQuery\(tag, output, includeDescendantText\)\) return output;/,
   );
   assert.match(service, /findAccessibilityNodeInfosByViewId\(tag\)/);
-  assert.match(service, /AccessibilityNodeInfo indexed = findIndexedRenderedNode\(tag, expectedBounds\);/);
+  assert.match(
+    service,
+    /AccessibilityNodeInfo indexed = findIndexedRenderedNode\([\s\S]*tag,[\s\S]*expectedBounds,[\s\S]*projectedGeometry/,
+  );
 });
 
 test("Android semantic actions preserve the separator between readiness bounds", () => {
@@ -4269,7 +4272,10 @@ test("Android semantic text delivery revalidates one exact rendered accessibilit
     /setAndroidSemanticText\([\s\S]*this\.serial,[\s\S]*semanticTag,[\s\S]*value,[\s\S]*readyElement\.bounds,[\s\S]*readyElement\.semantic_path/,
   );
   assert.match(textDelivery, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
-  assert.match(textDelivery, /setMatchingNodeText\(node, tag, value, expectedBounds\)/);
+  assert.match(textDelivery, /currentProviderTargetMatches\(/);
+  assert.match(textDelivery, /setMatchingNodeText\([\s\S]*projectedGeometry/);
+  assert.match(service, /findIndexedRenderedNode\([\s\S]*acceptProjectedGeometry/);
+  assert.match(service, /bounds\.contains\(expectedBounds\.centerX\(\), expectedBounds\.centerY\(\)\)/);
   assert.match(service, /supportsAction\([\s\S]*AccessibilityNodeInfo\.ACTION_SET_TEXT/);
   assert.match(service, /ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE/);
   assert.match(service, /node\.performAction\(AccessibilityNodeInfo\.ACTION_SET_TEXT, arguments\)/);
@@ -4658,11 +4664,16 @@ test("Android indexed taps revalidate app state and rendered reachability before
     renderedTapBounds.indexOf('semanticPath.startsWith("projection-provider:")'),
     renderedTapBounds.indexOf("AccessibilityNodeInfo node"),
   );
-  assert.match(indexedBranch, /providerProjection\(tag, true\)/);
-  assert.match(indexedBranch, /semanticPath\.equals\(value\.optString\("semantic-path"/);
-  assert.match(indexedBranch, /expectedBounds\.equals\(currentBounds\)/);
-  assert.match(indexedBranch, /return currentBounds/);
+  assert.match(indexedBranch, /currentProviderTargetMatches\(/);
+  assert.match(indexedBranch, /\? expectedBounds : null/);
   assert.doesNotMatch(indexedBranch, /resolveRenderedNode|AccessibilityNodeInfo/);
+  const currentProvider = renderedTapBounds.slice(
+    renderedTapBounds.indexOf("private boolean currentProviderTargetMatches"),
+  );
+  assert.match(currentProvider, /providerProjection\(tag, true\)/);
+  assert.match(currentProvider, /semanticPath\.equals\(value\.optString\("semantic-path"/);
+  assert.match(currentProvider, /expectedBounds\.equals\(currentBounds\)/);
+  assert.match(currentProvider, /center-reachable/);
   assert.match(renderedTapBounds, /!centerReachable\(node\)/);
 });
 

@@ -1573,10 +1573,24 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect expectedBounds,
         String semanticPath
     ) {
+        boolean projectedGeometry = semanticPath.startsWith("projection-provider:");
+        if (projectedGeometry && !currentProviderTargetMatches(
+            tag,
+            expectedBounds,
+            semanticPath,
+            true,
+            true
+        )) return false;
         AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
         if (node == null) return false;
         try {
-            return setMatchingNodeText(node, tag, value, expectedBounds);
+            return setMatchingNodeText(
+                node,
+                tag,
+                value,
+                expectedBounds,
+                projectedGeometry
+            );
         } finally {
             node.recycle();
         }
@@ -1609,7 +1623,12 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect expectedBounds,
         String semanticPath
     ) {
-        AccessibilityNodeInfo indexed = findIndexedRenderedNode(tag, expectedBounds);
+        boolean projectedGeometry = semanticPath.startsWith("projection-provider:");
+        AccessibilityNodeInfo indexed = findIndexedRenderedNode(
+            tag,
+            expectedBounds,
+            projectedGeometry
+        );
         if (indexed != null) return indexed;
 
         AccessibilityNodeInfo node = nodeAtPath(semanticPath);
@@ -1630,7 +1649,7 @@ public final class SemanticDriverService extends AccessibilityService {
                     root,
                     tag,
                     expectedBounds,
-                    semanticPath.startsWith("projection-provider:")
+                    projectedGeometry
                 );
                 if (match != null) return match;
             }
@@ -1640,7 +1659,11 @@ public final class SemanticDriverService extends AccessibilityService {
         }
     }
 
-    private AccessibilityNodeInfo findIndexedRenderedNode(String tag, Rect expectedBounds) {
+    private AccessibilityNodeInfo findIndexedRenderedNode(
+        String tag,
+        Rect expectedBounds,
+        boolean acceptProjectedGeometry
+    ) {
         List<AccessibilityNodeInfo> roots = targetRoots(true);
         try {
             for (AccessibilityNodeInfo root : roots) {
@@ -1649,7 +1672,9 @@ public final class SemanticDriverService extends AccessibilityService {
                 try {
                     for (AccessibilityNodeInfo match : indexed) {
                         match.refresh();
-                        if (matchesRenderedTarget(match, tag, expectedBounds)) {
+                        if (matchesRenderedTarget(match, tag, expectedBounds) ||
+                            (acceptProjectedGeometry &&
+                                matchesProjectedTarget(match, tag, expectedBounds))) {
                             return AccessibilityNodeInfo.obtain(match);
                         }
                     }
@@ -1705,6 +1730,17 @@ public final class SemanticDriverService extends AccessibilityService {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         return bounds.equals(expectedBounds);
+    }
+
+    private static boolean matchesProjectedTarget(
+        AccessibilityNodeInfo node,
+        String tag,
+        Rect expectedBounds
+    ) {
+        if (!tag.equals(node.getViewIdResourceName())) return false;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        return bounds.contains(expectedBounds.centerX(), expectedBounds.centerY());
     }
 
     @SuppressWarnings("deprecation")
@@ -1899,13 +1935,17 @@ public final class SemanticDriverService extends AccessibilityService {
         AccessibilityNodeInfo node,
         String tag,
         String value,
-        Rect expectedBounds
+        Rect expectedBounds,
+        boolean acceptProjectedGeometry
     ) {
         node.refresh();
         if (!tag.equals(node.getViewIdResourceName())) return false;
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
-        if (!bounds.equals(expectedBounds) || !node.isVisibleToUser() ||
+        boolean geometryMatches = bounds.equals(expectedBounds) ||
+            (acceptProjectedGeometry &&
+                bounds.contains(expectedBounds.centerX(), expectedBounds.centerY()));
+        if (!geometryMatches || !node.isVisibleToUser() ||
             !node.isEnabled() || !node.isFocused() ||
             !supportsAction(node, AccessibilityNodeInfo.ACTION_SET_TEXT)) {
             return false;
@@ -1923,22 +1963,13 @@ public final class SemanticDriverService extends AccessibilityService {
             // Current app-owned geometry rejects stale actions. The tagged
             // physical touch receipt proves that the rendered control, rather
             // than merely these coordinates, received the one emitted tap.
-            ProviderProjection projection = providerProjection(tag, true);
-            if (!projection.handled || projection.values.length() != 1) return null;
-            try {
-                JSONObject value = projection.values.getJSONObject(0);
-                Rect currentBounds = parseBounds(value.optString("bounds", ""));
-                if (!semanticPath.equals(value.optString("semantic-path", "")) ||
-                    currentBounds == null || !expectedBounds.equals(currentBounds) ||
-                    !"true".equals(value.optString("enabled", "false")) ||
-                    !"true".equals(value.optString("visible", "false")) ||
-                    !"true".equals(value.optString("center-reachable", "false"))) {
-                    return null;
-                }
-                return currentBounds;
-            } catch (JSONException error) {
-                return null;
-            }
+            return currentProviderTargetMatches(
+                tag,
+                expectedBounds,
+                semanticPath,
+                false,
+                false
+            ) ? expectedBounds : null;
         }
         AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
         if (node == null) return null;
@@ -1954,6 +1985,30 @@ public final class SemanticDriverService extends AccessibilityService {
             node.recycle();
         }
         return renderedBounds;
+    }
+
+    private boolean currentProviderTargetMatches(
+        String tag,
+        Rect expectedBounds,
+        String semanticPath,
+        boolean requireFocused,
+        boolean requireSetText
+    ) {
+        ProviderProjection projection = providerProjection(tag, true);
+        if (!projection.handled || projection.values.length() != 1) return false;
+        try {
+            JSONObject value = projection.values.getJSONObject(0);
+            Rect currentBounds = parseBounds(value.optString("bounds", ""));
+            return semanticPath.equals(value.optString("semantic-path", "")) &&
+                currentBounds != null && expectedBounds.equals(currentBounds) &&
+                "true".equals(value.optString("enabled", "false")) &&
+                "true".equals(value.optString("visible", "false")) &&
+                "true".equals(value.optString("center-reachable", "false")) &&
+                (!requireFocused || "true".equals(value.optString("focused", "false"))) &&
+                (!requireSetText || "true".equals(value.optString("set-text-action", "false")));
+        } catch (JSONException error) {
+            return false;
+        }
     }
 
     @SuppressWarnings("deprecation")

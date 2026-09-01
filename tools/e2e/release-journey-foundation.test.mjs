@@ -4321,6 +4321,31 @@ test("Android playback buttons publish indexed action geometry", () => {
   assert.match(button, /Modifier\.testTag\(testTag\)/);
 });
 
+test("Android map orientation and plate-folder actions publish indexed geometry", () => {
+  const charts = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt", import.meta.url),
+    "utf8",
+  );
+  const orientation = charts.slice(
+    charts.indexOf("internal fun MapOrientationButton"),
+    charts.indexOf("internal fun ChartSearchButton"),
+  );
+  const folder = charts.slice(
+    charts.indexOf("internal fun PlateFolderGrid"),
+    charts.indexOf("private fun PlateProcedureNotamBadgeButton"),
+  );
+  assert.match(
+    orientation,
+    /e2eIndexedControl\(\s*semanticTag = "parity:map-orientation-button"/,
+  );
+  assert.match(orientation, /testTag\("parity:map-orientation-button"\)/);
+  assert.match(
+    folder,
+    /e2eIndexedControl\(\s*semanticTag = "parity:plate-folder-tile:\$\{chart\.id\}"/,
+  );
+  assert.match(folder, /testTag\("parity:plate-folder-tile:\$\{chart\.id\}"\)/);
+});
+
 test("Android click and focus delivery resolves the current Compose virtual node", () => {
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),

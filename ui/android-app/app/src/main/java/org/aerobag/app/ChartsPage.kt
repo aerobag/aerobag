@@ -1455,6 +1455,10 @@ internal fun MapOrientationButton(
     Surface(
         modifier = Modifier
             .size(ThumbSize)
+            .e2eIndexedControl(
+                semanticTag = "parity:map-orientation-button",
+                state = "enabled:true:selected:$trackUp:text:${if (trackUp) "TRK" else "N"}",
+            )
             .testTag("parity:map-orientation-button")
             .semantics { selected = trackUp }
             .clickable(onClick = onToggle),
@@ -1858,6 +1862,12 @@ internal fun PlateFolderGrid(
                 Surface(
                     modifier = Modifier
                         .fillMaxSize()
+                        .e2eIndexedControl(
+                            semanticTag = "parity:plate-folder-tile:${chart.id}",
+                            state =
+                                "enabled:true:selected:${chart.id == selectedChartId}:" +
+                                    "text:${Uri.encode(chart.label)}",
+                        )
                         .testTag("parity:plate-folder-tile:${chart.id}")
                         .border(
                             width = when {

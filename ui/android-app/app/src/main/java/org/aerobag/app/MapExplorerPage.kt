@@ -430,6 +430,7 @@ private fun rasterPlanId(mapId: String, viewport: MapViewportState): String =
     }
 
 private const val TerrainTileBitmapCacheMaxEntries = 256
+private const val NexradDecodedTileCacheMaxBytes = 32L * 1024L * 1024L
 private const val NexradViewportRefreshThrottleMs = 1_000L
 private const val NexradRenderFailureRetryMs = 1_000L
 private const val PerfScenarioKorsOwnshipSourceId = "perf:kors-terrain-ownship"
@@ -598,15 +599,32 @@ internal suspend fun prefetchNexradCacheResourcesBestEffort(
     resources: List<NexradOverlayCacheResource>,
     fetch: suspend (NexradOverlayCacheResource) -> Unit,
     reportFailure: (NexradOverlayCacheResource, Throwable) -> Unit,
-) {
+): Set<String> {
+    val completed = linkedSetOf<String>()
     resources.distinctBy { it.src }.forEach { resource ->
         try {
             fetch(resource)
+            completed += resource.src
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
             reportFailure(resource, error)
         }
+    }
+    return completed
+}
+
+internal class NexradPrefetchTracker {
+    private val completedSrcs = mutableSetOf<String>()
+
+    fun pending(resources: List<NexradOverlayCacheResource>): List<NexradOverlayCacheResource> {
+        val distinct = resources.distinctBy { it.src }
+        completedSrcs.retainAll(distinct.mapTo(mutableSetOf()) { it.src })
+        return distinct.filterNot { it.src in completedSrcs }
+    }
+
+    fun recordCompleted(srcs: Iterable<String>) {
+        completedSrcs += srcs
     }
 }
 
@@ -1001,6 +1019,10 @@ private fun rememberNexradLayerState(
     devServerBaseUrl: String,
 ): NexradLayerState {
     var frame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
+    val decodedBitmapCache = remember(uiSession) {
+        DecodedTileBitmapCache(NexradDecodedTileCacheMaxBytes)
+    }
+    val prefetchTracker = remember(uiSession) { NexradPrefetchTracker() }
     val renderRequests = remember(uiSession) { Channel<Unit>(Channel.CONFLATED) }
     val viewportRefreshRequests = remember(uiSession) { Channel<Unit>(Channel.CONFLATED) }
     val latestViewport = rememberUpdatedState(viewport)
@@ -1062,26 +1084,7 @@ private fun rememberNexradLayerState(
                         fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                     }
                 }
-                withContext(Dispatchers.IO) {
-                    prefetchNexradCacheResourcesBestEffort(
-                        resources = overlay.cachePlan?.fetchResources.orEmpty(),
-                        fetch = { planned ->
-                            sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
-                                val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
-                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                                }
-                            }
-                        },
-                        reportFailure = { planned, error ->
-                            Log.w(
-                                "AerobagLayers",
-                                "NEXRAD background prefetch failed for ${planned.src}; continuing selected frame",
-                                error,
-                            )
-                        },
-                    )
-                }
+                val plannedCacheResources = overlay.cachePlan?.fetchResources.orEmpty()
                 if (overlay.tiles.isEmpty()) {
                     deadlineState.renderCompleted(
                         SystemClock.elapsedRealtime(),
@@ -1098,24 +1101,32 @@ private fun rememberNexradLayerState(
                 val images = withContext(Dispatchers.IO) {
                     overlay.tiles.map { tile ->
                         val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
-                            val bytes = sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
-                                val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
-                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                            decodedBitmapCache.get(tile.src) ?: run {
+                                val bytes = sessionWorkRunner.nexradTileBytes(tile.src) { resource ->
+                                    val fetchStartMs = SystemClock.elapsedRealtime()
+                                    fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
+                                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                    }
                                 }
-                            }
-                            imageBytes += bytes.size
-                            val decodeStartMs = SystemClock.elapsedRealtime()
-                            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                ?: error("failed to decode nexrad tile ${tile.src}")
-                            decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
-                            decoded.asImageBitmap().also { image ->
-                                decodedImageBytes += estimatedImageBitmapBytes(image)
+                                prefetchTracker.recordCompleted(listOf(tile.src))
+                                imageBytes += bytes.size
+                                val decodeStartMs = SystemClock.elapsedRealtime()
+                                val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    ?: error("failed to decode nexrad tile ${tile.src}")
+                                decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
+                                decoded.asImageBitmap().also { image ->
+                                    decodedBitmapCache.put(
+                                        tile.src,
+                                        image,
+                                        estimatedImageBitmapBytes(image),
+                                    )
+                                }
                             }
                         }
                         NexradOverlayImage(tile = tile, bitmap = bitmap)
                     }
                 }
+                decodedImageBytes = decodedImagesBySrc.values.sumOf(::estimatedImageBitmapBytes)
                 frame = NexradOverlayFrame(
                     images = images,
                     viewport = currentViewport,
@@ -1133,6 +1144,27 @@ private fun rememberNexradLayerState(
                     SystemClock.elapsedRealtime(),
                     overlay.animation.nextUpdateDelayMs?.toLong(),
                 )
+                val completedPrefetches = withContext(Dispatchers.IO) {
+                    prefetchNexradCacheResourcesBestEffort(
+                        resources = prefetchTracker.pending(plannedCacheResources),
+                        fetch = { planned ->
+                            sessionWorkRunner.nexradTileBytes(planned.src) { resource ->
+                                val fetchStartMs = SystemClock.elapsedRealtime()
+                                fetchNexradCoreResource(context, resource, currentDevServerBaseUrl).also {
+                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                }
+                            }
+                        },
+                        reportFailure = { planned, error ->
+                            Log.w(
+                                "AerobagLayers",
+                                "NEXRAD background prefetch failed for ${planned.src}; continuing selected frame",
+                                error,
+                            )
+                        },
+                    )
+                }
+                prefetchTracker.recordCompleted(completedPrefetches)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {

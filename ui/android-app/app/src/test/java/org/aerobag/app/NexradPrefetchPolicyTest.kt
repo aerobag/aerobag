@@ -22,7 +22,7 @@ class NexradPrefetchPolicyTest {
         val attempted = mutableListOf<String>()
         val failed = mutableListOf<String>()
 
-        prefetchNexradCacheResourcesBestEffort(
+        val completed = prefetchNexradCacheResourcesBestEffort(
             resources = resources,
             fetch = { resource ->
                 attempted += resource.src
@@ -35,6 +35,21 @@ class NexradPrefetchPolicyTest {
 
         assertEquals(listOf("/old.png", "/selected.png"), attempted)
         assertEquals(listOf("/old.png"), failed)
+        assertEquals(setOf("/selected.png"), completed)
+    }
+
+    @Test
+    fun completedResourcesAreNotFetchedAgainUntilTheyLeaveAndReenterThePlan() {
+        val tracker = NexradPrefetchTracker()
+        val old = resource("old", "/old.png")
+        val current = resource("current", "/current.png")
+
+        assertEquals(listOf(old, current), tracker.pending(listOf(old, current)))
+        tracker.recordCompleted(listOf(old.src, current.src))
+        assertEquals(emptyList<NexradOverlayCacheResource>(), tracker.pending(listOf(old, current)))
+
+        assertEquals(emptyList<NexradOverlayCacheResource>(), tracker.pending(listOf(current)))
+        assertEquals(listOf(old), tracker.pending(listOf(old, current)))
     }
 
     @Test

@@ -2412,6 +2412,29 @@ test("mandatory disclaimer response and application startup use separate budgets
     implementation,
     /accept mandatory disclaimer[\s\S]*const completed = await startupState\(runtime\)/,
   );
+  const sharedAcceptance = implementation.slice(
+    implementation.indexOf("async function acceptDisclaimer(runtime"),
+    implementation.indexOf("async function selectedRasterMap"),
+  );
+  assert.match(
+    sharedAcceptance,
+    /complete:[\s\S]*readStartupState\(runtime\)[\s\S]*disclaimer_required === "false"/,
+  );
+  assert.doesNotMatch(sharedAcceptance, /readElement\("disclaimer-accept-button"\)/);
+
+  const startupJourney = implementation.slice(
+    implementation.indexOf("async function startupNavigation(runtime"),
+    implementation.indexOf("async function mapModesAndOverlays"),
+  );
+  assert.match(
+    startupJourney,
+    /disclaimer\.accept-persist[\s\S]*persistedStartup\.disclaimer_required === "false"/,
+  );
+  assert.doesNotMatch(startupJourney, /readElement\("disclaimer-accept-button"\)/);
+  assert.match(
+    implementation,
+    /runtime\.platform === "web"[\s\S]*readElement\("startup-fatal-error"\)/,
+  );
 });
 
 test("Android app restart observes a stable process node without dumping the UI", () => {

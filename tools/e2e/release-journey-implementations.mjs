@@ -115,16 +115,20 @@ function taggedFields(entry, prefix) {
   return fields;
 }
 
+async function readStartupState(runtime) {
+  const fatal = runtime.platform === "web"
+    ? await runtime.driver.readElement("startup-fatal-error")
+    : null;
+  if (fatal) {
+    throw new TerminalObservationError("application startup failed", fatal.text || "unknown failure");
+  }
+  const entries = await runtime.driver.readProjection("parity:startup-state:");
+  const fields = taggedFields(entries[0], "parity:startup-state:");
+  return fields?.ready === "true" ? fields : null;
+}
+
 async function startupState(runtime, timeoutMs = E2E_TIMING.startupMs) {
-  return runtime.eventually("operational startup state", async () => {
-    const fatal = await runtime.driver.readElement("startup-fatal-error");
-    if (fatal) {
-      throw new TerminalObservationError("application startup failed", fatal.text || "unknown failure");
-    }
-    const entries = await runtime.driver.readProjection("parity:startup-state:");
-    const fields = taggedFields(entries[0], "parity:startup-state:");
-    return fields?.ready === "true" ? fields : null;
-  }, timeoutMs);
+  return runtime.eventually("operational startup state", () => readStartupState(runtime), timeoutMs);
 }
 
 async function acceptDisclaimer(runtime, { required = false } = {}) {
@@ -136,7 +140,10 @@ async function acceptDisclaimer(runtime, { required = false } = {}) {
     return false;
   }
   await runtime.action("accept mandatory disclaimer", "disclaimer-accept-button", {
-    complete: async () => !(await runtime.driver.readElement("disclaimer-accept-button")) || null,
+    complete: async () => {
+      const state = await readStartupState(runtime);
+      return state?.disclaimer_required === "false" ? state : null;
+    },
   });
   const completed = await startupState(runtime);
   if (completed.disclaimer_required !== "false") {
@@ -348,9 +355,11 @@ async function startupNavigation(runtime) {
     () => runtime.driver.readElement("page:map"),
     E2E_TIMING.startupMs,
   );
+  const persistedStartup = await startupState(runtime);
   runtime.check(
     "disclaimer.accept-persist",
-    !(await runtime.driver.readElement("disclaimer-accept-button")),
+    persistedStartup.disclaimer_required === "false",
+    JSON.stringify(persistedStartup),
   );
 
   await runtime.openPage("home");

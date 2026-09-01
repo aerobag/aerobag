@@ -9,6 +9,7 @@ import {
   assertNoAerobagAnr,
   androidImeShownFromDumpsys,
   androidImeVisible,
+  androidIndexedControlIsActionReady,
   androidInteractiveRuntime,
   androidOfflinePackagesVisible,
   androidRuntimeReadyForJourney,
@@ -149,7 +150,7 @@ test("Android emulator readiness enables real HWUI drawing", () => {
   );
 });
 
-test("Android physical taps use bounded preflight and one timed delivered gesture", () => {
+test("Android physical taps dispatch once and defer success to semantic completion", () => {
   const harness = readFileSync(new URL("android-harness.mjs", import.meta.url), "utf8");
   const click = harness.slice(
     harness.indexOf("export function clickAndroidSemanticNode"),
@@ -161,8 +162,8 @@ test("Android physical taps use bounded preflight and one timed delivered gestur
   assert.match(click, /if \(!androidSemanticReadinessStateMatches[\s\S]*continue/);
   assert.doesNotMatch(click, /"shell", "input", "tap"/);
   assert.equal(click.match(/androidPhysicalTapTarget/g)?.length, 1);
-  assert.match(click, /awaitAndroidPhysicalTouch[\s\S]*?return true/);
-  assert.match(click, /physical tap was not received/);
+  assert.match(click, /return target/);
+  assert.doesNotMatch(click, /awaitAndroidPhysicalTouch|physical tap was not received/);
 
   const activity = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt",
@@ -173,29 +174,22 @@ test("Android physical taps use bounded preflight and one timed delivered gestur
     activity.indexOf("override fun dispatchKeyEvent"),
   );
   assert.match(dispatch, /val handled = super\.dispatchTouchEvent\(event\)/);
-  assert.match(dispatch, /event\.actionMasked == MotionEvent\.ACTION_UP/);
-  assert.match(dispatch, /E2eProjectionRegistry\.publishTouchReceipt/);
+  assert.doesNotMatch(dispatch, /publishTouchReceipt/);
 
   const indexedControl = readFileSync(new URL(
     "../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionView.kt",
     import.meta.url,
   ), "utf8");
-  assert.match(indexedControl, /motionEventSpy/);
-  assert.match(indexedControl, /event\.actionMasked == MotionEvent\.ACTION_UP/);
-  assert.doesNotMatch(indexedControl, /event\.actionMasked == MotionEvent\.ACTION_DOWN/);
+  assert.doesNotMatch(indexedControl, /motionEventSpy|publishTouchReceipt/);
   assert.match(indexedControl, /window-focus:\$windowFocused/);
   assert.match(indexedControl, /OnWindowFocusChangeListener/);
-  assert.match(indexedControl, /publishTouchReceipt\(semanticTag = semanticTag\)/);
 
   const service = readFileSync(new URL(
     "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
     import.meta.url,
   ), "utf8");
-  assert.match(service, /case "\/await-touch"/);
-  assert.match(service, /receipt\.sequence > sequence && receipt\.handled/);
-  assert.match(service, /expectedBounds\.contains\(receipt\.rawX, receipt\.rawY\)/);
-  assert.match(service, /globalReceipt\.sequence > globalSequence/);
-  assert.match(service, /expectedBounds\.contains\(globalReceipt\.rawX, globalReceipt\.rawY\)/);
+  assert.doesNotMatch(service, /\/await-touch|TouchReceipt/);
+  assert.match(service, /respondAction\(socket, true, "physical tap gesture rejected\\n"\)/);
   assert.match(service, /ProviderProjection projection = providerProjection\(tag, true\)/);
   assert.match(service, /fields\.getOrDefault\("window-focus", "false"\)/);
   const providerTapStart = service.indexOf(
@@ -248,17 +242,25 @@ test("Android runtime startup rejects a semantic tree whose surface is not reach
   const state = { ready: "true", disclaimer_required: "false", page: "Map" };
   const home = {
     enabled: "true",
-    clickable: "true",
     visible: "true",
+    bounds: "[10,20][30,40]",
+    "semantic-path": "projection-provider:12",
     "center-reachable": "false",
   };
+  assert.equal(androidIndexedControlIsActionReady(home), false);
   assert.equal(androidInteractiveRuntime(state, home), null);
-  assert.deepEqual(androidInteractiveRuntime(state, {
+  const readyHome = {
     ...home,
     "center-reachable": "true",
-  }), {
+  };
+  assert.equal(androidIndexedControlIsActionReady(readyHome), true);
+  assert.equal(androidIndexedControlIsActionReady({
+    ...readyHome,
+    "semantic-path": "1/0/4",
+  }), false);
+  assert.deepEqual(androidInteractiveRuntime(state, readyHome), {
     state,
-    home: { ...home, "center-reachable": "true" },
+    home: readyHome,
   });
 });
 

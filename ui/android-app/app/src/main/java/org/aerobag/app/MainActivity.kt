@@ -2347,13 +2347,6 @@ class MainActivity : ComponentActivity() {
             noteDisplayUserActivity()
         }
         val handled = super.dispatchTouchEvent(event)
-        if (BuildConfig.AEROBAG_E2E_ENABLED && event.actionMasked == MotionEvent.ACTION_UP) {
-            E2eProjectionRegistry.publishTouchReceipt(
-                rawX = event.rawX.roundToInt(),
-                rawY = event.rawY.roundToInt(),
-                handled = handled,
-            )
-        }
         return handled
     }
 

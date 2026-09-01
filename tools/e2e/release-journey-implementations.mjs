@@ -2094,8 +2094,10 @@ async function mapModesAndOverlays(runtime) {
 }
 
 export async function openAndDismissDataStatus(runtime) {
-  const warning = await runtime.driver.readElement("data-status-launcher");
-  if (!warning) return null;
+  const warning = await runtime.eventually(
+    "data status warning launcher",
+    () => runtime.driver.readElement("data-status-launcher"),
+  );
 
   await runtime.action("open data status popup", "data-status-launcher", {
     complete: () => runtime.driver.readElement("data-status-panel"),

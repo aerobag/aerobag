@@ -5,7 +5,6 @@
 package org.aerobag.app
 
 import android.net.Uri
-import android.view.MotionEvent
 import android.view.ViewTreeObserver
 import androidx.annotation.IdRes
 import androidx.compose.foundation.layout.Spacer
@@ -24,7 +23,6 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.positionOnScreen
-import androidx.compose.ui.input.pointer.motionEventSpy
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -99,11 +97,7 @@ internal fun Modifier.e2eIndexedControl(
             E2eProjectionRegistry.remove(semanticTag, owner)
         }
     }
-    return motionEventSpy { event ->
-        if (event.actionMasked == MotionEvent.ACTION_UP) {
-            E2eProjectionRegistry.publishTouchReceipt(semanticTag = semanticTag)
-        }
-    }.onGloballyPositioned { coordinates ->
+    return onGloballyPositioned { coordinates ->
             val encoded = coordinates.toE2eBounds()
             bounds.set(encoded)
             E2eProjectionRegistry.publish(semanticTag, publishedState, owner, encoded)

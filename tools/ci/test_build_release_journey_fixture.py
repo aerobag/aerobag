@@ -219,6 +219,7 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
                 "metars": {"collected_at_utc": "2026-08-20T04:13:35.500Z"},
             },
         })
+        fixture.write_replay_fixture(source)
         output = self.root / "materialized"
         materializer.materialize(source, output)
         self.assertEqual(
@@ -305,6 +306,23 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         self.assertEqual([None, None], [replay["trace"][2][5], replay["trace"][3][5]])
         missing_track_seconds = replay["trace"][4][0] - replay["trace"][2][0]
         self.assertGreaterEqual(missing_track_seconds / 0.25, 10.0)
+        self.assertGreaterEqual(replay["trace"][-1][0] - replay["trace"][0][0], 8.0)
+        self.assertGreaterEqual(replay["trace"][-1][0] - replay["trace"][4][0], 4.0)
+
+    def test_materializer_rejects_a_replay_without_time_to_pause_after_the_gap(self) -> None:
+        source = self.root / "fixture"
+        fixture.write_json(source / "replay" / "track-gap.json", {
+            "trace": [
+                [0.0, 47.493, -122.216, 1500, 105, 320],
+                [0.25, 47.497, -122.222, 1550, 105, 320],
+                [0.5, 47.501, -122.228, 1600, 105, None],
+                [0.75, 47.505, -122.234, 1650, 105, None],
+                [1.0, 47.509, -122.240, 1700, 105, 300],
+                [1.25, 47.513, -122.246, 1750, 105, 300],
+            ],
+        })
+        with self.assertRaisesRegex(fixture.BuildError, "duration must be at least"):
+            materializer.validate_replay_fixture(source)
 
 
 if __name__ == "__main__":

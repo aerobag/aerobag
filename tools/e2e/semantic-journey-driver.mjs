@@ -165,35 +165,29 @@ export async function navigateSemanticPage(
     })).value,
   } = {},
 ) {
-  const selectedPage = async (expectedPageId) => {
-    const selected = await driver.readCurrentPage();
-    return selected?.pageId === expectedPageId ? selected : null;
-  };
   const renderedPage = (expectedPageId) => observe(
     `rendered ${expectedPageId} page after navigation`,
     () => driver.readPage(expectedPageId),
   );
   let current = await observe("visible page before navigation", () => driver.readCurrentPage());
-  if (current.pageId === pageId) return current;
+  if (current.pageId === pageId) return renderedPage(pageId);
 
   if (current.pageId !== "home") {
     current = await transition("navigate to Home", {
       readinessSamples: 1,
       ready: () => driver.readNavigationAction("home"),
       act: (readyElement) => driver.activateNavigation("home", readyElement),
-      complete: () => selectedPage("home"),
+      complete: () => driver.readPage("home"),
     });
-    current = await renderedPage("home");
   }
   if (pageId === "home") return current;
 
-  await transition(`navigate to ${pageId}`, {
+  return transition(`navigate to ${pageId}`, {
     readinessSamples: 1,
     ready: () => driver.readNavigationAction(pageId),
     act: (readyElement) => driver.activateNavigation(pageId, readyElement),
-    complete: () => selectedPage(pageId),
+    complete: () => driver.readPage(pageId),
   });
-  return renderedPage(pageId);
 }
 
 function semanticTextValue(element) {
@@ -1054,8 +1048,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   async readPage(pageId) {
     const tag = androidPageTag(pageId);
     if (!tag) throw new Error(`Android page ${pageId} has no semantic page tag`);
-    const current = visibleAndroidPage(this.serial);
-    if (current?.pageId !== pageId) return null;
     const node = queryFirstAndroidSemanticNode(
       this.serial,
       tag,

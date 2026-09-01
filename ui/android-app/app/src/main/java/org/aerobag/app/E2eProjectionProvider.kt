@@ -19,8 +19,6 @@ internal data class E2eProjectionSnapshot(
 )
 
 internal object E2eProjectionRegistry {
-    const val TouchReceiptResourceId = "org.aerobag.app:id/e2e_touch_receipt"
-
     val KnownViewIds = setOf(
         R.id.e2e_ownship_state_projection,
         R.id.e2e_live_overlay_projection,
@@ -61,8 +59,6 @@ internal object E2eProjectionRegistry {
     )
 
     private val revision = AtomicLong()
-    private val touchSequences = ConcurrentHashMap<String, AtomicLong>()
-    private val touchOwner = Any()
     private val entries =
         ConcurrentHashMap<String, ConcurrentHashMap<Any, E2eProjectionSnapshot>>()
 
@@ -98,25 +94,6 @@ internal object E2eProjectionRegistry {
             .sortedBy { (resourceId, _) -> resourceId }
             .toList()
 
-    fun publishTouchReceipt(
-        rawX: Int = -1,
-        rawY: Int = -1,
-        handled: Boolean = true,
-        semanticTag: String? = null,
-    ) {
-        val resourceId = touchReceiptResourceId(semanticTag)
-        publish(
-            resourceId = resourceId,
-            state =
-                "sequence:${touchSequences.computeIfAbsent(resourceId) { AtomicLong() }.incrementAndGet()}:" +
-                    "x:$rawX:y:$rawY:handled:$handled",
-            owner = touchOwner,
-        )
-    }
-
-    fun touchReceiptResourceId(semanticTag: String?): String =
-        if (semanticTag.isNullOrEmpty()) TouchReceiptResourceId
-        else "$TouchReceiptResourceId:${Uri.encode(semanticTag)}"
 }
 
 /** E2E-only state channel that cannot block behind Compose accessibility traversal. */

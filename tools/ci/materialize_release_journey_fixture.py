@@ -14,6 +14,41 @@ from pathlib import Path
 
 from build_e2e_package_fixture import BuildError, read_json, safe_member_path
 
+
+MIN_REPLAY_DURATION_SECONDS = 8.0
+MIN_REPLAY_POST_GAP_SECONDS = 4.0
+
+
+def validate_replay_fixture(source: Path) -> None:
+    replay_path = source / "replay" / "track-gap.json"
+    replay = read_json(replay_path)
+    trace = replay.get("trace")
+    if not isinstance(trace, list) or len(trace) < 6:
+        raise BuildError(f"{replay_path}: replay trace must contain at least 6 samples")
+    samples: list[tuple[float, object]] = []
+    for index, sample in enumerate(trace):
+        if not isinstance(sample, list) or len(sample) < 6 or not isinstance(sample[0], (int, float)):
+            raise BuildError(f"{replay_path}: replay sample {index} has an invalid shape")
+        samples.append((float(sample[0]), sample[5]))
+    if samples[-1][0] - samples[0][0] < MIN_REPLAY_DURATION_SECONDS:
+        raise BuildError(
+            f"{replay_path}: replay duration must be at least "
+            f"{MIN_REPLAY_DURATION_SECONDS:.1f}s"
+        )
+    gap_index = next((index for index, (_, track) in enumerate(samples) if track is None), None)
+    if gap_index is None:
+        raise BuildError(f"{replay_path}: replay trace has no missing-track sample")
+    recovery = next(
+        (time for time, track in samples[gap_index + 1:] if track is not None),
+        None,
+    )
+    if recovery is None or samples[-1][0] - recovery < MIN_REPLAY_POST_GAP_SECONDS:
+        raise BuildError(
+            f"{replay_path}: replay trace must continue for at least "
+            f"{MIN_REPLAY_POST_GAP_SECONDS:.1f}s after track recovery"
+        )
+
+
 def extract_packages(publication: Path) -> None:
     current_values = read_json(publication / "current_artifacts.json")
     if not isinstance(current_values, list) or not current_values:
@@ -48,6 +83,7 @@ def materialize(source: Path, output: Path) -> None:
     publication_root = fixture.get("publication_root")
     if not isinstance(publication_root, str):
         raise BuildError("release fixture has no publication_root")
+    validate_replay_fixture(source)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:

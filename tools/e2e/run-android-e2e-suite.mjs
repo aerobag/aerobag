@@ -365,10 +365,11 @@ async function ensureOfflinePackagesReady(
     recordStep(result, "disclaimer accepted");
   }
   if (startup?.page === "OfflinePackages" && startup?.ready === "true") {
+    const driver = nativeSemanticDriver(serial);
     await nativeTransition(result, "offline package page dismissed", {
       ready: async () => queryExactAndroidNode(serial, "parity:button:HOME", true),
       act: async (readyNode) => activateAndroidNode(serial, readyNode),
-      complete: async () => queryAndroidRuntimeReadyForJourney(serial),
+      complete: async () => driver.readPage("home"),
     });
     recordStep(result, "offline package page dismissed", "Home page visible");
   }

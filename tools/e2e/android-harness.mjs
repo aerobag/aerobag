@@ -32,7 +32,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/28";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/29";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -194,6 +194,12 @@ export function semanticDriverObservationRequest(
   path,
   request = semanticDriverRequest,
 ) {
+  if (path.includes("provider_only=true")) {
+    // App-owned projections do not contend on accessibility traversal. Give
+    // their bounded Binder read one request window and let the outer semantic
+    // observer retry; immediate retries only create a herd of abandoned reads.
+    return request(port, path, SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS);
+  }
   const deadline = performance.now() + SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS * 1_000;
   let response = request(
     port, path, SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS,
@@ -358,14 +364,7 @@ export function clickAndroidSemanticNode(
   if (!target) {
     throw new Error(`persistent Android physical tap target stayed stale for ${tag}`);
   }
-  if (awaitAndroidPhysicalTouch(
-    state.port,
-    target.bounds,
-    target.touchTag,
-    target.touchSequence,
-    target.globalTouchSequence,
-  )) return true;
-  throw new Error(`persistent Android physical tap was not received by ${tag}`);
+  return target;
 }
 
 export function androidSemanticTargetStateMatches(tag, node, expectedState = {}) {
@@ -397,25 +396,7 @@ function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
     const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
     throw new Error(`persistent Android physical tap failed for ${tag}: ${detail}`);
   }
-  const target = JSON.parse(response.stdout);
-  return {
-    bounds: rectOfBounds(target.bounds),
-    touchTag: target.touch_tag ?? "",
-    touchSequence: Number(target.touch_sequence),
-    globalTouchSequence: Number(target.global_touch_sequence),
-  };
-}
-
-function awaitAndroidPhysicalTouch(port, bounds, tag, after, globalAfter) {
-  const query = new URLSearchParams({
-    bounds: `[${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}]`,
-    tag,
-    after: String(after),
-    global_after: String(globalAfter),
-    timeout_ms: "2000",
-  });
-  const response = semanticDriverRequest(port, `/await-touch?${query}`, 2.5);
-  return response.status === 0 && response.stdout.trim() === "received";
+  return response.stdout.trim() === "ok";
 }
 
 export function focusAndroidSemanticNode(
@@ -818,7 +799,7 @@ export function queryAndroidStartupState(serial) {
 
 export function queryAndroidStartupProjection(serial) {
   return startupProjectionFromExactNode(
-    queryAndroidExactProjection(serial, STARTUP_PROJECTION_ID)?.[0] ?? null,
+    queryAndroidExactProjection(serial, STARTUP_PROJECTION_ID, { providerOnly: true })?.[0] ?? null,
   );
 }
 
@@ -829,10 +810,18 @@ export function queryAndroidRuntimeReadyForJourney(serial) {
     : null;
 }
 
+export function androidIndexedControlIsActionReady(node) {
+  return node?.enabled === "true" &&
+    node?.visible === "true" &&
+    node?.["center-reachable"] === "true" &&
+    node?.["semantic-path"]?.startsWith("projection-provider:") &&
+    Boolean(node?.bounds);
+}
+
 export function androidInteractiveRuntime(state, home) {
   return state?.ready === "true" &&
     state?.disclaimer_required === "false" &&
-    androidSemanticNodeIsActionable(home)
+    androidIndexedControlIsActionReady(home)
     ? { state, home }
     : null;
 }
@@ -844,10 +833,10 @@ export async function waitForAndroidInteractiveRuntime(
   const observed = await observeUntil("painted interactive Android runtime", () => {
     const state = queryAndroidStartupState(serial);
     if (state?.disclaimer_required !== "false") return null;
-    const home = queryAndroidSemanticNodes(
+    const home = queryAndroidExactProjection(
       serial,
       "parity:button:HOME",
-      { first: true },
+      { providerOnly: true, verifyReachable: true },
     )[0] ?? null;
     return androidInteractiveRuntime(state, home);
   }, {

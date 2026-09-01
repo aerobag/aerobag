@@ -316,11 +316,15 @@ test("replay seek gestures move toward the open side of the timeline", () => {
 test("status popup dismissal waits until the popup can receive Back", async () => {
   const events = [];
   let panelOpen = false;
+  let launcherReads = 0;
   const runtime = withActionContract({
     driver: {
       async readElement(id) {
         events.push(`read:${id}:${panelOpen}`);
-        if (id === "data-status-launcher") return { text: "1" };
+        if (id === "data-status-launcher") {
+          launcherReads += 1;
+          return launcherReads === 1 ? null : { text: "1" };
+        }
         if (id === "data-status-panel") return panelOpen ? { test_id: id } : null;
         return null;
       },
@@ -336,7 +340,8 @@ test("status popup dismissal waits until the popup can receive Back", async () =
     },
     async eventually(label, probe) {
       events.push(`eventually:${label}`);
-      const value = await probe();
+      let value = await probe();
+      if (!value && label === "data status warning launcher") value = await probe();
       assert.ok(value, `${label} did not satisfy its postcondition`);
       return value;
     },
@@ -344,6 +349,8 @@ test("status popup dismissal waits until the popup can receive Back", async () =
 
   assert.deepEqual(await openAndDismissDataStatus(runtime), { text: "1" });
   assert.deepEqual(events, [
+    "eventually:data status warning launcher",
+    "read:data-status-launcher:false",
     "read:data-status-launcher:false",
     "eventually:open data status popup ready",
     "read:data-status-launcher:false",
@@ -2801,6 +2808,7 @@ test("journey choices retry transient discovery before launcher and selection ac
 
 test("Android offline startup completion uses fixed and exact projections instead of hierarchy dumps", () => {
   const source = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const bootstrap = source.slice(
     source.indexOf("async function ensureOfflinePackagesReady"),
     source.indexOf("async function waitForRuntime"),
@@ -2813,6 +2821,12 @@ test("Android offline startup completion uses fixed and exact projections instea
     bootstrap,
     /dumpAndroid|queryAndroidSemanticNodes|androidRuntimeReadyForJourney/,
   );
+  const interactiveRuntime = harness.slice(
+    harness.indexOf("export function androidInteractiveRuntime"),
+    harness.indexOf("export async function waitForAndroidInteractiveRuntime"),
+  );
+  assert.match(interactiveRuntime, /androidIndexedControlIsActionReady\(home\)/);
+  assert.doesNotMatch(interactiveRuntime, /androidSemanticNodeIsActionable/);
 });
 
 test("Android plate first-open journey uses exact projections for semantic rendezvous", () => {
@@ -3211,8 +3225,7 @@ test("Android page navigation requires visible semantic pages", () => {
   );
   assert.match(currentPage, /queryAndroidStartupProjection\(serial\)/);
   assert.doesNotMatch(currentPage, /queryAndroidSemanticNodes/);
-  assert.match(readPage, /const current = visibleAndroidPage\(this\.serial\)/);
-  assert.match(readPage, /current\?\.pageId !== pageId/);
+  assert.doesNotMatch(readPage, /visibleAndroidPage/);
   assert.match(readPage, /queryFirstAndroidSemanticNode/);
   assert.match(readPage, /includeDescendantText: false/);
   assert.match(readPage, /providerOnly: true/);
@@ -3476,9 +3489,8 @@ test("Android semantic taps validate current controls before one timed input ges
   assert.match(service, /new GestureDescription\.StrokeDescription\(path, 0, 80\)/);
   assert.match(service, /dispatchGesture/);
   assert.doesNotMatch(service, /GestureResultCallback/);
-  assert.match(service, /ACTION_UP receipt is the authoritative completion signal/);
-  assert.match(service, /target\.put\("global_touch_sequence"/);
-  assert.match(service, /globalReceipt\.sequence > globalSequence/);
+  assert.match(service, /surrounding journey transition requires the app-visible result/);
+  assert.doesNotMatch(service, /ACTION_UP receipt|global_touch_sequence|TouchReceipt/);
   assert.doesNotMatch(service, /ACTION_CLICK/);
 });
 
@@ -3923,17 +3935,17 @@ test("shared semantic navigation separates page selection from rendered readines
     async readNavigationAction(destination) { return { destination }; },
     async activateNavigation(destination) { selectedPage = destination; },
   };
-  const transition = async (_description, contract) => {
-    assert.ok(await contract.ready());
-    await contract.act();
-    return contract.complete();
-  };
   const observe = async (_description, probe) => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const value = await probe();
       if (value) return value;
     }
     return null;
+  };
+  const transition = async (_description, contract) => {
+    assert.ok(await contract.ready());
+    await contract.act();
+    return observe("semantic completion", contract.complete);
   };
 
   assert.deepEqual(
@@ -4105,6 +4117,16 @@ test("Android semantic probes cannot create an accessibility traversal herd", ()
   assert.match(service, /semanticRequestMonitor\.notifyAll\(\)/);
   assert.match(harness, /semanticDriverObservationUnavailable\(response\)/);
   assert.match(harness, /response\.stdout\.includes\("semantic request busy"\)/);
+  assert.match(service, /requiresSerializedAccessibility\(endpoint, path\)/);
+  assert.match(
+    service,
+    /"\/exact-projection"\.equals\(endpoint\)[\s\S]*provider_only[\s\S]*return false/,
+  );
+  assert.match(
+    service,
+    /"\/tap"\.equals\(endpoint\)[\s\S]*startsWith\("projection-provider:"\)[\s\S]*return false/,
+  );
+  assert.match(harness, /path\.includes\("provider_only=true"\)/);
 });
 
 test("Android semantic actions retry only an explicit busy non-delivery", () => {
@@ -4221,10 +4243,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/28/);
-  assert.match(service, /aerobag-semantic-driver\/28/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/28/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/28/);
+  assert.match(harness, /aerobag-semantic-driver\/29/);
+  assert.match(service, /aerobag-semantic-driver\/29/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/29/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/29/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

@@ -51,9 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/28";
-    private static final String TOUCH_RECEIPT_RESOURCE_ID =
-        "org.aerobag.app:id/e2e_touch_receipt";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/29";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
     private static final long EXACT_PROJECTION_TIME_LIMIT_NANOS = TimeUnit.MILLISECONDS.toNanos(750);
     private static final long PROVIDER_QUERY_TIMEOUT_MS = 500;
@@ -158,7 +156,7 @@ public final class SemanticDriverService extends AccessibilityService {
         String path = request.length > 1 ? request[1] : "/";
         String endpoint = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
         boolean ownsSemanticRequest = false;
-        if (isSemanticEndpoint(endpoint)) {
+        if (requiresSerializedAccessibility(endpoint, path)) {
             ownsSemanticRequest = semanticRequestActive.compareAndSet(false, true);
             if (!ownsSemanticRequest) {
                 respond(
@@ -219,9 +217,6 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/tap":
                     handleTap(socket, path);
                     return;
-                case "/await-touch":
-                    handleAwaitTouch(socket, path);
-                    return;
                 case "/scroll":
                     handleScroll(socket, path);
                     return;
@@ -269,6 +264,20 @@ public final class SemanticDriverService extends AccessibilityService {
                 true;
             default -> false;
         };
+    }
+
+    private static boolean requiresSerializedAccessibility(String endpoint, String path) {
+        if (!isSemanticEndpoint(endpoint)) return false;
+        Map<String, String> query = queryOf(path);
+        if ("/exact-projection".equals(endpoint) &&
+            "true".equals(query.getOrDefault("provider_only", "false"))) {
+            return false;
+        }
+        if ("/tap".equals(endpoint) &&
+            query.getOrDefault("path", "").startsWith("projection-provider:")) {
+            return false;
+        }
+        return true;
     }
 
     private void handleSetText(Socket socket, String path) throws IOException {
@@ -417,16 +426,6 @@ public final class SemanticDriverService extends AccessibilityService {
             );
             return;
         }
-        JSONObject target = new JSONObject();
-        try {
-            String touchTag = semanticPath.startsWith("projection-provider:") ? tag : "";
-            target.put("bounds", renderedBounds.toShortString());
-            target.put("touch_tag", touchTag);
-            target.put("touch_sequence", currentTouchReceipt(touchTag).sequence);
-            target.put("global_touch_sequence", currentTouchReceipt("").sequence);
-        } catch (JSONException error) {
-            throw new IllegalStateException("failed to encode physical tap target", error);
-        }
         if (!dispatchTapGesture(renderedBounds)) {
             respond(
                 socket.getOutputStream(),
@@ -436,12 +435,7 @@ public final class SemanticDriverService extends AccessibilityService {
             );
             return;
         }
-        respond(
-            socket.getOutputStream(),
-            "application/json; charset=utf-8",
-            target.toString() + "\n",
-            200
-        );
+        respondAction(socket, true, "physical tap gesture rejected\n");
     }
 
     private boolean dispatchTapGesture(Rect bounds) {
@@ -450,37 +444,10 @@ public final class SemanticDriverService extends AccessibilityService {
         GestureDescription gesture = new GestureDescription.Builder()
             .addStroke(new GestureDescription.StrokeDescription(path, 0, 80))
             .build();
-        // Acceptance only means Android queued the gesture. The app-owned
-        // ACTION_UP receipt is the authoritative completion signal; waiting
-        // for this service's callback can lag behind an already-delivered tap.
+        // The surrounding journey transition requires the app-visible result;
+        // this method is responsible only for validating and dispatching the
+        // user's one physical gesture.
         return dispatchGesture(gesture, null, null);
-    }
-
-    private void handleAwaitTouch(Socket socket, String path) throws IOException {
-        Map<String, String> query = queryOf(path);
-        long after;
-        long globalAfter;
-        long timeoutMs;
-        try {
-            after = Long.parseLong(query.getOrDefault("after", "0"));
-            globalAfter = Long.parseLong(query.getOrDefault("global_after", "0"));
-            timeoutMs = Long.parseLong(query.getOrDefault("timeout_ms", "500"));
-        } catch (NumberFormatException error) {
-            after = 0;
-            globalAfter = 0;
-            timeoutMs = 500;
-        }
-        timeoutMs = Math.max(1, Math.min(2_500, timeoutMs));
-        Rect bounds = parseBounds(query.getOrDefault("bounds", ""));
-        String touchTag = query.getOrDefault("tag", "");
-        boolean received = bounds != null &&
-            awaitTouchAfter(after, globalAfter, bounds, touchTag, timeoutMs);
-        respond(
-            socket.getOutputStream(),
-            "text/plain; charset=utf-8",
-            received ? "received\n" : "unreceived\n",
-            200
-        );
     }
 
     private void handleScroll(Socket socket, String path) throws IOException {
@@ -535,77 +502,6 @@ public final class SemanticDriverService extends AccessibilityService {
         return true;
     }
 
-    private boolean awaitTouchAfter(
-        long sequence,
-        long globalSequence,
-        Rect expectedBounds,
-        String touchTag,
-        long timeoutMs
-    ) {
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-        do {
-            TouchReceipt receipt = currentTouchReceipt(touchTag);
-            boolean exactTaggedReceipt = !touchTag.isEmpty();
-            if (receipt.sequence > sequence && receipt.handled &&
-                (exactTaggedReceipt || expectedBounds.contains(receipt.rawX, receipt.rawY))) {
-                return true;
-            }
-            // A successful click may synchronously navigate and dispose its
-            // Compose control before that control observes ACTION_UP. The
-            // activity-level receipt survives navigation and proves that the
-            // same gesture reached the app at the verified target bounds.
-            TouchReceipt globalReceipt = currentTouchReceipt("");
-            if (globalReceipt.sequence > globalSequence && globalReceipt.handled &&
-                expectedBounds.contains(globalReceipt.rawX, globalReceipt.rawY)) {
-                return true;
-            }
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        } while (System.nanoTime() < deadlineNanos);
-        return false;
-    }
-
-    private TouchReceipt currentTouchReceipt(String touchTag) {
-        String resourceId = touchTag.isEmpty()
-            ? TOUCH_RECEIPT_RESOURCE_ID
-            : TOUCH_RECEIPT_RESOURCE_ID + ":" + Uri.encode(touchTag);
-        ProviderProjection projection = providerProjection(resourceId);
-        if (!projection.handled || projection.values.length() != 1) return TouchReceipt.Empty;
-        try {
-            JSONObject value = projection.values.getJSONObject(0);
-            Map<String, String> fields = projectionStateFields(
-                value.optString("state-description", "")
-            );
-            return new TouchReceipt(
-                Long.parseLong(fields.getOrDefault("sequence", "0")),
-                Integer.parseInt(fields.getOrDefault("x", "-1")),
-                Integer.parseInt(fields.getOrDefault("y", "-1")),
-                Boolean.parseBoolean(fields.getOrDefault("handled", "false"))
-            );
-        } catch (JSONException | NumberFormatException error) {
-            return TouchReceipt.Empty;
-        }
-    }
-
-    private static final class TouchReceipt {
-        static final TouchReceipt Empty = new TouchReceipt(0, -1, -1, false);
-
-        final long sequence;
-        final int rawX;
-        final int rawY;
-        final boolean handled;
-
-        TouchReceipt(long sequence, int rawX, int rawY, boolean handled) {
-            this.sequence = sequence;
-            this.rawX = rawX;
-            this.rawY = rawY;
-            this.handled = handled;
-        }
-    }
 
     private static Map<String, String> queryOf(String path) {
         return parseQuery(path.contains("?") ? path.substring(path.indexOf('?') + 1) : "");

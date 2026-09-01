@@ -3250,6 +3250,7 @@ test("Android journey controls publish indexed geometry through the private E2E 
   assert.match(provider, /if \(snapshot == null\) 0 else 1/);
   assert.match(flightPlan, /semanticTag = "parity:plan-append-route-input"/);
   assert.match(settings, /semanticTag = "parity:settings-section:\$\{section\.id\}"/);
+  assert.match(settings, /semanticTag = "parity:settings-toggle:\$\{row\.id\}"/);
   assert.match(commonWidgets, /semanticTag = resolvedTestTag/);
   assert.match(commonWidgets, /text:\$\{Uri\.encode\(renderedLabel\)\}/);
   assert.match(charts, /semanticTag = testTag/);

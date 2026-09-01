@@ -430,6 +430,10 @@ private fun SettingsToggleRow(
                     onSettingsAction(row.actionId, if (enabled) "off" else "on")
                 },
             )
+            .e2eIndexedControl(
+                semanticTag = "parity:settings-toggle:${row.id}",
+                state = "enabled:true:selected:false:checked:$enabled",
+            )
             .testTag("parity:settings-toggle:${row.id}")
             .padding(horizontal = ThumbSize * 0.24f),
         verticalAlignment = Alignment.CenterVertically,

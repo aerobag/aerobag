@@ -149,7 +149,7 @@ internal fun CloudPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:page:cloud")
+            .e2ePageRoot("parity:page:cloud")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         PrimaryNavigationDock(

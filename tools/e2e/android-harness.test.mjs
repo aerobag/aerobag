@@ -194,6 +194,8 @@ test("Android physical taps use bounded preflight and one timed delivered gestur
   assert.match(service, /case "\/await-touch"/);
   assert.match(service, /receipt\.sequence > sequence && receipt\.handled/);
   assert.match(service, /expectedBounds\.contains\(receipt\.rawX, receipt\.rawY\)/);
+  assert.match(service, /globalReceipt\.sequence > globalSequence/);
+  assert.match(service, /expectedBounds\.contains\(globalReceipt\.rawX, globalReceipt\.rawY\)/);
   assert.match(service, /ProviderProjection projection = providerProjection\(tag, true\)/);
   assert.match(service, /fields\.getOrDefault\("window-focus", "false"\)/);
   const providerTapStart = service.indexOf(

@@ -420,11 +420,11 @@ export function auditJourneyStructure(text, filename = "release-journey-implemen
           reportNativeActionEvidence(source, violations, property.initializer);
         } else if (
           property.name.text === "responseTimeoutMs" &&
-          !isTimingClass(property.initializer, "userResponseMs")
+          !isTimingClass(property.initializer, "userTransitionDeadlineMs")
         ) {
           violations.push({
             ...sourceLocation(source, property.initializer),
-            message: "user transition responseTimeoutMs must use E2E_TIMING.userResponseMs",
+            message: "user transition responseTimeoutMs must use E2E_TIMING.userTransitionDeadlineMs",
           });
         }
       }

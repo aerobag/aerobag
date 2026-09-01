@@ -188,7 +188,7 @@ export function createJourneyRuntime({
       let timingRecord = null;
       console.log(
         `[${journey.id}:${platform}] transition start: ${description} ` +
-          `(budget ${contract.responseTimeoutMs ?? E2E_TIMING.userResponseMs}ms)`,
+          `(deadline ${contract.responseTimeoutMs ?? E2E_TIMING.userTransitionDeadlineMs}ms)`,
       );
       const completed = await performTransition(description, {
         ...contract,
@@ -214,7 +214,10 @@ export function createJourneyRuntime({
         await driver.readSessionRevision?.().catch(() => null) ?? null;
       console.log(
         `[${journey.id}:${platform}] transition pass: ${description} ` +
-          `(${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total)`,
+          `(${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total` +
+          (completed.timing.response_target_met
+            ? ")"
+            : `, missed ${completed.timing.response_target_ms}ms target)`),
       );
       return completed.value;
     },

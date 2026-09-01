@@ -342,7 +342,7 @@ function httpJson(url) {
       });
     });
     req.on("error", reject);
-    req.setTimeout(E2E_TIMING.userResponseMs, () => {
+    req.setTimeout(E2E_TIMING.localReadyMs, () => {
       req.destroy(new Error(`timeout fetching ${url}`));
     });
   });
@@ -365,7 +365,7 @@ function httpText(url) {
       });
     });
     req.on("error", reject);
-    req.setTimeout(E2E_TIMING.userResponseMs, () => {
+    req.setTimeout(E2E_TIMING.localReadyMs, () => {
       req.destroy(new Error(`timeout fetching ${url}`));
     });
   });
@@ -931,7 +931,7 @@ async function run(args) {
       cdp,
       (status) => status?.navigator_online === false
         && status?.connection?.facts?.some((fact) => fact.label === "Last error"),
-      E2E_TIMING.userResponseMs,
+      E2E_TIMING.userTransitionDeadlineMs,
       "offline transition did not schedule live-feed reconnect",
       E2E_TIMING.resourcePollIntervalMs,
     );
@@ -945,7 +945,7 @@ async function run(args) {
     progress("waiting for online to interrupt reconnect backoff");
     await waitFor(
       () => liveFeed.requestCounts.events > beforeOnlineEventStreams,
-      E2E_TIMING.userResponseMs,
+      E2E_TIMING.userTransitionDeadlineMs,
       "online event did not interrupt pending live-feed reconnect backoff",
       E2E_TIMING.stabilityPollIntervalMs,
     );

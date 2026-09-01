@@ -51,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/27";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/28";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -423,6 +423,7 @@ public final class SemanticDriverService extends AccessibilityService {
             target.put("bounds", renderedBounds.toShortString());
             target.put("touch_tag", touchTag);
             target.put("touch_sequence", currentTouchReceipt(touchTag).sequence);
+            target.put("global_touch_sequence", currentTouchReceipt("").sequence);
         } catch (JSONException error) {
             throw new IllegalStateException("failed to encode physical tap target", error);
         }
@@ -458,18 +459,22 @@ public final class SemanticDriverService extends AccessibilityService {
     private void handleAwaitTouch(Socket socket, String path) throws IOException {
         Map<String, String> query = queryOf(path);
         long after;
+        long globalAfter;
         long timeoutMs;
         try {
             after = Long.parseLong(query.getOrDefault("after", "0"));
+            globalAfter = Long.parseLong(query.getOrDefault("global_after", "0"));
             timeoutMs = Long.parseLong(query.getOrDefault("timeout_ms", "500"));
         } catch (NumberFormatException error) {
             after = 0;
+            globalAfter = 0;
             timeoutMs = 500;
         }
         timeoutMs = Math.max(1, Math.min(2_500, timeoutMs));
         Rect bounds = parseBounds(query.getOrDefault("bounds", ""));
         String touchTag = query.getOrDefault("tag", "");
-        boolean received = bounds != null && awaitTouchAfter(after, bounds, touchTag, timeoutMs);
+        boolean received = bounds != null &&
+            awaitTouchAfter(after, globalAfter, bounds, touchTag, timeoutMs);
         respond(
             socket.getOutputStream(),
             "text/plain; charset=utf-8",
@@ -532,6 +537,7 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private boolean awaitTouchAfter(
         long sequence,
+        long globalSequence,
         Rect expectedBounds,
         String touchTag,
         long timeoutMs
@@ -542,6 +548,15 @@ public final class SemanticDriverService extends AccessibilityService {
             boolean exactTaggedReceipt = !touchTag.isEmpty();
             if (receipt.sequence > sequence && receipt.handled &&
                 (exactTaggedReceipt || expectedBounds.contains(receipt.rawX, receipt.rawY))) {
+                return true;
+            }
+            // A successful click may synchronously navigate and dispose its
+            // Compose control before that control observes ACTION_UP. The
+            // activity-level receipt survives navigation and proves that the
+            // same gesture reached the app at the verified target bounds.
+            TouchReceipt globalReceipt = currentTouchReceipt("");
+            if (globalReceipt.sequence > globalSequence && globalReceipt.handled &&
+                expectedBounds.contains(globalReceipt.rawX, globalReceipt.rawY)) {
                 return true;
             }
             try {

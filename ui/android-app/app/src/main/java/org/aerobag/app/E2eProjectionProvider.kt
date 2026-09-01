@@ -45,6 +45,7 @@ internal object E2eProjectionRegistry {
     val KnownSemanticPrefixes = listOf(
         "parity:button:",
         "parity:home-button:",
+        "parity:page:",
         "parity:map-surface",
         "parity:map-selection-tray",
         "parity:ownship-launcher",

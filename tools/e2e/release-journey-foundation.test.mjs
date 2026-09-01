@@ -573,7 +573,7 @@ test("a user transition cannot borrow a long-running operation budget", async ()
   );
 });
 
-test("action delivery and completion share one user-response budget", async () => {
+test("action delivery and completion share one functional deadline", async () => {
   await assert.rejects(
     performTransition("slow action delivery", {
       ready: async () => true,
@@ -583,8 +583,28 @@ test("action delivery and completion share one user-response budget", async () =
       responseTimeoutMs: 10,
       intervalMs: 1,
     }),
-    /timed out|exceeded the 10ms user-response budget/,
+    /timed out|exceeded the 10ms functional deadline/,
   );
+});
+
+test("a functional transition records a missed user-response target without hiding success", async () => {
+  let completed = false;
+  const result = await performTransition("slow but complete", {
+    ready: async () => true,
+    act: async () => { completed = true; },
+    complete: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 8));
+      return completed;
+    },
+    readyTimeoutMs: 100,
+    responseTimeoutMs: 100,
+    responseTargetMs: 5,
+    completionSamples: 1,
+    intervalMs: 1,
+  });
+  assert.equal(result.value, true);
+  assert.equal(result.timing.response_target_ms, 5);
+  assert.equal(result.timing.response_target_met, false);
 });
 
 test("a transition does not accept a one-sample completion glitch", async () => {
@@ -1216,7 +1236,7 @@ test("journey structure audit rejects long-running budgets on user transitions",
   `;
   assert.deepEqual(
     auditJourneyStructure(source, "slow-transition.mjs").map((violation) => violation.message),
-    ["user transition responseTimeoutMs must use E2E_TIMING.userResponseMs"],
+    ["user transition responseTimeoutMs must use E2E_TIMING.userTransitionDeadlineMs"],
   );
 });
 
@@ -2144,7 +2164,7 @@ test("persistent Android semantic requests separate probes from bounded actions"
     source.match(/SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = ([0-9.]+)/)?.[1],
   );
   assert.ok(
-    observationTimeoutSeconds * 1_000 <= E2E_TIMING.userResponseMs / 3,
+    observationTimeoutSeconds * 1_000 <= E2E_TIMING.userResponseTargetMs / 3,
     "one semantic observation must leave room for retries inside a user transition",
   );
   const hierarchyDump = source.slice(
@@ -3195,6 +3215,27 @@ test("Android page navigation requires visible semantic pages", () => {
   assert.match(readPage, /current\?\.pageId !== pageId/);
   assert.match(readPage, /queryFirstAndroidSemanticNode/);
   assert.match(readPage, /includeDescendantText: false/);
+  assert.match(readPage, /providerOnly: true/);
+  const provider = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionProvider.kt", import.meta.url),
+    "utf8",
+  );
+  assert.match(provider, /"parity:page:"/);
+  for (const file of [
+    "AltitudePlannerPage.kt",
+    "ChartsPage.kt",
+    "CloudPage.kt",
+    "DataStatusPage.kt",
+    "FlightPlanPage.kt",
+    "HomePage.kt",
+    "SettingsPage.kt",
+  ]) {
+    const page = readFileSync(
+      new URL(`../../ui/android-app/app/src/main/java/org/aerobag/app/${file}`, import.meta.url),
+      "utf8",
+    );
+    assert.match(page, /\.e2ePageRoot\(/, `${file} must publish exact rendered-page readiness`);
+  }
 });
 
 test("Android first-node probes stop semantic traversal at the first match", () => {
@@ -3436,6 +3477,8 @@ test("Android semantic taps validate current controls before one timed input ges
   assert.match(service, /dispatchGesture/);
   assert.doesNotMatch(service, /GestureResultCallback/);
   assert.match(service, /ACTION_UP receipt is the authoritative completion signal/);
+  assert.match(service, /target\.put\("global_touch_sequence"/);
+  assert.match(service, /globalReceipt\.sequence > globalSequence/);
   assert.doesNotMatch(service, /ACTION_CLICK/);
 });
 
@@ -4178,10 +4221,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/27/);
-  assert.match(service, /aerobag-semantic-driver\/27/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/27/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/27/);
+  assert.match(harness, /aerobag-semantic-driver\/28/);
+  assert.match(service, /aerobag-semantic-driver\/28/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/28/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/28/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 

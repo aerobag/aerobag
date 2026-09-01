@@ -122,6 +122,14 @@ internal fun Modifier.e2eIndexedTextControl(
     state = "kind:text:text:${Uri.encode(text)}:enabled:$enabled:focused:$focused",
 )
 
+/** A rendered page marker, published only after Compose has positioned the page root. */
+@Composable
+internal fun Modifier.e2ePageRoot(semanticTag: String): Modifier =
+    e2eIndexedControl(
+        semanticTag = semanticTag,
+        state = "enabled:true",
+    ).testTag(semanticTag)
+
 private fun LayoutCoordinates.toE2eBounds(): String {
     val clippedWindowBounds = boundsInWindow()
     val screenOffset = positionOnScreen() - positionInWindow()

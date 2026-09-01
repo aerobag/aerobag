@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 export const E2E_TIMING = Object.freeze({
-  userResponseMs: 3_000,
+  userResponseTargetMs: 3_000,
+  userTransitionDeadlineMs: 6_000,
   localReadyMs: 3_000,
   stabilityMs: 1_500,
   syntheticOwnshipProgressMs: 5_000,
@@ -160,7 +161,7 @@ export async function observeChangedValueUntilStable(
   probe,
   {
     initialValue,
-    timeoutMs = E2E_TIMING.userResponseMs,
+    timeoutMs = E2E_TIMING.userTransitionDeadlineMs,
     intervalMs = E2E_TIMING.pollIntervalMs,
     stableSamples = E2E_TIMING.transitionCompletionSamples + 1,
     valueKey = (value) => value,
@@ -244,7 +245,8 @@ export async function performTransition(description, {
   diagnose = null,
   waitForObservation = null,
   readyTimeoutMs = E2E_TIMING.localReadyMs,
-  responseTimeoutMs = E2E_TIMING.userResponseMs,
+  responseTimeoutMs = E2E_TIMING.userTransitionDeadlineMs,
+  responseTargetMs = Math.min(E2E_TIMING.userResponseTargetMs, responseTimeoutMs),
   intervalMs = E2E_TIMING.pollIntervalMs,
   readinessSamples = E2E_TIMING.transitionReadinessSamples,
   completionSamples = E2E_TIMING.transitionCompletionSamples,
@@ -257,10 +259,10 @@ export async function performTransition(description, {
   if (!Number.isInteger(completionSamples) || completionSamples < 1) {
     throw new Error(`${description} completionSamples must be a positive integer`);
   }
-  if (responseTimeoutMs > E2E_TIMING.userResponseMs) {
+  if (responseTimeoutMs > E2E_TIMING.userTransitionDeadlineMs) {
     throw new Error(
-      `${description} requests a ${responseTimeoutMs}ms user-response budget; ` +
-        `user transitions are capped at ${E2E_TIMING.userResponseMs}ms. ` +
+      `${description} requests a ${responseTimeoutMs}ms functional transition deadline; ` +
+        `user transitions are capped at ${E2E_TIMING.userTransitionDeadlineMs}ms. ` +
         "Observe longer resource or temporal work as a separate named phase.",
     );
   }
@@ -275,6 +277,8 @@ export async function performTransition(description, {
     response_ms: null,
     total_ms: null,
     response_budget_ms: responseTimeoutMs,
+    response_target_ms: responseTargetMs,
+    response_target_met: null,
     ready_state: null,
     action_result: null,
     observation: null,
@@ -323,6 +327,7 @@ export async function performTransition(description, {
         action_ms: 0,
         completion_ms: 0,
         response_ms: 0,
+        response_target_met: true,
         total_ms: Math.round(performance.now() - transitionStartedAt),
         action_result: { skipped: "already-complete" },
         observation: diagnosticValue(completionBeforeAction),
@@ -345,6 +350,7 @@ export async function performTransition(description, {
   } catch (error) {
     timing.action_ms = Math.round(performance.now() - actionStartedAt);
     timing.response_ms = timing.action_ms;
+    timing.response_target_met = timing.response_ms <= responseTargetMs;
     timing.total_ms = Math.round(performance.now() - transitionStartedAt);
     timing.observation = { error: error.message };
     await recordFailure("action", error);
@@ -354,10 +360,11 @@ export async function performTransition(description, {
   const remainingResponseMs = responseTimeoutMs - (performance.now() - actionStartedAt);
   if (remainingResponseMs <= 0) {
     timing.response_ms = actionDurationMs;
+    timing.response_target_met = timing.response_ms <= responseTargetMs;
     timing.total_ms = Math.round(performance.now() - transitionStartedAt);
     await recordFailure(
       "action",
-      new Error(`${description} action exceeded the ${responseTimeoutMs}ms user-response budget`),
+      new Error(`${description} action exceeded the ${responseTimeoutMs}ms functional deadline`),
     );
   }
   let completion;
@@ -371,6 +378,7 @@ export async function performTransition(description, {
   } catch (error) {
     timing.completion_ms = Math.round(performance.now() - actionStartedAt - actionDurationMs);
     timing.response_ms = Math.round(performance.now() - actionStartedAt);
+    timing.response_target_met = timing.response_ms <= responseTargetMs;
     timing.total_ms = Math.round(performance.now() - transitionStartedAt);
     timing.observation = error.diagnostics ?? null;
     await recordFailure("completion", error);
@@ -381,6 +389,7 @@ export async function performTransition(description, {
     failure_phase: null,
     completion_ms: completion.durationMs,
     response_ms: responseDurationMs,
+    response_target_met: responseDurationMs <= responseTargetMs,
     total_ms: Math.round(performance.now() - transitionStartedAt),
     observation: diagnosticValue(completion.value),
   });

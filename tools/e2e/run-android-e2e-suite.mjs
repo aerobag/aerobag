@@ -113,7 +113,10 @@ async function nativeTransition(result, description, contract) {
   recordStep(
     result,
     description,
-    `${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total`,
+    `${completed.timing.response_ms}ms response, ${completed.timing.total_ms}ms total` +
+      (completed.timing.response_target_met
+        ? ""
+        : `, missed ${completed.timing.response_target_ms}ms target`),
   );
   return completed.value;
 }
@@ -515,7 +518,7 @@ async function centerChartOnDestination(serial, result, route) {
       );
       return evidence.matched ? evidence : null;
     },
-    responseTimeoutMs: E2E_TIMING.userResponseMs,
+    responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
   await dismissMapSelection(serial, result, driver);
   await observeUntil(
@@ -550,7 +553,7 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
       );
       return evidence.matched ? evidence : null;
     },
-    responseTimeoutMs: E2E_TIMING.userResponseMs,
+    responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
   recordStep(result, "airport inspector opened", `${airportId}, ${evidence.probeTag}`);
 }
@@ -590,7 +593,7 @@ async function inspectRawTerrainSpot(serial, result) {
         ? xml
         : null;
     },
-    responseTimeoutMs: E2E_TIMING.userResponseMs,
+    responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
   const { x, y } = point;
   recordStep(result, "raw map SPOT inspector opened", `screen=${x},${y}`);
@@ -764,7 +767,7 @@ async function selectBadAutopilotSource(serial, result) {
       readyOption,
     ),
     complete: async () => queryMapFollowProbe(serial),
-    responseTimeoutMs: E2E_TIMING.userResponseMs,
+    responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
 }
 
@@ -911,7 +914,7 @@ async function ensureMapFollowEngaged(serial, result) {
   await waitForMapFollowProbe(
     serial,
     (nextProbe) => nextProbe.following && mapFollowOffsetPx(nextProbe) <= 120,
-    E2E_TIMING.userResponseMs,
+    E2E_TIMING.userTransitionDeadlineMs,
     "CTR follow centered on ownship",
   );
   recordStep(result, "CTR follow engaged");
@@ -965,7 +968,7 @@ async function dragMapWhileFollowing(serial, result) {
         const nextProbe = queryMapFollowProbe(serial);
         return nextProbe?.following && mapFollowOffsetPx(nextProbe) >= 80 ? nextProbe : null;
       },
-      responseTimeoutMs: E2E_TIMING.userResponseMs,
+      responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
     });
   } catch (error) {
     probe = queryMapFollowProbe(serial);
@@ -1008,7 +1011,7 @@ async function zoomMapOneStepWhileFollowing(serial, result, direction) {
         : probe?.zoomCenti < before.zoomCenti;
       return probe?.following && changedInDirection && mapFollowOffsetPx(probe) >= 80 ? probe : null;
     },
-    responseTimeoutMs: E2E_TIMING.userResponseMs,
+    responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
   return changed;
 }

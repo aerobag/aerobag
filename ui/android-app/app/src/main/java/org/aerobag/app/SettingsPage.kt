@@ -82,7 +82,7 @@ internal fun SettingsPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:page:settings")
+            .e2ePageRoot("parity:page:settings")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         PrimaryNavigationDock(

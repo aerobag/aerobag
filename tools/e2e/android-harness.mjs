@@ -32,7 +32,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/27";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/28";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -359,7 +359,11 @@ export function clickAndroidSemanticNode(
     throw new Error(`persistent Android physical tap target stayed stale for ${tag}`);
   }
   if (awaitAndroidPhysicalTouch(
-    state.port, target.bounds, target.touchTag, target.touchSequence,
+    state.port,
+    target.bounds,
+    target.touchTag,
+    target.touchSequence,
+    target.globalTouchSequence,
   )) return true;
   throw new Error(`persistent Android physical tap was not received by ${tag}`);
 }
@@ -398,14 +402,16 @@ function androidPhysicalTapTarget(port, tag, expectedBounds, semanticPath) {
     bounds: rectOfBounds(target.bounds),
     touchTag: target.touch_tag ?? "",
     touchSequence: Number(target.touch_sequence),
+    globalTouchSequence: Number(target.global_touch_sequence),
   };
 }
 
-function awaitAndroidPhysicalTouch(port, bounds, tag, after) {
+function awaitAndroidPhysicalTouch(port, bounds, tag, after, globalAfter) {
   const query = new URLSearchParams({
     bounds: `[${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}]`,
     tag,
     after: String(after),
+    global_after: String(globalAfter),
     timeout_ms: "2000",
   });
   const response = semanticDriverRequest(port, `/await-touch?${query}`, 2.5);
@@ -1258,7 +1264,7 @@ async function awaitAndroidScrollProjectionSettled(serial, before) {
       () => dumpAndroid(serial),
       {
         initialValue: before,
-        timeoutMs: E2E_TIMING.userResponseMs,
+        timeoutMs: E2E_TIMING.userTransitionDeadlineMs,
         intervalMs: E2E_TIMING.pollIntervalMs,
       },
     );
@@ -1508,7 +1514,7 @@ export async function acceptDisclaimerIfPresent(serial) {
       const nextState = queryAndroidStartupProjection(serial);
       return nextState?.disclaimer_required === "false" ? nextState : null;
     },
-    responseTimeoutMs: E2E_TIMING.userResponseMs,
+    responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
     readyTimeoutMs: E2E_TIMING.startupMs,
   });
   await observeUntil("application startup after accepting mandatory disclaimer", () => {

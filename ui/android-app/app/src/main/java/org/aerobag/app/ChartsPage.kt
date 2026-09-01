@@ -577,7 +577,7 @@ internal fun ChartsPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:page:plate")
+            .e2ePageRoot("parity:page:plate")
             .background(uiTheme.controls.chartSurfaceBg)
             .onSizeChanged { surfaceSize = it }
             .focusRequester(focusRequester)

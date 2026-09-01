@@ -732,7 +732,7 @@ internal fun FlightPlanPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:page:flight_plan")
+            .e2ePageRoot("parity:page:flight_plan")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         Column(

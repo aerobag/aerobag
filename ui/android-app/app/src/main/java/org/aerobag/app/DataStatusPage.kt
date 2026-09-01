@@ -371,7 +371,7 @@ internal fun DataStatusPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:page:data_status")
+            .e2ePageRoot("parity:page:data_status")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         E2eProjectionView(

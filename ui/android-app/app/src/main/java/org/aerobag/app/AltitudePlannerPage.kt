@@ -192,7 +192,7 @@ internal fun AltitudePlannerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("parity:page:altitude_planner")
+            .e2ePageRoot("parity:page:altitude_planner")
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         Column(

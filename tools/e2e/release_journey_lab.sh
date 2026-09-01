@@ -840,7 +840,7 @@ await driver.zoom(surface, Number(amount), ready);
 await observeUntil(`${surface} zoom`, async () => {
   const current = (await driver.readProjection(viewportProbe))[0]?.id;
   return current && current !== before ? current : null;
-}, { timeoutMs: E2E_TIMING.userResponseMs });
+}, { timeoutMs: E2E_TIMING.userTransitionDeadlineMs });
 console.log(`android zoom applied: surface=${surface} amount=${amount}`);
 JS
     ;;

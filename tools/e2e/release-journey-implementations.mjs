@@ -776,7 +776,7 @@ async function flightPlanEditAndNavigate(runtime) {
       expectedTrimmedLabels.every((label, index) => labels[index]?.includes(label))
       ? labels
       : null;
-  }, E2E_TIMING.userResponseMs);
+  }, E2E_TIMING.userTransitionDeadlineMs);
   runtime.check(
     "plan.remove-all-above",
     !trimmedLabels.some((label) => label.includes("KPLU")),
@@ -1220,7 +1220,7 @@ async function plateOperate(runtime) {
       ? "plate-ownship-overlay"
       : "parity:plate-ownship-overlay");
     return entries[0] ?? null;
-  }, E2E_TIMING.userResponseMs);
+  }, E2E_TIMING.userTransitionDeadlineMs);
   runtime.check("plate.georeferenced-ownship", Boolean(ownship));
 
   const initialViewport = await initializedPlateViewport(
@@ -2318,7 +2318,7 @@ async function inspectorDetails(runtime) {
   const spot = await runtime.eventually("raw SPOT selection", async () => {
     const entries = await runtime.driver.readProjection("parity:map-selection-selected:");
     return entries.find((entry) => /SPOT/i.test(entry.text)) ?? null;
-  }, E2E_TIMING.userResponseMs);
+  }, E2E_TIMING.userTransitionDeadlineMs);
   runtime.check("inspector.spot-fallback", Boolean(spot), spot?.text);
   const terrain = await runtime.eventually("SPOT terrain result", async () => {
     const entry = (await runtime.driver.readProjection("parity:map-selection-selected:"))

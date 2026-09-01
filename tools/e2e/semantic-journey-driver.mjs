@@ -1063,6 +1063,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         allowPrefix: tag.endsWith(":"),
         requireVisible: true,
         includeDescendantText: false,
+        providerOnly: true,
       },
     );
     return node ? { pageId, node } : null;

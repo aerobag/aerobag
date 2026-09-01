@@ -689,10 +689,12 @@ internal fun HomePage(
         }
     }
 
+    val pageSemanticTag =
+        if (offlinePackagesRouted) "parity:page:offline_packages" else "parity:page:home"
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .testTag(if (offlinePackagesRouted) "parity:page:offline_packages" else "parity:page:home")
+            .e2ePageRoot(pageSemanticTag)
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
         if (!offlinePackagesRouted) {

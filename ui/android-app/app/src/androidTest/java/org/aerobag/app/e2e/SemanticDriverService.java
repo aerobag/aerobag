@@ -51,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/26";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/27";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -1030,6 +1030,10 @@ public final class SemanticDriverService extends AccessibilityService {
             value.put("set-text-action", Boolean.toString(
                 "text".equals(fields.getOrDefault("kind", ""))
             ));
+            value.put(
+                "input-connection-ready",
+                Boolean.toString(SemanticDriverInputMethodService.focusedInputConnectionReady())
+            );
             value.put("state-description", snapshot.state);
             value.put("bounds", hasBounds ? snapshot.bounds : "[0,0][1,1]");
             value.put(

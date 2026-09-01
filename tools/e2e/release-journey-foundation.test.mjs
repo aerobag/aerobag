@@ -72,8 +72,10 @@ import {
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
 import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
+  androidSemanticTextTargetIsReady,
   androidSemanticReadinessStateMatches,
   androidSemanticTargetStateMatches,
+  deliverAndroidSemanticText,
   semanticDriverActionRequest,
   semanticDriverObservationRequest,
   setAndroidWallClockAndWait,
@@ -3437,7 +3439,7 @@ test("Android semantic taps validate current controls before one timed input ges
   assert.doesNotMatch(service, /ACTION_CLICK/);
 });
 
-test("Android stale indexed targets separate semantic state from temporary actionability", () => {
+test("Android stale indexed targets separate interaction state from live presentation", () => {
   const current = {
     "resource-id": "parity:button:HOME",
     "semantic-path": "projection-provider:42",
@@ -3453,12 +3455,11 @@ test("Android stale indexed targets separate semantic state from temporary actio
     enabled: true,
     selected: false,
     checked: false,
-    stateDescription: "enabled:true:selected:false:text:HOME:window-focus:false",
   };
   assert.equal(
     androidSemanticTargetStateMatches("parity:button:HOME", current, expected),
     true,
-    "window focus is delivery metadata, not a semantic action-state change",
+    "window focus is delivery metadata, not an interaction-state change",
   );
   assert.equal(
     androidSemanticReadinessStateMatches("parity:button:HOME", current, expected),
@@ -3482,7 +3483,21 @@ test("Android stale indexed targets separate semantic state from temporary actio
       { ...current, "state-description": "enabled:true:selected:false:text:PLATE:window-focus:true" },
       expected,
     ),
-    false,
+    true,
+    "live button text may change without changing the stable tagged action",
+  );
+  assert.equal(
+    androidSemanticTargetStateMatches(
+      "parity:data-status-launcher",
+      {
+        ...current,
+        "resource-id": "parity:data-status-launcher",
+        "state-description": "enabled:true:selected:false:text:3:window-focus:true",
+      },
+      expected,
+    ),
+    true,
+    "a changing warning count must not invalidate the status-launcher action",
   );
   assert.equal(
     androidSemanticTargetStateMatches(
@@ -4060,7 +4075,7 @@ test("Android semantic actions retry only an explicit busy non-delivery", () => 
   assert.doesNotMatch(actionRequest, /semanticDriverRequestTimedOut/);
   assert.equal(
     (harness.match(/semanticDriverActionRequest\((?:state\.port|port),/g) ?? []).length,
-    5,
+    4,
   );
 
   const requests = [];
@@ -4163,10 +4178,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/26/);
-  assert.match(service, /aerobag-semantic-driver\/26/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/26/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/26/);
+  assert.match(harness, /aerobag-semantic-driver\/27/);
+  assert.match(service, /aerobag-semantic-driver\/27/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/27/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/27/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -4339,15 +4354,73 @@ test("Android semantic text delivery revalidates the focused projection before u
   assert.doesNotMatch(textDelivery, /resolveRenderedNode|AccessibilityNodeInfo/);
   assert.match(inputMethod, /getCurrentInputConnection\(\)/);
   assert.match(inputMethod, /getExtractedText\(new ExtractedTextRequest\(\), 0\)/);
+  assert.match(inputMethod, /focusedInputConnectionReady\(\)/);
   assert.match(inputMethod, /int start = current\.startOffset/);
   assert.match(inputMethod, /setSelection\(start, start \+ current\.text\.length\(\)\)/);
   assert.match(inputMethod, /commitText\(value, 1\)/);
   assert.match(driver, /providerOnly: true/);
   assert.match(service, /"text"\.equals\(fields\.getOrDefault\("kind", ""\)\)/);
-  assert.match(driver, /projected\.focused && !projected\.supports_set_text/);
-  assert.match(driver, /readyElement\.focused !== true/);
-  assert.doesNotMatch(harness, /\/ime-ready/);
+  assert.match(driver, /projected\.focused && \(!projected\.supports_set_text \|\| !projected\.input_ready\)/);
+  assert.match(driver, /readyElement\.focused !== true \|\|[\s\S]*readyElement\.input_ready !== true/);
+  assert.match(service, /"input-connection-ready"/);
+  assert.match(harness, /response\.stdout\.trim\(\) !== "text action rejected"/);
+  assert.match(harness, /queryAndroidExactProjection/);
   assert.doesNotMatch(service, /ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE/);
+});
+
+test("Android text delivery retries only explicit non-delivery against the refreshed editor", () => {
+  const requests = [];
+  const waits = [];
+  const responses = [
+    { status: 22, stdout: "text action rejected\n", stderr: "curl: HTTP 409" },
+    { status: 0, stdout: "ok\n", stderr: "" },
+  ];
+  const refreshed = {
+    "resource-id": "parity:playback-source-input",
+    "semantic-path": "projection-provider:108",
+    bounds: "[41,1090][846,1183]",
+    enabled: "true",
+    visible: "true",
+    focused: "true",
+    "set-text-action": "true",
+    "input-connection-ready": "true",
+    "center-reachable": "true",
+  };
+  const result = deliverAndroidSemanticText(
+    19191,
+    "emulator-5554",
+    "parity:playback-source-input",
+    "/releasejourney/replay",
+    "[41,1793][846,1886]",
+    "projection-provider:107",
+    {
+      actionRequest(_port, path) {
+        requests.push(path);
+        return responses.shift();
+      },
+      queryProjection(_serial, tag, options) {
+        assert.equal(tag, "parity:playback-source-input");
+        assert.deepEqual(options, { providerOnly: true });
+        return [refreshed];
+      },
+      waitForEvent(serial, timeoutMs) {
+        waits.push([serial, timeoutMs]);
+      },
+    },
+  );
+  assert.equal(result.status, 0);
+  assert.equal(requests.length, 2);
+  assert.match(requests[0], /path=projection-provider%3A107/);
+  assert.match(requests[1], /path=projection-provider%3A108/);
+  assert.deepEqual(waits, [["emulator-5554", 250]]);
+  assert.equal(androidSemanticTextTargetIsReady(refreshed["resource-id"], refreshed), true);
+  assert.equal(
+    androidSemanticTextTargetIsReady(
+      refreshed["resource-id"],
+      { ...refreshed, "input-connection-ready": "false" },
+    ),
+    false,
+  );
 });
 
 test("Android mandatory disclaimer publishes indexed action geometry", () => {

@@ -843,6 +843,7 @@ function androidProjectedElement(node, elementId = androidTag(node)) {
     semantic_path: node["semantic-path"],
     focused: node.focused === "true",
     supports_set_text: node["set-text-action"] === "true",
+    input_ready: node["input-connection-ready"] === "true",
   };
 }
 
@@ -936,7 +937,6 @@ function activateAndroidSemanticTag(serial, tag, readyElement = null) {
       enabled: readyElement.enabled,
       selected: readyElement.selected,
       checked: readyElement.checked,
-      stateDescription: readyElement.disabled_reason,
     },
   )) {
     throw new Error(`Android semantic action ${tag} was rejected`);
@@ -1203,7 +1203,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     }
     if (
       readyElement?.test_id !== semanticTag ||
-      readyElement.focused !== true
+      readyElement.focused !== true ||
+      readyElement.input_ready !== true
     ) {
       throw new Error(`Android text control ${controlId} has no focused readiness evidence`);
     }
@@ -1230,7 +1231,6 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
         enabled: readyElement.enabled,
         selected: readyElement.selected,
         checked: readyElement.checked,
-        stateDescription: readyElement.disabled_reason,
       },
     );
   }
@@ -1483,7 +1483,7 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     ) ?? null;
     if (!queried) return null;
     const projected = androidProjectedElement(queried, elementId);
-    return projected.focused && !projected.supports_set_text
+    return projected.focused && (!projected.supports_set_text || !projected.input_ready)
       ? { ...projected, actionable: false }
       : projected;
   }

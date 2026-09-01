@@ -32,7 +32,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/26";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/27";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -245,11 +245,63 @@ export function setAndroidSemanticText(serial, tag, value, expectedBounds, seman
       `persistent Android semantic text action for ${tag} has no readiness path and bounds`,
     );
   }
-  const query = new URLSearchParams({ tag, value, bounds: expectedBounds, path: semanticPath });
-  const response = semanticDriverActionRequest(state.port, `/set-text?${query}`);
+  const response = deliverAndroidSemanticText(
+    state.port,
+    serial,
+    tag,
+    value,
+    expectedBounds,
+    semanticPath,
+  );
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
   throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
+}
+
+export function deliverAndroidSemanticText(
+  port,
+  serial,
+  tag,
+  value,
+  expectedBounds,
+  semanticPath,
+  {
+    actionRequest = semanticDriverActionRequest,
+    queryProjection = queryAndroidExactProjection,
+    waitForEvent = waitForAndroidSemanticEvent,
+  } = {},
+) {
+  let currentBounds = expectedBounds;
+  let currentPath = semanticPath;
+  let response = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) {
+      waitForEvent(serial, 250);
+      const refreshed = queryProjection(serial, tag, { providerOnly: true })[0] ?? null;
+      if (!androidSemanticTextTargetIsReady(tag, refreshed)) continue;
+      currentBounds = refreshed.bounds;
+      currentPath = refreshed["semantic-path"];
+    }
+    const query = new URLSearchParams({
+      tag,
+      value,
+      bounds: currentBounds,
+      path: currentPath,
+    });
+    response = actionRequest(port, `/set-text?${query}`);
+    if (response.status === 0 && response.stdout.trim() === "ok") return response;
+    if (response.stdout.trim() !== "text action rejected") return response;
+  }
+  return response ?? { status: 1, stdout: "", stderr: "focused text target stayed stale" };
+}
+
+export function androidSemanticTextTargetIsReady(tag, node) {
+  return node?.["resource-id"] === tag &&
+    Boolean(node.bounds) && Boolean(node["semantic-path"]) &&
+    node.enabled === "true" && node.visible === "true" &&
+    node.focused === "true" && node["set-text-action"] === "true" &&
+    node["input-connection-ready"] === "true" &&
+    node["center-reachable"] === "true";
 }
 
 export function setAndroidSemanticProgress(serial, tag, value, expectedBounds, semanticPath) {
@@ -312,24 +364,13 @@ export function clickAndroidSemanticNode(
   throw new Error(`persistent Android physical tap was not received by ${tag}`);
 }
 
-function normalizedAndroidSemanticStateDescription(value) {
-  if (value == null) return value;
-  return String(value)
-    .replace(/(?:^|:)window-focus:(?:true|false)(?=:|$)/g, "")
-    .replace(/^:/, "");
-}
-
 export function androidSemanticTargetStateMatches(tag, node, expectedState = {}) {
   const matches = (actual, expected) => expected == null || String(actual) === String(expected);
   return node?.["resource-id"] === tag &&
     Boolean(node.bounds) && Boolean(node["semantic-path"]) &&
     matches(node.enabled, expectedState.enabled) &&
     matches(node.selected, expectedState.selected) &&
-    matches(node.checked, expectedState.checked) &&
-    matches(
-      normalizedAndroidSemanticStateDescription(node["state-description"]),
-      normalizedAndroidSemanticStateDescription(expectedState.stateDescription),
-    );
+    matches(node.checked, expectedState.checked);
 }
 
 export function androidSemanticReadinessStateMatches(tag, node, expectedState = {}) {
@@ -1125,7 +1166,6 @@ export async function activateAndroidNode(serial, node) {
     enabled: node.enabled,
     selected: node.selected,
     checked: node.checked,
-    stateDescription: node["state-description"],
   })) {
     throw new Error(`Android semantic action ${tag} was rejected`);
   }

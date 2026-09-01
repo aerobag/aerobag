@@ -25,6 +25,15 @@ public final class SemanticDriverInputMethodService extends InputMethodService {
         super.onDestroy();
     }
 
+    static boolean focusedInputConnectionReady() {
+        SemanticDriverInputMethodService service = activeService;
+        if (service == null) return false;
+        InputConnection connection = service.getCurrentInputConnection();
+        if (connection == null) return false;
+        ExtractedText current = connection.getExtractedText(new ExtractedTextRequest(), 0);
+        return current != null && current.text != null;
+    }
+
     static boolean replaceFocusedText(String value) {
         SemanticDriverInputMethodService service = activeService;
         if (service == null) return false;

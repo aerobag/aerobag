@@ -59,45 +59,41 @@ internal object E2eProjectionRegistry {
         "parity:tray-option:",
     )
 
-    private data class Entry(
-        val owner: Any,
-        val snapshot: E2eProjectionSnapshot,
-    )
-
     private val revision = AtomicLong()
     private val touchSequences = ConcurrentHashMap<String, AtomicLong>()
     private val touchOwner = Any()
-    private val entries = ConcurrentHashMap<String, Entry>()
+    private val entries =
+        ConcurrentHashMap<String, ConcurrentHashMap<Any, E2eProjectionSnapshot>>()
 
     fun publish(resourceId: String, state: String, owner: Any, bounds: String? = null) {
-        entries.compute(resourceId) { _, previous ->
-            if (previous?.owner === owner &&
-                previous.snapshot.state == state &&
-                previous.snapshot.bounds == bounds
+        val owners = entries.computeIfAbsent(resourceId) { ConcurrentHashMap() }
+        owners.compute(owner) { _, previous ->
+            if (previous?.state == state && previous.bounds == bounds
             ) {
                 previous
             } else {
-                Entry(
-                    owner = owner,
-                    snapshot = E2eProjectionSnapshot(state, bounds, revision.incrementAndGet()),
-                )
+                E2eProjectionSnapshot(state, bounds, revision.incrementAndGet())
             }
         }
     }
 
     fun remove(resourceId: String, owner: Any) {
-        entries.computeIfPresent(resourceId) { _, entry ->
-            if (entry.owner === owner) null else entry
+        entries.computeIfPresent(resourceId) { _, owners ->
+            owners.remove(owner)
+            owners.takeUnless { it.isEmpty() }
         }
     }
 
-    fun read(resourceId: String): E2eProjectionSnapshot? = entries[resourceId]?.snapshot
+    fun read(resourceId: String): E2eProjectionSnapshot? =
+        entries[resourceId]?.values?.maxByOrNull(E2eProjectionSnapshot::revision)
 
     fun readPrefix(resourceIdPrefix: String): List<Pair<String, E2eProjectionSnapshot>> =
         entries.entries
             .asSequence()
             .filter { (resourceId, _) -> resourceId.startsWith(resourceIdPrefix) }
-            .map { (resourceId, entry) -> resourceId to entry.snapshot }
+            .mapNotNull { (resourceId, owners) ->
+                owners.values.maxByOrNull(E2eProjectionSnapshot::revision)?.let { resourceId to it }
+            }
             .sortedBy { (resourceId, _) -> resourceId }
             .toList()
 

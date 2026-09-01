@@ -4,6 +4,7 @@
 
 package org.aerobag.app
 
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -105,6 +106,12 @@ internal fun DataStatusBadge(
             open = open,
             badgeSize = launcherSize,
             modifier = Modifier
+                .e2eIndexedControl(
+                    semanticTag = "parity:$testTagPrefix-launcher",
+                    state =
+                        "enabled:true:selected:$open:" +
+                            "text:${Uri.encode(dataStatusState.launcherCount ?: "status")}",
+                )
                 .testTag("parity:$testTagPrefix-launcher")
                 .clickable(
                     indication = null,

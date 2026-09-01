@@ -2263,7 +2263,15 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.doesNotMatch(mapExplorer, /\.testTag\(mapFollowProbeTag/);
   assert.match(projectionView, /E2eProjectionRegistry\.publish\(resourceId, state, owner\)/);
   assert.match(projectionView, /E2eProjectionRegistry\.remove\(resourceId, owner\)/);
-  assert.match(projectionProvider, /ConcurrentHashMap<String, Entry>/);
+  assert.match(
+    projectionProvider,
+    /ConcurrentHashMap<String, ConcurrentHashMap<Any, E2eProjectionSnapshot>>/,
+  );
+  assert.match(projectionProvider, /owners\.remove\(owner\)/);
+  assert.match(
+    projectionProvider,
+    /owners\.values\.maxByOrNull\(E2eProjectionSnapshot::revision\)/,
+  );
   assert.match(projectionProvider, /viewId !in E2eProjectionRegistry\.KnownViewIds/);
   assert.match(manifest, /android:enabled="\$\{e2eProjectionProviderEnabled\}"/);
   assert.match(manifest, /android:readPermission="org\.aerobag\.app\.permission\.READ_E2E_PROJECTIONS"/);
@@ -4344,6 +4352,22 @@ test("Android map orientation and plate-folder actions publish indexed geometry"
     /e2eIndexedControl\(\s*semanticTag = "parity:plate-folder-tile:\$\{chart\.id\}"/,
   );
   assert.match(folder, /testTag\("parity:plate-folder-tile:\$\{chart\.id\}"\)/);
+});
+
+test("Android status launchers publish indexed action geometry", () => {
+  const status = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/DataStatusPage.kt", import.meta.url),
+    "utf8",
+  );
+  const badge = status.slice(
+    status.indexOf("internal fun DataStatusBadge("),
+    status.indexOf("internal fun DataStatusBadgeFace("),
+  );
+  assert.match(
+    badge,
+    /e2eIndexedControl\(\s*semanticTag = "parity:\$testTagPrefix-launcher"/,
+  );
+  assert.match(badge, /testTag\("parity:\$testTagPrefix-launcher"\)/);
 });
 
 test("Android click and focus delivery resolves the current Compose virtual node", () => {

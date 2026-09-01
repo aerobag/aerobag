@@ -2929,6 +2929,21 @@ test("offline package sync completion rejects every in-flight label", () => {
   assert.equal(offlineSyncButtonIsIdle({ enabled: false, text: "APPLY CHANGES" }), false);
 });
 
+test("offline package maintenance covers a transport that remains open without progress", () => {
+  const implementation = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const fixtureServer = readFileSync(
+    new URL("./serve-release-journey-fixture.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(implementation, /artifact_fault: "stall-once"/);
+  assert.match(implementation, /stalled artifact transfer failed closed/);
+  assert.match(fixtureServer, /\["none", "drop", "stall-once"\]/);
+  assert.match(fixtureServer, /stallThisRequest/);
+});
+
 test("Android track-up memory is owned above the disposable map page", () => {
   const retained = readFileSync(
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/RetainedSession.kt", import.meta.url),
@@ -2941,6 +2956,27 @@ test("Android track-up memory is owned above the disposable map page", () => {
   assert.match(retained, /val mapOrientationMemory = MapOrientationMemory\(\)/);
   assert.match(mapPage, /mapOrientationMemory: MapOrientationMemory/);
   assert.doesNotMatch(mapPage, /remember \{ MapOrientationMemory\(\) \}/);
+});
+
+test("map-mode layer probes restore their state before replay", () => {
+  const implementations = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const journey = implementations.slice(
+    implementations.indexOf("async function mapModesAndOverlays"),
+    implementations.indexOf("async function inspectorDetails"),
+  );
+  const restoration = journey.indexOf("restore ${layerId} layer");
+  const replay = journey.indexOf("await loadReplayFixture(runtime)");
+  assert.ok(restoration >= 0, "map-mode journey must restore changed layers");
+  assert.ok(replay > restoration, "layer restoration must complete before replay starts");
+  assert.match(journey, /await dismissTrayOptions\(runtime, "dismiss restored layer choices"\)/);
+});
+
+test("map warning coverage uses deterministic mixed live-feed health", () => {
+  const journey = RELEASE_JOURNEYS.find(({ id }) => id === "shared.map-modes-and-overlays");
+  assert.equal(journey?.live_feed_profile, "mixed");
 });
 
 test("Android keeps the playback editor above the software keyboard", () => {
@@ -2970,6 +3006,18 @@ test("Android airport-info popups export their semantic identity", () => {
   assert.match(
     modal,
     /\.testTag\("parity:airport-info-scroll:\$\{scrollState\.value\}"\)\s*\.verticalScroll\(scrollState\)/,
+  );
+  assert.match(
+    modal,
+    /E2eProjectionView\(\s*viewId = R\.id\.e2e_airport_info_scroll_projection,\s*state = scrollState\.value\.toString\(\)/,
+  );
+  const driver = readFileSync(
+    new URL("./semantic-journey-driver.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    driver,
+    /\["parity:airport-info-scroll:", "org\.aerobag\.app:id\/e2e_airport_info_scroll_projection"\]/,
   );
   const notamModal = mapPage.slice(mapPage.indexOf("internal fun ProcedureNotamModal"));
   assert.match(
@@ -4005,22 +4053,23 @@ test("Android semantic observations recover one timed-out read without creating 
   assert.equal(requests[2][1], "/query?tag=map");
 });
 
-test("Android semantic observations wait for an action lock before probing IME readiness", () => {
+test("Android exact semantic observations wait for an action lock", () => {
   const requests = [];
   const responses = [
     { status: 22, stdout: "semantic request busy\n", stderr: "curl: HTTP 503" },
     { status: 0, stdout: "idle\n", stderr: "" },
-    { status: 0, stdout: "ready\n", stderr: "" },
+    { status: 0, stdout: "[]\n", stderr: "" },
   ];
-  const completed = semanticDriverObservationRequest(19191, "/ime-ready", (...request) => {
+  const path = "/exact-projection?tag=input";
+  const completed = semanticDriverObservationRequest(19191, path, (...request) => {
     requests.push(request);
     return responses.shift();
   });
   assert.equal(completed.status, 0);
-  assert.equal(completed.stdout, "ready\n");
+  assert.equal(completed.stdout, "[]\n");
   assert.deepEqual(
     requests.map((request) => request[1]),
-    ["/ime-ready", requests[1][1], "/ime-ready"],
+    [path, requests[1][1], path],
   );
   assert.match(requests[1][1], /^\/await-idle\?/);
 });
@@ -4056,10 +4105,10 @@ test("Android semantic driver rejects stale protocol artifacts before a journey"
     new URL("../ci/verify_release_e2e_apps.py", import.meta.url),
     "utf8",
   );
-  assert.match(harness, /aerobag-semantic-driver\/24/);
-  assert.match(service, /aerobag-semantic-driver\/24/);
-  assert.match(bundleBuilder, /aerobag-semantic-driver\/24/);
-  assert.match(bundleVerifier, /aerobag-semantic-driver\/24/);
+  assert.match(harness, /aerobag-semantic-driver\/25/);
+  assert.match(service, /aerobag-semantic-driver\/25/);
+  assert.match(bundleBuilder, /aerobag-semantic-driver\/25/);
+  assert.match(bundleVerifier, /aerobag-semantic-driver\/25/);
   assert.match(harness, /semantic driver protocol mismatch/);
 });
 
@@ -4203,48 +4252,32 @@ test("Android semantic actions preserve the separator between readiness bounds",
   assert.match(service, /\.replace\("\]\[", " "\)/);
 });
 
-test("Android semantic text delivery uses the focused input connection without Compose traversal", () => {
+test("Android semantic text delivery revalidates one exact rendered accessibility action", () => {
   const harness = readFileSync(new URL("./android-harness.mjs", import.meta.url), "utf8");
   const driver = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
     "utf8",
   );
-  const ime = readFileSync(new URL(
-    "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverInputMethodService.java",
-    import.meta.url,
-  ), "utf8");
   const textDelivery = service.slice(
-    service.indexOf("private boolean replaceIndexedFocusedText"),
-    service.indexOf("private static Map<String, String> projectionStateFields"),
+    service.indexOf("private boolean setRenderedText"),
+    service.indexOf("private boolean setRenderedProgress"),
   );
   assert.match(harness, /ime", "set", SEMANTIC_DRIVER_IME/);
-  assert.match(driver, /setAndroidSemanticText\([\s\S]*this\.serial,[\s\S]*semanticTag,[\s\S]*value/);
-  assert.match(textDelivery, /SemanticDriverInputMethodService\.replaceFocusedText/);
-  assert.match(textDelivery, /projection\.values\.length\(\) != 1/);
-  assert.match(textDelivery, /current\.optString\("focused", "false"\)/);
-  assert.doesNotMatch(textDelivery, /expectedBounds|semanticPath/);
-  assert.doesNotMatch(service, /ACTION_SET_TEXT|setRenderedText|setMatchingNodeText/);
-  assert.match(driver, /projected\.focused && !androidSemanticTextReady\(this\.serial\)/);
-  assert.match(driver, /readyElement\.focused !== true/);
-  assert.match(harness, /semanticDriverObservationRequest\(state\.port, "\/ime-ready"\)/);
-  assert.match(service, /SemanticDriverInputMethodService\.focusedTextReady\(\)/);
-  const readiness = ime.slice(
-    ime.indexOf("static boolean focusedTextReady()"),
-    ime.indexOf("private void refreshFocusedTextConnection"),
+  assert.match(
+    driver,
+    /setAndroidSemanticText\([\s\S]*this\.serial,[\s\S]*semanticTag,[\s\S]*value,[\s\S]*readyElement\.bounds,[\s\S]*readyElement\.semantic_path/,
   );
-  assert.match(ime, /onStartInput\(EditorInfo attribute, boolean restarting\)/);
-  assert.match(ime, /onFinishInput\(\)[\s\S]*focusedTextConnectionReady = false/);
-  assert.match(readiness, /service\.focusedTextConnectionReady/);
-  assert.match(readiness, /scheduleFocusedTextConnectionRefresh/);
-  assert.match(readiness, /readinessRefreshScheduled\.compareAndSet\(false, true\)/);
-  assert.match(readiness, /getCurrentInputEditorInfo\(\)/);
-  assert.match(readiness, /readinessRefreshScheduled\.set\(false\)/);
-  assert.doesNotMatch(readiness, /CountDownLatch|await/);
-  assert.match(ime, /getExtractedText\(request, 0\)/);
-  assert.match(ime, /connection\.setSelection\(start, end\)/);
-  assert.doesNotMatch(ime, /performContextMenuAction/);
-  assert.match(ime, /connection\.commitText\(value, 1\)/);
+  assert.match(textDelivery, /resolveRenderedNode\(tag, expectedBounds, semanticPath\)/);
+  assert.match(textDelivery, /setMatchingNodeText\(node, tag, value, expectedBounds\)/);
+  assert.match(service, /supportsAction\([\s\S]*AccessibilityNodeInfo\.ACTION_SET_TEXT/);
+  assert.match(service, /ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE/);
+  assert.match(service, /node\.performAction\(AccessibilityNodeInfo\.ACTION_SET_TEXT, arguments\)/);
+  assert.match(driver, /renderedOnly: true/);
+  assert.match(driver, /projected\.focused && !projected\.supports_set_text/);
+  assert.match(driver, /readyElement\.focused !== true/);
+  assert.doesNotMatch(harness, /\/ime-ready/);
+  assert.doesNotMatch(service, /SemanticDriverInputMethodService\.focusedTextReady/);
 });
 
 test("Android click and focus delivery resolves the current Compose virtual node", () => {

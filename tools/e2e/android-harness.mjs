@@ -32,7 +32,7 @@ const SEMANTIC_OBSERVATION_REQUEST_TIMEOUT_SECONDS = 0.9;
 const SEMANTIC_OBSERVATION_RECOVERY_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_ACTION_REQUEST_TIMEOUT_SECONDS = 2.25;
 const SEMANTIC_DRIVER_DEVICE_PORT = 19191;
-const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/24";
+const SEMANTIC_DRIVER_PROTOCOL = "aerobag-semantic-driver/25";
 const SEMANTIC_DRIVER_PACKAGE = "org.aerobag.app.test";
 const STARTUP_PROJECTION_ID = "org.aerobag.app:id/e2e_startup_state_projection";
 const SEMANTIC_DRIVER_SERVICE =
@@ -238,28 +238,18 @@ export function semanticDriverActionRequest(
   return response;
 }
 
-export function setAndroidSemanticText(serial, tag, value) {
+export function setAndroidSemanticText(serial, tag, value, expectedBounds, semanticPath) {
   const state = requiredSemanticDriver(serial);
-  const query = new URLSearchParams({ tag, value });
+  if (!expectedBounds || !semanticPath) {
+    throw new Error(
+      `persistent Android semantic text action for ${tag} has no readiness path and bounds`,
+    );
+  }
+  const query = new URLSearchParams({ tag, value, bounds: expectedBounds, path: semanticPath });
   const response = semanticDriverActionRequest(state.port, `/set-text?${query}`);
   if (response.status === 0 && response.stdout.trim() === "ok") return true;
   const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-  throw new Error(`persistent Android IME text action failed for ${tag}: ${detail}`);
-}
-
-export function androidSemanticTextReady(serial) {
-  const state = requiredSemanticDriver(serial);
-  const response = semanticDriverObservationRequest(state.port, "/ime-ready");
-  if (response.status !== 0) {
-    const detail = response.error?.message || response.stdout.trim() || response.stderr.trim();
-    if (semanticDriverObservationUnavailable(response)) {
-      throw new TransientObservationError(
-        `Android semantic driver was busy while probing IME readiness: ${detail}`,
-      );
-    }
-    throw new Error(`persistent Android IME readiness probe failed: ${detail}`);
-  }
-  return response.stdout.trim() === "ready";
+  throw new Error(`persistent Android semantic text action failed for ${tag}: ${detail}`);
 }
 
 export function setAndroidSemanticProgress(serial, tag, value, expectedBounds, semanticPath) {

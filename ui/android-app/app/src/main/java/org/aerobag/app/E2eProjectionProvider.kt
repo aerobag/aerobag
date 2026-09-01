@@ -40,6 +40,7 @@ internal object E2eProjectionRegistry {
         R.id.e2e_vector_state_projection,
         R.id.e2e_flight_plan_route_overlay_projection,
         R.id.e2e_flight_plan_route_entry_projection,
+        R.id.e2e_airport_info_scroll_projection,
     )
     val KnownSemanticPrefixes = listOf(
         "parity:button:",

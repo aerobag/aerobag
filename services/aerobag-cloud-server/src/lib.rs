@@ -23,4 +23,4 @@ pub use store::{
     TokenBucketConfig,
 };
 #[cfg(feature = "workload")]
-pub use workload::{run_workload, WorkloadProfile, WorkloadReport};
+pub use workload::{run_workload, validate_workload_report, WorkloadProfile, WorkloadReport};

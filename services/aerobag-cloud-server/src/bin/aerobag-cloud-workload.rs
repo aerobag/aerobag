@@ -4,7 +4,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-use aerobag_cloud_server::{run_workload, AcsRuntimePolicy, WorkloadProfile};
+use aerobag_cloud_server::{
+    run_workload, validate_workload_report, AcsRuntimePolicy, WorkloadProfile,
+};
 use anyhow::{bail, Context as _};
 
 fn usage() -> &'static str {
@@ -30,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     let policy = AcsRuntimePolicy::load(&policy_path)?;
     let report = run_workload(profile, policy).await?;
+    let validation = validate_workload_report(&report);
     let json = serde_json::to_string_pretty(&report)? + "\n";
     if let Some(output) = output {
         if let Some(parent) = output.parent() {
@@ -48,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         print!("{json}");
     }
-    Ok(())
+    validation
 }
 
 fn take_option(args: &mut Vec<String>, name: &str) -> Option<String> {

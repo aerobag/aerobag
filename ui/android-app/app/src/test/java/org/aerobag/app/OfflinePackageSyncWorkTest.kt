@@ -4,6 +4,7 @@
 
 package org.aerobag.app
 
+import java.io.Closeable
 import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,6 +12,49 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OfflinePackageSyncWorkTest {
+    @Test
+    fun transferWatchdogDisconnectsAReadThatStopsMakingProgress() {
+        var nowMs = 0L
+        var disconnectCount = 0
+        var readClosed = false
+        val watchdog = PackageTransferWatchdog(
+            timeoutMs = 30,
+            elapsedRealtimeMs = { nowMs },
+            onTimeout = { disconnectCount += 1 },
+        )
+        watchdog.attachRead(Closeable { readClosed = true })
+
+        nowMs = 29
+        assertFalse(watchdog.expireIfStalled())
+        watchdog.recordProgress()
+        nowMs = 58
+        assertFalse(watchdog.expireIfStalled())
+        nowMs = 59
+        assertTrue(watchdog.expireIfStalled())
+        assertTrue(readClosed)
+        assertTrue(watchdog.timedOut())
+        assertEquals(1, disconnectCount)
+        assertFalse(watchdog.expireIfStalled())
+    }
+
+    @Test
+    fun completedTransferCannotBeExpiredByTheWatchdog() {
+        var nowMs = 0L
+        var disconnected = false
+        val watchdog = PackageTransferWatchdog(
+            timeoutMs = 30,
+            elapsedRealtimeMs = { nowMs },
+            onTimeout = { disconnected = true },
+        )
+
+        watchdog.complete()
+        nowMs = 60
+
+        assertFalse(watchdog.expireIfStalled())
+        assertFalse(watchdog.timedOut())
+        assertFalse(disconnected)
+    }
+
     @Test
     fun contentRangeMustBeginAtRequestedResumeOffset() {
         assertTrue(contentRangeStartsAt("bytes 1000-1999/3000", 1_000))

@@ -1623,7 +1623,7 @@ async function androidPackageMaintenance(runtime) {
   await waitForOfflineSyncIdle(runtime, "initial package plan ready");
   const updated = await setFixtureControl(runtime, {
     publication: "updated",
-    artifact_fault: "drop",
+    artifact_fault: "stall-once",
   });
   try {
     const catalogRequestsBeforeRefresh = publicationCatalogRequestCount(
@@ -1659,7 +1659,7 @@ async function androidPackageMaintenance(runtime) {
     runtime.check(
       "offline.interrupted-sync",
       Boolean(recovered),
-      "truncated artifact transfer failed closed and returned the planner to idle",
+      "stalled artifact transfer failed closed and returned the planner to idle",
     );
 
     await setFixtureControl(runtime, { artifact_fault: "none" });
@@ -2007,6 +2007,24 @@ async function mapModesAndOverlays(runtime) {
       `${projectionId(control)} -> ${projectionId(changed)}`,
     );
   }
+
+  // Each layer assertion owns its mutation. Restore the original state before
+  // exercising replay so this journey does not accidentally combine every
+  // expensive overlay into a workload unrelated to the track-up assertions.
+  for (const { layerId, beforeVisible } of changedLayers) {
+    await runtime.openOption(
+      `restore ${layerId} layer option`,
+      "layers-button",
+      layerId,
+    );
+    await runtime.toggleOption(
+      `restore ${layerId} layer`,
+      "layers-button",
+      layerId,
+      beforeVisible,
+    );
+  }
+  await dismissTrayOptions(runtime, "dismiss restored layer choices");
 
   const north = await runtime.driver.readElement("map-orientation-button");
   runtime.check("map.n-up", north?.pressed !== "true", north?.text);

@@ -308,16 +308,19 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import java.io.BufferedOutputStream
+import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.atan2
@@ -1482,6 +1485,97 @@ internal fun formatProgressMegabytes(bytes: Long): String = "${bytes / 1_000_000
 
 internal const val PackageHttpConnectTimeoutMs = 5_000
 internal const val PackageHttpReadTimeoutMs = 30_000
+internal const val PackageHttpWatchdogPollMs = 1_000L
+
+internal class PackageTransferWatchdog(
+    private val timeoutMs: Long,
+    private val elapsedRealtimeMs: () -> Long,
+    private val onTimeout: () -> Unit,
+) {
+    private val state = AtomicInteger(Active)
+    private val lastProgressMs = AtomicLong(elapsedRealtimeMs())
+    private val activeRead = AtomicReference<Closeable?>()
+
+    fun attachRead(read: Closeable) {
+        activeRead.set(read)
+        if (state.get() != Active && activeRead.compareAndSet(read, null)) {
+            runCatching { read.close() }
+        }
+    }
+
+    fun recordProgress() {
+        if (state.get() == Active) {
+            lastProgressMs.set(elapsedRealtimeMs())
+        }
+    }
+
+    fun expireIfStalled(): Boolean {
+        if (state.get() != Active || elapsedRealtimeMs() - lastProgressMs.get() < timeoutMs) {
+            return false
+        }
+        if (!state.compareAndSet(Active, TimedOut)) {
+            return false
+        }
+        activeRead.getAndSet(null)?.let { read -> runCatching { read.close() } }
+        runCatching(onTimeout)
+        return true
+    }
+
+    fun complete() {
+        state.compareAndSet(Active, Complete)
+        activeRead.set(null)
+    }
+
+    fun timedOut(): Boolean = state.get() == TimedOut
+
+    suspend fun monitor(pollMs: Long) {
+        while (state.get() == Active) {
+            delay(pollMs)
+            expireIfStalled()
+        }
+    }
+
+    private companion object {
+        const val Active = 0
+        const val Complete = 1
+        const val TimedOut = 2
+    }
+}
+
+internal suspend fun <T> withPackageTransferWatchdog(
+    connection: HttpURLConnection,
+    sourceUrl: String,
+    timeoutMs: Long = PackageHttpReadTimeoutMs.toLong(),
+    pollMs: Long = PackageHttpWatchdogPollMs,
+    block: suspend (PackageTransferWatchdog) -> T,
+): T = coroutineScope {
+    val watchdog = PackageTransferWatchdog(
+        timeoutMs = timeoutMs,
+        elapsedRealtimeMs = SystemClock::elapsedRealtime,
+        onTimeout = {
+            Log.w("OfflinePackages", "package transfer stalled for ${timeoutMs}ms; disconnecting $sourceUrl")
+            connection.disconnect()
+        },
+    )
+    val monitor = launch(Dispatchers.IO) { watchdog.monitor(pollMs) }
+    try {
+        val result = block(watchdog)
+        if (watchdog.timedOut()) {
+            throw SocketTimeoutException("package transfer stalled for ${timeoutMs}ms fetching $sourceUrl")
+        }
+        result
+    } catch (error: Throwable) {
+        if (watchdog.timedOut() && error !is SocketTimeoutException) {
+            throw SocketTimeoutException("package transfer stalled for ${timeoutMs}ms fetching $sourceUrl").apply {
+                initCause(error)
+            }
+        }
+        throw error
+    } finally {
+        watchdog.complete()
+        monitor.cancel()
+    }
+}
 
 internal class ActivePackageConnections {
     private val connections = linkedSetOf<HttpURLConnection>()
@@ -1580,25 +1674,29 @@ internal suspend fun readPackageSourceBytes(
     }
     return try {
         diagnosticLogInfo("OfflinePackages") { "http read start $sourceUrl" }
-        connection.inputStream.buffered().use { input ->
-            val buffer = ByteArray(64 * 1024)
-            val output = expectedSizeBytes
-                ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }
-                ?.let { java.io.ByteArrayOutputStream(it.toInt()) }
-                ?: java.io.ByteArrayOutputStream()
-            output.use { bytes ->
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val read = input.read(buffer)
-                    currentCoroutineContext().ensureActive()
-                    if (read < 0) {
-                        break
+        withPackageTransferWatchdog(connection, sourceUrl) { watchdog ->
+            connection.inputStream.buffered().use { input ->
+                watchdog.attachRead(input)
+                val buffer = ByteArray(64 * 1024)
+                val output = expectedSizeBytes
+                    ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }
+                    ?.let { java.io.ByteArrayOutputStream(it.toInt()) }
+                    ?: java.io.ByteArrayOutputStream()
+                output.use { bytes ->
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val read = input.read(buffer)
+                        watchdog.recordProgress()
+                        currentCoroutineContext().ensureActive()
+                        if (read < 0) {
+                            break
+                        }
+                        bytes.write(buffer, 0, read)
+                        totalBytesRead += read.toLong()
+                        onBytesRead(read.toLong())
                     }
-                    bytes.write(buffer, 0, read)
-                    totalBytesRead += read.toLong()
-                    onBytesRead(read.toLong())
+                    bytes.toByteArray()
                 }
-                bytes.toByteArray()
             }
         }
     } finally {
@@ -1737,59 +1835,65 @@ internal suspend fun downloadPackageToTempFile(
         }
     }
     try {
-        val responseStartNanos = SystemClock.elapsedRealtimeNanos()
-        responseCode = connection.responseCode
-        responseContentLength = connection.contentLengthLong.takeIf { it >= 0L }
-        if (responseCode !in 200..299) {
-            throw PackageHttpStatusException(responseCode, sourceUrl)
-        }
-        val appendToPartial = resumeOffsetBytes > 0L &&
-            responseCode == HttpURLConnection.HTTP_PARTIAL &&
-            contentRangeStartsAt(connection.getHeaderField("Content-Range"), resumeOffsetBytes)
-        if (appendToPartial) {
-            temp.inputStream().buffered().use { input ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    digest.update(buffer, 0, read)
-                }
+        withPackageTransferWatchdog(connection, sourceUrl) { watchdog ->
+            val responseStartNanos = SystemClock.elapsedRealtimeNanos()
+            responseCode = connection.responseCode
+            watchdog.recordProgress()
+            responseContentLength = connection.contentLengthLong.takeIf { it >= 0L }
+            if (responseCode !in 200..299) {
+                throw PackageHttpStatusException(responseCode, sourceUrl)
             }
-            sizeBytes = resumeOffsetBytes
-            onBytesRead(sizeBytes)
-        } else {
-            resumeOffsetBytes = 0L
-        }
-        diagnosticLogInfo("OfflinePackages") {
-            "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} resume=$resumeOffsetBytes setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}"
-        }
-        connection.inputStream.buffered().use { input ->
-            BufferedOutputStream(FileOutputStream(temp, appendToPartial)).use { output ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val readStartNanos = SystemClock.elapsedRealtimeNanos()
-                    val read = input.read(buffer)
-                    readNanos += SystemClock.elapsedRealtimeNanos() - readStartNanos
-                    currentCoroutineContext().ensureActive()
-                    if (read < 0) {
-                        break
+            val appendToPartial = resumeOffsetBytes > 0L &&
+                responseCode == HttpURLConnection.HTTP_PARTIAL &&
+                contentRangeStartsAt(connection.getHeaderField("Content-Range"), resumeOffsetBytes)
+            if (appendToPartial) {
+                temp.inputStream().buffered().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        watchdog.recordProgress()
+                        if (read < 0) break
+                        digest.update(buffer, 0, read)
                     }
-                    val writeStartNanos = SystemClock.elapsedRealtimeNanos()
-                    output.write(buffer, 0, read)
-                    writeNanos += SystemClock.elapsedRealtimeNanos() - writeStartNanos
-                    val digestStartNanos = SystemClock.elapsedRealtimeNanos()
-                    digest.update(buffer, 0, read)
-                    digestNanos += SystemClock.elapsedRealtimeNanos() - digestStartNanos
-                    sizeBytes += read.toLong()
-                    val progressStartNanos = SystemClock.elapsedRealtimeNanos()
-                    onBytesRead(sizeBytes)
-                    progressNanos += SystemClock.elapsedRealtimeNanos() - progressStartNanos
-                    progressCallbacks += 1
+                }
+                sizeBytes = resumeOffsetBytes
+                onBytesRead(sizeBytes)
+            } else {
+                resumeOffsetBytes = 0L
+            }
+            diagnosticLogInfo("OfflinePackages") {
+                "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} resume=$resumeOffsetBytes setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}"
+            }
+            connection.inputStream.buffered().use { input ->
+                watchdog.attachRead(input)
+                BufferedOutputStream(FileOutputStream(temp, appendToPartial)).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val readStartNanos = SystemClock.elapsedRealtimeNanos()
+                        val read = input.read(buffer)
+                        readNanos += SystemClock.elapsedRealtimeNanos() - readStartNanos
+                        watchdog.recordProgress()
+                        currentCoroutineContext().ensureActive()
+                        if (read < 0) {
+                            break
+                        }
+                        val writeStartNanos = SystemClock.elapsedRealtimeNanos()
+                        output.write(buffer, 0, read)
+                        writeNanos += SystemClock.elapsedRealtimeNanos() - writeStartNanos
+                        val digestStartNanos = SystemClock.elapsedRealtimeNanos()
+                        digest.update(buffer, 0, read)
+                        digestNanos += SystemClock.elapsedRealtimeNanos() - digestStartNanos
+                        sizeBytes += read.toLong()
+                        val progressStartNanos = SystemClock.elapsedRealtimeNanos()
+                        onBytesRead(sizeBytes)
+                        progressNanos += SystemClock.elapsedRealtimeNanos() - progressStartNanos
+                        progressCallbacks += 1
+                    }
                 }
             }
+            complete = true
         }
-        complete = true
     } finally {
         completionHandle?.dispose()
         activeConnections.remove(connection)

@@ -61,10 +61,14 @@ class MapSelectionHeaderPolicyTest {
         )
         assertTrue(
             "The scroll probe must be attached to the scrollable node, not a prunable spacer.",
-            modalBody.contains(
-                ".testTag(\"parity:airport-info-scroll:${'$'}{scrollState.value}\")\n" +
-                    "                .verticalScroll(scrollState)",
-            ),
+            Regex(
+                """\.testTag\("parity:airport-info-scroll:\$\{scrollState\.value\}"\)\s*\.verticalScroll\(scrollState\)""",
+            ).containsMatchIn(modalBody),
+        )
+        assertTrue(
+            "Rapid scroll state must use the fixed indexed projection instead of traversing Compose semantics.",
+            modalBody.contains("viewId = R.id.e2e_airport_info_scroll_projection") &&
+                modalBody.contains("state = scrollState.value.toString()"),
         )
     }
 

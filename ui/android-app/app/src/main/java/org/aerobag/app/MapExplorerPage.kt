@@ -5333,13 +5333,19 @@ internal fun AirportInfoModal(
         shadowElevation = 8.dp,
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
     ) {
-        Column(
-            modifier = Modifier
-                .testTag("parity:airport-info-scroll:${scrollState.value}")
-                .verticalScroll(scrollState)
-                .padding(ThumbSize * 0.18f),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
-        ) {
+        Box {
+            E2eProjectionView(
+                viewId = R.id.e2e_airport_info_scroll_projection,
+                state = scrollState.value.toString(),
+                modifier = Modifier.align(Alignment.TopStart),
+            )
+            Column(
+                modifier = Modifier
+                    .testTag("parity:airport-info-scroll:${scrollState.value}")
+                    .verticalScroll(scrollState)
+                    .padding(ThumbSize * 0.18f),
+                verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
+            ) {
             Text(
                 text = detail.airportId.uppercase(),
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
@@ -5357,7 +5363,7 @@ internal fun AirportInfoModal(
                     color = uiTheme.controls.panelMuted,
                 )
             }
-            detail.factSections.forEach { section ->
+                detail.factSections.forEach { section ->
                 section.title?.let { AirportInfoSectionTitle(it) }
                 section.facts.forEach { fact ->
                     Box(
@@ -5440,6 +5446,7 @@ internal fun AirportInfoModal(
                             Text(runway.surfaceLabel, fontWeight = FontWeight.Bold)
                         }
                     }
+                }
                 }
             }
         }

@@ -227,9 +227,10 @@ python3 tools/verify_acs_workload_report.py \
 
 `production` describes the policy and workload shape; it still uses an
 isolated temporary store. It never sends traffic to a deployed ACS. CI enforces
-generous catastrophic latency ceilings and a scale-falloff guard, while the
-production report remains a characterization artifact rather than a
-machine-dependent microbenchmark.
+generous catastrophic latency ceilings. Stage-to-stage falloff remains in both
+reports for diagnosis, but is not a CI gate because shared hosted runners are
+not stable microbenchmark environments. The production report is likewise a
+characterization artifact rather than a machine-dependent pass/fail benchmark.
 
 Restore refuses to run while the daemon owns `locks/serve.lock`, verifies the
 entire snapshot first, and retains the replaced `live/` tree under `recovery/`.

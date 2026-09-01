@@ -60,7 +60,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "layer.metars", "layer.nexrad", "layer.traffic", "layer.terrain-warning",
     "layer.offline-regions", "map.n-up", "map.trk-up", "map.track-gap",
     "map.warning", "map.chart-reference",
-  ]),
+  ], { live_feed_profile: "mixed" }),
   journey("shared.inspector-details", "p1", shared, [
     "inspector.airport-priority", "inspector.spot-fallback", "inspector.distance-live",
     "inspector.terrain-async", "inspector.weather", "inspector.info",

@@ -51,7 +51,7 @@ public final class SemanticDriverService extends AccessibilityService {
     private static final String LOG_TAG = "AerobagSemanticDriver";
     private static final String TARGET_PACKAGE = "org.aerobag.app";
     private static final int DRIVER_PORT = 19_191;
-    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/24";
+    private static final String DRIVER_PROTOCOL = "aerobag-semantic-driver/25";
     private static final String TOUCH_RECEIPT_RESOURCE_ID =
         "org.aerobag.app:id/e2e_touch_receipt";
     private static final int EXACT_PROJECTION_NODE_LIMIT = 8_192;
@@ -210,14 +210,6 @@ public final class SemanticDriverService extends AccessibilityService {
                 case "/set-text":
                     handleSetText(socket, path);
                     return;
-                case "/ime-ready":
-                    respond(
-                        socket.getOutputStream(),
-                        "text/plain; charset=utf-8",
-                        SemanticDriverInputMethodService.focusedTextReady() ? "ready\n" : "not-ready\n",
-                        200
-                    );
-                    return;
                 case "/set-progress":
                     handleSetProgress(socket, path);
                     return;
@@ -270,7 +262,7 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private static boolean isSemanticEndpoint(String endpoint) {
         return switch (endpoint) {
-            case "/dump", "/query", "/exact-projection", "/ime-ready", "/set-text", "/set-progress", "/tap", "/scroll" ->
+            case "/dump", "/query", "/exact-projection", "/set-text", "/set-progress", "/tap", "/scroll" ->
                 true;
             default -> false;
         };
@@ -280,7 +272,10 @@ public final class SemanticDriverService extends AccessibilityService {
         Map<String, String> query = queryOf(path);
         String tag = query.getOrDefault("tag", "");
         String value = query.getOrDefault("value", "");
-        boolean changed = !tag.isEmpty() && replaceIndexedFocusedText(tag, value);
+        String semanticPath = query.getOrDefault("path", "");
+        Rect expectedBounds = parseBounds(query.getOrDefault("bounds", ""));
+        boolean changed = !tag.isEmpty() && !semanticPath.isEmpty() && expectedBounds != null &&
+            setRenderedText(tag, value, expectedBounds, semanticPath);
         respondAction(socket, changed, "text action rejected\n");
     }
 
@@ -1142,25 +1137,6 @@ public final class SemanticDriverService extends AccessibilityService {
         return snapshot.handled && snapshot.present ? parseBounds(snapshot.bounds) : null;
     }
 
-    private boolean replaceIndexedFocusedText(
-        String tag,
-        String value
-    ) {
-        ProviderProjection projection = providerProjection(tag);
-        if (!projection.handled || projection.values.length() != 1) return false;
-        try {
-            JSONObject current = projection.values.getJSONObject(0);
-            if (!"true".equals(current.optString("enabled", "false")) ||
-                !"true".equals(current.optString("focused", "false")) ||
-                !"true".equals(current.optString("center-reachable", "false"))) {
-                return false;
-            }
-            return SemanticDriverInputMethodService.replaceFocusedText(value);
-        } catch (JSONException error) {
-            return false;
-        }
-    }
-
     private static Map<String, String> projectionStateFields(String state) {
         Map<String, String> fields = new HashMap<>();
         if (state == null) return fields;
@@ -1427,6 +1403,10 @@ public final class SemanticDriverService extends AccessibilityService {
         value.put("selected", Boolean.toString(node.isSelected()));
         value.put("checked", Boolean.toString(node.isChecked()));
         value.put("focused", Boolean.toString(node.isFocused()));
+        value.put("set-text-action", Boolean.toString(supportsAction(
+            node,
+            AccessibilityNodeInfo.ACTION_SET_TEXT
+        )));
         value.put("state-description", stringValue(node.getStateDescription()));
         value.put("bounds", bounds.toShortString());
         value.put("center-reachable", Boolean.toString(centerReachable(node)));
@@ -1582,6 +1562,21 @@ public final class SemanticDriverService extends AccessibilityService {
 
     private static String stringValue(CharSequence value) {
         return value == null ? "" : value.toString();
+    }
+
+    private boolean setRenderedText(
+        String tag,
+        String value,
+        Rect expectedBounds,
+        String semanticPath
+    ) {
+        AccessibilityNodeInfo node = resolveRenderedNode(tag, expectedBounds, semanticPath);
+        if (node == null) return false;
+        try {
+            return setMatchingNodeText(node, tag, value, expectedBounds);
+        } finally {
+            node.recycle();
+        }
     }
 
     private boolean setRenderedProgress(
@@ -1853,6 +1848,13 @@ public final class SemanticDriverService extends AccessibilityService {
         for (AccessibilityNodeInfo node : nodes) node.recycle();
     }
 
+    private static boolean supportsAction(AccessibilityNodeInfo node, int actionId) {
+        for (AccessibilityNodeInfo.AccessibilityAction action : node.getActionList()) {
+            if (action.getId() == actionId) return true;
+        }
+        return false;
+    }
+
     private static AccessibilityNodeInfo childAtOrNull(
         AccessibilityNodeInfo node,
         int childIndex
@@ -1887,6 +1889,30 @@ public final class SemanticDriverService extends AccessibilityService {
             AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(),
             arguments
         );
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean setMatchingNodeText(
+        AccessibilityNodeInfo node,
+        String tag,
+        String value,
+        Rect expectedBounds
+    ) {
+        node.refresh();
+        if (!tag.equals(node.getViewIdResourceName())) return false;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.equals(expectedBounds) || !node.isVisibleToUser() ||
+            !node.isEnabled() || !node.isFocused() ||
+            !supportsAction(node, AccessibilityNodeInfo.ACTION_SET_TEXT)) {
+            return false;
+        }
+        Bundle arguments = new Bundle();
+        arguments.putCharSequence(
+            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+            value
+        );
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
     }
 
     private Rect renderedTapBounds(String tag, Rect expectedBounds, String semanticPath) {

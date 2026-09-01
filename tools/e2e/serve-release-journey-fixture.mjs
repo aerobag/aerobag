@@ -309,7 +309,7 @@ export function createReleaseJourneyFixtureServer(args) {
             control.publication = update.publication;
           }
           if (update.artifact_fault !== undefined) {
-            if (!["none", "drop"].includes(update.artifact_fault)) {
+            if (!["none", "drop", "stall-once"].includes(update.artifact_fault)) {
               throw new Error(`unsupported artifact fault ${update.artifact_fault}`);
             }
             control.artifact_fault = update.artifact_fault;
@@ -417,7 +417,7 @@ export function createReleaseJourneyFixtureServer(args) {
       }
       if (relative === config.publicationVariants.updatedArtifactPath) {
         const original = join(config.publicationRoot, config.publicationVariants.originalArtifactPath);
-        if (control.artifact_fault === "drop" && request.method !== "HEAD") {
+        if (["drop", "stall-once"].includes(control.artifact_fault) && request.method !== "HEAD") {
           control.dropped_artifact_requests += 1;
           response.writeHead(200, {
             "Content-Type": "application/octet-stream",
@@ -425,7 +425,9 @@ export function createReleaseJourneyFixtureServer(args) {
           });
           const stream = createReadStream(original, { start: 0, end: 16_383 });
           stream.pipe(response, { end: false });
-          stream.on("end", () => response.destroy());
+          const stallThisRequest = control.artifact_fault === "stall-once" &&
+            control.dropped_artifact_requests === 1;
+          if (!stallThisRequest) stream.on("end", () => response.destroy());
           return;
         }
         control.completed_update_artifact_requests += 1;

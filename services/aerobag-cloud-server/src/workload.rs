@@ -363,7 +363,6 @@ pub async fn run_workload(
         rss_bytes_at_end: process_memory_bytes("VmRSS:"),
         peak_rss_bytes: process_memory_bytes("VmHWM:"),
     };
-    enforce_profile_bounds(&report)?;
     Ok(report)
 }
 
@@ -1354,7 +1353,7 @@ fn stage_falloff(stages: &[StageReport]) -> Vec<FalloffReport> {
     .collect()
 }
 
-fn enforce_profile_bounds(report: &WorkloadReport) -> anyhow::Result<()> {
+pub fn validate_workload_report(report: &WorkloadReport) -> anyhow::Result<()> {
     if report.profile != WorkloadProfile::Ci {
         return Ok(());
     }
@@ -1384,15 +1383,6 @@ fn enforce_profile_bounds(report: &WorkloadReport) -> anyhow::Result<()> {
         ensure!(
             latency.p99_ms < 5_000.0,
             "CI operation p99 exceeded five seconds"
-        );
-    }
-    for falloff in &report.falloff {
-        ensure!(
-            falloff.p95_ratio < 10.0 || falloff.last_stage_p95_ms < 250.0,
-            "CI {} p95 degraded from {:.1} ms to {:.1} ms",
-            falloff.operation,
-            falloff.first_stage_p95_ms,
-            falloff.last_stage_p95_ms
         );
     }
     ensure!(

@@ -4,7 +4,7 @@
 
 import { writeFileSync } from "node:fs";
 import {
-  adb, androidImeShown, androidNodeLabel, androidSemanticTextReady, androidTag, clickAndroidSemanticNode,
+  adb, androidImeShown, androidNodeLabel, androidTag, clickAndroidSemanticNode,
   displayBoundsFromXml, dumpAndroid, findNode, findNodes, focusAndroidSemanticNode,
   findVerticalScrollSurface, pressKey, rectOfBounds, screencapPng,
   queryAndroidSemanticNodes, scrollAndroidAndAwait, setAndroidSemanticText,
@@ -37,6 +37,7 @@ const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:vector-state:", "org.aerobag.app:id/e2e_vector_state_projection"],
   ["parity:flight-plan-route-overlay:", "org.aerobag.app:id/e2e_flight_plan_route_overlay_projection"],
   ["parity:plan-append-route-state:", "org.aerobag.app:id/e2e_flight_plan_route_entry_projection"],
+  ["parity:airport-info-scroll:", "org.aerobag.app:id/e2e_airport_info_scroll_projection"],
 ]);
 
 export function androidMapSelectionEntryFromState(state, expected = "") {
@@ -841,6 +842,7 @@ function androidProjectedElement(node, elementId = androidTag(node)) {
     bounds: node.bounds,
     semantic_path: node["semantic-path"],
     focused: node.focused === "true",
+    supports_set_text: node["set-text-action"] === "true",
   };
 }
 
@@ -1204,6 +1206,8 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       this.serial,
       semanticTag,
       value,
+      readyElement.bounds,
+      readyElement.semantic_path,
     );
   }
 
@@ -1468,13 +1472,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const queried = queryAndroidExactProjection(
       this.serial,
       semanticTag,
-      { includeDescendantText: true, verifyReachable: true },
+      { includeDescendantText: true, verifyReachable: true, renderedOnly: true },
     ).find((candidate) =>
       candidate.visible === "true" && candidate["center-reachable"] === "true",
     ) ?? null;
     if (!queried) return null;
     const projected = androidProjectedElement(queried, elementId);
-    return projected.focused && !androidSemanticTextReady(this.serial)
+    return projected.focused && !projected.supports_set_text
       ? { ...projected, actionable: false }
       : projected;
   }

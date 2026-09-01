@@ -2186,14 +2186,20 @@ async function airportInfo(runtime) {
   await acceptDisclaimer(runtime);
 
   await openAirportInfo(runtime, complexAirport);
-  const beforeTime = (await runtime.driver.readElement("airport-info-time-toggle"))?.text;
+  const beforeTime = projectionId(
+    (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0],
+  );
   const afterTime = await runtime.action("change airport time mode", "airport-info-time-toggle", {
     complete: async () => {
-      const text = (await runtime.driver.readElement("airport-info-time-toggle"))?.text;
-      return text && text !== beforeTime ? text : null;
+      const fact = (await runtime.driver.readProjection("airport-info-fact:Time at airport:"))[0];
+      return projectionId(fact) && projectionId(fact) !== beforeTime ? fact : null;
     },
   });
-  runtime.check("airport-info.time-toggle", Boolean(afterTime), `${beforeTime} -> ${afterTime}`);
+  runtime.check(
+    "airport-info.time-toggle",
+    Boolean(afterTime),
+    `${beforeTime} -> ${projectionId(afterTime)}`,
+  );
   const initialScroll = await runtime.stable("settled airport-info scroll position", async () =>
     projectionId((await runtime.driver.readProjection("parity:airport-info-scroll:"))[0]));
   const scrolled = await runtime.transition("scroll airport info", {

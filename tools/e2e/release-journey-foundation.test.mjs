@@ -3038,6 +3038,25 @@ test("Android airport-info popups export their semantic identity", () => {
   );
 });
 
+test("airport-info time mode observes one unique fact instead of duplicate toggles", () => {
+  const implementations = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const airport = implementations.slice(
+    implementations.indexOf("async function airportInfo(runtime)"),
+    implementations.indexOf("async function flightPlanAirwayEstimates(runtime)"),
+  );
+  assert.match(
+    airport,
+    /readProjection\("airport-info-fact:Time at airport:"\)/,
+  );
+  assert.doesNotMatch(
+    airport,
+    /readElement\("airport-info-time-toggle"\)\)\?\.text/,
+  );
+});
+
 test("Android status popups export their semantic identity", () => {
   const source = readFileSync(
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/DataStatusPage.kt", import.meta.url),
@@ -3263,6 +3282,10 @@ test("Android journey controls publish indexed geometry through the private E2E 
   assert.match(flightPlan, /semanticTag = "parity:plan-append-route-input"/);
   assert.match(settings, /semanticTag = "parity:settings-section:\$\{section\.id\}"/);
   assert.match(settings, /semanticTag = "parity:settings-toggle:\$\{row\.id\}"/);
+  assert.match(
+    settings,
+    /"parity:settings-choice:\$\{row\.id\}:\$\{item\.cell\.id\}"[\s\S]*e2eIndexedControl\([\s\S]*semanticTag = semanticTag/,
+  );
   assert.match(commonWidgets, /semanticTag = resolvedTestTag/);
   assert.match(commonWidgets, /text:\$\{Uri\.encode\(renderedLabel\)\}/);
   assert.match(charts, /semanticTag = testTag/);

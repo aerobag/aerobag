@@ -479,11 +479,18 @@ private fun SettingsGridChoicesRow(
                         horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
                     ) {
                         items.forEach { item ->
+                            val semanticTag =
+                                "parity:settings-choice:${row.id}:${item.cell.id}"
                             FlightDataSettingsCell(
                                 item = item,
-                                modifier = Modifier.testTag(
-                                    "parity:settings-choice:${row.id}:${item.cell.id}",
-                                ),
+                                modifier = Modifier
+                                    .e2eIndexedControl(
+                                        semanticTag = semanticTag,
+                                        state =
+                                            "enabled:true:selected:${item.enabled}:" +
+                                                "text:${item.cell.id}",
+                                    )
+                                    .testTag(semanticTag),
                                 onClick = { onSettingsAction(row.actionId, item.cell.id) },
                             )
                         }

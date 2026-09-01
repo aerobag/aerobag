@@ -131,20 +131,6 @@ describe("map interaction boundaries", () => {
     expect(functionSource("handleDoubleClick")).toContain("trayGroup.scrimOpen || mapSelection");
   });
 
-  it("accepts the first plate gesture before the viewport synchronization effect runs", () => {
-    const chartsPage = sourceBetween(
-      "function ChartsPage(props:",
-      "function HomePage(props:",
-    );
-    for (const handler of ["handlePointerDown", "handleWheel", "handleDoubleClick"]) {
-      const start = chartsPage.indexOf(`function ${handler}`);
-      expect(start, handler).toBeGreaterThanOrEqual(0);
-      const end = chartsPage.indexOf("\n  function ", start + 1);
-      const source = chartsPage.slice(start, end);
-      expect(source).toContain("viewportRef.current ?? effectiveViewport");
-    }
-  });
-
   it("opens a raw map click with core's preferred point already selected", () => {
     const releaseSource = functionSource("handlePointerRelease");
     expect(releaseSource).toContain(

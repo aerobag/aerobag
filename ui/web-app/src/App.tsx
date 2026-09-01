@@ -12418,11 +12418,9 @@ function ChartsPage(props: {
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-    const gestureViewport = viewportRef.current ?? effectiveViewport;
-    if (!gestureViewport || !selectedImageSize || trayOpen || folderOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen || folderOpen) {
       return;
     }
-    viewportRef.current = gestureViewport;
     const point = localPointFromPointerEvent(event);
     activePointersRef.current.set(event.pointerId, point);
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -12432,7 +12430,7 @@ function ChartsPage(props: {
     } else if (activePointersRef.current.size >= 2) {
       const [first, second] = Array.from(activePointersRef.current.values());
       pinchRef.current = {
-        viewport: gestureViewport,
+        viewport: viewportRef.current,
         distance: distanceBetween(first, second),
         midpoint: midpoint(first, second),
       };
@@ -12512,17 +12510,16 @@ function ChartsPage(props: {
     if (folderOpen) {
       return;
     }
-    const gestureViewport = viewportRef.current ?? effectiveViewport;
-    if (!gestureViewport || !selectedImageSize || trayOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen) {
       event.preventDefault();
       return;
     }
     event.preventDefault();
     wheelGestureUntilRef.current = Date.now() + 160;
     const point = localPointFromPointerEvent(event);
-    const zoomTarget = gestureViewport.zoom - event.deltaY / 360;
+    const zoomTarget = viewportRef.current.zoom - event.deltaY / 360;
     const next = zoomImageAroundPoint(
-      gestureViewport,
+      viewportRef.current,
       point.x,
       point.y,
       zoomTarget,
@@ -12536,17 +12533,16 @@ function ChartsPage(props: {
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
-    const gestureViewport = viewportRef.current ?? effectiveViewport;
-    if (!gestureViewport || !selectedImageSize || trayOpen || folderOpen) {
+    if (!viewportRef.current || !selectedImageSize || trayOpen || folderOpen) {
       return;
     }
     const point = localPointFromPointerEvent(event);
     updateViewport(
       zoomImageAroundPoint(
-        gestureViewport,
+        viewportRef.current,
         point.x,
         point.y,
-        gestureViewport.zoom + 0.75,
+        viewportRef.current.zoom + 0.75,
         selectedImageSize.width,
         selectedImageSize.height,
         surfaceSize.width,

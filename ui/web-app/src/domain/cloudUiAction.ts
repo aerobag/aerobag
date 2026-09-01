@@ -9,6 +9,7 @@ interface CloudUiActionDependencies<Snapshot> {
   applySnapshot: (snapshot: Snapshot) => void;
   pumpCloudProvider: () => Promise<void>;
   writeClipboard: (text: string) => Promise<void>;
+  writeClipboardFallback: (text: string) => boolean;
 }
 
 type PlatformEffectOutcome =
@@ -18,15 +19,23 @@ type PlatformEffectOutcome =
 function startPlatformEffect(
   effect: CloudPlatformEffect | null,
   writeClipboard: (text: string) => Promise<void>,
+  writeClipboardFallback: (text: string) => boolean,
 ): Promise<PlatformEffectOutcome> | null {
   if (effect?.kind !== "copy_text") return null;
 
   // Clipboard access must begin in the click's user-activation task. Waiting
   // for the core worker first makes permission behavior browser-dependent.
-  return writeClipboard(effect.text).then<PlatformEffectOutcome, PlatformEffectOutcome>(
+  const modernWrite = writeClipboard(effect.text).then<PlatformEffectOutcome, PlatformEffectOutcome>(
     () => ({ completionLabel: effect.completion_label, error: null }),
     (error: unknown) => ({ completionLabel: null, error }),
   );
+  // Chromium can leave Clipboard.writeText pending indefinitely even after
+  // granting permission. A synchronous copy still has user-activation here;
+  // once the click task ends, that recovery path is no longer available.
+  if (writeClipboardFallback(effect.text)) {
+    return Promise.resolve({ completionLabel: effect.completion_label, error: null });
+  }
+  return modernWrite;
 }
 
 export async function performCloudUiActionWithPlatformEffect<Snapshot>({
@@ -35,8 +44,13 @@ export async function performCloudUiActionWithPlatformEffect<Snapshot>({
   applySnapshot,
   pumpCloudProvider,
   writeClipboard,
+  writeClipboardFallback,
 }: CloudUiActionDependencies<Snapshot>): Promise<string | null> {
-  const platformOutcome = startPlatformEffect(platformEffect, writeClipboard);
+  const platformOutcome = startPlatformEffect(
+    platformEffect,
+    writeClipboard,
+    writeClipboardFallback,
+  );
   const snapshot = await performCoreAction();
   applySnapshot(snapshot);
 

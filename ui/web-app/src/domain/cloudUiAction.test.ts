@@ -13,6 +13,10 @@ describe("cloud UI platform effects", () => {
     const order: string[] = [];
     const coreResult = new Promise<string>((resolve) => { finishCore = resolve; });
     const writeClipboard = vi.fn(async () => { order.push("clipboard"); });
+    const writeClipboardFallback = vi.fn(() => {
+      order.push("fallback");
+      return false;
+    });
 
     const action = performCloudUiActionWithPlatformEffect({
       platformEffect: {
@@ -27,13 +31,34 @@ describe("cloud UI platform effects", () => {
       applySnapshot: () => { order.push("snapshot"); },
       pumpCloudProvider: async () => { order.push("pump"); },
       writeClipboard,
+      writeClipboardFallback,
     });
 
-    expect(order).toEqual(["clipboard", "core"]);
+    expect(order).toEqual(["clipboard", "fallback", "core"]);
     finishCore("snapshot");
     await expect(action).resolves.toBe("Copied");
-    expect(order).toEqual(["clipboard", "core", "snapshot"]);
+    expect(order).toEqual(["clipboard", "fallback", "core", "snapshot"]);
     expect(writeClipboard).toHaveBeenCalledWith("AB3.example");
+  });
+
+  it("does not wedge when the modern clipboard write remains pending", async () => {
+    const never = new Promise<void>(() => {});
+    const writeClipboardFallback = vi.fn(() => true);
+    const action = performCloudUiActionWithPlatformEffect({
+      platformEffect: {
+        kind: "copy_text",
+        text: "AB3.example",
+        completion_label: "Copied",
+      },
+      performCoreAction: async () => "snapshot",
+      applySnapshot: () => {},
+      pumpCloudProvider: async () => {},
+      writeClipboard: () => never,
+      writeClipboardFallback,
+    });
+
+    await expect(action).resolves.toBe("Copied");
+    expect(writeClipboardFallback).toHaveBeenCalledWith("AB3.example");
   });
 
   it("surfaces clipboard rejection after applying the core snapshot", async () => {
@@ -49,6 +74,7 @@ describe("cloud UI platform effects", () => {
       applySnapshot: () => { applied = true; },
       pumpCloudProvider: async () => {},
       writeClipboard: async () => { throw error; },
+      writeClipboardFallback: () => false,
     });
 
     await expect(action).rejects.toBe(error);

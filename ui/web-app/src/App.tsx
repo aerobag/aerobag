@@ -2810,6 +2810,7 @@ function OperationalApp() {
       },
       pumpCloudProvider,
       writeClipboard: (text) => navigator.clipboard.writeText(text),
+      writeClipboardFallback,
     });
   }, [applySessionSnapshot, pumpCloudProvider, uiSession]);
   useEffect(() => {
@@ -13030,6 +13031,22 @@ function CloudQrCode({ code }: { code: UiQrCode }) {
       <path d={darkModules.join("")} fill="#000" />
     </svg>
   );
+}
+
+function writeClipboardFallback(text: string): boolean {
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.readOnly = true;
+  input.style.position = "fixed";
+  input.style.left = "-10000px";
+  input.style.top = "0";
+  document.body.appendChild(input);
+  input.select();
+  try {
+    return document.execCommand("copy");
+  } finally {
+    input.remove();
+  }
 }
 
 function CloudPage(props: {

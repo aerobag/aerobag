@@ -473,8 +473,11 @@ async function chartBasicUse(runtime) {
   runtime.check("chart.ctr-off", Boolean(free));
 }
 
-function projectionId(entry) {
-  return entry?.id ?? entry ?? "";
+export function projectionId(entry) {
+  if (typeof entry === "string") return entry;
+  if (typeof entry?.id === "string") return entry.id;
+  if (typeof entry?.test_id === "string") return entry.test_id;
+  return "";
 }
 
 function projectionState(entry) {
@@ -906,6 +909,14 @@ async function dismissTrayOptions(runtime, description) {
 }
 
 export async function selectTrayOptionMatching(runtime, launcherId, needle) {
+  const projection = runtime.platform === "web" ? "tray-option-" : "parity:tray-option:";
+  const revealMatchingOption = async () => {
+    const entry = await runtime.revealProjectionMatching(
+      projection, needle, `${launcherId} option ${needle}`,
+    );
+    if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
+    return entry;
+  };
   const selected = await runtime.driver.readElement(launcherId);
   if (selected?.text?.toUpperCase().includes(needle.toUpperCase())) {
     if (launcherId === "plate-chart-button") {
@@ -916,22 +927,26 @@ export async function selectTrayOptionMatching(runtime, launcherId, needle) {
         return selectPlateFolderTileMatching(runtime, needle);
       }
     }
+    let entry = (await visibleTrayOptions(runtime))
+      .find((option) => option.text?.toUpperCase().includes(needle.toUpperCase())) ?? null;
+    if (!entry) {
+      await runtime.action(`open ${launcherId} options`, launcherId, {
+        complete: async () => (await runtime.driver.readProjection(projection))[0] ?? null,
+      });
+      entry = await revealMatchingOption();
+    }
     await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
-    return selected;
+    return entry;
   }
 
-  const projection = runtime.platform === "web" ? "tray-option-" : "parity:tray-option:";
   await runtime.action(`open ${launcherId} options`, launcherId, {
     complete: async () => (await runtime.driver.readProjection(projection))[0] ?? null,
   });
-  const entry = await runtime.revealProjectionMatching(
-    projection, needle, `${launcherId} option ${needle}`,
-  );
-  if (!entry) throw new Error(`${launcherId} option matching ${needle} is not reachable`);
+  const entry = await revealMatchingOption();
   const refreshed = await runtime.driver.readElement(launcherId);
   if (refreshed?.text?.toUpperCase().includes(needle.toUpperCase())) {
     await dismissTrayOptions(runtime, `dismiss already-selected ${launcherId} options`);
-    return refreshed;
+    return entry;
   }
   await runtime.action(`select ${needle} from ${launcherId}`, `tray-option:${trayOptionId(entry)}`, {
     complete: async () => {

@@ -29,6 +29,7 @@ import {
   offlineSyncButtonIsIdle,
   publicationArtifactRequestCount,
   publicationCatalogRequestCount,
+  projectionId,
   rasterPlanHasVisiblePaint,
   rasterPlanIsDisplayReady,
   rasterStateFromProjection,
@@ -990,12 +991,75 @@ test("tray selection avoids a redundant click when the target materializes selec
   };
 
   const selected = await selectTrayOptionMatching(runtime, "plate-airport-button", "KPAE");
+  assert.equal(selected, option);
   assert.equal(selected.text, "KPAE");
   assert.deepEqual(calls, [
     "open plate-airport-button options",
     "dismiss already-selected plate-airport-button options",
     "dismiss",
   ]);
+});
+
+test("selected tray options retain option identity instead of returning launcher controls", async () => {
+  const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");
+  const calls = [];
+  let optionsOpen = false;
+  const option = { id: "parity:tray-option:chart-reference:tac:legend:seattle", text: "SEATTLE TAC LEGEND" };
+  const runtime = {
+    platform: "android",
+    driver: {
+      async readElement(id) {
+        assert.equal(id, "plate-chart-button");
+        return { test_id: "parity:plate-chart-button", text: "SEATTLE TAC LEGEND" };
+      },
+      async readProjection(prefix) {
+        if (prefix === "parity:plate-folder-tile:") return [];
+        assert.equal(prefix, "parity:tray-option:");
+        return optionsOpen ? [option] : [];
+      },
+      async back() {
+        calls.push("dismiss");
+        optionsOpen = false;
+      },
+    },
+    async action(description, id, { complete }) {
+      calls.push(description);
+      assert.equal(id, "plate-chart-button");
+      optionsOpen = true;
+      return complete();
+    },
+    async revealProjectionMatching(prefix, needle) {
+      assert.equal(prefix, "parity:tray-option:");
+      assert.equal(needle, "SEATTLE TAC LEGEND");
+      return option;
+    },
+    async transition(description, { ready, act, complete }) {
+      calls.push(description);
+      assert.ok(await ready());
+      await act();
+      assert.equal(await complete(), true);
+    },
+  };
+
+  const selected = await selectTrayOptionMatching(
+    runtime,
+    "plate-chart-button",
+    "SEATTLE TAC LEGEND",
+  );
+  assert.equal(selected, option);
+  assert.deepEqual(calls, [
+    "open plate-chart-button options",
+    "dismiss already-selected plate-chart-button options",
+    "dismiss",
+  ]);
+});
+
+test("projection identity is always a string for projection rows and rendered controls", () => {
+  assert.equal(projectionId("parity:one"), "parity:one");
+  assert.equal(projectionId({ id: "parity:two" }), "parity:two");
+  assert.equal(projectionId({ test_id: "parity:three" }), "parity:three");
+  assert.equal(projectionId({ text: "not an identity" }), "");
+  assert.equal(projectionId(null), "");
 });
 
 test("viewport geometry identity excludes orientation but preserves pan changes", async () => {

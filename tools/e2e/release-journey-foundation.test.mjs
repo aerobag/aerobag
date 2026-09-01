@@ -4139,13 +4139,14 @@ test("Android semantic request watchdog accepts fractional network deadlines", (
   assert.match(implementation, /timeout: Math\.ceil\(\(timeoutSeconds \+ 1\) \* 1000\)/);
 });
 
-test("revealed-element observation handles the initial probe through the bounded observer", () => {
+test("revealed-element traversal is not nested inside its shorter observation deadline", () => {
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const start = source.indexOf("export async function establishRevealedElement");
   const end = source.indexOf("\nexport ", start + 1);
   const implementation = source.slice(start, end < 0 ? undefined : end);
-  assert.doesNotMatch(implementation, /const initial = await readReachable\(\)/);
-  assert.match(implementation, /await observe\(/);
+  assert.match(implementation, /const existing = await readReachable\(\)/);
+  assert.match(implementation, /await traverse\(\);[\s\S]*await observe\([\s\S]*readReachable/);
+  assert.doesNotMatch(implementation, /await observe\([\s\S]*await traverse\(\)/);
 });
 
 test("Android semantic driver rejects stale protocol artifacts before a journey", () => {
@@ -4567,7 +4568,7 @@ test("Android vertical reveals settle semantic scrolling before exposing a targe
   assert.match(service, /awaitAccessibilityQuietAfter\(eventSequence, 150, 750\)/);
 });
 
-test("Android reveal traversal re-rendezvous with exact semantic reachability", async () => {
+test("Android reveal performs one bounded traversal then observes exact semantic reachability", async () => {
   let reachable = null;
   let traversals = 0;
   const result = await establishRevealedElement({
@@ -4575,19 +4576,30 @@ test("Android reveal traversal re-rendezvous with exact semantic reachability", 
     readReachable: async () => reachable,
     traverse: async () => {
       traversals += 1;
-      if (traversals === 2) reachable = { test_id: "settings-section-debug_diagnostics" };
+      reachable = { test_id: "settings-section-debug_diagnostics" };
       return true;
     },
     observe: async (_description, probe) => {
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const value = await probe();
-        if (value) return { value, durationMs: 0 };
-      }
-      throw new Error("test probe did not establish reachability");
+      assert.equal(traversals, 1);
+      const value = await probe();
+      if (!value) throw new Error("test probe did not establish reachability");
+      return { value, durationMs: 0 };
     },
   });
-  assert.equal(traversals, 2);
+  assert.equal(traversals, 1);
   assert.equal(result?.test_id, "settings-section-debug_diagnostics");
+});
+
+test("Android reveal does not traverse an already reachable control", async () => {
+  let traversals = 0;
+  const result = await establishRevealedElement({
+    description: "plan-append-route-input",
+    readReachable: async () => ({ test_id: "plan-append-route-input" }),
+    traverse: async () => { traversals += 1; return true; },
+    observe: async () => { throw new Error("observation should not run"); },
+  });
+  assert.equal(traversals, 0);
+  assert.equal(result?.test_id, "plan-append-route-input");
 });
 
 test("session revision acknowledgement is parsed from Android's persistent root projection", () => {

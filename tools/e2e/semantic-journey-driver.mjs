@@ -16,7 +16,7 @@ import {
 } from "./android-harness.mjs";
 import {
   E2E_TIMING, ObservationTimeoutError, observeUntil, performTransition,
-  TerminalObservationError,
+  TerminalObservationError, TransientObservationError,
 } from "./transition-contract.mjs";
 
 const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
@@ -895,14 +895,20 @@ export async function establishRevealedElement({
   observe = observeUntil,
 }) {
   try {
+    const existing = await readReachable();
+    if (existing) return existing;
+  } catch (error) {
+    if (!(error instanceof TransientObservationError)) throw error;
+  }
+
+  // Traversal is a bounded UI mutation in its own right. Keep it outside the
+  // observation deadline so a successful multi-scroll traversal is not
+  // discarded merely because it took longer than a local readiness probe.
+  await traverse();
+  try {
     return (await observe(
       `${description} reachable after traversal`,
-      async () => {
-        const current = await readReachable();
-        if (current) return current;
-        if (!await traverse()) return null;
-        return readReachable();
-      },
+      readReachable,
       {
         timeoutMs: E2E_TIMING.localReadyMs,
         intervalMs: E2E_TIMING.pollIntervalMs,

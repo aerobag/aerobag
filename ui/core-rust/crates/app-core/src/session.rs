@@ -146,9 +146,9 @@ use crate::{
     MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
     NavKvStore, NavRef, NotamDisplayIndex, OfflinePackagesLibraryCache, PlaybackUiState,
     PointTilePayload, ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget,
-    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
-    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
-    TfrProductPayload, VectorAggregateTilePayload, VectorIdentLabelStyle, WeatherDetailUiView,
+    RasterMapCatalog, RasterResourceMode, RasterTilePlan, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    VectorAggregateTilePayload, VectorIdentLabelStyle, WeatherDetailUiView,
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
@@ -14057,24 +14057,23 @@ fn plan_preview_legs(
     plan: &FlightPlan,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Vec<PlanPreviewLeg> {
-    let mut component_leg_counts = HashMap::<usize, usize>::new();
-    for leg in &plan.resolved_legs {
-        match leg.source {
-            ResolvedLegSource::RouteComponent { component_index }
-            | ResolvedLegSource::SyntheticBridge {
-                from_component_index: component_index,
-                ..
-            } => {
-                *component_leg_counts.entry(component_index).or_insert(0) += 1;
-            }
-        }
-    }
+    let pointer_key_by_leg_index = crate::planning::guidance_leg_row_ids(plan)
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|(leg_index, row_id)| {
+            let guidance_leg_id = crate::GuidanceLegId::for_destination_row(&row_id);
+            (
+                leg_index,
+                format!("guidance-leg:{}", guidance_leg_id.as_str()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     plan.resolved_legs
         .iter()
         .enumerate()
-        .filter_map(|(leg_index, leg)| {
-            let pointer_key =
-                pointer_key_for_preview_leg(plan, leg_index, leg, &component_leg_counts)?;
+        .filter_map(|(leg_index, _leg)| {
+            let pointer_key = pointer_key_by_leg_index.get(&leg_index)?.clone();
             let geometry = crate::flight_plan_materialization::geometry_for_resolved_leg(
                 plan,
                 leg_index,
@@ -14089,44 +14088,6 @@ fn plan_preview_legs(
             })
         })
         .collect()
-}
-
-fn pointer_key_for_preview_leg(
-    plan: &FlightPlan,
-    leg_index: usize,
-    leg: &ResolvedLeg,
-    component_leg_counts: &HashMap<usize, usize>,
-) -> Option<String> {
-    match leg.source {
-        ResolvedLegSource::RouteComponent { component_index }
-        | ResolvedLegSource::SyntheticBridge {
-            from_component_index: component_index,
-            ..
-        } => {
-            if component_leg_counts
-                .get(&component_index)
-                .copied()
-                .unwrap_or(0)
-                > 1
-            {
-                Some(format!(
-                    "guidance-leg:{}:{}:{}",
-                    preview_component_pointer_scope(plan, component_index),
-                    leg_index,
-                    leg.id
-                ))
-            } else {
-                plan.route_component_uids.get(component_index).cloned()
-            }
-        }
-    }
-}
-
-fn preview_component_pointer_scope(plan: &FlightPlan, component_index: usize) -> String {
-    plan.route_component_uids
-        .get(component_index)
-        .map(|uid| format!("component:{uid}"))
-        .unwrap_or_else(|| format!("component-index:{component_index}"))
 }
 
 fn position_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> LatLon {
@@ -26118,7 +26079,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -26181,7 +26141,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -26250,7 +26209,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 1,
                 active_detail_index: Some(1),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -26319,7 +26277,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -26376,7 +26333,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -26514,7 +26470,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 2,
                 active_detail_index: Some(2),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -26784,7 +26739,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -30251,7 +30205,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 1,
                 active_detail_index: Some(1),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -30704,7 +30657,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -30724,14 +30676,10 @@ mod tests {
         let records = plan_preview_legs(&plan, &geometry_by_leg_id);
 
         assert_eq!(records.len(), 2);
-        assert_eq!(
-            records[0].pointer_key,
-            "guidance-leg:component:row-proc:0:proc-1"
-        );
-        assert_eq!(
-            records[1].pointer_key,
-            "guidance-leg:component:row-proc:1:proc-2"
-        );
+        assert_ne!(records[0].pointer_key, records[1].pointer_key);
+        assert!(records.iter().all(|record| record
+            .pointer_key
+            .contains("component:row-proc:Procedure:child:")));
     }
 
     #[test]
@@ -30812,7 +30760,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -30837,14 +30784,129 @@ mod tests {
 
         assert_eq!(keys.len(), 4);
         assert_eq!(keys.iter().collect::<HashSet<_>>().len(), keys.len());
-        assert_eq!(
-            keys,
-            vec![
-                "guidance-leg:component:row-v1:0:airway--0",
-                "guidance-leg:component:row-v1:1:airway--1",
-                "guidance-leg:component:row-v2:2:airway--0",
-                "guidance-leg:component:row-v2:3:airway--1",
-            ]
+        assert!(keys
+            .iter()
+            .all(|key| key.starts_with("guidance-leg:component:")));
+    }
+
+    #[test]
+    fn plan_preview_stays_on_airway_leg_when_a_preceding_component_is_inserted() {
+        let x = LatLon {
+            lat: 40.0,
+            lon: -121.0,
+        };
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.9,
+        };
+        let c = LatLon {
+            lat: 40.0,
+            lon: -119.8,
+        };
+        let d = LatLon {
+            lat: 40.0,
+            lon: -117.0,
+        };
+        let e = LatLon {
+            lat: 40.0,
+            lon: -116.9,
+        };
+        let airway = |name: &str, entry: LatLon, exit: LatLon| RouteComponent::Airway {
+            airway: crate::AirwaySegment {
+                name: name.to_string(),
+                branch_key: None,
+                entry: NavRef::LatLon(entry),
+                exit: NavRef::LatLon(exit),
+            },
+        };
+        let leg = |id: &str, from: LatLon, to: LatLon, component_index: usize| ResolvedLeg {
+            id: id.to_string(),
+            from: NavRef::LatLon(from),
+            to: NavRef::LatLon(to),
+            source: ResolvedLegSource::RouteComponent { component_index },
+            procedure_provenance: None,
+        };
+        let original = FlightPlan {
+            id: "stable-airway-preview".to_string(),
+            name: "V1 V2".to_string(),
+            route_components: vec![airway("V1", a, c), airway("V2", c, e)],
+            route_component_uids: vec!["row-v1".to_string(), "row-v2".to_string()],
+            route_component_uid_counter: 2,
+            resolved_legs: vec![
+                leg("airway--0", a, b, 0),
+                leg("airway--1", b, c, 0),
+                leg("airway--0", c, d, 1),
+                leg("airway--1", d, e, 1),
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 2,
+                active_detail_index: Some(2),
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            ..FlightPlan::empty()
+        };
+        let init = create_ui_session(original, &[], None, None).expect("create session");
+        select_plan_preview(init.handle);
+
+        let with_prefix = FlightPlan {
+            id: "stable-airway-preview".to_string(),
+            name: "X V1 V2".to_string(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(x),
+                },
+                airway("V1", a, c),
+                airway("V2", c, e),
+            ],
+            route_component_uids: vec![
+                "row-x".to_string(),
+                "row-v1".to_string(),
+                "row-v2".to_string(),
+            ],
+            route_component_uid_counter: 3,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "component-0-1".to_string(),
+                    from: NavRef::LatLon(x),
+                    to: NavRef::LatLon(a),
+                    source: ResolvedLegSource::SyntheticBridge {
+                        from_component_index: 0,
+                        to_component_index: 1,
+                    },
+                    procedure_provenance: None,
+                },
+                leg("airway--0", a, b, 1),
+                leg("airway--1", b, c, 1),
+                leg("airway--0", c, d, 2),
+                leg("airway--1", d, e, 2),
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 3,
+                active_detail_index: Some(3),
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            ..FlightPlan::empty()
+        };
+        replace_flight_plan_in_session(init.handle, with_prefix).expect("insert prefix");
+        let snapshot = apply_situation_control_input_in_session(
+            init.handle,
+            SituationControlInput::FastForward,
+            0.0,
+        )
+        .expect("advance preview after insertion");
+        let position = ownship_position(&snapshot);
+
+        assert!(
+            position.lon > c.lon,
+            "preview should continue eastward on the previously selected V2 leg, got {position:?}"
         );
     }
 
@@ -30918,7 +30980,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -31042,7 +31103,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -31141,7 +31201,6 @@ mod tests {
         plan.guidance = Some(GuidanceState {
             active_leg_index: 0,
             active_detail_index: Some(0),
-            display_split_leg_id: None,
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
             suspend_reason: None,
@@ -31278,7 +31337,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: Some(leg.id.clone()),
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -31463,7 +31521,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: Some(hold_leg.id.clone()),
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,

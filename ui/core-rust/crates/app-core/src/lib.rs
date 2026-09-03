@@ -252,11 +252,11 @@ pub use planning::{
     DirectToTargetRow, DirectToUiView, FlightPlan, FlightPlanControlId, FlightPlanControlUiView,
     FlightPlanDisplayRowKind, FlightPlanRowActionDecision, FlightPlanRowActionEffect,
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanRowId, FlightPlanUiState,
-    GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement,
-    LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole,
-    ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource, RouteComponent,
-    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
+    GuidanceLegId, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
+    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
+    RouteComponent, RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use product_contracts::{AircraftDefinition, AircraftSelection};
@@ -2325,7 +2325,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: None,
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::DirectTo,
                 direct_to: Some(DirectToState {
                     start: NavRef::Spot(start_position),

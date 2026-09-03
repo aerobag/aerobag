@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::planning::{
-    guidance_detail_ref_by_index, guidance_projects_active_leg, project_identity_rows,
-    terminal_hold_start_element_index_for_leg, DirectToTargetRow, FlightPlan,
-    FlightPlanDisplayRowKind, FlightPlanRowId, NavRef, SequencingMode,
+    display_row_targets_guidance_leg, guidance_detail_ref_by_index, guidance_projects_active_leg,
+    project_identity_rows, terminal_hold_start_element_index_for_leg, DirectToTargetRow,
+    FlightPlan, FlightPlanRowId, GuidanceLegId, NavRef, SequencingMode,
 };
 use crate::{
     AppError, AppErrorKind, AppResult, FlightDataCellTone, FlightPlanRouteSegmentStatus,
@@ -24,6 +24,7 @@ pub(crate) enum MaterializedFlightPlanRowArrow {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MaterializedFlightPlanRow {
     pub id: FlightPlanRowId,
+    pub guidance_leg_id: Option<GuidanceLegId>,
     pub location: Option<NavRef>,
     pub leg_index: Option<usize>,
     pub tone: FlightDataCellTone,
@@ -56,20 +57,27 @@ impl MaterializedFlightPlan {
         geometry_by_id: &HashMap<String, GuidanceLegGeometry>,
         ownship_position: Option<LatLon>,
     ) -> AppResult<Self> {
-        let estimate_geometry_by_leg_id = plan
-            .resolved_legs
-            .iter()
-            .enumerate()
-            .filter(|(_, leg)| !crate::planning::resolved_leg_ends_in_manual_sequence(leg))
-            .filter_map(|(leg_index, leg)| {
-                geometry_for_resolved_leg(plan, leg_index, geometry_by_id)
-                    .map(|geometry| (leg.id.clone(), geometry))
+        let estimate_geometry_by_guidance_leg_id = project_identity_rows(plan)
+            .into_iter()
+            .filter(|row| display_row_targets_guidance_leg(plan, row))
+            .filter_map(|row| {
+                let leg_index = row.leg_index?;
+                let leg = plan.resolved_legs.get(leg_index)?;
+                if crate::planning::resolved_leg_ends_in_manual_sequence(leg) {
+                    return None;
+                }
+                geometry_for_resolved_leg(plan, leg_index, geometry_by_id).map(|geometry| {
+                    (
+                        GuidanceLegId::for_destination_row(&FlightPlanRowId(row.uid)),
+                        geometry,
+                    )
+                })
             })
             .collect();
         Self::build_with_estimate_geometries(
             plan,
             geometry_by_id,
-            &estimate_geometry_by_leg_id,
+            &estimate_geometry_by_guidance_leg_id,
             ownship_position,
         )
     }
@@ -77,7 +85,7 @@ impl MaterializedFlightPlan {
     pub fn build_with_estimate_geometries(
         plan: &FlightPlan,
         geometry_by_id: &HashMap<String, GuidanceLegGeometry>,
-        estimate_geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+        estimate_geometry_by_guidance_leg_id: &HashMap<GuidanceLegId, GuidanceLegGeometry>,
         ownship_position: Option<LatLon>,
     ) -> AppResult<Self> {
         let identity_rows = project_identity_rows(plan);
@@ -85,17 +93,14 @@ impl MaterializedFlightPlan {
         let mut rows = BTreeMap::new();
         let mut row_id_by_leg_index = BTreeMap::new();
 
-        for row in identity_rows.into_iter().filter(|row| {
-            (row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.nav_ref.is_some())
-                || (row.row_kind == FlightPlanDisplayRowKind::Discontinuity
-                    && row
-                        .leg_index
-                        .and_then(|leg_index| plan.resolved_legs.get(leg_index))
-                        .is_some_and(
-                            crate::planning::resolved_leg_targets_vector_discontinuity_row,
-                        ))
-        }) {
+        for row in identity_rows
+            .into_iter()
+            .filter(|row| display_row_targets_guidance_leg(plan, row))
+        {
             let id = FlightPlanRowId(row.uid);
+            let guidance_leg_id = row
+                .leg_index
+                .map(|_| GuidanceLegId::for_destination_row(&id));
             if let Some(leg_index) = row.leg_index {
                 if row_id_by_leg_index.insert(leg_index, id.clone()).is_some() {
                     return Err(invalid_plan(format!(
@@ -108,6 +113,7 @@ impl MaterializedFlightPlan {
                 id.clone(),
                 MaterializedFlightPlanRow {
                     id,
+                    guidance_leg_id: guidance_leg_id.clone(),
                     location: row.nav_ref,
                     leg_index: row.leg_index,
                     tone: FlightDataCellTone::Planned,
@@ -119,10 +125,9 @@ impl MaterializedFlightPlan {
                     geometry: row.leg_index.and_then(|leg_index| {
                         geometry_for_resolved_leg(plan, leg_index, geometry_by_id)
                     }),
-                    estimate_geometry: row
-                        .leg_index
-                        .and_then(|leg_index| plan.resolved_legs.get(leg_index))
-                        .and_then(|leg| estimate_geometry_by_leg_id.get(&leg.id))
+                    estimate_geometry: guidance_leg_id
+                        .as_ref()
+                        .and_then(|leg_id| estimate_geometry_by_guidance_leg_id.get(leg_id))
                         .cloned(),
                     distance_remaining_nm: None,
                     cumulative_distance_remaining_nm: None,
@@ -352,16 +357,25 @@ pub(crate) fn geometry_for_resolved_leg(
     })
 }
 
-pub(crate) fn estimate_geometry_by_leg_id_with_resolver<E, F>(
+pub(crate) fn estimate_geometry_by_guidance_leg_id_with_resolver<E, F>(
     plan: &FlightPlan,
     geometry_by_id: &HashMap<String, GuidanceLegGeometry>,
     mut resolve_position: F,
-) -> Result<HashMap<String, GuidanceLegGeometry>, E>
+) -> Result<HashMap<GuidanceLegId, GuidanceLegGeometry>, E>
 where
     F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
 {
     let mut estimates = HashMap::new();
-    for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
+    for row in project_identity_rows(plan)
+        .into_iter()
+        .filter(|row| display_row_targets_guidance_leg(plan, row))
+    {
+        let Some(leg_index) = row.leg_index else {
+            continue;
+        };
+        let Some(leg) = plan.resolved_legs.get(leg_index) else {
+            continue;
+        };
         let geometry = if crate::planning::resolved_leg_ends_in_manual_sequence(leg) {
             let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
                 (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
@@ -378,7 +392,10 @@ where
             geometry_for_resolved_leg(plan, leg_index, geometry_by_id)
         };
         if let Some(geometry) = geometry {
-            estimates.insert(leg.id.clone(), geometry);
+            estimates.insert(
+                GuidanceLegId::for_destination_row(&FlightPlanRowId(row.uid)),
+                geometry,
+            );
         }
     }
     Ok(estimates)
@@ -548,7 +565,8 @@ fn invalid_plan(message: impl Into<String>) -> AppError {
 mod tests {
     use super::*;
     use crate::planning::{
-        DirectToState, GuidanceState, ResolvedLeg, ResolvedLegSource, RouteComponent,
+        DirectToState, FlightPlanDisplayRowKind, GuidanceState, ResolvedLeg, ResolvedLegSource,
+        RouteComponent,
     };
 
     const EPSILON_NM: f64 = 1e-6;
@@ -604,7 +622,6 @@ mod tests {
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -620,6 +637,85 @@ mod tests {
             version: 1,
         })
         .expect("valid three-point plan")
+    }
+
+    fn two_airway_plan() -> FlightPlan {
+        let a = nav(40.0, -120.0);
+        let b = nav(40.0, -119.8);
+        let c = nav(40.0, -119.6);
+        let d = nav(40.0, -117.0);
+        let e = nav(40.0, -116.0);
+        crate::build_flight_plan(FlightPlan {
+            id: "two-airway-plan".to_string(),
+            name: "A V1 C V2 E".to_string(),
+            route_components: vec![
+                RouteComponent::Airway {
+                    airway: crate::AirwaySegment {
+                        name: "V1".to_string(),
+                        branch_key: None,
+                        entry: a.clone(),
+                        exit: c.clone(),
+                    },
+                },
+                RouteComponent::Airway {
+                    airway: crate::AirwaySegment {
+                        name: "V2".to_string(),
+                        branch_key: None,
+                        entry: c.clone(),
+                        exit: e.clone(),
+                    },
+                },
+            ],
+            route_component_uids: vec!["row-v1".to_string(), "row-v2".to_string()],
+            route_component_uid_counter: 2,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "airway--0".to_string(),
+                    from: a,
+                    to: b.clone(),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway--1".to_string(),
+                    from: b,
+                    to: c.clone(),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway--0".to_string(),
+                    from: c,
+                    to: d.clone(),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway--1".to_string(),
+                    from: d,
+                    to: e,
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 1,
+                active_detail_index: Some(1),
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            aircraft: None,
+            cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("valid two-airway plan")
     }
 
     fn geometry_map(
@@ -721,6 +817,31 @@ mod tests {
     }
 
     #[test]
+    fn active_leg_in_first_of_two_airways_uses_its_own_destination() {
+        let plan = two_airway_plan();
+        let ownship = point(40.0, -119.8);
+        let destination = point(40.0, -119.6);
+        let destination_row_id = row_id_for_location(&plan, &NavRef::LatLon(destination));
+        let materialized =
+            MaterializedFlightPlan::build(&plan, &geometry_map(&plan, None), Some(ownship))
+                .expect("materialize two-airway route");
+
+        assert_near(
+            materialized.rows[&destination_row_id]
+                .distance_remaining_nm
+                .expect("active airway distance"),
+            crate::great_circle_distance_nm(ownship, destination),
+        );
+        assert_eq!(
+            materialized
+                .active
+                .as_ref()
+                .map(|active| active.row_id.clone()),
+            Some(destination_row_id),
+        );
+    }
+
+    #[test]
     fn vectors_manual_sequence_estimates_direct_to_next_waypoint() {
         let mut plan = three_point_plan();
         let start = point(40.0, -120.0);
@@ -760,19 +881,23 @@ mod tests {
         })
         .expect("project manual-sequence route");
         let geometry_by_id = geometry_map_from_route(&route);
-        let estimate_geometry_by_leg_id =
-            estimate_geometry_by_leg_id_with_resolver(&plan, &geometry_by_id, |nav_ref, _| {
-                if let NavRef::LatLon(position) = nav_ref {
-                    Ok(*position)
-                } else {
-                    Err("fixture uses only lat/lon nav refs")
-                }
-            })
+        let estimate_geometry_by_guidance_leg_id =
+            estimate_geometry_by_guidance_leg_id_with_resolver(
+                &plan,
+                &geometry_by_id,
+                |nav_ref, _| {
+                    if let NavRef::LatLon(position) = nav_ref {
+                        Ok(*position)
+                    } else {
+                        Err("fixture uses only lat/lon nav refs")
+                    }
+                },
+            )
             .expect("estimate manual sequence");
         let materialized = MaterializedFlightPlan::build_with_estimate_geometries(
             &plan,
             &geometry_by_id,
-            &estimate_geometry_by_leg_id,
+            &estimate_geometry_by_guidance_leg_id,
             None,
         )
         .expect("materialize manual-sequence estimate");
@@ -873,7 +998,6 @@ mod tests {
         plan.guidance = Some(GuidanceState {
             active_leg_index: 0,
             active_detail_index: None,
-            display_split_leg_id: None,
             sequencing_mode: SequencingMode::DirectTo,
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(direct_start),
@@ -915,7 +1039,6 @@ mod tests {
         plan.guidance = Some(GuidanceState {
             active_leg_index: 1,
             active_detail_index: Some(1),
-            display_split_leg_id: None,
             sequencing_mode: SequencingMode::FollowPlan,
             direct_to: None,
             suspend_reason: None,

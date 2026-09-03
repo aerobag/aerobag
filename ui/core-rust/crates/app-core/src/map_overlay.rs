@@ -11910,7 +11910,6 @@ mod tests {
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: None,
-                display_split_leg_id: None,
                 sequencing_mode: crate::SequencingMode::DirectTo,
                 direct_to: Some(crate::DirectToState {
                     start: NavRef::LatLon(viewport.center),

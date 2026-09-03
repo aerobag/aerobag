@@ -1084,7 +1084,6 @@ fn sequence_suspended_terminal_hold_detail(plan: &FlightPlan) -> AppResult<Fligh
         guidance: Some(GuidanceState {
             active_leg_index: guidance.active_leg_index,
             active_detail_index: Some(next_detail_index),
-            display_split_leg_id: guidance.display_split_leg_id.clone(),
             sequencing_mode: SequencingMode::Suspended,
             direct_to: None,
             suspend_reason: guidance.suspend_reason,

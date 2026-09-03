@@ -2096,8 +2096,8 @@ pub(crate) fn flight_plan_ui_projection(
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
     let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
-    let estimate_geometry_by_leg_id =
-        crate::flight_plan_materialization::estimate_geometry_by_leg_id_with_resolver(
+    let estimate_geometry_by_guidance_leg_id =
+        crate::flight_plan_materialization::estimate_geometry_by_guidance_leg_id_with_resolver(
             &plan,
             &geometry_by_id,
             |nav_ref, procedure_airport_id| nav_ref_position(store, nav_ref, procedure_airport_id),
@@ -2106,7 +2106,7 @@ pub(crate) fn flight_plan_ui_projection(
         crate::flight_plan_materialization::MaterializedFlightPlan::build_with_estimate_geometries(
             &plan,
             &geometry_by_id,
-            &estimate_geometry_by_leg_id,
+            &estimate_geometry_by_guidance_leg_id,
             live_data.ownship_position,
         )
         .map_err(|err| HadReadError::Fatal(err.message))?;
@@ -2382,8 +2382,8 @@ pub(crate) fn altitude_comparison_panel(
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
     let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
-    let estimate_geometry_by_leg_id =
-        crate::flight_plan_materialization::estimate_geometry_by_leg_id_with_resolver(
+    let estimate_geometry_by_guidance_leg_id =
+        crate::flight_plan_materialization::estimate_geometry_by_guidance_leg_id_with_resolver(
             &plan,
             &geometry_by_id,
             |nav_ref, procedure_airport_id| nav_ref_position(store, nav_ref, procedure_airport_id),
@@ -2392,7 +2392,7 @@ pub(crate) fn altitude_comparison_panel(
         crate::flight_plan_materialization::MaterializedFlightPlan::build_with_estimate_geometries(
             &plan,
             &geometry_by_id,
-            &estimate_geometry_by_leg_id,
+            &estimate_geometry_by_guidance_leg_id,
             live_data.ownship_position,
         )
         .map_err(|error| HadReadError::Fatal(error.message))?;
@@ -6033,6 +6033,7 @@ mod tests {
         let estimate_end = LatLon { lat: 0.0, lon: 2.0 };
         let row = crate::flight_plan_materialization::MaterializedFlightPlanRow {
             id: row_id.clone(),
+            guidance_leg_id: None,
             location: Some(NavRef::LatLon(estimate_end)),
             leg_index: Some(0),
             tone: crate::FlightDataCellTone::Planned,
@@ -7820,7 +7821,6 @@ mod tests {
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -8143,7 +8143,6 @@ mod tests {
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,
@@ -8245,7 +8244,6 @@ mod tests {
             guidance: Some(crate::GuidanceState {
                 active_leg_index: 0,
                 active_detail_index: Some(0),
-                display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
                 suspend_reason: None,

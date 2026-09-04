@@ -81,6 +81,11 @@ describe("flight plan layout CSS", () => {
     expect(restore.at(-1)).toMatchObject({ stroke: "white" });
   });
 
+  it("provides shared NEXRAD animation action symbols", () => {
+    expect(actionSymbol("pause_nexrad_animation")).toBeTruthy();
+    expect(actionSymbol("resume_nexrad_animation")).toBeTruthy();
+  });
+
   it("overlays core-projected weather on the existing waypoint symbol cell", () => {
     expect(appSource).toContain("weatherBadge: row.weather_badge ?? null");
     expect(appSource).toContain("weatherBadge={row.weatherBadge}");

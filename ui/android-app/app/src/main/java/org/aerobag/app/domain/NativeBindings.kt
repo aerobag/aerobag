@@ -409,6 +409,11 @@ interface NativeBridge {
         actionId: String,
     ): String
 
+    fun performFlightDataBannerCellActionInSessionJson(
+        handle: Long,
+        cellId: String,
+    ): String
+
     fun performFlightPlanColumnActionInSessionJson(
         handle: Long,
         actionId: String,
@@ -1074,6 +1079,11 @@ object NativeBindings : NativeBridge {
     external override fun performTimeDisplayActionInSessionJson(
         handle: Long,
         actionId: String,
+    ): String
+
+    external override fun performFlightDataBannerCellActionInSessionJson(
+        handle: Long,
+        cellId: String,
     ): String
 
     external override fun performFlightPlanColumnActionInSessionJson(

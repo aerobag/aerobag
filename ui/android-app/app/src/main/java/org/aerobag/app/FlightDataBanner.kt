@@ -7,6 +7,7 @@ package org.aerobag.app
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -26,11 +28,16 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -64,7 +71,7 @@ internal fun FlightDataBanner(
     situationDockTopPadding: Dp,
     uiTheme: UiTheme,
     modifier: Modifier = Modifier,
-    onAction: (String) -> Unit,
+    onCellActivated: (String) -> Unit,
 ) {
     val cells = banner.cells
     if (cells.isEmpty() || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
@@ -106,9 +113,9 @@ internal fun FlightDataBanner(
                             uiTheme,
                             FlightDataCellMinWidth,
                             cellHeight,
-                            modifier = cell.actionId?.let { actionId ->
-                                Modifier.clickable { onAction(actionId) }
-                            } ?: Modifier,
+                            modifier = Modifier
+                                .testTag("flight-data-cell:${cell.id}")
+                                .flightDataCellInput(cell, onCellActivated),
                         )
                     }
                 }
@@ -148,9 +155,9 @@ internal fun FlightDataBanner(
                             uiTheme,
                             cellWidth,
                             cellHeight,
-                            modifier = cell.actionId?.let { actionId ->
-                                Modifier.clickable { onAction(actionId) }
-                            } ?: Modifier,
+                            modifier = Modifier
+                                .testTag("flight-data-cell:${cell.id}")
+                                .flightDataCellInput(cell, onCellActivated),
                         )
                     }
                 }
@@ -158,6 +165,23 @@ internal fun FlightDataBanner(
         }
     }
 }
+
+private fun Modifier.flightDataCellInput(
+    cell: FlightDataCell,
+    onCellActivated: (String) -> Unit,
+): Modifier = pointerInput(cell.id, onCellActivated) {
+    detectTapGestures(onTap = { onCellActivated(cell.id) })
+}.then(
+    cell.action?.let { action ->
+        Modifier.semantics {
+            role = Role.Button
+            onClick(label = action.accessibilityLabel) {
+                onCellActivated(cell.id)
+                true
+            }
+        }
+    } ?: Modifier,
+)
 
 private fun flightDataEdgeColumnCount(
     surfaceHeightDp: Float,
@@ -262,15 +286,26 @@ private fun FlightDataBannerCell(
                 minFontSize = 9.5.sp,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Text(
-                text = cell.value ?: "\u2014",
-                color = if (cell.value == null) uiTheme.controls.flightDataMissingValue else uiTheme.controls.flightDataValue,
-                style = valueStyle,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                softWrap = false,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = cell.value ?: "\u2014",
+                    color = if (cell.value == null) uiTheme.controls.flightDataMissingValue else uiTheme.controls.flightDataValue,
+                    style = valueStyle,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                cell.action?.symbolId?.let { symbolId ->
+                    ActionIcon(
+                        actionId = symbolId,
+                        enabled = true,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .size(ThumbSize * 0.28f),
+                    )
+                }
+            }
         }
     }
 }

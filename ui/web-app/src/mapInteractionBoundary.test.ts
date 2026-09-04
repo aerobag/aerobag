@@ -198,15 +198,16 @@ describe("map interaction boundaries", () => {
     expect(hoverPanelBlocks).toContain("pointer-events: none");
   });
 
-  it("keeps core-actionable time cells and the ETA column header clickable", () => {
-    const actionableFlightDataBlocks = [...styles.matchAll(/\.flightDataCell\.isActionable\s*\{([^}]*)\}/g)]
+  it("sends every flight-data banner click to core without falling through the map", () => {
+    const flightDataBlocks = [...styles.matchAll(/\.flightDataCell\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")
       .join("\n");
-    expect(actionableFlightDataBlocks).toContain("pointer-events: auto");
+    expect(flightDataBlocks).toContain("pointer-events: auto");
 
     const banner = sourceBetween("function FlightDataBanner", "function FlightDataCellContents");
-    expect(banner).toContain("cell.action_id");
-    expect(banner).toContain("props.onAction(cell.action_id!)");
+    expect(banner).toContain("onPointerDown={stopPointer}");
+    expect(banner).toContain("onPointerUp={stopPointer}");
+    expect(banner).toContain("props.onCellActivated(cell.id)");
 
     const planHeaders = sourceBetween("planDataColumns.map((column)", "displayRows.map((row)");
     expect(planHeaders).toContain("column.action_id");

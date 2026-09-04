@@ -170,6 +170,7 @@ fn main() {
                 "FlightPlanControlUiView",
                 "FlightDataCellTone",
                 "FlightEstimateKind",
+                "FlightDataCellAction",
                 "FlightDataCell",
                 "FlightDataColumn",
                 "FlightDataBannerModel",

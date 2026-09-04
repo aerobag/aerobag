@@ -10,15 +10,16 @@ import org.junit.Test
 
 class TimeDisplayParityTest {
     @Test
-    fun androidForwardsCoreTimeActionsFromBannerAndFlightPlanCells() {
+    fun androidForwardsEveryBannerCellAndCoreActionsFromFlightPlanCells() {
         val banner = sourceFile("src/main/java/org/aerobag/app/FlightDataBanner.kt").readText()
         val planWidgets = sourceFile("src/main/java/org/aerobag/app/PlanDisplayWidgets.kt").readText()
         val planPage = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
 
         assertTrue(
-            "Flight-data cells must become clickable only when core supplies an action ID.",
-            banner.contains("cell.actionId?.let { actionId ->") &&
-                banner.contains("Modifier.clickable { onAction(actionId) }"),
+            "Every flight-data cell must consume taps and forward its ID to core.",
+            banner.contains(".flightDataCellInput(cell, onCellActivated)") &&
+                banner.contains("pointerInput(cell.id, onCellActivated)") &&
+                banner.contains("detectTapGestures(onTap = { onCellActivated(cell.id) })"),
         )
         assertTrue(
             "Flight-plan column headers must forward core-supplied action IDs.",

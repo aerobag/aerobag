@@ -859,6 +859,7 @@ export interface UiSession {
   setAltitudePlannerDepartureInput(field: "time" | "when", input: string): Promise<UiSessionSnapshot>;
   performFlightPlanColumnAction(actionId: string): Promise<UiSessionSnapshot>;
   performTimeDisplayAction(actionId: string): Promise<UiSessionSnapshot>;
+  performFlightDataBannerCellAction(cellId: string): Promise<UiSessionSnapshot>;
   statusActionDecision(actionId: string): Promise<UiStatusActionDecision>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   mapSelectionActionDecision(actionUid: string): Promise<MapSelectionActionDecision>;
@@ -1055,6 +1056,10 @@ type WasmModule = {
   perform_time_display_action_in_session(
     sessionHandle: number,
     actionId: string,
+  ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
+  perform_flight_data_banner_cell_action_in_session(
+    sessionHandle: number,
+    cellId: string,
   ): Promise<SessionMutationOperationJson> | SessionMutationOperationJson;
   perform_flight_plan_column_action_in_session(
     sessionHandle: number,
@@ -1788,6 +1793,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       performTimeDisplayAction: async (actionId) => {
         return runSessionMutation(() =>
           this.module.perform_time_display_action_in_session(handle, actionId),
+        );
+      },
+      performFlightDataBannerCellAction: async (cellId) => {
+        return runSessionMutation(() =>
+          this.module.perform_flight_data_banner_cell_action_in_session(handle, cellId),
         );
       },
       performFlightPlanColumnAction: async (actionId) => {

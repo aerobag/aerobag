@@ -28,7 +28,7 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type ActionSymbolId = "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "toggle_sequencing_suspension" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
+export type ActionSymbolId = "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
 export const actionSymbols = {
   "undo": [
     {
@@ -131,6 +131,30 @@ export const actionSymbols = {
   "toggle_sequencing_suspension": [
     {
       "path": "M -11 -17 H -3 V 17 H -11 Z M 3 -17 H 11 V 17 H 3 Z",
+      "paint": "action_glyph",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "pause_nexrad_animation": [
+    {
+      "path": "M -11 -17 H -3 V 17 H -11 Z M 3 -17 H 11 V 17 H 3 Z",
+      "paint": "action_glyph",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "resume_nexrad_animation": [
+    {
+      "path": "M -10 -17 L 16 0 L -10 17 Z",
       "paint": "action_glyph",
       "fill": "button_icon",
       "stroke": null,

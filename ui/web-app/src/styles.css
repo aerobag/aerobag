@@ -1555,10 +1555,6 @@ button {
   cursor: pointer;
 }
 
-.flightDataCell.isActionable {
-  pointer-events: auto;
-}
-
 .airportInfoFactValue.isActionable {
   color: var(--theme-class-b-d-blue);
 }
@@ -2539,6 +2535,7 @@ button {
 }
 
 .flightDataCell {
+  pointer-events: auto;
   width: calc(var(--thumb) * 1.28);
   height: calc(var(--thumb) * 0.64);
   min-width: 0;
@@ -2583,6 +2580,28 @@ button {
   font-weight: 900;
   line-height: 0.96;
   letter-spacing: -0.02em;
+}
+
+.flightDataValueRow {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  align-items: center;
+}
+
+.flightDataActionIcon {
+  position: absolute;
+  right: 0;
+  width: calc(var(--thumb) * 0.22);
+  height: calc(var(--thumb) * 0.22);
+}
+
+.flightDataActionIcon .actionIcon {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .flightDataValue.isMissing {

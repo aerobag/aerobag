@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub use app_ui_contracts::session::{
-    FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn, FlightEstimateKind,
+    FlightDataBannerModel, FlightDataCell, FlightDataCellAction, FlightDataCellTone,
+    FlightDataColumn, FlightEstimateKind,
 };
 use chrono_tz::Tz;
 
@@ -55,6 +56,7 @@ pub struct FlightDataBannerInput {
     pub final_distance_nm: Option<f64>,
     pub destination_estimate: Option<FlightTimeFuelEstimate>,
     pub nexrad_age: Option<String>,
+    pub nexrad_action: Option<FlightDataCellAction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,8 +270,13 @@ impl FlightDataComputer {
                         definition.field,
                         FlightDataBannerField::FinalEta | FlightDataBannerField::Clock
                     ) {
-                        cell.action_id =
-                            Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string());
+                        cell.action = Some(flight_data_cell_action(
+                            crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+                            "Toggle local and UTC time display",
+                            None,
+                        ));
+                    } else if definition.field == FlightDataBannerField::NexradAge {
+                        cell.action = input.nexrad_action.clone();
                     }
                     cell
                 })
@@ -316,8 +323,13 @@ impl FlightDataComputer {
                         id: column.id,
                         label: column.label,
                         value: Some(String::new()),
-                        action_id: actionable
-                            .then(|| crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string()),
+                        action: actionable.then(|| {
+                            flight_data_cell_action(
+                                crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID,
+                                "Toggle local and UTC time display",
+                                None,
+                            )
+                        }),
                         tone: FlightDataCellTone::Planned,
                         estimate_kind: FlightEstimateKind::Basic,
                     }
@@ -560,7 +572,7 @@ pub fn cell_with_tone(
         id: id.to_string(),
         label: label.to_string(),
         value,
-        action_id: None,
+        action: None,
         tone,
         estimate_kind: FlightEstimateKind::Basic,
     }
@@ -576,7 +588,7 @@ pub fn cell_with_estimate(
         id: id.to_string(),
         label: label.to_string(),
         value,
-        action_id: None,
+        action: None,
         tone: FlightDataCellTone::Planned,
         estimate_kind,
     }
@@ -593,9 +605,25 @@ fn actionable_cell_with_estimate(
         id: id.to_string(),
         label: label.to_string(),
         value,
-        action_id: Some(action_id.to_string()),
+        action: Some(flight_data_cell_action(
+            action_id,
+            "Toggle local and UTC time display",
+            None,
+        )),
         tone: FlightDataCellTone::Planned,
         estimate_kind,
+    }
+}
+
+fn flight_data_cell_action(
+    action_id: &str,
+    accessibility_label: &str,
+    symbol_id: Option<&str>,
+) -> FlightDataCellAction {
+    FlightDataCellAction {
+        action_id: action_id.to_string(),
+        accessibility_label: accessibility_label.to_string(),
+        symbol_id: symbol_id.map(str::to_string),
     }
 }
 
@@ -914,7 +942,7 @@ mod tests {
         assert_eq!(eta.label, "ETA PDT");
         assert_eq!(eta.value.as_deref(), Some("19:15"));
         assert_eq!(
-            eta.action_id.as_deref(),
+            eta.action.as_ref().map(|action| action.action_id.as_str()),
             Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
         );
         assert_eq!(
@@ -945,7 +973,10 @@ mod tests {
         assert_eq!(local_clock.label, "TIME PDT");
         assert_eq!(local_clock.value.as_deref(), Some("19:34"));
         assert_eq!(
-            local_clock.action_id.as_deref(),
+            local_clock
+                .action
+                .as_ref()
+                .map(|action| action.action_id.as_str()),
             Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
         );
 

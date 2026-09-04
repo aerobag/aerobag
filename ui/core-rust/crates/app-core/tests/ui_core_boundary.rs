@@ -1304,6 +1304,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "perform_flight_plan_command_in_session",
         "perform_flight_plan_column_action_in_session",
         "perform_time_display_action_in_session",
+        "perform_flight_data_banner_cell_action_in_session",
         "query_flight_plan_in_session",
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",
@@ -1350,6 +1351,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "performFlightPlanCommandInSessionJson",
         "performFlightPlanColumnActionInSessionJson",
         "performTimeDisplayActionInSessionJson",
+        "performFlightDataBannerCellActionInSessionJson",
         "queryFlightPlanInSessionJson",
         "syncGuidanceGeometryInSessionJson",
         "projectFlightPlanRouteInSessionJson",
@@ -1400,6 +1402,45 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "platform adapters must drive paged session exports through resource loops:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn flight_data_banner_activation_policy_is_core_owned() {
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android_banner =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightDataBanner.kt");
+    let android_map =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+    let android_charts =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/ChartsPage.kt");
+
+    let core_action = function_body(
+        &session,
+        "perform_flight_data_banner_cell_action_in_session",
+    );
+    assert!(core_action.contains("\"final_eta\" | \"clock\""));
+    assert!(core_action.contains("\"nexrad_age\""));
+    assert!(core_action.contains("unchanged_session_update_outcome(session)"));
+
+    let web_banner_start = web
+        .find("function FlightDataBanner(")
+        .expect("web FlightDataBanner");
+    let web_banner_end = web[web_banner_start..]
+        .find("function FlightDataCellContents(")
+        .map(|offset| web_banner_start + offset)
+        .expect("web FlightDataCellContents");
+    let web_banner = &web[web_banner_start..web_banner_end];
+    assert!(web_banner.contains("props.onCellActivated(cell.id)"));
+    assert!(!web_banner.contains("nexrad_age"));
+    assert!(!web_banner.contains("performTimeDisplayAction"));
+
+    assert!(android_banner.contains("onCellActivated(cell.id)"));
+    assert!(!android_banner.contains("nexrad_age"));
+    assert!(!android_banner.contains("performTimeDisplayAction"));
+    for source in [&android_map, &android_charts] {
+        assert!(source.contains("performFlightDataBannerCellAction(cellId)"));
+    }
 }
 
 #[test]

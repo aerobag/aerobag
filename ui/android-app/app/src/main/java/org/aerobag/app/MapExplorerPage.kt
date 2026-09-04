@@ -3578,9 +3578,9 @@ internal fun MapExplorerPage(
             surfaceSize = surfaceSize,
             situationDockTopPadding = situationDockTopPadding,
             uiTheme = uiTheme,
-            onAction = { actionId ->
-                applySessionCommand("performTimeDisplayAction") {
-                    uiSession.performTimeDisplayAction(actionId)
+            onCellActivated = { cellId ->
+                applySessionCommand("performFlightDataBannerCellAction") {
+                    uiSession.performFlightDataBannerCellAction(cellId)
                 }
             },
             modifier = Modifier.align(if (surfaceWidthPx > surfaceHeightPx) Alignment.TopEnd else Alignment.TopCenter),

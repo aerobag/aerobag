@@ -69,10 +69,14 @@
     "FlightDataCell": {
       "additionalProperties": false,
       "properties": {
-        "action_id": {
-          "type": [
-            "string",
-            "null"
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlightDataCellAction"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "estimate_kind": {
@@ -97,6 +101,28 @@
       "required": [
         "id",
         "label"
+      ],
+      "type": "object"
+    },
+    "FlightDataCellAction": {
+      "additionalProperties": false,
+      "properties": {
+        "accessibility_label": {
+          "type": "string"
+        },
+        "action_id": {
+          "type": "string"
+        },
+        "symbol_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action_id",
+        "accessibility_label"
       ],
       "type": "object"
     },
@@ -1378,7 +1404,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 9,
+  "x-contract-version": 10,
   "x-export-order": [
     "UiNavigationPageId",
     "UiNavigationPageOption",
@@ -1387,6 +1413,7 @@
     "FlightPlanControlUiView",
     "FlightDataCellTone",
     "FlightEstimateKind",
+    "FlightDataCellAction",
     "FlightDataCell",
     "FlightDataColumn",
     "FlightDataBannerModel",

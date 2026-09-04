@@ -46,6 +46,7 @@
     "action_next_shaft": "M 0 -18 V 7",
     "action_next_arrow": "M -9 6 L 0 19 L 9 6 Z",
     "action_pause_bars": "M -11 -17 H -3 V 17 H -11 Z M 3 -17 H 11 V 17 H 3 Z",
+    "action_play_triangle": "M -10 -17 L 16 0 L -10 17 Z",
     "action_cancel_slash": "M -19 -19 L 19 19",
     "action_row_below": "M -19 7 H 19 V 15 H -19 Z",
     "action_row_above": "M -19 -15 H 19 V -7 H -19 Z",
@@ -109,6 +110,9 @@
     ],
     "action_suspend": [
       { "path": "action_pause_bars", "paint": "action_glyph", "fill": "button_icon" }
+    ],
+    "action_play": [
+      { "path": "action_play_triangle", "paint": "action_glyph", "fill": "button_icon" }
     ],
     "action_restore_direct_to": [
       { "path": "action_direct_to_d", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3, "line_cap": "round", "line_join": "round" },
@@ -326,6 +330,8 @@
     "activate_next_leg": "action_next",
     "stop_navigation": "action_stop_navigation",
     "toggle_sequencing_suspension": "action_suspend",
+    "pause_nexrad_animation": "action_suspend",
+    "resume_nexrad_animation": "action_play",
     "restore_direct_to": "action_restore_direct_to",
     "activate_leg": "action_activate_leg",
     "direct_to": "action_direct_to",

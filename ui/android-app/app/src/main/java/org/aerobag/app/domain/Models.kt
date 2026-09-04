@@ -485,11 +485,17 @@ data class AirportNotamUiView(
     val text: String,
 )
 
+data class FlightDataCellAction(
+    val actionId: String,
+    val accessibilityLabel: String,
+    val symbolId: String?,
+)
+
 data class FlightDataCell(
     val id: String,
     val label: String,
     val value: String?,
-    val actionId: String? = null,
+    val action: FlightDataCellAction? = null,
     val tone: String = "planned",
     val estimateKind: String = "basic",
 )

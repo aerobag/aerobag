@@ -108,7 +108,11 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "cloud.copy-code", "cloud.crossfill-plan", "cloud.crossfill-packages", "cloud.reconnect",
   ], { android_isolated: true }),
   journey("shared.prepared-live-feeds", "p1", shared, ["livefeed.metar-taf-pirep-notam"]),
-  journey("shared.nexrad-frames", "p1", shared, ["livefeed.nexrad-frames"]),
+  journey("shared.nexrad-frames", "p1", shared, [
+    "livefeed.nexrad-frames",
+    "livefeed.nexrad-hold",
+    "livefeed.nexrad-resume",
+  ]),
   journey("shared.obstacles-navkv", "p1", shared, ["livefeed.obstacles-navkv"]),
   journey("shared.winds-aloft-navkv", "p1", shared, ["livefeed.winds-aloft-navkv"]),
   journey("shared.tfr-map-detail", "p1", shared, ["livefeed.tfr-map-detail"]),

@@ -364,7 +364,7 @@ mod tests {
                     id: "ground_speed".to_string(),
                     label: "GS".to_string(),
                     value: Some("120".to_string()),
-                    action_id: None,
+                    action: None,
                     tone: Default::default(),
                     estimate_kind: Default::default(),
                 });

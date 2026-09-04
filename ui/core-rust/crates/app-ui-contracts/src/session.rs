@@ -88,6 +88,16 @@ pub enum FlightEstimateKind {
     Modeled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FlightDataCellAction {
+    pub action_id: String,
+    pub accessibility_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_id: Option<String>,
+}
+
 impl FlightEstimateKind {
     pub fn is_basic(&self) -> bool {
         matches!(self, Self::Basic)
@@ -102,7 +112,7 @@ pub struct FlightDataCell {
     pub label: String,
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action_id: Option<String>,
+    pub action: Option<FlightDataCellAction>,
     #[serde(default, skip_serializing_if = "FlightDataCellTone::is_planned")]
     pub tone: FlightDataCellTone,
     #[serde(default, skip_serializing_if = "FlightEstimateKind::is_basic")]

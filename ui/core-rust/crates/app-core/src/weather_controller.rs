@@ -7,7 +7,10 @@ use std::{
     sync::Arc,
 };
 
-use app_ui_contracts::nexrad::{NexradOverlayAnimation, NexradOverlayAnimationPhase};
+use app_ui_contracts::{
+    nexrad::{NexradOverlayAnimation, NexradOverlayAnimationPhase},
+    session::FlightDataCellAction,
+};
 use chrono::{DateTime, Utc};
 
 use crate::{
@@ -87,7 +90,15 @@ pub(crate) struct LiveForecastAtmosphereState {
 struct WeatherModel {
     live_feeds: Arc<LiveFeedsState>,
     connection: LiveFeedConnectionState,
+    nexrad_animation_mode: NexradAnimationMode,
     revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum NexradAnimationMode {
+    #[default]
+    Animating,
+    HoldLatest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +110,7 @@ pub(crate) struct WeatherProjectionInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WeatherProjection {
     pub nexrad_age_banner_value: String,
+    pub nexrad_action: Option<FlightDataCellAction>,
 }
 
 pub(crate) struct WeatherProjectionResult {
@@ -158,6 +170,18 @@ impl WeatherController {
     pub fn runtime_mut(&mut self) -> &mut WeatherRuntime {
         self.note_change();
         &mut self.runtime
+    }
+
+    pub fn nexrad_animation_mode(&self) -> NexradAnimationMode {
+        self.model.nexrad_animation_mode
+    }
+
+    pub fn toggle_nexrad_animation_mode(&mut self) {
+        self.model.nexrad_animation_mode = match self.model.nexrad_animation_mode {
+            NexradAnimationMode::Animating => NexradAnimationMode::HoldLatest,
+            NexradAnimationMode::HoldLatest => NexradAnimationMode::Animating,
+        };
+        self.note_change();
     }
 
     pub fn checkpoint_model(&self) -> WeatherModelCheckpoint {
@@ -314,6 +338,7 @@ impl WeatherController {
         }
         let projection = WeatherProjection {
             nexrad_age_banner_value: nexrad_frame_age_banner_value(self, input),
+            nexrad_action: nexrad_animation_action(self, input),
         };
         self.projection_cache = Some(WeatherProjectionCache {
             revision: self.model.revision,
@@ -394,9 +419,18 @@ pub(crate) fn nexrad_displayable_frame_candidates(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn nexrad_animation_for_frames(
     frames: &[NexradFrameCandidate],
     epoch_ms: i64,
+) -> NexradOverlayAnimation {
+    nexrad_animation_for_frames_in_mode(frames, epoch_ms, NexradAnimationMode::Animating)
+}
+
+pub(crate) fn nexrad_animation_for_frames_in_mode(
+    frames: &[NexradFrameCandidate],
+    epoch_ms: i64,
+    mode: NexradAnimationMode,
 ) -> NexradOverlayAnimation {
     if frames.is_empty() {
         return NexradOverlayAnimation::idle();
@@ -407,6 +441,17 @@ pub(crate) fn nexrad_animation_for_frames(
     } else {
         age_labels.join(", ")
     };
+    if mode == NexradAnimationMode::HoldLatest {
+        return NexradOverlayAnimation {
+            phase: NexradOverlayAnimationPhase::Frame,
+            selected_frame_index: Some(frames.len() - 1),
+            frame_count: frames.len(),
+            age_labels,
+            age_summary,
+            next_update_delay_ms: None,
+            next_update_epoch_ms: None,
+        };
+    }
     if frames.len() == 1 {
         return NexradOverlayAnimation {
             phase: NexradOverlayAnimationPhase::Frame,
@@ -534,7 +579,11 @@ fn nexrad_frame_age_banner_value(
     if frames.is_empty() {
         return "inop".to_string();
     }
-    let animation = nexrad_animation_for_frames(&frames, input.wall_clock_epoch_ms);
+    let animation = nexrad_animation_for_frames_in_mode(
+        &frames,
+        input.wall_clock_epoch_ms,
+        weather.nexrad_animation_mode(),
+    );
     let Some(index) = animation.selected_frame_index else {
         return "---".to_string();
     };
@@ -542,6 +591,31 @@ fn nexrad_frame_age_banner_value(
         .get(index)
         .cloned()
         .unwrap_or_else(|| "inop".to_string())
+}
+
+fn nexrad_animation_action(
+    weather: &WeatherController,
+    input: WeatherProjectionInput,
+) -> Option<FlightDataCellAction> {
+    input.nexrad_visible.then(|| {
+        let (action_id, accessibility_label, symbol_id) = match weather.nexrad_animation_mode() {
+            NexradAnimationMode::Animating => (
+                "pause_nexrad_animation",
+                "Hold latest NEXRAD frame",
+                "pause_nexrad_animation",
+            ),
+            NexradAnimationMode::HoldLatest => (
+                "resume_nexrad_animation",
+                "Animate NEXRAD history",
+                "resume_nexrad_animation",
+            ),
+        };
+        FlightDataCellAction {
+            action_id: action_id.to_string(),
+            accessibility_label: accessibility_label.to_string(),
+            symbol_id: Some(symbol_id.to_string()),
+        }
+    })
 }
 
 fn nexrad_manifest_identity(version: &str, manifest: &serde_json::Value) -> String {
@@ -595,6 +669,49 @@ mod tests {
                 .map(|frame| frame.version.as_str())
                 .collect::<Vec<_>>(),
             vec!["one-hour", "recent"]
+        );
+    }
+
+    #[test]
+    fn hold_latest_nexrad_mode_selects_the_freshest_frame_without_a_timer() {
+        let now = 1_800_000_000_000_i64;
+        let frames = [5_i64, 3, 1]
+            .into_iter()
+            .enumerate()
+            .map(|(index, age_minutes)| NexradFrameCandidate {
+                version: format!("frame-{index}"),
+                observed_at_utc: DateTime::<Utc>::from_timestamp_millis(now - age_minutes * 60_000),
+                manifest: serde_json::json!({"state_id": format!("frame-{index}")}),
+            })
+            .collect::<Vec<_>>();
+
+        let animation =
+            nexrad_animation_for_frames_in_mode(&frames, now, NexradAnimationMode::HoldLatest);
+
+        assert_eq!(animation.phase, NexradOverlayAnimationPhase::Frame);
+        assert_eq!(animation.selected_frame_index, Some(2));
+        assert_eq!(animation.frame_count, 3);
+        assert_eq!(animation.next_update_delay_ms, None);
+        assert_eq!(animation.next_update_epoch_ms, None);
+    }
+
+    #[test]
+    fn nexrad_animation_mode_is_core_owned_and_toggles() {
+        let mut controller = WeatherController::default();
+
+        assert_eq!(
+            controller.nexrad_animation_mode(),
+            NexradAnimationMode::Animating
+        );
+        controller.toggle_nexrad_animation_mode();
+        assert_eq!(
+            controller.nexrad_animation_mode(),
+            NexradAnimationMode::HoldLatest
+        );
+        controller.toggle_nexrad_animation_mode();
+        assert_eq!(
+            controller.nexrad_animation_mode(),
+            NexradAnimationMode::Animating
         );
     }
 

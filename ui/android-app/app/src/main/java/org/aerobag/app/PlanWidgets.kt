@@ -621,8 +621,8 @@ internal fun FlightPlanDataRow(
                 Modifier
                     .width(dataColumnWidth)
                     .testTag("parity:plan-data:${row.id}:${cell.id}:${cell.value ?: "none"}")
-                    .then(cell.actionId?.let { actionId ->
-                        Modifier.clickable { onDataCellAction(actionId) }
+                    .then(cell.action?.let { action ->
+                        Modifier.clickable { onDataCellAction(action.actionId) }
                     } ?: Modifier),
                 cellHeight = cellHeight,
                 tone = cell.tone,

@@ -1756,6 +1756,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun performFlightDataBannerCellAction(cellId: String): UiSessionSnapshot {
+        return runPagedSnapshot("performFlightDataBannerCellAction") {
+            bridge.performFlightDataBannerCellActionInSessionJson(handle, cellId)
+        }
+    }
+
     fun performFlightPlanColumnAction(actionId: String): UiSessionSnapshot {
         return runPagedSnapshot("performFlightPlanColumnAction") {
             bridge.performFlightPlanColumnActionInSessionJson(handle, actionId)
@@ -4379,7 +4385,13 @@ private fun WireFlightDataCell.toUi() = FlightDataCell(
     id = id,
     label = label,
     value = value,
-    actionId = actionId,
+    action = action?.let {
+        FlightDataCellAction(
+            actionId = it.actionId,
+            accessibilityLabel = it.accessibilityLabel,
+            symbolId = it.symbolId,
+        )
+    },
     tone = tone?.name?.lowercase() ?: "planned",
     estimateKind = estimateKind?.name?.lowercase() ?: "basic",
 )
@@ -4388,7 +4400,13 @@ private fun FlightDataCell.toWire() = WireFlightDataCell(
     id = id,
     label = label,
     value = value,
-    actionId = actionId,
+    action = action?.let {
+        org.aerobag.app.generated.FlightDataCellAction(
+            accessibilityLabel = it.accessibilityLabel,
+            actionId = it.actionId,
+            symbolId = it.symbolId,
+        )
+    },
     tone = when (tone) {
         "planned" -> org.aerobag.app.generated.FlightDataCellTone.Planned
         "passed" -> org.aerobag.app.generated.FlightDataCellTone.Passed

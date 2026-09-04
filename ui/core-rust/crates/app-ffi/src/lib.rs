@@ -240,6 +240,18 @@ pub fn perform_time_display_action_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn perform_flight_data_banner_cell_action_in_session_json(
+    handle: u64,
+    cell_id: &str,
+) -> Result<String, String> {
+    let outcome = app_core::perform_flight_data_banner_cell_action_in_session(
+        handle as u32,
+        cell_id.to_string(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn perform_flight_plan_column_action_in_session_json(
     handle: u64,
     action_id: &str,
@@ -3676,6 +3688,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performTimeDis
     let result = (|| {
         let action_id = get_java_string(&mut env, action_id)?;
         perform_time_display_action_in_session_json(handle as u64, &action_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightDataBannerCellActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    cell_id: JString,
+) -> jstring {
+    let result = (|| {
+        let cell_id = get_java_string(&mut env, cell_id)?;
+        perform_flight_data_banner_cell_action_in_session_json(handle as u64, &cell_id)
     })();
     return_string(&mut env, result)
 }

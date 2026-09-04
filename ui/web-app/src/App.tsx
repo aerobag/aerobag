@@ -7509,10 +7509,10 @@ function MapPage(props: {
                 edgeColumnCount={flightDataBannerEdgeColumnCount}
                 edgeLayout={flightDataBannerEdgeLayout}
                 lowered={statusControlDockLowered}
-                onAction={(actionId) => {
+                onCellActivated={(cellId) => {
                   if (!uiSession) return;
-                  void uiSession.performTimeDisplayAction(actionId).then((snapshot) => {
-                    props.onSessionSnapshot(snapshot, "time_display_mode");
+                  void uiSession.performFlightDataBannerCellAction(cellId).then((snapshot) => {
+                    props.onSessionSnapshot(snapshot, "flight_data_cell_action");
                   });
                 }}
               />
@@ -8531,7 +8531,7 @@ function FlightDataBanner(props: {
   edgeColumnCount?: number;
   edgeLayout?: boolean;
   lowered?: boolean;
-  onAction: (actionId: string) => void;
+  onCellActivated: (cellId: string) => void;
 }) {
   const cells = props.banner.cells;
   if (cells.length === 0) {
@@ -8550,19 +8550,21 @@ function FlightDataBanner(props: {
       {cells.map((cell) => (
         <div
           key={cell.id}
-          className={`flightDataCell${cell.action_id ? " isActionable" : ""}`}
-          role={cell.action_id ? "button" : undefined}
-          tabIndex={cell.action_id ? 0 : undefined}
-          onPointerDown={cell.action_id ? stopPointer : undefined}
-          onPointerUp={cell.action_id ? stopPointer : undefined}
-          onClick={cell.action_id ? (event) => {
+          data-testid={`flight-data-cell:${cell.id}`}
+          className={`flightDataCell${cell.action ? " isActionable" : ""}`}
+          role={cell.action ? "button" : undefined}
+          tabIndex={cell.action ? 0 : undefined}
+          aria-label={cell.action?.accessibility_label}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onClick={(event) => {
             event.stopPropagation();
-            props.onAction(cell.action_id!);
-          } : undefined}
-          onKeyDown={cell.action_id ? (event) => {
+            props.onCellActivated(cell.id);
+          }}
+          onKeyDown={cell.action ? (event) => {
             if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
-              props.onAction(cell.action_id!);
+              props.onCellActivated(cell.id);
             }
           } : undefined}
         >
@@ -8574,11 +8576,16 @@ function FlightDataBanner(props: {
 }
 
 function FlightDataCellContents(props: { cell: FlightDataBannerModel["cells"][number] }) {
+  const symbolId = props.cell.action?.symbol_id;
+  const symbol = symbolId ? actionSymbol(symbolId) : undefined;
   return (
     <>
       <span className="flightDataLabel">{props.cell.label}</span>
-      <span className={`flightDataValue${props.cell.value ? "" : " isMissing"}`}>
-        {props.cell.value ?? "\u2014"}
+      <span className="flightDataValueRow">
+        <span className={`flightDataValue${props.cell.value ? "" : " isMissing"}`}>
+          {props.cell.value ?? "\u2014"}
+        </span>
+        {symbol ? <span className="flightDataActionIcon"><ActionIcon layers={symbol} /></span> : null}
       </span>
     </>
   );
@@ -10230,20 +10237,21 @@ function FlightPlanPage(props: {
                           data-testid={`parity:plan-data:${row.rowUid}:${planDataColumns[cellIndex]?.id ?? cellIndex}:${cell.value ?? "none"}`}
                           className={[
                             "planCell",
-                            cell.action_id ? "isActionable" : "",
+                            cell.action ? "isActionable" : "",
                             row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
                             row.rowKind === "summary" ? "planSummaryCell" : "",
                             cell.estimate_kind === "modeled" ? "isModeled" : "",
                             cell.tone === "passed" ? "isPassed" : "",
                             cell.tone === "active" ? "isActive" : "",
                           ].filter(Boolean).join(" ")}
-                          onClick={cell.action_id ? () => void props.onTimeDisplayAction(cell.action_id!) : undefined}
-                          role={cell.action_id ? "button" : undefined}
-                          tabIndex={cell.action_id ? 0 : undefined}
-                          onKeyDown={cell.action_id ? (event) => {
+                          onClick={cell.action ? () => void props.onTimeDisplayAction(cell.action!.action_id) : undefined}
+                          role={cell.action ? "button" : undefined}
+                          tabIndex={cell.action ? 0 : undefined}
+                          aria-label={cell.action?.accessibility_label}
+                          onKeyDown={cell.action ? (event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
-                              void props.onTimeDisplayAction(cell.action_id!);
+                              void props.onTimeDisplayAction(cell.action!.action_id);
                             }
                           } : undefined}
                         >

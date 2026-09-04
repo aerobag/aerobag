@@ -114,8 +114,8 @@ pub use debug_log::{
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
     altitude_comparison_cells, altitude_comparison_columns, FlightDataBannerInput,
-    FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn,
-    FlightDataComputer, FlightPlanEteScope, FlightTimeFuelEstimate,
+    FlightDataBannerModel, FlightDataCell, FlightDataCellAction, FlightDataCellTone,
+    FlightDataColumn, FlightDataComputer, FlightPlanEteScope, FlightTimeFuelEstimate,
     TOGGLE_FLIGHT_PLAN_ETE_SCOPE_ACTION_ID,
 };
 pub use flight_plan_controller::GuidanceLegGeometry;
@@ -318,6 +318,7 @@ pub use session::{
     nexrad_acquisition_directive_in_session, nexrad_tile_bytes_in_session,
     open_chart_airport_in_session, pause_playback_in_session,
     perform_aircraft_library_action_in_session, perform_cloud_ui_action_in_session,
+    perform_flight_data_banner_cell_action_in_session,
     perform_flight_plan_column_action_in_session, perform_flight_plan_command_in_session,
     perform_map_selection_ui_action_in_session, perform_ownship_text_action_in_session,
     perform_settings_action_in_session, perform_status_action_in_session,

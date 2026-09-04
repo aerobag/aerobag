@@ -129,7 +129,7 @@ use crate::{
     },
     state,
     weather_controller::{
-        nexrad_animation_for_frames, nexrad_displayable_frame_candidates,
+        nexrad_animation_for_frames_in_mode, nexrad_displayable_frame_candidates,
         nexrad_frame_age_summary as controller_nexrad_frame_age_summary,
         nexrad_freshest_frame_observed_at_utc as controller_nexrad_freshest_frame_observed_at_utc,
         LiveFeedConnectionMode, LiveForecastAtmosphereState, LiveNavKvSource,
@@ -4611,6 +4611,32 @@ pub fn perform_time_display_action_in_session(
     let session = &mut *session_guard;
     session.coordinator.time_display_mode = session.coordinator.time_display_mode.toggled();
     changed_session_update_outcome(session)
+}
+
+pub fn perform_flight_data_banner_cell_action_in_session(
+    handle: u32,
+    cell_id: String,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    match cell_id.as_str() {
+        "final_eta" | "clock" => {
+            session.coordinator.time_display_mode = session.coordinator.time_display_mode.toggled();
+            changed_session_update_outcome(session)
+        }
+        "nexrad_age" if session.map.layer_state().nexrad.visible => {
+            session.weather.toggle_nexrad_animation_mode();
+            changed_session_update_outcome_with_invalidations(
+                session,
+                vec![
+                    UiInvalidation::SessionSnapshot,
+                    UiInvalidation::NexradOverlay,
+                ],
+            )
+        }
+        _ => unchanged_session_update_outcome(session),
+    }
 }
 
 pub fn perform_flight_plan_column_action_in_session(
@@ -10826,7 +10852,11 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             freshness_invalidations,
         );
     }
-    let animation = nexrad_animation_for_frames(&frames, session.coordinator.wall_clock_epoch_ms);
+    let animation = nexrad_animation_for_frames_in_mode(
+        &frames,
+        session.coordinator.wall_clock_epoch_ms,
+        session.weather.nexrad_animation_mode(),
+    );
     let mut fetch_resources = BTreeMap::new();
     if use_jit_resources {
         for frame in &frames {
@@ -11964,6 +11994,32 @@ fn changed_session_update_outcome(session: &mut UiSession) -> AppResult<HadOpera
     changed_session_update_outcome_with_invalidations(session, Vec::new())
 }
 
+fn unchanged_session_update_outcome(session: &UiSession) -> AppResult<HadOperationOutcome> {
+    serde_json::to_value(UiSessionUpdate {
+        ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
+        session_revision: session.coordinator.session_revision,
+        nav_data: None,
+        application_shell: None,
+        flight_plan: None,
+        ownship: None,
+        flight_data: None,
+        situation: None,
+        charts: None,
+        map: None,
+        status: None,
+        settings: None,
+        cloud: None,
+        packages: None,
+        home: None,
+        debug: None,
+    })
+    .map(HadOperationOutcome::complete)
+    .map_err(|error| AppError {
+        kind: AppErrorKind::Internal,
+        message: error.to_string(),
+    })
+}
+
 fn changed_session_update_outcome_for_flight_plan(
     session: &mut UiSession,
 ) -> AppResult<HadOperationOutcome> {
@@ -12995,7 +13051,7 @@ fn project_session_app_ui_state(
         &app_ui_state,
         materialized_plan.as_ref(),
         destination_estimate,
-        &weather_projection.nexrad_age_banner_value,
+        weather_projection,
     )?;
     Ok(app_ui_state)
 }
@@ -13357,7 +13413,7 @@ fn project_flight_data_banner(
     app_ui_state: &AppUiState,
     materialized_plan: Option<&crate::flight_plan_materialization::MaterializedFlightPlan>,
     destination_estimate: Option<crate::FlightTimeFuelEstimate>,
-    nexrad_age_banner_value: &str,
+    weather_projection: &WeatherProjection,
 ) -> Result<crate::FlightDataBannerModel, HadReadError> {
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
@@ -13414,7 +13470,8 @@ fn project_flight_data_banner(
         waypoint_distance_nm,
         final_distance_nm,
         destination_estimate,
-        nexrad_age: Some(nexrad_age_banner_value.to_string()),
+        nexrad_age: Some(weather_projection.nexrad_age_banner_value.clone()),
+        nexrad_action: weather_projection.nexrad_action.clone(),
     });
     Ok(banner)
 }
@@ -23778,6 +23835,7 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("initial nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
+        assert!(nexrad_age_cell.action.is_none());
 
         set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("show nexrad");
@@ -23790,6 +23848,13 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("empty nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("inop"));
+        assert_eq!(
+            nexrad_age_cell
+                .action
+                .as_ref()
+                .and_then(|action| action.symbol_id.as_deref()),
+            Some("pause_nexrad_animation")
+        );
 
         let versions = [
             ("nexrad-v1", "2026-05-20T12:00:00Z"),
@@ -23927,6 +23992,58 @@ mod tests {
             .expect("nexrad age cell");
         assert_eq!(nexrad_age_cell.label, "NEXRAD");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("30m"));
+        assert_eq!(
+            nexrad_age_cell
+                .action
+                .as_ref()
+                .and_then(|action| action.symbol_id.as_deref()),
+            Some("pause_nexrad_animation")
+        );
+
+        perform_flight_data_banner_cell_action_in_session(init.handle, "nexrad_age".to_string())
+            .expect("hold latest NEXRAD frame");
+        let held_outcome = get_nexrad_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            now,
+        )
+        .expect("query held NEXRAD frame");
+        let HadOperationOutcome::Complete { result, .. } = held_outcome else {
+            panic!("held NEXRAD query must complete");
+        };
+        let held_query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("held nexrad result");
+        assert_eq!(held_query.animation.selected_frame_index, Some(6));
+        assert_eq!(held_query.animation.next_update_epoch_ms, None);
+        let held_snapshot = get_session_snapshot(init.handle).expect("held snapshot");
+        let held_cell = held_snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("held nexrad age cell");
+        assert_eq!(held_cell.value.as_deref(), Some("0m"));
+        assert_eq!(
+            held_cell
+                .action
+                .as_ref()
+                .and_then(|action| action.symbol_id.as_deref()),
+            Some("resume_nexrad_animation")
+        );
+
+        perform_flight_data_banner_cell_action_in_session(init.handle, "nexrad_age".to_string())
+            .expect("resume NEXRAD animation");
 
         let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
             init.handle,
@@ -24108,6 +24225,33 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("hidden nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
+        assert!(nexrad_age_cell.action.is_none());
+    }
+
+    #[test]
+    fn flight_data_banner_command_drops_clicks_for_cells_without_actions() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let before = get_session_snapshot(init.handle).expect("snapshot before inert click");
+
+        let outcome = perform_flight_data_banner_cell_action_in_session(
+            init.handle,
+            "ground_speed".to_string(),
+        )
+        .expect("drop inert flight-data click");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("inert flight-data click must complete without resources");
+        };
+        let update: UiSessionUpdate =
+            serde_json::from_value(result).expect("inert flight-data update");
+
+        assert_eq!(update.session_revision, before.session_revision);
+        assert!(invalidations.is_empty());
+        assert!(update.flight_data.is_none());
     }
 
     #[test]

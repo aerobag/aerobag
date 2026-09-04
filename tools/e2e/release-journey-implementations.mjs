@@ -2921,6 +2921,41 @@ async function nexradFrames(runtime) {
     return state && state.tiles > 0 && state.frames === first.frames && state.frame !== first.frame ? state : null;
   }, E2E_TIMING.animationCycleMs, 100);
   runtime.check("livefeed.nexrad-frames", Boolean(next), `${JSON.stringify(first)} -> ${JSON.stringify(next)}`);
+
+  const held = await runtime.action("hold latest NEXRAD frame", "flight-data-cell:nexrad_age", {
+    complete: async () => {
+      const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+      return state && state.tiles > 0 && state.frames >= 2 && state.frame === state.frames - 1
+        ? state
+        : null;
+    },
+  });
+  const holdStartedAt = performance.now();
+  let changedWhileHeld = false;
+  const heldAfterDwell = await runtime.eventually("NEXRAD remains held past an old-frame dwell", async () => {
+    const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+    if (state?.frame !== held.frame) changedWhileHeld = true;
+    return performance.now() - holdStartedAt >= 3_500 ? state : null;
+  }, E2E_TIMING.userTransitionDeadlineMs, 100);
+  runtime.check(
+    "livefeed.nexrad-hold",
+    Boolean(heldAfterDwell && !changedWhileHeld && heldAfterDwell.frame === held.frame),
+    `${JSON.stringify(held)} -> ${JSON.stringify(heldAfterDwell)}`,
+  );
+
+  const resumed = await runtime.action("resume NEXRAD animation", "flight-data-cell:nexrad_age", {
+    complete: async () => {
+      const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+      return state && state.tiles > 0 && state.frame !== null && state.frame !== held.frame
+        ? state
+        : null;
+    },
+  });
+  runtime.check(
+    "livefeed.nexrad-resume",
+    Boolean(resumed),
+    `${JSON.stringify(held)} -> ${JSON.stringify(resumed)}`,
+  );
 }
 
 async function obstaclesNavKv(runtime) {

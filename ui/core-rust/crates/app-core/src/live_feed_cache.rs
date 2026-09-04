@@ -2788,8 +2788,8 @@ mod tests {
     use super::*;
     use crate::{
         weather_controller::{
-            nexrad_animation_for_frames, nexrad_frame_candidates, LiveNexradInstalledState,
-            WeatherController,
+            nexrad_animation_for_frames, nexrad_retained_frame_candidates,
+            LiveNexradInstalledState, WeatherController,
         },
         NexradOfflineProfile,
     };
@@ -3372,7 +3372,7 @@ mod tests {
                     },
                 );
             }
-            let frames = nexrad_frame_candidates(&weather);
+            let frames = nexrad_retained_frame_candidates(&weather);
             assert_eq!(
                 frames
                     .iter()

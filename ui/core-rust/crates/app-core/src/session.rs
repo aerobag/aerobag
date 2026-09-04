@@ -129,8 +129,8 @@ use crate::{
     },
     state,
     weather_controller::{
-        nexrad_animation_for_frames,
-        nexrad_frame_age_summary as controller_nexrad_frame_age_summary, nexrad_frame_candidates,
+        nexrad_animation_for_frames, nexrad_displayable_frame_candidates,
+        nexrad_frame_age_summary as controller_nexrad_frame_age_summary,
         nexrad_freshest_frame_observed_at_utc as controller_nexrad_freshest_frame_observed_at_utc,
         LiveFeedConnectionMode, LiveForecastAtmosphereState, LiveNavKvSource,
         LiveNexradInstalledState, LiveObstacleHadState, WeatherController, WeatherModelCheckpoint,
@@ -10799,14 +10799,22 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             );
         }
     }
-    let frames = nexrad_frame_candidates(&session.weather);
+    let frames = nexrad_displayable_frame_candidates(
+        &session.weather,
+        session.coordinator.wall_clock_epoch_ms,
+    );
     if frames.is_empty() {
+        let status = if nexrad_freshest_frame_observed_at_utc(session).is_some() {
+            NexradOverlayStatus::Ready { count: 0 }
+        } else {
+            NexradOverlayStatus::Unavailable {
+                reason: "NEXRAD product is missing from the live feed index".to_string(),
+            }
+        };
         return complete_nexrad_overlay_outcome_with_invalidations(
             session,
             NexradOverlayQueryResult {
-                status: NexradOverlayStatus::Unavailable {
-                    reason: "NEXRAD product is missing from the live feed index".to_string(),
-                },
+                status,
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
                 animation: NexradOverlayAnimation::idle(),
@@ -23627,6 +23635,76 @@ mod tests {
     }
 
     #[test]
+    fn nexrad_animation_excludes_frames_over_one_hour_old_after_a_long_gap() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "nexrad_coverage".to_string(),
+                value_id: "full_offline".to_string(),
+            },
+            1_234,
+        )
+        .expect("select full-offline NEXRAD");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
+        for (version, observed_at_utc) in [
+            ("nexrad-12h36m", "2026-05-20T11:24:00Z"),
+            ("nexrad-11h42m", "2026-05-20T12:18:00Z"),
+            ("nexrad-36m", "2026-05-20T23:24:00Z"),
+            ("nexrad-12m", "2026-05-20T23:48:00Z"),
+        ] {
+            let manifest = nexrad_live_test_manifest(version, observed_at_utc);
+            install_live_feed_installed_state_in_session(
+                init.handle,
+                &crate::LiveFeedInstalledState {
+                    product: "nexrad".to_string(),
+                    version: version.to_string(),
+                    state_sha256: canonical_json_sha256_value(&manifest).expect("manifest hash"),
+                    collected_at_utc: None,
+                    payload: crate::LiveFeedInstalledPayload::NexradPackage {
+                        manifest: serde_json::to_vec(&manifest).expect("manifest bytes"),
+                        render_manifest: None,
+                        package_blob_sha256: format!("blob-{version}"),
+                        package_bytes: None,
+                    },
+                },
+            )
+            .expect("install durable NEXRAD frame");
+        }
+
+        let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            utc("2026-05-21T00:00:00Z").timestamp_millis(),
+        )
+        .expect("query NEXRAD animation after long gap");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("durable frames must not trigger JIT manifest requests");
+        };
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("nexrad result");
+
+        assert_eq!(query.animation.frame_count, 2);
+        assert_eq!(query.animation.age_labels, vec!["36m ago", "12m ago"]);
+    }
+
+    #[test]
     fn nexrad_overlay_wire_status_is_state_tagged() {
         let value = serde_json::to_value(NexradOverlayQueryResult {
             status: NexradOverlayStatus::Ready { count: 96 },
@@ -24706,10 +24784,19 @@ mod tests {
             512.0,
         )
         .expect("query nexrad");
-        let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
             panic!("expected complete nexrad query");
         };
         assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("expired nexrad result");
+        assert_eq!(query.status, NexradOverlayStatus::Ready { count: 0 });
+        assert!(query.tiles.is_empty());
+        assert_eq!(query.animation, NexradOverlayAnimation::idle());
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let nexrad = data_status_box(&snapshot, LIVE_FEED_NEXRAD_STATUS_ID);

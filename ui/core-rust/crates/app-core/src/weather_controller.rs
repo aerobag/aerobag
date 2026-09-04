@@ -25,6 +25,7 @@ use crate::{
 pub(crate) const NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS: i64 = 1_000;
 pub(crate) const NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS: i64 = 2_500;
 pub(crate) const NEXRAD_ANIMATION_BLANK_DWELL_MS: i64 = 500;
+pub(crate) const NEXRAD_MAX_DISPLAY_AGE_MS: i64 = 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LiveFeedConnectionMode {
@@ -338,7 +339,9 @@ pub(crate) struct NexradFrameCandidate {
     pub observed_at_utc: Option<DateTime<Utc>>,
 }
 
-pub(crate) fn nexrad_frame_candidates(weather: &WeatherController) -> Vec<NexradFrameCandidate> {
+pub(crate) fn nexrad_retained_frame_candidates(
+    weather: &WeatherController,
+) -> Vec<NexradFrameCandidate> {
     let mut frames = Vec::new();
     let mut identities = HashSet::new();
     for installed in weather.runtime.nexrad_installed.values() {
@@ -374,6 +377,21 @@ pub(crate) fn nexrad_frame_candidates(weather: &WeatherController) -> Vec<Nexrad
         frames.drain(0..frames.len() - NEXRAD_FRAME_WINDOW_SIZE);
     }
     frames
+}
+
+pub(crate) fn nexrad_displayable_frame_candidates(
+    weather: &WeatherController,
+    epoch_ms: i64,
+) -> Vec<NexradFrameCandidate> {
+    let oldest_displayable_epoch_ms = epoch_ms.saturating_sub(NEXRAD_MAX_DISPLAY_AGE_MS);
+    nexrad_retained_frame_candidates(weather)
+        .into_iter()
+        .filter(|frame| {
+            frame
+                .observed_at_utc
+                .is_some_and(|observed| observed.timestamp_millis() >= oldest_displayable_epoch_ms)
+        })
+        .collect()
 }
 
 pub(crate) fn nexrad_animation_for_frames(
@@ -485,8 +503,10 @@ pub(crate) fn nexrad_frame_age_summary(
     if !input.nexrad_visible {
         return "off".to_string();
     }
-    let labels =
-        nexrad_frame_age_labels(&nexrad_frame_candidates(weather), input.wall_clock_epoch_ms);
+    let labels = nexrad_frame_age_labels(
+        &nexrad_displayable_frame_candidates(weather, input.wall_clock_epoch_ms),
+        input.wall_clock_epoch_ms,
+    );
     if labels.is_empty() {
         "inop".to_string()
     } else {
@@ -497,7 +517,7 @@ pub(crate) fn nexrad_frame_age_summary(
 pub(crate) fn nexrad_freshest_frame_observed_at_utc(
     weather: &WeatherController,
 ) -> Option<DateTime<Utc>> {
-    nexrad_frame_candidates(weather)
+    nexrad_retained_frame_candidates(weather)
         .into_iter()
         .filter_map(|frame| frame.observed_at_utc)
         .max()
@@ -510,7 +530,7 @@ fn nexrad_frame_age_banner_value(
     if !input.nexrad_visible {
         return "off".to_string();
     }
-    let frames = nexrad_frame_candidates(weather);
+    let frames = nexrad_displayable_frame_candidates(weather, input.wall_clock_epoch_ms);
     if frames.is_empty() {
         return "inop".to_string();
     }
@@ -542,6 +562,41 @@ fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displayable_nexrad_frames_include_one_hour_but_not_older() {
+        let mut controller = WeatherController::default();
+        let now = 1_800_000_000_000_i64;
+        for (version, observed_at_epoch_ms) in [
+            ("too-old", now - NEXRAD_MAX_DISPLAY_AGE_MS - 1),
+            ("one-hour", now - NEXRAD_MAX_DISPLAY_AGE_MS),
+            ("recent", now - 2 * 60 * 1_000),
+        ] {
+            controller.runtime.nexrad_installed.insert(
+                version.to_string(),
+                LiveNexradInstalledState {
+                    version: version.to_string(),
+                    package_blob_sha256: format!("blob-{version}"),
+                    manifest: serde_json::json!({
+                        "state_id": version,
+                        "observed_at_utc": DateTime::<Utc>::from_timestamp_millis(
+                            observed_at_epoch_ms
+                        )
+                        .expect("valid test instant")
+                        .to_rfc3339(),
+                    }),
+                },
+            );
+        }
+
+        assert_eq!(
+            nexrad_displayable_frame_candidates(&controller, now)
+                .iter()
+                .map(|frame| frame.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one-hour", "recent"]
+        );
+    }
 
     #[test]
     fn model_checkpoint_rolls_back_protocol_state_without_replacing_runtime() {

@@ -1530,6 +1530,7 @@ mod tests {
             last_updated_utc: Some("2026-07-11T02:03:00Z".to_string()),
             location_designator: Some("AAA".to_string()),
             icao_id: Some("KAAA".to_string()),
+            source_airport_id: None,
             airport_id: None,
             airport_effects: BTreeSet::new(),
             procedure_rendezvous_keys: BTreeSet::new(),

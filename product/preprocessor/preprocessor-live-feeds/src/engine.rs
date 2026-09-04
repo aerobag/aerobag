@@ -1656,6 +1656,10 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                         .procedure_notams_without_ui_anchor,
                     "source_records_without_location": snapshot
                         .source_records_without_location,
+                    "source_record_count": snapshot.source_record_count,
+                    "client_record_count": snapshot.counters.notam_count,
+                    "server_only_records_by_keyword": snapshot
+                        .server_only_records_by_keyword,
                 })),
                 publication_ack,
                 notam_compaction,
@@ -1833,6 +1837,10 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     .procedure_notams_without_ui_anchor,
                 "source_records_without_location": snapshot
                     .source_records_without_location,
+                "source_record_count": snapshot.source_record_count,
+                "client_record_count": snapshot.counters.notam_count,
+                "server_only_records_by_keyword": snapshot
+                    .server_only_records_by_keyword,
             })),
             publication_ack: Some(NotamPublicationAck {
                 state_root: store.root().to_path_buf(),

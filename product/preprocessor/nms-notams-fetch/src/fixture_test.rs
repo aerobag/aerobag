@@ -661,6 +661,8 @@ fn apply_transition_range(input: TransitionRangeInput<'_>) -> anyhow::Result<()>
                 counters: boundaries[next].counters,
                 procedure_notams_without_ui_anchor: 0,
                 source_records_without_location: 0,
+                source_record_count: boundaries[next].counters.notam_count,
+                server_only_records_by_keyword: BTreeMap::new(),
                 cursor: NotamPublicationCursor {
                     published_through_journal_seq: transitions[cursor].journal_seq - 1,
                     published_head_state_id: Some(boundaries[cursor].state_id.clone()),

@@ -1555,6 +1555,7 @@ def release_live_feeds_unit(config: dict[str, Any]) -> str:
         nms_args = (
             f" --nms-notams-config {shell_quote(config['nms_notams_prod_config'])}"
             f' --nms-notams-state-root "{state_root}/nms-notams"'
+            ' --product-artifacts "$AEROBAG_RELEASE_PRODUCT_ARTIFACTS"'
         )
     return f"""[Unit]
 Description=Aerobag live-feeds daemon for release %i

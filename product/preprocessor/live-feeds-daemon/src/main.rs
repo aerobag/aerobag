@@ -19,6 +19,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
+use had_nav_kv::NavKvRoot;
 use nms_notams_fetch::{
     collector::{
         run_collector_with_observer, CollectorOptions, NmsApiCollectorStore, NmsCollectorEvent,
@@ -54,8 +55,9 @@ use product_contracts::{
     live_feeds::v3::{
         CurrentEvent as LiveFeedCurrentEvent, CATALOG_EVENT_NAME, PRODUCT_EVENT_NAME,
     },
-    versioned_json, LiveFeedProductPolicy, AEROBAG_SSE_TRANSPORT_POLICY,
-    LIVE_FEED_PRODUCT_POLICIES,
+    publication::{bundle::v2::BundleManifest, current::v1::CurrentArtifactsManifest},
+    versioned_json, LiveFeedProductPolicy, NotamAirportCatalog, AEROBAG_SSE_TRANSPORT_POLICY,
+    LIVE_FEED_PRODUCT_POLICIES, NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
 };
 use serde::Serialize;
 
@@ -121,7 +123,7 @@ fn live_feeds_contract_root(live_root: &Path) -> PathBuf {
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--nms-notams-config <path> [--nms-notams-state-root <path>]]
+  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--nms-notams-config <path> --product-artifacts <path> [--nms-notams-state-root <path>]]
   aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
   aerobag-live-feedsd --check-config --live-root <path> --listen <addr> [--simulation --fixture-root <path>]
 
@@ -159,6 +161,7 @@ struct SimulationConfig {
 struct NmsNotamsConfig {
     config_path: PathBuf,
     state_root: PathBuf,
+    product_artifacts_path: PathBuf,
     retry_interval_ms: u64,
     poll_interval_seconds: u64,
     overlap_seconds: u64,
@@ -720,6 +723,7 @@ impl DaemonConfig {
         let mut speedup = 1_u32;
         let mut nms_notams_config = None;
         let mut nms_notams_state_root = None;
+        let mut product_artifacts_path = None;
         let mut nms_notams_retry_interval_ms = 60_000_u64;
         let mut nms_notams_poll_interval_seconds = live_feed_product_policy("notams")
             .expect("NOTAM product policy")
@@ -789,6 +793,9 @@ impl DaemonConfig {
                 "--nms-notams-state-root" => {
                     nms_notams_state_root = Some(next_path(&mut args, "--nms-notams-state-root")?)
                 }
+                "--product-artifacts" => {
+                    product_artifacts_path = Some(next_path(&mut args, "--product-artifacts")?)
+                }
                 "--nms-notams-retry-interval-ms" => {
                     let value = next_value(&mut args, "--nms-notams-retry-interval-ms")?;
                     nms_notams_retry_interval_ms = value.parse::<u64>().with_context(|| {
@@ -853,14 +860,20 @@ impl DaemonConfig {
             None
         };
         let nms_notams_state_root_supplied = nms_notams_state_root.is_some();
-        let nms_notams = nms_notams_config.map(|config_path| NmsNotamsConfig {
-            config_path,
-            state_root: nms_notams_state_root
-                .unwrap_or_else(|| live_root.join("../state/nms-notams")),
-            retry_interval_ms: nms_notams_retry_interval_ms,
-            poll_interval_seconds: nms_notams_poll_interval_seconds,
-            overlap_seconds: nms_notams_overlap_seconds,
-        });
+        let nms_notams = nms_notams_config
+            .map(|config_path| {
+                Ok::<NmsNotamsConfig, anyhow::Error>(NmsNotamsConfig {
+                    config_path,
+                    state_root: nms_notams_state_root
+                        .unwrap_or_else(|| live_root.join("../state/nms-notams")),
+                    product_artifacts_path: product_artifacts_path
+                        .context("--product-artifacts is required with --nms-notams-config")?,
+                    retry_interval_ms: nms_notams_retry_interval_ms,
+                    poll_interval_seconds: nms_notams_poll_interval_seconds,
+                    overlap_seconds: nms_notams_overlap_seconds,
+                })
+            })
+            .transpose()?;
         if nms_notams.is_none() && nms_notams_state_root_supplied {
             bail!("--nms-notams-state-root requires --nms-notams-config");
         }
@@ -939,6 +952,12 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
                 nms_notams.config_path.display()
             );
         }
+        if !nms_notams.product_artifacts_path.is_file() {
+            bail!(
+                "--product-artifacts does not exist: {}",
+                nms_notams.product_artifacts_path.display()
+            );
+        }
         NmsConfig::from_path(&nms_notams.config_path)?;
         ensure_parent(&nms_notams.state_root, "--nms-notams-state-root")?;
     }
@@ -999,6 +1018,11 @@ fn start_live_feed_driver(
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
     let nms_notams = config.nms_notams.clone();
+    let notam_airport_catalog = nms_notams
+        .as_ref()
+        .map(|config| load_notam_airport_catalog(&config.product_artifacts_path))
+        .transpose()?
+        .map(Arc::new);
     let tfr_detail_backfill_state_root = config.tfr_detail_backfill_state_root.clone();
     if let Err(error) =
         prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
@@ -1028,6 +1052,7 @@ fn start_live_feed_driver(
             start_nms_notams_supervisor(
                 nms_notams,
                 publication_state_root.clone(),
+                notam_airport_catalog.expect("NMS config has an airport catalog"),
                 source.sender(),
                 status.clone(),
             );
@@ -1590,16 +1615,141 @@ where
     }
 }
 
+fn load_notam_airport_catalog(
+    product_artifacts_path: &Path,
+) -> anyhow::Result<NotamAirportCatalog> {
+    let bytes = fs::read(product_artifacts_path).with_context(|| {
+        format!(
+            "failed to read product artifacts {}",
+            product_artifacts_path.display()
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "failed to parse product artifacts {}",
+            product_artifacts_path.display()
+        )
+    })?;
+    let manifests = match value {
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(serde_json::from_value::<CurrentArtifactsManifest>)
+            .collect::<Result<Vec<_>, _>>()?,
+        value => vec![serde_json::from_value::<CurrentArtifactsManifest>(value)?],
+    };
+    let mut airport_ids = BTreeSet::new();
+    let mut nav_db_count = 0_usize;
+    for manifest in manifests {
+        let unpacked_root = resolve_product_artifact_root(
+            product_artifacts_path,
+            &manifest.artifact_roots.unpacked,
+        )?;
+        for bundle_entry in manifest.bundles {
+            let bundle_path = unpacked_root.join(safe_relative_path(&bundle_entry.relative_path)?);
+            let bundle: BundleManifest = serde_json::from_slice(
+                &fs::read(&bundle_path)
+                    .with_context(|| format!("failed to read {}", bundle_path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", bundle_path.display()))?;
+            for package in bundle
+                .packages
+                .into_iter()
+                .filter(|package| package.family_id == "nav-db")
+            {
+                let relative_zip = safe_relative_path(&package.relative_path)?;
+                let nav_db_root = unpacked_root.join(relative_zip.with_extension(""));
+                let catalog = read_notam_airport_catalog_from_nav_db(&nav_db_root)?;
+                catalog
+                    .validate()
+                    .map_err(anyhow::Error::msg)
+                    .with_context(|| {
+                        format!("invalid NOTAM airport catalog in {}", nav_db_root.display())
+                    })?;
+                airport_ids.extend(catalog.airport_ids);
+                nav_db_count += 1;
+            }
+        }
+    }
+    if nav_db_count == 0 {
+        bail!(
+            "product artifacts {} contain no nav-db packages",
+            product_artifacts_path.display()
+        );
+    }
+    let catalog = NotamAirportCatalog {
+        schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+        airport_ids,
+    };
+    catalog.validate().map_err(anyhow::Error::msg)?;
+    Ok(catalog)
+}
+
+fn resolve_product_artifact_root(
+    product_artifacts_path: &Path,
+    relative: &str,
+) -> anyhow::Result<PathBuf> {
+    let relative = safe_relative_path(relative)?;
+    let parent = product_artifacts_path.parent().with_context(|| {
+        format!(
+            "product artifacts path has no parent: {}",
+            product_artifacts_path.display()
+        )
+    })?;
+    for ancestor in parent.ancestors() {
+        let candidate = ancestor.join(&relative);
+        if candidate.is_dir() {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "cannot resolve artifact root {relative:?} from {}",
+        product_artifacts_path.display()
+    )
+}
+
+fn read_notam_airport_catalog_from_nav_db(
+    nav_db_root: &Path,
+) -> anyhow::Result<NotamAirportCatalog> {
+    let root_path = nav_db_root.join("root");
+    let root_bytes = fs::read(&root_path)
+        .with_context(|| format!("failed to read nav-db root {}", root_path.display()))?;
+    let root = NavKvRoot::parse(&root_bytes)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("invalid nav-db root {}", root_path.display()))?;
+    let value = root
+        .extract_value(NOTAM_AIRPORT_CATALOG_NAV_DB_KEY, |page_index| {
+            fs::read(nav_db_root.join(format!("page_{page_index:04}"))).ok()
+        })
+        .with_context(|| {
+            format!(
+                "nav-db {} is missing {} or one of its pages",
+                nav_db_root.display(),
+                NOTAM_AIRPORT_CATALOG_NAV_DB_KEY
+            )
+        })?;
+    serde_json::from_slice(&value).with_context(|| {
+        format!(
+            "failed to parse NOTAM airport catalog in {}",
+            nav_db_root.display()
+        )
+    })
+}
+
 fn start_nms_notams_supervisor(
     config: NmsNotamsConfig,
     publication_state_root: PathBuf,
+    airport_catalog: Arc<NotamAirportCatalog>,
     sender: Sender<UpstreamEvent>,
     status: DaemonStatus,
 ) {
     thread::spawn(move || loop {
-        if let Err(error) =
-            run_nms_notams_supervisor_session(&config, &publication_state_root, &sender, &status)
-        {
+        if let Err(error) = run_nms_notams_supervisor_session(
+            &config,
+            &publication_state_root,
+            Arc::clone(&airport_catalog),
+            &sender,
+            &status,
+        ) {
             status.record_source_failure(
                 "notams",
                 format!("NMS NOTAM supervisor session failed: {error:#}"),
@@ -1612,6 +1762,7 @@ fn start_nms_notams_supervisor(
 fn run_nms_notams_supervisor_session(
     config: &NmsNotamsConfig,
     publication_state_root: &Path,
+    airport_catalog: Arc<NotamAirportCatalog>,
     sender: &Sender<UpstreamEvent>,
     status: &DaemonStatus,
 ) -> anyhow::Result<()> {
@@ -1619,7 +1770,8 @@ fn run_nms_notams_supervisor_session(
     let mut client = NmsClient::new(nms_config);
     let store = NmsApiCollectorStore::new(&config.state_root);
     let event_store = store.clone();
-    let publication_store = NotamPersistentStore::new(publication_state_root);
+    let publication_store =
+        NotamPersistentStore::with_airport_catalog(publication_state_root, airport_catalog);
     run_collector_with_observer(
         &store,
         &mut client,
@@ -2940,6 +3092,7 @@ mod tests {
             "last_updated_utc": "2026-07-24T00:00:00Z",
             "airport_id": "AAA",
             "airport_effects": ["other"],
+            "airport_name": "TEST AIRPORT",
             "location": "AAA",
             "notam_number": number,
             "notam_year": "2026",
@@ -2974,6 +3127,7 @@ mod tests {
                 </event:NOTAM></event:textNOTAM>
                 <event:extension><fnse:EventExtension>
                   <fnse:classification>DOM</fnse:classification>
+                  <fnse:airportname>TEST AIRPORT</fnse:airportname>
                   <fnse:lastUpdated>2026-07-24T00:03:00Z</fnse:lastUpdated>
                 </fnse:EventExtension></event:extension>
               </event:EventTimeSlice></event:timeSlice></event:Event></hasMember>
@@ -3925,6 +4079,8 @@ mod tests {
         fs::create_dir_all(temp.path().join("scratch"))?;
         fs::create_dir_all(temp.path().join("cache"))?;
         fs::create_dir_all(temp.path().join("state"))?;
+        let product_artifacts_path = temp.path().join("product_artifacts.json");
+        fs::write(&product_artifacts_path, b"{}")?;
         let config_path = temp.path().join("nms-notams.json");
         fs::write(
             &config_path,
@@ -3946,12 +4102,97 @@ mod tests {
                 "127.0.0.1:0",
                 "--nms-notams-config",
                 config_path.to_str().expect("utf8 temp path"),
+                "--product-artifacts",
+                product_artifacts_path.to_str().expect("utf8 temp path"),
             ]
             .into_iter()
             .map(str::to_string),
         )?;
 
         validate_config(&config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn notam_airport_catalog_loads_from_every_published_nav_db() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let publication = temp.path().join("published/build/instant");
+        let unpacked = publication.join("unpacked");
+        let nav_db = unpacked.join("nav_db_fixture");
+        fs::create_dir_all(&nav_db)?;
+        let source_catalog = NotamAirportCatalog {
+            schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+            airport_ids: BTreeSet::from(["0I8".to_string(), "KGTF".to_string()]),
+        };
+        let built = had_nav_kv::build_nav_kv_sorted(
+            vec![had_nav_kv::NavKvPair {
+                key: NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
+                value: serde_json::to_vec(&source_catalog)?,
+            }],
+            512,
+        )
+        .map_err(anyhow::Error::msg)?;
+        fs::write(nav_db.join("root"), built.root_bytes)?;
+        for (index, page) in built.pages.into_iter().enumerate() {
+            fs::write(nav_db.join(format!("page_{index:04}")), page)?;
+        }
+        fs::write(
+            unpacked.join("bundle.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 2,
+                "bundle_id": "cycle_2609_01",
+                "bundle_type": "cycle",
+                "cycle": "2609",
+                "cycle_version": "01",
+                "generated_at_utc": "2026-08-20T00:00:00Z",
+                "effective_date": "2026-09-03",
+                "expiration_date": "2026-10-01",
+                "start_valid": "2026-09-03",
+                "end_valid": "2026-10-01",
+                "packages": [{
+                    "id": "NAV_DB_NAV23_2609_01",
+                    "family_id": "nav-db",
+                    "contract_id": "NAV23",
+                    "filename": "nav_db_fixture.zip",
+                    "relative_path": "nav_db_fixture.zip",
+                    "checksum_sha256": "fixture",
+                    "size_bytes": 1,
+                    "effective_date": "2026-09-03",
+                    "expiration_date": "2026-10-01"
+                }]
+            }))?,
+        )?;
+        let product_artifacts = publication.join("product_artifacts.json");
+        fs::write(
+            &product_artifacts,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "contracts": {"nav-db": "NAV23"},
+                "artifact_roots": {
+                    "packaged": "build/instant/packaged/",
+                    "unpacked": "build/instant/unpacked/"
+                },
+                "as_of_date": "2026-08-20",
+                "as_of_utc": "2026-08-20T00:00:00Z",
+                "bundles": [{
+                    "filename": "bundle.json",
+                    "relative_path": "bundle.json",
+                    "id": "cycle_2609_01",
+                    "bundle_type": "cycle",
+                    "cycle": "2609",
+                    "cycle_version": "01",
+                    "start_valid": "2026-09-03",
+                    "end_valid": "2026-10-01",
+                    "checksum_sha256": "fixture",
+                    "size_bytes": 1
+                }]
+            }))?,
+        )?;
+
+        assert_eq!(
+            load_notam_airport_catalog(&product_artifacts)?,
+            source_catalog
+        );
         Ok(())
     }
 

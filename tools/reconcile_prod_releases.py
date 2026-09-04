@@ -490,6 +490,8 @@ class Controller:
         environment_root.mkdir(parents=True, exist_ok=True)
         environment = environment_root / f"{tag}.env"
         release_root = Path(record.release_root or "")
+        if record.product_manifest is None:
+            raise RuntimeError(f"release {tag} has no product manifest")
         live_root, scratch_root, state_root = prepare_release_live_feed_paths(
             self.artifact_root, tag
         )
@@ -501,6 +503,7 @@ class Controller:
             "AEROBAG_RELEASE_LIVE_SCRATCH": str(scratch_root),
             releases.RELEASE_LIVE_FEEDS_STATE_ENV: str(state_root),
             "AEROBAG_RELEASE_FETCH_CACHE": str(self.artifact_root / "cache/fetch"),
+            "AEROBAG_RELEASE_PRODUCT_ARTIFACTS": str(Path(record.product_manifest).resolve()),
         }
         environment.write_text(
             "".join(f"{key}={json.dumps(value)}\n" for key, value in values.items()),

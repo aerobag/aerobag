@@ -78,6 +78,10 @@ class ProductPublicationTests(unittest.TestCase):
             '"$AEROBAG_RELEASE_LIVE_FEEDS_STATE_ROOT/nms-notams"',
             unit,
         )
+        self.assertIn(
+            '--product-artifacts "$AEROBAG_RELEASE_PRODUCT_ARTIFACTS"',
+            unit,
+        )
 
     def test_deployment_runs_the_desired_state_reconciler(self) -> None:
         config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)

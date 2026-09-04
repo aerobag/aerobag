@@ -23,7 +23,7 @@ use crate::{
     InitialLoadCaptureSource, NmsApiSource,
 };
 
-const NMS_API_STORE_SCHEMA_VERSION: u32 = 8;
+const NMS_API_STORE_SCHEMA_VERSION: u32 = 9;
 const SOURCE_EPOCH_METADATA_KEY: &str = "canonical_change_epoch";
 const SOURCE_SEQUENCE_METADATA_KEY: &str = "canonical_change_sequence";
 
@@ -127,11 +127,12 @@ impl NmsApiCollectorStore {
             | Some("4")
             | Some("5")
             | Some("6")
-            | Some("7") => {
-                // Versions 1 through 7 used obsolete semantic procedure identities
-                // derived from raw AIXM. Stored rows do not retain enough source
-                // data to recompute those changes, so require an authoritative
-                // Initial Load refresh.
+            | Some("7")
+            | Some("8") => {
+                // Earlier versions used obsolete semantic procedure identities or
+                // airport associations derived from raw AIXM. Stored rows do not
+                // retain enough source data to recompute every association, so
+                // require an authoritative Initial Load refresh.
                 let tx = connection
                     .transaction()
                     .context("failed to start NMS procedure-key schema migration")?;
@@ -164,7 +165,7 @@ impl NmsApiCollectorStore {
                 tx.commit()
                     .context("failed to commit NMS procedure-key schema migration")
             }
-            Some("8") => self.validate_change_journal_metadata(&connection),
+            Some("9") => self.validate_change_journal_metadata(&connection),
             Some(version) => bail!(
                 "unsupported NMS API collector schema {version}; required {NMS_API_STORE_SCHEMA_VERSION}"
             ),
@@ -1303,12 +1304,12 @@ mod tests {
     }
 
     #[test]
-    fn older_state_is_invalidated_for_procedure_identity_reingestion() -> anyhow::Result<()> {
+    fn older_state_is_invalidated_for_semantic_reingestion() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NmsApiCollectorStore::new(temp.path());
         store.initialize()?;
         let connection = store.open_connection()?;
-        set_metadata(&connection, "schema_version", "7")?;
+        set_metadata(&connection, "schema_version", "8")?;
         set_metadata(
             &connection,
             "baseline_installed_at_utc",
@@ -1357,7 +1358,7 @@ mod tests {
         let connection = store.open_connection()?;
         assert_eq!(
             metadata(&connection, "schema_version")?.as_deref(),
-            Some("8")
+            Some("9")
         );
         assert!(!store.is_baseline_installed()?);
         assert!(store.current_records()?.is_empty());

@@ -406,6 +406,8 @@ class DevStack:
                     str(self.config.nms_notams_config),
                     "--nms-notams-state-root",
                     str(self.config.nms_notams_state_root),
+                    "--product-artifacts",
+                    str(self.config.published_root / "current_artifacts.json"),
                 ]
             )
         return command

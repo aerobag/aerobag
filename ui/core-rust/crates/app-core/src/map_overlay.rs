@@ -4615,20 +4615,25 @@ fn airport_notam_priority(effects: &BTreeSet<AirportNotamEffect>) -> u8 {
         .map(|effect| match effect {
             AirportNotamEffect::AirportClosed => 0,
             AirportNotamEffect::RunwayClosed => 1,
-            AirportNotamEffect::ProcedureUnavailable => 2,
-            AirportNotamEffect::RunwayRestricted => 3,
-            AirportNotamEffect::RunwayEquipmentUnavailable => 4,
-            AirportNotamEffect::TaxiwayClosed => 5,
-            AirportNotamEffect::ApronClosed => 6,
-            AirportNotamEffect::ProcedureRestricted => 7,
-            AirportNotamEffect::MovementAreaEquipmentUnavailable => 8,
-            AirportNotamEffect::SurfaceCondition => 9,
-            AirportNotamEffect::WorkInProgress => 10,
-            AirportNotamEffect::RoutineAdvisory => 11,
-            AirportNotamEffect::Other => 12,
+            AirportNotamEffect::AirTrafficServiceUnavailable => 2,
+            AirportNotamEffect::ProcedureUnavailable => 3,
+            AirportNotamEffect::RunwayRestricted => 4,
+            AirportNotamEffect::RunwayEquipmentUnavailable => 5,
+            AirportNotamEffect::NavigationAidUnavailable => 6,
+            AirportNotamEffect::CommunicationUnavailable => 7,
+            AirportNotamEffect::AirportServiceUnavailable => 8,
+            AirportNotamEffect::TaxiwayClosed => 9,
+            AirportNotamEffect::ApronClosed => 10,
+            AirportNotamEffect::ProcedureRestricted => 11,
+            AirportNotamEffect::MovementAreaEquipmentUnavailable => 12,
+            AirportNotamEffect::SurfaceCondition => 13,
+            AirportNotamEffect::WorkInProgress => 14,
+            AirportNotamEffect::RoutineAdvisory => 15,
+            AirportNotamEffect::Obstruction => 16,
+            AirportNotamEffect::Other => 17,
         })
         .min()
-        .unwrap_or(12)
+        .unwrap_or(17)
 }
 
 fn airport_notam_lookup_ids(airport_id: &str) -> HashSet<String> {
@@ -10024,7 +10029,7 @@ mod tests {
         let index = NotamDisplayIndex::from_payload(NotamProductPayload {
             schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
             version_label: "v1".to_string(),
-            notam_count: Some(4),
+            notam_count: Some(9),
             notams_by_id: HashMap::from([
                 record(
                     "mowing",
@@ -10053,6 +10058,36 @@ mod tests {
                     "AD AP CLSD",
                     &[AirportNotamEffect::AirportClosed],
                 ),
+                record(
+                    "tower",
+                    "SVC",
+                    "SVC TWR CLSD MNT CTAF",
+                    &[AirportNotamEffect::AirTrafficServiceUnavailable],
+                ),
+                record(
+                    "navigation",
+                    "NAV",
+                    "NAV ILS RWY 03 U/S",
+                    &[AirportNotamEffect::NavigationAidUnavailable],
+                ),
+                record(
+                    "atis",
+                    "SVC",
+                    "SVC ATIS U/S",
+                    &[AirportNotamEffect::AirportServiceUnavailable],
+                ),
+                record(
+                    "obstacle-a",
+                    "OBST",
+                    "OBST TOWER LGT U/S",
+                    &[AirportNotamEffect::Obstruction],
+                ),
+                record(
+                    "obstacle-b",
+                    "OBST",
+                    "OBST CRANE NOT LGTD",
+                    &[AirportNotamEffect::Obstruction],
+                ),
             ]),
         })
         .expect("supported NOTAM fixture");
@@ -10072,7 +10107,17 @@ mod tests {
                 .iter()
                 .map(|notam| notam.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["airport", "runway", "taxiway", "mowing"]
+            vec![
+                "airport",
+                "runway",
+                "tower",
+                "navigation",
+                "atis",
+                "taxiway",
+                "mowing",
+                "obstacle-b",
+                "obstacle-a",
+            ]
         );
     }
 

@@ -9,7 +9,10 @@ use preprocessor_core::runway::{
 };
 use preprocessor_core::{airport_location_label, is_enroute_navaid_type};
 use preprocessor_data::{cifp_procedure_kind_from_subsection, is_suppressed_cifp_procedure};
-use product_contracts::{ProcedureRendezvousKey, ProcedureRendezvousKind};
+use product_contracts::{
+    NotamAirportCatalog, ProcedureRendezvousKey, ProcedureRendezvousKind,
+    NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
+};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -1193,6 +1196,7 @@ pub(super) fn build_nav_kv_artifact(
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
                     .context("failed to encode nav_kv chart/catalog value")?;
                 let (aircraft_pairs, aircraft_prefetch_keys) = build_nav_kv_aircraft_pairs()?;
+                let notam_airport_catalog = build_notam_airport_catalog(&resource_index)?;
                 let mut pairs = vec![
                     NavKvPair {
                         key: "contract/nav-db".to_string(),
@@ -1204,6 +1208,11 @@ pub(super) fn build_nav_kv_artifact(
                     NavKvPair {
                         key: "chart/catalog".to_string(),
                         value: chart_catalog_bytes,
+                    },
+                    NavKvPair {
+                        key: NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
+                        value: serde_json::to_vec(&notam_airport_catalog)
+                            .context("failed to encode NOTAM airport catalog")?,
                     },
                 ];
                 pairs.extend(build_nav_kv_offline_region_pairs(
@@ -2944,6 +2953,24 @@ pub(super) fn build_nav_kv_resource_summary_pairs(
             "resource/temporal-summary",
         )?,
     ])
+}
+
+pub(super) fn build_notam_airport_catalog(
+    resource_index: &ResourceIndex,
+) -> anyhow::Result<NotamAirportCatalog> {
+    let catalog = NotamAirportCatalog {
+        schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+        airport_ids: resource_index
+            .airports
+            .iter()
+            .map(|airport| airport.id.trim().to_ascii_uppercase())
+            .collect(),
+    };
+    catalog
+        .validate()
+        .map_err(anyhow::Error::msg)
+        .context("failed to build NOTAM airport catalog")?;
+    Ok(catalog)
 }
 
 pub(super) fn build_nav_kv_package_pairs(

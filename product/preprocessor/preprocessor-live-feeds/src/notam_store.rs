@@ -10,6 +10,7 @@ use std::{
     io::{ErrorKind, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -20,6 +21,7 @@ use notam_state::{
     NotamCounters, NotamHash, NotamMutation, NotamRecord, NotamState,
     NOTAM_MERKLE_BUCKETS_PER_GROUP, NOTAM_MERKLE_BUCKET_COUNT, NOTAM_MERKLE_GROUP_COUNT,
 };
+use product_contracts::NotamAirportCatalog;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::Serialize;
 
@@ -29,7 +31,7 @@ use crate::{
     validate_canonical_structured_notam_record, NotamProjectionAction, StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 12;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 13;
 const LEGACY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const STATE_ID_METADATA_KEY: &str = "notam_state_id";
@@ -139,6 +141,7 @@ impl NotamStateReader {
 #[derive(Debug, Clone)]
 pub struct NotamPersistentStore {
     root: PathBuf,
+    airport_catalog: Option<Arc<NotamAirportCatalog>>,
 }
 
 #[derive(Debug)]
@@ -210,6 +213,8 @@ pub struct NotamPublicationSnapshot {
     pub counters: NotamCounters,
     pub procedure_notams_without_ui_anchor: u64,
     pub source_records_without_location: u64,
+    pub source_record_count: u64,
+    pub server_only_records_by_keyword: BTreeMap<String, u64>,
     pub cursor: NotamPublicationCursor,
     pub transitions: Vec<NotamPublicationTransition>,
 }
@@ -249,7 +254,20 @@ pub struct CanonicalNotamSourceBatch {
 
 impl NotamPersistentStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            airport_catalog: None,
+        }
+    }
+
+    pub fn with_airport_catalog(
+        root: impl Into<PathBuf>,
+        airport_catalog: Arc<NotamAirportCatalog>,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            airport_catalog: Some(airport_catalog),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -401,7 +419,13 @@ impl NotamPersistentStore {
             if !touched.contains_key(&id) {
                 touched.insert(id.clone(), None);
             }
-            apply_record_to_projection(&tx, ProjectionTable::Current, record, observed_at_utc)?;
+            apply_record_to_projection(
+                &tx,
+                ProjectionTable::Current,
+                record,
+                observed_at_utc,
+                self.airport_catalog.as_deref(),
+            )?;
         }
 
         let source_sequence = read_metadata(&tx, "canonical_source_sync_sequence")?
@@ -459,7 +483,10 @@ impl NotamPersistentStore {
             std::process::id(),
             Utc::now().timestamp_micros()
         ));
-        let rebuild_store = Self::new(&rebuild_root);
+        let rebuild_store = Self {
+            root: rebuild_root.clone(),
+            airport_catalog: self.airport_catalog.clone(),
+        };
 
         let result = (|| {
             rebuild_store.initialize()?;
@@ -545,6 +572,7 @@ impl NotamPersistentStore {
                         ProjectionTable::Current,
                         record,
                         observed_at_utc,
+                        self.airport_catalog.as_deref(),
                     )?;
                 }
                 CanonicalNotamSourceMutation::Remove { notam_id } => {
@@ -649,6 +677,7 @@ impl NotamPersistentStore {
                         ProjectionTable::Current,
                         &record,
                         &applied_at_utc,
+                        self.airport_catalog.as_deref(),
                     )?;
                     record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
                 }
@@ -830,6 +859,7 @@ impl NotamPersistentStore {
                                 ProjectionTable::Current,
                                 &record,
                                 &retried_at_utc,
+                                self.airport_catalog.as_deref(),
                             )?;
                             record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
                             applied_count += 1;
@@ -995,6 +1025,38 @@ impl NotamPersistentStore {
                 |row| row.get::<_, u64>(0),
             )
             .context("failed to count canonical NOTAMs without a source location")?;
+        let source_record_count = tx
+            .query_row("SELECT COUNT(*) FROM current_notams", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .context("failed to count canonical NOTAM source records")?;
+        let server_only_records_by_keyword = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT COALESCE(
+                                NULLIF(
+                                    UPPER(TRIM(json_extract(source.record_json, '$.notam_keyword'))),
+                                    ''
+                                ),
+                                '(none)'
+                            ) AS keyword,
+                            COUNT(*)
+                     FROM current_notams AS source
+                     LEFT JOIN notam_client_records AS client ON client.id = source.id
+                     WHERE client.id IS NULL
+                     GROUP BY keyword
+                     ORDER BY keyword",
+                )
+                .context("failed to prepare server-only NOTAM category query")?;
+            let counts = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                })
+                .context("failed to query server-only NOTAM categories")?
+                .collect::<Result<BTreeMap<_, _>, _>>()
+                .context("failed to read server-only NOTAM categories")?;
+            counts
+        };
         let cursor = tx
             .query_row(
                 "SELECT published_through_journal_seq, published_head_state_id
@@ -1045,6 +1107,8 @@ impl NotamPersistentStore {
             counters,
             procedure_notams_without_ui_anchor,
             source_records_without_location,
+            source_record_count,
+            server_only_records_by_keyword,
             cursor,
             transitions,
         })
@@ -1360,7 +1424,7 @@ impl NotamPersistentStore {
             .context("failed to query NOTAM sqlite schema version")?;
         match schema_version.as_deref() {
             None => self.migrate_incremental_schema(connection),
-            Some("12") => Ok(()),
+            Some("13") => Ok(()),
             Some("7") => self.migrate_incremental_schema(connection),
             Some("6") => {
                 self.migrate_schema_v6_to_v7(connection)?;
@@ -1631,6 +1695,7 @@ impl NotamPersistentStore {
                     ProjectionTable::SchemaV4,
                     &record,
                     &reprojected_at_utc,
+                    self.airport_catalog.as_deref(),
                 )?;
                 record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
             }
@@ -1700,7 +1765,13 @@ impl NotamPersistentStore {
                 .context("failed to decode NOTAM schema 3 projection row")?;
             let record = canonicalize_structured_notam_record(record)
                 .context("failed to classify NOTAM schema 3 projection row")?;
-            apply_record_to_projection(&tx, ProjectionTable::SchemaV4, &record, &updated_at_utc)?;
+            apply_record_to_projection(
+                &tx,
+                ProjectionTable::SchemaV4,
+                &record,
+                &updated_at_utc,
+                self.airport_catalog.as_deref(),
+            )?;
         }
         tx.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
@@ -1840,6 +1911,7 @@ fn apply_record_to_projection(
     table: ProjectionTable,
     record: &StructuredNotamRecord,
     updated_at_utc: &str,
+    airport_catalog: Option<&NotamAirportCatalog>,
 ) -> anyhow::Result<(usize, usize)> {
     let table = table.name();
     match notam_projection_action(record)? {
@@ -1891,7 +1963,11 @@ fn apply_record_to_projection(
     )
     .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
     if table == ProjectionTable::Current.name() {
-        if let Some(client_record) = published_notam_record(record) {
+        let client_record = match airport_catalog {
+            Some(catalog) => crate::published_notam_record_for_airport_catalog(record, catalog),
+            None => published_notam_record(record),
+        };
+        if let Some(client_record) = client_record {
             let client_json = serde_json::to_string(&client_record)
                 .with_context(|| format!("failed to encode published NOTAM {}", record.id))?;
             let hash = record_leaf_hash(&client_record)
@@ -2695,7 +2771,7 @@ mod tests {
     fn publication_omits_unanchored_records_but_reports_source_quality() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        let unanchored = structured_notam_record_from_json(&captured_notam_variant(
+        let mut unanchored = structured_notam_record_from_json(&captured_notam_variant(
             "PUBLISHED",
             "NOTAMN",
             Some("STAR"),
@@ -2704,6 +2780,9 @@ mod tests {
             "STAR SPECIAL IAP, USCG SAN DIEGO, COPTER RNAV (GPS) 007, ORIG",
         ))?
         .context("missing unanchored procedure NOTAM")?;
+        unanchored.icao_id = None;
+        unanchored.airport_id = None;
+        unanchored = canonicalize_structured_notam_record(unanchored)?;
         let mut locationless = structured_notam_record_from_json(&captured_notam_variant(
             "PUBLISHED",
             "NOTAMN",
@@ -2731,9 +2810,83 @@ mod tests {
         let snapshot = store.publication_snapshot()?;
         assert_eq!(snapshot.procedure_notams_without_ui_anchor, 1);
         assert_eq!(snapshot.source_records_without_location, 1);
+        assert_eq!(snapshot.source_record_count, 2);
+        assert_eq!(
+            snapshot.server_only_records_by_keyword,
+            BTreeMap::from([("AIRSPACE".to_string(), 1), ("STAR".to_string(), 1)])
+        );
 
         store.synchronize_current_records(&[], "2026-08-19T00:03:00Z")?;
         assert!(store.current_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn publication_store_keeps_catalog_misses_server_only() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::with_airport_catalog(
+            temp.path(),
+            Arc::new(NotamAirportCatalog {
+                schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+                airport_ids: BTreeSet::from(["KBBB".to_string()]),
+            }),
+        );
+        let record = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("NAV"),
+            "001",
+            Some("N"),
+            "NAV VOR U/S",
+        ))?
+        .context("missing catalog-miss NOTAM")?;
+
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-08-19T00:00:00Z")?;
+        assert_eq!(store.current_records()?, vec![record]);
+        let snapshot = store.publication_snapshot()?;
+        assert_eq!(snapshot.source_record_count, 1);
+        assert_eq!(snapshot.counters.notam_count, 0);
+        assert_eq!(
+            snapshot.server_only_records_by_keyword,
+            BTreeMap::from([("NAV".to_string(), 1)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_store_maps_pseudo_icao_to_the_catalog_airport_id() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::with_airport_catalog(
+            temp.path(),
+            Arc::new(NotamAirportCatalog {
+                schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+                airport_ids: BTreeSet::from(["0I8".to_string()]),
+            }),
+        );
+        let mut record = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("OBST"),
+            "001",
+            Some("N"),
+            "OBST TOWER LGT U/S",
+        ))?
+        .context("missing pseudo-ICAO NOTAM")?;
+        record.icao_id = Some("K0I8".to_string());
+        record.location_designator = Some("0I8".to_string());
+        record.location = Some("0I8".to_string());
+        record.airport_name = Some("CYNTHIANA-HARRISON COUNTY".to_string());
+        record = canonicalize_structured_notam_record(record)?;
+
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-08-19T00:00:00Z")?;
+        let connection = store.open_connection()?;
+        let client_json = connection.query_row(
+            "SELECT record_json FROM notam_client_records WHERE id = ?1",
+            [&record.id],
+            |row| row.get::<_, String>(0),
+        )?;
+        let client: NotamRecord = serde_json::from_str(&client_json)?;
+        assert_eq!(client.airport_id.as_deref(), Some("0I8"));
         Ok(())
     }
 
@@ -2758,6 +2911,10 @@ mod tests {
 
         record.notam_keyword = Some("AIRSPACE".to_string());
         record.text = Some("AIRSPACE TEST".to_string());
+        record.icao_id = None;
+        record.source_airport_id = None;
+        record.airport_id = None;
+        record.airport_name = Some("ZAB ARTCC".to_string());
         record = canonicalize_structured_notam_record(record)?;
         let updated = store
             .synchronize_current_records(std::slice::from_ref(&record), "2026-08-19T00:03:00Z")?;
@@ -3291,7 +3448,10 @@ mod tests {
         ))?
         .expect("record");
         assert_eq!(conflicting.notam_keyword.as_deref(), Some("NAV"));
-        assert_eq!(conflicting.airport_id, None);
+        assert_eq!(conflicting.airport_id.as_deref(), Some("KAAA"));
+        assert!(conflicting
+            .airport_effects
+            .contains(&product_contracts::AirportNotamEffect::NavigationAidUnavailable));
         Ok(())
     }
 
@@ -3333,13 +3493,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_v11_is_rejected_after_grouped_procedure_parser_change() -> anyhow::Result<()> {
+    fn schema_v12_is_rejected_after_airport_association_change() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         store.initialize()?;
         let connection = Connection::open(store.sqlite_path())?;
         connection.execute(
-            "UPDATE metadata SET value = '11' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '12' WHERE key = 'schema_version'",
             [],
         )?;
         drop(connection);
@@ -3348,7 +3508,7 @@ mod tests {
         assert!(is_incompatible_notam_store_schema(&error));
         assert!(error
             .to_string()
-            .contains("unsupported NOTAM sqlite schema 11; required 12"));
+            .contains("unsupported NOTAM sqlite schema 12; required 13"));
         Ok(())
     }
 

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 mod aerobag_cloud;
@@ -25,6 +27,40 @@ pub struct ProductContract {
 
 pub const WAYPOINT_SEARCH_MAX_RESULTS: usize = 100;
 pub const CHART_PACKAGE_TIER_METADATA_KEY: &str = "chart_package_tier";
+pub const NOTAM_AIRPORT_CATALOG_NAV_DB_KEY: &str = "airport/notam-catalog";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotamAirportCatalog {
+    pub schema_version: u32,
+    pub airport_ids: BTreeSet<String>,
+}
+
+impl NotamAirportCatalog {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported NOTAM airport catalog schema {}; expected {}",
+                self.schema_version,
+                Self::SCHEMA_VERSION
+            ));
+        }
+        if self.airport_ids.is_empty() {
+            return Err("NOTAM airport catalog is empty".to_string());
+        }
+        for airport_id in &self.airport_ids {
+            if airport_id.trim().is_empty() || airport_id != &airport_id.trim().to_ascii_uppercase()
+            {
+                return Err(format!(
+                    "NOTAM airport catalog contains non-canonical ID {airport_id:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,9 +104,13 @@ pub struct WaypointSearchRecord {
 pub enum AirportNotamEffect {
     AirportClosed,
     RunwayClosed,
+    AirTrafficServiceUnavailable,
     ProcedureUnavailable,
     RunwayRestricted,
     RunwayEquipmentUnavailable,
+    NavigationAidUnavailable,
+    CommunicationUnavailable,
+    AirportServiceUnavailable,
     TaxiwayClosed,
     ApronClosed,
     ProcedureRestricted,
@@ -78,6 +118,7 @@ pub enum AirportNotamEffect {
     SurfaceCondition,
     WorkInProgress,
     RoutineAdvisory,
+    Obstruction,
     Other,
 }
 
@@ -395,7 +436,7 @@ pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
-pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 6;
+pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 7;
 
 /// Transport timing shared by every Aerobag SSE producer and consumer.
 ///

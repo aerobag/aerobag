@@ -12,7 +12,8 @@ use notam_state::NotamRecord;
 use preprocessor_data::faa_procedure_id_candidate_groups;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use product_contracts::{
-    AirportNotamEffect, ProcedurePublishedName, ProcedureRendezvousKey, ProcedureRendezvousKind,
+    AirportNotamEffect, NotamAirportCatalog, ProcedurePublishedName, ProcedureRendezvousKey,
+    ProcedureRendezvousKind,
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -197,6 +198,13 @@ pub struct StructuredNotamRecord {
     pub last_updated_utc: Option<String>,
     pub location_designator: Option<String>,
     pub icao_id: Option<String>,
+    /// Airport identity carried by an AIXM `AirportHeliport` member, when present.
+    ///
+    /// This is source evidence, not a display decision. `airport_id` is the
+    /// client-facing association derived from this field and the other structured
+    /// NMS location fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_airport_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub airport_id: Option<String>,
     #[serde(default)]
@@ -229,9 +237,35 @@ pub struct StructuredPoint {
 }
 
 pub fn published_notam_record(record: &StructuredNotamRecord) -> Option<NotamRecord> {
+    published_notam_record_with_airport_id(record, record.airport_id.clone())
+}
+
+pub fn published_notam_record_for_airport_catalog(
+    record: &StructuredNotamRecord,
+    catalog: &NotamAirportCatalog,
+) -> Option<NotamRecord> {
+    let airport_id = record.airport_id.as_ref().and_then(|_| {
+        [
+            record.airport_id.as_deref(),
+            record.source_airport_id.as_deref(),
+            record.icao_id.as_deref(),
+            record.location_designator.as_deref(),
+            record.location.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| resolve_catalog_airport_id(catalog, candidate))
+    });
+    published_notam_record_with_airport_id(record, airport_id)
+}
+
+fn published_notam_record_with_airport_id(
+    record: &StructuredNotamRecord,
+    airport_id: Option<String>,
+) -> Option<NotamRecord> {
     let published = NotamRecord {
         id: record.id.clone(),
-        airport_id: record.airport_id.clone(),
+        airport_id,
         airport_effects: record.airport_effects.clone(),
         procedure_rendezvous_keys: record.procedure_rendezvous_keys.clone(),
         notam_keyword: record.notam_keyword.clone(),
@@ -242,6 +276,25 @@ pub fn published_notam_record(record: &StructuredNotamRecord) -> Option<NotamRec
         icao_text: record.icao_text.clone(),
     };
     published.is_displayable().then_some(published)
+}
+
+fn resolve_catalog_airport_id(catalog: &NotamAirportCatalog, candidate: &str) -> Option<String> {
+    let candidate = candidate.trim().to_ascii_uppercase();
+    if catalog.airport_ids.contains(&candidate) {
+        return Some(candidate);
+    }
+    if candidate.len() == 4 && candidate.starts_with('K') {
+        let domestic = candidate[1..].to_string();
+        if catalog.airport_ids.contains(&domestic) {
+            return Some(domestic);
+        }
+    } else if candidate.len() == 3 && candidate.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        let icao = format!("K{candidate}");
+        if catalog.airport_ids.contains(&icao) {
+            return Some(icao);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1930,11 +1983,16 @@ fn normalize_notam_xml(
         canonical_notam_function(hints.notam_function.or_else(|| notam_type.clone()))?;
     let notam_keyword =
         canonical_notam_keyword(&identity.source_type, hints.notam_keyword, text.as_deref());
+    let airport_name = find_first_text(&xml, "airportname").or(find_first_text(&xml, "name"));
+    let airport_position = find_airport_position(&xml)?;
+    let source_airport_id = find_airport_identifier(&xml);
     let airport_id = airport_id_for_notam(
-        notam_keyword.as_deref(),
+        source_airport_id.as_deref(),
         icao_id.as_deref(),
         location_designator.as_deref(),
         identity.location.as_deref(),
+        airport_name.as_deref(),
+        airport_position.is_some(),
     );
     let procedure_rendezvous_keys = procedure_rendezvous_keys_for_notam(
         &xml,
@@ -1955,7 +2013,6 @@ fn normalize_notam_xml(
         .unwrap_or_default();
     let account_id = find_first_text(&xml, "accountId");
     let xover_notam_id = find_first_text(&xml, "xovernotamID");
-    let airport_position = find_airport_position(&xml)?;
 
     Ok(Some(StructuredNotamRecord {
         id: record_id,
@@ -1969,10 +2026,11 @@ fn normalize_notam_xml(
             .or_else(|| find_first_text(&xml, "lastUpdated")),
         location_designator,
         icao_id,
+        source_airport_id,
         airport_id,
         airport_effects,
         procedure_rendezvous_keys,
-        airport_name: find_first_text(&xml, "airportname").or(find_first_text(&xml, "name")),
+        airport_name,
         airport_position,
         location: identity.location.clone(),
         classification: find_first_text(&xml, "classification"),
@@ -1999,6 +2057,7 @@ pub(crate) fn canonicalize_structured_notam_record(
 ) -> anyhow::Result<StructuredNotamRecord> {
     record.location_designator = normalize_optional_notam_field(record.location_designator);
     record.icao_id = normalize_optional_notam_field(record.icao_id);
+    record.source_airport_id = normalize_optional_notam_field(record.source_airport_id);
     record.notam_number = local_format_notam_number(record.local_text.as_deref())
         .or(record.notam_number)
         .map(|value| value.trim().to_ascii_uppercase());
@@ -2028,10 +2087,12 @@ pub(crate) fn canonicalize_structured_notam_record(
         record.text.as_deref(),
     );
     record.airport_id = airport_id_for_notam(
-        record.notam_keyword.as_deref(),
+        record.source_airport_id.as_deref(),
         record.icao_id.as_deref(),
         record.location_designator.as_deref(),
         record.location.as_deref(),
+        record.airport_name.as_deref(),
+        record.airport_position.is_some(),
     );
     record.airport_effects = record
         .airport_id
@@ -2553,19 +2614,93 @@ fn shortest_published_name_suffix(words: &[&str]) -> Option<String> {
 }
 
 fn airport_id_for_notam(
-    keyword: Option<&str>,
+    source_airport_id: Option<&str>,
     icao_id: Option<&str>,
     location_designator: Option<&str>,
     location: Option<&str>,
+    source_name: Option<&str>,
+    has_airport_position: bool,
 ) -> Option<String> {
-    const AIRPORT_KEYWORDS: &[&str] = &["AD", "APRON", "IAP", "ODP", "RWY", "SID", "TWY"];
-    AIRPORT_KEYWORDS
-        .contains(&keyword?)
-        .then(|| icao_id.or(location_designator).or(location))
-        .flatten()
+    fn normalized(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_uppercase)
+    }
+
+    if source_name_is_non_airport_facility(source_name)
+        || source_airport_id
+            .or(icao_id)
+            .is_some_and(source_id_is_non_airport_facility)
+    {
+        return None;
+    }
+    if let Some(airport_id) = normalized(source_airport_id) {
+        return Some(airport_id);
+    }
+    if let Some(airport_id) = normalized(icao_id) {
+        return Some(airport_id);
+    }
+
+    // Domestic facilities do not always have an ICAO identifier. An FAA facility
+    // name or an AIXM airport position is still structured source evidence; the
+    // NOTAM keyword itself deliberately plays no role in this decision.
+    if source_name.is_some_and(|name| !name.trim().is_empty()) || has_airport_position {
+        return normalized(location_designator.or(location));
+    }
+    None
+}
+
+fn source_id_is_non_airport_facility(source_id: &str) -> bool {
+    matches!(
+        source_id.trim().to_ascii_uppercase().as_str(),
+        "KFDC"
+            | "KGPS"
+            | "KZAB"
+            | "KZAK"
+            | "KZAU"
+            | "KZBW"
+            | "KZDC"
+            | "KZDV"
+            | "KZFW"
+            | "KZHU"
+            | "KZID"
+            | "KZJX"
+            | "KZKC"
+            | "KZLA"
+            | "KZLC"
+            | "KZMA"
+            | "KZME"
+            | "KZMP"
+            | "KZNY"
+            | "KZOA"
+            | "KZOB"
+            | "KZSE"
+            | "KZTL"
+            | "KZWY"
+            | "PAZA"
+            | "PHZH"
+    )
+}
+
+fn source_name_is_non_airport_facility(source_name: Option<&str>) -> bool {
+    let Some(source_name) = source_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_uppercase)
+    else {
+        return false;
+    };
+    source_name == "FDC"
+        || source_name == "GLOBAL POSITIONING SYSTEM"
+        || source_name.contains("ARTCC")
+        || source_name.contains("OCA/FIR")
+        || source_name.ends_with(" FIR")
+        || [
+            "-VOR", "-VOR/DME", "-VORTAC", "-TACAN", "-NDB", "-NDB/DME", "-DME",
+        ]
+        .iter()
+        .any(|suffix| source_name.ends_with(suffix))
 }
 
 fn airport_effects_for_notam(
@@ -2622,6 +2757,7 @@ fn airport_effect_for_scenario(
         ("APRON", "43" | "111") => Some(Effect::SurfaceCondition),
         ("IAP", "802" | "FDC001") => Some(Effect::ProcedureRestricted),
         ("ODP", "811") | ("SID", "812") => Some(Effect::ProcedureRestricted),
+        ("SVC", "103") => Some(Effect::AirTrafficServiceUnavailable),
         ("RWY", "50" | "82" | "86") => Some(Effect::RunwayClosed),
         ("RWY", "18" | "29" | "49" | "100" | "461" | "522" | "526") => {
             Some(Effect::RunwayEquipmentUnavailable)
@@ -2646,6 +2782,32 @@ fn airport_effects_from_text(keyword: &str, text: &str) -> BTreeSet<AirportNotam
 
     let text = text.to_ascii_uppercase();
     let mut effects = BTreeSet::new();
+    let unavailable = has_notam_token(&text, "U/S")
+        || text.contains("OUT OF SERVICE")
+        || text.contains("NOT AVBL")
+        || text.contains("UNAVAILABLE")
+        || text.contains("DECOMMISSIONED")
+        || text.contains("NOT MNT")
+        || text.contains("UNREL");
+    if keyword == "OBST" {
+        effects.insert(Effect::Obstruction);
+    }
+    if keyword == "SVC" && (unavailable || has_notam_token(&text, "CLSD")) {
+        if ["TWR", "ATC", "RADAR", "SSR", "TRSA", "CLR DELIVERY"]
+            .iter()
+            .any(|term| has_notam_token(&text, term) || text.contains(term))
+        {
+            effects.insert(Effect::AirTrafficServiceUnavailable);
+        } else {
+            effects.insert(Effect::AirportServiceUnavailable);
+        }
+    }
+    if keyword == "COM" && unavailable {
+        effects.insert(Effect::CommunicationUnavailable);
+    }
+    if keyword == "NAV" && unavailable {
+        effects.insert(Effect::NavigationAidUnavailable);
+    }
     if has_notam_token(&text, "CLSD") {
         match keyword {
             "AD" => {
@@ -2672,11 +2834,7 @@ fn airport_effects_from_text(keyword: &str, text: &str) -> BTreeSet<AirportNotam
     if matches!(keyword, "IAP" | "ODP" | "SID") && has_notam_token(&text, "NA") {
         effects.insert(Effect::ProcedureUnavailable);
     }
-    if has_notam_token(&text, "U/S")
-        || text.contains("OUT OF SERVICE")
-        || has_notam_token(&text, "UNMONITORED")
-        || text.contains("NOT STD")
-    {
+    if unavailable || has_notam_token(&text, "UNMONITORED") || text.contains("NOT STD") {
         match keyword {
             "RWY" => {
                 effects.insert(Effect::RunwayEquipmentUnavailable);
@@ -2773,6 +2931,21 @@ fn parse_compact_notam_timestamp(value: &str) -> anyhow::Result<String> {
     let parsed = NaiveDateTime::parse_from_str(value, "%Y%m%d%H%M")
         .with_context(|| format!("failed to parse NOTAM timestamp {value}"))?;
     Ok(parsed.and_utc().to_rfc3339())
+}
+
+fn find_airport_identifier(document: &roxmltree::Document<'_>) -> Option<String> {
+    let airport = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "AirportHeliport")?;
+    ["locationIndicatorICAO", "designator"]
+        .into_iter()
+        .find_map(|local_name| {
+            airport
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == local_name)
+                .and_then(text_content)
+                .and_then(|value| normalize_optional_notam_field(Some(value)))
+        })
 }
 
 fn find_airport_position(
@@ -3718,6 +3891,189 @@ mod tests {
     }
 
     #[test]
+    fn nms_service_notices_use_structured_airport_identity_regardless_of_keyword(
+    ) -> anyhow::Result<()> {
+        let parse = |number: &str, scenario: &str, text: &str| {
+            nms_initial_load::parse_nms_api_update(
+                &format!(
+                    r#"<root>
+                        <classification>DOM</classification>
+                        <EventTimeSlice>
+                          <scenario>{scenario}</scenario>
+                          <NOTAM>
+                            <location>GTF</location>
+                            <number>{number}</number>
+                            <year>2026</year>
+                            <type>N</type>
+                            <text>{text}</text>
+                          </NOTAM>
+                        </EventTimeSlice>
+                        <airportname>GREAT FALLS INTL</airportname>
+                        <icaoLocation>KGTF</icaoLocation>
+                    </root>"#
+                ),
+                nms_initial_load::NmsNotamClassification::Domestic,
+            )
+        };
+
+        let tower = parse(
+            "04/047",
+            "103",
+            "SVC TWR CLSD MNT CTAF 118.7 TERMINAL RADAR SERVICE AREA SER NOT AVBL",
+        )?
+        .record;
+        assert_eq!(tower.airport_id.as_deref(), Some("KGTF"));
+        assert!(tower
+            .airport_effects
+            .contains(&AirportNotamEffect::AirTrafficServiceUnavailable));
+        assert!(published_notam_record(&tower).is_some());
+
+        let atis = parse("08/197", "980", "SVC ATIS U/S")?.record;
+        assert_eq!(atis.airport_id.as_deref(), Some("KGTF"));
+        assert!(atis
+            .airport_effects
+            .contains(&AirportNotamEffect::AirportServiceUnavailable));
+        assert!(published_notam_record(&atis).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn client_projection_resolves_only_airports_present_in_the_nav_catalog() -> anyhow::Result<()> {
+        let parse = |location: &str, icao: &str, name: &str, text: &str| {
+            nms_initial_load::parse_nms_api_update(
+                &format!(
+                    r#"<root>
+                        <classification>DOM</classification>
+                        <NOTAM>
+                          <location>{location}</location>
+                          <number>01/123</number>
+                          <year>2026</year>
+                          <type>N</type>
+                          <text>{text}</text>
+                        </NOTAM>
+                        <airportname>{name}</airportname>
+                        <icaoLocation>{icao}</icaoLocation>
+                    </root>"#
+                ),
+                nms_initial_load::NmsNotamClassification::Domestic,
+            )
+        };
+        let catalog = NotamAirportCatalog {
+            schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+            airport_ids: BTreeSet::from([
+                "0I8".to_string(),
+                "KFUZ".to_string(),
+                "KGTF".to_string(),
+                "KZPH".to_string(),
+            ]),
+        };
+
+        let tower = parse("GTF", "KGTF", "GREAT FALLS INTL", "SVC TWR CLSD")?.record;
+        assert_eq!(
+            published_notam_record_for_airport_catalog(&tower, &catalog)
+                .and_then(|record| record.airport_id),
+            Some("KGTF".to_string())
+        );
+
+        let small_airport = parse("0I8", "K0I8", "CYNTHIANA-HARRISON COUNTY", "OBST TOWER")?.record;
+        assert_eq!(
+            published_notam_record_for_airport_catalog(&small_airport, &catalog)
+                .and_then(|record| record.airport_id),
+            Some("0I8".to_string())
+        );
+
+        let navaid = parse("GSU", "KGSU", "ATLANTA", "NAV VOR U/S")?.record;
+        assert!(published_notam_record_for_airport_catalog(&navaid, &catalog).is_none());
+        let zephyrhills = parse("ZPH", "KZPH", "ZEPHYRHILLS MUNI", "RWY 05 CLSD")?.record;
+        assert_eq!(
+            published_notam_record_for_airport_catalog(&zephyrhills, &catalog)
+                .and_then(|record| record.airport_id),
+            Some("KZPH".to_string())
+        );
+        let colliding_navaid = parse("FUZ", "KFUZ", "FUZ-VORTAC", "NAV VORTAC U/S")?.record;
+        assert_eq!(colliding_navaid.airport_id, None);
+        assert!(published_notam_record_for_airport_catalog(&colliding_navaid, &catalog).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn nms_non_airport_facilities_do_not_enter_the_airport_projection() -> anyhow::Result<()> {
+        let parse = |location: &str, icao: &str, name: &str, text: &str| {
+            nms_initial_load::parse_nms_api_update(
+                &format!(
+                    r#"<root>
+                        <classification>DOM</classification>
+                        <NOTAM>
+                          <location>{location}</location>
+                          <number>01/123</number>
+                          <year>2026</year>
+                          <type>N</type>
+                          <text>{text}</text>
+                        </NOTAM>
+                        <airportname>{name}</airportname>
+                        <icaoLocation>{icao}</icaoLocation>
+                    </root>"#
+                ),
+                nms_initial_load::NmsNotamClassification::Domestic,
+            )
+        };
+
+        for record in [
+            parse("ZAB", "KZAB", "ZAB ARTCC", "AIRSPACE R5107H ACT SFC-9000FT")?.record,
+            parse("FUZ", "KFUZ", "FUZ-VORTAC", "NAV VORTAC U/S")?.record,
+        ] {
+            assert_eq!(record.airport_id, None);
+            assert!(published_notam_record(&record).is_none());
+        }
+        assert_eq!(
+            airport_id_for_notam(
+                Some("KZAB"),
+                Some("KZAB"),
+                Some("ZAB"),
+                Some("ZAB"),
+                Some("ZUNI"),
+                true,
+            ),
+            None,
+            "a misleading AIXM airport member must not turn an ARTCC into an airport",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn aixm_airport_members_anchor_non_icao_obstacle_notices() -> anyhow::Result<()> {
+        let update = nms_initial_load::parse_nms_api_update(
+            r#"<root>
+                <classification>DOM</classification>
+                <AirportHeliport>
+                  <AirportHeliportTimeSlice>
+                    <designator>74V</designator>
+                    <name>ROOSEVELT MUNI</name>
+                    <ARP><ElevatedPoint><pos>40.2 -110.0</pos></ElevatedPoint></ARP>
+                  </AirportHeliportTimeSlice>
+                </AirportHeliport>
+                <NOTAM>
+                  <location>74V</location>
+                  <number>09/001</number>
+                  <year>2026</year>
+                  <type>N</type>
+                  <text>OBST TOWER LGT U/S</text>
+                </NOTAM>
+              </root>"#,
+            nms_initial_load::NmsNotamClassification::Domestic,
+        )?;
+
+        assert_eq!(update.record.source_airport_id.as_deref(), Some("74V"));
+        assert_eq!(update.record.airport_id.as_deref(), Some("74V"));
+        assert!(update
+            .record
+            .airport_effects
+            .contains(&AirportNotamEffect::Obstruction));
+        assert!(published_notam_record(&update.record).is_some());
+        Ok(())
+    }
+
+    #[test]
     fn airport_notam_effects_combine_structured_and_text_signals() {
         assert_eq!(
             airport_effects_for_notam(
@@ -3761,6 +4117,24 @@ mod tests {
         assert_eq!(
             airport_effects_for_notam(Some("AD"), Some("FF001"), Some("AD AP ALL SFC WIP MOWING"),),
             BTreeSet::from([AirportNotamEffect::WorkInProgress])
+        );
+        assert_eq!(
+            airport_effects_for_notam(Some("NAV"), Some("501"), Some("NAV ILS RWY 03 U/S")),
+            BTreeSet::from([
+                AirportNotamEffect::NavigationAidUnavailable,
+                AirportNotamEffect::Other,
+            ])
+        );
+        assert_eq!(
+            airport_effects_for_notam(
+                Some("COM"),
+                Some("504"),
+                Some("COM REMOTE TRANS/REC 126.6 U/S"),
+            ),
+            BTreeSet::from([
+                AirportNotamEffect::CommunicationUnavailable,
+                AirportNotamEffect::Other,
+            ])
         );
     }
 
@@ -4387,6 +4761,7 @@ mod tests {
             last_updated_utc: None,
             location_designator: Some(facility.to_string()),
             icao_id: None,
+            source_airport_id: None,
             airport_id: None,
             airport_effects: BTreeSet::new(),
             procedure_rendezvous_keys: BTreeSet::new(),

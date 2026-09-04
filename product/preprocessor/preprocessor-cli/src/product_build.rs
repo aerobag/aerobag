@@ -2316,7 +2316,9 @@ mod tests {
         DefaultView, NavDbRef, PlateRecord, ResourceFamily, ResourcePackage, ResourceRegion,
         TemporalSummary, TileLevelRecord,
     };
-    use product_contracts::{CSUP_CONTRACT_ID, ENR_L_CONTRACT_ID, SEC_CONTRACT_ID};
+    use product_contracts::{
+        NotamAirportCatalog, CSUP_CONTRACT_ID, ENR_L_CONTRACT_ID, SEC_CONTRACT_ID,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -4242,6 +4244,35 @@ mod tests {
 
         let temporal = pair_value("resource/temporal-summary");
         assert_eq!(temporal["uniform_cycle_code"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn notam_airport_catalog_comes_from_the_client_nav_airport_set() {
+        let mut resource_index = minimal_resource_index();
+        resource_index.airports = vec![
+            AirportRecord {
+                id: "kgtf".to_string(),
+                facility_name: "Great Falls Intl".to_string(),
+                lat: 47.0,
+                lon: -111.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+            AirportRecord {
+                id: "0i8".to_string(),
+                facility_name: "Cynthiana-Harrison County".to_string(),
+                lat: 38.0,
+                lon: -84.0,
+                airport_type: "AIRPORT".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            build_notam_airport_catalog(&resource_index).unwrap(),
+            NotamAirportCatalog {
+                schema_version: NotamAirportCatalog::SCHEMA_VERSION,
+                airport_ids: BTreeSet::from(["0I8".to_string(), "KGTF".to_string()]),
+            }
+        );
     }
 
     #[test]

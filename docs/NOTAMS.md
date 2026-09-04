@@ -18,7 +18,14 @@ periodic checkpoints.
 ```text
 --nms-notams-config /path/to/nms-notams.json
 --nms-notams-state-root /path/to/state/nms-notams
+--product-artifacts /path/to/product_artifacts.json
 ```
+
+The product manifest locates the nav-db airport catalogs for every published
+cycle. The daemon unions those catalogs and admits an airport-linked NOTAM to
+the client projection only when at least one structured NMS location candidate
+resolves to a catalog airport. This also canonicalizes pseudo-ICAO identifiers
+such as `K0I8` back to the client airport ID `0I8`.
 
 The credential file has this operator-owned shape:
 
@@ -67,13 +74,30 @@ live-feed products.
 TFR enrichment reads the same current NOTAM state and falls back to the
 independent TFR detail cache for FDC IDs absent from that state.
 
-The canonical source store retains valid NMS records even when FAA omits
-structured location metadata. This preserves source completeness, same-ID
-cancellation, diagnostics, and TFR enrichment. Client NOTAM checkpoints include
-only records with an airport or procedure lookup anchor and display text; core
-uses the same shared displayability predicate. Live-feed status reports the
-absolute `source_records_without_location` count so Pipeline Health can warn
-without rejecting an otherwise complete Initial Load.
+The canonical source store retains every valid NMS record, including records
+that have no client display destination. This preserves source completeness,
+same-ID cancellation, diagnostics, and TFR enrichment. Client NOTAM checkpoints
+are a selective projection: they contain only records with display text and an
+airport or procedure lookup anchor. Airport association starts from structured
+NMS facility evidence (`AirportHeliport`, ICAO location, airport name, or an
+airport location paired with a facility name or position), rather than deciding
+displayability from the NOTAM keyword, and must resolve against the nav-db
+airport catalog before publication. ARTCC, FIR, FDC, GPS, navaid, and remote
+communications facilities therefore stay out of the airport projection.
+
+Live-feed status reports source and client record totals, the existing
+`source_records_without_location` count, and `server_only_records_by_keyword`.
+That makes every omitted category visible to Pipeline Health without shipping
+records that neither client can render. A change to these association semantics
+bumps both persistent NOTAM schemas so the collector performs a fresh
+authoritative Initial Load and the publication store rebuilds its derived client
+projection.
+
+Airport NOTAM order is owned by app core and shared by Android and web. Safety
+and operational effects (airport/runway closure, unavailable ATC, procedures,
+navigation, communications, and services) sort ahead of surface work, routine
+advisories, and obstructions, so a long obstacle list cannot hide a runway
+closure.
 
 ## External Test Fixture
 

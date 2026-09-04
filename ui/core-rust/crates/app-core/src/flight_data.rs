@@ -53,6 +53,7 @@ pub struct FlightDataBannerInput {
     pub desired_track_magnetic_deg: Option<f64>,
     pub waypoint_distance_nm: Option<f64>,
     pub final_distance_nm: Option<f64>,
+    pub destination_estimate: Option<FlightTimeFuelEstimate>,
     pub nexrad_age: Option<String>,
 }
 
@@ -198,8 +199,9 @@ impl FlightDataComputer {
             .final_distance_nm
             .and_then(|distance| self.format_ete(distance));
         let final_fuel = input
-            .final_distance_nm
-            .and_then(|distance| self.format_fuel(distance));
+            .destination_estimate
+            .and_then(|estimate| estimate.cumulative_fuel_gal)
+            .map(format_fuel_gal);
         let final_eta = input
             .final_distance_nm
             .and_then(|distance| self.format_eta(distance));
@@ -256,6 +258,12 @@ impl FlightDataComputer {
                         label.as_deref().unwrap_or(definition.label),
                         value,
                     );
+                    if definition.field == FlightDataBannerField::FinalFuel {
+                        cell.estimate_kind = input
+                            .destination_estimate
+                            .map(|estimate| estimate.estimate_kind)
+                            .unwrap_or(FlightEstimateKind::Basic);
+                    }
                     if matches!(
                         definition.field,
                         FlightDataBannerField::FinalEta | FlightDataBannerField::Clock
@@ -278,20 +286,7 @@ impl FlightDataComputer {
         course_magnetic_deg: Option<f64>,
         distance_tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
-        let estimate = FlightTimeFuelEstimate {
-            leg_ete_seconds: segment_distance_nm
-                .and_then(|distance| self.ete_seconds(distance))
-                .map(|seconds| seconds as f64),
-            cumulative_ete_seconds: cumulative_distance_nm
-                .and_then(|distance| self.ete_seconds(distance))
-                .map(|seconds| seconds as f64),
-            cumulative_fuel_gal: cumulative_distance_nm.and_then(|distance| {
-                self.ground_speed_kt
-                    .zip(self.fuel_flow_gph)
-                    .map(|(speed_kt, fuel_flow_gph)| distance / speed_kt * fuel_flow_gph)
-            }),
-            estimate_kind: FlightEstimateKind::Basic,
-        };
+        let estimate = self.estimate_for_distances(segment_distance_nm, cumulative_distance_nm);
         self.flight_plan_row_cells_with_estimate(
             row_has_data,
             segment_distance_nm,
@@ -376,21 +371,29 @@ impl FlightDataComputer {
         total_distance_nm: Option<f64>,
         tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
-        let estimate = FlightTimeFuelEstimate {
-            leg_ete_seconds: total_distance_nm
+        let estimate = self.estimate_for_distances(total_distance_nm, total_distance_nm);
+        self.flight_plan_summary_cells_with_estimate(total_distance_nm, tone, estimate)
+    }
+
+    pub(crate) fn estimate_for_distances(
+        &self,
+        leg_distance_nm: Option<f64>,
+        cumulative_distance_nm: Option<f64>,
+    ) -> FlightTimeFuelEstimate {
+        FlightTimeFuelEstimate {
+            leg_ete_seconds: leg_distance_nm
                 .and_then(|distance| self.ete_seconds(distance))
                 .map(|seconds| seconds as f64),
-            cumulative_ete_seconds: total_distance_nm
+            cumulative_ete_seconds: cumulative_distance_nm
                 .and_then(|distance| self.ete_seconds(distance))
                 .map(|seconds| seconds as f64),
-            cumulative_fuel_gal: total_distance_nm.and_then(|distance| {
+            cumulative_fuel_gal: cumulative_distance_nm.and_then(|distance| {
                 self.ground_speed_kt
                     .zip(self.fuel_flow_gph)
                     .map(|(speed_kt, fuel_flow_gph)| distance / speed_kt * fuel_flow_gph)
             }),
             estimate_kind: FlightEstimateKind::Basic,
-        };
-        self.flight_plan_summary_cells_with_estimate(total_distance_nm, tone, estimate)
+        }
     }
 
     pub fn flight_plan_summary_cells_with_estimate(
@@ -428,14 +431,6 @@ impl FlightDataComputer {
     fn ete_seconds(&self, distance_nm: f64) -> Option<i64> {
         self.ground_speed_kt
             .map(|speed_kt| (distance_nm / speed_kt * 3600.0).round().max(0.0) as i64)
-    }
-
-    fn format_fuel(&self, distance_nm: f64) -> Option<String> {
-        self.ground_speed_kt
-            .zip(self.fuel_flow_gph)
-            .map(|(speed_kt, fuel_flow_gph)| {
-                format_fuel_gal(distance_nm / speed_kt * fuel_flow_gph)
-            })
     }
 
     fn format_eta_epoch(&self, now_epoch_ms: i64, ete_seconds: i64) -> String {
@@ -687,6 +682,7 @@ mod tests {
         let computer = FlightDataComputer::new(Some(120.0));
         let banner = computer.banner(FlightDataBannerInput {
             final_distance_nm: Some(30.0),
+            destination_estimate: Some(computer.estimate_for_distances(None, Some(30.0))),
             ..FlightDataBannerInput::default()
         });
         let final_ete = banner
@@ -856,6 +852,7 @@ mod tests {
             .and_then(|cell| cell.value.as_deref());
         let banner = computer.banner(FlightDataBannerInput {
             final_distance_nm: Some(30.0),
+            destination_estimate: Some(computer.estimate_for_distances(None, Some(30.0))),
             ..FlightDataBannerInput::default()
         });
         let final_fuel = banner
@@ -1057,6 +1054,7 @@ mod tests {
         let computer = FlightDataComputer::with_clock(Some(120.0), Some(noon_utc));
         let banner = computer.banner(FlightDataBannerInput {
             final_distance_nm: Some(30.0),
+            destination_estimate: Some(computer.estimate_for_distances(None, Some(30.0))),
             ..FlightDataBannerInput::default()
         });
         let final_eta = banner

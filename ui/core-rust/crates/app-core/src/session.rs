@@ -12940,6 +12940,7 @@ fn project_session_app_ui_state(
             .flight_plan_projection_count
             .fetch_add(1, Ordering::Relaxed);
     }
+    let destination_estimate = flight_plan_projection.projection.destination_estimate;
     let mut app_ui_state = state::project_app_ui_state_from_ui_parts(
         flight_plan_projection.projection.ui_state,
         situation_projection.ownship.clone(),
@@ -12993,6 +12994,7 @@ fn project_session_app_ui_state(
         session,
         &app_ui_state,
         materialized_plan.as_ref(),
+        destination_estimate,
         &weather_projection.nexrad_age_banner_value,
     )?;
     Ok(app_ui_state)
@@ -13354,6 +13356,7 @@ fn project_flight_data_banner(
     session: &UiSession,
     app_ui_state: &AppUiState,
     materialized_plan: Option<&crate::flight_plan_materialization::MaterializedFlightPlan>,
+    destination_estimate: Option<crate::FlightTimeFuelEstimate>,
     nexrad_age_banner_value: &str,
 ) -> Result<crate::FlightDataBannerModel, HadReadError> {
     let ownship = &app_ui_state.ownship.render;
@@ -13410,6 +13413,7 @@ fn project_flight_data_banner(
         desired_track_magnetic_deg,
         waypoint_distance_nm,
         final_distance_nm,
+        destination_estimate,
         nexrad_age: Some(nexrad_age_banner_value.to_string()),
     });
     Ok(banner)
@@ -29191,6 +29195,41 @@ mod tests {
             flight_data_value(&snapshot, "final_distance"),
             Some(final_expected.as_str()),
             "the data-grid FINAL distance must be the FP total"
+        );
+        let total_fuel = flight_plan_row_data_value(
+            &snapshot,
+            |row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary,
+            "fuel",
+        );
+        assert!(
+            total_fuel.is_some(),
+            "the FP total must estimate destination fuel"
+        );
+        assert_eq!(
+            flight_data_value(&snapshot, "final_fuel"),
+            total_fuel,
+            "the data-grid FUEL DEST must be the FP total FUEL CUM value"
+        );
+    }
+
+    #[test]
+    fn modeled_destination_fuel_is_consistent_across_flight_plan_and_banner() {
+        let init = create_synced_self_contained_session(lat_lon_preview_plan());
+        let snapshot = get_session_snapshot(init.handle).expect("modeled flight-plan snapshot");
+        let total_fuel = flight_plan_row_data_value(
+            &snapshot,
+            |row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary,
+            "fuel",
+        );
+
+        assert!(
+            total_fuel.is_some(),
+            "the aircraft model must estimate destination fuel without GPS"
+        );
+        assert_eq!(
+            flight_data_value(&snapshot, "final_fuel"),
+            total_fuel,
+            "the data-grid FUEL DEST must be the modeled FP total FUEL CUM value"
         );
     }
 

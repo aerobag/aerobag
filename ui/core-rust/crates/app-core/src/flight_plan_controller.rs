@@ -188,6 +188,7 @@ pub(crate) struct FlightPlanProjectionInputs {
 pub(crate) struct FlightPlanProjection {
     pub ui_state: Option<FlightPlanUiState>,
     pub materialized: Option<MaterializedFlightPlan>,
+    pub destination_estimate: Option<crate::FlightTimeFuelEstimate>,
     pub aircraft_plan_view_path: String,
 }
 
@@ -687,6 +688,7 @@ impl FlightPlanController {
             None => FlightPlanProjection {
                 ui_state: None,
                 materialized: None,
+                destination_estimate: None,
                 aircraft_plan_view_path: match store {
                     Some(store) => crate::had_ops::default_aircraft_plan_view_path(
                         store,
@@ -717,6 +719,7 @@ impl FlightPlanController {
                     FlightPlanProjection {
                         ui_state: Some(projection.ui_state),
                         materialized: Some(projection.materialized),
+                        destination_estimate: projection.destination_estimate,
                         aircraft_plan_view_path: projection.aircraft_plan_view_path,
                     }
                 } else {
@@ -729,6 +732,7 @@ impl FlightPlanController {
                     FlightPlanProjection {
                         ui_state: Some(ui_state),
                         materialized: Some(materialized),
+                        destination_estimate: None,
                         aircraft_plan_view_path: String::new(),
                     }
                 }

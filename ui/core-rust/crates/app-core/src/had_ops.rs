@@ -1289,6 +1289,7 @@ pub(crate) fn nav_symbol_feature(
 pub(crate) struct FlightPlanUiProjection {
     pub ui_state: FlightPlanUiState,
     pub materialized: crate::flight_plan_materialization::MaterializedFlightPlan,
+    pub destination_estimate: Option<crate::FlightTimeFuelEstimate>,
     pub aircraft_plan_view_path: String,
 }
 
@@ -2186,6 +2187,17 @@ pub(crate) fn flight_plan_ui_projection(
             }
         }
     };
+    let destination_estimate = materialized.total_distance_remaining_nm.map(|distance_nm| {
+        modeled_prediction.as_ref().map_or_else(
+            || computer.estimate_for_distances(Some(distance_nm), Some(distance_nm)),
+            |prediction| crate::FlightTimeFuelEstimate {
+                leg_ete_seconds: None,
+                cumulative_ete_seconds: Some(prediction.prediction.total_ete_seconds),
+                cumulative_fuel_gal: Some(prediction.prediction.total_fuel_gal),
+                estimate_kind: crate::FlightEstimateKind::Modeled,
+            },
+        )
+    });
     let estimate_basis = if use_live_eta {
         crate::FlightPlanEstimateBasis::LiveGroundSpeed
     } else if modeled_prediction.is_some() {
@@ -2346,14 +2358,7 @@ pub(crate) fn flight_plan_ui_projection(
             &computer,
             total_remaining_distance_nm,
             summary_tone,
-            modeled_prediction
-                .as_ref()
-                .map(|prediction| crate::FlightTimeFuelEstimate {
-                    leg_ete_seconds: None,
-                    cumulative_ete_seconds: Some(prediction.prediction.total_ete_seconds),
-                    cumulative_fuel_gal: Some(prediction.prediction.total_fuel_gal),
-                    estimate_kind: crate::FlightEstimateKind::Modeled,
-                }),
+            destination_estimate.expect("total distance has a destination estimate"),
         ));
     }
     ui_state.data_columns = computer.flight_plan_columns();
@@ -2364,6 +2369,7 @@ pub(crate) fn flight_plan_ui_projection(
     Ok(FlightPlanUiProjection {
         ui_state,
         materialized,
+        destination_estimate,
         aircraft_plan_view_path: aircraft.definition.plan_view_path,
     })
 }
@@ -2456,7 +2462,7 @@ fn flight_plan_summary_row(
     computer: &crate::FlightDataComputer,
     total_distance_nm: f64,
     tone: crate::FlightDataCellTone,
-    modeled_estimate: Option<crate::FlightTimeFuelEstimate>,
+    destination_estimate: crate::FlightTimeFuelEstimate,
 ) -> crate::planning::FlightPlanDisplayRowUiView {
     crate::planning::FlightPlanDisplayRowUiView {
         uid: "flight-plan:summary".to_string(),
@@ -2468,15 +2474,10 @@ fn flight_plan_summary_row(
         procedure_id: None,
         procedure_kind: None,
         leg_index: None,
-        data_cells: modeled_estimate.map_or_else(
-            || computer.flight_plan_summary_cells(Some(total_distance_nm), tone),
-            |estimate| {
-                computer.flight_plan_summary_cells_with_estimate(
-                    Some(total_distance_nm),
-                    tone,
-                    estimate,
-                )
-            },
+        data_cells: computer.flight_plan_summary_cells_with_estimate(
+            Some(total_distance_nm),
+            tone,
+            destination_estimate,
         ),
         show_plate_target_id: None,
         chart_airport_id: None,

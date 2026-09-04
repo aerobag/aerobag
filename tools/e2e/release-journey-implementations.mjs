@@ -2617,7 +2617,12 @@ async function altitudePlanner(runtime) {
 
   await runtime.openPage("flight_plan");
   await appendRoute(runtime, "KSEA KPAE");
-  await runtime.openPage("altitude_planner");
+  const openedFromPlan = await runtime.action(
+    "open Altitude Planner from Flight Plan",
+    "plan-estimate-mode",
+    { complete: () => runtime.driver.readElement("page:altitude_planner") },
+  );
+  runtime.check("altitude.open-from-plan", Boolean(openedFromPlan));
   const initialPanel = await runtime.eventually("altitude comparison panel", () =>
     runtime.driver.readElement("altitude-comparison-panel"), E2E_TIMING.resourceMs);
   const initialText = initialPanel.text;

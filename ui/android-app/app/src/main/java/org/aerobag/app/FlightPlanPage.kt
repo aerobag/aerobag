@@ -42,7 +42,6 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -53,6 +52,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
@@ -337,6 +338,31 @@ internal fun flightPlanStateProjection(plan: FlightPlanUiState): String {
         ":to:${guidance?.activeToRowUid ?: "none"}"
 }
 
+internal fun packedFlightPlanControlRowCount(
+    availableWidth: Float,
+    itemWidths: List<Float>,
+    gap: Float,
+): Int {
+    require(availableWidth > 0f)
+    require(itemWidths.all { it > 0f })
+    require(gap >= 0f)
+    if (itemWidths.isEmpty()) return 0
+
+    var rows = 1
+    var rowWidth = 0f
+    for (itemWidth in itemWidths) {
+        val candidateWidth = if (rowWidth == 0f) itemWidth else rowWidth + gap + itemWidth
+        if (rowWidth > 0f && candidateWidth > availableWidth) {
+            rows += 1
+            rowWidth = itemWidth
+        } else {
+            rowWidth = candidateWidth
+        }
+    }
+    return rows
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
@@ -374,7 +400,6 @@ internal fun FlightPlanPage(
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
     val planDataScrollState = rememberScrollState()
-    val planControlScrollState = rememberScrollState()
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
         try {
@@ -403,6 +428,18 @@ internal fun FlightPlanPage(
         buildFlightPlanDisplayBlocks(rows)
     }
     val configuration = LocalConfiguration.current
+    val planControlItemSize = ThumbSize + 8.dp
+    val planEstimateWidth = ThumbSize * 3.2f
+    val planControlAvailableWidth = configuration.screenWidthDp.dp - ThumbGap * 2f
+    val planControlRowCount = packedFlightPlanControlRowCount(
+        availableWidth = planControlAvailableWidth.value,
+        itemWidths = List(planControls.size) { planControlItemSize.value } + planEstimateWidth.value,
+        gap = ThumbGap.value,
+    )
+    val planFooterHeight =
+        planControlItemSize * planControlRowCount.toFloat() +
+            ThumbSize +
+            ThumbGap * (planControlRowCount + 1).toFloat()
     val narrowPortraitWaypointTray =
         configuration.screenWidthDp <= 720 && configuration.screenHeightDp > configuration.screenWidthDp
     val waypointActionButtonWidth = ThumbSize * 2.5f
@@ -750,7 +787,7 @@ internal fun FlightPlanPage(
                     top = ThumbGap,
                     start = ThumbGap,
                     end = ThumbGap,
-                    bottom = ThumbSize * 2f + ThumbGap * 2f,
+                    bottom = planFooterHeight,
                 ),
             verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         ) {
@@ -931,21 +968,22 @@ internal fun FlightPlanPage(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(ThumbSize * 2f + ThumbGap * 2f)
+                .height(planFooterHeight)
                 .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap),
         ) {
-            Row(
+            FlowRow(
                 modifier =
                     Modifier
-                        .align(Alignment.TopStart)
-                        .horizontalScroll(planControlScrollState)
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
                         .testTag("parity:plan-controls"),
-                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
                 planControls.forEach { control ->
                     SelectedControlHighlightFrame(
                         selected = control.selected,
-                        modifier = Modifier.size(ThumbSize + 8.dp),
+                        modifier = Modifier.size(planControlItemSize),
                     ) {
                         CompactSquareButton(
                             label = control.label,
@@ -964,8 +1002,12 @@ internal fun FlightPlanPage(
                 }
                 Surface(
                     modifier = Modifier
-                        .width(ThumbSize * 3.2f)
+                        .width(planEstimateWidth)
                         .height(ThumbSize)
+                        .e2eIndexedControl(
+                            semanticTag = "parity:plan-estimate-mode",
+                            state = "enabled:true",
+                        )
                         .testTag("parity:plan-estimate-mode")
                         .clickable { onSelectPage(AppPage.AltitudePlanner) },
                     color = uiTheme.controls.panelBg,

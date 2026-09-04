@@ -80,7 +80,7 @@ export const RELEASE_JOURNEYS = Object.freeze([
     "plate.composite-scroll",
   ]),
   journey("shared.altitude-planner", "p1", shared, [
-    "altitude.aircraft", "altitude.aircraft-profile", "altitude.wind-model",
+    "altitude.open-from-plan", "altitude.aircraft", "altitude.aircraft-profile", "altitude.wind-model",
     "altitude.time", "altitude.altitude", "altitude.changed-estimate",
     "altitude.forecast-fallback", "altitude.unavailable-reason",
   ]),

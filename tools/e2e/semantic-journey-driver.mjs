@@ -294,6 +294,9 @@ export function webTestIdSelector(testId) {
 }
 
 function webActionSelectors(actionId) {
+  if (actionId.startsWith("plan-row-action:")) {
+    return [webTestIdSelector(`plan-row-action-${actionId.slice("plan-row-action:".length)}`)];
+  }
   if (actionId.startsWith("plan-row:")) {
     return [webTestIdSelector(`plan-row-${actionId.slice("plan-row:".length)}`)];
   }
@@ -723,6 +726,9 @@ const ANDROID_CLOUD_ACTION_IDS = new Set([
 const ANDROID_MAX_VIRTUALIZED_REVEAL_STEPS = 64;
 
 export function androidActionCandidates(actionId) {
+  if (actionId.startsWith("plan-row-action:")) {
+    return [`parity:plan-row-action:${actionId.slice("plan-row-action:".length)}`];
+  }
   if (actionId === "ownship-source-button") return ["parity:ownship-launcher"];
   if (actionId === "playback-play-toggle") return ["parity:playback-play-toggle"];
   if (actionId.startsWith("plan-row:")) {
@@ -1491,12 +1497,13 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
   }
 
   async readModal(modalId) {
-    const queried = this.readScalarProjection("parity:map-selection-state:");
-    const state = queried[0]?.["state-description"] ?? "";
-    const detailId = decodeURIComponent(semanticProjectionFields(state).detail ?? "none");
-    return detailId === modalId
-      ? { test_id: modalId, state }
-      : null;
+    for (const projection of ["parity:map-selection-state:", "parity:flight-plan-overlay-state:"]) {
+      const queried = this.readScalarProjection(projection);
+      const state = queried[0]?.["state-description"] ?? "";
+      const detailId = decodeURIComponent(semanticProjectionFields(state).detail ?? "none");
+      if (detailId === modalId) return { test_id: modalId, state };
+    }
+    return null;
   }
 
   async revealElement(elementId) {

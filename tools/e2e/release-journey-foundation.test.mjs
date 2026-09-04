@@ -2441,7 +2441,7 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
   assert.match(mapExplorer, /R\.id\.e2e_flight_plan_route_overlay_projection/);
   assert.match(mapExplorer, /flightPlanRouteOverlayProjectionState\(/);
   assert.match(mainActivity, /R\.id\.e2e_flight_plan_overlay_projection/);
-  assert.match(mainActivity, /flightPlanOverlayController\.state is FlightPlanOverlayState\.RowTray/);
+  assert.match(mainActivity, /flightPlanOverlayController\.state\.e2eProjectionState\(\)/);
   assert.match(mainActivity, /parity:startup-state:ready:/);
   assert.match(
     harness,
@@ -3814,7 +3814,7 @@ test("Android observes a named map selection through its bounded scalar projecti
   assert.doesNotMatch(selectionBranch, /queryAndroidExactProjection\(this\.serial, prefix/);
 });
 
-test("Android modal presence and absence use only the fixed scalar projection", () => {
+test("Android modal presence and absence use fixed scalar projections for both modal hosts", () => {
   const source = readFileSync(
     new URL("./semantic-journey-driver.mjs", import.meta.url),
     "utf8",
@@ -3823,7 +3823,11 @@ test("Android modal presence and absence use only the fixed scalar projection", 
     source.lastIndexOf("  async readModal(modalId)"),
     source.lastIndexOf("  async revealElement(elementId)"),
   );
-  assert.match(method, /this\.readScalarProjection\("parity:map-selection-state:"\)/);
+  assert.match(
+    method,
+    /\["parity:map-selection-state:", "parity:flight-plan-overlay-state:"\]/,
+  );
+  assert.match(method, /this\.readScalarProjection\(projection\)/);
   assert.match(method, /detailId === modalId/);
   assert.doesNotMatch(method, /queryFirstAndroidSemanticNode|dumpAndroid/);
 });
@@ -4806,6 +4810,15 @@ test("Android semantic aliases map shared flight-plan controls to core enum ids"
     androidSemanticTag("plan-control:toggle_sequencing_suspension"),
     "parity:plan-control:ToggleSequencingSuspension",
   );
+});
+
+test("flight-plan row action selectors cannot alias map-inspector actions", () => {
+  assert.deepEqual(androidActionCandidates("plan-row-action:plates"), [
+    "parity:plan-row-action:plates",
+  ]);
+  assert.deepEqual(androidActionCandidates("plates"), [
+    "parity:map-selection-action:plates",
+  ]);
 });
 
 test("Android Cloud actions use exact selectors and require visible scroll reachability", () => {

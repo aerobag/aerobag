@@ -3548,12 +3548,7 @@ internal fun AerobagApp(
             )
             E2eProjectionView(
                 viewId = R.id.e2e_flight_plan_overlay_projection,
-                state = "row_tray:" +
-                    if (flightPlanOverlayController.state is FlightPlanOverlayState.RowTray) {
-                        "open"
-                    } else {
-                        "closed"
-                    },
+                state = flightPlanOverlayController.state.e2eProjectionState(),
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .offset(x = 3.dp)

@@ -52,6 +52,8 @@ internal sealed interface FlightPlanOverlayAction {
         val error: String,
     ) : FlightPlanOverlayAction
 
+    data object DismissRowTray : FlightPlanOverlayAction
+
     data object Dismiss : FlightPlanOverlayAction
 }
 
@@ -73,6 +75,8 @@ internal fun FlightPlanOverlayState.transition(action: FlightPlanOverlayAction):
             } else {
                 this
             }
+        FlightPlanOverlayAction.DismissRowTray ->
+            if (this is FlightPlanOverlayState.RowTray) FlightPlanOverlayState.None else this
         FlightPlanOverlayAction.Dismiss -> FlightPlanOverlayState.None
     }
 
@@ -89,6 +93,20 @@ internal fun FlightPlanOverlayState.present(): FlightPlanOverlayPresentation =
         is FlightPlanOverlayState.Weather -> FlightPlanOverlayPresentation(null, detail, null)
         is FlightPlanOverlayState.AirportInfo -> FlightPlanOverlayPresentation(null, null, this)
     }
+
+internal fun FlightPlanOverlayState.e2eProjectionState(): String {
+    val rowTray = if (this is FlightPlanOverlayState.RowTray) "open" else "closed"
+    val detailId =
+        when (this) {
+            is FlightPlanOverlayState.Weather -> "weather-detail-modal"
+            is FlightPlanOverlayState.AirportInfo -> "airport-info-modal:$airportId"
+            else -> "none"
+        }
+    return "row_tray:$rowTray:detail:${e2eProjectionToken(detailId)}"
+}
+
+private fun e2eProjectionToken(value: String): String =
+    value.replace("%", "%25").replace(":", "%3A")
 
 @Stable
 internal class FlightPlanOverlayController {

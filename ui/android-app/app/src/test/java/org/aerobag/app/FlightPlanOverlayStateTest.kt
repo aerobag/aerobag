@@ -98,6 +98,46 @@ class FlightPlanOverlayStateTest {
     }
 
     @Test
+    fun dismissingSourceRowTrayCannotEraseReplacementDetailModal() {
+        val weatherState =
+            FlightPlanOverlayState.RowTray("row-KBOI")
+                .transition(FlightPlanOverlayAction.ShowWeather(weather))
+                .transition(FlightPlanOverlayAction.DismissRowTray)
+        val airportInfoState =
+            FlightPlanOverlayState.RowTray("row-KBOI")
+                .transition(FlightPlanOverlayAction.ShowAirportInfo("KBOI"))
+                .transition(FlightPlanOverlayAction.DismissRowTray)
+
+        assertEquals(weather, weatherState.present().weatherDetail)
+        assertEquals("KBOI", airportInfoState.present().airportInfo?.airportId)
+    }
+
+    @Test
+    fun dismissingSourceRowTrayClosesOnlyTheRowTray() {
+        val state =
+            FlightPlanOverlayState.RowTray("row-KBOI")
+                .transition(FlightPlanOverlayAction.DismissRowTray)
+
+        assertEquals(FlightPlanOverlayState.None, state)
+    }
+
+    @Test
+    fun e2eProjectionIdentifiesEveryFlightPlanOverlayKind() {
+        assertEquals(
+            "row_tray:open:detail:none",
+            FlightPlanOverlayState.RowTray("row-KBOI").e2eProjectionState(),
+        )
+        assertEquals(
+            "row_tray:closed:detail:weather-detail-modal",
+            FlightPlanOverlayState.Weather(weather).e2eProjectionState(),
+        )
+        assertEquals(
+            "row_tray:closed:detail:airport-info-modal%3AKBOI",
+            FlightPlanOverlayState.AirportInfo("KBOI").e2eProjectionState(),
+        )
+    }
+
+    @Test
     fun dismissClearsEitherOverlayKind() {
         val state =
             FlightPlanOverlayState.RowTray("row-KBOI")

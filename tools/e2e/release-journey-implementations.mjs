@@ -656,7 +656,7 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
     if (trayStaysOpen && !observeResult) {
       throw new Error(`${actionId} ${label} must declare its visible row result`);
     }
-    completion = await runtime.action(`${actionId} ${label}`, actionId, {
+    completion = await runtime.action(`${actionId} ${label}`, `plan-row-action:${actionId}`, {
       complete: async () => {
         const open = (await runtime.driver.readProjection("parity:plan-row-action:")).length > 0;
         if (open !== trayStaysOpen) return null;
@@ -676,7 +676,7 @@ async function planAction(runtime, label, actionId, { observeResult = null } = {
     };
     const complete = completionByAction[actionId];
     if (!complete) throw new Error(`plan action ${actionId} has no semantic completion contract`);
-    await runtime.action(`${actionId} ${label}`, actionId, {
+    await runtime.action(`${actionId} ${label}`, `plan-row-action:${actionId}`, {
       complete: complete,
     });
   }
@@ -1017,7 +1017,7 @@ async function assertProcedurePainted(runtime, assertionId) {
 
 async function assertProcedureShowPlate(runtime, procedureId, assertionId, expectedLabel = procedureId) {
   await openProcedureRow(runtime, procedureId);
-  const plate = await runtime.action(`show plate for ${procedureId}`, "show_plate", {
+  const plate = await runtime.action(`show plate for ${procedureId}`, "plan-row-action:show_plate", {
     complete: () => runtime.driver.readElement("page:plate"),
   });
   const chart = await runtime.eventually("selected procedure plate", async () => {
@@ -1031,7 +1031,7 @@ async function removeProcedure(runtime, procedureId, assertionId) {
   await runtime.openPage("flight_plan");
   await openProcedureRow(runtime, procedureId);
   const beforeRevision = await runtime.driver.readSessionRevision();
-  await runtime.action(`remove procedure ${procedureId}`, "remove_procedure", {
+  await runtime.action(`remove procedure ${procedureId}`, "plan-row-action:remove_procedure", {
     complete: async () => {
       const tray = await runtime.driver.readElement("plan-row-tray-scrim");
       const revision = await runtime.driver.readSessionRevision();
@@ -2372,16 +2372,24 @@ async function inspectorDetails(runtime) {
     Boolean(unavailableArrival && !unavailableArrival.enabled && disabledReason),
     disabledReason,
   );
-  for (const [actionId, assertionId] of [
-    ["waypoint_info", "plan.row-waypoint-info"],
-    ["weather", "plan.row-weather"],
-    ["plates", "plan.row-plates"],
-  ]) {
-    const action = await runtime.driver.readElement(runtime.platform === "web"
-      ? `plan-row-action-${actionId}`
-      : `plan-row-action:${actionId}`);
-    runtime.check(assertionId, Boolean(action), action?.text);
-  }
+  const planInfo = await runtime.action("open flight-plan airport info", "plan-row-action:waypoint_info", {
+    complete: () => runtime.driver.readModal("airport-info-modal:KSEA"),
+  });
+  runtime.check("plan.row-waypoint-info-opens", Boolean(planInfo));
+  await closeMapDetail(runtime, "airport-info-modal:KSEA");
+
+  await openPlanRow(runtime, "KSEA");
+  const planWeather = await runtime.action("open flight-plan weather", "plan-row-action:weather", {
+    complete: () => runtime.driver.readModal("weather-detail-modal"),
+  });
+  runtime.check("plan.row-weather-opens", Boolean(planWeather));
+  await closeMapDetail(runtime, "weather-detail-modal");
+
+  await openPlanRow(runtime, "KSEA");
+  const planPlates = await runtime.action("open flight-plan airport plates", "plan-row-action:plates", {
+    complete: () => runtime.driver.readElement("page:plate"),
+  });
+  runtime.check("plan.row-plates-opens", Boolean(planPlates));
 }
 
 async function flightPlanAirwayEstimates(runtime) {

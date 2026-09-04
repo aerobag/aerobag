@@ -611,6 +611,14 @@ internal fun FlightPlanPage(
         airportInsert = null
     }
 
+    fun dismissRowTray() {
+        onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
+        selectedWaypointTrayAnchor = null
+        airwayPicker = null
+        procedurePicker = null
+        airportInsert = null
+    }
+
     BackHandler(enabled = overlayState !is FlightPlanOverlayState.None) {
         closePanels()
     }
@@ -1428,7 +1436,7 @@ internal fun FlightPlanPage(
                                             null -> Unit
                                         }
                                         if (decision.dismissTray) {
-                                            closePanels()
+                                            dismissRowTray()
                                         }
                                     },
                                 )

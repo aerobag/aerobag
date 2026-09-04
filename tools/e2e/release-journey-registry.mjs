@@ -64,8 +64,8 @@ export const RELEASE_JOURNEYS = Object.freeze([
   journey("shared.inspector-details", "p1", shared, [
     "inspector.airport-priority", "inspector.spot-fallback", "inspector.distance-live",
     "inspector.terrain-async", "inspector.weather", "inspector.info",
-    "inspector.plates", "inspector.disabled-reason", "plan.row-waypoint-info",
-    "plan.row-weather", "plan.row-plates",
+    "inspector.plates", "inspector.disabled-reason", "plan.row-waypoint-info-opens",
+    "plan.row-weather-opens", "plan.row-plates-opens",
   ]),
   journey("shared.airport-info", "p1", shared, [
     "airport-info.scroll", "airport-info.time-toggle", "airport-info.tpa-published",

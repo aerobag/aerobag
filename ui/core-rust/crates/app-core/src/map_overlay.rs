@@ -70,6 +70,7 @@ const WORLD_SIZE: f64 = 256.0;
 const MAX_LATITUDE: f64 = 85.051_128_78;
 const UI_THUMB_SIZE_LOGICAL_PX: f64 = 56.0;
 const INSPECTOR_HIT_RADIUS_THUMBS: f64 = 0.5;
+const RENDERED_FEATURE_HIT_SLOP_THUMBS: f64 = 0.125;
 const TFR_ACTIVE_STYLE_KEY: &str = "tfr_active";
 const TFR_UPCOMING_STYLE_KEY: &str = "tfr_upcoming";
 const WEATHER_STATION_AIRPORT_ALIAS_MAX_DISTANCE_NM: f64 = 5.0;
@@ -87,7 +88,30 @@ struct VectorDisplayBudgetAudit {
 
 struct VectorDisplayBudgetBucket {
     layer: &'static str,
-    features: Vec<VisibleMapFeature>,
+    features: Vec<PointSceneDisplayFeature>,
+}
+
+struct PointSceneDisplayFeature {
+    candidate_index: Option<usize>,
+    feature: VisibleMapFeature,
+}
+
+struct PointSceneCandidate<'a> {
+    record: &'a PointVectorRecord,
+    selection_symbol: NavSymbolFeature,
+    selection_feature: VisibleMapFeature,
+    rendered_feature: Option<VisibleMapFeature>,
+}
+
+struct PointVectorScene<'a> {
+    candidates: Vec<PointSceneCandidate<'a>>,
+    visible_features: Vec<VisibleMapFeature>,
+    needed_vector_tiles: Vec<VectorTileRequest>,
+    point_tile_count: usize,
+    vector_budget: VectorDisplayBudgetAudit,
+    point_vector_ms: u64,
+    obstacle_ms: u64,
+    budget_ms: u64,
 }
 
 fn bump_layer_count(counts: &mut BTreeMap<String, usize>, layer: &str) {
@@ -1202,7 +1226,6 @@ pub struct VectorOverlayInputRequests {
 }
 
 struct PointVectorTileScan {
-    tile_count: usize,
     needed_tiles: Vec<VectorTileRequest>,
 }
 
@@ -2247,7 +2270,6 @@ where
         height_px,
         point_display_scale,
     );
-    let tile_count = tile_window.len();
     let mut needed_tiles = Vec::new();
     let mut needed_seen = BTreeSet::new();
     for tile in &tile_window {
@@ -2264,9 +2286,254 @@ where
         };
         on_loaded(tile, payload);
     }
-    PointVectorTileScan {
-        tile_count,
-        needed_tiles,
+    PointVectorTileScan { needed_tiles }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_point_vector_scene<'a>(
+    metrics: &MapSurfaceMetrics,
+    config: &MapOverlayConfig,
+    scan_vectors: bool,
+    render_vectors: bool,
+    vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+    obstacle_layer: Option<&ObstacleLayerConfig>,
+    obstacle_tile_cache: &HashMap<String, PointTilePayload>,
+    obstacle_context: Option<&ObstacleOverlayContext>,
+) -> PointVectorScene<'a> {
+    let mut candidates = Vec::new();
+    let mut needed_vector_tiles = Vec::new();
+    let mut needed_seen = BTreeSet::new();
+    let mut vector_budget = VectorDisplayBudgetAudit::default();
+    let mut vector_budget_buckets = vector_display_budget_buckets();
+    let mut weather_camera_airport_idents = HashMap::new();
+    let projection = MapProjectionContext::new(metrics);
+    let mut point_tile_count = 0_usize;
+    let mut point_vector_ms = 0_u64;
+    let mut obstacle_ms = 0_u64;
+
+    if scan_vectors {
+        let point_vector_started_at = core_clock_ms();
+        let tiles = visible_point_display_tile_window(
+            config,
+            &metrics.viewport,
+            metrics.width_px,
+            metrics.height_px,
+            metrics.display_scale,
+        );
+        point_tile_count = tiles.len();
+        for tile in &tiles {
+            let key =
+                aggregate_vector_tile_cache_key(tile.request.z, tile.request.x, tile.request.y);
+            let Some(payload) = vector_tile_cache.get(&key) else {
+                if needed_seen.insert(key) {
+                    needed_vector_tiles.push(aggregate_vector_tile_request(
+                        tile.request.z,
+                        tile.request.x,
+                        tile.request.y,
+                    ));
+                }
+                continue;
+            };
+            for record in vector_tile_point_records(payload, &tile.request.layer) {
+                vector_budget.scanned_records += 1;
+                let is_airport = selection_record_is_airport(record);
+                let is_displayable = should_display_record(record);
+                let point = world_to_screen_with_x_offset(
+                    projection.center_world,
+                    projection.scale,
+                    metrics.width_px,
+                    metrics.height_px,
+                    LatLon {
+                        lat: record.lat,
+                        lon: record.lon,
+                    },
+                    tile.world_x_offset,
+                );
+                let candidate_index = if is_airport || is_displayable {
+                    selection_symbol_for_point(record, is_airport).map(|selection_symbol| {
+                        let selection_feature = visible_map_feature_from_symbol(
+                            record.id.clone(),
+                            selection_symbol.clone(),
+                            point,
+                            VectorIdentLabelStyle::Default,
+                        );
+                        let index = candidates.len();
+                        candidates.push(PointSceneCandidate {
+                            record,
+                            selection_symbol,
+                            selection_feature,
+                            rendered_feature: None,
+                        });
+                        index
+                    })
+                } else {
+                    None
+                };
+                if !render_vectors {
+                    continue;
+                }
+                if !is_displayable {
+                    bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.request.layer);
+                    continue;
+                }
+                let Some(symbol) = point_vector_record_to_symbol_feature(
+                    record,
+                    obstacle_context.and_then(|context| context.altitude_ft),
+                ) else {
+                    bump_layer_count(&mut vector_budget.no_symbol_by_layer, &tile.request.layer);
+                    continue;
+                };
+                vector_budget.displayable_records += 1;
+                let feature = visible_map_feature_from_symbol(
+                    record.id.clone(),
+                    symbol,
+                    point,
+                    VectorIdentLabelStyle::Default,
+                );
+                remember_weather_camera_airport_ident(record, &mut weather_camera_airport_idents);
+                if let Some(bucket_index) = vector_display_budget_bucket_index(&feature.symbol_kind)
+                {
+                    vector_budget_buckets[bucket_index]
+                        .features
+                        .push(PointSceneDisplayFeature {
+                            candidate_index,
+                            feature,
+                        });
+                }
+            }
+        }
+        point_vector_ms = overlay_elapsed_ms(point_vector_started_at);
+    }
+
+    if render_vectors {
+        let obstacle_started_at = core_clock_ms();
+        if let Some(obstacle_layer) = obstacle_layer {
+            let obstacle_tiles = visible_obstacle_tile_window(
+                obstacle_layer,
+                &metrics.viewport,
+                metrics.width_px,
+                metrics.height_px,
+                obstacle_context,
+                metrics.display_scale,
+            );
+            point_tile_count += obstacle_tiles.len();
+            for tile in obstacle_tiles {
+                let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
+                let Some(payload) = obstacle_tile_cache.get(&key) else {
+                    continue;
+                };
+                for record in &payload.records {
+                    vector_budget.scanned_records += 1;
+                    if !should_display_record(record) {
+                        bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.layer);
+                        continue;
+                    }
+                    let Some(symbol) = point_vector_record_to_symbol_feature(
+                        record,
+                        obstacle_context.and_then(|context| context.altitude_ft),
+                    ) else {
+                        bump_layer_count(&mut vector_budget.no_symbol_by_layer, &tile.layer);
+                        continue;
+                    };
+                    vector_budget.displayable_records += 1;
+                    let point = nearest_wrapped_screen_point(
+                        projection.center_world,
+                        projection.scale,
+                        metrics.width_px,
+                        metrics.height_px,
+                        LatLon {
+                            lat: record.lat,
+                            lon: record.lon,
+                        },
+                    );
+                    let feature = visible_map_feature_from_symbol(
+                        record.id.clone(),
+                        symbol,
+                        point,
+                        VectorIdentLabelStyle::Default,
+                    );
+                    if let Some(bucket_index) =
+                        vector_display_budget_bucket_index(&feature.symbol_kind)
+                    {
+                        vector_budget_buckets[bucket_index].features.push(
+                            PointSceneDisplayFeature {
+                                candidate_index: None,
+                                feature,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        obstacle_ms = overlay_elapsed_ms(obstacle_started_at);
+    }
+
+    let budget_started_at = core_clock_ms();
+    let mut rendered = Vec::new();
+    if render_vectors {
+        for bucket_index in 0..vector_budget_buckets.len() {
+            let bucket_len = vector_budget_buckets[bucket_index].features.len();
+            if bucket_len == 0 {
+                continue;
+            }
+            let remaining_budget = VECTOR_DISPLAY_FEATURE_LIMIT.saturating_sub(rendered.len());
+            if bucket_len <= remaining_budget {
+                add_layer_count(
+                    &mut vector_budget.drawn_by_layer,
+                    vector_budget_buckets[bucket_index].layer,
+                    bucket_len,
+                );
+                rendered.append(&mut vector_budget_buckets[bucket_index].features);
+            } else {
+                for omitted_bucket in vector_budget_buckets.iter().skip(bucket_index) {
+                    let omitted_len = omitted_bucket.features.len();
+                    vector_budget.omitted_after_cap += omitted_len;
+                    add_layer_count(
+                        &mut vector_budget.omitted_by_layer,
+                        omitted_bucket.layer,
+                        omitted_len,
+                    );
+                }
+                break;
+            }
+        }
+    }
+
+    let mut visible_features = rendered
+        .iter()
+        .map(|rendered| rendered.feature.clone())
+        .collect::<Vec<_>>();
+    layout_weather_camera_badges(
+        &mut visible_features,
+        &weather_camera_airport_idents,
+        metrics.display_scale,
+    );
+    for (rendered, feature) in rendered.iter_mut().zip(visible_features) {
+        rendered.feature = feature;
+    }
+    rendered.sort_by(|left, right| {
+        compare_visible_point_features_for_paint(&left.feature, &right.feature)
+    });
+    let visible_features = rendered
+        .into_iter()
+        .map(|rendered| {
+            if let Some(candidate_index) = rendered.candidate_index {
+                candidates[candidate_index].rendered_feature = Some(rendered.feature.clone());
+            }
+            rendered.feature
+        })
+        .collect();
+    let budget_ms = overlay_elapsed_ms(budget_started_at);
+
+    PointVectorScene {
+        candidates,
+        visible_features,
+        needed_vector_tiles,
+        point_tile_count,
+        vector_budget,
+        point_vector_ms,
+        obstacle_ms,
+        budget_ms,
     }
 }
 
@@ -2296,11 +2563,6 @@ pub fn query_map_overlay_for_surface(
     let height_px = metrics.height_px;
     let point_display_scale = metrics.display_scale;
     let decision = overlay_surface_decision(*metrics, config);
-    let mut needed_vector_tiles = Vec::new();
-    let mut visible_features = Vec::new();
-    let mut vector_budget = VectorDisplayBudgetAudit::default();
-    let mut vector_budget_buckets = vector_display_budget_buckets();
-    let mut weather_camera_airport_idents = HashMap::new();
     let projection = MapProjectionContext::new(metrics);
     let center_world = projection.center_world;
     let scale = projection.scale;
@@ -2313,159 +2575,25 @@ pub fn query_map_overlay_for_surface(
         height_px,
     );
     let offline_ms = overlay_elapsed_ms(offline_started_at);
-    let mut point_tile_count = 0_usize;
-    let mut point_vector_ms = 0_u64;
-    let mut obstacle_ms = 0_u64;
-
-    if display_vectors {
-        let point_vector_started_at = core_clock_ms();
-        let point_scan = visit_point_vector_tiles(
-            config,
-            viewport,
-            width_px,
-            height_px,
-            point_display_scale,
-            vector_tile_cache,
-            |tile, payload| {
-                for record in vector_tile_point_records(payload, &tile.request.layer) {
-                    vector_budget.scanned_records += 1;
-                    if !should_display_record(record) {
-                        bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.request.layer);
-                        continue;
-                    }
-                    let Some(symbol) = point_vector_record_to_symbol_feature(
-                        record,
-                        obstacle_context.and_then(|context| context.altitude_ft),
-                    ) else {
-                        bump_layer_count(
-                            &mut vector_budget.no_symbol_by_layer,
-                            &tile.request.layer,
-                        );
-                        continue;
-                    };
-                    vector_budget.displayable_records += 1;
-                    let point = world_to_screen_with_x_offset(
-                        center_world,
-                        scale,
-                        width_px,
-                        height_px,
-                        LatLon {
-                            lat: record.lat,
-                            lon: record.lon,
-                        },
-                        tile.world_x_offset,
-                    );
-                    let feature = visible_map_feature_from_symbol(
-                        record.id.clone(),
-                        symbol,
-                        point,
-                        VectorIdentLabelStyle::Default,
-                    );
-                    remember_weather_camera_airport_ident(
-                        record,
-                        &mut weather_camera_airport_idents,
-                    );
-                    if let Some(bucket_index) =
-                        vector_display_budget_bucket_index(&feature.symbol_kind)
-                    {
-                        vector_budget_buckets[bucket_index].features.push(feature);
-                    }
-                }
-            },
-        );
-        point_tile_count = point_scan.tile_count;
-        needed_vector_tiles = point_scan.needed_tiles;
-        point_vector_ms = overlay_elapsed_ms(point_vector_started_at);
-        let obstacle_started_at = core_clock_ms();
-        if let Some(obstacle_layer) = config.obstacle_layer.as_ref() {
-            let obstacle_tiles = visible_obstacle_tile_window(
-                obstacle_layer,
-                viewport,
-                width_px,
-                height_px,
-                obstacle_context,
-                point_display_scale,
-            );
-            point_tile_count += obstacle_tiles.len();
-            for tile in obstacle_tiles {
-                let key = tile_key(&tile.layer, tile.z, tile.x, tile.y);
-                let Some(payload) = obstacle_tile_cache.get(&key) else {
-                    continue;
-                };
-                for record in &payload.records {
-                    vector_budget.scanned_records += 1;
-                    if !should_display_record(record) {
-                        bump_layer_count(&mut vector_budget.hidden_by_layer, &tile.layer);
-                        continue;
-                    }
-                    let Some(symbol) = point_vector_record_to_symbol_feature(
-                        record,
-                        obstacle_context.and_then(|context| context.altitude_ft),
-                    ) else {
-                        bump_layer_count(&mut vector_budget.no_symbol_by_layer, &tile.layer);
-                        continue;
-                    };
-                    vector_budget.displayable_records += 1;
-                    let point = nearest_wrapped_screen_point(
-                        center_world,
-                        scale,
-                        width_px,
-                        height_px,
-                        LatLon {
-                            lat: record.lat,
-                            lon: record.lon,
-                        },
-                    );
-                    let feature = visible_map_feature_from_symbol(
-                        record.id.clone(),
-                        symbol,
-                        point,
-                        VectorIdentLabelStyle::Default,
-                    );
-                    if let Some(bucket_index) =
-                        vector_display_budget_bucket_index(&feature.symbol_kind)
-                    {
-                        vector_budget_buckets[bucket_index].features.push(feature);
-                    }
-                }
-            }
-        }
-        obstacle_ms = overlay_elapsed_ms(obstacle_started_at);
-    }
-    let budget_started_at = core_clock_ms();
-    for bucket_index in 0..vector_budget_buckets.len() {
-        let bucket_len = vector_budget_buckets[bucket_index].features.len();
-        if bucket_len == 0 {
-            continue;
-        }
-        let remaining_budget = VECTOR_DISPLAY_FEATURE_LIMIT.saturating_sub(visible_features.len());
-        if bucket_len <= remaining_budget {
-            add_layer_count(
-                &mut vector_budget.drawn_by_layer,
-                vector_budget_buckets[bucket_index].layer,
-                bucket_len,
-            );
-            visible_features.append(&mut vector_budget_buckets[bucket_index].features);
-        } else {
-            for omitted_bucket in vector_budget_buckets.iter().skip(bucket_index) {
-                let omitted_len = omitted_bucket.features.len();
-                vector_budget.omitted_after_cap += omitted_len;
-                add_layer_count(
-                    &mut vector_budget.omitted_by_layer,
-                    omitted_bucket.layer,
-                    omitted_len,
-                );
-            }
-            break;
-        }
-    }
-    layout_weather_camera_badges(
-        &mut visible_features,
-        &weather_camera_airport_idents,
-        point_display_scale,
+    let PointVectorScene {
+        candidates: _,
+        mut visible_features,
+        needed_vector_tiles,
+        point_tile_count,
+        vector_budget,
+        point_vector_ms,
+        obstacle_ms,
+        budget_ms,
+    } = build_point_vector_scene(
+        metrics,
+        config,
+        display_vectors,
+        display_vectors,
+        vector_tile_cache,
+        config.obstacle_layer.as_ref(),
+        obstacle_tile_cache,
+        obstacle_context,
     );
-    sort_visible_point_features_for_paint(&mut visible_features);
-    let budget_ms = overlay_elapsed_ms(budget_started_at);
     let mut data_status_records = if vector_budget.omitted_after_cap > 0 {
         let omitted_summary = layer_counts_summary(&vector_budget.omitted_by_layer);
         vec![DataStatusRecord::new(
@@ -2843,14 +2971,20 @@ fn point_feature_paint_rank(feature: &VisibleMapFeature) -> u8 {
     }
 }
 
+#[cfg(test)]
 fn sort_visible_point_features_for_paint(features: &mut [VisibleMapFeature]) {
-    features.sort_by(|left, right| {
-        point_feature_paint_rank(left)
-            .cmp(&point_feature_paint_rank(right))
-            .then_with(|| left.id.cmp(&right.id))
-            .then_with(|| left.screen_x.total_cmp(&right.screen_x))
-            .then_with(|| left.screen_y.total_cmp(&right.screen_y))
-    });
+    features.sort_by(compare_visible_point_features_for_paint);
+}
+
+fn compare_visible_point_features_for_paint(
+    left: &VisibleMapFeature,
+    right: &VisibleMapFeature,
+) -> std::cmp::Ordering {
+    point_feature_paint_rank(left)
+        .cmp(&point_feature_paint_rank(right))
+        .then_with(|| left.id.cmp(&right.id))
+        .then_with(|| left.screen_x.total_cmp(&right.screen_x))
+        .then_with(|| left.screen_y.total_cmp(&right.screen_y))
 }
 
 fn project_offline_regions(
@@ -3261,7 +3395,10 @@ pub struct MapSelectionQuery<'a> {
     pub config: &'a MapOverlayConfig,
     pub plan: Option<&'a FlightPlan>,
     pub click: LatLon,
+    pub display_vectors: bool,
     pub vector_tile_cache: &'a HashMap<String, VectorAggregateTilePayload>,
+    pub obstacle_tile_cache: Option<&'a HashMap<String, PointTilePayload>>,
+    pub obstacle_context: Option<&'a ObstacleOverlayContext>,
     pub metar_tile_cache: &'a HashMap<String, MetarTilePayload>,
     pub metar_payload: Option<&'a MetarProductPayload>,
     pub pirep_payload: Option<&'a PirepProductPayload>,
@@ -3292,7 +3429,10 @@ impl<'a> MapSelectionQuery<'a> {
             config,
             plan: None,
             click,
+            display_vectors: true,
             vector_tile_cache,
+            obstacle_tile_cache: None,
+            obstacle_context: None,
             metar_tile_cache,
             metar_payload: None,
             pirep_payload: None,
@@ -3354,7 +3494,10 @@ pub fn query_map_selection_for_surface_in_time_zone(
         config,
         plan,
         click,
+        display_vectors,
         vector_tile_cache,
+        obstacle_tile_cache,
+        obstacle_context,
         metar_tile_cache,
         metar_payload,
         pirep_payload,
@@ -3399,114 +3542,38 @@ pub fn query_map_selection_for_surface_in_time_zone(
     let mut offline_regions = BTreeMap::<String, Vec<&OfflineRegionRecord>>::new();
     let mut airspaces = Vec::new();
     let mut matched_nav_refs = BTreeSet::new();
-    let mut vector_layer_airport_ids = BTreeSet::new();
-    let mut nearest_weather_camera = None::<(f64, String)>;
-    let mut projected_records = Vec::<(&PointVectorRecord, bool, bool, NavSymbolFeature)>::new();
-    let mut projected_features = Vec::<VisibleMapFeature>::new();
-    let mut weather_camera_airport_idents = HashMap::new();
-
-    for tile in visible_point_display_tile_window(
+    let mut nearest_weather_camera = None::<(bool, f64, String)>;
+    let empty_obstacle_tile_cache = HashMap::new();
+    let point_scene = build_point_vector_scene(
+        metrics,
         config,
-        viewport,
-        width_px,
-        height_px,
-        point_display_scale,
-    ) {
-        let Some(payload) = vector_tile_cache.get(&aggregate_vector_tile_cache_key(
-            tile.request.z,
-            tile.request.x,
-            tile.request.y,
-        )) else {
-            continue;
-        };
-        for record in vector_tile_point_records(payload, &tile.request.layer) {
-            let is_airport = selection_record_is_airport(record);
-            let is_weather_camera = record.style_class == "weather_camera";
-            let is_displayed = should_display_record(record);
-            if !is_airport && !is_displayed {
-                continue;
-            }
-            let point = world_to_screen_with_x_offset(
-                center_world,
-                scale,
-                width_px,
-                height_px,
-                LatLon {
-                    lat: record.lat,
-                    lon: record.lon,
-                },
-                tile.world_x_offset,
-            );
-            if !is_airport && !is_weather_camera {
-                let distance_px = ((point.x - click_screen.x).powi(2)
-                    + (point.y - click_screen.y).powi(2))
-                .sqrt();
-                if distance_px > hit_radius_px {
-                    continue;
-                }
-                let Some(symbol) = selection_symbol_for_point(record, false) else {
-                    continue;
-                };
-                if record.style_class == "fix" || record.style_class == "nav" {
-                    let item = selection_item_for_point(
-                        record,
-                        &symbol,
-                        plan,
-                        AirportPlateAvailability::default(),
-                        None,
-                    );
-                    if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
-                        matched_nav_refs.insert(key);
-                    }
-                    navaids.push(MapSelectionPointMatch { item, distance_px });
-                }
-                continue;
-            }
-            let Some(symbol) = selection_symbol_for_point(record, is_airport) else {
-                continue;
-            };
-            remember_weather_camera_airport_ident(record, &mut weather_camera_airport_idents);
-            projected_features.push(visible_map_feature_from_symbol(
-                record.id.clone(),
-                symbol.clone(),
-                point,
-                VectorIdentLabelStyle::Default,
-            ));
-            projected_records.push((record, is_airport, is_displayed, symbol));
-        }
-    }
-
-    let displayed_indices = projected_records
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (_, _, is_displayed, _))| is_displayed.then_some(index))
-        .collect::<Vec<_>>();
-    let mut displayed_features = displayed_indices
-        .iter()
-        .map(|index| projected_features[*index].clone())
-        .collect::<Vec<_>>();
-    layout_weather_camera_badges(
-        &mut displayed_features,
-        &weather_camera_airport_idents,
-        point_display_scale,
+        true,
+        display_vectors,
+        vector_tile_cache,
+        config.obstacle_layer.as_ref(),
+        obstacle_tile_cache.unwrap_or(&empty_obstacle_tile_cache),
+        obstacle_context,
     );
-    for (index, displayed_feature) in displayed_indices.into_iter().zip(displayed_features) {
-        projected_features[index] = displayed_feature;
-    }
 
-    for ((record, is_airport, is_displayed, symbol), feature) in
-        projected_records.into_iter().zip(projected_features)
-    {
+    for candidate in point_scene.candidates {
+        let record = candidate.record;
+        let is_airport = selection_record_is_airport(record);
+        let rendered_hit = candidate
+            .rendered_feature
+            .as_ref()
+            .is_some_and(|feature| rendered_point_feature_contains(feature, click_screen, metrics));
+        let feature = candidate
+            .rendered_feature
+            .as_ref()
+            .unwrap_or(&candidate.selection_feature);
         let distance_px = ((feature.screen_x - click_screen.x).powi(2)
             + (feature.screen_y - click_screen.y).powi(2))
         .sqrt();
-        if distance_px > hit_radius_px {
+        if !rendered_hit && distance_px > hit_radius_px {
             continue;
         }
+        let symbol = candidate.selection_symbol;
         if is_airport {
-            if is_displayed {
-                vector_layer_airport_ids.insert(record.id.clone());
-            }
             let availability = selection_nav_ref(record, true)
                 .and_then(|nav_ref| match nav_ref {
                     NavRef::Airport(airport_id) => Some(airport_plate_availability(&airport_id)),
@@ -3532,17 +3599,48 @@ pub fn query_map_selection_for_surface_in_time_zone(
             if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
                 matched_nav_refs.insert(key);
             }
-            airports.push(MapSelectionPointMatch { item, distance_px });
+            airports.push(MapSelectionPointMatch {
+                item,
+                distance_px,
+                rendered_hit,
+            });
         } else if record.style_class == "weather_camera" {
             if let Some(item) = selection_item_for_weather_camera(record, symbol) {
-                let replace_nearest = nearest_weather_camera
-                    .as_ref()
-                    .is_none_or(|(nearest_distance, _)| distance_px < *nearest_distance);
+                let replace_nearest = nearest_weather_camera.as_ref().is_none_or(
+                    |(nearest_rendered_hit, nearest_distance, _)| {
+                        map_selection_hit_precedes(
+                            rendered_hit,
+                            distance_px,
+                            *nearest_rendered_hit,
+                            *nearest_distance,
+                        )
+                    },
+                );
                 if replace_nearest {
-                    nearest_weather_camera = Some((distance_px, item.id.clone()));
+                    nearest_weather_camera = Some((rendered_hit, distance_px, item.id.clone()));
                 }
-                weather.push(MapSelectionPointMatch { item, distance_px });
+                weather.push(MapSelectionPointMatch {
+                    item,
+                    distance_px,
+                    rendered_hit,
+                });
             }
+        } else if record.style_class == "fix" || record.style_class == "nav" {
+            let item = selection_item_for_point(
+                record,
+                &symbol,
+                plan,
+                AirportPlateAvailability::default(),
+                None,
+            );
+            if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
+                matched_nav_refs.insert(key);
+            }
+            navaids.push(MapSelectionPointMatch {
+                item,
+                distance_px,
+                rendered_hit,
+            });
         }
     }
 
@@ -3627,12 +3725,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
         }
     }
 
-    airports.sort_by(|left, right| {
-        vector_layer_airport_ids
-            .contains(&right.item.id)
-            .cmp(&vector_layer_airport_ids.contains(&left.item.id))
-            .then_with(|| compare_map_selection_point_matches(left, right))
-    });
+    airports.sort_by(compare_map_selection_point_matches);
     navaids.sort_by(compare_map_selection_point_matches);
     weather.sort_by(compare_map_selection_point_matches);
     let offline_region_items = offline_regions
@@ -3644,13 +3737,21 @@ pub fn query_map_selection_for_surface_in_time_zone(
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let nearest_airport = airports
-        .first()
-        .map(|matched| (matched.distance_px, matched.item.id.clone()));
+    let nearest_airport = airports.first().map(|matched| {
+        (
+            matched.rendered_hit,
+            matched.distance_px,
+            matched.item.id.clone(),
+        )
+    });
     let nearest_point_id = match (nearest_airport, nearest_weather_camera) {
-        (Some(airport), Some(camera)) if camera.0 < airport.0 => Some(camera.1),
-        (Some(airport), _) => Some(airport.1),
-        (None, Some(camera)) => Some(camera.1),
+        (Some(airport), Some(camera))
+            if map_selection_hit_precedes(camera.0, camera.1, airport.0, airport.1) =>
+        {
+            Some(camera.2)
+        }
+        (Some(airport), _) => Some(airport.2),
+        (None, Some(camera)) => Some(camera.2),
         (None, None) => None,
     };
     let spot = spot_selection_item(click, plan);
@@ -3658,6 +3759,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     navaids.push(MapSelectionPointMatch {
         item: spot,
         distance_px: f64::INFINITY,
+        rendered_hit: false,
     });
 
     MapSelectionQueryResult {
@@ -3770,6 +3872,7 @@ fn query_metar_selection_matches(
                         weather_age_reference_utc,
                     ),
                     distance_px,
+                    rendered_hit: false,
                 });
             }
         }
@@ -3831,6 +3934,7 @@ fn query_pirep_selection_matches(
                 matches.push(MapSelectionPointMatch {
                     item: selection_item_for_pirep(record, feature),
                     distance_px,
+                    rendered_hit: false,
                 });
             }
         }
@@ -4058,6 +4162,7 @@ fn query_supplemental_nav_ref_selection_matches(
         matches.push(MapSelectionPointMatch {
             item: selection_item_for_nav_ref_point(point, &item_data, availability),
             distance_px,
+            rendered_hit: false,
         });
     }
     matches
@@ -4760,14 +4865,29 @@ fn airspace_selection_label(feature: &AirspaceFeaturePayload) -> String {
 struct MapSelectionPointMatch {
     item: MapSelectionItem,
     distance_px: f64,
+    rendered_hit: bool,
+}
+
+fn map_selection_hit_precedes(
+    candidate_rendered_hit: bool,
+    candidate_distance_px: f64,
+    current_rendered_hit: bool,
+    current_distance_px: f64,
+) -> bool {
+    candidate_rendered_hit
+        .cmp(&current_rendered_hit)
+        .then_with(|| current_distance_px.total_cmp(&candidate_distance_px))
+        .is_gt()
 }
 
 fn compare_map_selection_point_matches(
     left: &MapSelectionPointMatch,
     right: &MapSelectionPointMatch,
 ) -> std::cmp::Ordering {
-    left.distance_px
-        .total_cmp(&right.distance_px)
+    right
+        .rendered_hit
+        .cmp(&left.rendered_hit)
+        .then_with(|| left.distance_px.total_cmp(&right.distance_px))
         .then_with(|| left.item.label.cmp(&right.item.label))
         .then_with(|| left.item.id.cmp(&right.item.id))
 }
@@ -5762,6 +5882,13 @@ impl LabelRect {
             && self.bottom > other.top
     }
 
+    fn contains(self, point: WorldPoint) -> bool {
+        point.x >= self.left
+            && point.x <= self.right
+            && point.y >= self.top
+            && point.y <= self.bottom
+    }
+
     fn center(self) -> AirspaceScreenPoint {
         AirspaceScreenPoint {
             x: (self.left + self.right) / 2.0,
@@ -5960,6 +6087,31 @@ fn point_feature_label_rect(feature: &VisibleMapFeature, scale: f64) -> Option<L
         width,
         font_px + 6.0,
     ))
+}
+
+fn rendered_point_feature_contains(
+    feature: &VisibleMapFeature,
+    click_screen: WorldPoint,
+    metrics: &MapSurfaceMetrics,
+) -> bool {
+    let radians = (-metrics.viewport.rotation_deg).to_radians();
+    let cos = radians.cos();
+    let sin = radians.sin();
+    let delta_x = click_screen.x - feature.screen_x;
+    let delta_y = click_screen.y - feature.screen_y;
+    let upright_delta = WorldPoint {
+        x: delta_x * cos - delta_y * sin,
+        y: delta_x * sin + delta_y * cos,
+    };
+    let mut local_feature = feature.clone();
+    local_feature.screen_x = 0.0;
+    local_feature.screen_y = 0.0;
+    let hit_slop_px = metrics
+        .logical_px_to_surface_px(UI_THUMB_SIZE_LOGICAL_PX * RENDERED_FEATURE_HIT_SLOP_THUMBS);
+    point_feature_symbol_rect(&local_feature, metrics.display_scale)
+        .is_some_and(|rect| rect.padded(hit_slop_px).contains(upright_delta))
+        || point_feature_label_rect(&local_feature, metrics.display_scale)
+            .is_some_and(|rect| rect.padded(hit_slop_px).contains(upright_delta))
 }
 
 fn centered_rect(center_x: f64, center_y: f64, width: f64, height: f64) -> LabelRect {
@@ -12839,6 +12991,162 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == "csup" && !action.enabled));
+    }
+
+    #[test]
+    fn painted_public_airport_label_outranks_colocated_hidden_heliport() {
+        let center = LatLon {
+            lat: 47.36,
+            lon: -121.98,
+        };
+        let width_px = 1_200.0;
+        let height_px = 900.0;
+        let map_rotation_deg: f64 = 37.0;
+        let config = test_map_overlay_config();
+
+        for display_scale in [1.0_f64, 2.625] {
+            for effective_zoom in [AIRPORT_MIN_DISPLAY_ZOOM, 10.0] {
+                let viewport = MapViewport {
+                    center,
+                    zoom: effective_zoom + display_scale.log2(),
+                    rotation_deg: map_rotation_deg,
+                    pitch_deg: 0.0,
+                };
+                let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, display_scale);
+                let label_delta = WorldPoint {
+                    x: 20.0 * display_scale,
+                    y: -24.0 * display_scale,
+                };
+                let radians = map_rotation_deg.to_radians();
+                let world_aligned_delta = WorldPoint {
+                    x: label_delta.x * radians.cos() - label_delta.y * radians.sin(),
+                    y: label_delta.x * radians.sin() + label_delta.y * radians.cos(),
+                };
+                let center_world = lat_lon_to_world(center);
+                let click = world_to_lat_lon(WorldPoint {
+                    x: center_world.x + world_aligned_delta.x / 2.0_f64.powf(viewport.zoom),
+                    y: center_world.y + world_aligned_delta.y / 2.0_f64.powf(viewport.zoom),
+                });
+                assert!(
+                    label_delta.x.hypot(label_delta.y) > metrics.inspector_hit_radius_px(),
+                    "the regression tap must remain outside the old ARP-only hit radius",
+                );
+
+                let airport_tile = visible_point_tile_window_with_display_scale(
+                    &config,
+                    &viewport,
+                    width_px,
+                    height_px,
+                    display_scale,
+                )
+                .into_iter()
+                .find(|tile| tile.layer == "airport")
+                .expect("expected airport tile");
+                let public_airport = PointVectorRecord {
+                    id: "airports:KSEA".to_string(),
+                    kind: "airport".to_string(),
+                    lat: center.lat,
+                    lon: center.lon,
+                    label: "SEATTLE".to_string(),
+                    location_label: None,
+                    style_class: "airport".to_string(),
+                    towered: Some(true),
+                    fuel_available: Some(true),
+                    public_use: Some(true),
+                    private_use: Some(false),
+                    has_paved_runway: Some(true),
+                    heliport: Some(false),
+                    has_water_runway: Some(false),
+                    longest_runway_length_ft: Some(10_000.0),
+                    longest_runway_heading_true_deg: Some(160.0),
+                    elevation_msl_ft: Some(433.0),
+                    obstacle: None,
+                    weather_camera: None,
+                };
+                let hidden_heliport = PointVectorRecord {
+                    id: "airports:H1".to_string(),
+                    kind: "heliport".to_string(),
+                    lat: click.lat,
+                    lon: click.lon,
+                    label: "HOSPITAL".to_string(),
+                    location_label: None,
+                    style_class: "airport".to_string(),
+                    towered: Some(false),
+                    fuel_available: Some(false),
+                    public_use: Some(true),
+                    private_use: Some(false),
+                    has_paved_runway: Some(false),
+                    heliport: Some(true),
+                    has_water_runway: Some(false),
+                    longest_runway_length_ft: Some(80.0),
+                    longest_runway_heading_true_deg: None,
+                    elevation_msl_ft: Some(200.0),
+                    obstacle: None,
+                    weather_camera: None,
+                };
+                let point_tiles = HashMap::from([(
+                    tile_key(
+                        &airport_tile.layer,
+                        airport_tile.z,
+                        airport_tile.x,
+                        airport_tile.y,
+                    ),
+                    PointTilePayload {
+                        schema_version: 1,
+                        layer: airport_tile.layer,
+                        z: airport_tile.z,
+                        x: airport_tile.x,
+                        y: airport_tile.y,
+                        records: vec![hidden_heliport, public_airport],
+                    },
+                )]);
+                let overlay = query_map_overlay_with_point_display_scale(
+                    metrics,
+                    &point_tiles,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                assert_eq!(
+                    overlay
+                        .visible_features
+                        .iter()
+                        .map(|feature| feature.id.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["airports:KSEA"],
+                );
+
+                let vector_tiles =
+                    aggregate_test_vector_tiles(&point_tiles, &HashMap::new(), &HashMap::new());
+                let metar_tiles = HashMap::new();
+                let airspaces = HashMap::new();
+                let aliases = WeatherStationAirportAliases::default();
+                let mut availability = |_: &str| AirportPlateAvailability::default();
+                let selection = query_map_selection_for_surface(
+                    &metrics,
+                    MapSelectionQuery::new(
+                        &config,
+                        click,
+                        &vector_tiles,
+                        &metar_tiles,
+                        &airspaces,
+                        &aliases,
+                        &mut availability,
+                    ),
+                );
+                let airport_ids = selection.categories[0]
+                    .items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(airport_ids, vec!["airports:KSEA", "airports:H1"]);
+                assert_eq!(
+                    selection.initial_selected_item_id.as_deref(),
+                    Some("airports:KSEA"),
+                    "painted airport must win at scale {display_scale} and display zoom {effective_zoom}",
+                );
+            }
+        }
     }
 
     fn test_visible_feature(

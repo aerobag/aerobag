@@ -10059,13 +10059,19 @@ fn materialize_map_selection_in_session(
             kind: AppErrorKind::InvalidCatalog,
             message: "configured platform local time zone is invalid".to_string(),
         })?;
+    let display_vectors =
+        session.map.layer_state().vectors.visible && session.map.vector_manifest_loaded();
+    let obstacle_context = ownship_overlay_context(session);
     let mut selection = query_map_selection_for_surface_in_time_zone(
         metrics,
         MapSelectionQuery {
             config: session.map.overlay_config(),
             plan,
             click,
+            display_vectors,
             vector_tile_cache: &session.map.runtime().vector_tile_cache,
+            obstacle_tile_cache: Some(&session.weather.runtime().obstacle_tile_cache),
+            obstacle_context: obstacle_context.as_ref(),
             metar_tile_cache: &session.weather.runtime().metar_tile_cache,
             metar_payload: session.weather.runtime().metar_payload.as_ref(),
             pirep_payload: session.weather.runtime().pirep_payload.as_ref(),

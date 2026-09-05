@@ -2561,7 +2561,6 @@ pub fn query_map_overlay_for_surface(
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
-    let point_display_scale = metrics.display_scale;
     let decision = overlay_surface_decision(*metrics, config);
     let projection = MapProjectionContext::new(metrics);
     let center_world = projection.center_world;
@@ -2685,11 +2684,11 @@ pub fn query_map_overlay_for_surface(
         labels.extend(tfrs.labels);
         labels
     };
-    suppress_overlapping_vector_labels(
+    suppress_overlapping_vector_labels_for_surface(
         &mut visible_features,
         &mut airspace_labels,
         protected_point_features,
-        point_display_scale,
+        metrics,
     );
     let labels_ms = overlay_elapsed_ms(labels_started_at);
 
@@ -5912,20 +5911,21 @@ struct LabelCandidate {
     order: usize,
 }
 
-fn suppress_overlapping_vector_labels(
+fn suppress_overlapping_vector_labels_for_surface(
     visible_features: &mut [VisibleMapFeature],
     airspace_labels: &mut Vec<AirspaceDisplayLabel>,
     protected_point_features: &[VisibleMapFeature],
-    point_display_scale: f64,
+    metrics: &MapSurfaceMetrics,
 ) {
-    let point_display_scale = point_display_scale.max(0.1);
+    let point_display_scale = metrics.display_scale.max(0.1);
     let mut candidates = Vec::<LabelCandidate>::new();
     let mut order = 0usize;
     for (index, label) in airspace_labels.iter().enumerate() {
         if let Some(rect) = airspace_label_rect(label, point_display_scale) {
             candidates.push(LabelCandidate {
                 label_ref: LabelRef::Airspace(index),
-                rect: rect.padded(LABEL_COLLISION_PADDING_PX),
+                rect: upright_label_rect_for_surface(rect, label.screen_x, label.screen_y, metrics)
+                    .padded(LABEL_COLLISION_PADDING_PX),
                 priority: 0,
                 order,
             });
@@ -5936,7 +5936,13 @@ fn suppress_overlapping_vector_labels(
         if let Some(rect) = point_feature_label_rect(feature, point_display_scale) {
             candidates.push(LabelCandidate {
                 label_ref: LabelRef::Point(index),
-                rect: rect.padded(LABEL_COLLISION_PADDING_PX),
+                rect: upright_label_rect_for_surface(
+                    rect,
+                    feature.screen_x,
+                    feature.screen_y,
+                    metrics,
+                )
+                .padded(LABEL_COLLISION_PADDING_PX),
                 priority: point_feature_label_priority(feature),
                 order,
             });
@@ -5947,7 +5953,13 @@ fn suppress_overlapping_vector_labels(
         if let Some(rect) = point_feature_label_rect(feature, point_display_scale) {
             candidates.push(LabelCandidate {
                 label_ref: LabelRef::ProtectedPoint,
-                rect: rect.padded(LABEL_COLLISION_PADDING_PX),
+                rect: upright_label_rect_for_surface(
+                    rect,
+                    feature.screen_x,
+                    feature.screen_y,
+                    metrics,
+                )
+                .padded(LABEL_COLLISION_PADDING_PX),
                 priority: point_feature_label_priority(feature),
                 order,
             });
@@ -5987,13 +5999,68 @@ fn suppress_overlapping_vector_labels(
     });
 }
 
+// Renderers rotate feature anchors but counter-rotate glyphs, leaving label offsets screen-upright.
+fn upright_label_rect_for_surface(
+    rect: LabelRect,
+    anchor_x: f64,
+    anchor_y: f64,
+    metrics: &MapSurfaceMetrics,
+) -> LabelRect {
+    let map_up_deg = metrics.viewport.rotation_deg;
+    if !map_up_deg.is_finite() || map_up_deg.abs() < f64::EPSILON {
+        return rect;
+    }
+    let surface_center_x = metrics.width_px / 2.0;
+    let surface_center_y = metrics.height_px / 2.0;
+    let radians = (-map_up_deg).to_radians();
+    let cos = radians.cos();
+    let sin = radians.sin();
+    let dx = anchor_x - surface_center_x;
+    let dy = anchor_y - surface_center_y;
+    let rotated_anchor_x = surface_center_x + dx * cos - dy * sin;
+    let rotated_anchor_y = surface_center_y + dx * sin + dy * cos;
+    let translate_x = rotated_anchor_x - anchor_x;
+    let translate_y = rotated_anchor_y - anchor_y;
+    LabelRect {
+        left: rect.left + translate_x,
+        right: rect.right + translate_x,
+        top: rect.top + translate_y,
+        bottom: rect.bottom + translate_y,
+    }
+}
+
+#[cfg(test)]
+fn suppress_overlapping_vector_labels(
+    visible_features: &mut [VisibleMapFeature],
+    airspace_labels: &mut Vec<AirspaceDisplayLabel>,
+    protected_point_features: &[VisibleMapFeature],
+    point_display_scale: f64,
+) {
+    suppress_overlapping_vector_labels_for_surface(
+        visible_features,
+        airspace_labels,
+        protected_point_features,
+        &MapSurfaceMetrics::new(
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 0.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            0.0,
+            0.0,
+            point_display_scale,
+        ),
+    );
+}
+
 fn point_feature_label_priority(feature: &VisibleMapFeature) -> u8 {
     match feature.label_style {
         VectorIdentLabelStyle::ActiveFlightPlan => 60,
         VectorIdentLabelStyle::FlightPlan => 50,
         VectorIdentLabelStyle::Default => match feature.symbol_kind.as_str() {
-            "nav" => 40,
-            "airport" => 30,
+            "airport" => 40,
+            "nav" => 30,
             "weather_camera" => 25,
             "fix" => 20,
             _ => 10,
@@ -11755,7 +11822,7 @@ mod tests {
     }
 
     #[test]
-    fn suppresses_lower_drawn_overlapping_point_labels() {
+    fn airport_label_priority_matches_colocated_selection_priority() {
         let mut features = vec![
             test_visible_feature("airports:KABC", "airport", "airport", "KABC", 100.0, 100.0),
             test_visible_feature("nav:ABC:VOR", "VORTAC", "nav", "ABC", 100.0, 100.0),
@@ -11764,8 +11831,126 @@ mod tests {
 
         suppress_overlapping_vector_labels(&mut features, &mut airspace_labels, &[], 1.0);
 
-        assert_eq!(features[0].label, "");
-        assert_eq!(features[1].label, "ABC");
+        assert_eq!(features[0].label, "KABC");
+        assert_eq!(features[1].label, "");
+    }
+
+    #[test]
+    fn rotated_upright_label_keeps_its_vertical_symbol_offset() {
+        let feature =
+            test_visible_feature("airports:KABC", "airport", "airport", "KABC", 650.0, 600.0);
+        let metrics = MapSurfaceMetrics::new(
+            MapViewport {
+                center: LatLon { lat: 0.0, lon: 0.0 },
+                zoom: 10.0,
+                rotation_deg: 90.0,
+                pitch_deg: 0.0,
+            },
+            1200.0,
+            1200.0,
+            1.0,
+        );
+        let rect = point_feature_label_rect(&feature, 1.0).expect("label rect");
+        let displayed =
+            upright_label_rect_for_surface(rect, feature.screen_x, feature.screen_y, &metrics);
+        let center = displayed.center();
+
+        assert!((center.x - 600.0).abs() < 1e-6);
+        assert!((center.y - 526.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rotated_colocated_airport_and_vor_do_not_compose_a_false_ident() {
+        let airport_position = LatLon {
+            lat: 43.422_173_6,
+            lon: -88.127_926_4,
+        };
+        let vor_position = LatLon {
+            lat: 43.421_971_7,
+            lon: -88.125_181_4,
+        };
+        let viewport = MapViewport {
+            center: airport_position,
+            zoom: 14.6,
+            rotation_deg: 30.0,
+            pitch_deg: 0.0,
+        };
+        let tiles =
+            visible_point_tile_window(&test_map_overlay_config(), &viewport, 1200.0, 1200.0);
+        let airport_tile = tiles
+            .iter()
+            .find(|tile| tile.layer == "airport")
+            .expect("expected airport tile");
+        let nav_tile = tiles
+            .iter()
+            .find(|tile| tile.layer == "nav")
+            .expect("expected nav tile");
+        assert_eq!(
+            (airport_tile.z, airport_tile.x, airport_tile.y),
+            (nav_tile.z, nav_tile.x, nav_tile.y),
+        );
+
+        let mut airport = test_point_record("airports:KETB".to_string(), "airport", "airport");
+        airport.lat = airport_position.lat;
+        airport.lon = airport_position.lon;
+        airport.label = "WEST BEND MUNI".to_string();
+        airport.has_paved_runway = Some(true);
+        let mut vor = test_point_record("nav:BJB".to_string(), "vor", "nav");
+        vor.lat = vor_position.lat;
+        vor.lon = vor_position.lon;
+        vor.label = "WEST BEND 109.80".to_string();
+
+        let mut cache = HashMap::new();
+        cache.insert(
+            tile_key(
+                &airport_tile.layer,
+                airport_tile.z,
+                airport_tile.x,
+                airport_tile.y,
+            ),
+            PointTilePayload {
+                schema_version: 1,
+                layer: airport_tile.layer.clone(),
+                z: airport_tile.z,
+                x: airport_tile.x,
+                y: airport_tile.y,
+                records: vec![airport],
+            },
+        );
+        cache.insert(
+            tile_key(&nav_tile.layer, nav_tile.z, nav_tile.x, nav_tile.y),
+            PointTilePayload {
+                schema_version: 1,
+                layer: nav_tile.layer.clone(),
+                z: nav_tile.z,
+                x: nav_tile.x,
+                y: nav_tile.y,
+                records: vec![vor],
+            },
+        );
+
+        let result = query_map_overlay(
+            &viewport,
+            1200.0,
+            1200.0,
+            &cache,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let airport = result
+            .visible_features
+            .iter()
+            .find(|feature| feature.id == "airports:KETB")
+            .expect("KETB feature");
+        let vor = result
+            .visible_features
+            .iter()
+            .find(|feature| feature.id == "nav:BJB")
+            .expect("BJB feature");
+
+        assert_eq!(airport.label, "KETB");
+        assert_eq!(vor.label, "", "KETB and BJB must not paint as KBJB");
     }
 
     #[test]

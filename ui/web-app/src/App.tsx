@@ -4687,6 +4687,7 @@ function MapPage(props: {
     requestedAt: number;
     session: UiSession;
     viewport: MapViewportState;
+    queryViewport: MapViewportState;
     center: LatLon;
     width: number;
     height: number;
@@ -5215,7 +5216,7 @@ function MapPage(props: {
               queue_wait_ms: Math.round(startedAt - request.requestedAt),
             }));
             const overlay = await request.session.queryMapOverlay(
-              request.viewport,
+              request.queryViewport,
               request.width,
               request.height,
             );
@@ -5294,6 +5295,7 @@ function MapPage(props: {
       && latest.height === completed.height
       && latest.layerKey === completed.layerKey
       && Math.abs(latest.viewport.zoom - completed.viewport.zoom) < 0.001
+      && Math.abs((latest.queryViewport.rotationDeg ?? 0) - (completed.queryViewport.rotationDeg ?? 0)) < 0.001
     );
   }
 
@@ -6280,6 +6282,7 @@ function MapPage(props: {
       requestedAt: performance.now(),
       session: uiSession,
       viewport,
+      queryViewport: rasterPlanningViewport,
       center,
       width: planningSurfaceSize.width,
       height: planningSurfaceSize.height,
@@ -6304,6 +6307,7 @@ function MapPage(props: {
     onDebugWarning,
     planningSurfaceSize.height,
     planningSurfaceSize.width,
+    rasterPlanningViewport,
     surfaceSize.height,
     surfaceSize.width,
     uiInvalidationRevisions.map_overlay,

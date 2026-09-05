@@ -1562,6 +1562,7 @@ private fun rememberDisplayedMapOverlay(
         invalidationRevision,
         trafficRefreshTick,
         viewport,
+        displayViewport,
         surfaceSize,
         densityScale,
         vectorsVisible,
@@ -1578,7 +1579,7 @@ private fun rememberDisplayedMapOverlay(
         )
         val queryEpoch = navDataEpoch
         sessionWorkRunner.submitOverlay(
-            viewport = viewport,
+            viewport = displayViewport,
             widthPx = overlayWidthPx.toDouble(),
             heightPx = overlayHeightPx.toDouble(),
             pointDisplayScale = densityScale.toDouble(),

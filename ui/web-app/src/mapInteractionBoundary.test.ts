@@ -29,6 +29,8 @@ describe("map interaction boundaries", () => {
     expect(appSource).toContain("const plannedMapUpDeg = resolveMapUpDegrees(");
     expect(appSource).toContain("mapUpDeg={plannedMapUpDeg}");
     expect(appSource).toContain("rotationDeg: plannedMapUpDeg");
+    expect(appSource).toContain("queryViewport: rasterPlanningViewport");
+    expect(functionSource("pumpMapOverlayQueryQueue")).toContain("request.queryViewport");
     expect(appSource).not.toContain('aria-label="Debug map-up rotation"');
   });
 

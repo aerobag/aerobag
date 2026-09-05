@@ -385,10 +385,8 @@ def write_atomic(path: Path, content: str) -> None:
 def assert_remote_idle(config: dict[str, Any]) -> None:
     try:
         deployment.assert_release_reconciliation_idle(config, dry_run=False)
-    except subprocess.CalledProcessError as error:
-        raise ManagementError(
-            "production release reconciliation is already running; wait for it to finish"
-        ) from error
+    except deployment.ReleaseReconciliationBusy as error:
+        raise ManagementError(str(error)) from error
 
 
 def load_remote_observed(config: dict[str, Any]) -> releases.ObservedState:

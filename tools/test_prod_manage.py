@@ -712,6 +712,25 @@ class StageOrderingTests(unittest.TestCase):
 
         confirmed.assert_not_called()
 
+    def test_remote_busy_message_preserves_reconciliation_context(self) -> None:
+        busy = prod_manage.deployment.ReleaseReconciliationBusy(
+            kind="service",
+            active_state="activating",
+            automatic=True,
+            progress="Building refreshed products for release 2026-08-30.4",
+        )
+        with mock.patch.object(
+            prod_manage.deployment,
+            "assert_release_reconciliation_idle",
+            side_effect=busy,
+        ):
+            with self.assertRaises(prod_manage.ManagementError) as raised:
+                prod_manage.assert_remote_idle({})
+
+        message = str(raised.exception)
+        self.assertIn("automatic scheduled product refresh", message)
+        self.assertIn("Building refreshed products", message)
+
     def test_stage_does_not_run_optional_prequalification(self) -> None:
         document = desired_document()
 

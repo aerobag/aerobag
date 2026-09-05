@@ -53,6 +53,47 @@ class ProductPublicationTests(unittest.TestCase):
         self.assertFalse(hasattr(deploy_prod, "parse_args"))
         self.assertFalse(hasattr(deploy_prod, "main"))
 
+    def test_idle_probe_reports_scheduled_refresh_progress(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        output = (
+            f"{deploy_prod.RECONCILIATION_BUSY_MARKER}\tservice\tactivating\ttimer\t"
+            "Preparing cycle products for 2026-09-05.1\n"
+        )
+        failure = subprocess.CalledProcessError(
+            deploy_prod.RECONCILIATION_BUSY_EXIT_CODE,
+            ["ssh"],
+            output=output,
+        )
+        with mock.patch.object(
+            deploy_prod, "run_ssh", side_effect=failure
+        ) as run_ssh:
+            with self.assertRaises(deploy_prod.ReleaseReconciliationBusy) as raised:
+                deploy_prod.assert_release_reconciliation_idle(
+                    config, dry_run=False
+                )
+
+        self.assertIn("automatic scheduled product refresh", str(raised.exception))
+        self.assertIn(
+            "Current progress: Preparing cycle products for 2026-09-05.1",
+            str(raised.exception),
+        )
+        self.assertTrue(run_ssh.call_args.kwargs["capture"])
+        probe = run_ssh.call_args.args[1]
+        self.assertIn("ExecMainStartTimestamp", probe)
+        self.assertIn("LastTriggerUSec", probe)
+        self.assertIn("release-reconciliation-progress", probe)
+
+    def test_idle_probe_does_not_mislabel_unrelated_ssh_failure(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        failure = subprocess.CalledProcessError(255, ["ssh"], output="network down\n")
+        with mock.patch.object(deploy_prod, "run_ssh", side_effect=failure):
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                deploy_prod.assert_release_reconciliation_idle(
+                    config, dry_run=False
+                )
+
+        self.assertEqual(raised.exception.returncode, 255)
+
     def test_live_feed_publication_path_matches_current_contract(self) -> None:
         self.assertEqual(deploy_prod.LIVE_FEEDS_CONTRACT_PATH, "v3")
         core_contract = (

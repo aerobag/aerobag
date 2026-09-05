@@ -76,6 +76,56 @@ GOOGLE_CHROME_APT_SOURCE = (
 )
 COMMAND_LOG_ENV = "AEROBAG_COMMAND_LOG"
 ProgressReporter = Callable[[str], None]
+RECONCILIATION_BUSY_EXIT_CODE = 75
+RECONCILIATION_BUSY_MARKER = "aerobag-reconciliation-busy"
+
+
+class ReleaseReconciliationBusy(RuntimeError):
+    def __init__(
+        self,
+        *,
+        kind: str,
+        active_state: str,
+        automatic: bool,
+        progress: str | None,
+    ) -> None:
+        self.kind = kind
+        self.active_state = active_state
+        self.automatic = automatic
+        self.progress = progress
+
+        if kind == "service" and automatic:
+            message = (
+                "the automatic scheduled product refresh is currently running"
+            )
+        elif kind == "service":
+            message = "another production release reconciliation is currently running"
+        else:
+            message = "another production release reconciliation holds the production lock"
+        if kind == "service" and active_state:
+            message += f" (service state: {active_state})"
+        message += "."
+        if progress:
+            message += f" Current progress: {progress}."
+        message += " Wait for it to finish, then retry."
+        super().__init__(message)
+
+
+def _raise_reconciliation_busy(error: subprocess.CalledProcessError) -> None:
+    if error.returncode != RECONCILIATION_BUSY_EXIT_CODE:
+        raise error
+    for line in reversed((error.stdout or "").splitlines()):
+        fields = line.split("\t", 4)
+        if len(fields) != 5 or fields[0] != RECONCILIATION_BUSY_MARKER:
+            continue
+        _, kind, active_state, origin, progress = fields
+        raise ReleaseReconciliationBusy(
+            kind=kind,
+            active_state=active_state,
+            automatic=origin == "timer",
+            progress=progress or None,
+        ) from error
+    raise error
 
 
 def _report(progress: ProgressReporter | None, message: str) -> None:
@@ -662,23 +712,42 @@ def assert_release_reconciliation_idle(
     """Reject source/config replacement while the release controller is running."""
 
     lock_path = f"{config['artifact_root']}/locks/release-reconciler.lock"
+    progress_path = (
+        Path(config["artifact_root"]) / RECONCILIATION_PROGRESS_RELATIVE_PATH
+    )
     command = textwrap.dedent(
         f"""
         set -euo pipefail
         unit=aerobag-build-product.service
+        timer=aerobag-build-product.timer
+        progress=''
+        if test -s {shell_quote(progress_path)}; then
+          IFS= read -r progress < {shell_quote(progress_path)} || true
+        fi
+        busy() {{
+          printf '{RECONCILIATION_BUSY_MARKER}\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$progress" >&2
+          exit {RECONCILIATION_BUSY_EXIT_CODE}
+        }}
         active_state="$(systemctl show "$unit" --property=ActiveState --value 2>/dev/null || true)"
         if [ "$active_state" = active ] || [ "$active_state" = activating ] || [ "$active_state" = reloading ] || [ "$active_state" = deactivating ]; then
-          echo "release reconciliation is already running (active_state=$active_state)" >&2
-          exit 1
+          origin=operator
+          service_started="$(systemctl show "$unit" --property=ExecMainStartTimestamp --value 2>/dev/null || true)"
+          timer_triggered="$(systemctl show "$timer" --property=LastTriggerUSec --value 2>/dev/null || true)"
+          if [ -n "$service_started" ] && [ "$service_started" = "$timer_triggered" ]; then
+            origin=timer
+          fi
+          busy service "$active_state" "$origin"
         fi
         install -d -m 0755 {shell_quote(config['artifact_root'] + '/locks')}
         if ! flock -n {shell_quote(lock_path)} true; then
-          echo "release reconciliation lock is already held" >&2
-          exit 1
+          busy lock held unknown
         fi
         """
     ).strip()
-    run_ssh(config, command, dry_run=dry_run)
+    try:
+        run_ssh(config, command, capture=True, dry_run=dry_run)
+    except subprocess.CalledProcessError as error:
+        _raise_reconciliation_busy(error)
 
 
 def quiesce_release_reconciliation(

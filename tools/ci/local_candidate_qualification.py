@@ -518,7 +518,11 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
         cwd=ROOT,
         check=True,
     )
-    for fixture_name in ("android-smoke-publication", "nav-db-advance"):
+    for fixture_name in (
+        "android-smoke-publication",
+        "nav-db-advance",
+        "release-journey-publication",
+    ):
         subprocess.run(
             [
                 "python3",

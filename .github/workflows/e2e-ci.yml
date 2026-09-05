@@ -135,10 +135,13 @@ jobs:
           esac
           echo "value=$value" >> "$GITHUB_OUTPUT"
       - name: Fetch and verify release-journey publication
-        run: >-
-          python3 tools/ci/fetch_test_artifacts.py
-          --fixture release-journey-publication
-          --destination "${{ github.workspace }}/.ci/release-journey-source"
+        run: |
+          python3 tools/ci/fetch_test_artifacts.py \
+            --fixture release-journey-publication \
+            --destination "${{ github.workspace }}/.ci/release-journey-source"
+          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+            --fixture-root "${{ github.workspace }}/.ci/release-journey-source" \
+            --fixture release-journey-publication
       - name: Upload immutable fixture
         uses: actions/upload-artifact@v4
         with:

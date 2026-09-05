@@ -53,12 +53,25 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        release = (
+            self.fixtures
+            / "e2e/release-journey-publication/published/current_artifacts.json"
+        )
+        release.parent.mkdir(parents=True)
+        release.write_text(
+            json.dumps([{"contracts": {"nav-db": "NAV15"}}]),
+            encoding="utf-8",
+        )
 
     def test_accepts_exact_contract_match(self) -> None:
         result = verify_nav_db_fixture_contracts.verify(
             self.repo,
             self.fixtures,
-            ["android-smoke-publication", "nav-db-advance"],
+            [
+                "android-smoke-publication",
+                "nav-db-advance",
+                "release-journey-publication",
+            ],
         )
 
         self.assertEqual("NAV15", result)
@@ -76,6 +89,25 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
         ):
             verify_nav_db_fixture_contracts.verify(
                 self.repo, self.fixtures, ["nav-db-advance"]
+            )
+
+    def test_checks_release_journey_publication_contract(self) -> None:
+        release = (
+            self.fixtures
+            / "e2e/release-journey-publication/published/current_artifacts.json"
+        )
+        release.write_text(
+            json.dumps([{"contracts": {"nav-db": "NAV14"}}]),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            verify_nav_db_fixture_contracts.ContractError,
+            r"release-journey-publication provides NAVDB contract\(s\) \[NAV14\]; "
+            r"client requires NAV15",
+        ):
+            verify_nav_db_fixture_contracts.verify(
+                self.repo, self.fixtures, ["release-journey-publication"]
             )
 
 

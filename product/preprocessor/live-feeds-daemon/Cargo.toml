@@ -12,6 +12,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 chrono.workspace = true
 had-nav-kv = { path = "../../../crates/had-nav-kv" }
+nav-kv-package = { path = "../../../crates/nav-kv-package" }
 nms-notams-fetch = { path = "../nms-notams-fetch" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }

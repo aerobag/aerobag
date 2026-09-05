@@ -46,6 +46,9 @@ def fixture_contracts(fixture_root: Path, fixture: str) -> set[str]:
     manifest_path = fixture_root / {
         "android-smoke-publication": "e2e/android-smoke-publication/fixture.json",
         "nav-db-advance": "nav-db/advance-2608-to-2609/fixture.json",
+        "release-journey-publication": (
+            "e2e/release-journey-publication/published/current_artifacts.json"
+        ),
     }[fixture]
     manifest = read_json(manifest_path)
     if fixture == "android-smoke-publication":
@@ -57,7 +60,7 @@ def fixture_contracts(fixture_root: Path, fixture: str) -> set[str]:
             for package in packages
             if isinstance(package, dict) and package.get("family_id") == "nav-db"
         }
-    else:
+    elif fixture == "nav-db-advance":
         cycles = manifest.get("cycles") if isinstance(manifest, dict) else None
         if not isinstance(cycles, list):
             raise ContractError(f"{manifest_path} has no cycle list")
@@ -65,6 +68,16 @@ def fixture_contracts(fixture_root: Path, fixture: str) -> set[str]:
             cycle.get("contract_id")
             for cycle in cycles
             if isinstance(cycle, dict)
+        }
+    else:
+        publications = manifest if isinstance(manifest, list) else None
+        if not publications:
+            raise ContractError(f"{manifest_path} has no publication list")
+        contracts = {
+            publication.get("contracts", {}).get("nav-db")
+            for publication in publications
+            if isinstance(publication, dict)
+            and isinstance(publication.get("contracts"), dict)
         }
     if not contracts or any(not isinstance(value, str) or not value for value in contracts):
         raise ContractError(f"{manifest_path} has no valid NAVDB contract")
@@ -96,7 +109,11 @@ def main() -> int:
         "--fixture",
         action="append",
         required=True,
-        choices=["android-smoke-publication", "nav-db-advance"],
+        choices=[
+            "android-smoke-publication",
+            "nav-db-advance",
+            "release-journey-publication",
+        ],
     )
     args = parser.parse_args()
     try:

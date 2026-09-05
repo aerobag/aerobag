@@ -964,6 +964,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "had-nav-kv",
+ "nav-kv-package",
  "nms-notams-fetch",
  "preprocessor-fetch",
  "preprocessor-live-feeds",

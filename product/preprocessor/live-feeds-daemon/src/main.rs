@@ -57,7 +57,7 @@ use product_contracts::{
     },
     publication::{bundle::v2::BundleManifest, current::v1::CurrentArtifactsManifest},
     versioned_json, LiveFeedProductPolicy, NotamAirportCatalog, AEROBAG_SSE_TRANSPORT_POLICY,
-    LIVE_FEED_PRODUCT_POLICIES, NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
+    LIVE_FEED_PRODUCT_POLICIES, NAV_DB_CONTRACT_ID, NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
 };
 use serde::Serialize;
 
@@ -1716,17 +1716,40 @@ fn read_notam_airport_catalog_from_nav_db(
     let root = NavKvRoot::parse(&root_bytes)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("invalid nav-db root {}", root_path.display()))?;
-    let value = root
-        .extract_value(NOTAM_AIRPORT_CATALOG_NAV_DB_KEY, |page_index| {
-            fs::read(nav_db_root.join(format!("page_{page_index:04}"))).ok()
-        })
-        .with_context(|| {
+    let mut page_error = None;
+    let value = root.extract_value(NOTAM_AIRPORT_CATALOG_NAV_DB_KEY, |page_index| {
+        let path = nav_db_root.join(format!("page_{page_index:04}"));
+        match fs::read(&path)
+            .with_context(|| format!("failed to read nav-db page {}", path.display()))
+            .and_then(|bytes| {
+                nav_kv_package::decode_xz_if_needed(&bytes)
+                    .map(|decoded| decoded.into_owned())
+                    .map_err(anyhow::Error::msg)
+                    .with_context(|| format!("failed to decode nav-db page {}", path.display()))
+            }) {
+            Ok(page) => Some(page),
+            Err(error) => {
+                page_error.get_or_insert(error);
+                None
+            }
+        }
+    });
+    if let Some(error) = page_error {
+        return Err(error).with_context(|| {
             format!(
-                "nav-db {} is missing {} or one of its pages",
-                nav_db_root.display(),
-                NOTAM_AIRPORT_CATALOG_NAV_DB_KEY
+                "failed to read {} from nav-db {}",
+                NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
+                nav_db_root.display()
             )
-        })?;
+        });
+    }
+    let value = value.with_context(|| {
+        format!(
+            "nav-db {} is missing required key {}",
+            nav_db_root.display(),
+            NOTAM_AIRPORT_CATALOG_NAV_DB_KEY
+        )
+    })?;
     serde_json::from_slice(&value).with_context(|| {
         format!(
             "failed to parse NOTAM airport catalog in {}",
@@ -4134,7 +4157,10 @@ mod tests {
         .map_err(anyhow::Error::msg)?;
         fs::write(nav_db.join("root"), built.root_bytes)?;
         for (index, page) in built.pages.into_iter().enumerate() {
-            fs::write(nav_db.join(format!("page_{index:04}")), page)?;
+            fs::write(
+                nav_db.join(format!("page_{index:04}")),
+                nav_kv_package::xz_frame_uncompressed_bytes(&page).map_err(anyhow::Error::msg)?,
+            )?;
         }
         fs::write(
             unpacked.join("bundle.json"),
@@ -4150,9 +4176,9 @@ mod tests {
                 "start_valid": "2026-09-03",
                 "end_valid": "2026-10-01",
                 "packages": [{
-                    "id": "NAV_DB_NAV23_2609_01",
+                    "id": format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2609_01"),
                     "family_id": "nav-db",
-                    "contract_id": "NAV23",
+                    "contract_id": NAV_DB_CONTRACT_ID,
                     "filename": "nav_db_fixture.zip",
                     "relative_path": "nav_db_fixture.zip",
                     "checksum_sha256": "fixture",
@@ -4167,7 +4193,7 @@ mod tests {
             &product_artifacts,
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "contracts": {"nav-db": "NAV23"},
+                "contracts": {"nav-db": NAV_DB_CONTRACT_ID},
                 "artifact_roots": {
                     "packaged": "build/instant/packaged/",
                     "unpacked": "build/instant/unpacked/"

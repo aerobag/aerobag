@@ -209,8 +209,9 @@ class MapFollowTargetGate {
 fun mapFollowSyncViewportForCompletedGesture(
     movedViewportDuringGesture: Boolean,
     finalGestureViewport: MapViewportState,
+    displayRotationDeg: Double,
 ): MapViewportState? =
-    if (movedViewportDuringGesture) finalGestureViewport else null
+    if (movedViewportDuringGesture) finalGestureViewport.copy(rotationDeg = displayRotationDeg) else null
 
 fun screenToWorld(
     viewport: MapViewportState,

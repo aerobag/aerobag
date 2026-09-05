@@ -297,6 +297,7 @@ class MapViewportTest {
         val syncViewport = mapFollowSyncViewportForCompletedGesture(
             movedViewportDuringGesture = true,
             finalGestureViewport = draggedViewport,
+            displayRotationDeg = 0.0,
         )
         require(syncViewport != null)
         follow.sync(
@@ -334,6 +335,7 @@ class MapViewportTest {
         val offscreenSyncViewport = mapFollowSyncViewportForCompletedGesture(
             movedViewportDuringGesture = true,
             finalGestureViewport = offscreenViewport,
+            displayRotationDeg = 0.0,
         )
         require(offscreenSyncViewport != null)
         follow.sync(
@@ -344,6 +346,23 @@ class MapViewportTest {
         )
 
         assertFalse("CTR should disengage when a drag moves ownship out of the viewport", follow.following)
+    }
+
+    @Test
+    fun completedCtrDragReportsTheDisplayedMapRotationToCore() {
+        val northUpViewport = MapViewportState(
+            centerWorldX = 128.0,
+            centerWorldY = 128.0,
+            zoom = 10.0,
+        )
+
+        val syncViewport = mapFollowSyncViewportForCompletedGesture(
+            movedViewportDuringGesture = true,
+            finalGestureViewport = northUpViewport,
+            displayRotationDeg = 87.0,
+        )
+
+        assertEquals(87.0, requireNotNull(syncViewport).rotationDeg, 0.0)
     }
 
     private class TestMapFollowState {

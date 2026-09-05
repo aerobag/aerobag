@@ -5,12 +5,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    geometry::{LatLon, MapViewport},
+    geometry::MapViewport,
     ownship::OwnshipRenderState,
+    ui_geometry::{
+        ui_lat_lon_to_screen, ui_lat_lon_to_world, ui_screen_to_world, ui_world_to_lat_lon,
+        UiGeometryPoint, UiMapViewportGeometry,
+    },
 };
-
-const WORLD_SIZE: f64 = 256.0;
-const MAX_LATITUDE: f64 = 85.051_128_78;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MapFollowUiState {
@@ -85,7 +86,8 @@ impl MapFollowSessionState {
         let Some(position) = ownship.position else {
             return;
         };
-        let point = world_to_screen(viewport, lat_lon_to_world(position), width_px, height_px);
+        let point =
+            ui_lat_lon_to_screen(position, viewport_geometry(viewport), width_px, height_px);
         if !point.x.is_finite()
             || !point.y.is_finite()
             || point.x < 0.0
@@ -133,13 +135,27 @@ impl MapFollowSessionState {
         let Some(position) = ownship.position else {
             return viewport;
         };
-        let scale = 2.0_f64.powf(viewport.zoom);
-        let world = lat_lon_to_world(position);
+        let world = ui_lat_lon_to_world(position);
+        // Treat ownship as the projection center, then project the negative
+        // screen anchor to recover the map center that keeps ownship at that
+        // anchor. This uses the same rotation convention as every other map
+        // projection rather than interpreting screen pixels as world axes.
+        let center = ui_screen_to_world(
+            UiMapViewportGeometry {
+                center_world_x: world.x,
+                center_world_y: world.y,
+                zoom: viewport.zoom,
+                rotation_deg: viewport.rotation_deg,
+            },
+            UiGeometryPoint {
+                x: -self.anchor_offset_x_px,
+                y: -self.anchor_offset_y_px,
+            },
+            0.0,
+            0.0,
+        );
         MapViewport {
-            center: world_to_lat_lon(
-                world.x - self.anchor_offset_x_px / scale,
-                world.y - self.anchor_offset_y_px / scale,
-            ),
+            center: ui_world_to_lat_lon(center),
             zoom: viewport.zoom,
             rotation_deg: viewport.rotation_deg,
             pitch_deg: viewport.pitch_deg,
@@ -147,45 +163,20 @@ impl MapFollowSessionState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct WorldPoint {
-    x: f64,
-    y: f64,
-}
-
-fn lat_lon_to_world(position: LatLon) -> WorldPoint {
-    let clamped_lat = position.lat.clamp(-MAX_LATITUDE, MAX_LATITUDE);
-    WorldPoint {
-        x: ((position.lon + 180.0) / 360.0) * WORLD_SIZE,
-        y: ((1.0 - clamped_lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0)
-            * WORLD_SIZE,
-    }
-}
-
-fn world_to_lat_lon(x: f64, y: f64) -> LatLon {
-    let lon = (x / WORLD_SIZE) * 360.0 - 180.0;
-    let n = std::f64::consts::PI - (2.0 * std::f64::consts::PI * y) / WORLD_SIZE;
-    let lat = n.sinh().atan().to_degrees();
-    LatLon { lat, lon }
-}
-
-fn world_to_screen(
-    viewport: MapViewport,
-    world: WorldPoint,
-    width_px: f64,
-    height_px: f64,
-) -> WorldPoint {
-    let scale = 2.0_f64.powf(viewport.zoom);
-    let center = lat_lon_to_world(viewport.center);
-    WorldPoint {
-        x: (world.x - center.x) * scale + width_px / 2.0,
-        y: (world.y - center.y) * scale + height_px / 2.0,
+fn viewport_geometry(viewport: MapViewport) -> UiMapViewportGeometry {
+    let center = ui_lat_lon_to_world(viewport.center);
+    UiMapViewportGeometry {
+        center_world_x: center.x,
+        center_world_y: center.y,
+        zoom: viewport.zoom,
+        rotation_deg: viewport.rotation_deg,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::LatLon;
     use crate::ownship::{OwnshipBannerSeverity, OwnshipMode};
 
     fn ownship(lat: f64, lon: f64) -> OwnshipRenderState {
@@ -298,6 +289,48 @@ mod tests {
         state.engage(viewport);
         state.sync_for_viewport(&ownship(0.0, 0.0), viewport, 800.0, 600.0);
         assert!(!state.following);
+    }
+
+    #[test]
+    fn sync_for_rotated_viewport_keeps_following_while_ownship_is_visible() {
+        let mut state = MapFollowSessionState::default();
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 10.0,
+            rotation_deg: 90.0,
+            pitch_deg: 0.0,
+        };
+        state.engage(viewport);
+        let position = LatLon {
+            lat: 0.0,
+            lon: -0.4,
+        };
+
+        // On this portrait display the aircraft is near the bottom edge after
+        // rotation. An unrotated projection incorrectly puts it left of the
+        // display and disengages CTR.
+        let displayed = ui_lat_lon_to_screen(position, viewport_geometry(viewport), 400.0, 800.0);
+        let unrotated = ui_lat_lon_to_screen(
+            position,
+            viewport_geometry(MapViewport {
+                rotation_deg: 0.0,
+                ..viewport
+            }),
+            400.0,
+            800.0,
+        );
+        assert!((0.0..=400.0).contains(&displayed.x));
+        assert!((0.0..=800.0).contains(&displayed.y));
+        assert!(unrotated.x < 0.0);
+
+        state.sync_for_viewport(&ownship(position.lat, position.lon), viewport, 400.0, 800.0);
+
+        assert!(state.following);
+        let target = state
+            .target_viewport(&ownship(position.lat, position.lon))
+            .unwrap();
+        assert!((target.center.lat - viewport.center.lat).abs() < 1e-9);
+        assert!((target.center.lon - viewport.center.lon).abs() < 1e-9);
     }
 
     #[test]

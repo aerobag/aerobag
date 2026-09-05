@@ -370,13 +370,22 @@ pub fn ui_route_distance_pill_layout(
     None
 }
 
-fn ui_lat_lon_to_world(position: LatLon) -> UiGeometryPoint {
+pub(crate) fn ui_lat_lon_to_world(position: LatLon) -> UiGeometryPoint {
     let lat = position
         .lat
         .clamp(-UI_MAX_MERCATOR_LATITUDE, UI_MAX_MERCATOR_LATITUDE);
     UiGeometryPoint {
         x: ((position.lon + 180.0) / 360.0) * UI_WORLD_SIZE,
         y: ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0) * UI_WORLD_SIZE,
+    }
+}
+
+pub(crate) fn ui_world_to_lat_lon(point: UiGeometryPoint) -> LatLon {
+    let lon = (point.x / UI_WORLD_SIZE) * 360.0 - 180.0;
+    let n = std::f64::consts::PI - (2.0 * std::f64::consts::PI * point.y) / UI_WORLD_SIZE;
+    LatLon {
+        lat: n.sinh().atan().to_degrees(),
+        lon,
     }
 }
 

@@ -3327,7 +3327,8 @@ internal fun MapExplorerPage(
                     } finally {
                         val completedGestureSyncViewport = mapFollowSyncViewportForCompletedGesture(
                             movedViewportDuringGesture = movedViewportDuringGesture,
-                            finalGestureViewport = gestureViewport.copy(rotationDeg = 0.0),
+                            finalGestureViewport = gestureViewport,
+                            displayRotationDeg = plannedMapUpDeg,
                         )
                         if (completedGestureSyncViewport != null) {
                             syncFollowStateForViewport(completedGestureSyncViewport)

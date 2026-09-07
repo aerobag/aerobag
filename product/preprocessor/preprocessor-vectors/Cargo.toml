@@ -19,4 +19,5 @@ serde_json.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+nav-kv-package = { path = "../../../crates/nav-kv-package" }
 tempfile.workspace = true

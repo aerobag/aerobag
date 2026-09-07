@@ -1396,6 +1396,7 @@ dependencies = [
  "geo",
  "had-key",
  "had-nav-kv",
+ "nav-kv-package",
  "preprocessor-core",
  "quick-xml",
  "rusqlite",

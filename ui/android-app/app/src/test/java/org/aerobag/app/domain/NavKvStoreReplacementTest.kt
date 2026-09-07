@@ -49,7 +49,7 @@ class NavKvStoreReplacementTest {
         val selectedAltitudePage = "live_nav_kv/winds-aloft/forecast/page/0128"
         val otherAltitudePage = "live_nav_kv/winds-aloft/forecast/page/0129"
         fun request(id: String, state: String) = """{
-            "state":"$state","invalidations":["flight_plan"],"resources":[{
+            "state":"$state","invalidations":["flight_plan_route"],"resources":[{
                 "id":"$id","source":{
                     "kind":"live_feed_package_member","product":"winds-aloft",
                     "version":"forecast","blob_sha256":"abc123",
@@ -75,7 +75,7 @@ class NavKvStoreReplacementTest {
                 },
             )
             assertTrue(mutation.resumedSnapshot)
-            assertEquals(listOf("flight_plan"), mutation.invalidations)
+            assertEquals(listOf(UiInvalidation.FlightPlanRoute), mutation.invalidations)
             assertEquals(1, mutationCalls)
             assertEquals(1, snapshotCalls)
             assertEquals(listOf(selectedAltitudePage), fetched.toList())

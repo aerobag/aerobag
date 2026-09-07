@@ -38,7 +38,7 @@ jobs:
           python3 tools/ci/fetch_test_artifacts.py \
             --fixture nav-db-advance \
             --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+          python3 tools/ci/verify_fixture_contracts.py \
             --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
             --fixture nav-db-advance
       - name: Install Rust toolchain

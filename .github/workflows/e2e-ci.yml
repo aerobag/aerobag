@@ -139,7 +139,7 @@ jobs:
           python3 tools/ci/fetch_test_artifacts.py \
             --fixture release-journey-publication \
             --destination "${{ github.workspace }}/.ci/release-journey-source"
-          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+          python3 tools/ci/verify_fixture_contracts.py \
             --fixture-root "${{ github.workspace }}/.ci/release-journey-source" \
             --fixture release-journey-publication
       - name: Upload immutable fixture
@@ -474,7 +474,7 @@ jobs:
           python3 tools/ci/fetch_test_artifacts.py \
             "${fixtures[@]}" \
             --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+          python3 tools/ci/verify_fixture_contracts.py \
             --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
             --fixture android-smoke-publication
       - uses: actions/setup-java@v4
@@ -572,7 +572,7 @@ jobs:
           python3 tools/ci/fetch_test_artifacts.py \
             --fixture android-smoke-publication \
             --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+          python3 tools/ci/verify_fixture_contracts.py \
             --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
             --fixture android-smoke-publication
       - uses: actions/setup-node@v4
@@ -639,7 +639,7 @@ jobs:
           python3 tools/ci/fetch_test_artifacts.py \
             --fixture nav-db-advance \
             --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+          python3 tools/ci/verify_fixture_contracts.py \
             --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
             --fixture nav-db-advance
       - uses: actions/setup-node@v4

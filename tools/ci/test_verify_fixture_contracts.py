@@ -7,14 +7,15 @@
 from __future__ import annotations
 
 import json
+import lzma
 import tempfile
 import unittest
 from pathlib import Path
 
-import verify_nav_db_fixture_contracts
+import verify_fixture_contracts
 
 
-class VerifyNavDbFixtureContractsTest(unittest.TestCase):
+class VerifyFixtureContractsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -23,7 +24,8 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
         contract_source = self.repo / "crates/product-contracts/src/lib.rs"
         contract_source.parent.mkdir(parents=True)
         contract_source.write_text(
-            'pub const NAV_DB_CONTRACT_ID: &str = "NAV15";\n',
+            'pub const NAV_DB_CONTRACT_ID: &str = "NAV15";\n'
+            'pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 7;\n',
             encoding="utf-8",
         )
         self.fixtures = self.root / "fixtures"
@@ -62,9 +64,25 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
             json.dumps([{"contracts": {"nav-db": "NAV15"}}]),
             encoding="utf-8",
         )
+        for profile in ("fresh", "mixed", "stale"):
+            profile_root = (
+                self.fixtures
+                / f"e2e/release-journey-publication/live-feeds/{profile}"
+            )
+            state_path = profile_root / "states/notams/state.json.xz"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_bytes(
+                lzma.compress(json.dumps({"contract_version": 7}).encode("utf-8"))
+            )
+            (profile_root / "current.json").write_text(
+                json.dumps(
+                    {"products": {"notams": {"state_url": "states/notams/state.json.xz"}}}
+                ),
+                encoding="utf-8",
+            )
 
     def test_accepts_exact_contract_match(self) -> None:
-        result = verify_nav_db_fixture_contracts.verify(
+        result = verify_fixture_contracts.verify(
             self.repo,
             self.fixtures,
             [
@@ -83,11 +101,11 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
         advance.write_text(json.dumps(manifest), encoding="utf-8")
 
         with self.assertRaisesRegex(
-            verify_nav_db_fixture_contracts.ContractError,
+            verify_fixture_contracts.ContractError,
             r"nav-db-advance provides NAVDB contract\(s\) \[NAV14, NAV15\]; "
             r"client requires NAV15",
         ):
-            verify_nav_db_fixture_contracts.verify(
+            verify_fixture_contracts.verify(
                 self.repo, self.fixtures, ["nav-db-advance"]
             )
 
@@ -102,11 +120,29 @@ class VerifyNavDbFixtureContractsTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            verify_nav_db_fixture_contracts.ContractError,
+            verify_fixture_contracts.ContractError,
             r"release-journey-publication provides NAVDB contract\(s\) \[NAV14\]; "
             r"client requires NAV15",
         ):
-            verify_nav_db_fixture_contracts.verify(
+            verify_fixture_contracts.verify(
+                self.repo, self.fixtures, ["release-journey-publication"]
+            )
+
+    def test_checks_release_journey_notam_contract(self) -> None:
+        state = (
+            self.fixtures
+            / "e2e/release-journey-publication/live-feeds/mixed/states/notams/state.json.xz"
+        )
+        state.write_bytes(
+            lzma.compress(json.dumps({"contract_version": 6}).encode("utf-8"))
+        )
+
+        with self.assertRaisesRegex(
+            verify_fixture_contracts.ContractError,
+            r"release-journey-publication provides NOTAM contract\(s\) \[6, 7\]; "
+            r"client requires 7",
+        ):
+            verify_fixture_contracts.verify(
                 self.repo, self.fixtures, ["release-journey-publication"]
             )
 

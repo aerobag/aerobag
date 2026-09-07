@@ -116,7 +116,7 @@ python3 -m pytest \
   tools/ci/test_build_nav_db_advance_fixture.py \
   tools/ci/test_fetch_test_artifacts.py \
   tools/ci/test_junit_summary.py \
-  tools/ci/test_verify_nav_db_fixture_contracts.py \
+  tools/ci/test_verify_fixture_contracts.py \
   product/preprocessor/scripts/test_build_multi_version_publication.py \
   product/preprocessor/scripts/test_pipeline_health.py \
   product/preprocessor/scripts/test_watch_build_log.py

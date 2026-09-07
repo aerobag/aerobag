@@ -526,7 +526,7 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
         subprocess.run(
             [
                 "python3",
-                "tools/ci/verify_nav_db_fixture_contracts.py",
+                "tools/ci/verify_fixture_contracts.py",
                 "--fixture-root",
                 str(fixtures),
                 "--fixture",

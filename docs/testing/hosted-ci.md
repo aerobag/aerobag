@@ -89,7 +89,7 @@ python3 tools/ci/build_nav_db_advance_fixture.py \
   --source-publication /path/to/published \
   --output /path/to/test-artifacts/nav-db/advance-2608-to-2609 \
   --cycle 2608 --cycle 2609
-python3 tools/ci/verify_nav_db_fixture_contracts.py \
+python3 tools/ci/verify_fixture_contracts.py \
   --fixture-root /path/to/test-artifacts \
   --fixture android-smoke-publication \
   --fixture nav-db-advance

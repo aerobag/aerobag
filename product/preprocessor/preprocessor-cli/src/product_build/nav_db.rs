@@ -3440,6 +3440,15 @@ fn build_nav_kv_airport_info_pairs(
     let mut pairs = Vec::new();
     for row in rows {
         let (id, name, city, state, lat, lon, elevation, pattern_altitude, unicom, ctaf) = row?;
+        let elevation_msl_ft = parse_optional_float(&elevation);
+        // NASR APT field E147 (position 594) is whole feet AGL, not MSL:
+        // https://nfdc.faa.gov/webContent/28DaySub/TXT_to_CSV_Mapping.pdf
+        // Normalize here for the MSL publication contract. KGXY's 800 ft AGL
+        // otherwise becomes an 800 ft MSL pattern below its 4696.8 ft field.
+        let pattern_altitude_agl_ft = parse_optional_float(&pattern_altitude);
+        let traffic_pattern_altitude_msl_ft = pattern_altitude_agl_ft
+            .zip(elevation_msl_ft)
+            .map(|(agl, elevation)| agl + elevation);
         let airport_key = id.trim().to_ascii_uppercase();
         let mut communications = Vec::new();
         let ctaf = normalize_airport_frequency(&ctaf);
@@ -3516,8 +3525,8 @@ fn build_nav_kv_airport_info_pairs(
                 "latitude": lat,
                 "longitude": lon,
                 "time_zone": time_zone,
-                "elevation_msl_ft": parse_optional_float(&elevation),
-                "traffic_pattern_altitude_msl_ft": parse_optional_float(&pattern_altitude),
+                "elevation_msl_ft": elevation_msl_ft,
+                "traffic_pattern_altitude_msl_ft": traffic_pattern_altitude_msl_ft,
                 "communications": communications,
                 "contacts": airport_contacts,
                 "runways": airport_runways,
@@ -7229,8 +7238,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn airport_info_pairs_are_self_contained_and_timezone_aware() {
+    fn airport_info_test_connection() -> rusqlite::Connection {
         let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
         connection
             .execute_batch(
@@ -7299,7 +7307,12 @@ mod tests {
                 "#,
             )
             .expect("schema");
+        connection
+    }
 
+    #[test]
+    fn airport_info_pairs_are_self_contained_and_timezone_aware() {
+        let connection = airport_info_test_connection();
         let pairs = build_nav_kv_airport_info_pairs(&connection).expect("airport info pairs");
         let pair = pairs
             .iter()
@@ -7310,7 +7323,7 @@ mod tests {
 
         assert_eq!(value["time_zone"], "America/Los_Angeles");
         assert_eq!(value["location_label"], "Renton, WA");
-        assert_eq!(value["traffic_pattern_altitude_msl_ft"], 1218.0);
+        assert_eq!(value["traffic_pattern_altitude_msl_ft"], 1250.0);
         assert_eq!(value["runways"][0]["length_ft"], 5382.0);
         assert_eq!(value["runways"][0]["end_a"]["latitude"], 47.5);
         assert_eq!(value["runways"][0]["end_b"]["longitude"], -122.216);
@@ -7369,6 +7382,43 @@ mod tests {
         assert_eq!(airport_info_heading, 69.0);
         assert_eq!(nav_symbol_heading, airport_info_heading);
         assert_eq!(vector_symbol_heading, airport_info_heading);
+    }
+
+    #[test]
+    fn airport_info_publishes_pattern_altitudes_relative_to_sea_level() {
+        let connection = airport_info_test_connection();
+        // NASR APT field E147 is AGL. KGXY exposed the bug: copying its 800
+        // straight into an MSL field displayed a pattern 3,897 feet underground.
+        let cases = [
+            ("KGXY", "4696.8", "800", Some(5496.8)),
+            ("SEA_LEVEL", "0", "800", Some(800.0)),
+            ("BELOW_SEA_LEVEL", "-210", "800", Some(590.0)),
+            ("NO_ELEVATION", "", "800", None),
+            ("BAD_ELEVATION", "UNKNOWN", "800", None),
+            ("NO_PATTERN", "4696.8", "", None),
+            ("BAD_PATTERN", "4696.8", "UNKNOWN", None),
+        ];
+        for (id, elevation, pattern_agl, _) in cases {
+            connection.execute(
+                "INSERT INTO airports VALUES (?1, ?1, '', 'CO', 40.4374, -104.6332, ?2, ?3, '', '', '')",
+                rusqlite::params![id, elevation, pattern_agl],
+            ).expect("insert traffic pattern fixture");
+        }
+        let pairs = build_nav_kv_airport_info_pairs(&connection).expect("airport info pairs");
+        for (id, _, _, expected_msl) in cases {
+            let key = format!("airport/info/{id}");
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .expect("airport info");
+            let value: serde_json::Value =
+                serde_json::from_slice(&pair.value).expect("airport info JSON");
+            assert_eq!(
+                value["traffic_pattern_altitude_msl_ft"].as_f64(),
+                expected_msl,
+                "{id}: published MSL must include airport elevation, not relabel the AGL height",
+            );
+        }
     }
 
     #[test]

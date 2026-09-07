@@ -1115,13 +1115,16 @@ mod tests {
 
     #[test]
     fn published_tpa_uses_published_msl_and_reports_agl() {
-        assert_eq!(
-            traffic_pattern_altitude(Some(632.0), Some(1_600.0)),
-            (
-                "1600 ft MSL (968 ft AGL)".to_string(),
-                "published".to_string()
-            )
-        );
+        for (elevation_msl, pattern_msl, expected) in [
+            (632.0, 1600.0, "1600 ft MSL (968 ft AGL)"),
+            // KGXY: preproc converts NASR's 800 ft AGL to 5496.8 ft MSL.
+            (4696.8, 5496.8, "5497 ft MSL (800 ft AGL)"),
+        ] {
+            assert_eq!(
+                traffic_pattern_altitude(Some(elevation_msl), Some(pattern_msl)),
+                (expected.to_string(), "published".to_string()),
+            );
+        }
     }
 
     #[test]

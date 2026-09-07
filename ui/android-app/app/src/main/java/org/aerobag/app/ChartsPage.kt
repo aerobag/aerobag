@@ -12,7 +12,6 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -1223,11 +1222,10 @@ internal fun PrimaryNavigationDock(
         .any { it.page == currentPage && it.chartOrPlateReturnTarget }
     Row(
         modifier = modifier
-            .e2eIndexedControl(
+            .e2eIndexedElement(
                 semanticTag = "parity:primary-navigation",
                 state = "enabled:true",
-            )
-            .testTag("parity:primary-navigation"),
+            ),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1397,9 +1395,10 @@ internal fun MapCenterButton(
             .size(ThumbSize)
             .e2eIndexedControl(
                 semanticTag = "parity:center-here-button",
-                state = "enabled:$enabled:selected:$selected:text:CTR",
+                enabled = enabled,
+                selected = selected,
+                text = "CTR",
             )
-            .testTag("parity:center-here-button")
             .semantics {
                 this.selected = selected
                 if (!enabled) disabled()
@@ -1457,9 +1456,10 @@ internal fun MapOrientationButton(
             .size(ThumbSize)
             .e2eIndexedControl(
                 semanticTag = "parity:map-orientation-button",
-                state = "enabled:true:selected:$trackUp:text:${if (trackUp) "TRK" else "N"}",
+                enabled = true,
+                selected = trackUp,
+                text = if (trackUp) "TRK" else "N",
             )
-            .testTag("parity:map-orientation-button")
             .semantics { selected = trackUp }
             .clickable(onClick = onToggle),
         shape = RoundedCornerShape(ThumbRadius),
@@ -1555,7 +1555,6 @@ internal fun AndroidChartSearchBox(
                         enabled = true,
                         focused = e2eFocused,
                     )
-                    .testTag("parity:chart-search-input")
                     .width(ThumbSize * 2f)
                     .height(ThumbSize)
                     .clip(RoundedCornerShape(ThumbRadius))
@@ -1622,11 +1621,9 @@ internal fun AndroidChartSearchBox(
                                     .height(ThumbSize)
                                     .e2eIndexedControl(
                                         semanticTag = semanticTag,
-                                        state =
-                                            "enabled:true:selected:false:" +
-                                                "text:${Uri.encode(listOfNotNull(suggestion.identifier, friendlyName).joinToString(" "))}",
+                                        enabled = true,
+                                        text = listOfNotNull(suggestion.identifier, friendlyName).joinToString(" "),
                                     )
-                                    .testTag(semanticTag)
                                     .clickable {
                                         focusManager.clearFocus(force = true)
                                         keyboardController?.hide()
@@ -1864,11 +1861,10 @@ internal fun PlateFolderGrid(
                         .fillMaxSize()
                         .e2eIndexedControl(
                             semanticTag = "parity:plate-folder-tile:${chart.id}",
-                            state =
-                                "enabled:true:selected:${chart.id == selectedChartId}:" +
-                                    "text:${Uri.encode(chart.label)}",
+                            enabled = true,
+                            selected = chart.id == selectedChartId,
+                            text = chart.label,
                         )
-                        .testTag("parity:plate-folder-tile:${chart.id}")
                         .border(
                             width = when {
                                 chart.id == selectedChartId -> 2.dp
@@ -1961,11 +1957,9 @@ private fun PlateProcedureNotamBadgeButton(
             .size(badgeSize)
             .e2eIndexedControl(
                 semanticTag = "parity:plate-notam:${badge.actionId}",
-                state =
-                    "enabled:true:selected:false:" +
-                        "text:${Uri.encode(badge.accessibilityLabel)}",
+                enabled = true,
+                text = badge.accessibilityLabel,
             )
-            .testTag("parity:plate-notam:${badge.actionId}")
             .semantics { contentDescription = badge.accessibilityLabel }
             .clickable(onClick = onClick),
         shape = RectangleShape,
@@ -2244,15 +2238,14 @@ internal fun MenuPanelRow(
                 if (testTag != null) {
                     Modifier.e2eIndexedControl(
                         semanticTag = testTag,
-                        state =
-                            "enabled:$enabled:selected:${active || isOn}:" +
-                                "text:${Uri.encode(renderedLabel)}",
+                        enabled = enabled,
+                        selected = active || isOn,
+                        text = renderedLabel,
                     )
                 } else {
                     Modifier
                 },
             )
-            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .semantics { selected = active || isOn }
             .clip(rowShape)
             .background(rowBackground)

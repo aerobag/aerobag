@@ -19,9 +19,11 @@ class AltitudePlannerNavigationPolicyTest {
 
         assertTrue(mainSource.contains("AppPage.AltitudePlanner ->"))
         assertTrue(
-            flightPlanSource.contains(
-                ".testTag(\"parity:plan-estimate-mode\")\n                        .clickable { onSelectPage(AppPage.AltitudePlanner) }",
-            ),
+            Regex(
+                "e2eIndexedControl\\([\\s\\S]{0,180}" +
+                    "semanticTag = \"parity:plan-estimate-mode\"[\\s\\S]{0,180}" +
+                    "\\.clickable \\{ onSelectPage\\(AppPage\\.AltitudePlanner\\) \\}",
+            ).containsMatchIn(flightPlanSource),
         )
         assertTrue(homeSource.contains("UiHomeDestination.AltitudePlanner ->"))
         assertTrue(homeSource.contains("iconResId = R.drawable.home_altitude_planner_icon"))

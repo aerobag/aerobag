@@ -3170,11 +3170,10 @@ internal fun MapExplorerPage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .e2eIndexedControl(
+            .e2eIndexedElement(
                 semanticTag = "parity:map-surface",
                 state = "enabled:true",
             )
-            .testTag("parity:map-surface")
             .background(uiTheme.controls.chartSurfaceBg)
             .then(startupAttributionModifier)
             .onSizeChanged { surfaceSize = it }
@@ -5045,11 +5044,10 @@ internal fun MapSelectionTray(
     val actionRows = actionSlots.chunked(3)
     Surface(
         modifier = modifier
-            .e2eIndexedControl(
+            .e2eIndexedElement(
                 semanticTag = "parity:map-selection-tray",
                 state = "enabled:true",
             )
-            .testTag("parity:map-selection-tray")
             .semantics { testTagsAsResourceId = true }
             .onGloballyPositioned { coordinates ->
                 onBoundsChange(coordinates.boundsInWindow())
@@ -5550,9 +5548,9 @@ private fun AirportInfoFact(
                         base
                             .e2eIndexedControl(
                                 semanticTag = semanticTag,
-                                state = "enabled:true:selected:false:text:${Uri.encode(value)}",
+                                enabled = true,
+                                text = value,
                             )
-                            .testTag(semanticTag)
                     }
                     indexed.clickable(onClick = onClick)
                 },
@@ -5916,11 +5914,10 @@ internal fun MapSelectionItemButton(
                 .fillMaxSize()
                 .e2eIndexedControl(
                     semanticTag = testTag,
-                    state =
-                        "enabled:true:selected:$selected:" +
-                            "text:${android.net.Uri.encode(item.label)}",
+                    enabled = true,
+                    selected = selected,
+                    text = item.label,
                 )
-                .testTag(testTag)
                 .clickable(onClick = onClick),
             shape = RoundedCornerShape(ThumbRadius),
             color = containerColor,
@@ -6092,11 +6089,10 @@ internal fun MapSelectionActionButton(
             .height(ThumbSize)
             .e2eIndexedControl(
                 semanticTag = "parity:map-selection-action:${action.id}",
-                state =
-                    "enabled:${enabled && acceptsTap}:selected:${action.displayOnly}:" +
-                        "text:${android.net.Uri.encode(buttonLabel(action.label))}",
+                enabled = enabled && acceptsTap,
+                selected = action.displayOnly,
+                text = buttonLabel(action.label),
             )
-            .testTag("parity:map-selection-action:${action.id}")
             .alpha(if (action.label.isBlank()) 0f else 1f)
             .semantics {
                 if (!enabled) {
@@ -6216,7 +6212,6 @@ internal fun AirportInsertPanel(
                                 enabled = !state.loading,
                                 focused = e2eFocused,
                             )
-                            .testTag("parity:plan-insert-airport-input")
                             .weight(1f)
                             .height(ThumbSize)
                             .focusRequester(focusRequester)

@@ -376,9 +376,9 @@ private fun SettingsPageSectionView(
                 .clickable { expanded = !expanded }
                 .e2eIndexedControl(
                     semanticTag = "parity:settings-section:${section.id}",
-                    state = "enabled:true:selected:$expanded",
+                    enabled = true,
+                    selected = expanded,
                 )
-                .testTag("parity:settings-section:${section.id}")
                 .semantics { selected = expanded }
                 .padding(horizontal = ThumbSize * 0.18f),
             verticalAlignment = Alignment.CenterVertically,
@@ -432,9 +432,9 @@ private fun SettingsToggleRow(
             )
             .e2eIndexedControl(
                 semanticTag = "parity:settings-toggle:${row.id}",
-                state = "enabled:true:selected:false:checked:$enabled",
+                enabled = true,
+                checked = enabled,
             )
-            .testTag("parity:settings-toggle:${row.id}")
             .padding(horizontal = ThumbSize * 0.24f),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -486,11 +486,10 @@ private fun SettingsGridChoicesRow(
                                 modifier = Modifier
                                     .e2eIndexedControl(
                                         semanticTag = semanticTag,
-                                        state =
-                                            "enabled:true:selected:${item.enabled}:" +
-                                                "text:${item.cell.id}",
-                                    )
-                                    .testTag(semanticTag),
+                                        enabled = true,
+                                        selected = item.enabled,
+                                        text = item.cell.id,
+                                    ),
                                 onClick = { onSettingsAction(row.actionId, item.cell.id) },
                             )
                         }

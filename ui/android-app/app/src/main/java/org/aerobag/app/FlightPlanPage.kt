@@ -1004,11 +1004,10 @@ internal fun FlightPlanPage(
                     modifier = Modifier
                         .width(planEstimateWidth)
                         .height(ThumbSize)
-                        .e2eIndexedControl(
-                            semanticTag = "parity:plan-estimate-mode",
-                            state = "enabled:true",
-                        )
-                        .testTag("parity:plan-estimate-mode")
+                    .e2eIndexedControl(
+                        semanticTag = "parity:plan-estimate-mode",
+                        enabled = true,
+                    )
                         .clickable { onSelectPage(AppPage.AltitudePlanner) },
                     color = uiTheme.controls.panelBg,
                     shape = RoundedCornerShape(ThumbRadius),
@@ -1610,7 +1609,6 @@ internal fun FlightPlanRouteEntryRow(
                         enabled = !submitting,
                         focused = e2eFocused,
                     )
-                    .testTag("parity:plan-append-route-input")
                     .onFocusChanged { state ->
                         e2eFocused = state.isFocused
                         onFocusChange(state.isFocused)

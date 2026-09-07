@@ -384,11 +384,10 @@ internal fun AltitudePlannerPage(
                                         .height(ThumbSize * 0.68f)
                                         .e2eIndexedControl(
                                             semanticTag = rowSemanticTag,
-                                            state =
-                                                "enabled:${row.enabled}:selected:${row.selected}:" +
-                                                    "text:${row.actionUid ?: "disabled"}",
+                                            enabled = row.enabled,
+                                            selected = row.selected,
+                                            text = row.actionUid ?: "disabled",
                                         )
-                                        .testTag(rowSemanticTag)
                                         .semantics { selected = row.selected }
                                         .clickable {
                                             val actionUid = row.actionUid

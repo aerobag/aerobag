@@ -19,46 +19,6 @@ internal data class E2eProjectionSnapshot(
 )
 
 internal object E2eProjectionRegistry {
-    val KnownViewIds = setOf(
-        R.id.e2e_ownship_state_projection,
-        R.id.e2e_live_overlay_projection,
-        R.id.e2e_nexrad_state_projection,
-        R.id.e2e_playback_widget_projection,
-        R.id.e2e_viewport_projection,
-        R.id.e2e_map_selection_projection,
-        R.id.e2e_map_follow_projection,
-        R.id.e2e_plate_viewport_projection,
-        R.id.e2e_data_status_projection,
-        R.id.e2e_startup_state_projection,
-        R.id.e2e_flight_plan_rows_projection,
-        R.id.e2e_flight_plan_state_projection,
-        R.id.e2e_flight_plan_overlay_projection,
-        R.id.e2e_map_family_projection,
-        R.id.e2e_raster_state_projection,
-        R.id.e2e_vector_state_projection,
-        R.id.e2e_flight_plan_route_overlay_projection,
-        R.id.e2e_flight_plan_route_entry_projection,
-        R.id.e2e_airport_info_scroll_projection,
-    )
-    val KnownSemanticPrefixes = listOf(
-        "parity:button:",
-        "parity:home-button:",
-        "parity:page:",
-        "parity:map-surface",
-        "parity:map-selection-tray",
-        "parity:ownship-launcher",
-        "parity:ownship-source:",
-        "parity:chart-search-suggestion:",
-        "parity:map-selection-action:",
-        "parity:chart-search-input",
-        "parity:plan-append-route-input",
-        "parity:plan-control:",
-        "parity:plan-row-action:",
-        "parity:settings-section:",
-        "parity:tray-option:",
-        "flight-data-cell:",
-    )
-
     private val revision = AtomicLong()
     private val entries =
         ConcurrentHashMap<String, ConcurrentHashMap<Any, E2eProjectionSnapshot>>()
@@ -113,9 +73,10 @@ class E2eProjectionProvider : ContentProvider() {
         val resourceIdPrefix = uri.getQueryParameter("resource_id_prefix")
         if ((resourceId == null) == (resourceIdPrefix == null)) return null
         if (resourceIdPrefix != null) {
-            if (resourceIdPrefix !in E2eProjectionRegistry.KnownSemanticPrefixes) return null
+            val snapshots = E2eProjectionRegistry.readPrefix(resourceIdPrefix)
+            if (snapshots.isEmpty()) return null
             return MatrixCursor(Columns).apply {
-                E2eProjectionRegistry.readPrefix(resourceIdPrefix).forEach { (id, snapshot) ->
+                snapshots.forEach { (id, snapshot) ->
                     addRow(arrayOf(id, snapshot.state, snapshot.bounds, snapshot.revision, 1))
                 }
             }
@@ -124,8 +85,8 @@ class E2eProjectionProvider : ContentProvider() {
         val snapshot = E2eProjectionRegistry.read(resourceId)
         val resourceName = resourceId.removePrefix("org.aerobag.app:id/")
         val viewId = context?.resources?.getIdentifier(resourceName, "id", context?.packageName) ?: 0
-        val knownSemanticControl = E2eProjectionRegistry.KnownSemanticPrefixes.any(resourceId::startsWith)
-        if (viewId !in E2eProjectionRegistry.KnownViewIds && !knownSemanticControl && snapshot == null) {
+        val knownProjection = viewId != 0 && resourceName.startsWith("e2e_")
+        if (!knownProjection && snapshot == null) {
             return null
         }
         return MatrixCursor(Columns).apply {

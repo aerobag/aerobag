@@ -69,7 +69,7 @@ internal fun E2eProjectionView(
 /** Indexed geometry and state for a real Compose control used by release journeys. */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-internal fun Modifier.e2eIndexedControl(
+private fun Modifier.e2eIndexedGeometry(
     semanticTag: String,
     state: String,
 ): Modifier {
@@ -104,6 +104,34 @@ internal fun Modifier.e2eIndexedControl(
         }
 }
 
+/** One semantic identity for Compose tests and indexed release-journey input. */
+@Composable
+internal fun Modifier.e2eIndexedElement(
+    semanticTag: String,
+    state: String,
+): Modifier = e2eIndexedGeometry(
+    semanticTag = semanticTag,
+    state = state,
+).testTag(semanticTag)
+
+/** Standard state contract for an indexed interactive control. */
+@Composable
+internal fun Modifier.e2eIndexedControl(
+    semanticTag: String,
+    enabled: Boolean,
+    selected: Boolean = false,
+    checked: Boolean? = null,
+    text: String? = null,
+): Modifier = e2eIndexedElement(
+    semanticTag = semanticTag,
+    state = buildString {
+        append("enabled:").append(enabled)
+        append(":selected:").append(selected)
+        checked?.let { append(":checked:").append(it) }
+        text?.let { append(":text:").append(Uri.encode(it)) }
+    },
+)
+
 /** Indexed editable state used by the release-journey IME boundary. */
 @Composable
 internal fun Modifier.e2eIndexedTextControl(
@@ -111,7 +139,7 @@ internal fun Modifier.e2eIndexedTextControl(
     text: String,
     enabled: Boolean,
     focused: Boolean,
-): Modifier = e2eIndexedControl(
+): Modifier = e2eIndexedElement(
     semanticTag = semanticTag,
     state = "kind:text:text:${Uri.encode(text)}:enabled:$enabled:focused:$focused",
 )
@@ -119,10 +147,10 @@ internal fun Modifier.e2eIndexedTextControl(
 /** A rendered page marker, published only after Compose has positioned the page root. */
 @Composable
 internal fun Modifier.e2ePageRoot(semanticTag: String): Modifier =
-    e2eIndexedControl(
+    e2eIndexedElement(
         semanticTag = semanticTag,
         state = "enabled:true",
-    ).testTag(semanticTag)
+    )
 
 private fun LayoutCoordinates.toE2eBounds(): String {
     val clippedWindowBounds = boundsInWindow()

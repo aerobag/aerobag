@@ -37,7 +37,6 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -116,9 +115,8 @@ internal fun FlightDataBanner(
                             modifier = Modifier
                                 .e2eIndexedControl(
                                     semanticTag = "flight-data-cell:${cell.id}",
-                                    state = "enabled:${cell.action != null}",
+                                    enabled = cell.action != null,
                                 )
-                                .testTag("flight-data-cell:${cell.id}")
                                 .flightDataCellInput(cell, onCellActivated),
                         )
                     }
@@ -162,9 +160,8 @@ internal fun FlightDataBanner(
                             modifier = Modifier
                                 .e2eIndexedControl(
                                     semanticTag = "flight-data-cell:${cell.id}",
-                                    state = "enabled:${cell.action != null}",
+                                    enabled = cell.action != null,
                                 )
-                                .testTag("flight-data-cell:${cell.id}")
                                 .flightDataCellInput(cell, onCellActivated),
                         )
                     }

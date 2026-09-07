@@ -2468,9 +2468,9 @@ internal fun DisclaimerConsentModal(
                     .height(ThumbSize * 0.95f)
                     .e2eIndexedControl(
                         semanticTag = "parity:disclaimer-accept-button",
-                        state = "enabled:true:selected:false:checked:false",
-                    )
-                    .testTag("parity:disclaimer-accept-button"),
+                        enabled = true,
+                        checked = false,
+                    ),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = uiTheme.controls.buttonChecked,
                     contentColor = uiTheme.controls.buttonFg,

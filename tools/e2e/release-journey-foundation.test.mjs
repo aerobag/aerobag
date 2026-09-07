@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -2424,7 +2424,7 @@ test("rapid Android scalar projections use stable IDs instead of full-tree prefi
     projectionProvider,
     /owners\.values\.maxByOrNull\(E2eProjectionSnapshot::revision\)/,
   );
-  assert.match(projectionProvider, /viewId !in E2eProjectionRegistry\.KnownViewIds/);
+  assert.match(projectionProvider, /viewId != 0 && resourceName\.startsWith\("e2e_"\)/);
   assert.match(manifest, /android:enabled="\$\{e2eProjectionProviderEnabled\}"/);
   assert.match(manifest, /android:readPermission="org\.aerobag\.app\.permission\.READ_E2E_PROJECTIONS"/);
   assert.match(charts, /R\.id\.e2e_plate_viewport_projection/);
@@ -3051,7 +3051,7 @@ test("mutable flight-plan column labels are not part of semantic identities", ()
     "utf8",
   );
   const web = readFileSync(new URL("../../ui/web-app/src/App.tsx", import.meta.url), "utf8");
-  assert.match(android, /testTag\("parity:plan-column:\$\{column\.id\}"\)/);
+  assert.match(android, /semanticTag = "parity:plan-column:\$\{column\.id\}"/);
   assert.match(android, /stateDescription = column\.label/);
   assert.doesNotMatch(android, /parity:plan-column:\$\{column\.id\}:\$\{column\.label\}/);
   assert.match(web, /data-testid=\{`parity:plan-column:\$\{column\.id\}`\}/);
@@ -3281,9 +3281,9 @@ test("Android altitude rows publish indexed action geometry and selection state"
   );
   assert.match(
     source,
-    /e2eIndexedControl\(\s*semanticTag = rowSemanticTag,[\s\S]*"enabled:\$\{row\.enabled\}:selected:\$\{row\.selected\}:/,
+    /e2eIndexedControl\(\s*semanticTag = rowSemanticTag,[\s\S]*enabled = row\.enabled,[\s\S]*selected = row\.selected/,
   );
-  assert.match(source, /\.testTag\(rowSemanticTag\)/);
+  assert.doesNotMatch(source, /\.testTag\(rowSemanticTag\)/);
 });
 
 test("Android flight-data settings expose their visible selected state", () => {
@@ -3375,7 +3375,7 @@ test("Android page navigation requires visible semantic pages", () => {
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionProvider.kt", import.meta.url),
     "utf8",
   );
-  assert.match(provider, /"parity:page:"/);
+  assert.doesNotMatch(provider, /KnownSemanticPrefixes/);
   for (const file of [
     "AltitudePlannerPage.kt",
     "ChartsPage.kt",
@@ -3485,14 +3485,16 @@ test("Android journey controls publish indexed geometry through the private E2E 
     new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/CloudPage.kt", import.meta.url),
     "utf8",
   );
+  assert.match(projection, /fun Modifier\.e2eIndexedElement/);
   assert.match(projection, /fun Modifier\.e2eIndexedControl/);
   assert.match(projection, /fun Modifier\.e2eIndexedTextControl/);
+  assert.match(projection, /e2eIndexedGeometry[\s\S]*\.testTag\(semanticTag\)/);
   assert.match(projection, /kind:text:text:\$\{Uri\.encode\(text\)\}:enabled:\$enabled:focused:\$focused/);
   assert.match(projection, /positionOnScreen\(\)/);
   assert.match(projection, /boundsInWindow\(\)/);
   assert.match(projection, /positionInWindow\(\)/);
   assert.match(provider, /snapshot\.bounds/);
-  assert.match(provider, /!knownSemanticControl && snapshot == null/);
+  assert.match(provider, /!knownProjection && snapshot == null/);
   assert.match(provider, /if \(snapshot == null\) 0 else 1/);
   assert.match(flightPlan, /semanticTag = "parity:plan-append-route-input"/);
   assert.match(settings, /semanticTag = "parity:settings-section:\$\{section\.id\}"/);
@@ -3502,7 +3504,7 @@ test("Android journey controls publish indexed geometry through the private E2E 
     /"parity:settings-choice:\$\{row\.id\}:\$\{item\.cell\.id\}"[\s\S]*e2eIndexedControl\([\s\S]*semanticTag = semanticTag/,
   );
   assert.match(commonWidgets, /semanticTag = resolvedTestTag/);
-  assert.match(commonWidgets, /text:\$\{Uri\.encode\(renderedLabel\)\}/);
+  assert.match(commonWidgets, /text = renderedLabel/);
   assert.match(charts, /semanticTag = testTag/);
   assert.match(charts, /semanticTag = "parity:primary-navigation"/);
   assert.match(charts, /e2eIndexedTextControl\(\s*semanticTag = "parity:chart-search-input"/);
@@ -3515,14 +3517,13 @@ test("Android journey controls publish indexed geometry through the private E2E 
   assert.doesNotMatch(cloud, /cloud-panel:\$\{panel\.id\}:state:/);
   assert.match(mapExplorer, /semanticTag = "parity:map-selection-tray"/);
   assert.match(mapExplorer, /semanticTag = "parity:map-surface"/);
-  assert.match(provider, /KnownSemanticPrefixes/);
-  assert.match(provider, /knownSemanticControl/);
   assert.match(provider, /fun readPrefix\(resourceIdPrefix: String\)/);
-  assert.match(provider, /resourceIdPrefix !in E2eProjectionRegistry\.KnownSemanticPrefixes/);
+  assert.match(provider, /if \(snapshots\.isEmpty\(\)\) return null/);
+  assert.doesNotMatch(provider, /KnownSemanticPrefixes|KnownViewIds/);
   assert.match(charts, /semanticTag = "parity:chart-search-suggestion:\$\{suggestion\.identifier\}"/);
   assert.match(
     charts,
-    /semanticTag = semanticTag,[\s\S]*text:\$\{Uri\.encode\(listOfNotNull\(suggestion\.identifier, friendlyName\)/,
+    /semanticTag = semanticTag,[\s\S]*text = listOfNotNull\(suggestion\.identifier, friendlyName\)/,
   );
   const service = readFileSync(
     new URL("../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java", import.meta.url),
@@ -4211,8 +4212,8 @@ test("Android preserves platform-neutral flight-data cell ids", () => {
     banner.match(/\.e2eIndexedControl\([\s\S]*?semanticTag = "flight-data-cell:\$\{cell\.id\}"/g)?.length,
     2,
   );
-  assert.match(banner, /state = "enabled:\$\{cell\.action != null\}"/);
-  assert.match(provider, /"flight-data-cell:"/);
+  assert.match(banner, /enabled = cell\.action != null/);
+  assert.doesNotMatch(provider, /"flight-data-cell:"/);
 });
 
 test("Android aliases the shared ownship launcher to its Compose semantic tag", () => {
@@ -4685,7 +4686,7 @@ test("Android mandatory disclaimer publishes indexed action geometry", () => {
     disclaimer,
     /e2eIndexedControl\(\s*semanticTag = "parity:disclaimer-accept-button"/,
   );
-  assert.match(disclaimer, /testTag\("parity:disclaimer-accept-button"\)/);
+  assert.doesNotMatch(disclaimer, /testTag\("parity:disclaimer-accept-button"\)/);
 });
 
 test("Android playback buttons publish indexed action geometry", () => {
@@ -4701,8 +4702,8 @@ test("Android playback buttons publish indexed action geometry", () => {
     button,
     /e2eIndexedControl\(\s*semanticTag = testTag/,
   );
-  assert.match(button, /state = "enabled:\$enabled:selected:false:checked:false"/);
-  assert.match(button, /Modifier\.testTag\(testTag\)/);
+  assert.match(button, /enabled = enabled,[\s\S]*checked = false/);
+  assert.doesNotMatch(button, /Modifier\.testTag\(testTag\)/);
 });
 
 test("Android map orientation and plate-folder actions publish indexed geometry", () => {
@@ -4722,12 +4723,12 @@ test("Android map orientation and plate-folder actions publish indexed geometry"
     orientation,
     /e2eIndexedControl\(\s*semanticTag = "parity:map-orientation-button"/,
   );
-  assert.match(orientation, /testTag\("parity:map-orientation-button"\)/);
+  assert.doesNotMatch(orientation, /testTag\("parity:map-orientation-button"\)/);
   assert.match(
     folder,
     /e2eIndexedControl\(\s*semanticTag = "parity:plate-folder-tile:\$\{chart\.id\}"/,
   );
-  assert.match(folder, /testTag\("parity:plate-folder-tile:\$\{chart\.id\}"\)/);
+  assert.doesNotMatch(folder, /testTag\("parity:plate-folder-tile:\$\{chart\.id\}"\)/);
 });
 
 test("Android status launchers publish indexed action geometry", () => {
@@ -4743,7 +4744,23 @@ test("Android status launchers publish indexed action geometry", () => {
     badge,
     /e2eIndexedControl\(\s*semanticTag = "parity:\$testTagPrefix-launcher"/,
   );
-  assert.match(badge, /testTag\("parity:\$testTagPrefix-launcher"\)/);
+  assert.doesNotMatch(badge, /testTag\("parity:\$testTagPrefix-launcher"\)/);
+});
+
+test("Android indexed elements cannot hand-copy their Compose test tags", () => {
+  const sourceDirectory = new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/",
+    import.meta.url,
+  );
+  for (const filename of readdirSync(sourceDirectory).filter((name) => name.endsWith(".kt"))) {
+    if (filename === "E2eProjectionView.kt") continue;
+    const source = readFileSync(new URL(filename, sourceDirectory), "utf8");
+    assert.doesNotMatch(
+      source,
+      /\.e2eIndexed(?:Control|Element|TextControl)\([\s\S]{0,500}?\.testTag\(/,
+      `${filename} must let the indexed modifier own the semantic test tag`,
+    );
+  }
 });
 
 test("Android flight-plan column and plate NOTAM actions publish indexed geometry", () => {

@@ -350,8 +350,7 @@ private fun CloudPanelView(
                         enabled = true,
                         focused = e2eSetupCodeFocused,
                     )
-                    .onFocusChanged { state -> e2eSetupCodeFocused = state.isFocused }
-                    .testTag("parity:cloud-setup-code-input"),
+                    .onFocusChanged { state -> e2eSetupCodeFocused = state.isFocused },
                 label = { Text(control.label) },
                 placeholder = { Text(control.placeholder) },
                 textStyle = MaterialTheme.typography.bodyMedium,

@@ -7,7 +7,7 @@ use had_key::component as had_key_component;
 use preprocessor_core::nav_kv::NavKvRoot;
 use std::{
     collections::BTreeSet,
-    env, fs,
+    env,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -79,20 +79,23 @@ fn validate_chart_catalog_packages(had: &HadSource) -> anyhow::Result<()> {
 }
 
 enum HadSource {
-    Dir { dir: PathBuf, root: NavKvRoot },
-    Zip { path: PathBuf, root: NavKvRoot },
+    Dir {
+        reader: nav_kv_package::NavKvDirectoryReader,
+        root: NavKvRoot,
+    },
+    Zip {
+        path: PathBuf,
+        root: NavKvRoot,
+    },
 }
 
 impl HadSource {
     fn open(path: &Path) -> anyhow::Result<Self> {
         if path.is_dir() {
-            let root_bytes = fs::read(path.join("root"))
-                .with_context(|| format!("failed to read {}", path.join("root").display()))?;
+            let reader = nav_kv_package::NavKvDirectoryReader::new(path, "HAD");
+            let root_bytes = reader.read_root().map_err(anyhow::Error::msg)?;
             let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
-            return Ok(Self::Dir {
-                dir: path.to_path_buf(),
-                root,
-            });
+            return Ok(Self::Dir { reader, root });
         }
 
         let file =
@@ -109,8 +112,8 @@ impl HadSource {
 
     fn query(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         match self {
-            Self::Dir { dir, root } => {
-                Ok(root.extract_value(key, |page_index| read_dir_page(dir, page_index).ok()))
+            Self::Dir { reader, root } => {
+                Ok(root.extract_value(key, |page_index| reader.read_page(page_index).ok()))
             }
             Self::Zip { path, root } => {
                 let file = File::open(path)
@@ -123,12 +126,6 @@ impl HadSource {
             }
         }
     }
-}
-
-fn read_dir_page(dir: &Path, page_index: u32) -> anyhow::Result<Vec<u8>> {
-    let path = dir.join(format!("page_{page_index:04}"));
-    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    decode_xz_if_needed(&bytes).with_context(|| format!("failed to decode {}", path.display()))
 }
 
 fn decode_xz_if_needed(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {

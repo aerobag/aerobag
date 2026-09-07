@@ -6,7 +6,7 @@ use anyhow::{bail, Context};
 use preprocessor_core::nav_kv::{NavKvPrefixStats, NavKvRoot};
 use std::{
     collections::BTreeSet,
-    env, fs,
+    env,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
@@ -91,11 +91,11 @@ fn print_prefix_stats(
 }
 
 fn prefix_size_had_dir(dir: &Path, prefix: &str) -> anyhow::Result<(NavKvRoot, NavKvPrefixStats)> {
-    let root_bytes = fs::read(dir.join("root"))
-        .with_context(|| format!("failed to read {}", dir.join("root").display()))?;
+    let reader = nav_kv_package::NavKvDirectoryReader::new(dir, "HAD");
+    let root_bytes = reader.read_root().map_err(anyhow::Error::msg)?;
     let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
     let stats = root
-        .prefix_stats(prefix, |page_index| read_dir_page(dir, page_index).ok())
+        .prefix_stats(prefix, |page_index| reader.read_page(page_index).ok())
         .with_context(|| format!("failed to scan HAD prefix {prefix}"))?;
     Ok((root, stats))
 }
@@ -115,16 +115,10 @@ fn prefix_size_had_zip(path: &Path, prefix: &str) -> anyhow::Result<(NavKvRoot, 
 }
 
 fn query_had_dir(dir: &Path, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    let root_bytes = fs::read(dir.join("root"))
-        .with_context(|| format!("failed to read {}", dir.join("root").display()))?;
+    let reader = nav_kv_package::NavKvDirectoryReader::new(dir, "HAD");
+    let root_bytes = reader.read_root().map_err(anyhow::Error::msg)?;
     let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
-    Ok(root.extract_value(key, |page_index| read_dir_page(dir, page_index).ok()))
-}
-
-fn read_dir_page(dir: &Path, page_index: u32) -> anyhow::Result<Vec<u8>> {
-    let path = dir.join(format!("page_{page_index:04}"));
-    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    decode_xz_if_needed(&bytes).with_context(|| format!("failed to decode {}", path.display()))
+    Ok(root.extract_value(key, |page_index| reader.read_page(page_index).ok()))
 }
 
 fn decode_xz_if_needed(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {

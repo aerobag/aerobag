@@ -57,7 +57,7 @@ use product_contracts::{
     },
     publication::{bundle::v2::BundleManifest, current::v1::CurrentArtifactsManifest},
     versioned_json, LiveFeedProductPolicy, NotamAirportCatalog, AEROBAG_SSE_TRANSPORT_POLICY,
-    LIVE_FEED_PRODUCT_POLICIES, NAV_DB_CONTRACT_ID, NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
+    LIVE_FEED_PRODUCT_POLICIES, NOTAM_AIRPORT_CATALOG_NAV_DB_KEY,
 };
 use serde::Serialize;
 
@@ -1710,28 +1710,20 @@ fn resolve_product_artifact_root(
 fn read_notam_airport_catalog_from_nav_db(
     nav_db_root: &Path,
 ) -> anyhow::Result<NotamAirportCatalog> {
-    let root_path = nav_db_root.join("root");
-    let root_bytes = fs::read(&root_path)
-        .with_context(|| format!("failed to read nav-db root {}", root_path.display()))?;
+    let reader = nav_kv_package::NavKvDirectoryReader::new(nav_db_root, "nav-db");
+    let root_bytes = reader.read_root().map_err(anyhow::Error::msg)?;
     let root = NavKvRoot::parse(&root_bytes)
         .map_err(anyhow::Error::msg)
-        .with_context(|| format!("invalid nav-db root {}", root_path.display()))?;
+        .with_context(|| format!("invalid nav-db root {}", nav_db_root.display()))?;
     let mut page_error = None;
-    let value = root.extract_value(NOTAM_AIRPORT_CATALOG_NAV_DB_KEY, |page_index| {
-        let path = nav_db_root.join(format!("page_{page_index:04}"));
-        match fs::read(&path)
-            .with_context(|| format!("failed to read nav-db page {}", path.display()))
-            .and_then(|bytes| {
-                nav_kv_package::decode_xz_if_needed(&bytes)
-                    .map(|decoded| decoded.into_owned())
-                    .map_err(anyhow::Error::msg)
-                    .with_context(|| format!("failed to decode nav-db page {}", path.display()))
-            }) {
-            Ok(page) => Some(page),
-            Err(error) => {
-                page_error.get_or_insert(error);
-                None
-            }
+    let value = root.extract_value(NOTAM_AIRPORT_CATALOG_NAV_DB_KEY, |page_index| match reader
+        .read_page(page_index)
+        .map_err(anyhow::Error::msg)
+    {
+        Ok(page) => Some(page),
+        Err(error) => {
+            page_error.get_or_insert(error);
+            None
         }
     });
     if let Some(error) = page_error {
@@ -3075,6 +3067,7 @@ fn next_path(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use product_contracts::NAV_DB_CONTRACT_ID;
     use std::io::Read;
     use std::sync::mpsc;
 

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -243,16 +243,15 @@ fn source_version(id: String, last_updated_utc: &str) -> anyhow::Result<SourceVe
 }
 
 fn read_nav_rendezvous_keys(nav_db_dir: &Path) -> anyhow::Result<BTreeSet<String>> {
-    let root_path = nav_db_dir.join("root");
-    let root_bytes =
-        fs::read(&root_path).with_context(|| format!("failed to read {}", root_path.display()))?;
+    let reader = nav_kv_package::NavKvDirectoryReader::new(nav_db_dir, "nav-db");
+    let root_bytes = reader.read_root().map_err(anyhow::Error::msg)?;
     let root = NavKvRoot::parse(&root_bytes).map_err(anyhow::Error::msg)?;
     let mut read_error = None;
     let keys = root.prefix_keys(ProcedureRendezvousKey::NAV_KV_PREFIX, |page_index| {
         if read_error.is_some() {
             return None;
         }
-        match read_nav_page(nav_db_dir, page_index) {
+        match reader.read_page(page_index).map_err(anyhow::Error::msg) {
             Ok(bytes) => Some(bytes),
             Err(error) => {
                 read_error = Some(error);
@@ -265,15 +264,6 @@ fn read_nav_rendezvous_keys(nav_db_dir: &Path) -> anyhow::Result<BTreeSet<String
     }
     keys.context("failed to scan procedure rendezvous keys from nav_db")
         .map(|keys| keys.into_iter().collect())
-}
-
-fn read_nav_page(nav_db_dir: &Path, page_index: u32) -> anyhow::Result<Vec<u8>> {
-    let path = nav_db_dir.join(format!("page_{page_index:04}"));
-    let encoded = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    nav_kv_package::decode_xz_if_needed(&encoded)
-        .map(|bytes| bytes.into_owned())
-        .map_err(anyhow::Error::msg)
-        .with_context(|| format!("failed to decode {}", path.display()))
 }
 
 fn audit_records(

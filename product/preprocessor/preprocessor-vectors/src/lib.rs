@@ -5344,8 +5344,9 @@ mod tests {
         let root = had_nav_kv::NavKvRoot::parse(&fs::read(&result.had_root_path)?)
             .map_err(anyhow::Error::msg)?;
         let had_dir = result.had_root_path.parent().unwrap();
+        let reader = nav_kv_package::NavKvDirectoryReader::new(had_dir, "obstacles");
         let pairs = root
-            .pairs(|page| fs::read(had_dir.join(format!("page_{page:04}"))).ok())
+            .pairs(|page| reader.read_page(page).ok())
             .expect("HAD pages should be readable");
         assert_eq!(
             nav_kv_canonical_sha256_from_pairs(&pairs),

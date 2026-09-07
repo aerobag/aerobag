@@ -86,19 +86,18 @@ fn load_nav_kv_pages_from_zip(zip_path: &Path) -> (Vec<u8>, Vec<Vec<u8>>) {
 }
 
 fn load_nav_kv_pages_from_dir(nav_kv_dir: &Path) -> (Vec<u8>, Vec<Vec<u8>>) {
-    let root_path = nav_kv_dir.join("root");
-    let root_bytes =
-        fs::read(&root_path).unwrap_or_else(|err| panic!("read {}: {err}", root_path.display()));
+    let reader = nav_kv_package::NavKvDirectoryReader::new(nav_kv_dir, "fixture");
+    let root_bytes = reader.read_root().unwrap_or_else(|err| panic!("{err}"));
     let root = app_core::NavKvRoot::parse(&root_bytes)
-        .unwrap_or_else(|err| panic!("parse {}: {err}", root_path.display()));
+        .unwrap_or_else(|err| panic!("parse {}: {err}", nav_kv_dir.display()));
     let page_count = root.page_count() as usize;
     let mut pages = Vec::with_capacity(page_count);
     for page_index in 0..page_count {
-        let page_name = format!("page_{page_index:04}");
-        let page_path = nav_kv_dir.join(&page_name);
-        let page_bytes = fs::read(&page_path)
-            .unwrap_or_else(|err| panic!("read {}: {err}", page_path.display()));
-        pages.push(decode_nav_kv_page_for_fixture(&page_name, page_bytes));
+        pages.push(
+            reader
+                .read_page(page_index as u32)
+                .unwrap_or_else(|err| panic!("{err}")),
+        );
     }
     (root_bytes, pages)
 }

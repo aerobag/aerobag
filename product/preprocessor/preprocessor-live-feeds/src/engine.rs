@@ -2424,30 +2424,36 @@ fn live_feed_nav_kv_delta_from_delta(
 }
 
 pub(crate) fn read_nav_kv_pairs_from_dir(state_dir: &Path) -> anyhow::Result<Vec<NavKvPair>> {
-    let root_path = state_dir.join("root");
-    let root_bytes =
-        fs::read(&root_path).with_context(|| format!("failed to read {}", root_path.display()))?;
+    let reader = nav_kv_package::NavKvDirectoryReader::new(state_dir, "live-feed state");
+    let root_bytes = reader.read_root().map_err(anyhow::Error::msg)?;
     let root = NavKvRoot::parse(&root_bytes)
-        .map_err(|err| anyhow::anyhow!("failed to parse {}: {err}", root_path.display()))?;
-    root.pairs(|page| read_nav_kv_page_from_dir(state_dir, page).ok())
-        .ok_or_else(|| anyhow::anyhow!("failed to read HAD pages under {}", state_dir.display()))
+        .map_err(|err| anyhow::anyhow!("failed to parse {}: {err}", state_dir.display()))?;
+    let mut read_error = None;
+    let pairs = root.pairs(|page| match reader.read_page(page) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            read_error.get_or_insert(error);
+            None
+        }
+    });
+    if let Some(error) = read_error {
+        return Err(anyhow::Error::msg(error));
+    }
+    pairs.ok_or_else(|| anyhow::anyhow!("failed to read HAD pages under {}", state_dir.display()))
 }
 
 type NavKvMembers = (Vec<u8>, Vec<u8>, Vec<Vec<u8>>);
 
 fn read_nav_kv_members_from_dir(product: &str, state_dir: &Path) -> anyhow::Result<NavKvMembers> {
-    let manifest_path = state_dir.join("manifest.json");
-    let manifest = fs::read(&manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let reader = nav_kv_package::NavKvDirectoryReader::new(state_dir, product);
+    let manifest = reader.read_manifest().map_err(anyhow::Error::msg)?;
     let manifest_value: Value = serde_json::from_slice(&manifest)
-        .with_context(|| format!("failed to decode {}", manifest_path.display()))?;
+        .with_context(|| format!("failed to decode {product} nav-kv manifest"))?;
     let page_count = nav_kv_manifest_page_count(product, &manifest_value)?;
-    let root_path = state_dir.join("root");
-    let root =
-        fs::read(&root_path).with_context(|| format!("failed to read {}", root_path.display()))?;
+    let root = reader.read_root().map_err(anyhow::Error::msg)?;
     let mut pages = Vec::new();
     for page in 0..page_count {
-        pages.push(read_nav_kv_page_from_dir(state_dir, page)?);
+        pages.push(reader.read_page(page).map_err(anyhow::Error::msg)?);
     }
     Ok((manifest, root, pages))
 }
@@ -2466,14 +2472,6 @@ fn xz_nav_kv_state_dir_pages(state_dir: &Path, manifest_value: &Value) -> anyhow
         fs::write(&path, encoded).with_context(|| format!("failed to write {}", path.display()))?;
     }
     Ok(())
-}
-
-fn read_nav_kv_page_from_dir(state_dir: &Path, page: u32) -> anyhow::Result<Vec<u8>> {
-    let path = state_dir.join(format!("page_{page:04}"));
-    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    nav_kv_package::decode_xz_if_needed(&bytes)
-        .map(|page| page.into_owned())
-        .map_err(|err| anyhow::anyhow!("failed to decode {}: {err}", path.display()))
 }
 
 fn nav_kv_manifest_page_count(product: &str, manifest_value: &Value) -> anyhow::Result<u32> {

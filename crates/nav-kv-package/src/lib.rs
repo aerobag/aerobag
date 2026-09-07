@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::borrow::Cow;
+use std::fs;
 use std::io::{Cursor, Read, Write};
+use std::path::PathBuf;
 
 use zip::{write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime};
 
@@ -14,6 +16,53 @@ pub struct NavKvPackageMembers {
     pub manifest: Vec<u8>,
     pub root: Vec<u8>,
     pub pages: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NavKvDirectoryReader {
+    root: PathBuf,
+    product: String,
+}
+
+impl NavKvDirectoryReader {
+    pub fn new(root: impl Into<PathBuf>, product: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            product: product.into(),
+        }
+    }
+
+    pub fn read_manifest(&self) -> Result<Vec<u8>, String> {
+        self.read_member("manifest.json")
+    }
+
+    pub fn read_root(&self) -> Result<Vec<u8>, String> {
+        self.read_member("root")
+    }
+
+    pub fn read_page(&self, page: u32) -> Result<Vec<u8>, String> {
+        let name = format!("page_{page:04}");
+        let encoded = self.read_member(&name)?;
+        decode_xz_if_needed(&encoded)
+            .map(Cow::into_owned)
+            .map_err(|err| {
+                format!(
+                    "failed to decode {} nav-kv member {}: {err}",
+                    self.product, name
+                )
+            })
+    }
+
+    fn read_member(&self, name: &str) -> Result<Vec<u8>, String> {
+        let path = self.root.join(name);
+        fs::read(&path).map_err(|err| {
+            format!(
+                "failed to read {} nav-kv member {}: {err}",
+                self.product,
+                path.display()
+            )
+        })
+    }
 }
 
 pub fn is_xz(bytes: &[u8]) -> bool {
@@ -135,6 +184,39 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn directory_reader_accepts_raw_and_xz_pages() {
+        let directory = temporary_directory("directory-reader");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("manifest.json"), b"manifest").unwrap();
+        std::fs::write(directory.join("root"), b"root").unwrap();
+        std::fs::write(directory.join("page_0000"), b"raw").unwrap();
+        std::fs::write(
+            directory.join("page_0001"),
+            xz_frame_uncompressed_bytes(b"compressed").unwrap(),
+        )
+        .unwrap();
+
+        let reader = NavKvDirectoryReader::new(&directory, "test");
+        assert_eq!(reader.read_manifest().unwrap(), b"manifest");
+        assert_eq!(reader.read_root().unwrap(), b"root");
+        assert_eq!(reader.read_page(0).unwrap(), b"raw");
+        assert_eq!(reader.read_page(1).unwrap(), b"compressed");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn directory_reader_reports_product_and_member() {
+        let directory = temporary_directory("missing-page");
+        let error = NavKvDirectoryReader::new(&directory, "notams")
+            .read_page(7)
+            .unwrap_err();
+
+        assert!(error.contains("notams nav-kv member"));
+        assert!(error.contains("page_0007"));
+    }
+
+    #[test]
     fn package_round_trips_client_framed_xz_pages_in_stored_zip() {
         let manifest = br#"{"page_count":2}"#;
         let root = b"root";
@@ -223,5 +305,16 @@ mod tests {
             ));
         }
         Ok(output.stdout)
+    }
+
+    fn temporary_directory(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "aerobag-nav-kv-package-{label}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 }

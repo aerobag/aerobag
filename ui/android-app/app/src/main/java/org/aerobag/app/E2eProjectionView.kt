@@ -122,6 +122,7 @@ internal fun Modifier.e2eIndexedControl(
     selected: Boolean = false,
     checked: Boolean? = null,
     text: String? = null,
+    state: String? = null,
 ): Modifier = e2eIndexedElement(
     semanticTag = semanticTag,
     state = buildString {
@@ -129,6 +130,7 @@ internal fun Modifier.e2eIndexedControl(
         append(":selected:").append(selected)
         checked?.let { append(":checked:").append(it) }
         text?.let { append(":text:").append(Uri.encode(it)) }
+        state?.let { append(":state:").append(Uri.encode(it)) }
     },
 )
 

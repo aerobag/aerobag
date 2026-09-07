@@ -24,7 +24,7 @@ import { RELEASE_JOURNEYS, validateJourneyRegistry } from "./release-journey-reg
 import { validateAndroidSmokeFixture } from "./android-smoke-fixture.mjs";
 import { validateReleaseJourneyFixture } from "./release-journey-fixture.mjs";
 import {
-  chooseForecastWindModel, dismissPlanRowTray,
+  chooseForecastWindModel, dismissMapSelectionIfPresent, dismissPlanRowTray,
   openAndDismissDataStatus,
   offlineSyncButtonIsIdle,
   publicationArtifactRequestCount,
@@ -36,6 +36,7 @@ import {
   selectChartSearchSuggestion,
   selectProcedure,
   selectTfrFromPreparedMap,
+  setNexradAnimationHeld,
 } from "./release-journey-implementations.mjs";
 import {
   decodeReleaseJourneyFixturePath,
@@ -976,6 +977,123 @@ test("map selection actions wait through asynchronous inspector materialization"
     "map-selection-action:wx",
   ]);
 });
+
+function boundedObservationRuntime(driver) {
+  return {
+    driver,
+    async eventually(description, probe) {
+      return (await observeUntil(description, probe, { timeoutMs: 40, intervalMs: 1 })).value;
+    },
+    transition(description, contract) {
+      return performTransition(description, {
+        ...contract,
+        readyTimeoutMs: 40,
+        responseTimeoutMs: 40,
+        intervalMs: 1,
+        readinessSamples: 1,
+        completionSamples: 1,
+      });
+    },
+    action(description, id, contract) {
+      return this.transition(description, {
+        ...contract,
+        ready: () => driver.readElement(id),
+        act: () => driver.performAction(id),
+      });
+    },
+  };
+}
+
+for (const initiallyPresent of [true, false]) {
+  test(`optional inspector dismissal observes busy then ${initiallyPresent ? "present" : "absent"} tray`, async () => {
+    let reads = 0;
+    let present = initiallyPresent;
+    let backs = 0;
+    const runtime = boundedObservationRuntime({
+      async readElement(id) {
+        assert.equal(id, "map-selection-tray");
+        if (++reads === 1) throw new TransientObservationError("projection busy");
+        return present ? { enabled: true } : null;
+      },
+      async back() {
+        backs += 1;
+        present = false;
+      },
+    });
+    await dismissMapSelectionIfPresent(runtime, "dismiss inspector");
+    assert.ok(reads >= 2);
+    assert.equal(backs, initiallyPresent ? 1 : 0);
+    assert.equal(present, false);
+  });
+}
+
+for (const transient of [true, false]) {
+  test(`optional inspector dismissal does not hide ${transient ? "persistent busy" : "terminal"} errors`, async () => {
+    const error = transient
+      ? new TransientObservationError("projection busy")
+      : new TerminalObservationError("driver crashed");
+    let reads = 0;
+    const runtime = boundedObservationRuntime({
+      async readElement() { reads += 1; throw error; },
+      async back() { assert.fail("must not act without a successful observation"); },
+    });
+    await assert.rejects(
+      dismissMapSelectionIfPresent(runtime, "dismiss inspector"),
+      transient ? ObservationTimeoutError : TerminalObservationError,
+    );
+    if (!transient) assert.equal(reads, 1);
+  });
+}
+
+test("flight data controls project their core-owned action on both platforms", () => {
+  const web = readFileSync(new URL("../../ui/web-app/src/App.tsx", import.meta.url), "utf8");
+  const android = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/FlightDataBanner.kt", import.meta.url,
+  ), "utf8");
+  const indexed = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionView.kt", import.meta.url,
+  ), "utf8");
+  assert.match(web, /data-testid=\{`flight-data-cell:\$\{cell.id\}`\}\s+data-e2e-state=\{cell.action\?\.action_id\}/);
+  assert.equal((android.match(/state = cell.action\?\.actionId/g) ?? []).length, 2,
+    "portrait and landscape must use the same core-owned action");
+  assert.match(indexed, /state\?\.let \{ append\(":state:"\)\.append\(Uri.encode\(it\)\) \}/);
+});
+
+for (const held of [true, false]) {
+  test(`NEXRAD ${held ? "hold" : "resume"} proves mode and painted frame through the strict action contract`, async () => {
+    let action = held ? "pause_nexrad_animation" : "resume_nexrad_animation";
+    let frame = 2; // Normal animation may already be painting the newest frame.
+    let actions = 0;
+    const runtime = boundedObservationRuntime({
+      async readElement() { return { enabled: true, state: action }; },
+      async readProjection() {
+        return [{ id: `parity:nexrad-state:tiles:184:frame:${frame}:frames:3` }];
+      },
+      async performAction(id) {
+        assert.equal(id, "flight-data-cell:nexrad_age");
+        actions += 1;
+        action = held ? "resume_nexrad_animation" : "pause_nexrad_animation";
+        frame = held ? 2 : 0;
+      },
+    });
+    await setNexradAnimationHeld(runtime, held, 2);
+    assert.equal(actions, 1);
+  });
+}
+
+for (const changeMode of [false, true]) {
+  test(`NEXRAD hold rejects ${changeMode ? "mode change without latest paint" : "latest paint without mode change"}`, async () => {
+    let action = "pause_nexrad_animation";
+    const runtime = boundedObservationRuntime({
+      async readElement() { return { enabled: true, state: action }; },
+      async readProjection() {
+        return [{ id: `parity:nexrad-state:tiles:184:frame:${changeMode ? 0 : 2}:frames:3` }];
+      },
+      async performAction() { if (changeMode) action = "resume_nexrad_animation"; },
+    });
+    await assert.rejects(setNexradAnimationHeld(runtime, true), ObservationTimeoutError);
+  });
+}
 
 test("tray selection avoids a redundant click when the target materializes selected", async () => {
   const { selectTrayOptionMatching } = await import("./release-journey-implementations.mjs");

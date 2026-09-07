@@ -8549,6 +8549,7 @@ function FlightDataBanner(props: {
         <div
           key={cell.id}
           data-testid={`flight-data-cell:${cell.id}`}
+          data-e2e-state={cell.action?.action_id}
           className={`flightDataCell${cell.action ? " isActionable" : ""}`}
           role={cell.action ? "button" : undefined}
           tabIndex={cell.action ? 0 : undefined}

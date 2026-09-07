@@ -2190,19 +2190,26 @@ async function openAirportInfo(runtime, airportId) {
   });
 }
 
+export async function dismissMapSelectionIfPresent(runtime, description) {
+  // Absence is a valid observation; a busy transport is not evidence of absence.
+  const { element } = await runtime.eventually(`${description} presence`, async () => ({
+    element: await runtime.driver.readElement("map-selection-tray"),
+  }));
+  if (!element) return;
+  await runtime.transition(description, {
+    ready: () => runtime.driver.readElement("map-selection-tray"),
+    act: () => runtime.driver.back(),
+    complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
+  });
+}
+
 async function closeMapDetail(runtime, modalId) {
   await runtime.transition(`dismiss ${modalId}`, {
     ready: () => runtime.driver.readModal(modalId),
     act: () => runtime.driver.back(),
     complete: async () => (await runtime.driver.readModal(modalId)) ? null : true,
   });
-  if (await runtime.driver.readElement("map-selection-tray")) {
-    await runtime.transition("dismiss map detail inspector", {
-      ready: () => runtime.driver.readElement("map-selection-tray"),
-      act: () => runtime.driver.back(),
-      complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
-    });
-  }
+  await dismissMapSelectionIfPresent(runtime, "dismiss map detail inspector");
 }
 
 async function airportInfo(runtime) {
@@ -2302,12 +2309,8 @@ async function inspectorDetails(runtime) {
   runtime.check("inspector.weather", Boolean(weatherAction && (weather || weatherAction.disabled_reason)), weatherAction?.text);
   if (weather) {
     await closeMapDetail(runtime, "weather-detail-modal");
-  } else if (await runtime.driver.readElement("map-selection-tray")) {
-    await runtime.transition("dismiss weather inspector", {
-      ready: () => runtime.driver.readElement("map-selection-tray"),
-      act: () => runtime.driver.back(),
-      complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
-    });
+  } else {
+    await dismissMapSelectionIfPresent(runtime, "dismiss weather inspector");
   }
 
   await selectAirportFromMapSearch(runtime, "KSEA");
@@ -2322,13 +2325,7 @@ async function inspectorDetails(runtime) {
   runtime.check("inspector.plates", Boolean(platesAction && plate));
 
   await runtime.openPage("map");
-  if (await runtime.driver.readElement("map-selection-tray")) {
-    await runtime.transition("dismiss retained inspector", {
-      ready: () => runtime.driver.readElement("map-selection-tray"),
-      act: () => runtime.driver.back(),
-      complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
-    });
-  }
+  await dismissMapSelectionIfPresent(runtime, "dismiss retained inspector");
   await disableCtrBeforeFreePan(runtime, "disable CTR before SPOT pan");
   const viewportBeforeSpotPan = await runtime.stable("settled viewport before SPOT pan", async () =>
     viewportGeometryId(await runtime.driver.readProjection("parity:viewport:")));
@@ -2354,13 +2351,7 @@ async function inspectorDetails(runtime) {
     return entry && /(MSL|ELEV|FT)/i.test(entry.text) ? entry : null;
   }, E2E_TIMING.localResourceMs);
   runtime.check("inspector.terrain-async", Boolean(terrain), terrain?.text);
-  if (await runtime.driver.readElement("map-selection-tray")) {
-    await runtime.transition("dismiss SPOT inspector", {
-      ready: () => runtime.driver.readElement("map-selection-tray"),
-      act: () => runtime.driver.back(),
-      complete: async () => (await runtime.driver.readElement("map-selection-tray")) ? null : true,
-    });
-  }
+  await dismissMapSelectionIfPresent(runtime, "dismiss SPOT inspector");
   await runtime.openPage("flight_plan");
   await openPlanRow(runtime, "KSEA");
   const unavailableArrival = await runtime.driver.readElement(runtime.platform === "web"
@@ -2914,6 +2905,24 @@ async function preparedLiveFeeds(runtime) {
   );
 }
 
+export async function setNexradAnimationHeld(runtime, held, previousFrame = null) {
+  const control = "flight-data-cell:nexrad_age";
+  const nextAction = held ? "resume_nexrad_animation" : "pause_nexrad_animation";
+  return runtime.action(held ? "hold latest NEXRAD frame" : "resume NEXRAD animation", control, {
+    complete: async () => {
+      // Animation itself visits the newest frame. Prove the core-owned mode
+      // through the rendered control's action as well as the painted frame.
+      const button = await runtime.driver.readElement(control);
+      if (button?.state !== nextAction) return null;
+      const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
+      return state && state.tiles > 0 && state.frames >= 2 && state.frame !== null &&
+        (held ? state.frame === state.frames - 1 : state.frame !== previousFrame)
+        ? state
+        : null;
+    },
+  });
+}
+
 async function nexradFrames(runtime) {
   await runtime.reset();
   await acceptDisclaimer(runtime);
@@ -2929,14 +2938,7 @@ async function nexradFrames(runtime) {
   }, E2E_TIMING.animationCycleMs, 100);
   runtime.check("livefeed.nexrad-frames", Boolean(next), `${JSON.stringify(first)} -> ${JSON.stringify(next)}`);
 
-  const held = await runtime.action("hold latest NEXRAD frame", "flight-data-cell:nexrad_age", {
-    complete: async () => {
-      const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
-      return state && state.tiles > 0 && state.frames >= 2 && state.frame === state.frames - 1
-        ? state
-        : null;
-    },
-  });
+  const held = await setNexradAnimationHeld(runtime, true);
   const holdStartedAt = performance.now();
   let changedWhileHeld = false;
   const heldAfterDwell = await runtime.eventually("NEXRAD remains held past an old-frame dwell", async () => {
@@ -2950,14 +2952,7 @@ async function nexradFrames(runtime) {
     `${JSON.stringify(held)} -> ${JSON.stringify(heldAfterDwell)}`,
   );
 
-  const resumed = await runtime.action("resume NEXRAD animation", "flight-data-cell:nexrad_age", {
-    complete: async () => {
-      const state = nexradState(await runtime.driver.readProjection("parity:nexrad-state:"));
-      return state && state.tiles > 0 && state.frame !== null && state.frame !== held.frame
-        ? state
-        : null;
-    },
-  });
+  const resumed = await setNexradAnimationHeld(runtime, false, held.frame);
   runtime.check(
     "livefeed.nexrad-resume",
     Boolean(resumed),

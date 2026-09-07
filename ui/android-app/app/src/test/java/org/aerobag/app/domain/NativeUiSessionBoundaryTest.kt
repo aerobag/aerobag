@@ -101,7 +101,9 @@ class NativeUiSessionBoundaryTest {
         }
         assertTrue(
             "NativeUiSession must expose core invalidations from paged mutations.",
-            sessionBody.contains("fun subscribeInvalidations(listener: (List<String>) -> Unit)"),
+            sessionBody.contains(
+                "fun subscribeInvalidations(listener: (List<UiInvalidation>) -> Unit)",
+            ),
         )
         val packagePreferenceMutation = balancedBlockAfterMarker(
             sessionBody,
@@ -192,7 +194,7 @@ class NativeUiSessionBoundaryTest {
             "Commands that return their new snapshot must not also request a redundant snapshot refresh.",
             sessionBody.contains(
                 "publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)",
-            ) && sessionBody.contains("invalidations - \"session_snapshot\""),
+            ) && sessionBody.contains("invalidations - UiInvalidation.SessionSnapshot"),
         )
         assertTrue(
             "Command snapshots must support generated group-scoped retained-session delivery.",
@@ -355,8 +357,11 @@ class NativeUiSessionBoundaryTest {
             mainActivity.contains("uiSession.subscribeInvalidations(::enqueueUiInvalidations)"),
         )
         assertTrue(
-            "Android app shell should preserve core invalidation names from the shared contract.",
-            mainActivity.contains("\"map_overlay\"") && mainActivity.contains("\"flight_plan_route\""),
+            "Android app shell should consume typed invalidations from the shared contract.",
+            mainActivity.contains("List<UiInvalidation>") &&
+                mainActivity.contains("UiInvalidation.FlightPlanRoute") &&
+                mapPage.contains("UiInvalidation.NexradOverlay") &&
+                mapPage.contains("UiInvalidation.MapOverlay"),
         )
         assertTrue(
             "Android app shell should route snapshot invalidations through core's shared refresh scheduler.",
@@ -408,7 +413,15 @@ class NativeUiSessionBoundaryTest {
         )
         assertTrue(
             "Map overlay query should rerun when core emits map_overlay.",
-            mapPage.contains("uiInvalidationRevisions.mapOverlay"),
+            mapPage.contains(
+                "invalidationRevisions[UiInvalidation.MapOverlay]",
+            ),
+        )
+        assertTrue(
+            "NEXRAD query should rerun when core emits nexrad_overlay.",
+            mapPage.contains(
+                "invalidationRevisions[UiInvalidation.NexradOverlay]",
+            ),
         )
         assertTrue(
             "Flight-plan route projection should rerun from the core-owned route revision.",

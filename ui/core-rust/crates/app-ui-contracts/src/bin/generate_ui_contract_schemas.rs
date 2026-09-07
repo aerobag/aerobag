@@ -37,6 +37,13 @@ fn cloud_schema() -> Value {
 
 fn session_schema() -> Value {
     let mut root = schema::<session::UiSessionPageContracts>();
+    add_definition::<session::UiInvalidation>(&mut root, "UiInvalidation");
+    definition_mut(
+        root.as_object_mut()
+            .expect("session schema root must be an object"),
+        "UiInvalidation",
+    )
+    .insert("x-export-values".to_string(), Value::Bool(true));
     add_definition::<session::FlightEstimateKind>(&mut root, "FlightEstimateKind");
     add_definition::<session::FlightPlanControlId>(&mut root, "FlightPlanControlId");
     add_definition::<session::FlightPlanControlUiView>(&mut root, "FlightPlanControlUiView");
@@ -163,6 +170,7 @@ fn main() {
             description:
                 "Core-owned session page, platform capability, and settings-action wire contract.",
             export_order: &[
+                "UiInvalidation",
                 "UiNavigationPageId",
                 "UiNavigationPageOption",
                 "UiNavigationPageState",

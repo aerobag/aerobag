@@ -313,7 +313,11 @@ function tsObjectSource(name, objectSchema) {
 }
 
 function tsEnumSource(name, enumSchema) {
-  return `export type ${name} = ${enumSchema.enum.map((value) => JSON.stringify(value)).join(" | ")};\n`;
+  const values = enumSchema.enum.map((value) => JSON.stringify(value));
+  const valuesSource = enumSchema["x-export-values"]
+    ? `export const ${name.replaceAll(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase()}_VALUES = [${values.join(", ")}] as const;\n\n`
+    : "";
+  return `${valuesSource}export type ${name} = ${values.join(" | ")};\n`;
 }
 
 function taggedUnionInfo(unionSchema) {

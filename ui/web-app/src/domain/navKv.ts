@@ -94,15 +94,8 @@ type NavKvWasmModule = {
   resolve_chart_asset_resource_in_session(handle: number, chartId: string, assetKind: string): Promise<string> | string;
 };
 
-export type UiInvalidation =
-  | "nav_data"
-  | "session_snapshot"
-  | "raster_tiles"
-  | "map_overlay"
-  | "nexrad_overlay"
-  | "terrain_overlay"
-  | "flight_plan_route"
-  | "debug_panel";
+export type { UiInvalidation } from "../generated/sessionPageWire";
+import type { UiInvalidation } from "../generated/sessionPageWire";
 
 export type UiInvalidationListener = (invalidations: UiInvalidation[]) => void;
 export type ResourceFailureReporter = (resourceId: string, message: string) => Promise<void> | void;

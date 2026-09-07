@@ -63,7 +63,10 @@ import type {
   UiSurfaceStatusState,
 } from "../generated/sessionPageWire";
 import { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
-export { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
+export {
+  UI_INVALIDATION_VALUES,
+  UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
+} from "../generated/sessionPageWire";
 export type {
   CloudHttpHeader,
   CloudHttpMethod,
@@ -95,6 +98,7 @@ export type {
   UiDebugState,
   UiDisclaimerState,
   UiDisplayPolicy,
+  UiInvalidation,
   UiMapLayerState,
   UiMapLayerToggleState,
   UiNavigationPageId,
@@ -131,7 +135,6 @@ import {
   type SessionResultOperationJson,
   type SessionSnapshotOperation,
   type SessionSnapshotOperationJson,
-  type UiInvalidation,
   type UiInvalidationListener,
 } from "./navKv";
 import {
@@ -943,7 +946,7 @@ export type LiveFeedSseEvent = {
   data: string;
 };
 
-export type { UiInvalidation, UiInvalidationListener };
+export type { UiInvalidationListener };
 
 export interface AppCoreAdapter {
   prewarm(): Promise<void>;

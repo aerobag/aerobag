@@ -320,6 +320,7 @@ import org.aerobag.app.generated.NexradOverlayScreenPoint
 import org.aerobag.app.generated.NexradOverlayCacheResource
 import org.aerobag.app.generated.NexradOverlayTile
 import org.aerobag.app.generated.UiStatusPlatformEffect
+import org.aerobag.app.generated.UiInvalidation
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.generated.airportCircleMarkerPath
@@ -1016,9 +1017,10 @@ private fun rememberNexradLayerState(
     enabled: Boolean,
     mapVisible: Boolean,
     liveFeedGeneration: Int,
-    invalidationRevision: Int,
+    invalidationRevisions: UiInvalidationRevisions,
     devServerBaseUrl: String,
 ): NexradLayerState {
+    val invalidationRevision = invalidationRevisions[UiInvalidation.NexradOverlay]
     var frame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
     val decodedBitmapCache = remember(uiSession) {
         DecodedTileBitmapCache(NexradDecodedTileCacheMaxBytes)
@@ -1542,7 +1544,7 @@ private fun rememberDisplayedMapOverlay(
     sessionWorkRunner: UiSessionWorkRunner,
     navDataEpoch: Long,
     liveFeedGeneration: Int,
-    invalidationRevision: Int,
+    invalidationRevisions: UiInvalidationRevisions,
     viewport: MapViewportState,
     displayViewport: MapViewportState,
     surfaceSize: IntSize,
@@ -1559,6 +1561,7 @@ private fun rememberDisplayedMapOverlay(
     startupPerfTrace: AndroidStartupPerfTrace?,
     onVectorContentReady: () -> Unit,
 ): MapOverlayQueryResult {
+    val invalidationRevision = invalidationRevisions[UiInvalidation.MapOverlay]
     var committedOverlay by remember(uiSession, navDataEpoch) { mutableStateOf(emptyMapOverlay()) }
     var committedViewport by remember(uiSession, navDataEpoch) { mutableStateOf<MapViewportState?>(null) }
     var committedSurface by remember(uiSession, navDataEpoch) { mutableStateOf<OverlaySurfaceUnits?>(null) }
@@ -2212,7 +2215,7 @@ internal fun MapExplorerPage(
         enabled = mapLayerState.nexrad.enabled,
         mapVisible = page == AppPage.Map,
         liveFeedGeneration = liveFeedGeneration,
-        invalidationRevision = uiInvalidationRevisions.nexradOverlay,
+        invalidationRevisions = uiInvalidationRevisions,
         devServerBaseUrl = devServerBaseUrl,
     )
     val nexradFrame = nexradLayerState.frame
@@ -2879,7 +2882,7 @@ internal fun MapExplorerPage(
         sessionWorkRunner = sessionWorkRunner,
         navDataEpoch = navDataEpoch,
         liveFeedGeneration = liveFeedGeneration,
-        invalidationRevision = uiInvalidationRevisions.mapOverlay,
+        invalidationRevisions = uiInvalidationRevisions,
         viewport = currentViewport,
         displayViewport = displayViewport,
         surfaceSize = surfaceSize,

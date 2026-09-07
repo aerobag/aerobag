@@ -8,11 +8,12 @@ import android.util.Log
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
+import org.aerobag.app.generated.UiInvalidation
 
 internal class AsyncSessionResourceEffectPump(
     private val executor: Executor,
-    private val pump: () -> List<String>,
-    private val publishInvalidations: (List<String>) -> Unit,
+    private val pump: () -> List<UiInvalidation>,
+    private val publishInvalidations: (List<UiInvalidation>) -> Unit,
 ) : AutoCloseable {
     private val requested = AtomicBoolean(false)
     private val running = AtomicBoolean(false)

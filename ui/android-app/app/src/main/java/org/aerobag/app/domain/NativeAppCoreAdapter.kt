@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.perfLogInfo
+import org.aerobag.app.generated.UiInvalidation
 import org.aerobag.app.VerbosePerfLogs
 import org.aerobag.app.generated.NexradOverlayQueryResult
 import org.aerobag.app.generated.CloudHttpRequest
@@ -889,7 +890,7 @@ class NativeUiSession internal constructor(
         private set
 
     @Volatile
-    private var invalidationListener: ((List<String>) -> Unit)? = null
+    private var invalidationListener: ((List<UiInvalidation>) -> Unit)? = null
     private data class SnapshotListenerRegistration(
         val groups: Set<UiSessionUpdateGroup>,
         val includeRevisionOnlyUpdates: Boolean,
@@ -922,7 +923,7 @@ class NativeUiSession internal constructor(
         },
     )
 
-    fun subscribeInvalidations(listener: (List<String>) -> Unit): AutoCloseable {
+    fun subscribeInvalidations(listener: (List<UiInvalidation>) -> Unit): AutoCloseable {
         synchronized(listenerLock) {
             invalidationListener = listener
         }
@@ -1163,10 +1164,10 @@ class NativeUiSession internal constructor(
         commandName: String,
         outcome: PagedSessionOperationResult,
         snapshotAlreadyReturned: Boolean = false,
-    ): List<String> {
+    ): List<UiInvalidation> {
         val invalidations = outcome.invalidations.distinct()
         val publishedInvalidations = if (snapshotAlreadyReturned) {
-            invalidations - "session_snapshot"
+            invalidations - UiInvalidation.SessionSnapshot
         } else {
             invalidations
         }
@@ -1175,7 +1176,10 @@ class NativeUiSession internal constructor(
         return invalidations
     }
 
-    private fun publishInvalidations(commandName: String, invalidations: List<String>) {
+    private fun publishInvalidations(
+        commandName: String,
+        invalidations: List<UiInvalidation>,
+    ) {
         if (invalidations.isEmpty()) return
         diagnosticLogInfo("AerobagInvalidation") {
             "source=$commandName invalidations=${invalidations.joinToString(",")}"
@@ -1887,7 +1891,7 @@ class NativeUiSession internal constructor(
         bridge.ingestAirspaceLabelTilesInSessionJson(handle, tilesJson)
     }
 
-    fun syncLiveFeeds(fetchResource: (CoreResourceRequest) -> ByteArray): List<String> {
+    fun syncLiveFeeds(fetchResource: (CoreResourceRequest) -> ByteArray): List<UiInvalidation> {
         val outcome = executePagedOperation(
             operation = { bridge.syncLiveFeedsInSessionJson(handle) },
             resourceIo = sessionResourceIo.withFetcher(fetchResource),
@@ -1898,7 +1902,7 @@ class NativeUiSession internal constructor(
     fun ingestLiveFeedSseEvents(
         events: List<LiveFeedSseEvent>,
         fetchResource: (CoreResourceRequest) -> ByteArray,
-    ): List<String> {
+    ): List<UiInvalidation> {
         val outcome = executePagedOperation(
             operation = {
                 bridge.ingestLiveFeedSseEventsInSessionJson(handle, json.encodeToString(events))
@@ -2935,7 +2939,7 @@ data class NavDbMaintenanceUiResult(
 
 data class MapOverlayQueryOutcome(
     val overlay: MapOverlayQueryResult,
-    val invalidations: List<String>,
+    val invalidations: List<UiInvalidation>,
 )
 
 enum class UiStatusSeverity {

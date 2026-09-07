@@ -111,6 +111,7 @@ import {
   type UiHomeDestination,
   type UiHomePageState,
   type UiInvalidation,
+  UI_INVALIDATION_VALUES,
   type UiQrCode,
 } from "./domain/appCoreAdapter";
 import { executeCloudHttpRequest } from "./domain/cloudProviderRuntime";
@@ -421,16 +422,9 @@ function useWebIdleState(timeoutMs = WebIdleTimeoutMs): WebIdleState {
 type UiInvalidationRevisions = Record<UiInvalidation, number>;
 
 function initialUiInvalidationRevisions(): UiInvalidationRevisions {
-  return {
-    nav_data: 0,
-    session_snapshot: 0,
-    raster_tiles: 0,
-    map_overlay: 0,
-    nexrad_overlay: 0,
-    terrain_overlay: 0,
-    flight_plan_route: 0,
-    debug_panel: 0,
-  };
+  return Object.fromEntries(
+    UI_INVALIDATION_VALUES.map((invalidation) => [invalidation, 0]),
+  ) as UiInvalidationRevisions;
 }
 
 function errorMessage(error: unknown): string {

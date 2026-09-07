@@ -829,6 +829,21 @@
       ],
       "type": "object"
     },
+    "UiInvalidation": {
+      "enum": [
+        "nav_data",
+        "session_snapshot",
+        "raster_tiles",
+        "map_overlay",
+        "nexrad_overlay",
+        "terrain_overlay",
+        "flight_plan_route",
+        "debug_panel"
+      ],
+      "title": "UiInvalidation",
+      "type": "string",
+      "x-export-values": true
+    },
     "UiMapLayerOption": {
       "additionalProperties": false,
       "properties": {
@@ -1404,8 +1419,9 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 10,
+  "x-contract-version": 11,
   "x-export-order": [
+    "UiInvalidation",
     "UiNavigationPageId",
     "UiNavigationPageOption",
     "UiNavigationPageState",

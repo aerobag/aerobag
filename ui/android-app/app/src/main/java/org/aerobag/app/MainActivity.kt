@@ -354,6 +354,7 @@ import org.aerobag.app.generated.vorBandPath
 import org.aerobag.app.generated.vorOuterHexPath
 import org.aerobag.app.generated.UiNavigationPageId
 import org.aerobag.app.generated.UiNavigationPageState
+import org.aerobag.app.generated.UiInvalidation
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -2487,29 +2488,18 @@ internal fun DisclaimerConsentModal(
 }
 
 internal data class UiInvalidationRevisions(
-    val navData: Int = 0,
-    val sessionSnapshot: Int = 0,
-    val rasterTiles: Int = 0,
-    val mapOverlay: Int = 0,
-    val nexradOverlay: Int = 0,
-    val terrainOverlay: Int = 0,
-    val flightPlanRoute: Int = 0,
-    val debugPanel: Int = 0,
+    private val values: Map<UiInvalidation, Int> = emptyMap(),
 ) {
-    fun bumped(invalidations: List<String>): UiInvalidationRevisions =
-        invalidations.fold(this) { revisions, invalidation ->
-            when (invalidation) {
-                "nav_data" -> revisions.copy(navData = revisions.navData + 1)
-                "session_snapshot" -> revisions.copy(sessionSnapshot = revisions.sessionSnapshot + 1)
-                "raster_tiles" -> revisions.copy(rasterTiles = revisions.rasterTiles + 1)
-                "map_overlay" -> revisions.copy(mapOverlay = revisions.mapOverlay + 1)
-                "nexrad_overlay" -> revisions.copy(nexradOverlay = revisions.nexradOverlay + 1)
-                "terrain_overlay" -> revisions.copy(terrainOverlay = revisions.terrainOverlay + 1)
-                "flight_plan_route" -> revisions.copy(flightPlanRoute = revisions.flightPlanRoute + 1)
-                "debug_panel" -> revisions.copy(debugPanel = revisions.debugPanel + 1)
-                else -> revisions
-            }
+    operator fun get(invalidation: UiInvalidation): Int = values[invalidation] ?: 0
+
+    fun bumped(invalidations: List<UiInvalidation>): UiInvalidationRevisions {
+        if (invalidations.isEmpty()) return this
+        val next = values.toMutableMap()
+        invalidations.forEach { invalidation ->
+            next[invalidation] = (next[invalidation] ?: 0) + 1
         }
+        return UiInvalidationRevisions(next)
+    }
 }
 
 @Composable
@@ -2877,12 +2867,12 @@ internal fun AerobagApp(
         onDispose { sessionSnapshotRefreshRunner.setListeners(null, null) }
     }
     var uiInvalidationRevisions by remember(uiSession) { mutableStateOf(UiInvalidationRevisions()) }
-    fun publishUiInvalidations(invalidations: List<String>) {
+    fun publishUiInvalidations(invalidations: List<UiInvalidation>) {
         if (invalidations.isEmpty()) return
         uiInvalidationRevisions = uiInvalidationRevisions.bumped(invalidations)
-        if ("session_snapshot" in invalidations) {
+        if (UiInvalidation.SessionSnapshot in invalidations) {
             sessionSnapshotRefreshRunner.request(
-                priority = if ("flight_plan_route" in invalidations) {
+                priority = if (UiInvalidation.FlightPlanRoute in invalidations) {
                     SessionSnapshotRefreshPriority.Timely
                 } else {
                     SessionSnapshotRefreshPriority.LowPriority
@@ -2891,7 +2881,7 @@ internal fun AerobagApp(
             )
         }
     }
-    fun enqueueUiInvalidations(invalidations: List<String>) {
+    fun enqueueUiInvalidations(invalidations: List<UiInvalidation>) {
         if (invalidations.isEmpty()) return
         mainExecutor.execute { publishUiInvalidations(invalidations) }
     }

@@ -5,6 +5,20 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiInvalidation {
+    NavData,
+    SessionSnapshot,
+    RasterTiles,
+    MapOverlay,
+    NexradOverlay,
+    TerrainOverlay,
+    FlightPlanRoute,
+    DebugPanel,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]

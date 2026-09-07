@@ -17,6 +17,8 @@ use product_contracts::WaypointSearchRecord;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
+pub use app_ui_contracts::session::UiInvalidation;
+
 use crate::navdb_types::{
     AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwaySpatialPoint,
 };
@@ -78,19 +80,6 @@ pub enum HadOperationOutcome {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         invalidations: Vec<UiInvalidation>,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiInvalidation {
-    NavData,
-    SessionSnapshot,
-    RasterTiles,
-    MapOverlay,
-    NexradOverlay,
-    TerrainOverlay,
-    FlightPlanRoute,
-    DebugPanel,
 }
 
 impl HadOperationOutcome {

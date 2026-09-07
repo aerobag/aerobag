@@ -20,6 +20,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.aerobag.app.generated.UiInvalidation
 
 class NavKvStoreReplacementTest {
     private val navKvOnlyResourceIo = SessionResourceIo(
@@ -197,7 +198,10 @@ class NavKvStoreReplacementTest {
                 "adsb/airplanes_live/traffic/1" to "provider unavailable",
                 reported,
             )
-            assertEquals(listOf("map_overlay", "session_snapshot"), invalidations)
+            assertEquals(
+                listOf(UiInvalidation.MapOverlay, UiInvalidation.SessionSnapshot),
+                invalidations,
+            )
         } finally {
             store.close()
             PackageZipStore.invalidate(artifact.file)

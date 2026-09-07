@@ -23,6 +23,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.perfLogInfo
+import org.aerobag.app.generated.UiInvalidation
 
 data class CoreResourceRequest(
     val id: String,
@@ -54,7 +55,7 @@ sealed class CoreResourceSource {
 
 data class PagedSessionOperationResult(
     val result: JsonElement,
-    val invalidations: List<String>,
+    val invalidations: List<UiInvalidation>,
     val resumedSnapshot: Boolean = false,
 )
 
@@ -69,8 +70,15 @@ internal data class SessionResourceIo(
 
 private data class CoreSessionResourceEffect(
     val resource: CoreResourceRequest,
-    val completionInvalidations: List<String>,
+    val completionInvalidations: List<UiInvalidation>,
 )
+
+internal fun decodeUiInvalidations(
+    json: Json,
+    element: JsonElement?,
+): List<UiInvalidation> =
+    element?.jsonArray?.map { json.decodeFromJsonElement<UiInvalidation>(it) }
+        ?: emptyList()
 
 fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
     outcome.getValue("resources").jsonArray.map { element ->
@@ -358,10 +366,7 @@ class NavKvStore private constructor(
                     "complete" -> {
                         val result = PagedSessionOperationResult(
                             result = outcome["result"] ?: JsonNull,
-                            invalidations = outcome["invalidations"]
-                                ?.jsonArray
-                                ?.map { it.jsonPrimitive.content }
-                                ?: emptyList(),
+                            invalidations = decodeUiInvalidations(json, outcome["invalidations"]),
                         )
                         if (previousBackend == null) {
                             bridge.navKvDestroy(nextBackend.handle)
@@ -442,7 +447,7 @@ class NavKvStore private constructor(
     ): PagedSessionOperationResult {
         var activeOperation = operation
         var resumedSnapshot = false
-        val pendingInvalidations = linkedSetOf<String>()
+        val pendingInvalidations = linkedSetOf<UiInvalidation>()
         // A peer may install a requested NAVKV page after core reports the request but
         // before this operation reaches ensurePage. An already-present page therefore
         // means the operation should resume, not that the request is invalid. Track the
@@ -457,20 +462,17 @@ class NavKvStore private constructor(
                     PagedSessionOperationResult(
                         result = outcome["result"] ?: JsonNull,
                         invalidations = (pendingInvalidations + (
-                            outcome["invalidations"]
-                                ?.jsonArray
-                                ?.map { it.jsonPrimitive.content }
-                                ?: emptyList()
+                            decodeUiInvalidations(json, outcome["invalidations"])
                             )).toList(),
                         resumedSnapshot = resumedSnapshot,
                     )
                 }
                 "need_resources", "need_snapshot_resources" -> {
                     if (state == "need_snapshot_resources") {
-                        pendingInvalidations += outcome["invalidations"]
-                            ?.jsonArray
-                            ?.map { it.jsonPrimitive.content }
-                            ?: emptyList()
+                        pendingInvalidations += decodeUiInvalidations(
+                            json,
+                            outcome["invalidations"],
+                        )
                         activeOperation = resumeSnapshot
                             ?: error("committed session mutation requires a snapshot-resume operation")
                         resumedSnapshot = true
@@ -520,7 +522,7 @@ class NavKvStore private constructor(
         resourceIo: SessionResourceIo,
         drainSessionResourceEffects: () -> String,
         reportSessionResourceFailure: ((CoreResourceRequest, Throwable) -> Unit)? = null,
-    ): List<String> = backendLock.read {
+    ): List<UiInvalidation> = backendLock.read {
         check(!closed) { "nav_kv store is closed" }
         pumpSessionResourceEffects(
             activeBackend = backend,
@@ -535,8 +537,8 @@ class NavKvStore private constructor(
         resourceIo: SessionResourceIo,
         drainSessionResourceEffects: () -> String,
         reportSessionResourceFailure: ((CoreResourceRequest, Throwable) -> Unit)?,
-    ): List<String> {
-        val invalidations = linkedSetOf<String>()
+    ): List<UiInvalidation> {
+        val invalidations = linkedSetOf<UiInvalidation>()
         while (true) {
             val effects = parseCoreSessionResourceEffects(drainSessionResourceEffects())
             if (effects.isEmpty()) {
@@ -593,10 +595,10 @@ class NavKvStore private constructor(
             val effect = element.jsonObject
             CoreSessionResourceEffect(
                 resource = parseCoreResourceRequest(effect.getValue("resource").jsonObject),
-                completionInvalidations = effect["completion_invalidations"]
-                    ?.jsonArray
-                    ?.map { it.jsonPrimitive.content }
-                    ?: emptyList(),
+                completionInvalidations = decodeUiInvalidations(
+                    json,
+                    effect["completion_invalidations"],
+                ),
             )
         }
 

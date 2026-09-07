@@ -5,6 +5,7 @@
 package org.aerobag.app.domain
 
 import java.util.concurrent.Executor
+import org.aerobag.app.generated.UiInvalidation
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -13,12 +14,12 @@ class AsyncSessionResourceEffectPumpTest {
     fun requestDefersResourceIoAndCoalescesPendingWakeups() {
         val executor = QueuedExecutor()
         var pumpCalls = 0
-        val published = mutableListOf<List<String>>()
+        val published = mutableListOf<List<UiInvalidation>>()
         val pump = AsyncSessionResourceEffectPump(
             executor = executor,
             pump = {
                 pumpCalls += 1
-                listOf("session_snapshot")
+                listOf(UiInvalidation.SessionSnapshot)
             },
             publishInvalidations = published::add,
         )
@@ -32,7 +33,7 @@ class AsyncSessionResourceEffectPumpTest {
         executor.runNext()
 
         assertEquals(1, pumpCalls)
-        assertEquals(listOf(listOf("session_snapshot")), published)
+        assertEquals(listOf(listOf(UiInvalidation.SessionSnapshot)), published)
         pump.close()
     }
 

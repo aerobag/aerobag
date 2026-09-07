@@ -2492,10 +2492,7 @@ pub fn configure_platform_capabilities_in_session(
     settings_storage: Option<SettingsStorageHandle>,
 ) -> AppResult<HadOperationOutcome> {
     if let Some(local_time_zone) = capabilities.local_time_zone.as_deref() {
-        local_time_zone.parse::<Tz>().map_err(|_| AppError {
-            kind: AppErrorKind::InvalidCatalog,
-            message: format!("unsupported platform local time zone {local_time_zone:?}"),
-        })?;
+        validate_platform_time_zone(local_time_zone)?;
     }
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
@@ -4558,6 +4555,13 @@ fn session_local_time_zone(session: &UiSession) -> AppResult<Tz> {
         })
 }
 
+fn validate_platform_time_zone(local_time_zone: &str) -> AppResult<Tz> {
+    local_time_zone.parse::<Tz>().map_err(|_| AppError {
+        kind: AppErrorKind::InvalidCatalog,
+        message: format!("unsupported platform local time zone {local_time_zone:?}"),
+    })
+}
+
 fn set_altitude_planner_departure_input_in_session(
     handle: u32,
     field: crate::AltitudePlannerDepartureInputField,
@@ -6142,9 +6146,25 @@ pub fn get_session_snapshot(handle: u32) -> AppResult<HadOperationOutcome> {
     get_session_snapshot_at_epoch_ms(handle, 0)
 }
 
+pub fn get_session_snapshot_at_platform_time(
+    handle: u32,
+    epoch_ms: i64,
+    local_time_zone: &str,
+) -> AppResult<HadOperationOutcome> {
+    get_session_snapshot_with_time(handle, epoch_ms, Some(local_time_zone))
+}
+
 pub fn get_session_snapshot_at_epoch_ms(
     handle: u32,
     epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    get_session_snapshot_with_time(handle, epoch_ms, None)
+}
+
+fn get_session_snapshot_with_time(
+    handle: u32,
+    epoch_ms: i64,
+    local_time_zone: Option<&str>,
 ) -> AppResult<HadOperationOutcome> {
     let total_started_at = crate::core_clock_ms();
     let lock_started_at = crate::core_clock_ms();
@@ -6153,6 +6173,21 @@ pub fn get_session_snapshot_at_epoch_ms(
     let lock_ms = elapsed_ms(lock_started_at);
     let lookup_started_at = crate::core_clock_ms();
     let session = &mut *session_guard;
+    if let Some(zone) = local_time_zone {
+        if session
+            .coordinator
+            .platform_capabilities
+            .local_time_zone
+            .as_deref()
+            != Some(zone)
+        {
+            validate_platform_time_zone(zone)?;
+            // The OS owns zone detection. Updating this observation must not rerun
+            // startup configuration, restore persistence, or change the Local/Z choice.
+            session.coordinator.platform_capabilities.local_time_zone = Some(zone.to_string());
+            advance_session_revision(session);
+        }
+    }
     advance_session_wall_clock(session, epoch_ms);
     sync_adsb_ownship_status_record(session);
     prepare_adsb_ownship_effect(session);
@@ -30235,6 +30270,109 @@ mod tests {
             zulu_built.action_id.as_deref(),
             Some(crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID),
         );
+    }
+
+    #[test]
+    fn running_session_follows_platform_time_zone_without_changing_plan_or_time_basis() {
+        let now = utc("2026-09-07T18:00:00Z").timestamp_millis();
+        let mut plan = sample_duplicate_waypoint_plan();
+        plan.planned_departure_time_epoch_ms = Some(now + 3_600_000);
+        let init = create_ui_session_at_epoch_ms(plan.clone(), &[], None, None, now)
+            .expect("create session");
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                local_time_zone: Some("America/Los_Angeles".to_string()),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure initial OS zone");
+        let plan = {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).unwrap();
+            session.flight_plan.active_plan().unwrap().clone()
+        };
+
+        for (zone, label, value) in [
+            ("America/Los_Angeles", "TIME PDT", "11:00"),
+            ("America/Boise", "TIME MDT", "12:00"),
+            ("America/Chicago", "TIME CDT", "13:00"),
+        ] {
+            let snapshot = snapshot_from_outcome(
+                get_session_snapshot_at_platform_time(init.handle, now, zone)
+                    .expect("refresh existing session after OS time zone changes"),
+            );
+            let clock = snapshot
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == "clock")
+                .expect("clock");
+            assert_eq!(clock.label, label);
+            assert_eq!(clock.value.as_deref(), Some(value));
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("same session");
+            assert_eq!(session.flight_plan.active_plan(), Some(&plan));
+            assert_eq!(
+                session.coordinator.time_display_mode,
+                crate::TimeDisplayMode::Local
+            );
+        }
+
+        let before = get_session_snapshot(init.handle).unwrap();
+        let repeated = snapshot_from_outcome(
+            get_session_snapshot_at_platform_time(init.handle, now, "America/Chicago").unwrap(),
+        );
+        assert_eq!(repeated.session_revision, before.session_revision);
+        let invalid =
+            get_session_snapshot_at_platform_time(init.handle, now + 60_000, "not/a/zone")
+                .expect_err("invalid OS zone is rejected without changing time or state");
+        assert_eq!(invalid.kind, AppErrorKind::InvalidCatalog);
+        let after = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(after.session_revision, before.session_revision);
+        assert_eq!(
+            after.app_ui_state.flight_data_banner,
+            before.app_ui_state.flight_data_banner
+        );
+
+        perform_time_display_action_in_session(
+            init.handle,
+            crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
+        )
+        .expect("select Zulu");
+        let snapshot = snapshot_from_outcome(
+            get_session_snapshot_at_platform_time(init.handle, now, "America/Boise")
+                .expect("time zone changes while displaying Zulu"),
+        );
+        let clock = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "clock")
+            .expect("clock");
+        assert_eq!(clock.label, "TIME Z");
+        assert_eq!(clock.value.as_deref(), Some("18:00"));
+        perform_time_display_action_in_session(
+            init.handle,
+            crate::TOGGLE_TIME_DISPLAY_MODE_ACTION_ID.to_string(),
+        )
+        .expect("return to Local");
+        let local = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(
+            local
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == "clock")
+                .unwrap()
+                .label,
+            "TIME MDT"
+        );
+        destroy_session(init.handle);
     }
 
     #[test]

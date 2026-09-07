@@ -75,7 +75,7 @@ declare module "@generated/app_wasm.js" {
   export const render_terrain_warning_raw_rgba: (...args: unknown[]) => Uint8Array;
   export const render_terrain_warning_raw_rgba_from_packed_tiles: (...args: unknown[]) => Uint8Array;
   export const get_session_snapshot_paged: (...args: unknown[]) => string;
-  export const get_session_snapshot_at_epoch_ms_paged: (...args: unknown[]) => string;
+  export const get_session_snapshot_at_platform_time_paged: (...args: unknown[]) => string;
   export const create_session_snapshot_refresh_scheduler: (...args: unknown[]) => number;
   export const destroy_session_snapshot_refresh_scheduler: (...args: unknown[]) => void;
   export const session_snapshot_refresh_scheduler_request: (...args: unknown[]) => string;

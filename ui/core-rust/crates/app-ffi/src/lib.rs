@@ -764,12 +764,14 @@ pub fn get_session_snapshot_paged_json(handle: u64) -> Result<String, String> {
     Ok(serialized)
 }
 
-pub fn get_session_snapshot_at_epoch_ms_paged_json(
+pub fn get_session_snapshot_at_platform_time_paged_json(
     handle: u64,
     epoch_ms: i64,
+    local_time_zone: &str,
 ) -> Result<String, String> {
-    let outcome = app_core::get_session_snapshot_at_epoch_ms(handle as u32, epoch_ms)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::get_session_snapshot_at_platform_time(handle as u32, epoch_ms, local_time_zone)
+            .map_err(|err| err.to_string())?;
     let serialized = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;
     app_core::record_session_serialized_payload_bytes(handle as u32, serialized.len());
     Ok(serialized)
@@ -4372,16 +4374,18 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnap
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnapshotAtEpochMsPagedJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnapshotAtPlatformTimePagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
     epoch_ms: i64,
+    local_time_zone: JString,
 ) -> jstring {
-    return_string(
-        &mut env,
-        get_session_snapshot_at_epoch_ms_paged_json(handle as u64, epoch_ms),
-    )
+    let result = (|| {
+        let local_time_zone = get_java_string(&mut env, local_time_zone)?;
+        get_session_snapshot_at_platform_time_paged_json(handle as u64, epoch_ms, &local_time_zone)
+    })();
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

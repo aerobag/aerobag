@@ -2857,6 +2857,7 @@ internal fun AerobagApp(
     }
     val mainExecutor = remember(appContext) { ContextCompat.getMainExecutor(appContext) }
     val sessionSnapshotRefreshRunner = retainedCoreSession.sessionSnapshotRefreshRunner
+    PlatformTimeRefreshEffect(sessionSnapshotRefreshRunner)
     DisposableEffect(sessionSnapshotRefreshRunner) {
         sessionSnapshotRefreshRunner.setListeners(
             onSnapshot = null,

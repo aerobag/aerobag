@@ -12,6 +12,25 @@ import org.junit.Test
 
 class NativeUiSessionBoundaryTest {
     @Test
+    fun existingSessionRefreshSamplesOsTimeZoneAndIsRequestedOnResumeAndZoneChange() {
+        val adapter = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        for (method in listOf("fun refreshSnapshot()", "private fun refreshSnapshotAfterRejectedCommand(")) {
+            val refresh = balancedBlockAfterMarker(adapter, method)
+            assertTrue(refresh.contains("bridge.getSessionSnapshotAtPlatformTimePagedJson("))
+            assertTrue(refresh.contains("ZoneId.systemDefault().id"))
+            assertFalse("Refreshing time must not reload persisted session settings.", refresh.contains("configurePlatformCapabilities"))
+        }
+        val effect = sourceFile("src/main/java/org/aerobag/app/PlatformTimeRefreshEffect.kt").readText()
+        assertTrue(effect.contains("Intent.ACTION_TIMEZONE_CHANGED"))
+        assertTrue(effect.contains("Lifecycle.Event.ON_RESUME"))
+        assertTrue(effect.contains("runner.request(SessionSnapshotRefreshPriority.Timely"))
+        assertTrue(effect.contains("context.unregisterReceiver(receiver)"))
+        assertTrue(effect.contains("lifecycle.removeObserver(observer)"))
+        val app = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+        assertTrue(app.contains("PlatformTimeRefreshEffect(sessionSnapshotRefreshRunner)"))
+    }
+
+    @Test
     fun everyMutableSessionSnapshotFieldHasAnUpdateLander() {
         val source = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
         val wireFields = source

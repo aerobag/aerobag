@@ -1093,7 +1093,7 @@ type WasmModule = {
   get_raster_tile_plan_in_session_with_display_scale(handle: number, viewportJson: string, widthPx: number, heightPx: number, devicePixelRatio: number, nowEpochMs: number): Promise<string> | string;
   render_terrain_overlay_tile_by_key_in_session(handle: number, terrainTileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array> | Uint8Array;
   get_session_snapshot_paged(handle: number): Promise<SessionSnapshotOperationJson> | SessionSnapshotOperationJson;
-  get_session_snapshot_at_epoch_ms_paged(handle: number, nowEpochMs: bigint): Promise<SessionSnapshotOperationJson> | SessionSnapshotOperationJson;
+  get_session_snapshot_at_platform_time_paged(handle: number, nowEpochMs: bigint, localTimeZone: string): Promise<SessionSnapshotOperationJson> | SessionSnapshotOperationJson;
   create_session_snapshot_refresh_scheduler(): Promise<number> | number;
   destroy_session_snapshot_refresh_scheduler(handle: number): Promise<void> | void;
   session_snapshot_refresh_scheduler_request(handle: number, priorityJson: string, reason: string): Promise<string> | string;
@@ -1600,7 +1600,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       initialSnapshot: () => snapshot,
       snapshot: async () => {
         const fullSnapshot = await runSessionSnapshot<unknown>(() =>
-          this.module.get_session_snapshot_at_epoch_ms_paged(handle, BigInt(this.clockEpochMs())));
+          this.module.get_session_snapshot_at_platform_time_paged(
+            handle, BigInt(this.clockEpochMs()), Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ));
         return installFullSnapshot(fullSnapshot);
       },
       maintainNavDb: async (nowEpochMs) => {
@@ -2472,7 +2474,7 @@ async function loadBestAvailableAdapterUncached(
     "get_raster_tile_plan_in_session_with_display_scale",
     "render_terrain_overlay_tile_by_key_in_session",
     "get_session_snapshot_paged",
-    "get_session_snapshot_at_epoch_ms_paged",
+    "get_session_snapshot_at_platform_time_paged",
     "create_session_snapshot_refresh_scheduler",
     "destroy_session_snapshot_refresh_scheduler",
     "session_snapshot_refresh_scheduler_request",

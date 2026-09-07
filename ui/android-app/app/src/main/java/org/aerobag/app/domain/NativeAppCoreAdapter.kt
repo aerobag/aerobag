@@ -1223,7 +1223,9 @@ class NativeUiSession internal constructor(
         Log.w("AerobagSessionCommand", "session command failed; refreshing snapshot command=$commandName", error)
         return try {
             snapshot = executePagedFullSnapshot("refreshSnapshotAfterRejectedCommand") {
-                bridge.getSessionSnapshotAtEpochMsPagedJson(handle, System.currentTimeMillis())
+                bridge.getSessionSnapshotAtPlatformTimePagedJson(
+                    handle, System.currentTimeMillis(), ZoneId.systemDefault().id,
+                )
             }
             snapshot
         } catch (refreshError: RuntimeException) {
@@ -1651,7 +1653,9 @@ class NativeUiSession internal constructor(
     fun refreshSnapshot(): UiSessionSnapshot {
         runNativeSessionCommand("refreshSnapshot") {
             executePagedFullSnapshot("refreshSnapshot") {
-                bridge.getSessionSnapshotAtEpochMsPagedJson(handle, System.currentTimeMillis())
+                bridge.getSessionSnapshotAtPlatformTimePagedJson(
+                    handle, System.currentTimeMillis(), ZoneId.systemDefault().id,
+                )
             }
         }
         return syncGuidanceGeometry()

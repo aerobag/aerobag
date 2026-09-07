@@ -3224,14 +3224,12 @@ function OperationalApp() {
       if (document.visibilityState !== "visible") {
         return;
       }
-      const nextCheckEpochMs = sessionSnapshot.next_cycle_product_freshness_check_epoch_ms;
-      if (nextCheckEpochMs !== null && nextCheckEpochMs !== undefined && Date.now() >= nextCheckEpochMs) {
-        requestSessionSnapshotRefresh("low_priority", "cycle_product_freshness_resume");
-      }
+      // Resample the OS clock and zone, including changes made while this tab slept.
+      requestSessionSnapshotRefresh("timely", "platform_time_resume");
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [requestSessionSnapshotRefresh, sessionSnapshot.next_cycle_product_freshness_check_epoch_ms]);
+  }, [requestSessionSnapshotRefresh]);
 
   useEffect(() => {
     if (!uiSession) {

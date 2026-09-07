@@ -1365,11 +1365,12 @@ pub fn get_session_snapshot_paged(handle: u32) -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn get_session_snapshot_at_epoch_ms_paged(
+pub fn get_session_snapshot_at_platform_time_paged(
     handle: u32,
     epoch_ms: i64,
+    local_time_zone: &str,
 ) -> Result<String, JsValue> {
-    get_session_snapshot_at_epoch_ms_paged_json(handle, epoch_ms)
+    get_session_snapshot_paged_json_impl(handle, epoch_ms, Some(local_time_zone))
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -2209,17 +2210,21 @@ fn select_raster_map_in_session_json(
 }
 
 fn get_session_snapshot_paged_json(handle: u32) -> Result<String, String> {
-    get_session_snapshot_at_epoch_ms_paged_json(handle, 0)
+    get_session_snapshot_paged_json_impl(handle, 0, None)
 }
 
-fn get_session_snapshot_at_epoch_ms_paged_json(
+fn get_session_snapshot_paged_json_impl(
     handle: u32,
     epoch_ms: i64,
+    local_time_zone: Option<&str>,
 ) -> Result<String, String> {
     let total_started_at = now_ms();
     let core_started_at = now_ms();
-    let outcome = app_core::get_session_snapshot_at_epoch_ms(handle, epoch_ms)
-        .map_err(|err| err.to_string())?;
+    let outcome = match local_time_zone {
+        Some(zone) => app_core::get_session_snapshot_at_platform_time(handle, epoch_ms, zone),
+        None => app_core::get_session_snapshot(handle),
+    }
+    .map_err(|err| err.to_string())?;
     let core_ms = now_ms() - core_started_at;
     let serialize_started_at = now_ms();
     let serialized = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;

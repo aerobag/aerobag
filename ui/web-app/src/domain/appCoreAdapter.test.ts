@@ -114,6 +114,7 @@ describe("loadBestAvailableAdapter", () => {
     let sessionRevision = 0;
     let resourcePolicyEstablished = false;
     let createdAtEpochMs: number | null = null;
+    const refreshedTimeZones: string[] = [];
     const startupCalls: string[] = [];
     vi.spyOn(navKv, "runCoreHadSessionMutationOperation")
       .mockImplementation(async (_sessionHandle, operation) => {
@@ -132,6 +133,12 @@ describe("loadBestAvailableAdapter", () => {
     vi.spyOn(navKv, "attachNavKvStoreToSession")
       .mockImplementation(async () => {
         startupCalls.push("attach-nav-kv");
+      });
+    vi.spyOn(navKv, "runCoreHadSessionSnapshotOperation")
+      .mockImplementation(async (_sessionHandle, operation) => {
+        const response = JSON.parse(await operation(1));
+        expect(response.state).toBe("complete");
+        return response.result;
       });
     const mutationOutcomeJson = () => JSON.stringify({
       state: "complete",
@@ -249,7 +256,10 @@ describe("loadBestAvailableAdapter", () => {
       get_raster_tile_plan_in_session_with_display_scale: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       render_terrain_overlay_tile_by_key_in_session: async () => new Uint8Array(),
       get_session_snapshot_paged: async () => snapshotOutcomeJson(),
-      get_session_snapshot_at_epoch_ms_paged: async () => snapshotOutcomeJson(),
+      get_session_snapshot_at_platform_time_paged: async (_handle: number, _epochMs: bigint, zone: string) => {
+        refreshedTimeZones.push(zone);
+        return snapshotOutcomeJson();
+      },
       create_session_snapshot_refresh_scheduler: async () => 1,
       destroy_session_snapshot_refresh_scheduler: async () => {},
       session_snapshot_refresh_scheduler_request: async () => JSON.stringify({ kind: "idle" }),
@@ -307,6 +317,16 @@ describe("loadBestAvailableAdapter", () => {
       .toBeLessThan(startupCalls.indexOf("nav-dependent-mutation"));
     expect(startupCalls.indexOf("set-resource-policy"))
       .toBeLessThan(startupCalls.indexOf("attach-nav-kv"));
+
+    // Keep the session alive while the device changes zones. Startup-only sampling
+    // leaves this clock stale on long flights even though the OS knows the new zone.
+    const options = Intl.DateTimeFormat().resolvedOptions();
+    const resolvedOptions = vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions");
+    for (const timeZone of ["America/Los_Angeles", "America/Boise", "America/Chicago"]) {
+      resolvedOptions.mockReturnValue({ ...options, timeZone });
+      await session.snapshot();
+    }
+    expect(refreshedTimeZones).toEqual(["America/Los_Angeles", "America/Boise", "America/Chicago"]);
     await session.destroy();
   });
 });

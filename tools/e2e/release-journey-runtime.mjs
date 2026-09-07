@@ -9,7 +9,7 @@ import {
   recordJourneyStep, validateJourneyResult,
 } from "./journey-result.mjs";
 import {
-  editSemanticText, inspectSemanticMapAt, navigateSemanticPage,
+  editSemanticText, inspectSemanticMap, navigateSemanticPage,
   semanticActionReadinessSamples, semanticTransitionCompletionSamples,
 } from "./semantic-journey-driver.mjs";
 import {
@@ -235,8 +235,8 @@ export function createJourneyRuntime({
       });
     },
 
-    async inspectMapAt(point) {
-      return inspectSemanticMapAt(driver, point, { transition: runtime.transition });
+    async inspectMap() {
+      return inspectSemanticMap(driver, { transition: runtime.transition });
     },
 
     async action(description, actionId, contract, ...unexpectedArguments) {

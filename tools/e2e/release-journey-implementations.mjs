@@ -2342,9 +2342,7 @@ async function inspectorDetails(runtime) {
       return viewport && viewport !== viewportBeforeSpotPan ? viewport : null;
     },
   });
-  // Stay below Android's portrait flight-data banner while retaining a useful
-  // point inside the unobscured map on both platforms.
-  await runtime.inspectMapAt({ x: 0.30, y: 0.70 });
+  await runtime.inspectMap();
   const spot = await runtime.eventually("raw SPOT selection", async () => {
     const entries = await runtime.driver.readProjection("parity:map-selection-selected:");
     return entries.find((entry) => /SPOT/i.test(entry.text)) ?? null;

@@ -18,6 +18,7 @@ import {
   E2E_TIMING, ObservationTimeoutError, observeUntil, performTransition,
   TerminalObservationError, TransientObservationError,
 } from "./transition-contract.mjs";
+import { chooseUnobscuredMapPoint } from "./gesture-geometry.mjs";
 
 const ANDROID_EXACT_SCALAR_PROJECTIONS = new Map([
   ["parity:live-overlay:", "org.aerobag.app:id/e2e_live_overlay_projection"],
@@ -56,7 +57,7 @@ export function androidMapSelectionEntryFromState(state, expected = "") {
 export const SEMANTIC_DRIVER_OPERATIONS = Object.freeze([
   "reset", "resetApplicationData", "resetApplicationDataExpectingStartupFailure", "openPage", "readCurrentPage", "readPage", "readNavigationAction", "activateNavigation",
   "openChooser", "readOption", "selectOption",
-  "inspectMapAt", "activateMapInspection", "performAction",
+  "inspectMap", "findMapInspectionPoint", "activateMapInspection", "performAction",
   "readRepeatedAction", "performRepeatedAction",
   "focusText", "enterText", "submit", "drag", "setProgress", "zoom", "hover", "copyText", "readElement", "readProjection",
   "readAction", "readSessionRevision", "findProjectionMatching", "revealElement", "scanProjection",
@@ -104,7 +105,10 @@ export class SemanticJourneyDriver {
   async selectOption(_launcherId, _optionId, _readyElement) {
     throw new Error(`${this.platform} driver does not implement selectOption`);
   }
-  async inspectMapAt(point) { return inspectSemanticMapAt(this, point); }
+  async inspectMap() { return inspectSemanticMap(this); }
+  async findMapInspectionPoint(_readyElement) {
+    throw new Error(`${this.platform} driver does not implement map inspection geometry`);
+  }
   async activateMapInspection(_point, _readyElement) {
     throw new Error(`${this.platform} driver does not implement activateMapInspection`);
   }
@@ -243,9 +247,8 @@ export async function editSemanticText(
   });
 }
 
-export async function inspectSemanticMapAt(
+export async function inspectSemanticMap(
   driver,
-  point,
   {
     transition = async (description, contract) => (await performTransition(description, {
       ...contract,
@@ -254,8 +257,13 @@ export async function inspectSemanticMapAt(
   } = {},
 ) {
   return transition("inspect map position", {
-    ready: () => driver.readElement("map-surface"),
-    act: (readyElement) => driver.activateMapInspection(point, readyElement),
+    ready: async () => {
+      const surface = await driver.readElement("map-surface");
+      if (!surface) return null;
+      const point = await driver.findMapInspectionPoint(surface);
+      return point ? { surface, point } : null;
+    },
+    act: ({ surface, point }) => driver.activateMapInspection(point, surface),
     complete: () => driver.readElement("map-selection-tray"),
   });
 }
@@ -451,6 +459,16 @@ export class WebSemanticJourneyDriver extends SemanticJourneyDriver {
 
   async activateMapInspection({ x, y }) {
     return this.transport.pointerClick('[data-testid="map-surface"]', x, y);
+  }
+
+  async findMapInspectionPoint(readyElement) {
+    const obstacles = await this.transport.collectRenderedTestIdBounds();
+    return chooseUnobscuredMapPoint(
+      readyElement.bounds,
+      obstacles
+        .filter(({ id }) => id !== "map-surface" && id !== "parity:map-surface")
+        .map(({ bounds }) => bounds),
+    );
   }
 
   async performAction(actionId, readyElement) {
@@ -1133,6 +1151,24 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
     const px = bounds.left + Math.round(bounds.width * x);
     const py = bounds.top + Math.round(bounds.height * y);
     adb(this.serial, ["shell", "input", "tap", String(px), String(py)]);
+  }
+
+  async findMapInspectionPoint(readyElement) {
+    if (!readyElement?.bounds) return null;
+    const obstacles = queryAndroidSemanticNodes(this.serial, "", {
+      prefix: true,
+      includeDescendantText: false,
+    })
+      .filter((node) => androidTag(node) !== "parity:map-surface")
+      .map((node) => {
+        try {
+          return rectOfBounds(node.bounds);
+        } catch (_error) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    return chooseUnobscuredMapPoint(rectOfBounds(readyElement.bounds), obstacles);
   }
 
   async performAction(actionId, readyElement = null) {

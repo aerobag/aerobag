@@ -526,6 +526,18 @@ export class WebSemanticTransport {
       })))()`);
   }
 
+  async collectRenderedTestIdBounds() {
+    return this.page.evaluate(`(() => [...document.querySelectorAll("[data-testid]")]
+      .filter((element) => ${RENDERED_ELEMENT_PREDICATE}(element))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          id: element.dataset.testid,
+          bounds: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        };
+      }))()`);
+  }
+
   async snapshot() {
     return this.page.evaluate(`(() => ({
       href: location.href,

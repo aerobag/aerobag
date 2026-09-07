@@ -32,7 +32,7 @@ const MUTATING_DRIVER_METHODS = new Set([
   "enterText",
   "hover",
   "injectRasterLoadFault",
-  "inspectMapAt",
+  "inspectMap",
   "openPage",
   "openChooser",
   "performAction",

@@ -58,7 +58,9 @@ import {
   validateSemanticDriver, WebSemanticJourneyDriver, webTestIdSelector,
 } from "./semantic-journey-driver.mjs";
 import { advancingVirtualClockScript } from "./virtual-clock.mjs";
-import { clampDragEndpoint, timelineSeekDeltaX } from "./gesture-geometry.mjs";
+import {
+  chooseUnobscuredMapPoint, clampDragEndpoint, timelineSeekDeltaX,
+} from "./gesture-geometry.mjs";
 import { WebSemanticTransport } from "./web-semantic-transport.mjs";
 import {
   assertConditionRemains, E2E_TIMING, observeChangedValueUntilStable,
@@ -307,6 +309,31 @@ test("web semantic drags remain inside their target surface", () => {
     ),
     { x: 20, y: 20 },
   );
+});
+
+test("map inspection geometry avoids rendered controls on both platforms", () => {
+  const surface = { left: 0, top: 0, width: 1000, height: 800 };
+  const point = chooseUnobscuredMapPoint(surface, [
+    { left: 260, top: 520, width: 80, height: 80 },
+    { left: 0, top: 0, width: 1000, height: 800 },
+  ]);
+  assert.deepEqual(point, {
+    x: 0.7,
+    y: 0.7,
+    screenX: 700,
+    screenY: 560,
+  });
+});
+
+test("release journeys cannot encode device-specific map tap coordinates", () => {
+  const shared = readFileSync(
+    new URL("./release-journey-implementations.mjs", import.meta.url),
+    "utf8",
+  );
+  const native = readFileSync(new URL("./run-android-e2e-suite.mjs", import.meta.url), "utf8");
+  assert.match(shared, /runtime\.inspectMap\(\)/);
+  assert.doesNotMatch(shared, /inspectMapAt|activateMapInspection/);
+  assert.doesNotMatch(native, /activateMapInspection\(\{\s*x:/);
 });
 
 test("replay seek gestures move toward the open side of the timeline", () => {
@@ -562,7 +589,7 @@ test("only text-focus convergence may accept an already-complete transition", ()
   );
   const editText = driver.slice(
     driver.indexOf("export async function editSemanticText"),
-    driver.indexOf("export async function inspectSemanticMapAt"),
+    driver.indexOf("export async function inspectSemanticMap"),
   );
   assert.doesNotMatch(journeys, /acceptPreexistingCompletion/);
   assert.equal((driver.match(/acceptPreexistingCompletion/g) ?? []).length, 1);
@@ -2799,7 +2826,7 @@ test("semantic text editing uses action-ready reads before every mutation", asyn
   const source = readFileSync(new URL("./semantic-journey-driver.mjs", import.meta.url), "utf8");
   const method = source.slice(
     source.indexOf("export async function editSemanticText"),
-    source.indexOf("export async function inspectSemanticMapAt"),
+    source.indexOf("export async function inspectSemanticMap"),
   );
   assert.doesNotMatch(method, /discoverTextElement/);
   assert.match(method, /let current = await readTextElement\(controlId\)/);

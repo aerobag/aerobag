@@ -577,14 +577,15 @@ async function inspectRawTerrainSpot(serial, result) {
   const driver = nativeSemanticDriver(serial);
   let point = null;
   await nativeTransition(result, "raw SPOT inspector with terrain elevation", {
-    ready: async () => driver.readElement("map-surface"),
-    act: async (surface) => {
-      const rect = rectOfBounds(surface.bounds);
-      point = {
-        x: Math.round(rect.left + rect.width * 0.72),
-        y: Math.round(rect.top + rect.height * 0.72),
-      };
-      return driver.activateMapInspection({ x: 0.72, y: 0.72 }, surface);
+    ready: async () => {
+      const surface = await driver.readElement("map-surface");
+      if (!surface) return null;
+      const candidate = await driver.findMapInspectionPoint(surface);
+      return candidate ? { surface, candidate } : null;
+    },
+    act: async ({ surface, candidate }) => {
+      point = candidate;
+      return driver.activateMapInspection(candidate, surface);
     },
     complete: async () => {
       const xml = dumpAndroid(serial);
@@ -596,8 +597,11 @@ async function inspectRawTerrainSpot(serial, result) {
     },
     responseTimeoutMs: E2E_TIMING.userTransitionDeadlineMs,
   });
-  const { x, y } = point;
-  recordStep(result, "raw map SPOT inspector opened", `screen=${x},${y}`);
+  recordStep(
+    result,
+    "raw map SPOT inspector opened",
+    `screen=${Math.round(point.screenX)},${Math.round(point.screenY)}`,
+  );
   recordCheck(result, "inspector.rawSpotTerrainElevation", true, "numeric terrain elevation");
 }
 

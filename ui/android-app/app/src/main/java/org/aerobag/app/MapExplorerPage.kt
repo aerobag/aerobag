@@ -1016,6 +1016,7 @@ private fun rememberNexradLayerState(
     enabled: Boolean,
     mapVisible: Boolean,
     liveFeedGeneration: Int,
+    invalidationRevision: Int,
     devServerBaseUrl: String,
 ): NexradLayerState {
     var frame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
@@ -1195,7 +1196,16 @@ private fun rememberNexradLayerState(
             viewportRefreshRequests.trySend(Unit)
         }
     }
-    LaunchedEffect(uiSession, liveFeedGeneration, surfaceSize, visible, enabled, mapVisible, devServerBaseUrl) {
+    LaunchedEffect(
+        uiSession,
+        liveFeedGeneration,
+        invalidationRevision,
+        surfaceSize,
+        visible,
+        enabled,
+        mapVisible,
+        devServerBaseUrl,
+    ) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             frame = null
             return@LaunchedEffect
@@ -2202,6 +2212,7 @@ internal fun MapExplorerPage(
         enabled = mapLayerState.nexrad.enabled,
         mapVisible = page == AppPage.Map,
         liveFeedGeneration = liveFeedGeneration,
+        invalidationRevision = uiInvalidationRevisions.nexradOverlay,
         devServerBaseUrl = devServerBaseUrl,
     )
     val nexradFrame = nexradLayerState.frame

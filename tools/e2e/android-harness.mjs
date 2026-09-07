@@ -729,6 +729,7 @@ export function androidTag(node) {
   const contentDescription = node["content-desc"] ?? "";
   if (contentDescription.startsWith("parity:")) return contentDescription;
   const resourceId = node["resource-id"] ?? "";
+  if (resourceId.startsWith("flight-data-cell:")) return resourceId;
   const marker = "parity:";
   const offset = resourceId.indexOf(marker);
   return offset >= 0 ? resourceId.slice(offset) : "";

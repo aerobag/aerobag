@@ -56,6 +56,7 @@ internal object E2eProjectionRegistry {
         "parity:plan-row-action:",
         "parity:settings-section:",
         "parity:tray-option:",
+        "flight-data-cell:",
     )
 
     private val revision = AtomicLong()

@@ -971,6 +971,7 @@ export function androidZoomKeyCode(amount) {
 }
 
 export function androidSemanticTag(value) {
+  if (value.startsWith("flight-data-cell:")) return value;
   if (value.startsWith("chart-search-suggestion-")) {
     return `parity:chart-search-suggestion:${value.slice("chart-search-suggestion-".length)}`;
   }

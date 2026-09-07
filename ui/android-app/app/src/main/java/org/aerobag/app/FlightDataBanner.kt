@@ -114,6 +114,10 @@ internal fun FlightDataBanner(
                             FlightDataCellMinWidth,
                             cellHeight,
                             modifier = Modifier
+                                .e2eIndexedControl(
+                                    semanticTag = "flight-data-cell:${cell.id}",
+                                    state = "enabled:${cell.action != null}",
+                                )
                                 .testTag("flight-data-cell:${cell.id}")
                                 .flightDataCellInput(cell, onCellActivated),
                         )
@@ -156,6 +160,10 @@ internal fun FlightDataBanner(
                             cellWidth,
                             cellHeight,
                             modifier = Modifier
+                                .e2eIndexedControl(
+                                    semanticTag = "flight-data-cell:${cell.id}",
+                                    state = "enabled:${cell.action != null}",
+                                )
                                 .testTag("flight-data-cell:${cell.id}")
                                 .flightDataCellInput(cell, onCellActivated),
                         )

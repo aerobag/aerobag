@@ -11,6 +11,7 @@ import {
   androidImeVisible,
   androidIndexedControlIsActionReady,
   androidInteractiveRuntime,
+  androidTag,
   androidOfflinePackagesVisible,
   androidRuntimeReadyForJourney,
   androidRuntimeUiVisible,
@@ -33,6 +34,13 @@ import {
   restartAndroidAppAcrossSemanticLifecycle,
   verticalScrollTargetIsReachable,
 } from "./android-harness.mjs";
+
+test("Android semantic tags preserve platform-neutral flight-data cell ids", () => {
+  assert.equal(
+    androidTag({ "resource-id": "flight-data-cell:nexrad_age" }),
+    "flight-data-cell:nexrad_age",
+  );
+});
 
 test("persistent semantic dumps refresh accessibility roots before traversal", () => {
   const source = readFileSync(new URL(

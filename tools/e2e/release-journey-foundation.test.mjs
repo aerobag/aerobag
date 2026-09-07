@@ -4194,6 +4194,27 @@ test("Android semantic aliases preserve shared search suggestion ids", () => {
   );
 });
 
+test("Android preserves platform-neutral flight-data cell ids", () => {
+  assert.equal(
+    androidSemanticTag("flight-data-cell:nexrad_age"),
+    "flight-data-cell:nexrad_age",
+  );
+  const banner = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/FlightDataBanner.kt", import.meta.url),
+    "utf8",
+  );
+  const provider = readFileSync(
+    new URL("../../ui/android-app/app/src/main/java/org/aerobag/app/E2eProjectionProvider.kt", import.meta.url),
+    "utf8",
+  );
+  assert.equal(
+    banner.match(/\.e2eIndexedControl\([\s\S]*?semanticTag = "flight-data-cell:\$\{cell\.id\}"/g)?.length,
+    2,
+  );
+  assert.match(banner, /state = "enabled:\$\{cell\.action != null\}"/);
+  assert.match(provider, /"flight-data-cell:"/);
+});
+
 test("Android aliases the shared ownship launcher to its Compose semantic tag", () => {
   assert.equal(androidElementSemanticTag("ownship-source-button"), "parity:ownship-launcher");
 });

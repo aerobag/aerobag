@@ -40,6 +40,7 @@ LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
 LOCAL_CANDIDATE_QUALIFICATION = (
     REPO_ROOT / "tools/ci/local_candidate_qualification.py"
 )
+FAST_RELEASE_PREFLIGHT = REPO_ROOT / "tools/ci/fast_release_preflight.py"
 DEFAULT_GITHUB_TOKEN_HELPER = Path(
     "/root/aerobag-credentials/github-ci-reader/with-token"
 )
@@ -741,17 +742,19 @@ def github_git_url(config: dict[str, Any]) -> str:
 
 
 def run_stage_preflight(*, full: bool = False) -> None:
-    mode = "full exact-commit workload" if full else "qualification receipt"
+    mode = "full exact-commit workload" if full else "fast emulator-free checks"
     print(f"Running local release preflight: {mode}")
-    command = [sys.executable, str(LOCAL_CANDIDATE_QUALIFICATION)]
-    if not full:
-        command.append("--check")
+    command = [
+        sys.executable,
+        str(LOCAL_CANDIDATE_QUALIFICATION if full else FAST_RELEASE_PREFLIGHT),
+    ]
     try:
         run(command, capture=False)
     except subprocess.CalledProcessError as error:
+        retry = LOCAL_CANDIDATE_QUALIFICATION if full else FAST_RELEASE_PREFLIGHT
         raise ManagementError(
-            "local release qualification failed; run "
-            "tools/ci/local_candidate_qualification.py and inspect its lane logs"
+            f"local release qualification failed; run {retry.relative_to(REPO_ROOT)} "
+            "and inspect its lane logs"
         ) from error
 
 
@@ -886,6 +889,7 @@ def stage(config_path: Path, releases_path: Path) -> int:
 
     config = deployment.load_config(config_path)
     assert_remote_idle(config)
+    run_stage_preflight(full=False)
     tag = next_release_name(existing_release_tags())
     proposed = stage_document(document, tag)
     old_text = serialize_release_document(document)

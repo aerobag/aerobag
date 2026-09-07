@@ -731,7 +731,7 @@ class StageOrderingTests(unittest.TestCase):
         self.assertIn("automatic scheduled product refresh", message)
         self.assertIn("Building refreshed products", message)
 
-    def test_stage_does_not_run_optional_prequalification(self) -> None:
+    def test_stage_aborts_before_proposal_when_fast_preflight_fails(self) -> None:
         document = desired_document()
 
         with (
@@ -754,12 +754,15 @@ class StageOrderingTests(unittest.TestCase):
             mock.patch.object(prod_manage, "confirmed", return_value=False),
             mock.patch.object(prod_manage, "write_atomic") as write_atomic,
         ):
-            result = prod_manage.stage(
-                prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
-            )
+            with self.assertRaisesRegex(
+                prod_manage.ManagementError,
+                "formatting failed",
+            ):
+                prod_manage.stage(
+                    prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES
+                )
 
-        self.assertEqual(result, 1)
-        preflight.assert_not_called()
+        preflight.assert_called_once_with(full=False)
         candidate.assert_not_called()
         write_atomic.assert_not_called()
 
@@ -796,7 +799,7 @@ class StageOrderingTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        preflight.assert_not_called()
+        preflight.assert_called_once_with(full=False)
         candidate.assert_not_called()
         self.assertEqual(idle.call_count, 2)
         mutation_calls = [
@@ -847,6 +850,7 @@ class StageOrderingTests(unittest.TestCase):
                 return_value={"github_repository": "aerobag/aerobag"},
             ),
             mock.patch.object(prod_manage, "assert_remote_idle"),
+            mock.patch.object(prod_manage, "run_stage_preflight"),
             mock.patch.object(prod_manage, "load_release_document", return_value=document),
             mock.patch.object(
                 prod_manage, "next_release_name", return_value="2026-08-22.1"

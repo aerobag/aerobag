@@ -73,7 +73,7 @@ tools/prod_manage.py --promote --force
 tools/prod_manage.py --reconcile
 ```
 
-`--prequalify` is an optional early gate before staging. It first runs the complete
+`--prequalify` is an optional full early gate before staging. It first runs the complete
 ordinary-CI and release-journey workload locally against one immutable app
 bundle and pinned fixture. Independent Rust, web, and Android lanes run in
 parallel; twelve fresh Android priority/shard lanes mirror GitHub's matrix and
@@ -88,8 +88,12 @@ without changing release intent or contacting production. Failures are not
 retried into a green result. `--candidate-status` reports the ordinary-CI and
 candidate-journey results for the current commit.
 
-`--stage` does not require prequalification; running `--prequalify` first is an
-optional way to catch failures before the slower release-tag round trip. It
+`--stage` automatically runs a cached, commit-bound, emulator-free preflight before
+creating release intent or a tag. The preflight runs the ordinary unit, static,
+generated-source, web, and Android JVM lanes; it deliberately excludes fixture
+materialization and UI journeys so a successful release does not pay for the full
+qualification twice. Running `--prequalify` first remains an optional way to run
+the complete journey matrix before the slower release-tag round trip. `--stage`
 chooses the first unused UTC-date release name such as `2026-08-22.1`. It
 requires a clean synchronized `main`, then commits the staging assignment,
 creates an immutable annotated tag at that same commit, atomically pushes both,

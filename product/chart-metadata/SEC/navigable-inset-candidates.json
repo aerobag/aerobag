@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "charts": [
+    {
+      "source": "Chicago SEC.tif",
+      "insets": ["Milwaukee"]
+    },
+    {
+      "source": "Dutch Harbor SEC.tif",
+      "insets": ["Pribilof Islands", "Dutch Harbor"]
+    },
+    {
+      "source": "Jacksonville SEC.tif",
+      "insets": ["Jacksonville"]
+    },
+    {
+      "source": "Juneau SEC.tif",
+      "insets": ["Seward Glacier Area", "Juneau"]
+    },
+    {
+      "source": "Ketchikan SEC.tif",
+      "insets": ["Ketchikan"]
+    },
+    {
+      "source": "Kodiak SEC.tif",
+      "insets": ["Kodiak"]
+    },
+    {
+      "source": "Nome SEC.tif",
+      "insets": ["Lavrentiya/Provideniya"]
+    }
+  ]
+}

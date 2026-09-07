@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "source": "Kodiak SEC.tif",
+  "source_width": 16612,
+  "source_height": 12282,
+  "insets": [
+    {
+      "id": "Inset 1",
+      "target_family": "TAC",
+      "enabled": true,
+      "boundary": [
+        [
+          13809.0,
+          8574.85
+        ],
+        [
+          16435.0,
+          8575.0
+        ],
+        [
+          16459.0,
+          11992.0
+        ],
+        [
+          13808.0,
+          11993.0
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            14342.5,
+            8839.75
+          ],
+          "latitude": 58.0,
+          "longitude": -152.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15040.0,
+            8841.0
+          ],
+          "latitude": 58.0,
+          "longitude": -152.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15738.0,
+            8840.25
+          ],
+          "latitude": 58.0,
+          "longitude": -152.25
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14337.0,
+            10154.25
+          ],
+          "latitude": 57.75,
+          "longitude": -152.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15039.75,
+            10156.0
+          ],
+          "latitude": 57.75,
+          "longitude": -152.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15743.0,
+            10154.5
+          ],
+          "latitude": 57.75,
+          "longitude": -152.25
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14332.25,
+            11469.5
+          ],
+          "latitude": 57.5,
+          "longitude": -152.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15040.25,
+            11470.25
+          ],
+          "latitude": 57.5,
+          "longitude": -152.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15748.0,
+            11469.25
+          ],
+          "latitude": 57.5,
+          "longitude": -152.25
+        }
+      ]
+    }
+  ]
+}

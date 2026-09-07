@@ -297,7 +297,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: process_id.clone(),
-                    deps: vec![fetch_id.clone()],
+                    deps: chart_process_fetch_task_ids(family)
+                        .iter()
+                        .map(|id| cycle_task_id(cycle, id))
+                        .collect(),
                     weight: CHART_PROCESS_WEIGHT,
                     kind: ProductScheduledTaskKind::ChartProcess {
                         cycle: cycle.clone(),
@@ -311,6 +314,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             process_id,
                             cycle_task_id(cycle, "charts-flyway-process"),
                             fetch_id,
+                            cycle_task_id(cycle, "charts-sec-fetch"),
                         ]
                     } else {
                         vec![process_id, fetch_id]
@@ -324,7 +328,10 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             }
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "charts-flyway-process"),
-                deps: vec![cycle_task_id(cycle, "charts-tac-fetch")],
+                deps: chart_process_fetch_task_ids(ChartFamily::Flyway)
+                    .iter()
+                    .map(|id| cycle_task_id(cycle, id))
+                    .collect(),
                 weight: CHART_PROCESS_WEIGHT,
                 kind: ProductScheduledTaskKind::ChartProcess {
                     cycle: cycle.clone(),
@@ -752,12 +759,25 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             Some(ProductTaskValue::ChartFetch { record }) => record,
                             _ => bail!("missing chart fetch for cycle {cycle} family {family_id}"),
                         };
+                        let supplemental_source_fetch =
+                            if let Some(source) = navigable_inset_source_family(family) {
+                                match task_values_snapshot.get(&cycle_task_id(
+                                    &cycle,
+                                    &format!("charts-{}-fetch", family_slug(source)),
+                                )) {
+                                    Some(ProductTaskValue::ChartFetch { record }) => Some(record),
+                                    _ => bail!("missing sectional chart fetch for cycle {cycle}"),
+                                }
+                            } else {
+                                None
+                            };
                         let record = build_chart_process_node(
                             &cycle_config,
                             family,
                             &cycle_config.chart_metadata_root,
                             &chart_source_urls_path(&source_urls, family),
                             &source_fetch,
+                            supplemental_source_fetch.as_ref(),
                             cycle_config.cpu_jobs.clamp(1, 8),
                         )?;
                         let cache_hit = record.cache_hit;
@@ -1154,6 +1174,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             Some(ProductTaskValue::ChartFetch { record }) => record,
                             _ => bail!("missing chart fetch for cycle {cycle} family {family_id}"),
                         };
+                        let supplemental_source_fetch = if family == ChartFamily::Tac {
+                            match task_values_snapshot
+                                .get(&cycle_task_id(&cycle, "charts-sec-fetch"))
+                            {
+                                Some(ProductTaskValue::ChartFetch { record }) => Some(record),
+                                _ => bail!("missing sectional chart fetch for cycle {cycle}"),
+                            }
+                        } else {
+                            None
+                        };
                         let started = Instant::now();
                         let (records, source) = build_chart_package_nodes(
                             &cycle_config,
@@ -1164,6 +1194,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
                             &source_fetch,
+                            supplemental_source_fetch.as_ref(),
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(ProductTaskCompletion {

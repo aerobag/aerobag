@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -35,6 +35,15 @@ use serde::{Deserialize, Serialize};
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
 pub const WIDE_ANGLE_REGION_ID: &str = "wide";
 pub const CHART_REFERENCE_CATALOG_NAME: &str = "chart-reference-catalog.json";
+const NAVIGABLE_INSET_SUFFIX: &str = ".navigable-insets.json";
+
+/// Sectional sheets contain independently georeferenced TAC and Flyway insets.
+pub fn navigable_inset_source_family(destination: ChartFamily) -> Option<ChartFamily> {
+    match destination {
+        ChartFamily::Tac | ChartFamily::Flyway => Some(ChartFamily::Sec),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ChartRunRequest {
@@ -126,6 +135,68 @@ pub struct ChartExtractRegion {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct NavigableInsetLayout {
+    schema_version: u32,
+    source: String,
+    source_width: u32,
+    source_height: u32,
+    insets: Vec<NavigableInset>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+enum NavigableInsetTarget {
+    #[serde(rename = "TAC")]
+    Tac,
+    #[serde(rename = "FLY")]
+    Flyway,
+}
+
+impl NavigableInsetTarget {
+    fn family(self) -> ChartFamily {
+        match self {
+            Self::Tac => ChartFamily::Tac,
+            Self::Flyway => ChartFamily::Flyway,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
+struct NavigableInset {
+    id: String,
+    target_family: NavigableInsetTarget,
+    #[serde(default)]
+    enabled: bool,
+    boundary: Vec<[f64; 2]>,
+    #[serde(default)]
+    control_points: Vec<NavigableInsetControlPoint>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq)]
+struct NavigableInsetControlPoint {
+    kind: NavigableInsetControlKind,
+    pixel: [f64; 2],
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum NavigableInsetControlKind {
+    Intersection,
+    Latitude,
+    Longitude,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NavigableInsetCrop {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1193,7 +1264,7 @@ fn build_vfr_vrts(
     // specific reordering quirks exactly, instead of choosing a tidier/deterministic order
     // of our own.
     let inputs = ordered_chart_input_names(spec.family, &chart_dir)?;
-    let vrts = vfr_vrt_paths(work_dir, &inputs)?;
+    let mut vrts = vfr_vrt_paths(work_dir, &inputs)?;
 
     let queue = Arc::new(Mutex::new(inputs));
     let job_count = cpu_jobs.max(1);
@@ -1233,6 +1304,8 @@ fn build_vfr_vrts(
             .map_err(|_| anyhow::anyhow!("vrt worker panicked"))??;
     }
 
+    vrts.extend(build_navigable_inset_vrts(work_dir, spec.family)?);
+
     build_main_vrt(work_dir, chart_dir_name, &vrts)?;
     let elapsed_ms = start.elapsed().as_millis();
 
@@ -1242,6 +1315,228 @@ fn build_vfr_vrts(
         vrt_count: vrts.len(),
         elapsed_ms,
         main_vrt: work_dir.join(format!("{chart_dir_name}.vrt")),
+    })
+}
+
+fn build_navigable_inset_vrts(
+    work_dir: &Path,
+    destination: ChartFamily,
+) -> anyhow::Result<Vec<PathBuf>> {
+    if navigable_inset_source_family(destination).is_none() {
+        return Ok(Vec::new());
+    }
+    let metadata_dir = work_dir.join("SEC");
+    if !metadata_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut metadata_paths = fs::read_dir(&metadata_dir)
+        .with_context(|| format!("failed to read {}", metadata_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(NAVIGABLE_INSET_SUFFIX))
+        })
+        .collect::<Vec<_>>();
+    metadata_paths.sort();
+
+    let mut outputs = Vec::new();
+    for metadata_path in metadata_paths {
+        let layout: NavigableInsetLayout = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        if !layout
+            .insets
+            .iter()
+            .any(|inset| inset.enabled && inset.target_family.family() == destination)
+        {
+            continue;
+        }
+        let source_path = work_dir.join(&layout.source);
+        let dimensions = inspect_raster(&source_path)?.dimensions;
+        validate_navigable_inset_layout(&layout, &metadata_path, dimensions)?;
+        for inset in layout
+            .insets
+            .iter()
+            .filter(|inset| inset.enabled && inset.target_family.family() == destination)
+        {
+            outputs.push(build_one_navigable_inset_vrt(
+                work_dir,
+                &layout.source,
+                inset,
+                outputs.len(),
+            )?);
+        }
+    }
+    Ok(outputs)
+}
+
+fn validate_navigable_inset_layout(
+    layout: &NavigableInsetLayout,
+    path: &Path,
+    actual_dimensions: (u32, u32),
+) -> anyhow::Result<()> {
+    if layout.schema_version != 1 {
+        bail!(
+            "unsupported navigable-inset schema_version {} in {}",
+            layout.schema_version,
+            path.display()
+        );
+    }
+    let source = Path::new(&layout.source);
+    if source.components().count() != 1 || source.file_name().is_none() {
+        bail!(
+            "navigable-inset source must be a filename in {}",
+            path.display()
+        );
+    }
+    if (layout.source_width, layout.source_height) != actual_dimensions {
+        bail!(
+            "navigable-inset layout {} expects {}x{} source but {} is {}x{}",
+            path.display(),
+            layout.source_width,
+            layout.source_height,
+            layout.source,
+            actual_dimensions.0,
+            actual_dimensions.1
+        );
+    }
+    let mut identifiers = BTreeSet::new();
+    for inset in &layout.insets {
+        if inset.id.trim().is_empty() || inset.boundary.len() < 3 {
+            bail!(
+                "navigable inset in {} needs an id and at least three boundary points",
+                path.display()
+            );
+        }
+        if !identifiers.insert(inset.id.to_ascii_lowercase()) {
+            bail!(
+                "duplicate navigable inset id {:?} in {}",
+                inset.id,
+                path.display()
+            );
+        }
+        if inset
+            .boundary
+            .iter()
+            .flatten()
+            .any(|value| !value.is_finite())
+        {
+            bail!("navigable inset {:?} has a non-finite boundary", inset.id);
+        }
+        let crop = navigable_inset_crop(&inset.boundary)?;
+        let right = crop.x.checked_add(crop.width).context("inset x overflow")?;
+        let bottom = crop
+            .y
+            .checked_add(crop.height)
+            .context("inset y overflow")?;
+        if right > layout.source_width || bottom > layout.source_height {
+            bail!("navigable inset {:?} exceeds source bounds", inset.id);
+        }
+        for point in &inset.control_points {
+            if !point.pixel.iter().all(|value| value.is_finite())
+                || point.pixel[0] < 0.0
+                || point.pixel[0] > layout.source_width as f64
+                || point.pixel[1] < 0.0
+                || point.pixel[1] > layout.source_height as f64
+            {
+                bail!(
+                    "navigable inset {:?} has a control point outside its source raster",
+                    inset.id
+                );
+            }
+            for (value, limit, required) in [
+                (
+                    point.latitude,
+                    90.0,
+                    point.kind != NavigableInsetControlKind::Longitude,
+                ),
+                (
+                    point.longitude,
+                    180.0,
+                    point.kind != NavigableInsetControlKind::Latitude,
+                ),
+            ] {
+                match value {
+                    Some(value)
+                        if required && value.is_finite() && (-limit..=limit).contains(&value) => {}
+                    None if !required || !inset.enabled => {}
+                    _ => bail!(
+                        "navigable inset {:?} has an invalid or incomplete control point",
+                        inset.id
+                    ),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_one_navigable_inset_vrt(
+    work_dir: &Path,
+    source_name: &str,
+    inset: &NavigableInset,
+    output_index: usize,
+) -> anyhow::Result<PathBuf> {
+    let label = format!("{output_index:03}-{}", sanitize_label(&inset.id));
+    let output_name = format!("navigable-inset-{label}.vrt");
+    remove_if_exists(work_dir.join(&output_name))?;
+    let invocation = ToolInvocation {
+        program: "python3".to_string(),
+        args: vec![
+            "-c".to_string(),
+            include_str!("../navigable_inset.py").to_string(),
+            source_name.to_string(),
+            output_name.clone(),
+        ],
+        cwd: work_dir.to_path_buf(),
+        label: format!("navigable-inset-{label}"),
+        env: Vec::new(),
+        stdin_text: Some(serde_json::to_string(inset)?),
+    };
+    let outcome = invocation.run_logged(&work_dir.join(".rust-logs"))?;
+    invocation.ensure_success(
+        &outcome,
+        &format!("failed to georeference navigable inset {:?}", inset.id),
+    )?;
+    Ok(work_dir.join(output_name))
+}
+
+fn navigable_inset_crop(boundary: &[[f64; 2]]) -> anyhow::Result<NavigableInsetCrop> {
+    let left = boundary
+        .iter()
+        .map(|point| point[0])
+        .reduce(f64::min)
+        .context("navigable inset has no boundary")?
+        .floor();
+    let top = boundary
+        .iter()
+        .map(|point| point[1])
+        .reduce(f64::min)
+        .context("navigable inset has no boundary")?
+        .floor();
+    let right = boundary
+        .iter()
+        .map(|point| point[0])
+        .reduce(f64::max)
+        .context("navigable inset has no boundary")?
+        .ceil();
+    let bottom = boundary
+        .iter()
+        .map(|point| point[1])
+        .reduce(f64::max)
+        .context("navigable inset has no boundary")?
+        .ceil();
+    if left < 0.0 || top < 0.0 || right <= left || bottom <= top {
+        bail!("navigable inset boundary has invalid bounds");
+    }
+    Ok(NavigableInsetCrop {
+        x: left as u32,
+        y: top as u32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
     })
 }
 
@@ -2509,8 +2804,8 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 mod tests {
     use super::{
         antimeridian_supplement_from_html, build_family_insets, build_family_legends,
-        build_family_reference_catalog, copy_dir_recursive, inspect_raster,
-        package_family_bundle_detail_region_versioned_to,
+        build_family_reference_catalog, build_navigable_inset_vrts, copy_dir_recursive,
+        inspect_raster, package_family_bundle_detail_region_versioned_to,
         package_family_bundle_region_versioned_to, package_family_region_versioned_to,
         package_family_wide_angle_versioned_to, resolve_chart_input_filename,
         source_chart_coverage, tile_belongs_to_region, validate_chart_extract_layout,
@@ -2648,6 +2943,168 @@ mod tests {
             (4, 5)
         );
         assert_ne!(result.output_paths[0], inset_result.output_paths[0]);
+    }
+
+    fn navigable_inset_fixture() -> TempDir {
+        let temp = TempDir::new("chart-navigable-inset");
+        let metadata_dir = temp.path().join("SEC");
+        fs::create_dir_all(&metadata_dir).unwrap();
+        let png_path = temp.path().join("source.png");
+        assert!(Command::new("convert")
+            .args(["-size", "100x80", "xc:#c86432", "-colors", "16"])
+            .arg(format!("PNG8:{}", png_path.display()))
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("gdal_translate")
+            .args(["-q", "-of", "GTiff", "-a_srs", "EPSG:26916"])
+            .arg(&png_path)
+            .arg(temp.path().join("Test SEC.tif"))
+            .status()
+            .unwrap()
+            .success());
+        fs::write(
+            metadata_dir.join("Test SEC.navigable-insets.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "source": "Test SEC.tif",
+                "source_width": 100,
+                "source_height": 80,
+                "insets": [{
+                    "id": "Test city",
+                    "target_family": "TAC",
+                    "enabled": true,
+                    "boundary": [[10, 10], [90, 10], [10, 70]],
+                    "control_points": [
+                        {"kind": "intersection", "pixel": [0, 0], "latitude": 43.10, "longitude": -88.10},
+                        {"kind": "intersection", "pixel": [100, 0], "latitude": 43.10, "longitude": -87.90},
+                        {"kind": "intersection", "pixel": [0, 80], "latitude": 42.90, "longitude": -88.10},
+                        {"kind": "intersection", "pixel": [100, 80], "latitude": 42.90, "longitude": -87.90}
+                    ]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        temp
+    }
+
+    #[test]
+    fn navigable_sectional_inset_builds_georeferenced_tac_vrt() {
+        let temp = navigable_inset_fixture();
+        let metadata_dir = temp.path().join("SEC");
+        let outputs = build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).unwrap();
+        assert_eq!(outputs.len(), 1);
+        let inspection = inspect_raster(&outputs[0]).unwrap();
+        assert!(inspection.dimensions.0 > 0);
+        assert!(inspection.dimensions.1 > 0);
+        let info = Command::new("gdalinfo")
+            .arg("-json")
+            .arg(&outputs[0])
+            .output()
+            .unwrap();
+        assert!(info.status.success());
+        let document: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+        assert!(document["coordinateSystem"]["wkt"]
+            .as_str()
+            .unwrap()
+            .contains("Pseudo-Mercator"));
+        let outside = Command::new("gdallocationinfo")
+            .args(["-valonly", "-b", "1"])
+            .arg(&outputs[0])
+            .args([
+                (inspection.dimensions.0 - 2).to_string(),
+                (inspection.dimensions.1 - 2).to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(outside.status.success());
+        assert_eq!(String::from_utf8_lossy(&outside.stdout).trim(), "51");
+        // Exercise the Rust wire/validation path with partial coordinates too.
+        let layout_path = metadata_dir.join("Test SEC.navigable-insets.json");
+        let mut layout: serde_json::Value =
+            serde_json::from_slice(&fs::read(&layout_path).unwrap()).unwrap();
+        let controls = layout["insets"][0]["control_points"].as_array().unwrap();
+        let ticks: Vec<_> = controls
+            .iter()
+            .flat_map(|point| {
+                ["latitude", "longitude"].map(|kind| {
+                    let mut tick = point.clone();
+                    tick["kind"] = serde_json::json!(kind);
+                    tick[if kind == "latitude" {
+                        "longitude"
+                    } else {
+                        "latitude"
+                    }] = serde_json::Value::Null;
+                    tick
+                })
+            })
+            .collect();
+        layout["insets"][0]["control_points"] = serde_json::json!(ticks);
+        fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+        let outputs = build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(inspect_raster(&outputs[0]).unwrap(), inspection);
+    }
+
+    #[test]
+    fn mixed_insets_reach_only_their_selected_family_mosaics() {
+        let temp = navigable_inset_fixture();
+        let layout_path = temp.path().join("SEC/Test SEC.navigable-insets.json");
+        let mut layout: serde_json::Value =
+            serde_json::from_slice(&fs::read(&layout_path).unwrap()).unwrap();
+        let mut second = layout["insets"][0].clone();
+        second["id"] = serde_json::json!("Glacier");
+        let mut flyway = second.clone();
+        flyway["id"] = serde_json::json!("Traffic Area");
+        flyway["target_family"] = serde_json::json!("FLY");
+        let insets = layout["insets"].as_array_mut().unwrap();
+        insets.push(second);
+        insets.push(flyway);
+        fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+
+        for (family, expected, excluded) in [
+            (
+                ChartFamily::Tac,
+                vec!["Test-city", "Glacier"],
+                vec!["Traffic-Area"],
+            ),
+            (
+                ChartFamily::Flyway,
+                vec!["Traffic-Area"],
+                vec!["Test-city", "Glacier"],
+            ),
+        ] {
+            // Use the real family-mosaic entry point, not just the selection helper.
+            let built = super::build_family_vrts(family, temp.path(), 1).unwrap();
+            assert_eq!(built.vrt_count, expected.len());
+            let xml = fs::read_to_string(&built.main_vrt).unwrap();
+            for name in expected {
+                assert!(xml.contains(name), "missing {name}: {xml}");
+            }
+            for name in excluded {
+                assert!(!xml.contains(name), "wrong-layer {name}: {xml}");
+            }
+            assert!(inspect_raster(&built.main_vrt).unwrap().dimensions.0 > 0);
+        }
+
+        layout["insets"][2]["enabled"] = serde_json::json!(false);
+        fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+        assert!(build_navigable_inset_vrts(temp.path(), ChartFamily::Flyway)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            build_navigable_inset_vrts(temp.path(), ChartFamily::Tac)
+                .unwrap()
+                .len(),
+            2
+        );
+        for bad_target in [serde_json::json!("SEC"), serde_json::Value::Null] {
+            layout["insets"][0]["target_family"] = bad_target;
+            fs::write(&layout_path, serde_json::to_vec(&layout).unwrap()).unwrap();
+            assert!(build_navigable_inset_vrts(temp.path(), ChartFamily::Tac).is_err());
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -24,6 +25,16 @@ import numpy as np
 from osgeo import gdal, osr
 
 gdal.UseExceptions()
+
+# Import the same helper embedded in preprocessor-charts, not an editor-only fit.
+_inset_spec = importlib.util.spec_from_file_location(
+    "navigable_inset",
+    Path(__file__).resolve().parents[1]
+    / "product/preprocessor/preprocessor-charts/navigable_inset.py",
+)
+inset_georeference = importlib.util.module_from_spec(_inset_spec)
+_inset_spec.loader.exec_module(inset_georeference)
+navigable_inset_diagnostics = inset_georeference.navigable_inset_diagnostics
 
 try:
     from chart_cutline_audit import (
@@ -50,7 +61,8 @@ DEFAULT_CACHE_DIR = Path("/tmp/aerobag-chart-cutline-editor")
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_CROP_DIMENSION = 8192
 MAX_CROP_PIXELS = 16 * 1024 * 1024
-OVERVIEW_RENDER_VERSION = 3
+MAX_OVERVIEW_DIMENSION = 4096
+OVERVIEW_RENDER_VERSION = 4
 FAMILY_LABELS = {
     "SEC": "Sectional",
     "TAC": "TAC",
@@ -59,6 +71,10 @@ FAMILY_LABELS = {
     "ENR_H": "IFR-H",
 }
 EXTRACT_TYPES = {"legend", "inset"}
+NAVIGABLE_INSET_TYPE = "navigable-inset"
+NAVIGABLE_INSET_SUFFIX = ".navigable-insets.json"
+NAVIGABLE_INSET_CANDIDATES_FILE = "navigable-inset-candidates.json"
+NAVIGABLE_INSET_TARGET_FAMILIES = ("TAC", "FLY")
 
 
 @dataclass(frozen=True)
@@ -121,11 +137,14 @@ class EditorState:
         self.work_dir = work_dir.resolve()
         self.cutline_dir = cutline_dir.resolve()
         self.cache_dir = cache_dir.resolve()
+        if not 1 <= overview_width <= MAX_OVERVIEW_DIMENSION:
+            raise EditorError(f"overview size must be between 1 and {MAX_OVERVIEW_DIMENSION}")
         self.overview_width = overview_width
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._write_lock = threading.Lock()
         self._overview_locks: dict[str, threading.Lock] = {}
         self.charts = self._discover_charts()
+        self.navigable_inset_candidates = self._load_navigable_inset_candidates()
 
     def _discover_charts(self) -> dict[str, Chart]:
         charts: dict[str, Chart] = {}
@@ -180,15 +199,62 @@ class EditorState:
         return chart
 
     def chart_list(self, include_extract_only: bool = False) -> list[dict[str, object]]:
-        return [
-            {
+        result = []
+        for chart in self.charts.values():
+            if not include_extract_only and chart.cutline_path is None:
+                continue
+            candidate_names = self.navigable_inset_candidates.get(chart.source_path.name, ())
+            inset_path = self.navigable_inset_path(chart)
+            regions = []
+            if inset_path.is_file():
+                document = json.loads(inset_path.read_text(encoding="utf-8"))
+                regions = validate_navigable_inset_document(document, chart, inset_path)
+            result.append({
                 "name": chart.name,
                 "width": chart.width,
                 "height": chart.height,
-            }
-            for chart in self.charts.values()
-            if include_extract_only or chart.cutline_path is not None
-        ]
+                "navigable_inset_candidates": list(candidate_names),
+                "navigable_inset_defined_count": len(regions),
+                "navigable_inset_enabled_count": sum(
+                    1 for region in regions if region["enabled"]
+                ),
+            })
+        return result
+
+    def _load_navigable_inset_candidates(self) -> dict[str, tuple[str, ...]]:
+        path = self.cutline_dir / NAVIGABLE_INSET_CANDIDATES_FILE
+        if not path.is_file():
+            return {}
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            raise EditorError(f"unsupported navigable-inset candidate schema in {path}")
+        charts = document.get("charts")
+        if not isinstance(charts, list):
+            raise EditorError(f"navigable-inset candidates must be an array in {path}")
+        known_sources = {chart.source_path.name for chart in self.charts.values()}
+        result: dict[str, tuple[str, ...]] = {}
+        for index, value in enumerate(charts):
+            if not isinstance(value, dict):
+                raise EditorError(f"navigable-inset candidate {index + 1} must be an object")
+            source = value.get("source")
+            if not isinstance(source, str) or source not in known_sources:
+                raise EditorError(
+                    f"navigable-inset candidate {index + 1} names unknown source {source!r}"
+                )
+            if source in result:
+                raise EditorError(f"duplicate navigable-inset candidate source {source!r}")
+            insets = value.get("insets")
+            if not isinstance(insets, list) or not insets:
+                raise EditorError(f"navigable-inset candidate {source!r} needs inset names")
+            names = tuple(
+                name.strip()
+                for name in insets
+                if isinstance(name, str) and name.strip()
+            )
+            if len(names) != len(insets) or len(set(name.casefold() for name in names)) != len(names):
+                raise EditorError(f"navigable-inset candidate {source!r} has invalid inset names")
+            result[source] = names
+        return result
 
     def chart_payload(self, name: str) -> dict[str, object]:
         chart = self.chart(name)
@@ -281,6 +347,64 @@ class EditorState:
     def extract_path(self, chart: Chart, extract_type: str) -> Path:
         return self.cutline_dir / f"{chart.name}.{extract_type}.json"
 
+    def navigable_inset_payload(self, name: str) -> dict[str, object]:
+        chart = self.chart(name)
+        path = self.navigable_inset_path(chart)
+        if not path.is_file():
+            return {
+                "name": chart.name,
+                "source": chart.source_path.name,
+                "source_width": chart.width,
+                "source_height": chart.height,
+                "regions": [],
+                "revision": None,
+            }
+        document = json.loads(path.read_text(encoding="utf-8"))
+        regions = validate_navigable_inset_document(document, chart, path)
+        return {
+            "name": chart.name,
+            "source": chart.source_path.name,
+            "source_width": chart.width,
+            "source_height": chart.height,
+            "regions": [region_with_diagnostics(chart, region) for region in regions],
+            "revision": file_revision(path),
+        }
+
+    def save_navigable_insets(
+        self,
+        name: str,
+        regions_value: object,
+        expected_revision: object,
+    ) -> dict[str, object]:
+        chart = self.chart(name)
+        path = self.navigable_inset_path(chart)
+        if expected_revision is not None and not isinstance(expected_revision, str):
+            raise EditorError("navigable-inset save revision must be a string or null")
+        document = {
+            "schema_version": 1,
+            "source": chart.source_path.name,
+            "source_width": chart.width,
+            "source_height": chart.height,
+            "insets": regions_value,
+        }
+        regions = validate_navigable_inset_document(document, chart, path)
+        document["insets"] = regions
+        with self._write_lock:
+            current_revision = file_revision(path) if path.is_file() else None
+            if current_revision != expected_revision:
+                raise RevisionConflict(
+                    f"{path.name} changed on disk; reload before saving"
+                )
+            atomic_write_json(path, document)
+            revision = file_revision(path)
+        return {
+            "revision": revision,
+            "regions": [region_with_diagnostics(chart, region) for region in regions],
+        }
+
+    def navigable_inset_path(self, chart: Chart) -> Path:
+        return self.cutline_dir / f"{chart.name}{NAVIGABLE_INSET_SUFFIX}"
+
     def _pixel_points(self, chart: Chart) -> list[tuple[float, float]]:
         if chart.cutline_path is None:
             raise EditorError(f"{chart.name} has no georeferenced cutline")
@@ -368,6 +492,24 @@ class EditorState:
                 remove_aux_xml(cache_path)
         return cache_path.read_bytes()
 
+    def crop_overview_png(self, name: str, x: int, y: int, width: int, height: int) -> bytes:
+        chart = self.chart(name)
+        validate_source_window(chart, x, y, width, height)
+        cache_path = self.cache_dir / (
+            f"{slug(chart.name)}-{file_revision(chart.source_path)}"
+            f"-crop-{x}-{y}-{width}-{height}-{self.overview_width}"
+            f"-v{OVERVIEW_RENDER_VERSION}.png"
+        )
+        lock = self._overview_locks.setdefault(chart.name, threading.Lock())
+        with lock:
+            if not cache_path.is_file():
+                render_overview_png(
+                    chart.source_path, cache_path, self.overview_width,
+                    source_window=[x, y, width, height],
+                )
+                remove_aux_xml(cache_path)
+        return cache_path.read_bytes()
+
     def crop_png(
         self,
         name: str,
@@ -377,8 +519,7 @@ class EditorState:
         height: int,
     ) -> bytes:
         chart = self.chart(name)
-        if width < 1 or height < 1:
-            raise EditorError("crop dimensions must be positive")
+        validate_source_window(chart, x, y, width, height)
         if width > MAX_CROP_DIMENSION or height > MAX_CROP_DIMENSION:
             raise EditorError(
                 f"crop dimensions must not exceed {MAX_CROP_DIMENSION} pixels"
@@ -387,8 +528,6 @@ class EditorState:
             raise EditorError(
                 f"crop area must not exceed {MAX_CROP_PIXELS} source pixels"
             )
-        if x < 0 or y < 0 or x + width > chart.width or y + height > chart.height:
-            raise EditorError("crop falls outside source chart")
         vsi_path = f"/vsimem/cutline-editor-{uuid.uuid4().hex}.png"
         try:
             options = translate_png_options(
@@ -468,48 +607,56 @@ def translate_png_options(
     return gdal.TranslateOptions(**kwargs)
 
 
-def render_overview_png(source_path: Path, output_path: Path, width: int) -> None:
+def validate_source_window(chart: Chart, x: int, y: int, width: int, height: int) -> None:
+    if width < 1 or height < 1:
+        raise EditorError("crop dimensions must be positive")
+    if x < 0 or y < 0 or x + width > chart.width or y + height > chart.height:
+        raise EditorError("crop falls outside source chart")
+
+
+def render_overview_png(
+    source_path: Path, output_path: Path, width: int,
+    *, source_window: list[int] | None = None,
+) -> None:
     dataset = gdal.Open(str(source_path))
     if dataset is None:
         raise EditorError(f"failed to open {source_path}")
     first_band = dataset.GetRasterBand(1)
     is_paletted = dataset.RasterCount == 1 and first_band.GetColorTable() is not None
-    if not is_paletted:
-        options = gdal.TranslateOptions(
-            format="PNG",
-            width=width,
-            height=0,
-            resampleAlg="average",
-        )
-        result = gdal.Translate(str(output_path), dataset, options=options)
-        if result is None:
-            raise EditorError(f"failed to generate overview for {source_path.name}")
-        result = None
-        return
-
+    region_width, region_height = (
+        source_window[2:] if source_window else (dataset.RasterXSize, dataset.RasterYSize)
+    )
+    scale = min(1.0, width / max(region_width, region_height))
+    output_width = max(1, round(region_width * scale))
+    output_height = max(1, round(region_height * scale))
     rgb_vrt_path = f"/vsimem/cutline-editor-overview-{uuid.uuid4().hex}.vrt"
     try:
         expanded = gdal.Translate(
             rgb_vrt_path,
             dataset,
-            options=gdal.TranslateOptions(format="VRT", rgbExpand="rgb"),
+            options=gdal.TranslateOptions(
+                format="VRT", rgbExpand="rgb" if is_paletted else None,
+                srcWin=source_window,
+            ),
         )
         if expanded is None:
             raise EditorError(f"failed to expand {source_path.name} to RGB")
-        if not dataset.GetProjection():
-            expanded.SetGeoTransform(
-                (0.0, 1.0, 0.0, float(dataset.RasterYSize), 0.0, -1.0)
-            )
-            expanded.FlushCache()
+        # The editor overlays source-pixel geometry. Do not reproject or rotate it.
+        # Expand palette indices before averaging; the VRT keeps the large source lazy.
+        expanded.SetProjection("")
+        expanded.SetGCPs([], "")
+        expanded.SetGeoTransform((0.0, 1.0, 0.0, float(region_height), 0.0, -1.0))
+        expanded.FlushCache()
         expanded = None
         result = gdal.Warp(
             str(output_path),
             rgb_vrt_path,
             options=gdal.WarpOptions(
                 format="PNG",
-                width=width,
-                height=0,
+                width=output_width,
+                height=output_height,
                 resampleAlg="average",
+                warpMemoryLimit=32,
             ),
         )
         if result is None:
@@ -616,6 +763,146 @@ def validate_extract_regions(
             raise EditorError(f"{extract_type} region {index + 1} exceeds the source chart height")
         result.append(parsed)
     return result
+
+
+def validate_navigable_inset_document(
+    document: object,
+    chart: Chart,
+    path: Path,
+) -> list[dict[str, object]]:
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        raise EditorError(f"unsupported navigable-inset schema in {path.name}")
+    if document.get("source") != chart.source_path.name:
+        raise EditorError(f"navigable-inset source mismatch in {path.name}")
+    if document.get("source_width") != chart.width or document.get("source_height") != chart.height:
+        raise EditorError(
+            f"navigable-inset dimensions in {path.name} do not match {chart.source_path.name}"
+        )
+    if "target_family" in document:
+        raise EditorError(f"target_family belongs to each inset, not the source chart, in {path.name}")
+    values = document.get("insets")
+    if not isinstance(values, list):
+        raise EditorError("navigable insets must be an array")
+    if len(values) > 64:
+        raise EditorError("navigable-inset layout has too many regions")
+
+    regions: list[dict[str, object]] = []
+    identifiers: set[str] = set()
+    for index, value in enumerate(values):
+        if not isinstance(value, dict):
+            raise EditorError(f"navigable inset {index + 1} must be an object")
+        identifier = value.get("id")
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise EditorError(f"navigable inset {index + 1} needs a non-empty id")
+        identifier = identifier.strip()
+        if Path(identifier).name != identifier or len(identifier) > 80:
+            raise EditorError(f"navigable inset {index + 1} has an invalid id")
+        identity = identifier.casefold()
+        if identity in identifiers:
+            raise EditorError(f"duplicate navigable inset id {identifier!r}")
+        identifiers.add(identity)
+
+        target_family = value.get("target_family")
+        if target_family not in NAVIGABLE_INSET_TARGET_FAMILIES:
+            raise EditorError(f"navigable inset {identifier!r} target_family must be TAC or FLY")
+
+        boundary = validate_pixel_points(value.get("boundary"), chart)
+        if len(boundary) < 3:
+            raise EditorError(f"navigable inset {identifier!r} needs at least 3 boundary points")
+        if any(
+            x < 0.0 or x > chart.width or y < 0.0 or y > chart.height
+            for x, y in boundary
+        ):
+            raise EditorError(
+                f"navigable inset {identifier!r} boundary is outside the source raster"
+            )
+        enabled = value.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise EditorError(f"navigable inset {identifier!r} enabled must be boolean")
+        controls_value = value.get("control_points", [])
+        if not isinstance(controls_value, list):
+            raise EditorError(
+                f"navigable inset {identifier!r} control_points must be an array"
+            )
+        if len(controls_value) > 32:
+            raise EditorError(f"navigable inset {identifier!r} has too many control points")
+        control_points = [
+            validate_navigable_control_point(
+                point,
+                chart,
+                identifier,
+                point_index,
+                allow_incomplete=not enabled,
+            )
+            for point_index, point in enumerate(controls_value)
+        ]
+        region: dict[str, object] = {
+            "id": identifier,
+            "target_family": target_family,
+            "enabled": enabled,
+            "boundary": [[round(x, 3), round(y, 3)] for x, y in boundary],
+            "control_points": control_points,
+        }
+        diagnostics = navigable_inset_diagnostics(chart.source_path, control_points)
+        if enabled:
+            if not diagnostics["ready"]:
+                raise EditorError(
+                    f"enabled navigable inset {identifier!r}: {diagnostics['summary']}"
+                )
+        regions.append(region)
+    return regions
+
+
+def validate_navigable_control_point(
+    value: object,
+    chart: Chart,
+    identifier: str,
+    index: int,
+    *,
+    allow_incomplete: bool,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise EditorError(
+            f"navigable inset {identifier!r} control point {index + 1} must be an object"
+        )
+    try:
+        point = inset_georeference.normalize_control(value, allow_incomplete=allow_incomplete)
+    except inset_georeference.GeoreferenceError as error:
+        raise EditorError(f"inset {identifier!r} control {index + 1}: {error}") from error
+    x, y = point["pixel"]
+    if not (0.0 <= x <= chart.width and 0.0 <= y <= chart.height):
+        raise EditorError(
+            f"navigable inset {identifier!r} control point {index + 1} is outside the source raster"
+        )
+    point["pixel"] = [round(x, 3), round(y, 3)]
+    for field in ("latitude", "longitude"):
+        if point[field] is not None:
+            point[field] = round(point[field], 9)
+    return point
+
+
+def region_with_diagnostics(chart: Chart, region: dict[str, object]) -> dict[str, object]:
+    boundary = [tuple(point) for point in region["boundary"]]
+    return {
+        **region,
+        **pixel_polygon_bounds(boundary),
+        "diagnostics": navigable_inset_diagnostics(chart.source_path, region["control_points"]),
+    }
+
+
+def pixel_polygon_bounds(points: list[tuple[float, float]]) -> dict[str, int]:
+    left = math.floor(min(point[0] for point in points))
+    top = math.floor(min(point[1] for point in points))
+    right = math.ceil(max(point[0] for point in points))
+    bottom = math.ceil(max(point[1] for point in points))
+    return {
+        "x": left,
+        "y": top,
+        "width": max(1, right - left),
+        "height": max(1, bottom - top),
+    }
+
+
 
 
 def validate_max_output_width(value: object) -> int:
@@ -830,6 +1117,10 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                 self._send_file(ASSET_DIR / "editor.css", "text/css; charset=utf-8")
             elif parsed.path == "/assets/editor.js":
                 self._send_file(ASSET_DIR / "editor.js", "text/javascript; charset=utf-8")
+            elif parsed.path == "/assets/cutline-points.js":
+                self._send_file(ASSET_DIR / "cutline-points.js", "text/javascript; charset=utf-8")
+            elif parsed.path == "/assets/coordinate-input.js":
+                self._send_file(ASSET_DIR / "coordinate-input.js", "text/javascript; charset=utf-8")
             elif parsed.path == "/assets/extracts.css":
                 self._send_file(ASSET_DIR / "extracts.css", "text/css; charset=utf-8")
             elif parsed.path == "/assets/extracts.js":
@@ -860,6 +1151,13 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                         required_query(query, "type"),
                     )
                 )
+            elif parsed.path == "/api/navigable-insets":
+                family = required_query(query, "family")
+                self._send_json(
+                    self.state.family(family).navigable_inset_payload(
+                        required_query(query, "name")
+                    )
+                )
             elif parsed.path == "/api/overview":
                 family = required_query(query, "family")
                 self._send_bytes(
@@ -867,10 +1165,15 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                     "image/png",
                     cache_control="private, max-age=3600",
                 )
-            elif parsed.path == "/api/crop":
+            elif parsed.path in ("/api/crop", "/api/crop-overview"):
                 family = required_query(query, "family")
+                renderer = (
+                    self.state.family(family).crop_overview_png
+                    if parsed.path == "/api/crop-overview"
+                    else self.state.family(family).crop_png
+                )
                 self._send_bytes(
-                    self.state.family(family).crop_png(
+                    renderer(
                         required_query(query, "name"),
                         int_query(query, "x"),
                         int_query(query, "y"),
@@ -913,6 +1216,13 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                     body.get("type"),
                     body.get("regions"),
                     body.get("max_output_width", 1210),
+                    body.get("revision"),
+                )
+                self._send_json(result)
+            elif parsed.path == "/api/navigable-insets/save":
+                result = family.save_navigable_insets(
+                    str(body.get("name", "")),
+                    body.get("regions"),
                     body.get("revision"),
                 )
                 self._send_json(result)

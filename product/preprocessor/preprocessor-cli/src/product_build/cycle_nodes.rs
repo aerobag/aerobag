@@ -153,17 +153,23 @@ pub(super) fn build_chart_process_node(
     source_repo: &Path,
     source_urls: &Path,
     source_fetch_record: &NodeRecord,
+    supplemental_source_fetch_record: Option<&NodeRecord>,
     cpu_jobs: usize,
 ) -> anyhow::Result<NodeRecord> {
     let family_id = family_slug(family).to_string();
     let node_name = format!("charts-{family_id}-process");
     let source_fetch_root =
         resolve_artifact_path(config, output_path(source_fetch_record, "source_root")?);
+    let source_fingerprint = combined_chart_source_fingerprint(
+        family,
+        source_fetch_record,
+        supplemental_source_fetch_record,
+    )?;
     let inputs = chart_process_inputs(
         family,
         source_repo,
         source_urls,
-        source_content_fingerprint(source_fetch_record)?,
+        &source_fingerprint,
         cpu_jobs,
     )?;
     let prepared = prepare_node_at(
@@ -190,6 +196,10 @@ pub(super) fn build_chart_process_node(
         |prepared| {
             let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
             seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
+            if let Some(record) = supplemental_source_fetch_record {
+                let root = resolve_artifact_path(config, output_path(record, "source_root")?);
+                seed_prefetched_source_tree(&root, &work_dir)?;
+            }
             build_family_vrts(family, &work_dir, cpu_jobs)?;
             build_family_legends(family, &work_dir)?;
             build_family_insets(family, &work_dir)?;
@@ -367,17 +377,23 @@ pub(super) fn build_chart_package_nodes(
     source_urls_dir: &Path,
     version_label: &str,
     source_fetch_record: &NodeRecord,
+    supplemental_source_fetch_record: Option<&NodeRecord>,
 ) -> anyhow::Result<(Vec<NodeRecord>, ChartSource)> {
     let family_id = family_slug(family).to_string();
     let contract_id = product_contract_id_for_family(&family_id)?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = chart_source_urls_path(source_urls_dir, family);
     let process_node_name = format!("charts-{family_id}-process");
+    let source_fingerprint = combined_chart_source_fingerprint(
+        family,
+        source_fetch_record,
+        supplemental_source_fetch_record,
+    )?;
     let process_inputs = chart_process_inputs(
         family,
         &config.chart_metadata_root,
         &source_urls_path,
-        source_content_fingerprint(source_fetch_record)?,
+        &source_fingerprint,
         config.cpu_jobs.clamp(1, 8),
     )?;
     let process_prepared = prepare_node_at(
@@ -395,7 +411,11 @@ pub(super) fn build_chart_package_nodes(
             bundled_family,
             &config.chart_metadata_root,
             &source_urls_path,
-            source_content_fingerprint(source_fetch_record)?,
+            &combined_chart_source_fingerprint(
+                bundled_family,
+                source_fetch_record,
+                supplemental_source_fetch_record,
+            )?,
             config.cpu_jobs.clamp(1, 8),
         )?;
         let bundled_prepared = prepare_node_at(
@@ -608,6 +628,24 @@ pub(super) fn build_chart_package_nodes(
             source_urls_path: Some(source_urls_path),
         },
     ))
+}
+
+fn combined_chart_source_fingerprint(
+    family: ChartFamily,
+    primary: &NodeRecord,
+    supplemental: Option<&NodeRecord>,
+) -> anyhow::Result<String> {
+    if navigable_inset_source_family(family).is_some() != supplemental.is_some() {
+        anyhow::bail!(
+            "incorrect supplemental chart source for {}",
+            family_slug(family)
+        );
+    }
+    let primary = source_content_fingerprint(primary)?;
+    Ok(match supplemental {
+        Some(record) => format!("{primary}:{}", source_content_fingerprint(record)?),
+        None => primary.to_string(),
+    })
 }
 
 pub(super) fn chart_package_record_has_tiles(
@@ -1899,6 +1937,12 @@ pub(super) fn chart_process_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("cpu_jobs".to_string(), cpu_jobs.to_string()),
         (
+            "navigable_inset_georeference".to_string(),
+            hash_text(include_str!(
+                "../../../preprocessor-charts/navigable_inset.py"
+            )),
+        ),
+        (
             "source_content_fingerprint".to_string(),
             source_content_fingerprint.to_string(),
         ),
@@ -3005,6 +3049,64 @@ mod tests {
         );
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
         assert!(!inputs.contains_key("tools_lib"));
+        assert_eq!(
+            inputs.get("navigable_inset_georeference"),
+            Some(&hash_text(include_str!(
+                "../../../preprocessor-charts/navigable_inset.py"
+            )))
+        );
+    }
+
+    #[test]
+    fn chart_inset_destinations_track_sectional_fetch_and_cache_changes() {
+        let primary = write_source_fetch_record("tac-source");
+        let sec_before = write_source_fetch_record("sec-before");
+        let sec_after = write_source_fetch_record("sec-after");
+        for family in [ChartFamily::Tac, ChartFamily::Flyway] {
+            assert_eq!(
+                chart_process_fetch_task_ids(family),
+                ["charts-tac-fetch", "charts-sec-fetch"]
+            );
+            assert_ne!(
+                combined_chart_source_fingerprint(family, &primary, Some(&sec_before)).unwrap(),
+                combined_chart_source_fingerprint(family, &primary, Some(&sec_after)).unwrap(),
+            );
+            assert!(combined_chart_source_fingerprint(family, &primary, None).is_err());
+        }
+        assert_eq!(
+            chart_process_fetch_task_ids(ChartFamily::Sec),
+            ["charts-sec-fetch"]
+        );
+        assert!(
+            combined_chart_source_fingerprint(ChartFamily::Sec, &sec_before, Some(&primary))
+                .is_err()
+        );
+        assert_eq!(
+            combined_chart_source_fingerprint(ChartFamily::Sec, &sec_before, None).unwrap(),
+            "sec-before"
+        );
+
+        let temp = tempdir().unwrap();
+        let source_urls = temp.path().join("source_urls.jsonl");
+        fs::write(&source_urls, b"").unwrap();
+        let metadata = temp.path().join("metadata");
+        fs::create_dir_all(&metadata).unwrap();
+        let inset = metadata.join("example.navigable-insets.json");
+        fs::write(&inset, br#"{"insets":[{"target_family":"TAC"}]}"#).unwrap();
+        let before: Vec<_> = [ChartFamily::Tac, ChartFamily::Flyway]
+            .into_iter()
+            .map(|family| {
+                chart_process_inputs(family, &metadata, &source_urls, "source", 1).unwrap()
+            })
+            .collect();
+        fs::write(&inset, br#"{"insets":[{"target_family":"FLY"}]}"#).unwrap();
+        for (family, before) in [ChartFamily::Tac, ChartFamily::Flyway]
+            .into_iter()
+            .zip(before)
+        {
+            let after = chart_process_inputs(family, &metadata, &source_urls, "source", 1).unwrap();
+            assert_ne!(before, after, "rerouting must invalidate both families");
+        }
     }
 
     #[test]

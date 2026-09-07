@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "source": "Nome SEC.tif",
+  "source_width": 16626,
+  "source_height": 12250,
+  "insets": [
+    {
+      "id": "Inset 1",
+      "target_family": "TAC",
+      "enabled": true,
+      "boundary": [
+        [
+          2299.75,
+          259.35
+        ],
+        [
+          4088.5,
+          259.1
+        ],
+        [
+          4088.5,
+          2843.1
+        ],
+        [
+          2299.75,
+          2842.85
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            2708.0,
+            312.0
+          ],
+          "latitude": 66.0,
+          "longitude": -173.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3244.25,
+            320.0
+          ],
+          "latitude": 66.0,
+          "longitude": -172.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3780.5,
+            320.0
+          ],
+          "latitude": 66.0,
+          "longitude": -171.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2678.0,
+            1628.75
+          ],
+          "latitude": 65.0,
+          "longitude": -173.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3235.5,
+            1637.0
+          ],
+          "latitude": 65.0,
+          "longitude": -172.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3792.5,
+            1636.25
+          ],
+          "latitude": 65.0,
+          "longitude": -171.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3228.25,
+            2735.5
+          ],
+          "latitude": 64.166666667,
+          "longitude": -172.0
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "source": "Juneau SEC.tif",
+  "source_width": 16574,
+  "source_height": 12333,
+  "insets": [
+    {
+      "id": "Juneau",
+      "enabled": true,
+      "boundary": [
+        [
+          1692,
+          4106
+        ],
+        [
+          4149,
+          4105.35
+        ],
+        [
+          4149,
+          5767.85
+        ],
+        [
+          1693.25,
+          5768.35
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            2298.5,
+            4973.5
+          ],
+          "latitude": 58.333333333,
+          "longitude": -134.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2294,
+            4535.5
+          ],
+          "latitude": 58.416666667,
+          "longitude": -134.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2990,
+            4965
+          ],
+          "latitude": 58.333333333,
+          "longitude": -134.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2983.5,
+            4526.5
+          ],
+          "latitude": 58.416666667,
+          "longitude": -134.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2303.5,
+            5411.5
+          ],
+          "latitude": 58.25,
+          "longitude": -134.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            2996.5,
+            5403
+          ],
+          "latitude": 58.25,
+          "longitude": -134.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3689.25,
+            5392.5
+          ],
+          "latitude": 58.25,
+          "longitude": -134.25
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3674,
+            4516
+          ],
+          "latitude": 58.416666667,
+          "longitude": -134.25
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3681.5,
+            4954.25
+          ],
+          "latitude": 58.333333333,
+          "longitude": -134.25
+        }
+      ],
+      "target_family": "TAC"
+    },
+    {
+      "id": "Juneau High Density Traffic Area",
+      "enabled": true,
+      "boundary": [
+        [
+          1346.25,
+          6409.35
+        ],
+        [
+          1342.25,
+          10792.85
+        ],
+        [
+          6369.75,
+          10792.85
+        ],
+        [
+          6369,
+          6410.35
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "longitude",
+          "pixel": [
+            1911.75,
+            6409.75
+          ],
+          "latitude": null,
+          "longitude": -135
+        },
+        {
+          "kind": "longitude",
+          "pixel": [
+            5342.25,
+            6410.25
+          ],
+          "latitude": null,
+          "longitude": -134.25
+        },
+        {
+          "kind": "longitude",
+          "pixel": [
+            4198.25,
+            6409.75
+          ],
+          "latitude": null,
+          "longitude": -134.5
+        },
+        {
+          "kind": "longitude",
+          "pixel": [
+            1883,
+            10792.75
+          ],
+          "latitude": null,
+          "longitude": -135
+        },
+        {
+          "kind": "longitude",
+          "pixel": [
+            3044,
+            10792.75
+          ],
+          "latitude": null,
+          "longitude": -134.75
+        },
+        {
+          "kind": "longitude",
+          "pixel": [
+            5363,
+            10793
+          ],
+          "latitude": null,
+          "longitude": -134.25
+        },
+        {
+          "kind": "latitude",
+          "pixel": [
+            1346.25,
+            7285.25
+          ],
+          "latitude": 58.5,
+          "longitude": null
+        },
+        {
+          "kind": "latitude",
+          "pixel": [
+            1343.25,
+            9476.75
+          ],
+          "latitude": 58.25,
+          "longitude": null
+        },
+        {
+          "kind": "latitude",
+          "pixel": [
+            6369,
+            7285.5
+          ],
+          "latitude": 58.5,
+          "longitude": null
+        },
+        {
+          "kind": "latitude",
+          "pixel": [
+            6370,
+            9477.5
+          ],
+          "latitude": 58.25,
+          "longitude": null
+        }
+      ],
+      "target_family": "FLY"
+    },
+    {
+      "id": "Seward Glacier Area",
+      "enabled": true,
+      "boundary": [
+        [
+          1685,
+          2799.6
+        ],
+        [
+          1685,
+          3814.6
+        ],
+        [
+          4356,
+          3808.4
+        ],
+        [
+          4356,
+          2800.1
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            2345.5,
+            3819
+          ],
+          "latitude": 60,
+          "longitude": -140.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3662.5,
+            3815
+          ],
+          "latitude": 60,
+          "longitude": -139.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3003,
+            3381.5
+          ],
+          "latitude": 60.166666667,
+          "longitude": -140
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3002,
+            2943.5
+          ],
+          "latitude": 60.333333333,
+          "longitude": -140
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3004,
+            3819.5
+          ],
+          "latitude": 60,
+          "longitude": -140
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            3002.5,
+            3162.5
+          ],
+          "latitude": 60.25,
+          "longitude": -140
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            4305.5,
+            2930.25
+          ],
+          "latitude": 60.333333333,
+          "longitude": -139
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            1701,
+            2937.5
+          ],
+          "latitude": 60.333333333,
+          "longitude": -141
+        }
+      ],
+      "target_family": "TAC"
+    }
+  ]
+}

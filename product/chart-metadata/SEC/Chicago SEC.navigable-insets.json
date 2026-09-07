@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "source": "Chicago SEC.tif",
+  "source_width": 17932,
+  "source_height": 12384,
+  "insets": [
+    {
+      "id": "Milwaukee",
+      "enabled": true,
+      "boundary": [
+        [
+          0,
+          6285
+        ],
+        [
+          1843.8,
+          6288
+        ],
+        [
+          1705.8,
+          9139
+        ],
+        [
+          1.8,
+          9137
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            258.8,
+            7474
+          ],
+          "latitude": 43,
+          "longitude": -88.25
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            1218.4,
+            7474.5
+          ],
+          "latitude": 43,
+          "longitude": -88
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            255.9,
+            8781
+          ],
+          "latitude": 42.75,
+          "longitude": -88.25
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            1219.4,
+            8782
+          ],
+          "latitude": 42.75,
+          "longitude": -88
+        }
+      ],
+      "target_family": "TAC"
+    }
+  ]
+}

@@ -9,30 +9,35 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chart extract regions</title>
+  <title>Chart extracts and navigable insets</title>
   <link rel="stylesheet" href="/assets/editor.css">
   <link rel="stylesheet" href="/assets/extracts.css">
 </head>
 <body>
   <header class="toolbar">
-    <div class="brand">Chart extracts</div>
+    <div class="brand">Chart source editor</div>
     <select id="extractType" aria-label="Extract type">
       <option value="legend">Legends</option>
       <option value="inset">Insets</option>
+      <option value="navigable-inset">Georeferenced insets</option>
     </select>
     <select id="familySelect" aria-label="Chart family"></select>
     <button id="previousChart" class="iconButton" type="button" title="Previous chart" aria-label="Previous chart">&#x2039;</button>
     <select id="chartSelect" aria-label="Chart"></select>
     <button id="nextChart" class="iconButton" type="button" title="Next chart" aria-label="Next chart">&#x203a;</button>
+    <label id="candidateScope" class="candidateScope" hidden>
+      <input id="showAllCharts" type="checkbox"> All sectionals
+    </label>
     <div class="toolbarDivider"></div>
     <button id="undo" class="iconButton" type="button" title="Undo" aria-label="Undo">&#x21b6;</button>
     <button id="redo" class="iconButton" type="button" title="Redo" aria-label="Redo">&#x21b7;</button>
     <button id="drawRegion" type="button" title="Draw a new region on the chart overview">Draw region</button>
+    <button id="finishOutline" class="primaryButton" type="button" hidden>Finish outline</button>
     <button id="deleteRegion" type="button">Delete</button>
     <button id="moveEarlier" class="iconButton" type="button" title="Move region earlier" aria-label="Move region earlier">&#x2191;</button>
     <button id="moveLater" class="iconButton" type="button" title="Move region later" aria-label="Move region later">&#x2193;</button>
     <div class="toolbarSpacer"></div>
-    <a class="toolLink" href="/">Cutlines</a>
+    <a id="chartCutlineLink" class="toolLink" href="/">Whole-chart cutline</a>
     <span id="saveState" class="saveState">Loading</span>
     <button id="reloadLayout" type="button">Reload</button>
     <button id="saveLayout" class="primaryButton" type="button">Save</button>
@@ -47,7 +52,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
         </div>
         <span id="regionCount" class="muted"></span>
       </div>
-      <div class="overviewViewport">
+      <div id="overviewViewport" class="overviewViewport">
         <div id="overviewStage" class="overviewStage extractOverviewStage">
           <img id="overviewImage" alt="Chart source overview" draggable="false">
           <svg id="overviewSvg" aria-label="Editable extract regions">
@@ -64,27 +69,94 @@ SPDX-License-Identifier: AGPL-3.0-or-later
           <h2 id="regionTitle">No region selected</h2>
           <span class="muted">Composite order</span>
         </div>
-        <label class="outputWidthLabel">Max width
+        <label id="outputWidthLabel" class="outputWidthLabel">Max width
           <input id="maxOutputWidth" type="number" min="320" max="4096" step="10" value="1210">
         </label>
       </div>
-      <div class="regionInputs">
+      <div id="regionInputs" class="regionInputs">
         <label>X <input id="regionX" type="number" step="1"></label>
         <label>Y <input id="regionY" type="number" step="1"></label>
         <label>Width <input id="regionWidth" type="number" min="1" step="1"></label>
         <label>Height <input id="regionHeight" type="number" min="1" step="1"></label>
       </div>
+      <section id="navigableControls" class="navigableControls" hidden>
+        <div id="insetEditMode" class="segmented insetEditMode" aria-label="Inset editing mode">
+          <button type="button" data-mode="boundary" class="insetEditModeButton active">Inset cutlines</button>
+          <button type="button" data-mode="georef" class="insetEditModeButton">Georeference</button>
+        </div>
+        <p id="boundaryGuide" class="boundaryGuide"></p>
+        <div id="insetIdentity" class="insetIdentity">
+          <label>Inset name <input id="insetId" type="text" maxlength="80" placeholder="Milwaukee"></label>
+          <label>Output layer
+            <select id="insetTargetFamily">
+              <option value="TAC">TAC</option>
+              <option value="FLY">Flyway</option>
+            </select>
+          </label>
+          <label class="enabledLabel"><input id="insetEnabled" type="checkbox"> Include in build</label>
+        </div>
+        <div id="boundaryControls" class="boundaryControls">
+          <div>
+            <strong id="boundaryPointTitle">Boundary point</strong>
+            <div class="boundaryCoordinateInputs">
+              <label>X <input id="boundaryPointX" type="number" step="0.1"></label>
+              <label>Y <input id="boundaryPointY" type="number" step="0.1"></label>
+            </div>
+          </div>
+          <div class="boundaryButtons">
+            <button id="addBoundaryPoint" type="button">Add point</button>
+            <button id="deleteBoundaryPoint" type="button">Delete point</button>
+            <button id="snapBoundaryPoint" type="button">Snap</button>
+          </div>
+        </div>
+        <div id="boundaryPointList" class="boundaryPointList" aria-label="Cutline points"></div>
+        <div id="controlPointSection" class="controlPointSection" hidden>
+          <div class="controlPointHeader">
+            <div>
+              <strong>Geographic control points</strong>
+              <span id="fitSummary" class="muted">Save to compute fit diagnostics</span>
+            </div>
+            <strong id="georefGuide" class="georefGuide">Click an approximate point in the inset overview.</strong>
+          </div>
+          <label>New point:
+            <select id="newControlKind" aria-label="New control point type">
+              <option value="intersection">Lat/lon intersection</option>
+              <option value="latitude">Latitude-only tick</option>
+              <option value="longitude">Longitude-only tick</option>
+            </select>
+          </label>
+          <span class="muted">Degrees or degrees minutes: 58 15 = 58.25; -134 30 = -134.5.
+            Spread ticks across opposite edges; use at least four of each coordinate.</span>
+          <div id="controlPointList" class="controlPointList"></div>
+        </div>
+      </section>
       <ol id="regionList" class="regionList"></ol>
       <div class="previewHeader">
         <span id="previewFacts" class="muted"></span>
+        <div id="previewZoom" class="segmented" aria-label="Loupe scale" hidden>
+          <button type="button" data-zoom="1" class="previewZoomButton active">1:1</button>
+          <button type="button" data-zoom="2" class="previewZoomButton">2:1</button>
+          <button type="button" data-zoom="4" class="previewZoomButton">4:1</button>
+        </div>
         <span id="message" role="status"></span>
       </div>
       <div id="previewViewport" class="extractPreviewViewport">
-        <img id="previewImage" alt="Selected extract region at source resolution" draggable="false">
+        <div id="previewStage" class="previewStage">
+          <img id="previewImage" alt="Selected extract region at source resolution" draggable="false">
+          <svg id="previewSvg" aria-label="Navigable inset control points">
+            <polyline id="previewBoundary" class="previewBoundary"></polyline>
+            <line id="previewCrosshairH" class="previewCrosshair"></line>
+            <line id="previewCrosshairV" class="previewCrosshair"></line>
+            <circle id="previewBoundaryHandle" class="vertexHandle selected" r="7"></circle>
+            <g id="previewControlPoints"></g>
+          </svg>
+        </div>
       </div>
     </section>
   </main>
 
+  <script src="/assets/cutline-points.js"></script>
+  <script src="/assets/coordinate-input.js"></script>
   <script src="/assets/extracts.js"></script>
 </body>
 </html>

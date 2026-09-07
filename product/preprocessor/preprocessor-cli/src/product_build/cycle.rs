@@ -165,7 +165,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             });
             pending_tasks.push(GraphScheduledTask {
                 id: process_id.clone(),
-                deps: vec![fetch_id],
+                deps: chart_process_fetch_task_ids(family),
                 weight: CHART_PROCESS_WEIGHT,
                 kind: ScheduledTaskKind::ChartProcess { family },
             });
@@ -176,6 +176,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         process_id,
                         "charts-flyway-process".to_string(),
                         format!("charts-{family_id}-fetch"),
+                        "charts-sec-fetch".to_string(),
                     ]
                 } else {
                     vec![process_id, format!("charts-{family_id}-fetch")]
@@ -186,7 +187,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         }
         pending_tasks.push(GraphScheduledTask {
             id: "charts-flyway-process".to_string(),
-            deps: vec!["charts-tac-fetch".to_string()],
+            deps: chart_process_fetch_task_ids(ChartFamily::Flyway),
             weight: CHART_PROCESS_WEIGHT,
             kind: ScheduledTaskKind::ChartProcess {
                 family: ChartFamily::Flyway,
@@ -366,12 +367,27 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Some(TaskValue::ChartFetch { record }) => record,
                             _ => unreachable!("chart fetch dependency should have completed"),
                         };
+                        let supplemental_source_fetch = if let Some(source) =
+                            navigable_inset_source_family(family)
+                        {
+                            match task_values_snapshot
+                                .get(&format!("charts-{}-fetch", family_slug(source)))
+                            {
+                                Some(TaskValue::ChartFetch { record }) => Some(record),
+                                _ => {
+                                    unreachable!("sectional fetch dependency should have completed")
+                                }
+                            }
+                        } else {
+                            None
+                        };
                         build_chart_process_node(
                             &config,
                             family,
                             &config.chart_metadata_root,
                             &chart_source_urls_path(&source_urls_dir, family),
                             &source_fetch,
+                            supplemental_source_fetch.as_ref(),
                             config.cpu_jobs.clamp(1, 8),
                         )
                         .map(|record| TaskCompletion {
@@ -694,6 +710,16 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 Some(TaskValue::ChartFetch { record }) => record,
                                 _ => unreachable!("chart fetch dependency should have completed"),
                             };
+                        let supplemental_source_fetch = if family == ChartFamily::Tac {
+                            match task_values_snapshot.get("charts-sec-fetch") {
+                                Some(TaskValue::ChartFetch { record }) => Some(record),
+                                _ => {
+                                    unreachable!("sectional fetch dependency should have completed")
+                                }
+                            }
+                        } else {
+                            None
+                        };
                         let started = Instant::now();
                         let (records, source) = build_chart_package_nodes(
                             &config,
@@ -703,6 +729,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
                             &source_fetch,
+                            supplemental_source_fetch.as_ref(),
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(TaskCompletion {

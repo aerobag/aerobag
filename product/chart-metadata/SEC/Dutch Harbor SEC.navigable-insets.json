@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "source": "Dutch Harbor SEC.tif",
+  "source_width": 16600,
+  "source_height": 12331,
+  "insets": [
+    {
+      "id": "Inset 1",
+      "target_family": "TAC",
+      "enabled": true,
+      "boundary": [
+        [
+          5141.0,
+          3945.0
+        ],
+        [
+          7335.0,
+          3947.0
+        ],
+        [
+          7335.0,
+          444.0
+        ],
+        [
+          5141.0,
+          444.0
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            5410.45,
+            883.75
+          ],
+          "latitude": 57.5,
+          "longitude": -170.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            6826.2,
+            883.5
+          ],
+          "latitude": 57.5,
+          "longitude": -169.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            5390.95,
+            3514.75
+          ],
+          "latitude": 56.5,
+          "longitude": -170.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            6846.7,
+            3514.5
+          ],
+          "latitude": 56.5,
+          "longitude": -169.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            5400.7,
+            2199.0
+          ],
+          "latitude": 57.0,
+          "longitude": -170.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            6118.95,
+            2201.5
+          ],
+          "latitude": 57.0,
+          "longitude": -170.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            6836.45,
+            2198.5
+          ],
+          "latitude": 57.0,
+          "longitude": -169.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            6118.7,
+            3517.25
+          ],
+          "latitude": 56.5,
+          "longitude": -170.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            6118.95,
+            886.0
+          ],
+          "latitude": 57.5,
+          "longitude": -170.0
+        }
+      ]
+    },
+    {
+      "id": "Inset 2",
+      "target_family": "TAC",
+      "enabled": true,
+      "boundary": [
+        [
+          10288.0,
+          427.0
+        ],
+        [
+          10287.25,
+          3447.1
+        ],
+        [
+          13558.0,
+          3447.0
+        ],
+        [
+          13558.0,
+          427.0
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            10355.75,
+            469.75
+          ],
+          "latitude": 54.25,
+          "longitude": -167.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            10346.75,
+            1784.5
+          ],
+          "latitude": 54.0,
+          "longitude": -167.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            10337.25,
+            3099.0
+          ],
+          "latitude": 53.75,
+          "longitude": -167.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            11895.25,
+            475.25
+          ],
+          "latitude": 54.25,
+          "longitude": -166.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            11895.25,
+            1789.75
+          ],
+          "latitude": 54.0,
+          "longitude": -166.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            11895.25,
+            3104.25
+          ],
+          "latitude": 53.75,
+          "longitude": -166.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            13435.25,
+            469.75
+          ],
+          "latitude": 54.25,
+          "longitude": -166.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            13444.5,
+            1784.5
+          ],
+          "latitude": 54.0,
+          "longitude": -166.0
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            13453.5,
+            3098.75
+          ],
+          "latitude": 53.75,
+          "longitude": -166.0
+        }
+      ]
+    }
+  ]
+}

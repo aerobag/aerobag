@@ -26,9 +26,10 @@ use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
     build_family_insets, build_family_legends, build_family_reference_catalog, build_family_tiles,
-    build_family_vrts, package_family_bundle_detail_region_versioned_to,
-    package_family_bundle_region_versioned_to, package_family_bundle_wide_angle_versioned_to,
-    stage_work_dir, CHART_REFERENCE_CATALOG_NAME, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
+    build_family_vrts, navigable_inset_source_family,
+    package_family_bundle_detail_region_versioned_to, package_family_bundle_region_versioned_to,
+    package_family_bundle_wide_angle_versioned_to, stage_work_dir, CHART_REFERENCE_CATALOG_NAME,
+    FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted_with_extra_prefetch_keys, NavKvPair, NavKvRoot,
@@ -2137,6 +2138,13 @@ fn chart_source_family(family: ChartFamily) -> ChartFamily {
         ChartFamily::Flyway => ChartFamily::Tac,
         family => family,
     }
+}
+
+fn chart_process_fetch_task_ids(family: ChartFamily) -> Vec<String> {
+    std::iter::once(chart_source_family(family))
+        .chain(navigable_inset_source_family(family))
+        .map(|source| format!("charts-{}-fetch", family_slug(source)))
+        .collect()
 }
 
 fn chart_source_urls_path(source_urls_dir: &Path, family: ChartFamily) -> PathBuf {

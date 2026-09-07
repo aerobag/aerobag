@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "source": "Jacksonville SEC.tif",
+  "source_width": 16617,
+  "source_height": 12412,
+  "insets": [
+    {
+      "id": "Inset 1",
+      "enabled": true,
+      "boundary": [
+        [
+          13674,
+          3354
+        ],
+        [
+          13674,
+          7
+        ],
+        [
+          16595,
+          7
+        ],
+        [
+          16595,
+          3355
+        ]
+      ],
+      "control_points": [
+        {
+          "kind": "intersection",
+          "pixel": [
+            14793.5,
+            1142.75
+          ],
+          "latitude": 30.5,
+          "longitude": -81.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15926.5,
+            1142.25
+          ],
+          "latitude": 30.5,
+          "longitude": -81.5
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            14792.25,
+            2451.5
+          ],
+          "latitude": 30.25,
+          "longitude": -81.75
+        },
+        {
+          "kind": "intersection",
+          "pixel": [
+            15928.75,
+            2451
+          ],
+          "latitude": 30.25,
+          "longitude": -81.5
+        }
+      ],
+      "target_family": "TAC"
+    }
+  ]
+}

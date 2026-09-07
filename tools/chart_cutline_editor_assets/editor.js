@@ -456,24 +456,23 @@ function addVertex() {
   }
   pushUndo();
   const index = state.selectedIndex;
-  const nextIndex = (index + 1) % state.points.length;
-  const point = state.points[index];
-  const next = state.points[nextIndex];
-  state.points.splice(index + 1, 0, [(point[0] + next[0]) / 2, (point[1] + next[1]) / 2]);
-  state.selectedIndex = index + 1;
+  const inserted = CutlinePoints.insertAfter(state.points, index);
+  state.points = inserted.points;
+  state.selectedIndex = inserted.selectedIndex;
   markDirty();
   renderOverview();
   centerLoupe();
 }
 
 function deleteVertex() {
-  if (state.points.length <= 3) {
+  const removed = CutlinePoints.remove(state.points, state.selectedIndex);
+  if (!removed) {
     showMessage("A cutline needs at least three points", true);
     return;
   }
   pushUndo();
-  state.points.splice(state.selectedIndex, 1);
-  state.selectedIndex = Math.min(state.selectedIndex, state.points.length - 1);
+  state.points = removed.points;
+  state.selectedIndex = removed.selectedIndex;
   markDirty();
   renderOverview();
   centerLoupe();
@@ -627,7 +626,7 @@ function setBusy(busy) {
 }
 
 function handleKeyDown(event) {
-  if (!state.chart || event.target.matches("input, select, button")) {
+  if (!state.chart || event.target.matches("input, select, textarea")) {
     return;
   }
   const key = event.key.toLowerCase();
@@ -660,11 +659,9 @@ function handleKeyDown(event) {
     event.preventDefault();
     pushUndo();
     const multiplier = event.shiftKey ? 10 : 1;
-    const point = state.points[state.selectedIndex];
-    state.points[state.selectedIndex] = [
-      point[0] + movement[0] * multiplier,
-      point[1] + movement[1] * multiplier,
-    ];
+    state.points = CutlinePoints.nudge(
+      state.points, state.selectedIndex, movement, multiplier,
+    ).points;
     markDirty();
     renderOverview();
   }

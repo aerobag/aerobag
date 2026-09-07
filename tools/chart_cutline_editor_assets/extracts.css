@@ -10,7 +10,29 @@
   height: calc(100vh - 52px);
 }
 
+.candidateScope {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #536670;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.candidateScope[hidden] {
+  display: none;
+}
+
+.candidateScope input {
+  min-height: 0;
+}
+
 .extractOverviewStage svg.drawMode {
+  cursor: crosshair;
+}
+
+.extractOverviewStage svg.pointMode,
+.previewStage.pointMode {
   cursor: crosshair;
 }
 
@@ -33,6 +55,12 @@
   stroke: #008c99;
 }
 
+.extractRegion.lockedBoundary {
+  fill: none;
+  cursor: crosshair;
+  pointer-events: none;
+}
+
 .regionNumber {
   fill: #fff;
   stroke: #17242d;
@@ -47,6 +75,35 @@
   text-anchor: middle;
   dominant-baseline: central;
   pointer-events: none;
+}
+
+.controlPointMarker {
+  fill: #ffe050;
+  stroke: #102832;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.controlPointMarker.interactive {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.controlPointMarker.selected {
+  fill: #ff9f43;
+  stroke-width: 5;
+}
+
+.controlPointLabel {
+  fill: #102832;
+  font-weight: 850;
+  paint-order: stroke;
+  pointer-events: none;
+  stroke: #fff;
+  stroke-width: 4;
+  text-anchor: middle;
+  vector-effect: non-scaling-stroke;
 }
 
 .extractDetailPane {
@@ -83,6 +140,56 @@
   border-bottom: 1px solid #d5dde1;
 }
 
+.regionInputs[hidden],
+.segmented[hidden],
+.insetIdentity[hidden],
+.boundaryControls[hidden],
+.controlPointSection[hidden] {
+  display: none;
+}
+
+.boundaryPointList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  max-height: 90px;
+  overflow-y: auto;
+}
+
+.boundaryPointList[hidden] {
+  display: none;
+}
+
+.boundaryPointList button {
+  min-width: 32px;
+  padding: 3px 7px;
+}
+
+.boundaryPointList button.selected {
+  color: #fff;
+  background: #008c99;
+}
+
+.boundaryPointLabel {
+  fill: #17242d;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 3px;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.draftBoundary {
+  fill: none;
+  stroke: #dd167d;
+  stroke-width: 3px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
 .regionInputs label {
   color: #61717a;
   font-size: 12px;
@@ -95,6 +202,208 @@
   padding: 2px 6px;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
+}
+
+.navigableControls {
+  padding: 10px;
+  background: #f7f9fa;
+  border-bottom: 1px solid #cbd5da;
+}
+
+.insetEditMode {
+  width: fit-content;
+  margin-bottom: 10px;
+}
+
+.boundaryGuide {
+  margin: 0 0 10px;
+  color: #536670;
+  line-height: 1.4;
+}
+
+.insetEditMode button {
+  min-width: 126px;
+}
+
+.overviewStage.insetOverview {
+  margin: auto;
+}
+
+.boundaryControls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #d5dde1;
+}
+
+.boundaryCoordinateInputs,
+.boundaryButtons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.boundaryCoordinateInputs {
+  margin-top: 4px;
+}
+
+.boundaryCoordinateInputs label {
+  color: #61717a;
+  font-size: 11px;
+}
+
+.boundaryCoordinateInputs input {
+  width: 92px;
+  min-height: 28px;
+  margin-left: 3px;
+  padding: 2px 5px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.navigableBoundary {
+  fill: rgba(0, 140, 153, 0.16);
+  stroke: #008c99;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.previewBoundary {
+  fill: none;
+  stroke: #008c99;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.previewCrosshair {
+  stroke: rgba(0, 95, 105, 0.72);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.previewStage.zoomed img {
+  image-rendering: pixelated;
+}
+
+.insetIdentity,
+.controlPointHeader {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.insetIdentity label {
+  color: #61717a;
+  font-size: 12px;
+}
+
+.insetIdentity {
+  flex-wrap: wrap;
+}
+
+.insetIdentity input[type="text"] {
+  width: min(260px, 30vw);
+  margin-top: 3px;
+  padding: 2px 7px;
+}
+
+.insetIdentity .enabledLabel {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  color: #263d47;
+  font-size: 13px;
+}
+
+.enabledLabel input {
+  min-height: 0;
+}
+
+.controlPointHeader {
+  align-items: center;
+  margin-top: 10px;
+}
+
+.georefGuide {
+  max-width: 230px;
+  color: #006c78;
+  font-size: 12px;
+  text-align: right;
+}
+
+.controlPointHeader strong,
+.controlPointHeader span {
+  display: block;
+}
+
+.controlPointList {
+  display: grid;
+  gap: 5px;
+  max-height: 180px;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.controlPointRow {
+  display: grid;
+  grid-template-columns: 26px 110px repeat(4, minmax(72px, 1fr)) 32px;
+  align-items: end;
+  gap: 5px;
+}
+
+.controlPointRow label {
+  color: #61717a;
+  font-size: 10px;
+}
+
+.controlPointRow input,
+.controlPointRow select {
+  width: 100%;
+  min-height: 28px;
+  margin-top: 2px;
+  padding: 2px 5px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.controlPointRow input:invalid {
+  border-color: #a92318;
+  background: #fff0eb;
+}
+
+.controlPointRow input:disabled {
+  background: #e5e9eb;
+}
+
+.controlPointNumber {
+  align-self: center;
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 2px solid #102832;
+  border-radius: 50%;
+  background: #ffe050;
+  color: #102832;
+  font-weight: 800;
+  text-align: center;
+}
+
+.controlPointNumber:hover,
+.controlPointNumber.selected {
+  background: #ff9f43;
+}
+
+.deleteControlPoint {
+  width: 32px;
+  min-height: 28px;
+  padding: 0;
 }
 
 .regionList {
@@ -147,6 +456,25 @@
   display: block;
   max-width: none;
   background: #fff;
+}
+
+.previewStage {
+  position: relative;
+  width: 0;
+  height: 0;
+}
+
+.previewStage img,
+.previewStage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.previewStage svg {
+  overflow: visible;
+  touch-action: none;
 }
 
 #message {

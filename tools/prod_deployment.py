@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -43,6 +44,20 @@ NGINX_ENABLED_SITE = "/etc/nginx/sites-enabled/aerobag.conf"
 ENV_FILE = "/etc/aerobag/env"
 DEPLOYED_REV_FILE = "/etc/aerobag/deployed-rev"
 DEPLOY_CONFIG_FILE = "/etc/aerobag/deploy-config.json"
+RUNTIME_FINGERPRINT_FILE = "/etc/aerobag/runtime-inputs.sha256"
+# Files executed by the controller or used to generate installed runtime files.
+# Release assignments and application source have independent lifecycles.
+RUNTIME_SOURCE_PATHS = (
+    "tools/prod_deployment.py",
+    "tools/reconcile_prod_releases.py",
+    "tools/release_reconciler.py",
+    "tools/build_release.py",
+    "tools/admin_index.py",
+    "tools/live_feed_contract.py",
+    "product/preprocessor/scripts/pipeline_health.py",
+    "product/preprocessor/scripts/watch_build_log.py",
+    "deploy/faa-cycle-calendar.json",
+)
 CARGO_TARGET_PRUNE_SCRIPT = "/usr/local/bin/aerobag-prune-cargo-target"
 REPO_PACKAGE_MANIFEST = "deploy/prod-packages.txt"
 BOOTSTRAP_PACKAGES = ["ca-certificates", "curl", "git", "rsync"]
@@ -327,6 +342,23 @@ def load_config(path: Path) -> dict[str, Any]:
 def repo_path(value: str | os.PathLike[str]) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else REPO_ROOT / path
+
+
+def runtime_fingerprint(config: dict[str, Any]) -> str:
+    digest = hashlib.sha256()
+    for name in RUNTIME_SOURCE_PATHS:
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256((REPO_ROOT / name).read_bytes()).digest())
+    digest.update(json.dumps(config, sort_keys=True).encode("utf-8"))
+    digest.update(repo_path(config["cloud_server_policy_source"]).read_bytes())
+    return digest.hexdigest()
+
+
+def record_runtime_fingerprint(config: dict[str, Any], *, dry_run: bool) -> None:
+    write_remote_file(
+        config, RUNTIME_FINGERPRINT_FILE, runtime_fingerprint(config) + "\n",
+        dry_run=dry_run,
+    )
 
 
 def cloud_policy(config: dict[str, Any]) -> dict[str, Any]:
@@ -2277,6 +2309,43 @@ def repair_runtime(
     start_release_live_feeds(config, dry_run=dry_run)
 
 
+def update_runtime(
+    config: dict[str, Any],
+    *,
+    progress: ProgressReporter | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Install controller and monitoring changes without running release builds."""
+
+    assert_local_refs_exist(config, dry_run=dry_run)
+    assert_clean_checkout(allow_dirty=False, dry_run=dry_run)
+    deployed_rev = local_ref_sha(config["checkout_ref"], dry_run=dry_run)
+    quiesce_release_reconciliation(config, dry_run=dry_run)
+    try:
+        _report(progress, "Synchronizing the production controller checkout")
+        sync_source_checkout(config, dry_run=dry_run)
+        _report(progress, "Installing runtime scripts and configuration")
+        prepare_remote_paths(config, dry_run=dry_run)
+        migrate_cloud_storage_layout(config, dry_run=dry_run)
+        install_nms_notams_credential(config, dry_run=dry_run)
+        install_cloud_server_secret(config, dry_run=dry_run)
+        install_cloud_server_policy(config, dry_run=dry_run)
+        write_remote_config(config, deployed_rev=deployed_rev, dry_run=dry_run)
+        reload_services(config, dry_run=dry_run)
+        _report(progress, "Restarting support services")
+        start_support_runtime(config, dry_run=dry_run)
+        start_release_live_feeds(config, dry_run=dry_run)
+        write_remote_file(
+            config, DEPLOY_CONFIG_FILE, deploy_config_json(config, deployed_rev),
+            dry_run=dry_run,
+        )
+        # Record only a completed installation. Retrying a partial update must
+        # not mistake a synchronized checkout for an installed runtime.
+        record_runtime_fingerprint(config, dry_run=dry_run)
+    finally:
+        run_ssh(config, "systemctl start aerobag-build-product.timer", dry_run=dry_run)
+
+
 def reconcile_host(
     config: dict[str, Any],
     *,
@@ -2320,6 +2389,7 @@ def reconcile_host(
     reload_services(config, dry_run=dry_run)
     _report(progress, "Reconciling release artifacts and channel assignments")
     start_reconciled_runtime(config, progress=progress, dry_run=dry_run)
+    record_runtime_fingerprint(config, dry_run=dry_run)
 
 
 def activate_release_intent(

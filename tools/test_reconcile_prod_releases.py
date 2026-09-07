@@ -57,6 +57,107 @@ class ForcedPromotionArgumentTests(unittest.TestCase):
         self.assertEqual(args.force_production_tag, "2026-08-23.1")
 
 
+class ForcedPromotionActivationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        release_root = root / "release"
+        for directory in [release_root / "web", release_root / "downloads", root / "published"]:
+            directory.mkdir(parents=True)
+        self.record = releases.ObservedRelease(
+            tag="candidate", tag_object="a" * 40, commit="b" * 40,
+            build_status="passed", qualification_status="pending",
+            release_root=str(release_root), live_feed_endpoint="http://127.0.0.1:8101",
+            live_feed_status="running",
+        )
+        self.instance = controller.Controller.__new__(controller.Controller)
+        self.instance.args = SimpleNamespace(
+            observed=root / "observed.json", force_production_tag="candidate",
+            controller_preprocessor=root / "preprocessor-cli",
+        )
+        self.instance.artifact_root = root
+        self.instance.desired = releases.DesiredReleases(
+            production=releases.ReleaseBinding("candidate"), staging=None, sunset=(),
+        )
+        self.instance.observed = releases.ObservedState(
+            production="old", staging="candidate", generation=1,
+            releases={"candidate": self.record},
+        )
+        previous = root / "channel-generations/00000001"
+        releases.materialize_channel_generation(
+            previous, root / "published",
+            production_manifests=[releases.ChannelManifest(
+                release_tag="old", source_path=root / "old-manifest.json",
+                document={}, publication_roots=(),
+            )],
+            staging_manifests=[],
+        )
+        (root / "channel-current").symlink_to(previous, target_is_directory=True)
+        self.instance.save()
+        for target, name, options in [
+            (self.instance, "_manifest", {"return_value": releases.ChannelManifest(
+                release_tag="candidate", source_path=root / "manifest.json",
+                document={}, publication_roots=(),
+            )}),
+            (self.instance, "validate_public_production", {}),
+            (controller.release_builder, "normalize_release_permissions", {}),
+            (controller.release_builder, "validate_release_directory", {}),
+            (controller, "_run", {}),
+        ]:
+            patcher = mock.patch.object(target, name, **options)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_forced_activation_records_bypass_and_preserves_it_on_later_reconcile(self) -> None:
+        self.instance.activate()
+        observed = releases.load_observed_state(self.instance.args.observed)
+        self.assertEqual(observed.production, "candidate")
+        record = observed.releases["candidate"]
+        self.assertEqual(record.qualification_status, "bypassed")
+        self.assertEqual(record.qualification_bypass_reason, "forced promotion")
+        timestamp = record.qualification_bypassed_at_utc
+        self.assertIsNotNone(timestamp)
+        self.assertEqual(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).utcoffset(), timedelta(0))
+        self.assertIsNone(record.qualification_record)
+        self.assertFalse(controller.qualification_is_current(record))
+        self.assertTrue(releases.plan_reconciliation(self.instance.desired, observed).converged)
+        self.instance.activate()
+        self.assertEqual(self.record.qualification_bypassed_at_utc, timestamp)
+
+    def test_normal_activation_keeps_passing_qualification(self) -> None:
+        self.instance.args.force_production_tag = None
+        self.record.qualification_status = "passed"
+        self.instance.activate()
+        self.assertEqual(self.record.qualification_status, "passed")
+        self.assertIsNone(self.record.qualification_bypassed_at_utc)
+        self.assertIsNone(self.record.qualification_bypass_reason)
+
+    def test_failed_activation_does_not_record_a_bypass(self) -> None:
+        self.instance.validate_public_production.side_effect = RuntimeError("bad route")
+        with self.assertRaisesRegex(RuntimeError, "bad route"):
+            self.instance.activate()
+        persisted = releases.load_observed_state(self.instance.args.observed)
+        self.assertEqual(persisted.production, "old")
+        self.assertEqual(self.record.qualification_status, "pending")
+        self.assertIsNone(self.record.qualification_bypassed_at_utc)
+        self.assertEqual(
+            (self.instance.artifact_root / "channel-current").resolve().name,
+            "00000001",
+        )
+
+    def test_restart_recovers_bypass_after_activation_before_state_write(self) -> None:
+        with mock.patch.object(self.instance, "save", side_effect=RuntimeError("restart")):
+            with self.assertRaisesRegex(RuntimeError, "restart"):
+                self.instance.activate()
+        self.instance.observed = releases.load_observed_state(self.instance.args.observed)
+        self.instance.args.force_production_tag = None
+        self.assertTrue(self.instance.recover_activated_generation())
+        record = releases.load_observed_state(self.instance.args.observed).releases["candidate"]
+        self.assertEqual(record.qualification_status, "bypassed")
+        self.assertEqual(record.qualification_bypass_reason, "forced promotion")
+
+
 class MaintenancePolicyTests(unittest.TestCase):
     def test_assignment_change_defers_refresh_and_gc_until_periodic_reconcile(self) -> None:
         self.assertEqual(
@@ -197,6 +298,9 @@ class PublicProductionValidationTests(unittest.TestCase):
                 build_status="passed",
                 release_root=str(release_root),
                 product_manifest=str(product_manifest),
+                qualification_status="bypassed",
+                qualification_bypassed_at_utc="2026-09-07T15:00:00Z",
+                qualification_bypass_reason="forced promotion",
             )
             instance = controller.Controller.__new__(controller.Controller)
             instance.args = SimpleNamespace(
@@ -249,6 +353,8 @@ class PublicProductionValidationTests(unittest.TestCase):
 
             run.assert_not_called()
             self.assertEqual(record.qualification_status, "passed")
+            self.assertIsNone(record.qualification_bypassed_at_utc)
+            self.assertIsNone(record.qualification_bypass_reason)
             self.assertTrue(Path(record.qualification_record or "").is_file())
 
 

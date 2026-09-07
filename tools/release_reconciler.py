@@ -242,6 +242,8 @@ class ObservedRelease:
     live_feed_endpoint: str | None = None
     live_feed_status: str = "pending"
     qualification_record: str | None = None
+    qualification_bypassed_at_utc: str | None = None
+    qualification_bypass_reason: str | None = None
     last_error: str | None = None
     draining_until_utc: str | None = None
     legacy_adopted: bool = False
@@ -262,6 +264,8 @@ class ObservedRelease:
                 "live_feed_endpoint",
                 "live_feed_status",
                 "qualification_record",
+                "qualification_bypassed_at_utc",
+                "qualification_bypass_reason",
                 "last_error",
                 "draining_until_utc",
                 "legacy_adopted",

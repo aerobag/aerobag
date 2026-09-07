@@ -133,20 +133,39 @@ tag is scoped to one controller invocation, and the promotion commit explicitly
 records that qualification was bypassed. An ordinary `--promote` remains
 fail-closed.
 
+Successful forced activation also records `qualification_status: "bypassed"`,
+`qualification_bypassed_at_utc`, and `qualification_bypass_reason` in observed
+release state. The channel generation carries the same audit so recovery after
+a controller restart preserves it. Bypass never counts as passing qualification.
+A later successful qualification clears the bypass fields; product refreshes
+can invalidate qualification and reset the status to `pending`.
+
 `--reconcile` never edits, commits, tags, or pushes desired state. It first
 compares the checked-in assignments with observed state and the installed
-runtime. A converged server produces a green success message without deployment;
-service-only drift runs the runtime-config repair path without apt, toolchain, or
-binary installation. Missing host state, release artifacts, or channel state
-runs the idempotent full deployment. Both repair paths wait for verified
-convergence. Use `--reconcile` to resume interrupted staging, finish promotion,
-repair host drift, or recover a replaced container.
+runtime. It also compares a fingerprint of runtime/controller Python sources,
+deployment generators, the FAA calendar, and deployment configuration/policy
+with `/etc/aerobag/runtime-inputs.sha256`. Missing or changed fingerprints use a
+runtime update: sync the controller checkout, install generated scripts and
+configuration, and restart support services. This preserves release assignments
+and does not invoke application builds, product refreshes, GC, apt, or SDK setup.
+The fingerprint is written only after installation completes, so interrupted
+updates remain retryable. The first reconciliation of an older deployment
+installs the runtime and establishes its fingerprint.
+
+A converged server produces a green success message without deployment;
+service-only drift runs the runtime-config repair path. Missing host state,
+release artifacts, or channel state runs the idempotent full deployment. All
+paths verify convergence before reporting success. Use `--reconcile` to deploy
+tooling changes, resume interrupted staging, finish promotion, repair host drift,
+or recover a replaced container.
 
 Convergence is defined by release intent and runtime health, not by whether the
 deployment-owned source mirror equals the caller's latest unrelated `main`
-commit. Controller, host-package, and systemd/nginx changes are installed by
-the full `--stage` or `--reconcile` path; there is no independent deployment
-entry point.
+commit. App source, documentation, and `deploy/releases.json` are excluded from
+the runtime fingerprint; release assignments are reconciled separately. Commit
+and push tooling changes, then run `--reconcile`; no new application tag or
+staging build is needed. Host-package installation remains part of full host
+reconciliation; there is no independent deployment entry point.
 
 `prod_manage` captures subprocess command traces and output in a private
 per-invocation file under `/tmp`. Successful and operator-aborted invocations
@@ -341,6 +360,35 @@ channel-specific:
 Each discovery file is a distinct JSON list validated and written by the
 production release's `preprocessor-cli merge-current-artifacts --output`.
 Artifact subtrees are shared through symlinks; discovery files are not.
+
+## Pipeline health
+
+`/pipeline-health/` checks availability of the merged production publication,
+but derives production cycle-product errors and warnings from
+`channel-current/releases/<production-tag>/packages/current_artifacts.json`.
+Sunset releases have independent diagnostic counts. Two releases with 153
+warnings each therefore report 153 in each scope, and an increase to 154 warns
+in the affected scope. The comparison is against the previous distinct
+publication, not a fixed allowance. Old merged history totals are excluded from
+the new release-specific comparison; old single-publication baselines remain
+usable.
+
+Qualification `pending` or `bypassed` is critical for production and a warning
+for staging or sunset. `failed` is critical for every role; `passed` is OK.
+Legacy `pending` records do not prove a bypass: a product refresh or a stale
+qualification receipt can also produce that status. Build and live-feed health
+remain separate signals.
+
+Every metric has a detail row, including string statuses and missing values.
+Only numeric and boolean values have graphs. Alert links select the metric's
+scope and scroll to its row. Verify dashboard behavior locally with:
+
+```bash
+python3 product/preprocessor/scripts/smoke_pipeline_health_dashboard.py
+```
+
+This uses local Chrome with fixture data and a stub plot renderer; it makes no
+dashboard or CDN requests. Set `CHROME_BIN` to select another Chrome executable.
 
 ## Services
 

@@ -445,6 +445,13 @@ def remote_runtime_failures(
         ),
         (
             "grep -Fqx -- "
+            f"{deployment.shell_quote(deployment.runtime_fingerprint(config))} "
+            f"{deployment.shell_quote(deployment.RUNTIME_FINGERPRINT_FILE)} 2>/dev/null",
+            "runtime",
+            "controller or monitoring inputs differ from the installed runtime",
+        ),
+        (
+            "grep -Fqx -- "
             f"{deployment.shell_quote(cargo_target_assignment)} "
             f"{deployment.shell_quote(deployment.ENV_FILE)}",
             "host",
@@ -707,6 +714,14 @@ def repair_runtime(config_path: Path) -> None:
             config,
             progress=report_deployment_progress,
         ),
+    )
+
+
+def update_runtime(config_path: Path) -> None:
+    config = deployment.load_config(config_path)
+    timed_operation(
+        "Updating production runtime",
+        lambda: deployment.update_runtime(config, progress=report_deployment_progress),
     )
 
 
@@ -1045,6 +1060,10 @@ def reconcile(config_path: Path, releases_path: Path) -> int:
         failure.category == "service" for failure in runtime_failures
     ):
         repair_runtime(config_path)
+    elif plan.converged and all(
+        failure.category in {"service", "runtime"} for failure in runtime_failures
+    ):
+        update_runtime(config_path)
     else:
         deploy(config_path)
 

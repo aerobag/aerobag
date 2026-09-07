@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 import io
 import json
 import os
@@ -509,6 +509,79 @@ class ProductPublicationTests(unittest.TestCase):
         command = run_ssh.call_args.args[1]
         self.assertNotIn("aerobag-build-product.service", command)
         self.assertIn("systemctl start aerobag-build-product.timer", command)
+
+
+class RuntimeUpdateTests(unittest.TestCase):
+    def test_fingerprint_tracks_runtime_inputs_but_not_app_docs_or_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in deploy_prod.RUNTIME_SOURCE_PATHS:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("initial", encoding="utf-8")
+            policy = root / "policy.json"
+            policy.write_text("{}", encoding="utf-8")
+            config = {"cloud_server_policy_source": str(policy), "setting": 1}
+            with mock.patch.object(deploy_prod, "REPO_ROOT", root):
+                baseline = deploy_prod.runtime_fingerprint(config)
+                for name in ["ui/app.ts", "docs/DEPLOY.md", "deploy/releases.json"]:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("unrelated change", encoding="utf-8")
+                self.assertEqual(deploy_prod.runtime_fingerprint(config), baseline)
+                self.assertNotEqual(deploy_prod.runtime_fingerprint({**config, "setting": 2}), baseline)
+                for name in deploy_prod.RUNTIME_SOURCE_PATHS:
+                    path = root / name
+                    path.write_text("runtime change", encoding="utf-8")
+                    self.assertNotEqual(deploy_prod.runtime_fingerprint(config), baseline, name)
+                    path.write_text("initial", encoding="utf-8")
+                policy.write_text('{"new":true}', encoding="utf-8")
+                self.assertNotEqual(deploy_prod.runtime_fingerprint(config), baseline)
+
+    def test_update_installs_runtime_without_building_or_changing_release_channels(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        calls = []
+        with ExitStack() as stack:
+            for name in [
+                "assert_local_refs_exist", "assert_clean_checkout", "quiesce_release_reconciliation",
+                "sync_source_checkout", "install_cloud_server_policy", "write_remote_config",
+                "prepare_remote_paths", "migrate_cloud_storage_layout",
+                "install_nms_notams_credential", "install_cloud_server_secret", "write_remote_file",
+                "reload_services", "start_support_runtime", "start_release_live_feeds",
+                "record_runtime_fingerprint",
+            ]:
+                stack.enter_context(mock.patch.object(
+                    deploy_prod, name, side_effect=lambda *args, _name=name, **kwargs: calls.append(_name),
+                ))
+            stack.enter_context(mock.patch.object(deploy_prod, "local_ref_sha", return_value="a" * 40))
+            ssh = stack.enter_context(mock.patch.object(deploy_prod, "run_ssh"))
+            forbidden = [stack.enter_context(mock.patch.object(deploy_prod, name)) for name in [
+                "install_repo_packages", "run_initial_toolchain_build", "run_android_sdk_setup",
+                "run_release_reconciliation", "start_reconciled_runtime",
+            ]]
+            deploy_prod.update_runtime(config)
+        for method in forbidden:
+            method.assert_not_called()
+        self.assertLess(calls.index("quiesce_release_reconciliation"), calls.index("sync_source_checkout"))
+        self.assertLess(calls.index("write_remote_config"), calls.index("start_support_runtime"))
+        self.assertEqual(calls[-1], "record_runtime_fingerprint")
+        ssh.assert_called_once_with(config, "systemctl start aerobag-build-product.timer", dry_run=False)
+
+    def test_failed_update_stays_retryable_and_restores_timer(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with (
+            mock.patch.object(deploy_prod, "assert_local_refs_exist"),
+            mock.patch.object(deploy_prod, "assert_clean_checkout"),
+            mock.patch.object(deploy_prod, "local_ref_sha", return_value="a" * 40),
+            mock.patch.object(deploy_prod, "quiesce_release_reconciliation"),
+            mock.patch.object(deploy_prod, "sync_source_checkout", side_effect=RuntimeError("sync failed")),
+            mock.patch.object(deploy_prod, "record_runtime_fingerprint") as record,
+            mock.patch.object(deploy_prod, "run_ssh") as ssh,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sync failed"):
+                deploy_prod.update_runtime(config)
+        record.assert_not_called()
+        ssh.assert_called_once_with(config, "systemctl start aerobag-build-product.timer", dry_run=False)
 
 
 class AndroidSigningKeyTests(unittest.TestCase):

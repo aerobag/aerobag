@@ -284,6 +284,7 @@ class Controller:
             )
         _run(["nginx", "-t"])
         _run(["systemctl", "reload", "nginx.service"])
+        self.record_qualification_bypass(metadata.get("qualification_bypass"))
         self.observed.production = expected["production"]
         self.observed.staging = expected["staging"]
         self.observed.sunset = expected["sunset"]
@@ -561,6 +562,15 @@ class Controller:
         # not any client release's runtime contract.
         return self.args.controller_preprocessor.resolve()
 
+    def record_qualification_bypass(self, bypass: dict | None) -> None:
+        if bypass is None:
+            return
+        record = self.observed.releases[self.desired.production.tag]
+        record.qualification_status = "bypassed"
+        record.qualification_record = None
+        record.qualification_bypassed_at_utc = bypass["at_utc"]
+        record.qualification_bypass_reason = bypass["reason"]
+
     def activate(self) -> None:
         self.progress("Switching release channels")
         production_tags = [
@@ -629,6 +639,15 @@ class Controller:
                 staging,
                 generation / "staging/packages/current_artifacts.json",
             )
+        qualification_bypass = None
+        if (
+            self.observed.production != self.desired.production.tag
+            and self.args.force_production_tag == self.desired.production.tag
+        ):
+            qualification_bypass = {
+                "at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "reason": "forced promotion",
+            }
         (generation / "generation.json").write_text(
             json.dumps(
                 {
@@ -637,6 +656,9 @@ class Controller:
                     "production": self.desired.production.tag,
                     "staging": staging_tag,
                     "sunset": [binding.tag for binding in self.desired.sunset],
+                    # Preserve the audit if activation completes just before
+                    # a controller restart prevents saving observed state.
+                    "qualification_bypass": qualification_bypass,
                 },
                 indent=2,
                 sort_keys=True,
@@ -673,6 +695,7 @@ class Controller:
                 releases.activate_channel_generation(self.artifact_root, previous)
                 _run(["systemctl", "reload", "nginx.service"])
             raise
+        self.record_qualification_bypass(qualification_bypass)
         self.observed.production = self.desired.production.tag
         self.observed.staging = (
             staging_tag
@@ -759,6 +782,8 @@ class Controller:
         )
         record.qualification_record = str(qualification_path)
         record.qualification_status = "passed"
+        record.qualification_bypassed_at_utc = None
+        record.qualification_bypass_reason = None
         record.last_error = None
         self.save()
 

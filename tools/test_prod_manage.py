@@ -958,9 +958,10 @@ class ReconcileCommandTests(unittest.TestCase):
             "cargo_target_dir": "/data/build-cache/cargo-target",
             "cargo_target_max_bytes": 32 * 1024**3,
         }
-        with mock.patch.object(
-            prod_manage.deployment, "run_ssh", return_value=completed
-        ) as run_ssh:
+        with (
+            mock.patch.object(prod_manage.deployment, "run_ssh", return_value=completed) as run_ssh,
+            mock.patch.object(prod_manage.deployment, "runtime_fingerprint", return_value="runtime-sha"),
+        ):
             failures = prod_manage.remote_runtime_failures(
                 config, desired, releases.ObservedState.empty()
             )
@@ -969,6 +970,8 @@ class ReconcileCommandTests(unittest.TestCase):
         command = run_ssh.call_args.args[1]
         self.assertIn(f"test -s {prod_manage.deployment.DEPLOYED_REV_FILE}", command)
         self.assertNotIn("installed controller revision differs", command)
+        self.assertIn("grep -Fqx -- runtime-sha", command)
+        self.assertIn(prod_manage.deployment.RUNTIME_FINGERPRINT_FILE, command)
         self.assertIn(
             "CARGO_TARGET_DIR=/data/build-cache/cargo-target",
             command,
@@ -1077,6 +1080,31 @@ class ReconcileCommandTests(unittest.TestCase):
         self.assertEqual(result, 0)
         deploy.assert_not_called()
         repair.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+
+
+    def test_runtime_drift_updates_tooling_and_verifies_convergence(self) -> None:
+        for repaired in [True, False]:
+            with self.subTest(repaired=repaired), ExitStack() as stack:
+                for patcher in self.common_patches(releases.ReconciliationPlan([])):
+                    stack.enter_context(patcher)
+                drift = [prod_manage.RuntimeFailure("runtime", "runtime differs")]
+                stack.enter_context(mock.patch.object(
+                    prod_manage, "remote_runtime_failures",
+                    side_effect=[drift, [] if repaired else drift],
+                ))
+                update = stack.enter_context(mock.patch.object(prod_manage, "update_runtime"))
+                deploy = stack.enter_context(mock.patch.object(prod_manage, "deploy"))
+                write = stack.enter_context(mock.patch.object(prod_manage, "write_atomic"))
+                if repaired:
+                    self.assertEqual(prod_manage.reconcile(
+                        prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES,
+                    ), 0)
+                else:
+                    with self.assertRaisesRegex(prod_manage.ManagementError, "without converging"):
+                        prod_manage.reconcile(prod_manage.DEFAULT_CONFIG, prod_manage.DEFAULT_RELEASES)
+                update.assert_called_once_with(prod_manage.DEFAULT_CONFIG)
+                deploy.assert_not_called()
+                write.assert_not_called()
 
 
 class PromoteCommandTests(unittest.TestCase):

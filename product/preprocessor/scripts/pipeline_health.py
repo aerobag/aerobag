@@ -270,6 +270,12 @@ def release_channel_sources(
                 "current_artifacts_path": (
                     generation_root / "production/packages/current_artifacts.json"
                 ),
+                "product_facts_artifacts_path": (
+                    generation_root
+                    / "releases"
+                    / production
+                    / "packages/current_artifacts.json"
+                ),
                 "live_feeds_endpoint": routes.get("production"),
             }
         ]
@@ -342,6 +348,16 @@ def collect_channel_facts(
 ) -> dict[str, Any]:
     current_path = source["current_artifacts_path"]
     current_artifacts, current_error = read_json_file(current_path)
+    product_artifacts = current_artifacts
+    product_inputs = {}
+    if "product_facts_artifacts_path" in source:
+        product_path = source["product_facts_artifacts_path"]
+        product_artifacts, product_error = read_json_file(product_path)
+        product_inputs["product_facts_artifacts"] = {
+            "path": str(product_path),
+            "payload": product_artifacts,
+            "error": product_error,
+        }
     endpoint = source.get("live_feeds_endpoint")
     status_url = source.get("live_feeds_status_url")
     if status_url is None and isinstance(endpoint, str):
@@ -364,8 +380,9 @@ def collect_channel_facts(
                 "error": current_error,
             },
             "product_facts": collect_product_facts(
-                config.artifact_root, current_artifacts
+                config.artifact_root, product_artifacts
             ),
+            **product_inputs,
             "live_feeds_status": {
                 "url": status_url,
                 "payload": live_status,
@@ -714,6 +731,8 @@ def add_channel_input_metrics(
     add_source_availability_metrics(
         metrics, inputs, ["current_artifacts", "live_feeds_status"]
     )
+    if "product_facts_artifacts" in inputs:
+        add_source_availability_metrics(metrics, inputs, ["product_facts_artifacts"])
     add_product_facts_availability_metric(metrics, inputs)
 
 
@@ -743,15 +762,27 @@ def add_channel_release_metrics(
             severity = "ok"
         elif role == "staging" and value in {"pending", "building", "qualifying"}:
             severity = "warning"
+        elif (
+            field == "qualification_status"
+            and value in {"pending", "bypassed"}
+            and role in {"staging", "sunset"}
+        ):
+            severity = "warning"
         else:
             severity = "critical"
+        message = f"{label}: {value}"
+        if field == "qualification_status" and value == "bypassed":
+            reason = record.get("qualification_bypass_reason") or "forced promotion"
+            message += f" ({reason})"
+            if record.get("qualification_bypassed_at_utc"):
+                message += f" at {record['qualification_bypassed_at_utc']}"
         add_metric(
             metrics,
             metric_id=f"release.{field}",
             label=label,
             value=value,
             severity=severity,
-            message=f"{label}: {value}",
+            message=message,
         )
 
 
@@ -1354,6 +1385,15 @@ def latest_distinct_product_counts(
                 if isinstance(key, list) and all(isinstance(item, str) for item in key)
                 else ()
             )
+            if (
+                "product_facts_artifacts" in current_facts.get("inputs", {})
+                and state.get("product_counts_basis") != "release"
+                and len(previous_key) != 1
+            ):
+                # Older production history sums compatibility publications.
+                # Only a single-publication total is safe to compare with a
+                # release-specific count; e.g. 306 must not mask 153 -> 154.
+                continue
             raw_counts = state.get("product_counts")
             counts = (
                 {
@@ -1738,6 +1778,8 @@ def channel_product_states(facts: dict[str, Any]) -> dict[str, Any]:
             "product_facts_key": list(product_facts_publication_key(channel_facts)),
             "product_counts": aggregate_product_counts(channel_facts),
         }
+        if "product_facts_artifacts" in inputs:
+            states[channel_id]["product_counts_basis"] = "release"
     return states
 
 
@@ -2045,6 +2087,8 @@ def dashboard_html() -> str:
     .scope-nav a.selected { background:var(--panel); box-shadow:inset 0 0 0 1px currentColor; }
     .metric-list { display:flex; flex-direction:column; gap:10px; }
     .metric-row { display:grid; grid-template-columns:minmax(280px, 360px) minmax(0, 1fr); gap:12px; align-items:stretch; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+    .metric-row.status-only { grid-template-columns:1fr; }
+    .alerts a { color:inherit; }
     .metric-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
     .metric-title h3 { margin:0; font-size:15px; }
     .metric-id { color:var(--muted); overflow-wrap:anywhere; font-size:12px; margin-bottom:10px; }
@@ -2173,12 +2217,21 @@ function renderMetricDetails(metric) {
     : "";
   return `<details class="metric-details"><summary>Failure details</summary>${last}${table}</details>`;
 }
-function graphableMetrics(metrics) {
-  return (metrics || []).filter((metric) => graphValue(metric.value) !== null);
+function metricLink(metric) {
+  return `#${encodeURIComponent(metric.scope || "global")}/metric/${encodeURIComponent(metric.id || metric.metric_id)}`;
 }
 function selectedScope() {
-  const value = decodeURIComponent(location.hash.replace(/^#/, ""));
+  const value = decodeURIComponent(location.hash.replace(/^#/, "").split("/metric/")[0]);
   return value || "all";
+}
+function scrollToSelectedMetric() {
+  const target = location.hash.split("/metric/")[1];
+  if (!target) return;
+  const row = document.getElementById(`metric-${decodeURIComponent(target)}`);
+  if (row) {
+    row.scrollIntoView({ block:"start" });
+    row.focus({ preventScroll:true });
+  }
 }
 function renderScopes(evaln) {
   const selected = selectedScope();
@@ -2200,7 +2253,7 @@ function renderCurrent(record) {
   const scope = selectedScope();
   const alerts = (evaln.alerts || []).filter((alert) => scope === "all" || alert.scope === scope);
   document.getElementById("alerts").innerHTML = alerts.length
-    ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td>${esc(a.metric_id)}</td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
+    ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td><a href="${esc(metricLink(a))}">${esc(a.metric_id)}</a></td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">No alerts.</div>`;
 }
 function updateMetricRow(row, metric) {
@@ -2230,17 +2283,17 @@ function buildMetricRows(metrics) {
   purgeAllPlots();
   dashboard.rows.clear();
   container.innerHTML = metrics.length
-    ? metrics.map((metric, index) => `<section class="metric-row">
+    ? metrics.map((metric, index) => `<section id="${esc(`metric-${metric.id}`)}" tabindex="-1" class="metric-row${graphValue(metric.value) === null ? " status-only" : ""}">
         <div>
           <div class="metric-title"><h3></h3><span class="pill"></span></div>
           <div class="metric-id">${esc(metric.id)}</div>
           <div class="metric-value"></div>
           <div class="metric-message"></div>
         </div>
-        <div id="metricPlot${index}" class="plot"></div>
+        ${graphValue(metric.value) !== null ? `<div id="metricPlot${index}" class="plot"></div>` : ""}
         <div class="metric-details-host"></div>
       </section>`).join("")
-    : `<section><div class="muted">No graphable metrics yet.</div></section>`;
+    : `<section><div class="muted">No metrics yet.</div></section>`;
   dashboard.observer = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       const metricId = entry.target.dataset.metricId;
@@ -2264,24 +2317,24 @@ function buildMetricRows(metrics) {
     };
     dashboard.rows.set(metric.id, row);
     updateMetricRow(row, metric);
-    dashboard.observer.observe(element);
+    if (row.plot) dashboard.observer.observe(element);
   });
   dashboard.rowOrder = metrics.map((metric) => metric.id);
 }
 function ensureMetricRows(current) {
   const scope = selectedScope();
-  const metrics = graphableMetrics(current.evaluation?.metrics || []).filter(
+  const metrics = (current.evaluation?.metrics || []).filter(
     (metric) => scope === "all" || metric.scope === scope
+  ).sort((a, b) => {
+    const severity = (severityRank[b.severity || "ok"] || 0) - (severityRank[a.severity || "ok"] || 0);
+    return severity || String(a.id).localeCompare(String(b.id));
+  });
+  const changed = metrics.length !== dashboard.rowOrder.length || metrics.some((metric, index) =>
+    metric.id !== dashboard.rowOrder[index]
+    || (graphValue(metric.value) !== null) !== Boolean(dashboard.rows.get(metric.id)?.plot)
   );
-  const ids = metrics.map((metric) => metric.id).sort();
-  const existingIds = [...dashboard.rowOrder].sort();
-  const changed = ids.length !== existingIds.length || ids.some((id, index) => id !== existingIds[index]);
   if (changed) {
-    const ordered = [...metrics].sort((a, b) => {
-      const severity = (severityRank[b.severity || "ok"] || 0) - (severityRank[a.severity || "ok"] || 0);
-      return severity || String(a.id).localeCompare(String(b.id));
-    });
-    buildMetricRows(ordered);
+    buildMetricRows(metrics);
   }
   for (const metric of metrics) {
     const row = dashboard.rows.get(metric.id);
@@ -2353,7 +2406,7 @@ function renderPlot(metricId) {
 }
 function activatePlot(metricId) {
   const row = dashboard.rows.get(metricId);
-  if (!row || dashboard.plots.has(metricId)) return;
+  if (!row?.plot || dashboard.plots.has(metricId)) return;
   dashboard.plots.set(metricId, row.plot);
   renderPlot(metricId);
 }
@@ -2432,6 +2485,7 @@ function shouldReloadSeries(current) {
   return sampledAt - latest > pollMilliseconds * 1.5 + 5000;
 }
 async function refresh(forceSeriesReload = false) {
+  const firstLoad = dashboard.current === null;
   const current = await loadJson("/pipeline-health/current.json");
   if (forceSeriesReload || shouldReloadSeries(current)) {
     dashboard.series = await loadJson("/pipeline-health/series.json");
@@ -2441,6 +2495,7 @@ async function refresh(forceSeriesReload = false) {
   renderCurrent(current);
   ensureMetricRows(current);
   renderActivePlots();
+  if (firstLoad) scrollToSelectedMetric();
 }
 async function refreshLoop(forceSeriesReload = false) {
   if (dashboard.refreshInFlight) {
@@ -2469,6 +2524,7 @@ window.addEventListener("hashchange", () => {
   dashboard.rowOrder = [];
   renderCurrent(dashboard.current);
   ensureMetricRows(dashboard.current);
+  scrollToSelectedMetric();
 });
 void refreshLoop(true);
 </script>

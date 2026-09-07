@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -119,7 +120,7 @@ class PipelineHealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             channel_root = root / "channel-current"
-            for relative in ["production/packages", "staging/packages"]:
+            for relative in ["production/packages", "staging/packages", "releases/prod/packages"]:
                 (channel_root / relative).mkdir(parents=True)
                 (channel_root / relative / "current_artifacts.json").write_text(
                     "[]\n", encoding="utf-8"
@@ -349,6 +350,33 @@ class PipelineHealthTests(unittest.TestCase):
 
         self.assertEqual(metrics[0]["id"], "cycle_build.latest_result")
         self.assertEqual(metrics[0]["severity"], "warning")
+
+    def test_release_qualification_severity_distinguishes_sunset_from_production(self) -> None:
+        for role in ["production", "staging", "sunset"]:
+            for status in ["passed", "pending", "bypassed", "failed", None]:
+                with self.subTest(role=role, status=status):
+                    metrics = []
+                    pipeline_health.add_channel_release_metrics(metrics, {
+                        "role": role,
+                        "tag": "example",
+                        "release_state": {
+                            "build_status": "passed",
+                            "qualification_status": status,
+                            "qualification_bypassed_at_utc": "2026-09-07T15:00:00Z",
+                            "qualification_bypass_reason": "forced promotion",
+                            "live_feed_status": "running",
+                        },
+                    })
+                    qualification = next(item for item in metrics if item["id"] == "release.qualification_status")
+                    expected = "critical"
+                    if status == "passed":
+                        expected = "ok"
+                    elif role in {"staging", "sunset"} and status in {"pending", "bypassed"}:
+                        expected = "warning"
+                    self.assertEqual(qualification["severity"], expected)
+                    if status == "bypassed":
+                        self.assertIn("forced promotion", qualification["message"])
+                        self.assertIn("2026-09-07T15:00:00Z", qualification["message"])
 
     def test_live_feed_health_requires_daemon_product_policy(self) -> None:
         now = datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc)
@@ -1460,6 +1488,109 @@ def write_history_records(path: Path, sampled_at_values: list[str]) -> None:
                 )
                 + "\n"
             )
+
+
+class ReleaseProductDiagnosticsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.channels = self.root / "channel-current"
+        self.channels.mkdir()
+        (self.channels / "generation.json").write_text(json.dumps({
+            "production": "new", "staging": None, "sunset": ["old"],
+        }), encoding="utf-8")
+        (self.channels / "live-feed-routes.json").write_text(json.dumps({
+            "production": "http://127.0.0.1:8100",
+            "releases": {"old": "http://127.0.0.1:8101"},
+        }), encoding="utf-8")
+        self.config = SimpleNamespace(artifact_root=self.root, channel_root=self.channels)
+
+    def sample(self, publication: str, production: int = 153, sunset: int = 153) -> dict:
+        manifests = []
+        for tag, count in [("new", production), ("old", sunset)]:
+            packaged = f"{tag}/{publication}/packaged"
+            directory = self.root / "published" / packaged
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "product-facts.json").write_text(json.dumps({
+                "products": [{"cycle": "2609", "error_count": 0, "warning_count": count}],
+            }), encoding="utf-8")
+            manifest = {"artifact_roots": {"packaged": packaged}}
+            manifests.append(manifest)
+            packages = self.channels / "releases" / tag / "packages"
+            packages.mkdir(parents=True, exist_ok=True)
+            (packages / "current_artifacts.json").write_text(json.dumps([manifest]), encoding="utf-8")
+        merged = self.channels / "production/packages"
+        merged.mkdir(parents=True, exist_ok=True)
+        (merged / "current_artifacts.json").write_text(json.dumps(manifests), encoding="utf-8")
+        sources, _status = pipeline_health.release_channel_sources(self.config)
+        with patch.object(pipeline_health, "fetch_json_url", return_value=({}, None)):
+            channels = {
+                source["id"]: pipeline_health.collect_channel_facts(self.config, source, None)
+                for source in sources
+            }
+        return {"sampled_at_utc": "2026-09-07T15:00:00Z", "channels": channels}
+
+    def warning(self, facts: dict, history: list, scope: str = "production") -> dict:
+        metrics = []
+        pipeline_health.add_product_fact_metrics(
+            metrics, {"inputs": facts["channels"][scope]["inputs"]}, history,
+            history_scope=scope,
+        )
+        return next(item for item in metrics if item["id"] == "cycle_product.warning_count")
+
+    def history(self, facts: dict) -> dict:
+        return pipeline_health.compact_history_record(facts, {"metrics": []})
+
+    def test_each_release_has_its_own_regression_signal(self) -> None:
+        baseline = self.sample("baseline")
+        history = [self.history(baseline)]
+        current = self.sample("current")
+        production_inputs = current["channels"]["production"]["inputs"]
+        self.assertEqual(len(production_inputs["current_artifacts"]["payload"]), 2)
+        self.assertEqual(len(production_inputs["product_facts"]), 1)
+        self.assertEqual(self.warning(current, history)["value"], 153)
+        self.assertEqual(self.warning(current, history)["severity"], "ok")
+
+        increased = self.sample("increase", production=154)
+        warning = self.warning(increased, history)
+        self.assertEqual(warning["value"], 154)
+        self.assertEqual(warning["warning_threshold"], 154)
+        self.assertEqual(warning["severity"], "warning")
+        self.assertEqual(self.warning(increased, history, "release-old")["severity"], "ok")
+
+        sunset_increased = self.sample("sunset-increase", sunset=154)
+        self.assertEqual(self.warning(sunset_increased, history)["severity"], "ok")
+        self.assertEqual(self.warning(sunset_increased, history, "release-old")["severity"], "warning")
+
+    def test_legacy_merged_history_cannot_mask_a_new_regression(self) -> None:
+        legacy_single = {"channel_product_states": {"production": {
+            "product_facts_key": ["previous/product-facts.json"],
+            "product_counts": {"error_count": 0, "warning_count": 153},
+        }}}
+        legacy_merged = {"channel_product_states": {"production": {
+            "product_facts_key": ["old/product-facts.json", "new/product-facts.json"],
+            "product_counts": {"error_count": 0, "warning_count": 306},
+        }}}
+        history = [legacy_single, legacy_merged]
+        self.assertEqual(self.warning(self.sample("stable"), history)["severity"], "ok")
+        warning = self.warning(self.sample("increase", production=154), history)
+        self.assertEqual(warning["severity"], "warning")
+        self.assertEqual(warning["warning_threshold"], 154)
+        self.assertIn("previous distinct publication: 153", warning["message"])
+
+    def test_missing_release_manifest_is_visible_even_if_merged_manifest_exists(self) -> None:
+        self.sample("current")
+        (self.channels / "releases/new/packages/current_artifacts.json").unlink()
+        sources, _status = pipeline_health.release_channel_sources(self.config)
+        with patch.object(pipeline_health, "fetch_json_url", return_value=({}, None)):
+            channel = pipeline_health.collect_channel_facts(self.config, sources[0], None)
+        metrics = []
+        pipeline_health.add_channel_input_metrics(metrics, channel)
+        by_id = {item["id"]: item for item in metrics}
+        self.assertEqual(by_id["input.current_artifacts.available"]["severity"], "ok")
+        self.assertEqual(by_id["input.product_facts_artifacts.available"]["severity"], "critical")
+        self.assertEqual(channel["inputs"]["product_facts"], [])
 
 
 if __name__ == "__main__":

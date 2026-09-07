@@ -191,6 +191,7 @@ test("Android physical taps dispatch once and defer success to semantic completi
   assert.doesNotMatch(indexedControl, /motionEventSpy|publishTouchReceipt/);
   assert.match(indexedControl, /window-focus:\$windowFocused/);
   assert.match(indexedControl, /OnWindowFocusChangeListener/);
+  assert.match(indexedControl, /e2eIndexedGeometry[\s\S]*\.testTag\(semanticTag\)/);
 
   const service = readFileSync(new URL(
     "../../ui/android-app/app/src/androidTest/java/org/aerobag/app/e2e/SemanticDriverService.java",
@@ -227,9 +228,10 @@ test("Android physical taps dispatch once and defer success to semantic completi
   );
   assert.match(mapExplorer, /semanticTag = fact\.actionId\?\.let[\s\S]*airport-info-time-toggle/);
   assert.match(airportInfoFact, /e2eIndexedControl/);
-  assert.match(airportInfoFact, /testTag\(semanticTag\)/);
+  assert.doesNotMatch(airportInfoFact, /testTag\(semanticTag\)/);
   assert.match(mapSelectionItemButton, /e2eIndexedControl\([\s\S]*semanticTag = testTag/);
-  assert.match(mapSelectionItemButton, /testTag\(testTag\)[\s\S]*clickable/);
+  assert.match(mapSelectionItemButton, /e2eIndexedControl\([\s\S]*clickable/);
+  assert.doesNotMatch(mapSelectionItemButton, /testTag\(testTag\)/);
 });
 
 test("Android semantic actions wait for their rendered surface to reach the screen", () => {

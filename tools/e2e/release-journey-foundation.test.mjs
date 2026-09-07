@@ -1004,6 +1004,36 @@ function boundedObservationRuntime(driver) {
   };
 }
 
+test("Android inspector presence uses its rendered index without accessibility fallback", async () => {
+  const map = readFileSync(new URL(
+    "../../ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt", import.meta.url,
+  ), "utf8");
+  assert.match(map, /e2eIndexedElement\(\s*semanticTag = "parity:map-selection-tray"/);
+  let result = { enabled: "true", visible: "true" };
+  let calls = 0;
+  const readElement = runInNewContext(
+    `({ ${AndroidSemanticJourneyDriver.prototype.readElement.toString()} }).readElement`,
+    {
+      androidElementSemanticTag,
+      queryFirstAndroidSemanticNode(_serial, tag, options) {
+        assert.equal(tag, "parity:map-selection-tray");
+        assert.equal(options.providerOnly, true);
+        assert.equal(options.requireVisible, true);
+        calls += 1;
+        if (result instanceof Error) throw result;
+        return result;
+      },
+      androidProjectedElement: (node) => node,
+    },
+  );
+  assert.equal(await readElement.call({}, "map-selection-tray"), result);
+  result = null;
+  assert.equal(await readElement.call({}, "map-selection-tray"), null);
+  result = new TransientObservationError("provider IPC busy");
+  await assert.rejects(readElement.call({}, "map-selection-tray"), (error) => error === result);
+  assert.equal(calls, 3, "one indexed observation per probe; no fallback or hidden retries");
+});
+
 for (const initiallyPresent of [true, false]) {
   test(`optional inspector dismissal observes busy then ${initiallyPresent ? "present" : "absent"} tray`, async () => {
     let reads = 0;

@@ -1511,6 +1511,9 @@ export class AndroidSemanticJourneyDriver extends SemanticJourneyDriver {
       {
         requireVisible: true,
         includeDescendantText: elementId !== "map-surface",
+        // This tray is Compose-indexed, including its disappearance. Falling
+        // back to the accessibility tree for absence can stall the query queue.
+        providerOnly: semanticTag === "parity:map-selection-tray",
       },
     );
     if (!queried) return null;

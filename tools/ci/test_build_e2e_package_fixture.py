@@ -168,6 +168,16 @@ class BuildE2ePackageFixtureTest(unittest.TestCase):
             self.assertEqual(["KPLU"], [asset["airport_id"] for asset in assets["assets"]])
         fixture = json.loads((output / "fixture.json").read_text())
         self.assertEqual(1, fixture["schema_version"])
+        self.assertEqual(
+            {
+                "publication": {
+                    "current_manifest_schema": 1,
+                    "bundle_manifest_schema": 2,
+                },
+                "package_contracts": {"nav-db": "NAV12", "tpp": "TPP1"},
+            },
+            fixture["client_contracts"],
+        )
         self.assertEqual(1, fixture["packages"][1]["plate_count"])
         self.assertEqual(
             {

@@ -16,6 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from contract_inventory import (
+    ContractInventoryError,
+    FixtureClientContracts,
+    parse_fixture_client_contracts,
+)
+
 
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -32,6 +38,7 @@ class Fixture:
     manifest_path: PurePosixPath | None
     manifest_version_field: str | None
     required_globs: tuple[str, ...]
+    client_contracts: FixtureClientContracts | None
 
 
 @dataclass(frozen=True)
@@ -55,8 +62,8 @@ def load_lock(path: Path) -> Lock:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise LockError(f"cannot read fixture lock {path}: {error}") from error
-    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
-        raise LockError("fixture lock schema_version must be 1")
+    if not isinstance(raw, dict) or raw.get("schema_version") != 2:
+        raise LockError("fixture lock schema_version must be 2")
     repository = raw.get("repository")
     if not isinstance(repository, str) or not repository:
         raise LockError("fixture lock repository must be a non-empty string")
@@ -95,6 +102,17 @@ def load_lock(path: Path) -> Lock:
             for pattern in required_globs_value
         ):
             raise LockError(f"fixture {name} required_globs must contain strings")
+        try:
+            client_contracts = (
+                parse_fixture_client_contracts(
+                    value["client_contracts"],
+                    f"fixture {name} client_contracts",
+                )
+                if "client_contracts" in value
+                else None
+            )
+        except ContractInventoryError as error:
+            raise LockError(str(error)) from error
         fixtures[name] = Fixture(
             name=name,
             path=fixture_path,
@@ -102,6 +120,7 @@ def load_lock(path: Path) -> Lock:
             manifest_path=manifest_path,
             manifest_version_field=manifest_version_field,
             required_globs=tuple(required_globs_value),
+            client_contracts=client_contracts,
         )
     return Lock(repository=repository, commit=commit, fixtures=fixtures)
 
@@ -150,6 +169,18 @@ def validate_fixture(root: Path, fixture: Fixture) -> None:
                 f"fixture {fixture.name} contract is {version}; "
                 f"lock requires {fixture.contract_version}"
             )
+        if fixture.client_contracts is not None:
+            try:
+                manifest_contracts = parse_fixture_client_contracts(
+                    manifest.get("client_contracts") if isinstance(manifest, dict) else None,
+                    f"fixture {fixture.name} manifest client_contracts",
+                )
+            except ContractInventoryError as error:
+                raise LockError(str(error)) from error
+            if manifest_contracts != fixture.client_contracts:
+                raise LockError(
+                    f"fixture {fixture.name} manifest client contracts do not match the lock"
+                )
     for pattern in fixture.required_globs:
         if not any(fixture_root.glob(pattern)):
             raise LockError(

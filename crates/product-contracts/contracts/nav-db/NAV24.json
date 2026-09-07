@@ -1,0 +1,7 @@
+{
+  "contract_id": "NAV24",
+  "page_encoding": "xz",
+  "required_exact_keys": {
+    "airport/notam-catalog": 1
+  }
+}

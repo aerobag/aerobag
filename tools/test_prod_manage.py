@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -311,39 +312,33 @@ class DesiredStateBehaviorTests(unittest.TestCase):
 
 
 class PromotionContractCompatibilityTests(unittest.TestCase):
-    def test_product_registry_parser_discovers_new_families_generically(self) -> None:
-        source = """
-pub const NAV_DB_CONTRACT_ID: &str = "NAV9";
-pub const NEW_THING_CONTRACT_ID: &str = "NEW1";
-pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
-    ProductContract {
-        family_id: "nav-db",
-        contract_id: NAV_DB_CONTRACT_ID,
-    },
-    ProductContract {
-        family_id: "new-thing",
-        contract_id: NEW_THING_CONTRACT_ID,
-    },
-];
-"""
-
-        self.assertEqual(
-            prod_manage.parse_product_contracts(source, ref="candidate"),
-            {"nav-db": "NAV9", "new-thing": "NEW1"},
+    def test_contract_inventory_discovers_new_families_generically(self) -> None:
+        source = json.dumps(
+            {
+                "schema_version": 1,
+                "package_contracts": {"nav-db": "NAV9", "new-thing": "NEW1"},
+                "live_feeds": {"manifest_schema": 3},
+            }
         )
 
-    def test_product_registry_parser_fails_closed_on_unknown_layout(self) -> None:
-        source = """
-pub const NAV_DB_CONTRACT_ID: &str = "NAV9";
-pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
-    ProductContract::new("nav-db", NAV_DB_CONTRACT_ID),
-];
-"""
+        self.assertEqual(
+            prod_manage.parse_client_contract_inventory(source, ref="candidate"),
+            {"nav-db": "NAV9", "new-thing": "NEW1", "live-feeds": "v3"},
+        )
+
+    def test_contract_inventory_fails_closed_on_unknown_layout(self) -> None:
+        source = json.dumps(
+            {
+                "schema_version": 2,
+                "package_contracts": {"nav-db": "NAV9"},
+                "live_feeds": {"manifest_schema": 3},
+            }
+        )
 
         with self.assertRaisesRegex(
-            prod_manage.ManagementError, "cannot safely enumerate every"
+            prod_manage.ManagementError, "invalid client contract inventory"
         ):
-            prod_manage.parse_product_contracts(source, ref="candidate")
+            prod_manage.parse_client_contract_inventory(source, ref="candidate")
 
     def test_changed_production_contracts_are_reported(self) -> None:
         document = desired_document(staging="2026-08-22.1")

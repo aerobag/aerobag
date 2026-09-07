@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -438,6 +438,76 @@ pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
 pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 7;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationContractInventory {
+    pub current_manifest_schema: u32,
+    pub bundle_manifest_schema: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveFeedContractInventory {
+    pub manifest_schema: u32,
+    pub product_contracts: BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NavDbContractDescriptor {
+    pub contract_id: String,
+    pub page_encoding: String,
+    pub required_exact_keys: BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientDataContractInventory {
+    pub schema_version: u32,
+    pub publication: PublicationContractInventory,
+    pub package_contracts: BTreeMap<String, String>,
+    pub live_feeds: LiveFeedContractInventory,
+    pub nav_db: NavDbContractDescriptor,
+}
+
+pub fn nav_db_contract_descriptor() -> NavDbContractDescriptor {
+    NavDbContractDescriptor {
+        contract_id: NAV_DB_CONTRACT_ID.to_string(),
+        page_encoding: "xz".to_string(),
+        required_exact_keys: BTreeMap::from([(
+            NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
+            NotamAirportCatalog::SCHEMA_VERSION,
+        )]),
+    }
+}
+
+pub fn client_data_contract_inventory() -> ClientDataContractInventory {
+    ClientDataContractInventory {
+        schema_version: 1,
+        publication: PublicationContractInventory {
+            current_manifest_schema: publication::current::v1::SCHEMA_VERSION,
+            bundle_manifest_schema: publication::bundle::v2::SCHEMA_VERSION,
+        },
+        package_contracts: PRODUCT_CONTRACTS
+            .iter()
+            .map(|contract| {
+                (
+                    contract.family_id.to_string(),
+                    contract.contract_id.to_string(),
+                )
+            })
+            .collect(),
+        live_feeds: LiveFeedContractInventory {
+            manifest_schema: LIVE_FEEDS_SCHEMA_VERSION,
+            product_contracts: BTreeMap::from([(
+                "notams".to_string(),
+                NOTAM_LIVE_FEED_CONTRACT_VERSION,
+            )]),
+        },
+        nav_db: nav_db_contract_descriptor(),
+    }
+}
+
 /// Transport timing shared by every Aerobag SSE producer and consumer.
 ///
 /// Platforms execute this policy; they do not define their own timing values.
@@ -540,6 +610,22 @@ mod tests {
             );
         }
         assert_eq!(contract_id_for_family("missing"), None);
+    }
+
+    #[test]
+    fn client_contract_inventory_matches_checked_in_export() {
+        let expected: ClientDataContractInventory =
+            serde_json::from_str(include_str!("../contracts/client-data-contracts.json"))
+                .expect("decode checked-in client contract inventory");
+        assert_eq!(client_data_contract_inventory(), expected);
+    }
+
+    #[test]
+    fn nav_db_contract_descriptor_matches_immutable_revision() {
+        let expected: NavDbContractDescriptor =
+            serde_json::from_str(include_str!("../contracts/nav-db/NAV24.json"))
+                .expect("decode NAV24 contract descriptor");
+        assert_eq!(nav_db_contract_descriptor(), expected);
     }
 
     #[test]

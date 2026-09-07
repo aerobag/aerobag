@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "https://github.com/aerobag/test-artifacts.git",
-  "commit": "e78f1ff9f9f317f28337d564cbe044bf3173111e",
+  "commit": "5d5fcdf2c05f25d4b1e9aa70d8eb59cc9635dd05",
   "fixtures": {
     "android-smoke-publication": {
       "path": "e2e/android-smoke-publication",
@@ -9,6 +9,16 @@
       "manifest": {
         "path": "fixture.json",
         "version_field": "schema_version"
+      },
+      "client_contracts": {
+        "publication": {
+          "current_manifest_schema": 1,
+          "bundle_manifest_schema": 2
+        },
+        "package_contracts": {
+          "nav-db": "NAV24",
+          "tpp": "TPP1"
+        }
       }
     },
     "android-rotation-live-feed": {
@@ -32,6 +42,15 @@
       "manifest": {
         "path": "fixture.json",
         "version_field": "schema_version"
+      },
+      "client_contracts": {
+        "publication": {
+          "current_manifest_schema": 1,
+          "bundle_manifest_schema": 2
+        },
+        "package_contracts": {
+          "nav-db": "NAV24"
+        }
       }
     },
     "nexrad-source-grid": {
@@ -68,7 +87,31 @@
         "published/**/packaged/*.zip",
         "live-feeds/fresh/current.json",
         "replay/*.json"
-      ]
+      ],
+      "client_contracts": {
+        "publication": {
+          "current_manifest_schema": 1,
+          "bundle_manifest_schema": 2
+        },
+        "package_contracts": {
+          "csup": "CSUP1",
+          "enr-h": "ENH1",
+          "enr-l": "ENL1",
+          "nav-db": "NAV24",
+          "sec": "SEC1",
+          "shaded-relief": "SHD1",
+          "tac": "TAC1",
+          "terrain": "TER2",
+          "tpp": "TPP1",
+          "world-basemap": "WBM1"
+        },
+        "live_feeds": {
+          "manifest_schema": 3,
+          "product_contracts": {
+            "notams": 7
+          }
+        }
+      }
     },
     "winds-aloft-cycle": {
       "path": "winds-aloft/cycle-trace",

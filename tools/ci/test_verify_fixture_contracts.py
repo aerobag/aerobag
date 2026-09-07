@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import lzma
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,131 +18,96 @@ class VerifyFixtureContractsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
-        self.repo = self.root / "repo"
-        contract_source = self.repo / "crates/product-contracts/src/lib.rs"
-        contract_source.parent.mkdir(parents=True)
-        contract_source.write_text(
-            'pub const NAV_DB_CONTRACT_ID: &str = "NAV15";\n'
-            'pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 7;\n',
-            encoding="utf-8",
+        self.repo = Path(self.temporary.name) / "repo"
+        self.fixtures = Path(self.temporary.name) / "fixtures"
+        contracts = {
+            "publication": {
+                "current_manifest_schema": 1,
+                "bundle_manifest_schema": 2,
+            },
+            "package_contracts": {"nav-db": "NAV24"},
+        }
+        inventory = {
+            "schema_version": 1,
+            **contracts,
+            "package_contracts": {"nav-db": "NAV24", "tpp": "TPP1"},
+            "live_feeds": {
+                "manifest_schema": 3,
+                "product_contracts": {"notams": 7},
+            },
+            "nav_db": {
+                "contract_id": "NAV24",
+                "page_encoding": "xz",
+                "required_exact_keys": {"airport/notam-catalog": 1},
+            },
+        }
+        inventory_path = self.repo / "crates/product-contracts/contracts"
+        inventory_path.mkdir(parents=True)
+        (inventory_path / "client-data-contracts.json").write_text(
+            json.dumps(inventory), encoding="utf-8"
         )
-        self.fixtures = self.root / "fixtures"
-        android = self.fixtures / "e2e/android-smoke-publication/fixture.json"
-        android.parent.mkdir(parents=True)
-        android.write_text(
-            json.dumps(
-                {
-                    "packages": [
-                        {"family_id": "nav-db", "contract_id": "NAV15"},
-                        {"family_id": "tpp", "contract_id": "TPP1"},
-                    ]
+        lock = {
+            "schema_version": 2,
+            "repository": "https://example.invalid/fixtures.git",
+            "commit": "a" * 40,
+            "fixtures": {
+                "client-fixture": {
+                    "path": "client-fixture",
+                    "contract_version": 1,
+                    "manifest": {
+                        "path": "fixture.json",
+                        "version_field": "schema_version",
+                    },
+                    "client_contracts": contracts,
                 }
-            ),
+            },
+        }
+        (self.repo / "test-artifacts.lock.json").write_text(
+            json.dumps(lock), encoding="utf-8"
+        )
+        fixture = self.fixtures / "client-fixture"
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.json").write_text(
+            json.dumps({"schema_version": 1, "client_contracts": contracts}),
             encoding="utf-8",
         )
-        advance = self.fixtures / "nav-db/advance-2608-to-2609/fixture.json"
-        advance.parent.mkdir(parents=True)
-        advance.write_text(
-            json.dumps(
-                {
-                    "cycles": [
-                        {"cycle": "2607", "contract_id": "NAV15"},
-                        {"cycle": "2608", "contract_id": "NAV15"},
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        release = (
-            self.fixtures
-            / "e2e/release-journey-publication/published/current_artifacts.json"
-        )
-        release.parent.mkdir(parents=True)
-        release.write_text(
-            json.dumps([{"contracts": {"nav-db": "NAV15"}}]),
-            encoding="utf-8",
-        )
-        for profile in ("fresh", "mixed", "stale"):
-            profile_root = (
-                self.fixtures
-                / f"e2e/release-journey-publication/live-feeds/{profile}"
-            )
-            state_path = profile_root / "states/notams/state.json.xz"
-            state_path.parent.mkdir(parents=True)
-            state_path.write_bytes(
-                lzma.compress(json.dumps({"contract_version": 7}).encode("utf-8"))
-            )
-            (profile_root / "current.json").write_text(
-                json.dumps(
-                    {"products": {"notams": {"state_url": "states/notams/state.json.xz"}}}
-                ),
-                encoding="utf-8",
-            )
 
     def test_accepts_exact_contract_match(self) -> None:
-        result = verify_fixture_contracts.verify(
-            self.repo,
-            self.fixtures,
-            [
-                "android-smoke-publication",
-                "nav-db-advance",
-                "release-journey-publication",
-            ],
+        self.assertEqual(
+            1,
+            verify_fixture_contracts.verify(
+                self.repo, self.fixtures, ["client-fixture"]
+            ),
         )
 
-        self.assertEqual("NAV15", result)
-
-    def test_reports_fixture_and_required_contract(self) -> None:
-        advance = self.fixtures / "nav-db/advance-2608-to-2609/fixture.json"
-        manifest = json.loads(advance.read_text())
-        manifest["cycles"][1]["contract_id"] = "NAV14"
-        advance.write_text(json.dumps(manifest), encoding="utf-8")
+    def test_reports_client_incompatibility(self) -> None:
+        lock_path = self.repo / "test-artifacts.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["fixtures"]["client-fixture"]["client_contracts"][
+            "package_contracts"
+        ]["nav-db"] = "NAV23"
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
 
         with self.assertRaisesRegex(
             verify_fixture_contracts.ContractError,
-            r"nav-db-advance provides NAVDB contract\(s\) \[NAV14, NAV15\]; "
-            r"client requires NAV15",
+            "provides nav-db contract NAV23; client requires NAV24",
         ):
             verify_fixture_contracts.verify(
-                self.repo, self.fixtures, ["nav-db-advance"]
+                self.repo, self.fixtures, ["client-fixture"]
             )
 
-    def test_checks_release_journey_publication_contract(self) -> None:
-        release = (
-            self.fixtures
-            / "e2e/release-journey-publication/published/current_artifacts.json"
-        )
-        release.write_text(
-            json.dumps([{"contracts": {"nav-db": "NAV14"}}]),
-            encoding="utf-8",
-        )
+    def test_reports_manifest_lock_drift(self) -> None:
+        manifest_path = self.fixtures / "client-fixture/fixture.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["client_contracts"]["package_contracts"]["nav-db"] = "NAV23"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         with self.assertRaisesRegex(
             verify_fixture_contracts.ContractError,
-            r"release-journey-publication provides NAVDB contract\(s\) \[NAV14\]; "
-            r"client requires NAV15",
+            "manifest client contracts do not match the lock",
         ):
             verify_fixture_contracts.verify(
-                self.repo, self.fixtures, ["release-journey-publication"]
-            )
-
-    def test_checks_release_journey_notam_contract(self) -> None:
-        state = (
-            self.fixtures
-            / "e2e/release-journey-publication/live-feeds/mixed/states/notams/state.json.xz"
-        )
-        state.write_bytes(
-            lzma.compress(json.dumps({"contract_version": 6}).encode("utf-8"))
-        )
-
-        with self.assertRaisesRegex(
-            verify_fixture_contracts.ContractError,
-            r"release-journey-publication provides NOTAM contract\(s\) \[6, 7\]; "
-            r"client requires 7",
-        ):
-            verify_fixture_contracts.verify(
-                self.repo, self.fixtures, ["release-journey-publication"]
+                self.repo, self.fixtures, ["client-fixture"]
             )
 
 

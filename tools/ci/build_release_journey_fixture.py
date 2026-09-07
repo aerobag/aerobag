@@ -710,6 +710,31 @@ def live_feed_reference_epoch_ms(live_feed_source: Path) -> int:
     return round(instant.timestamp() * 1000)
 
 
+def live_feed_client_contracts(live_feed_source: Path) -> dict[str, Any]:
+    current = read_json(live_feed_source / "current.json")
+    schema = current.get("schema_version")
+    products = current.get("products")
+    notams = products.get("notams") if isinstance(products, dict) else None
+    state_url = notams.get("state_url") if isinstance(notams, dict) else None
+    if not isinstance(schema, int) or not isinstance(state_url, str):
+        raise BuildError("live-feed source has no schema or NOTAM state URL")
+    state_path = live_feed_source.joinpath(*safe_member_path(state_url).parts)
+    try:
+        payload = state_path.read_bytes()
+        if state_path.suffix == ".xz":
+            payload = lzma.decompress(payload)
+        state = json.loads(payload)
+    except (OSError, lzma.LZMAError, json.JSONDecodeError) as error:
+        raise BuildError(f"cannot read NOTAM state {state_path}: {error}") from error
+    contract = state.get("contract_version") if isinstance(state, dict) else None
+    if not isinstance(contract, int):
+        raise BuildError(f"NOTAM state {state_path} has no numeric contract_version")
+    return {
+        "manifest_schema": schema,
+        "product_contracts": {"notams": contract},
+    }
+
+
 def build_fixture(
     source_publication: Path,
     output_root: Path,
@@ -731,9 +756,25 @@ def build_fixture(
             source_publication, current, temporary / "published", primary_cycle, had_query
         )
         live_feeds = write_auxiliary_fixtures(temporary, live_feed_source)
+        publication = read_json(temporary / "published/current_artifacts.json")[-1]
+        bundle_ref = publication["bundles"][0]
+        bundle_path = temporary / "published" / PUBLICATION_ROOT / "packaged" / bundle_ref["relative_path"]
+        bundle = read_json(bundle_path)
         write_json(temporary / "fixture.json", {
             "schema_version": FIXTURE_SCHEMA_VERSION,
             "fixture": FIXTURE_ID,
+            "client_contracts": {
+                "publication": {
+                    "current_manifest_schema": publication["schema_version"],
+                    "bundle_manifest_schema": bundle["schema_version"],
+                },
+                "package_contracts": {
+                    family: contract
+                    for family, contract in publication["contracts"].items()
+                    if family in {package["family_id"] for package in bundle["packages"]}
+                },
+                "live_feeds": live_feed_client_contracts(live_feed_source),
+            },
             "publication_root": "published",
             "source_current_artifacts_sha256": sha256(current_path),
             "publications": [primary],

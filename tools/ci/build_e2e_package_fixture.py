@@ -193,6 +193,8 @@ def build_fixture(source_publication: Path, output_root: Path, cycle: str) -> No
         raise BuildError(f"source publication has no cycle {cycle} bundle")
     bundle_path = package_path(packaged_root, bundle_ref)
     bundle = read_json(bundle_path)
+    if not isinstance(bundle, dict):
+        raise BuildError("source bundle must be an object")
     packages = bundle.get("packages", [])
     nav_package = next(
         (value for value in packages if value.get("family_id") == "nav-db"),
@@ -308,6 +310,16 @@ def build_fixture(source_publication: Path, output_root: Path, cycle: str) -> No
         fixture_manifest = {
             "schema_version": FIXTURE_SCHEMA_VERSION,
             "fixture": FIXTURE_ID,
+            "client_contracts": {
+                "publication": {
+                    "current_manifest_schema": current.get("schema_version"),
+                    "bundle_manifest_schema": compact_bundle.get("schema_version"),
+                },
+                "package_contracts": {
+                    nav_updated["family_id"]: nav_updated["contract_id"],
+                    tpp_updated["family_id"]: tpp_updated["contract_id"],
+                },
+            },
             "source_current_artifacts_sha256": sha256(current_path),
             "source_bundle_sha256": sha256(bundle_path),
             "source_cycle": cycle,

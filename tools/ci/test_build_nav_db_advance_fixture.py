@@ -90,6 +90,16 @@ class BuildNavDbAdvanceFixtureTest(unittest.TestCase):
         )
 
         fixture = json.loads((output / "fixture.json").read_text())
+        self.assertEqual(
+            {
+                "publication": {
+                    "current_manifest_schema": 1,
+                    "bundle_manifest_schema": 2,
+                },
+                "package_contracts": {"nav-db": "NAV15"},
+            },
+            fixture["client_contracts"],
+        )
         self.assertEqual(["2607", "2608"], [entry["cycle"] for entry in fixture["cycles"]])
         self.assertEqual(
             ["NAV15", "NAV15"],

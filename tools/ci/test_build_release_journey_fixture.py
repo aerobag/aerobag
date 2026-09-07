@@ -298,6 +298,26 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
             fixture.live_feed_reference_epoch_ms(source),
         )
 
+    def test_live_feed_contracts_come_from_source_state(self) -> None:
+        source = self.root / "live-source"
+        state = source / "states/notams/current.json.xz"
+        state.parent.mkdir(parents=True)
+        state.write_bytes(lzma.compress(b'{"contract_version":7}'))
+        fixture.write_json(
+            source / "current.json",
+            {
+                "schema_version": 3,
+                "products": {
+                    "notams": {"state_url": "states/notams/current.json.xz"}
+                },
+            },
+        )
+
+        self.assertEqual(
+            {"manifest_schema": 3, "product_contracts": {"notams": 7}},
+            fixture.live_feed_client_contracts(source),
+        )
+
     def test_replay_fixture_uses_real_trace_shape_with_track_gap(self) -> None:
         fixture.write_replay_fixture(self.root / "fixture")
         replay = fixture.read_json(self.root / "fixture/replay/track-gap.json")

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "publication": {
+    "current_manifest_schema": 1,
+    "bundle_manifest_schema": 2
+  },
+  "package_contracts": {
+    "csup": "CSUP1",
+    "enr-h": "ENH1",
+    "enr-l": "ENL1",
+    "geo": "GEO1",
+    "nav-db": "NAV24",
+    "sec": "SEC1",
+    "shaded-relief": "SHD1",
+    "tac": "TAC1",
+    "terrain": "TER2",
+    "tpp": "TPP1",
+    "world-basemap": "WBM1"
+  },
+  "live_feeds": {
+    "manifest_schema": 3,
+    "product_contracts": {
+      "notams": 7
+    }
+  },
+  "nav_db": {
+    "contract_id": "NAV24",
+    "page_encoding": "xz",
+    "required_exact_keys": {
+      "airport/notam-catalog": 1
+    }
+  }
+}

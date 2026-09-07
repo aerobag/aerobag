@@ -150,6 +150,7 @@ def build_fixture(
         shutil.copyfile(current_path, source_output / "current_artifacts.json")
 
         cycle_records = []
+        bundle_schemas: set[int] = set()
         for cycle in cycles:
             bundle_ref = find_cycle_bundle(current, cycle)
             bundle_relative = required_string(
@@ -159,6 +160,10 @@ def build_fixture(
             bundle = read_json(bundle_path)
             if not isinstance(bundle, dict):
                 raise BuildError(f"cycle {cycle} bundle must be an object")
+            bundle_schema = bundle.get("schema_version")
+            if not isinstance(bundle_schema, int):
+                raise BuildError(f"cycle {cycle} bundle has no numeric schema_version")
+            bundle_schemas.add(bundle_schema)
             nav_package = find_nav_db_package(bundle, cycle)
             contract_id = required_string(
                 nav_package, "contract_id", f"cycle {cycle} NAVDB package"
@@ -199,10 +204,24 @@ def build_fixture(
                 }
             )
 
+        if len(bundle_schemas) != 1:
+            raise BuildError(
+                f"selected bundles use multiple schemas: {sorted(bundle_schemas)}"
+            )
+        publication_schema = current.get("schema_version")
+        if not isinstance(publication_schema, int):
+            raise BuildError("source current artifacts has no numeric schema_version")
         publication_build = str(PurePosixPath(packaged_relative).parent)
         fixture = {
             "schema_version": FIXTURE_SCHEMA_VERSION,
             "purpose": f"{FIXTURE_PURPOSE} from {cycles[0]} to {cycles[-1]}",
+            "client_contracts": {
+                "publication": {
+                    "current_manifest_schema": publication_schema,
+                    "bundle_manifest_schema": next(iter(bundle_schemas)),
+                },
+                "package_contracts": {"nav-db": source_nav_contract},
+            },
             "source": {
                 "publication_build": publication_build,
                 "current_artifacts_filename": "source/current_artifacts.json",

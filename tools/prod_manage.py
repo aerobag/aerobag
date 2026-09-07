@@ -35,8 +35,9 @@ import release_reconciler as releases  # noqa: E402
 
 DEFAULT_CONFIG = REPO_ROOT / "deploy/aerobag-prod.json"
 DEFAULT_RELEASES = REPO_ROOT / "deploy/releases.json"
-PRODUCT_CONTRACT_SOURCE = "crates/product-contracts/src/lib.rs"
-LIVE_FEED_CONTRACT_SOURCE = "tools/live_feed_contract.py"
+CLIENT_CONTRACT_INVENTORY = (
+    "crates/product-contracts/contracts/client-data-contracts.json"
+)
 LOCAL_CANDIDATE_QUALIFICATION = (
     REPO_ROOT / "tools/ci/local_candidate_qualification.py"
 )
@@ -189,72 +190,51 @@ def git_file(ref: str, path: str) -> str:
         ) from error
 
 
-def parse_product_contracts(source: str, *, ref: str) -> dict[str, str]:
-    constants = dict(
-        re.findall(
-            r'pub const ([A-Z][A-Z0-9_]*_CONTRACT_ID):\s*&str\s*=\s*"([^"]+)"\s*;',
-            source,
-        )
-    )
-    block_match = re.search(
-        r"pub const PRODUCT_CONTRACTS:\s*&\[ProductContract\]\s*=\s*&\[(.*?)\n\];",
-        source,
-        re.DOTALL,
-    )
-    if block_match is None:
-        raise ManagementError(f"cannot parse PRODUCT_CONTRACTS at release {ref}")
-    block = block_match.group(1)
-    entries = re.findall(
-        r"ProductContract\s*\{\s*"
-        r'family_id:\s*"([^"]+)"\s*,\s*'
-        r"contract_id:\s*([A-Z][A-Z0-9_]*)\s*,?\s*\}",
-        block,
-        re.DOTALL,
-    )
-    if not entries or len(entries) != block.count("ProductContract {"):
+def parse_client_contract_inventory(source: str, *, ref: str) -> dict[str, str]:
+    try:
+        inventory = json.loads(source)
+    except json.JSONDecodeError as error:
         raise ManagementError(
-            f"cannot safely enumerate every PRODUCT_CONTRACTS entry at release {ref}"
-        )
-    contracts: dict[str, str] = {}
-    for family, constant in entries:
-        contract = constants.get(constant)
-        if contract is None:
-            raise ManagementError(
-                f"PRODUCT_CONTRACTS[{family!r}] uses unreadable {constant} at release {ref}"
-            )
-        if family in contracts:
-            raise ManagementError(
-                f"PRODUCT_CONTRACTS repeats family {family!r} at release {ref}"
-            )
-        contracts[family] = contract
-    return contracts
-
-
-def parse_live_feed_contract(source: str, *, ref: str) -> str:
-    matches = re.findall(
-        r'^LIVE_FEEDS_CONTRACT_PATH\s*=\s*"([^"]+)"\s*$',
-        source,
-        re.MULTILINE,
+            f"cannot parse client contract inventory at release {ref}: {error}"
+        ) from error
+    package_contracts = (
+        inventory.get("package_contracts") if isinstance(inventory, dict) else None
     )
-    if len(matches) != 1:
+    live_feeds = inventory.get("live_feeds") if isinstance(inventory, dict) else None
+    live_schema = (
+        live_feeds.get("manifest_schema") if isinstance(live_feeds, dict) else None
+    )
+    if (
+        inventory.get("schema_version") != 1
+        or not isinstance(package_contracts, dict)
+        or not package_contracts
+        or not all(
+            isinstance(family, str)
+            and family
+            and isinstance(contract, str)
+            and contract
+            for family, contract in package_contracts.items()
+        )
+        or not isinstance(live_schema, int)
+        or isinstance(live_schema, bool)
+        or live_schema < 1
+    ):
         raise ManagementError(
-            f"cannot parse LIVE_FEEDS_CONTRACT_PATH at release {ref}"
+            f"invalid client contract inventory at release {ref}"
         )
-    return matches[0]
-
-
-def release_contracts(ref: str) -> dict[str, str]:
-    contracts = parse_product_contracts(
-        git_file(ref, PRODUCT_CONTRACT_SOURCE), ref=ref
-    )
+    contracts = dict(package_contracts)
     if "live-feeds" in contracts:
         raise ManagementError(
             f"release {ref} uses reserved product family name 'live-feeds'"
         )
-    contracts["live-feeds"] = parse_live_feed_contract(
-        git_file(ref, LIVE_FEED_CONTRACT_SOURCE), ref=ref
-    )
+    contracts["live-feeds"] = f"v{live_schema}"
     return contracts
+
+
+def release_contracts(ref: str) -> dict[str, str]:
+    return parse_client_contract_inventory(
+        git_file(ref, CLIENT_CONTRACT_INVENTORY), ref=ref
+    )
 
 
 def changed_contracts_after_promotion(

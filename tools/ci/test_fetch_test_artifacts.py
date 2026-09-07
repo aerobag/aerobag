@@ -27,7 +27,14 @@ class FetchTestArtifactsTest(unittest.TestCase):
         self.git("config", "user.email", "fixture-test@example.invalid")
         (self.source / "alpha").mkdir()
         (self.source / "alpha" / "manifest.json").write_text(
-            '{"schema_version": 2}\n', encoding="utf-8"
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "client_contracts": self.client_contracts(),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
         )
         (self.source / "alpha" / "payload.dat").write_text(
             "selected\n", encoding="utf-8"
@@ -53,7 +60,7 @@ class FetchTestArtifactsTest(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "repository": str(self.source),
                     "commit": self.commit,
                     "fixtures": {
@@ -65,6 +72,7 @@ class FetchTestArtifactsTest(unittest.TestCase):
                                 "version_field": "schema_version",
                             },
                             "required_globs": ["*.dat"],
+                            "client_contracts": self.client_contracts(),
                         },
                         "beta": {
                             "path": "beta",
@@ -78,6 +86,16 @@ class FetchTestArtifactsTest(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    @staticmethod
+    def client_contracts() -> dict[str, object]:
+        return {
+            "publication": {
+                "current_manifest_schema": 1,
+                "bundle_manifest_schema": 2,
+            },
+            "package_contracts": {"nav-db": "NAV24"},
+        }
 
     def test_fetches_only_selected_fixture_at_exact_commit(self) -> None:
         lock = fetch_test_artifacts.load_lock(self.write_lock())
@@ -141,6 +159,22 @@ class FetchTestArtifactsTest(unittest.TestCase):
             fetch_test_artifacts.LockError, "normalized relative path"
         ):
             fetch_test_artifacts.load_lock(lock_path)
+
+    def test_rejects_manifest_client_contract_mismatch(self) -> None:
+        manifest_path = self.source / "alpha" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["client_contracts"]["package_contracts"]["nav-db"] = "NAV23"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "--quiet", "-m", "break contract")
+        self.commit = self.git("rev-parse", "HEAD").stdout.strip()
+        lock = fetch_test_artifacts.load_lock(self.write_lock())
+
+        with self.assertRaisesRegex(
+            fetch_test_artifacts.LockError,
+            "manifest client contracts do not match the lock",
+        ):
+            fetch_test_artifacts.fetch(lock, ["alpha"], self.root / "checkout")
 
 
 if __name__ == "__main__":

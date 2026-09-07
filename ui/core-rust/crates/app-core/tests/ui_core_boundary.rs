@@ -1363,9 +1363,9 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
             continue;
         };
         let window = &android[index.saturating_sub(220)..android.len().min(index + 420)];
-        if !window.contains("runPagedSessionOperation") && !window.contains("runPagedSnapshot") {
+        if !window.contains("executePagedOperation") && !window.contains("runPagedSnapshot") {
             violations.push(format!(
-                "android calls {export} without runPagedSessionOperationElement"
+                "android calls {export} without the resource-aware session executor or snapshot helper"
             ));
         }
     }
@@ -1401,6 +1401,40 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         violations.is_empty(),
         "platform adapters must drive paged session exports through resource loops:\n{}",
         violations.join("\n")
+    );
+}
+
+#[test]
+fn android_paged_executor_preserves_resource_loop_delegation() {
+    let android = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+    );
+    // The executor is expression-bodied Kotlin; include the whole declaration,
+    // not just its nested resumeSnapshot lambda or a fixed character window.
+    let executor = android
+        .split_once("private fun executePagedOperation(")
+        .expect("Android session executor")
+        .1
+        .split("\n    private fun ")
+        .next()
+        .expect("Android session executor declaration");
+    for required in [
+        "resourceIo: SessionResourceIo = sessionResourceIo",
+        "navKvStore.runPagedSessionOperation(",
+        "operation = operation",
+        "resourceIo = resourceIo",
+        "resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) }",
+        "metrics = metrics",
+    ] {
+        assert!(
+            executor.contains(required),
+            "Android session executor must preserve {required}"
+        );
+    }
+    assert_eq!(
+        android.matches(".runPagedSessionOperation(").count(),
+        1,
+        "Android adapter must route paging through its single resource-aware executor"
     );
 }
 

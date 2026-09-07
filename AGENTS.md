@@ -10,3 +10,81 @@
 - Use the shared Android indexed-control modifiers for core-driven controls. They own both the Compose test tag and E2E geometry/state registration.
 - Read NAVKV manifests, roots, and pages through the shared directory reader so compression, paths, and errors have one implementation.
 - E2E map journeys must ask the semantic driver for an unobscured point derived from rendered geometry. Do not encode fractional or absolute map tap coordinates in journeys.
+
+## When asked to commit and push
+
+Run a cheap feature preflight before committing, not just the new tests written
+for the change. Target **under two minutes total on a warm checkout**. Select
+checks from [ordinary CI](.github/workflows/ci.yml), with its pinned tools and
+environment; a cold build, dependency installation, emulator, or full release
+qualification is not implicitly part of this budget.
+
+- Inspect the final diff and run `git diff --check`. Stage only the intended
+  changes; preserve other sessions' work.
+- Run relevant existing regression and contract tests as well as new tests.
+  Test ownership crosses language boundaries: changing Kotlin or TypeScript
+  adapters can break tests housed in Rust.
+- Run applicable formatting and generated-source checks. For Rust edits, use
+  `./scripts/check-rust-format.sh`. If generation is needed, inspect its tracked
+  diff and include intended outputs; do not silently leave stale generated code.
+- Use explicit empty artifact directories for fixture-free checks. Use the web
+  target-workspace entrypoint rather than source-tree `node_modules`; use
+  `ANDROID_BUILD_NATIVE_LIBRARIES=false` for Android JVM/static-only checks.
+- Recheck after the final edit or integration change. A pass on an earlier tree
+  does not validate the tree being committed.
+- Fix in-scope failures without weakening assertions or retrying into green.
+  If a needed check exceeds the budget, is blocked, or exposes an unrelated
+  failure, report it and ask how to proceed rather than silently skipping it or
+  starting a long suite. Do not push known failing relevant checks without the
+  user's explicit acceptance.
+- In the handoff, list exact checks and results, and explicitly name checks not
+  run. A targeted pass is not a claim that all ordinary CI passed.
+
+Choose the smallest useful coverage for the feature:
+
+| Changed surface | Cheap checks to consider |
+| --- | --- |
+| Rust behavior | Affected crate/test family under nextest's `ci` profile with `--locked`; relevant doctests |
+| Core/web/Android session adapters or UI contracts | The complete Rust `ui_core_boundary` test binary, plus affected platform tests |
+| Python tools | Relevant `test_*.py` files with CI's `/usr/bin/python3 -m pytest` |
+| JavaScript E2E tooling | Relevant `node --test` harness contract files, not browser/emulator journeys |
+| Web or Android feature | Focused existing web unit/type checks or Android JVM/static tests through repo entrypoints |
+| Workflow changes | Pinned actionlint command from `.github/workflows/ci.yml` |
+| Documentation only | Diff/whitespace checks and verification of referenced paths and commands; no app build |
+
+For core/platform boundary changes, run this from the repository root:
+
+```sh
+(
+  cd ui/core-rust
+  AEROBAG_ARTIFACT_READ_PATH="$(mktemp -d)" \
+    cargo +1.94.1 nextest run --locked --profile ci \
+      -p app-core --test ui_core_boundary
+)
+```
+
+When refactoring a helper, update structural tests to verify the new helper and
+its implementation preserve the contract. Do not merely remove the assertion
+or rename production code to satisfy a stale text match.
+
+## Before staging a release
+
+- The command is `tools/prod_manage.py --stage`, not `--staging`. Check ordinary
+  CI for the integrated revision, not only an individual feature's local tests.
+  Recommend resolving known failures before spending another staging build;
+  report failed, pending, or unrun checks distinctly.
+- Recommend `tools/prod_manage.py --prequalify` when the operator wants full
+  pre-staging assurance. It requires clean, synchronized `main`, runs ordinary
+  CI and repeated release journeys locally, then pushes a `candidate-*` tag and
+  waits for hosted qualification. It does not deploy to production. This is an
+  expensive, explicit release operation, not a cheap commit-and-push check.
+- Run `tools/ci/fast_release_preflight.py` for the complete emulator-free
+  ordinary-CI preflight on a clean integrated commit. `--stage` now runs it
+  automatically before creating release intent or a tag. This is broader than
+  the two-minute feature checklist and is cached against the exact commit.
+- Full prequalification remains optional. The operator may choose `--stage`
+  directly and use the release-tag journey qualification round trip. Do not
+  treat the full local qualifier's `--check` receipt verification as running tests.
+- After staging, use `tools/prod_manage.py --qualification-status`: passing
+  deployed staging checks alone does not mean ordinary CI and exact-release
+  journeys passed. Do not automatically bypass failures with `--promote --force`.

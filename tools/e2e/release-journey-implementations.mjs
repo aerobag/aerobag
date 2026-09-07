@@ -2586,6 +2586,13 @@ export async function chooseForecastWindModel(runtime) {
       const value = await runtime.driver.readElement(readyId);
       return value && value.enabled !== false ? value : null;
     }, E2E_TIMING.externalConsistencyMs);
+    // Fetching also selects the forecast in core. Prove that selection lands;
+    // do not invent a second transition whose postcondition is already true.
+    const selected = await runtime.eventually("downloaded forecast selected", async () => {
+      const value = await runtime.driver.readElement(readyId);
+      return selectedSemantic(value) ? value : null;
+    }, E2E_TIMING.resourceMs);
+    return { noWind, ready, selected, downloaded };
   }
 
   const response = await runtime.action("select ready wind forecast", readyId, {

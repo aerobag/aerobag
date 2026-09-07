@@ -2205,6 +2205,62 @@ test("forecast choice waits for one coherent action state before branching", asy
   assert.deepEqual(actions, ["altitude-planner-wind-action-ready_forecast"]);
 });
 
+for (const platform of ["web", "android"]) {
+  test(`${platform} forecast download proves automatic selection without a second action`, async () => {
+    const separator = platform === "web" ? "-" : ":";
+    const actionId = (row) => `altitude-planner-wind-action${separator}${row}`;
+    let requested = false;
+    let ready = false;
+    let selected = false;
+    let selectionReads = 0;
+    const actions = [];
+    const runtime = withActionContract({
+      platform,
+      driver: {
+        async readElement(id) {
+          if (id === actionId("no_wind")) {
+            return { enabled: true, pressed: requested ? "false" : "true" };
+          }
+          if (id === actionId("latest_forecast")) {
+            return {
+              enabled: !requested,
+              text: requested ? "FETCHING MODEL" : "FETCH MODEL",
+            };
+          }
+          if (id === actionId("ready_forecast")) {
+            return ready ? { enabled: true, selected, pressed: selected ? "true" : "false" } : null;
+          }
+          return null;
+        },
+        async performAction(id) {
+          assert.equal(id, actionId("latest_forecast"), "fetching already selects the model");
+          actions.push(id);
+          requested = true;
+        },
+      },
+      async eventually(label, probe) {
+        if (label === "downloaded forecast is ready") ready = true;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (label === "downloaded forecast selected") {
+            selectionReads += 1;
+            selected = selectionReads >= 2;
+          }
+          const value = await probe();
+          if (value) return value;
+        }
+        throw new Error(`forecast state did not settle: ${label}`);
+      },
+    });
+
+    const result = await chooseForecastWindModel(runtime);
+    assert.equal(result.downloaded, true);
+    assert.equal(result.noWind.pressed, "true");
+    assert.equal(result.selected.selected, true);
+    assert.equal(selectionReads, 2, "must observe selection, not just download readiness");
+    assert.deepEqual(actions, [actionId("latest_forecast")]);
+  });
+}
+
 test("altitude choices do not treat accessibility whitespace as a state change", () => {
   const source = readFileSync(new URL("./release-journey-implementations.mjs", import.meta.url), "utf8");
   const choice = source.slice(

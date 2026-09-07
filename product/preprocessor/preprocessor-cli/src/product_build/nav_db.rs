@@ -24,7 +24,7 @@ pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
 }
 
 const NAV_COORDINATE_DECIMAL_SCALE: f64 = 10_000_000.0;
-const NAV_DB_DIAGNOSTICS_FORMAT: &str = "nav-db-diagnostics-v1";
+const NAV_DB_DIAGNOSTICS_FORMAT: &str = "nav-db-diagnostics-v2";
 const DEFAULT_AIRCRAFT_LINEAGE_ID: &str = "cessna-172-generic";
 const BUNDLED_AIRCRAFT_DEFINITIONS: &[(&str, &str)] = &[
     (
@@ -1364,6 +1364,10 @@ pub(super) fn build_nav_kv_artifact(
                     serde_json::json!(diagnostics.procedure_geometry_warning_count),
                 ),
                 (
+                    "weather_camera_site_count".to_string(),
+                    serde_json::json!(diagnostics.weather_camera_site_count),
+                ),
+                (
                     "procedure_geometry_error_count".to_string(),
                     serde_json::json!(diagnostics.procedure_geometry_error_count),
                 ),
@@ -1379,6 +1383,7 @@ pub(super) fn build_nav_kv_artifact(
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct NavDbBuildDiagnostics {
     schema_version: u32,
+    weather_camera_site_count: usize,
     procedure_geometry_warning_count: usize,
     procedure_geometry_error_count: usize,
     procedure_geometry_records_with_data_quality: usize,
@@ -1389,7 +1394,8 @@ fn nav_db_build_diagnostics_from_pairs(
     pairs: &[NavKvPair],
 ) -> anyhow::Result<NavDbBuildDiagnostics> {
     let mut diagnostics = NavDbBuildDiagnostics {
-        schema_version: 1,
+        schema_version: 2,
+        weather_camera_site_count: weather_camera_site_count_from_pairs(pairs)?,
         ..Default::default()
     };
     for pair in pairs
@@ -1418,6 +1424,30 @@ fn nav_db_build_diagnostics_from_pairs(
         }
     }
     Ok(diagnostics)
+}
+
+fn weather_camera_site_count_from_pairs(pairs: &[NavKvPair]) -> anyhow::Result<usize> {
+    #[derive(Deserialize)]
+    struct VectorStats {
+        points: PointCounts,
+    }
+    #[derive(Deserialize)]
+    struct PointCounts {
+        layer_counts: BTreeMap<String, usize>,
+    }
+    let stats = pairs
+        .iter()
+        .find(|pair| pair.key == "vector/stats")
+        .context("NAVDB is missing vector/stats for weather-camera site count")?;
+    let stats: VectorStats =
+        serde_json::from_slice(&stats.value).context("invalid vector/stats point counts")?;
+    // The map omits layers with no points; absence of the whole stats record is an error.
+    Ok(stats
+        .points
+        .layer_counts
+        .get("weather_camera")
+        .copied()
+        .unwrap_or(0))
 }
 
 pub(super) fn attach_procedure_metadata_to_plate_pairs(
@@ -6498,6 +6528,48 @@ pub(super) fn max_zoom_for_levels(
 mod tests {
     use super::*;
     use product_contracts::ProcedureRendezvousIdentity;
+
+    #[test]
+    fn nav_db_build_metadata_preserves_unique_weather_camera_site_count() {
+        let pairs = vec![
+            NavKvPair {
+                key: "vector/stats".to_string(),
+                value: br#"{"points":{"total_points":30000,"layer_counts":{"airport":29026,"weather_camera":974}}}"#.to_vec(),
+            },
+            NavKvPair {
+                key: "vector/tile/10/1/1".to_string(),
+                value: br#"{"points":[]}"#.to_vec(),
+            },
+        ];
+        let diagnostics = nav_db_build_diagnostics_from_pairs(&pairs).unwrap();
+        assert_eq!(diagnostics.weather_camera_site_count, 974);
+        assert_eq!(diagnostics.schema_version, 2);
+        let cached: NavDbBuildDiagnostics =
+            serde_json::from_slice(&serde_json::to_vec(&diagnostics).unwrap()).unwrap();
+        assert_eq!(cached.weather_camera_site_count, 974);
+    }
+
+    #[test]
+    fn missing_weather_camera_layer_is_zero_but_missing_stats_is_an_error() {
+        assert!(weather_camera_site_count_from_pairs(&[]).is_err());
+        let pair = |value: &str| NavKvPair {
+            key: "vector/stats".to_string(),
+            value: value.as_bytes().to_vec(),
+        };
+        assert_eq!(
+            weather_camera_site_count_from_pairs(&[pair(
+                r#"{"points":{"layer_counts":{"airport":10}}}"#
+            )])
+            .unwrap(),
+            0
+        );
+        for value in [
+            r#"{}"#,
+            r#"{"points":{"layer_counts":{"weather_camera":"974"}}}"#,
+        ] {
+            assert!(weather_camera_site_count_from_pairs(&[pair(value)]).is_err());
+        }
+    }
 
     #[test]
     fn cycle_procedures_emit_the_shared_rendezvous_contract() {

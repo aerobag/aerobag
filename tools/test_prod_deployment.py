@@ -547,6 +547,7 @@ class RuntimeUpdateTests(unittest.TestCase):
                 "sync_source_checkout", "install_cloud_server_policy", "write_remote_config",
                 "prepare_remote_paths", "migrate_cloud_storage_layout",
                 "install_nms_notams_credential", "install_cloud_server_secret", "write_remote_file",
+                "install_weather_camera_credential",
                 "reload_services", "start_support_runtime", "start_release_live_feeds",
                 "record_runtime_fingerprint",
             ]:
@@ -646,6 +647,67 @@ class NmsProductionCredentialTests(unittest.TestCase):
         path = self.write_credential(clientSecret="")
         with self.assertRaisesRegex(SystemExit, "clientSecret"):
             deploy_prod.validate_nms_notams_production_credential(path)
+
+
+class WeatherCameraCredentialTests(unittest.TestCase):
+    def test_deploy_copies_token_privately_and_exports_only_its_remote_path(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        self.assertEqual(config["weather_camera_source"], "combined")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "token"
+            source.write_text("test-only-camera-token\n", encoding="ascii")
+            config["weather_camera_token_file"] = str(source)
+            with (
+                mock.patch.object(deploy_prod, "run_ssh") as ssh,
+                mock.patch.object(deploy_prod, "run_local") as local,
+            ):
+                deploy_prod.install_weather_camera_credential(config, dry_run=False)
+            self.assertIn("install -d -m 0700", ssh.call_args.args[1])
+            command = local.call_args.args[0]
+            self.assertIn("--chmod=F600", command)
+            self.assertIn(source, command)
+            self.assertTrue(str(command[-1]).endswith(config["weather_camera_prod_token_file"]))
+            env = deploy_prod.env_file(config)
+            self.assertIn("AEROBAG_WEATHER_CAMERA_SOURCE=combined", env)
+            self.assertIn(
+                f"AEROBAG_WEATHER_CAMERA_TOKEN_FILE={config['weather_camera_prod_token_file']}", env
+            )
+            self.assertNotIn("test-only-camera-token", env + str(ssh.call_args) + str(local.call_args))
+
+    def test_website_override_does_not_install_or_require_a_token(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        config["weather_camera_source"] = "website"
+        config["weather_camera_token_file"] = "/does-not-exist/token"
+        with (
+            mock.patch.object(deploy_prod, "run_ssh") as ssh,
+            mock.patch.object(deploy_prod, "run_local") as local,
+        ):
+            deploy_prod.install_weather_camera_credential(config, dry_run=False)
+        ssh.assert_not_called()
+        local.assert_not_called()
+        self.assertIn("AEROBAG_WEATHER_CAMERA_SOURCE=website", deploy_prod.env_file(config))
+
+    def test_missing_or_malformed_token_fails_before_copying_without_echoing_it(self) -> None:
+        config = deploy_prod.load_config(deploy_prod.DEFAULT_CONFIG)
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "token"
+            config["weather_camera_token_file"] = str(source)
+            with (
+                mock.patch.object(deploy_prod, "run_ssh") as ssh,
+                mock.patch.object(deploy_prod, "run_local") as local,
+            ):
+                with self.assertRaisesRegex(SystemExit, "missing FAA weather-camera token") as error:
+                    deploy_prod.install_weather_camera_credential(config, dry_run=False)
+                self.assertIn("9-AJO-WCAM-ProgramOffice@faa.gov", str(error.exception))
+                self.assertIn("MoU", str(error.exception))
+                self.assertIn("docs/WEATHER_CAMERAS.md", str(error.exception))
+                for value in ["", "Bearer test-only-token", "test-only-token\nX: injected"]:
+                    source.write_text(value, encoding="ascii")
+                    with self.assertRaisesRegex(SystemExit, "one raw token") as error:
+                        deploy_prod.install_weather_camera_credential(config, dry_run=False)
+                    self.assertNotIn("test-only-token", str(error.exception))
+                ssh.assert_not_called()
+                local.assert_not_called()
 
 
 class AerobagCloudProductionTests(unittest.TestCase):

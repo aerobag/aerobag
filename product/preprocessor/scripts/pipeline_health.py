@@ -39,6 +39,7 @@ DASHBOARD_BUCKET_SECONDS = 5 * 60
 DASHBOARD_BUCKET_LIMIT = DASHBOARD_WINDOW_SECONDS // DASHBOARD_BUCKET_SECONDS
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 EXPECTED_NOTAM_PROCEDURE_WITHOUT_UI_ANCHOR = 1
+MIN_WEATHER_CAMERA_SITE_COUNT = 960
 ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
 
 _history_maintenance_dates: dict[Path, date] = {}
@@ -1238,6 +1239,7 @@ def add_product_fact_metrics(
     *,
     history_scope: str | None = None,
 ) -> None:
+    add_weather_camera_metric(metrics, facts)
     summary = product_count_summary(facts)
     counts = summary["counts"]
     previous_counts = latest_distinct_product_counts(
@@ -1267,6 +1269,42 @@ def add_product_fact_metrics(
             message=message,
             details={"cycle_counts": summary["cycles"]},
         )
+
+
+def add_weather_camera_metric(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+    cycle_counts: dict[str, int] = {}
+    unavailable = []
+    for product in iter_current_product_facts(facts):
+        if product.get("family") != "nav-db":
+            continue
+        cycle = str(product.get("cycle") or "uncycled")
+        count = product.get("weather_camera_site_count")
+        if type(count) is not int or count < 0:
+            unavailable.append(str(product.get("product_id") or cycle))
+            continue
+        # Overlapping cycles and duplicate publication references are not additive.
+        cycle_counts[cycle] = min(cycle_counts.get(cycle, count), count)
+    value = min(cycle_counts.values()) if cycle_counts and not unavailable else None
+    minimum = MIN_WEATHER_CAMERA_SITE_COUNT
+    add_metric(
+        metrics,
+        metric_id="cycle_product.weather_camera_site_count",
+        label="Weather camera sites",
+        value=value,
+        unit="sites",
+        severity="ok" if value is not None and value >= minimum else "warning",
+        warning_threshold=minimum,
+        message=(
+            f"Weather camera site count unavailable for {', '.join(unavailable) or 'this publication'}"
+            if value is None
+            else f"Published weather camera sites: minimum {value} per cycle; expected at least {minimum}"
+        ),
+        details={
+            "cycle_counts": cycle_counts,
+            "unavailable_products": unavailable,
+            "lower_is_worse": True,
+        },
+    )
 
 
 def iter_current_product_facts(facts: dict[str, Any]) -> list[dict[str, Any]]:

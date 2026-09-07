@@ -384,6 +384,12 @@ qualification receipt can also produce that status. Build and live-feed health
 remain separate signals.
 
 Every metric has a detail row, including string statuses and missing values.
+**Weather camera sites** reports the minimum published inventory across each
+release's cycles and warns below **960** unique sites (baseline: 974, including
+218 Canadian sites). An unavailable count also warns. See
+[weather camera ingestion](WEATHER_CAMERAS.md) for the two-source union and how
+to obtain your own FAA API credential by email and MoU.
+
 Only numeric and boolean values have graphs. Alert links select the metric's
 scope and scroll to its row. Verify dashboard behavior locally with:
 
@@ -482,6 +488,11 @@ APK, and daemon outputs with `tools/build_release.py`. Promotion only creates a
 new channel generation and reloads nginx gracefully. Product refresh and
 channel-aware GC are deferred to periodic reconciliation. Promotion does not
 rebuild or requalify the release.
+
+Cycle builds combine the FAA weather-camera API and website inventories. Deployment copies
+`/root/aerobag-credentials/faa-weathercams-token` to the production secrets
+directory; see [weather camera ingestion](WEATHER_CAMERAS.md) for token setup
+and source selection.
 
 `build_prod_apk.sh` verifies that `JAVA_HOME` resolves to a full JDK with
 `jlink` before invoking Gradle. On prod that should be

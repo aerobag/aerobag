@@ -679,6 +679,14 @@ fn product_facts_product(
         source_generated_at_utc: package.source_generated_at_utc.clone(),
         source_fetched_at_utc: package.source_fetched_at_utc.clone(),
         published_at_utc: package.published_at_utc.clone(),
+        weather_camera_site_count: if package.family_id == "nav-db" {
+            package
+                .metadata
+                .get("weather_camera_site_count")
+                .and_then(serde_json::Value::as_u64)
+        } else {
+            None
+        },
         error_count: diagnostics.error_count(),
         warning_count: diagnostics.warning_count(),
         diagnostics,

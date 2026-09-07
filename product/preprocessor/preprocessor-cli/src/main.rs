@@ -2421,7 +2421,7 @@ fn main() -> anyhow::Result<()> {
         Some("build-vectors") => {
             let mut main_db = None;
             let mut data_input_dir = None;
-            let mut weather_camera_inventory = None;
+            let mut weather_camera_inventories = Vec::new();
             let mut output_dir = None;
             let mut version_label = None;
             let mut include_class_e_airspace = false;
@@ -2445,7 +2445,7 @@ fn main() -> anyhow::Result<()> {
                         index += 2;
                     }
                     Some("--weather-camera-inventory") => {
-                        weather_camera_inventory = Some(PathBuf::from(
+                        weather_camera_inventories.push(PathBuf::from(
                             args.get(index + 1)
                                 .cloned()
                                 .ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
@@ -2478,7 +2478,7 @@ fn main() -> anyhow::Result<()> {
             let request = BuildVectorsRequest {
                 main_db: main_db.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 data_input_dir,
-                weather_camera_inventory,
+                weather_camera_inventories,
                 output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
                 include_class_e_airspace,

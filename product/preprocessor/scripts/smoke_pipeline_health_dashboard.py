@@ -24,6 +24,7 @@ const fixtureMetrics = [
   {id:"channel.production.release.qualification_status", scope:"production", value:"pending", severity:"critical"},
   {id:"channel.release-old.release.qualification_status", scope:"release-old", value:"bypassed", severity:"warning"},
   {id:"channel.production.cycle_product.warning_count", scope:"production", value:154, severity:"warning"},
+  {id:"channel.production.cycle_product.weather_camera_site_count", scope:"production", label:"Weather camera sites", value:756, unit:"sites", severity:"warning", warning_threshold:960},
   {id:"input.available", scope:"global", value:true, severity:"ok"},
   {id:"cloud.mode", scope:"global", value:"normal", severity:"ok"},
   {id:"missing.status", scope:"global", value:null, severity:"critical"},
@@ -63,11 +64,12 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 20));
     const row = rowFor(metric.id);
     check(row, `missing row ${metric.id}`);
     check(row.querySelector(".pill").textContent === metric.severity, "row severity");
-    check(row.querySelector(".metric-value").textContent === formatValue(metric), "row value");
+    const expectedValue = formatValue(metric) + (metric.unit ? ` ${metric.unit}` : "");
+    check(row.querySelector(".metric-value").textContent === expectedValue, "row value and unit");
     check(Boolean(row.querySelector(".plot")) === (graphValue(metric.value) !== null), "plot eligibility");
     activatePlot(metric.id);
   }
-  check(dashboard.plots.size === 2, "only numeric and boolean metrics get plots");
+  check(dashboard.plots.size === 3, "only numeric and boolean metrics get plots");
   check(plotCalls.length > 0, "numeric plots are exercised");
   const reusedRow = rowFor(fixtureMetrics[0].id);
   ensureMetricRows(fixtureRecord);

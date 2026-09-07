@@ -81,7 +81,8 @@ const AIRSPACE_LABEL_CONTAINMENT_RATIO: f64 = 0.98;
 pub struct BuildVectorsRequest {
     pub main_db: PathBuf,
     pub data_input_dir: Option<PathBuf>,
-    pub weather_camera_inventory: Option<PathBuf>,
+    /// Inventories in priority order; the first source wins for a shared site ID.
+    pub weather_camera_inventories: Vec<PathBuf>,
     pub output_dir: PathBuf,
     pub version_label: String,
     pub include_class_e_airspace: bool,
@@ -1028,12 +1029,10 @@ pub fn build_vectors_dataset(request: &BuildVectorsRequest) -> anyhow::Result<Bu
     let conn = Connection::open(&request.main_db)
         .with_context(|| format!("failed to open {}", request.main_db.display()))?;
     let mut points = load_points(&conn)?;
-    if let Some(path) = &request.weather_camera_inventory {
-        points.extend(load_weather_camera_points(
-            path,
-            MIN_PLAUSIBLE_WEATHER_CAMERA_SITE_COUNT,
-        )?);
-    }
+    points.extend(load_weather_camera_inventories(
+        &request.weather_camera_inventories,
+        MIN_PLAUSIBLE_WEATHER_CAMERA_SITE_COUNT,
+    )?);
     let airport_points = points
         .iter()
         .filter(|point| point.style_class == "airport")
@@ -2876,6 +2875,19 @@ fn build_point_tiles(points: &[PointRecord], zoom: u8) -> Vec<PointTileRecord> {
         .into_iter()
         .map(|((z, x, y), records)| PointTileRecord { z, x, y, records })
         .collect()
+}
+
+fn load_weather_camera_inventories(
+    paths: &[PathBuf],
+    minimum_site_count: usize,
+) -> anyhow::Result<Vec<PointRecord>> {
+    let mut sites = BTreeMap::new();
+    for path in paths {
+        for point in load_weather_camera_points(path, minimum_site_count)? {
+            sites.entry(point.id.clone()).or_insert(point);
+        }
+    }
+    Ok(sites.into_values().collect())
 }
 
 fn load_weather_camera_points(
@@ -5116,6 +5128,106 @@ mod tests {
         assert_eq!(value["lat"], serde_json::json!(47.4931389));
         assert_eq!(value["lon"], serde_json::json!(-122.2157501));
         assert_eq!(value["location_label"], "Renton, WA");
+    }
+
+    #[test]
+    fn weather_camera_union_keeps_canada_and_prefers_official_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let official = directory.path().join("official.json");
+        let website = directory.path().join("website.json");
+        let inventory = |count: usize, source: &str| {
+            let payload = (0..count)
+                .map(|id| {
+                    serde_json::json!({
+                        "siteId": id, "siteName": format!("TEST ONLY {source} {id}"),
+                        "latitude": 47.0, "longitude": -122.0,
+                        "country": if id < 756 { "US" } else { "CA" },
+                        "state": if id < 756 { "WA" } else { "BC" },
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_vec(&serde_json::json!({
+                "success": true, "count": count, "payload": payload,
+            }))
+            .unwrap()
+        };
+        fs::write(&official, inventory(756, "official")).unwrap();
+        fs::write(&website, inventory(974, "website")).unwrap();
+        let points = load_weather_camera_inventories(&[official, website], 100).unwrap();
+        assert_eq!(points.len(), 974);
+        assert_eq!(
+            points
+                .iter()
+                .filter(|p| p.location_label.as_deref() == Some("BC, CA"))
+                .count(),
+            218
+        );
+        let common = points.iter().find(|p| p.id == "weather-camera:1").unwrap();
+        assert_eq!(
+            common.weather_camera.as_ref().unwrap().site_name,
+            "TEST ONLY official 1"
+        );
+        assert_eq!(point_layer_counts(&points)["weather_camera"], 974);
+        assert_eq!(points_by_layer(&points)["airport"].len(), 974);
+    }
+
+    #[test]
+    fn weather_camera_union_rejects_invalid_sources_instead_of_hiding_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let official = directory.path().join("official.json");
+        let website = directory.path().join("website.json");
+        fs::write(
+            &official,
+            br#"{"success":true,"count":1,"payload":[
+            {"siteId":1,"siteName":"TEST ONLY","latitude":47,"longitude":-122}
+        ]}"#,
+        )
+        .unwrap();
+        // A healthy primary must not mask a failed or internally duplicated supplement.
+        for data in [
+            br#"{"success":false,"count":0,"payload":[]}"#.as_slice(),
+            br#"{"success":true,"count":2,"payload":[
+                {"siteId":1,"siteName":"TEST ONLY","latitude":47,"longitude":-122},
+                {"siteId":1,"siteName":"TEST ONLY","latitude":47,"longitude":-122}
+            ]}"#
+            .as_slice(),
+        ] {
+            fs::write(&website, data).unwrap();
+            assert!(
+                load_weather_camera_inventories(&[official.clone(), website.clone()], 1).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn official_weather_camera_inventory_keeps_site_metadata_out_of_image_payloads() {
+        let inventory = br#"{
+            "success": true, "count": 1, "payload": [{
+                "siteId": 999999, "siteName": "Test Camera", "siteArea": "Test Area",
+                "siteIdentifier": null, "icao": null,
+                "latitude": 21.352196, "longitude": -158.12509, "elevation": 220,
+                "siteInMaintenance": false, "siteActive": true, "thirdParty": true,
+                "country": "US", "state": "HI", "operatedBy": "TEST ONLY",
+                "attribution": "TEST ONLY attribution",
+                "cameras": [{"cameraId": 999999, "images": [{"url": "https://example.invalid/current.jpg"}]}],
+                "advisoryWeather": {}, "validated": true
+            }]
+        }"#;
+        let points = parse_weather_camera_inventory(inventory, 1).unwrap();
+        assert_eq!(points.len(), 1);
+        let point = &points[0];
+        assert_eq!(point.id, "weather-camera:999999");
+        assert_eq!(point.label, "Test Camera");
+        assert_eq!((point.lat, point.lon), (21.352196, -158.12509));
+        assert_eq!(point.elevation_msl_ft, Some(220.0));
+        let camera = point.weather_camera.as_ref().unwrap();
+        assert_eq!(camera.attribution.as_deref(), Some("TEST ONLY attribution"));
+        assert_eq!(camera.operated_by.as_deref(), Some("TEST ONLY"));
+        assert_eq!(camera.site_identifier, None);
+        assert_eq!(camera.third_party, Some(true));
+        let serialized = serde_json::to_string(point).unwrap();
+        assert!(!serialized.contains("current.jpg"));
+        assert_eq!(points_by_layer(&points)["airport"].len(), 1);
     }
 
     #[test]

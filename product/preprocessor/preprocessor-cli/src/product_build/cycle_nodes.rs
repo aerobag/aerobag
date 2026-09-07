@@ -2,10 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use super::weather_cameras::{configured_sources, DEFAULT_TOKEN_FILE};
 use super::*;
-
-const FAA_WEATHER_CAMERA_INVENTORY_URL: &str = "https://weathercams.faa.gov/api/sites";
-const FAA_WEATHER_CAMERA_REFERER: &str = "https://weathercams.faa.gov/";
 
 pub(super) fn build_source_urls_node(
     config: &ProductBuildConfig,
@@ -2438,6 +2436,11 @@ pub(super) fn build_vectors_node(
     version_label: &str,
 ) -> anyhow::Result<NodeRecord> {
     let weather_camera_inventory_override = env_path("AEROBAG_WEATHER_CAMERA_INVENTORY");
+    let weather_camera_sources = if weather_camera_inventory_override.is_some() {
+        &[][..]
+    } else {
+        configured_sources(env::var("AEROBAG_WEATHER_CAMERA_SOURCE").ok().as_deref())?
+    };
     let mut inputs = BTreeMap::from([
         ("data_fingerprint".to_string(), data_fingerprint.to_string()),
         ("include_class_e_airspace".to_string(), "false".to_string()),
@@ -2460,8 +2463,12 @@ pub(super) fn build_vectors_node(
         );
     } else {
         inputs.insert(
-            "weather_camera_inventory_url".to_string(),
-            FAA_WEATHER_CAMERA_INVENTORY_URL.to_string(),
+            "weather_camera_inventory_urls".to_string(),
+            weather_camera_sources
+                .iter()
+                .map(|source| source.url())
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
     }
     let prepared = prepare_node_at(
@@ -2486,8 +2493,8 @@ pub(super) fn build_vectors_node(
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let weather_camera_inventory = match weather_camera_inventory_override {
-        Some(path) => path,
+    let weather_camera_inventories = match weather_camera_inventory_override {
+        Some(path) => vec![path],
         None => {
             let source_dir = prepared.dir.join("source").join("weather-cameras");
             let provenance_dir = prepared
@@ -2495,26 +2502,30 @@ pub(super) fn build_vectors_node(
                 .join("meta")
                 .join("provenance")
                 .join("weather-cameras");
-            let file_name = "weather-camera-sites.json";
+            let token_file = env_path("AEROBAG_WEATHER_CAMERA_TOKEN_FILE")
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_TOKEN_FILE));
+            let requests = weather_camera_sources
+                .iter()
+                .map(|source| source.request(&token_file))
+                .collect::<anyhow::Result<Vec<_>>>()?;
             prefetch_requests_with_provenance(
-                &[PrefetchRequest::new(FAA_WEATHER_CAMERA_INVENTORY_URL)
-                    .with_logical_file_name(file_name)
-                    // The public site sends this header and its API rejects otherwise-valid
-                    // anonymous inventory requests without it.
-                    .with_header("Referer", FAA_WEATHER_CAMERA_REFERER)],
+                &requests,
                 &source_dir,
-                1,
+                requests.len(),
                 Some(&fetch_cache_config(config)?),
                 &provenance_dir,
                 "weather-camera-inventory",
             )?;
-            source_dir.join(file_name)
+            weather_camera_sources
+                .iter()
+                .map(|source| source_dir.join(source.file_name()))
+                .collect()
         }
     };
     let request = BuildVectorsRequest {
         main_db: intermediate_sqlite_db.to_path_buf(),
         data_input_dir: Some(source_input_dir.to_path_buf()),
-        weather_camera_inventory: Some(weather_camera_inventory),
+        weather_camera_inventories,
         output_dir: output_dir.clone(),
         version_label: version_label.to_string(),
         include_class_e_airspace: false,

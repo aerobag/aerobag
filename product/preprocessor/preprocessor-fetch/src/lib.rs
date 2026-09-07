@@ -14,7 +14,7 @@ use std::{
     io::Write,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -338,7 +338,7 @@ pub fn prefetch_archives(
     prefetch_archives_inner(requests, dest_dir.as_ref(), fetch_jobs, fetch_cache, None)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PrefetchRequest {
     pub url: String,
     pub cache_key: String,
@@ -346,6 +346,20 @@ pub struct PrefetchRequest {
     pub headers: BTreeMap<String, String>,
     pub force_http1: bool,
     pub allow_html: bool,
+}
+
+impl std::fmt::Debug for PrefetchRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PrefetchRequest")
+            .field("url", &self.url)
+            .field("cache_key", &self.cache_key)
+            .field("logical_file_name", &self.logical_file_name)
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("force_http1", &self.force_http1)
+            .field("allow_html", &self.allow_html)
+            .finish()
+    }
 }
 
 impl PrefetchRequest {
@@ -849,7 +863,6 @@ fn curl_download_with_status(
     if force_http1 {
         command.arg("--http1.1");
     }
-    append_request_headers(&mut command, request_headers);
     command.arg(network_url).current_dir(dest_dir);
     if let Some(etag) = metadata
         .and_then(|value| value.get("etag"))
@@ -865,8 +878,7 @@ fn curl_download_with_status(
             .arg("-H")
             .arg(format!("If-Modified-Since: {last_modified}"));
     }
-    let output = command
-        .output()
+    let output = run_curl_with_headers(&mut command, request_headers)
         .with_context(|| format!("failed to fetch {network_url}"))?;
     let status_text = String::from_utf8_lossy(&output.stdout);
     let http_status = status_text.trim().parse::<u16>().with_context(|| {
@@ -926,15 +938,16 @@ fn fetch_network_once(
     if force_http1 {
         command.arg("--http1.1");
     }
-    append_request_headers(&mut command, request_headers);
     command.arg(url).current_dir(dest_dir);
-    let status = command
-        .status()
+    let output = run_curl_with_headers(&mut command, request_headers)
         .with_context(|| format!("failed to fetch {url}"))?;
-    if !status.success() {
+    if !output.status.success() {
         let _ = fs::remove_file(&temp_path);
         let _ = fs::remove_file(&cookies_path);
-        bail!("curl failed for {url}");
+        bail!(
+            "curl failed for {url}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     fs::rename(&temp_path, &archive_path).with_context(|| {
         format!(
@@ -949,10 +962,49 @@ fn fetch_network_once(
     Ok(())
 }
 
-fn append_request_headers(command: &mut Command, headers: &BTreeMap<String, String>) {
-    for (name, value) in headers {
-        command.arg("--header").arg(format!("{name}: {value}"));
+fn run_curl_with_headers(
+    command: &mut Command,
+    headers: &BTreeMap<String, String>,
+) -> anyhow::Result<Output> {
+    if headers.is_empty() {
+        return command.output().context("failed to run curl");
     }
+    let input = encode_request_headers(headers)?;
+    // Header values can contain credentials. Pass them through stdin so they
+    // never appear in process listings, command diagnostics, or temporary files.
+    command.arg("--header").arg("@-");
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to run curl")?;
+    let written = child
+        .stdin
+        .take()
+        .expect("curl has piped stdin")
+        .write_all(&input);
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for curl")?;
+    written.context("failed to supply curl request headers")?;
+    Ok(output)
+}
+
+fn encode_request_headers(headers: &BTreeMap<String, String>) -> anyhow::Result<Vec<u8>> {
+    let mut input = Vec::new();
+    for (name, value) in headers {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b':')
+            || value.contains(['\r', '\n', '\0'])
+        {
+            bail!("invalid HTTP request header");
+        }
+        writeln!(input, "{name}: {value}")?;
+    }
+    Ok(input)
 }
 
 fn looks_like_html(path: &Path) -> anyhow::Result<bool> {
@@ -1297,7 +1349,150 @@ fn gzip_test(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
     use std::os::unix::fs::MetadataExt;
+
+    fn serve_inventory() -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/sites", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "no inventory request");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("inventory server: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let body = r#"{"success":true,"count":0,"payload":[]}"#;
+            write!(stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ).unwrap();
+            request
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn authenticated_headers_reach_server_without_entering_command_arguments() {
+        let (url, server) = serve_inventory();
+        let headers = BTreeMap::from([
+            (
+                "Authorization".to_string(),
+                "Bearer unit-test-token".to_string(),
+            ),
+            (
+                "Referer".to_string(),
+                "https://weathercams.faa.gov/".to_string(),
+            ),
+        ]);
+        let mut command = Command::new("curl");
+        command.args(["--silent", "--show-error", "--max-time", "5", &url]);
+        let output = run_curl_with_headers(&mut command, &headers).unwrap();
+        assert!(output.status.success());
+        let request = server.join().unwrap();
+        assert!(request.contains("Authorization: Bearer unit-test-token\r\n"));
+        assert!(request.contains("Referer: https://weathercams.faa.gov/\r\n"));
+        assert!(!format!("{command:?}").contains("unit-test-token"));
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["success"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn authenticated_inventory_uses_normal_cache_and_provenance_without_persisting_token() {
+        let root = std::env::temp_dir().join(format!(
+            "preprocessor-fetch-authenticated-inventory-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let cache = FetchCacheConfig {
+            root: root.join("cache"),
+            mode: FetchCacheMode::Fill,
+        };
+        for (name, cache) in [("uncached", None), ("cached", Some(&cache))] {
+            let (url, server) = serve_inventory();
+            let request = PrefetchRequest::new(&url)
+                .with_logical_file_name("sites.json")
+                .with_header("Authorization", "Bearer unit-test-token");
+            assert!(!format!("{request:?}").contains("unit-test-token"));
+            let destination = root.join(name);
+            let provenance = destination.join("provenance");
+            prefetch_requests_with_provenance(
+                &[request],
+                &destination,
+                1,
+                cache,
+                &provenance,
+                "weather-camera-inventory",
+            )
+            .unwrap();
+            assert!(server
+                .join()
+                .unwrap()
+                .contains("Authorization: Bearer unit-test-token\r\n"));
+            let data = fs::read(destination.join("sites.json")).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&data).unwrap()["success"],
+                true
+            );
+            let provenance = fs::read_to_string(provenance.join("downloads.jsonl")).unwrap();
+            assert!(provenance.contains(&url));
+            assert!(!provenance.contains("unit-test-token"));
+            if let Some(cache) = cache {
+                let metadata =
+                    fs::read_to_string(CacheLayout::new(&cache.root).http_metadata_path(&url))
+                        .unwrap();
+                assert!(!metadata.contains("unit-test-token"));
+                let offline = FetchCacheConfig {
+                    root: cache.root.clone(),
+                    mode: FetchCacheMode::Offline,
+                };
+                // No token and no running server are needed to replay an already fetched input.
+                prefetch_requests_with_provenance(
+                    &[PrefetchRequest::new(url).with_logical_file_name("sites.json")],
+                    root.join("offline"),
+                    1,
+                    Some(&offline),
+                    root.join("offline-provenance"),
+                    "test",
+                )
+                .unwrap();
+                assert_eq!(fs::read(root.join("offline/sites.json")).unwrap(), data);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn request_headers_reject_line_injection_without_echoing_values() {
+        for value in ["test-only-token\r\nX: injected", "test-only-token\0"] {
+            let headers = BTreeMap::from([("Authorization".to_string(), value.to_string())]);
+            let error = encode_request_headers(&headers).unwrap_err();
+            assert!(!error.to_string().contains("test-only-token"));
+        }
+    }
 
     #[test]
     fn structured_request_uses_snapshot_name_for_cache_identity() {

@@ -238,7 +238,9 @@ class PipelineHealthTests(unittest.TestCase):
                 "tag": f"{role}-tag",
                 "inputs": {
                     "current_artifacts": {"error": None, "payload": []},
-                    "product_facts": [],
+                    "product_facts": [{"payload": {"products": [{
+                        "family": "nav-db", "cycle": "2609", "weather_camera_site_count": 974,
+                    }]}}],
                     "live_feeds_status": {
                         "error": None,
                         "payload": {"products": {}, "product_policies": policy},
@@ -1488,6 +1490,56 @@ def write_history_records(path: Path, sampled_at_values: list[str]) -> None:
                 )
                 + "\n"
             )
+
+
+class WeatherCameraMetricTests(unittest.TestCase):
+    def facts(self, counts: list[object]) -> dict:
+        return calendar_facts([], product_facts=[{"payload": {"products": [
+            {"family": "nav-db", "product_id": f"NAV_DB_TEST_{index}",
+             "cycle": f"261{index}", "weather_camera_site_count": count}
+            for index, count in enumerate(counts)
+        ]}}])
+
+    def evaluate(self, facts: dict) -> dict:
+        return pipeline_health.evaluate_health(facts, [], datetime(2026, 9, 7, tzinfo=timezone.utc))
+
+    def test_published_site_count_alerts_below_960_including_loss_of_canada(self) -> None:
+        for count, severity in [(974, "ok"), (960, "ok"), (959, "warning"), (756, "warning"), (0, "warning")]:
+            with self.subTest(count=count):
+                evaluation = self.evaluate(self.facts([count]))
+                camera = metric(evaluation, "cycle_product.weather_camera_site_count")
+                self.assertEqual(camera["value"], count)
+                self.assertEqual(camera["severity"], severity)
+                self.assertEqual(camera["warning_threshold"], 960)
+                alerts = [alert for alert in evaluation["alerts"] if alert["metric_id"] == camera["id"]]
+                self.assertEqual(bool(alerts), severity != "ok")
+
+    def test_overlapping_cycles_cannot_add_counts_or_mask_a_small_inventory(self) -> None:
+        camera = metric(self.evaluate(self.facts([974, 756])), "cycle_product.weather_camera_site_count")
+        self.assertEqual(camera["value"], 756)
+        self.assertEqual(camera["severity"], "warning")
+        self.assertEqual(camera["details"]["cycle_counts"], {"2610": 974, "2611": 756})
+
+    def test_missing_invalid_or_partially_missing_counts_are_visible(self) -> None:
+        for counts in [[], [None], [974, None], [-1], [True], ["974"]]:
+            with self.subTest(counts=counts):
+                camera = metric(self.evaluate(self.facts(counts)), "cycle_product.weather_camera_site_count")
+                self.assertIsNone(camera["value"])
+                self.assertEqual(camera["severity"], "warning")
+                self.assertIn("unavailable", camera["message"])
+
+    def test_production_and_staging_camera_counts_remain_separate(self) -> None:
+        facts = {**calendar_facts([]), "channels": {
+            "production": {**self.facts([974]), "role": "production", "tag": "prod"},
+            "staging": {**self.facts([756]), "role": "staging", "tag": "stage"},
+        }}
+        evaluation = self.evaluate(facts)
+        production = metric(evaluation, "channel.production.cycle_product.weather_camera_site_count")
+        staging = metric(evaluation, "channel.staging.cycle_product.weather_camera_site_count")
+        self.assertEqual(production["value"], 974)
+        self.assertEqual(production["severity"], "ok")
+        self.assertEqual(staging["value"], 756)
+        self.assertEqual(staging["severity"], "warning")
 
 
 class ReleaseProductDiagnosticsTests(unittest.TestCase):

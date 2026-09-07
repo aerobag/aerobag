@@ -100,6 +100,7 @@ use crate::emit_source_urls::{cycle_effective_date, discover_published_cycles, e
 mod paths;
 use paths::*;
 mod source_fingerprints;
+mod weather_cameras;
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
 const CYCLE_PUBLICATION_LEAD_DAYS: i64 = 20;
@@ -418,6 +419,8 @@ struct ProductFactsProduct {
     source_fetched_at_utc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     published_at_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    weather_camera_site_count: Option<u64>,
     error_count: usize,
     warning_count: usize,
     diagnostics: ProductFactsDiagnostics,
@@ -4839,6 +4842,9 @@ mod tests {
                 metadata: BTreeMap::from([(
                     "procedure_geometry_warning_count".to_string(),
                     serde_json::json!(2),
+                ), (
+                    "weather_camera_site_count".to_string(),
+                    serde_json::json!(974),
                 )]),
             }],
             ancillary: vec![],
@@ -4931,6 +4937,11 @@ mod tests {
             format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2604_01")
         );
         assert_eq!(facts.products[0].family, "nav-db");
+        assert_eq!(facts.products[0].weather_camera_site_count, Some(974));
+        assert_eq!(
+            serde_json::to_value(&facts).unwrap()["products"][0]["weather_camera_site_count"],
+            974
+        );
         assert_eq!(
             facts.products[0].source_fetched_at_utc.as_deref(),
             Some("2026-04-15T23:00:00Z")

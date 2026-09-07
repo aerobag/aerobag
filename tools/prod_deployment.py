@@ -82,6 +82,14 @@ DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE = Path(
     "/root/aerobag-credentials/nms-notams-production.json"
 )
 DEFAULT_NMS_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/nms-notams.json"
+DEFAULT_WEATHER_CAMERA_TOKEN_FILE = Path(
+    "/root/aerobag-credentials/faa-weathercams-token"
+)
+DEFAULT_WEATHER_CAMERA_PROD_TOKEN_FILE = "/etc/aerobag/secrets/faa-weathercams-token"
+WEATHER_CAMERA_CREDENTIAL_HELP = (
+    "Request API access from 9-AJO-WCAM-ProgramOffice@faa.gov and sign the MoU they send; "
+    "see docs/WEATHER_CAMERAS.md"
+)
 NMS_PRODUCTION_API_BASE_URL = "https://api-nms.aim.faa.gov/nmsapi/v1"
 NMS_PRODUCTION_TOKEN_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
 GOOGLE_CHROME_SIGNING_KEY_URL = "https://dl.google.com/linux/linux_signing_key.pub"
@@ -334,6 +342,11 @@ def load_config(path: Path) -> dict[str, Any]:
         os.fspath(DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE),
     )
     config.setdefault("nms_notams_prod_config", DEFAULT_NMS_NOTAMS_PROD_CONFIG)
+    config.setdefault("weather_camera_source", "combined")
+    if config["weather_camera_source"] not in {"combined", "official-api", "website"}:
+        raise SystemExit("weather_camera_source must be combined, official-api, or website")
+    config.setdefault("weather_camera_token_file", os.fspath(DEFAULT_WEATHER_CAMERA_TOKEN_FILE))
+    config.setdefault("weather_camera_prod_token_file", DEFAULT_WEATHER_CAMERA_PROD_TOKEN_FILE)
     validate_build_cache_config(config)
     validate_cloud_deploy_config(config)
     return config
@@ -626,6 +639,32 @@ def install_nms_notams_credential(config: dict[str, Any], *, dry_run: bool) -> N
     )
 
 
+def install_weather_camera_credential(config: dict[str, Any], *, dry_run: bool) -> None:
+    if config["weather_camera_source"] == "website":
+        return
+    source = Path(config["weather_camera_token_file"]).expanduser()
+    target = config["weather_camera_prod_token_file"]
+    if source.is_file():
+        try:
+            token = source.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            raise SystemExit(f"cannot read FAA weather-camera token file: {source}. {WEATHER_CAMERA_CREDENTIAL_HELP}") from None
+        if not token or any(not 33 <= ord(character) <= 126 for character in token):
+            raise SystemExit(f"FAA weather-camera token file must contain one raw token: {source}. {WEATHER_CAMERA_CREDENTIAL_HELP}")
+    elif not dry_run:
+        raise SystemExit(f"missing FAA weather-camera token file: {source}. {WEATHER_CAMERA_CREDENTIAL_HELP}")
+    run_ssh(
+        config,
+        f"install -d -m 0700 {shell_quote(os.path.dirname(target))}",
+        dry_run=dry_run,
+    )
+    run_local(
+        ["rsync", "-az", "--chmod=F600", source, f"{ssh_target(config)}:{target}"],
+        cwd=REPO_ROOT,
+        dry_run=dry_run,
+    )
+
+
 def install_cloud_server_secret(config: dict[str, Any], *, dry_run: bool) -> None:
     source = Path(config["cloud_server_secret_source"]).expanduser()
     target = config["cloud_server_secret_target"]
@@ -893,6 +932,8 @@ def env_file(config: dict[str, Any]) -> str:
         "CARGO_TARGET_DIR": config["cargo_target_dir"],
         "AEROBAG_CARGO_TARGET_MAX_BYTES": str(config["cargo_target_max_bytes"]),
         "AEROBAG_ARTIFACT_WRITE_PATH": artifact_root,
+        "AEROBAG_WEATHER_CAMERA_SOURCE": config["weather_camera_source"],
+        "AEROBAG_WEATHER_CAMERA_TOKEN_FILE": config["weather_camera_prod_token_file"],
         "AEROBAG_ARTIFACT_READ_PATH": f"{artifact_root}/published",
         "AEROBAG_WEB_DIST": config["web_dist"],
         "AEROBAG_LIVE_FEEDS_LISTEN": config["live_feeds_listen"],
@@ -1071,6 +1112,7 @@ def build_product_script(config: dict[str, Any]) -> str:
 set -euo pipefail
 source /etc/aerobag/env
 export PATH CHROME_BIN CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
+export AEROBAG_WEATHER_CAMERA_SOURCE AEROBAG_WEATHER_CAMERA_TOKEN_FILE
 
 mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/locks" "$ARTIFACT_ROOT/state" "$ARTIFACT_ROOT/scratch" "$ARTIFACT_ROOT/worktrees" "$ARTIFACT_ROOT/release-builds" "$ARTIFACT_ROOT/channel-generations" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
 
@@ -2296,6 +2338,7 @@ def repair_runtime(
     ensure_legacy_channel_view(config, dry_run=dry_run)
     migrate_cloud_storage_layout(config, dry_run=dry_run)
     install_nms_notams_credential(config, dry_run=dry_run)
+    install_weather_camera_credential(config, dry_run=dry_run)
     install_cloud_server_secret(config, dry_run=dry_run)
     install_cloud_server_policy(config, dry_run=dry_run)
     write_remote_config(
@@ -2328,6 +2371,7 @@ def update_runtime(
         prepare_remote_paths(config, dry_run=dry_run)
         migrate_cloud_storage_layout(config, dry_run=dry_run)
         install_nms_notams_credential(config, dry_run=dry_run)
+        install_weather_camera_credential(config, dry_run=dry_run)
         install_cloud_server_secret(config, dry_run=dry_run)
         install_cloud_server_policy(config, dry_run=dry_run)
         write_remote_config(config, deployed_rev=deployed_rev, dry_run=dry_run)
@@ -2372,6 +2416,7 @@ def reconcile_host(
     install_repo_packages(config, dry_run=dry_run)
     install_android_signing_key(config, dry_run=dry_run)
     install_nms_notams_credential(config, dry_run=dry_run)
+    install_weather_camera_credential(config, dry_run=dry_run)
     install_cloud_server_secret(config, dry_run=dry_run)
     install_cloud_server_policy(config, dry_run=dry_run)
     write_remote_file(

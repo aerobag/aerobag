@@ -518,10 +518,10 @@ internal fun androidNavigationPageState(
     )
 
 class NativeAppCoreAdapter(
-    private val navKvStore: NavKvStore? = null,
+    private val navKvStore: NavKvStore,
+    private val sessionResourceFetcher: (CoreResourceRequest) -> ByteArray,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = NativeAppCoreJson,
-    private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)? = null,
 ) {
     fun situationRingCandidates(): List<SituationRingCandidate> =
         json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
@@ -555,16 +555,22 @@ class NativeAppCoreAdapter(
         stageStartedAtMs = SystemClock.elapsedRealtime()
         val result = json.decodeFromString<WireUiSessionInitResult>(resultJson)
         markStage("session_core_decoded", stageStartedAtMs)
+        val sessionResourceIo = SessionResourceIo(
+            fetch = sessionResourceFetcher,
+            ingest = { resource, bytes ->
+                bridge.ingestResourceInSession(result.handle, resource.id, bytes)
+            },
+        )
         val session = NativeUiSession(
             handle = result.handle,
             bridge = bridge,
             json = json,
             navKvStore = navKvStore,
-            sessionResourceFetcher = sessionResourceFetcher,
+            sessionResourceIo = sessionResourceIo,
             initialSnapshot = result.snapshot,
         )
         stageStartedAtMs = SystemClock.elapsedRealtime()
-        navKvStore?.attachToSession(result.handle)
+        navKvStore.attachToSession(result.handle)
         markStage("session_nav_attached", stageStartedAtMs)
         stageStartedAtMs = SystemClock.elapsedRealtime()
         session.configurePlatformCapabilities(
@@ -678,8 +684,7 @@ class NativeAppCoreAdapter(
     }
 
     private fun runHadOperationElement(operation: kotlinx.serialization.json.JsonObject): JsonElement =
-        navKvStore?.runCoreOperationElement(operation)
-            ?: error("nav_kv store is required for core data operation ${operation["kind"]}")
+        navKvStore.runCoreOperationElement(operation)
 
 }
 
@@ -858,8 +863,8 @@ class NativeUiSession internal constructor(
     private val handle: Long,
     private val bridge: NativeBridge,
     private val json: Json,
-    private val navKvStore: NavKvStore?,
-    private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)?,
+    private val navKvStore: NavKvStore,
+    private val sessionResourceIo: SessionResourceIo,
     initialSnapshot: JsonObject,
 ) {
     internal data class SnapshotPublication(
@@ -893,34 +898,29 @@ class NativeUiSession internal constructor(
     private var nextSnapshotListenerId = 1L
     private val snapshotListeners = mutableMapOf<Long, SnapshotListenerRegistration>()
     private val listenerLock = Any()
-    private val sessionResourceEffectPump = navKvStore?.let { store ->
-        AsyncSessionResourceEffectPump(
-            executor = Executors.newSingleThreadExecutor { runnable ->
-                Thread(runnable, "aerobag-session-effects").apply { isDaemon = true }
-            },
-            pump = {
-                store.pumpSessionResourceEffects(
-                    drainSessionResourceEffects = {
-                        bridge.drainSessionResourceEffectsJson(handle)
-                    },
-                    fetchSessionResource = sessionResourceFetcher,
-                    ingestSessionResource = { resource, bytes ->
-                        bridge.ingestResourceInSession(handle, resource.id, bytes)
-                    },
-                    reportSessionResourceFailure = { resource, error ->
-                        bridge.reportSessionResourceFailureInSessionJson(
-                            handle,
-                            resource.id,
-                            error.message ?: error::class.java.simpleName,
-                        )
-                    },
-                )
-            },
-            publishInvalidations = { invalidations ->
-                publishInvalidations("sessionResourceEffect", invalidations)
-            },
-        )
-    }
+    private val sessionResourceEffectPump = AsyncSessionResourceEffectPump(
+        executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "aerobag-session-effects").apply { isDaemon = true }
+        },
+        pump = {
+            navKvStore.pumpSessionResourceEffects(
+                resourceIo = sessionResourceIo,
+                drainSessionResourceEffects = {
+                    bridge.drainSessionResourceEffectsJson(handle)
+                },
+                reportSessionResourceFailure = { resource, error ->
+                    bridge.reportSessionResourceFailureInSessionJson(
+                        handle,
+                        resource.id,
+                        error.message ?: error::class.java.simpleName,
+                    )
+                },
+            )
+        },
+        publishInvalidations = { invalidations ->
+            publishInvalidations("sessionResourceEffect", invalidations)
+        },
+    )
 
     fun subscribeInvalidations(listener: (List<String>) -> Unit): AutoCloseable {
         synchronized(listenerLock) {
@@ -987,8 +987,7 @@ class NativeUiSession internal constructor(
         libraryCacheJson: String,
         plannedGcFilenames: Set<String>,
     ): NavDbAdvanceUiResult = requireNotNull(runNativeSessionCommand("navDbAdvance") {
-        val store = requireNotNull(navKvStore) { "NAVDB advance requires a nav kv store" }
-        val outcome = store.replaceInstalledArtifacts(
+        val outcome = navKvStore.replaceInstalledArtifacts(
             artifacts,
             libraryCacheJson,
             handle,
@@ -1007,20 +1006,17 @@ class NativeUiSession internal constructor(
 
     fun maintainNavDb(nowEpochMs: Long): NavDbMaintenanceUiResult =
         requireNotNull(runNativeSessionCommand("navDbMaintenance") {
-        val outcome = navKvStore?.runPagedSessionOperation(
-            operation = {
+            val outcome = executePagedOperation {
                 bridge.maintainNavDbInSessionAtEpochMsJson(handle, nowEpochMs)
-            },
-            resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
-        ) ?: error("NAVDB maintenance requires a nav kv store")
-        val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
-        applyOptionalSessionUpdate(result.sessionUpdate)
-        publishPagedInvalidations("navDbMaintenance", outcome, snapshotAlreadyReturned = true)
-        NavDbMaintenanceUiResult(
-            shouldAttemptAdvance = result.action == "attempt_advance",
-            snapshot = snapshot,
-        )
-    })
+            }
+            val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
+            applyOptionalSessionUpdate(result.sessionUpdate)
+            publishPagedInvalidations("navDbMaintenance", outcome, snapshotAlreadyReturned = true)
+            NavDbMaintenanceUiResult(
+                shouldAttemptAdvance = result.action == "attempt_advance",
+                snapshot = snapshot,
+            )
+        })
 
     private fun runPagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val outcome = runNativeSessionCommand(commandName) {
@@ -1042,18 +1038,17 @@ class NativeUiSession internal constructor(
         }
 
     private fun queryFlightPlan(query: JsonObject): JsonElement {
-        val store = navKvStore ?: error("nav_kv store is required for flight-plan queries")
-        val result = store.runPagedSessionOperationElement {
+        val result = executePagedOperation {
             bridge.queryFlightPlanInSessionJson(handle, query.toString())
         }
-        sessionResourceEffectPump?.request()
-        return result
+        sessionResourceEffectPump.request()
+        return result.result
     }
 
     private fun executePagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val measureLanding = VerbosePerfLogs
         val operationStartedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
-        val outcome = executePagedOperation(operation)
+        val outcome = executePagedOperation(operation = operation)
         val operationFinishedAt = if (measureLanding) SystemClock.elapsedRealtimeNanos() else 0L
         val updateJsonBytes = if (measureLanding) {
             outcome.result.toString().toByteArray(Charsets.UTF_8).size
@@ -1112,7 +1107,7 @@ class NativeUiSession internal constructor(
     }
 
     private fun executePagedFullSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
-        val outcome = executePagedOperation(operation)
+        val outcome = executePagedOperation(operation = operation)
         snapshotAccumulator.replaceFullSnapshot(outcome.result)
         updateSnapshot(
             decodeAccumulatedSnapshot(),
@@ -1123,30 +1118,17 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
-    private fun executePagedOperation(operation: () -> String): PagedSessionOperationResult =
-        navKvStore?.runPagedSessionOperation(
+    private fun executePagedOperation(
+        resourceIo: SessionResourceIo = sessionResourceIo,
+        metrics: PagedSessionOperationMetrics? = null,
+        operation: () -> String,
+    ): PagedSessionOperationResult =
+        navKvStore.runPagedSessionOperation(
             operation = operation,
-            fetchSessionResource = sessionResourceFetcher,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+            resourceIo = resourceIo,
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
+            metrics = metrics,
         )
-            ?: run {
-                val outcome = json.parseToJsonElement(operation()).jsonObject
-                when (val state = outcome.getValue("state").jsonPrimitive.content) {
-                    "complete" -> PagedSessionOperationResult(
-                        result = outcome["result"] ?: JsonNull,
-                        invalidations = outcome["invalidations"]
-                            ?.jsonArray
-                            ?.map { it.jsonPrimitive.content }
-                            ?: emptyList(),
-                    )
-                    "need_resources", "need_snapshot_resources" ->
-                        error("nav_kv store is required for paged session resources")
-                    else -> error("unknown HAD session operation state: $state")
-                }
-            }
 
     private fun decodeAccumulatedSnapshot(): UiSessionSnapshot =
         json.decodeFromJsonElement<WireUiSessionSnapshot>(snapshotAccumulator.snapshot).toUi()
@@ -1189,7 +1171,7 @@ class NativeUiSession internal constructor(
             invalidations
         }
         publishInvalidations(commandName, publishedInvalidations)
-        sessionResourceEffectPump?.request()
+        sessionResourceEffectPump.request()
         return invalidations
     }
 
@@ -1300,11 +1282,7 @@ class NativeUiSession internal constructor(
     }
 
     fun projectFlightPlanRoute(): FlightPlanRouteProjection {
-        val store = navKvStore ?: return FlightPlanRouteProjection(
-            flightPlanRouteRevision = snapshot.flightPlanRouteRevision,
-            segments = emptyList(),
-        )
-        val outcome = store.runPagedSessionOperation {
+        val outcome = executePagedOperation {
             bridge.projectFlightPlanRouteInSessionJson(handle)
         }
         publishPagedInvalidations("projectFlightPlanRoute", outcome)
@@ -1910,13 +1888,9 @@ class NativeUiSession internal constructor(
     }
 
     fun syncLiveFeeds(fetchResource: (CoreResourceRequest) -> ByteArray): List<String> {
-        val store = navKvStore ?: error("session missing nav_db for live-feed sync")
-        val outcome = store.runPagedSessionOperation(
+        val outcome = executePagedOperation(
             operation = { bridge.syncLiveFeedsInSessionJson(handle) },
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
         )
         return publishPagedInvalidations("syncLiveFeeds", outcome)
     }
@@ -1925,15 +1899,11 @@ class NativeUiSession internal constructor(
         events: List<LiveFeedSseEvent>,
         fetchResource: (CoreResourceRequest) -> ByteArray,
     ): List<String> {
-        val store = navKvStore ?: error("session missing nav_db for live-feed SSE")
-        val outcome = store.runPagedSessionOperation(
+        val outcome = executePagedOperation(
             operation = {
                 bridge.ingestLiveFeedSseEventsInSessionJson(handle, json.encodeToString(events))
             },
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
         )
         return publishPagedInvalidations("ingestLiveFeedSseEvents", outcome)
     }
@@ -1960,8 +1930,7 @@ class NativeUiSession internal constructor(
         metrics: PagedSessionOperationMetrics? = null,
     ): MapOverlayQueryOutcome {
         val viewportJson = json.encodeToString(viewport.toWire())
-        val store = navKvStore ?: error("session missing nav_db for map overlay")
-        val outcome = store.runPagedSessionOperation(
+        val outcome = executePagedOperation(
             operation = {
                 bridge.getMapOverlayInSessionWithPointDisplayScaleJson(
                     handle,
@@ -1971,10 +1940,7 @@ class NativeUiSession internal constructor(
                     pointDisplayScale,
                 )
             },
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
         )
         val invalidations = publishPagedInvalidations("queryMapOverlay", outcome)
@@ -1996,14 +1962,10 @@ class NativeUiSession internal constructor(
     ): MapSelectionQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val clickJson = json.encodeToString(click.toWire())
-        val store = navKvStore ?: error("session missing nav_db for map selection")
-        val result = store.runPagedSessionOperation(
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+        val result = executePagedOperation(
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
-        ) {
+            operation = {
                 bridge.getMapSelectionInSessionWithPointDisplayScaleJson(
                     handle,
                     viewportJson,
@@ -2012,7 +1974,8 @@ class NativeUiSession internal constructor(
                     clickJson,
                     pointDisplayScale,
                 )
-        }
+            },
+        )
         publishPagedInvalidations("queryMapSelection", result)
         return json.decodeFromJsonElement<WireMapSelectionQueryResult>(result.result).toUi()
     }
@@ -2037,14 +2000,10 @@ class NativeUiSession internal constructor(
     ): MapSelectionForNavRefResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val navRefJson = json.encodeToString(navRef.toWire())
-        val store = navKvStore ?: error("session missing nav_db for map selection")
-        val result = store.runPagedSessionOperation(
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+        val result = executePagedOperation(
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
-        ) {
+            operation = {
                 bridge.getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
                     handle,
                     viewportJson,
@@ -2053,7 +2012,8 @@ class NativeUiSession internal constructor(
                     navRefJson,
                     pointDisplayScale,
                 )
-        }
+            },
+        )
         publishPagedInvalidations("queryMapSelectionForNavRef", result)
         return json.decodeFromJsonElement<WireMapSelectionForNavRefResult>(result.result).toUi()
     }
@@ -2071,8 +2031,7 @@ class NativeUiSession internal constructor(
         val viewportJson = json.encodeToString(viewport.toWire())
         val decodedCacheKeysJson = json.encodeToString(decodedCacheKeys.toList())
         val inFlightCacheKeysJson = json.encodeToString(inFlightCacheKeys.toList())
-        val store = navKvStore ?: error("session missing nav_db for terrain overlay")
-        val result = store.runPagedSessionOperation(
+        val result = executePagedOperation(
             operation = {
                 bridge.getScheduledTerrainOverlayInSessionJson(
                     handle,
@@ -2083,10 +2042,7 @@ class NativeUiSession internal constructor(
                     inFlightCacheKeysJson,
                 )
             },
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
         )
         publishPagedInvalidations("queryTerrainOverlay", result)
@@ -2102,16 +2058,13 @@ class NativeUiSession internal constructor(
         metrics: PagedSessionOperationMetrics? = null,
     ): NexradOverlayQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
-        val result = navKvStore?.runPagedSessionOperation(
+        val result = executePagedOperation(
             operation = {
                 bridge.getNexradOverlayInSessionJson(handle, viewportJson, widthPx, heightPx)
             },
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
-        ) ?: error("session missing nav_db for NEXRAD overlay")
+        )
         publishPagedInvalidations("queryNexradOverlay", result)
         return json.decodeFromJsonElement(
             result.result,
@@ -2128,16 +2081,13 @@ class NativeUiSession internal constructor(
         require(assetKind == "asset" || assetKind == "thumbnail") {
             "unsupported chart asset kind: $assetKind"
         }
-        val store = navKvStore ?: error("session missing nav_db for chart asset fetch")
-        val result = store.runPagedSessionOperation(
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+        val result = executePagedOperation(
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
-        ) {
-            bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
-        }
+            operation = {
+                bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
+            },
+        )
         publishPagedInvalidations("chartAssetBytes", result)
         val resultJson = result.result.jsonObject
         val source = parseCoreResourceSource(resultJson.getValue("source").jsonObject)
@@ -2166,16 +2116,13 @@ class NativeUiSession internal constructor(
         fetchResource: (CoreResourceRequest) -> ByteArray,
         metrics: PagedSessionOperationMetrics? = null,
     ): ByteArray {
-        val store = navKvStore ?: error("session missing nav_db for NEXRAD tile fetch")
-        val result = store.runPagedSessionOperation(
-            fetchSessionResource = fetchResource,
-            ingestSessionResource = { resource, bytes ->
-                bridge.ingestResourceInSession(handle, resource.id, bytes)
-            },
+        val result = executePagedOperation(
+            resourceIo = sessionResourceIo.withFetcher(fetchResource),
             metrics = metrics,
-        ) {
-            bridge.prepareNexradTileInSessionJson(handle, src)
-        }
+            operation = {
+                bridge.prepareNexradTileInSessionJson(handle, src)
+            },
+        )
         publishPagedInvalidations("nexradTileBytes", result)
         return metrics?.measureCoreCall {
             bridge.nexradTileBytesInSession(handle, src)
@@ -2232,7 +2179,7 @@ class NativeUiSession internal constructor(
     }
 
     fun destroy() {
-        sessionResourceEffectPump?.close()
+        sessionResourceEffectPump.close()
         bridge.destroySession(handle)
     }
 

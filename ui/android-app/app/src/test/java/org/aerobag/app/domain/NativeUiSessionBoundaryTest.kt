@@ -68,18 +68,37 @@ class NativeUiSessionBoundaryTest {
         )
         val pagedOperationBody = balancedBlockAfterMarker(
             sessionBody,
-            "private fun executePagedOperation(operation: () -> String)",
+            "private fun executePagedOperation(",
         )
         assertTrue(
-            "Every paged snapshot mutation must be able to load non-NAVKV session resources.",
-            pagedOperationBody.contains("fetchSessionResource = sessionResourceFetcher"),
+            "Every paged operation must carry the session's required resource capability.",
+            pagedOperationBody.contains("resourceIo: SessionResourceIo = sessionResourceIo") &&
+                pagedOperationBody.contains("resourceIo = resourceIo"),
+        )
+        assertEquals(
+            "NativeUiSession must have one raw paged-operation call, inside its configured executor.",
+            1,
+            Regex("""\brunPagedSessionOperation\s*\(""").findAll(sessionBody).count(),
+        )
+        val flightPlanQueryBody = balancedBlockAfterMarker(
+            sessionBody,
+            "private fun queryFlightPlan(query: JsonObject)",
         )
         assertTrue(
-            "Every paged snapshot mutation must ingest loaded resources into its active session.",
-            pagedOperationBody.contains(
-                "bridge.ingestResourceInSession(handle, resource.id, bytes)",
-            ),
+            "Flight-plan queries can fault live forecast pages and must use the resource-aware session executor.",
+            flightPlanQueryBody.contains("executePagedOperation"),
         )
+        assertFalse(
+            "Flight-plan queries must not bypass the shared session-resource fetch and ingest callbacks.",
+            flightPlanQueryBody.contains("runPagedSessionOperation"),
+        )
+        for (method in listOf("maintainNavDb", "projectFlightPlanRoute")) {
+            assertTrue(
+                "$method must service the same session resources as other queries and mutations.",
+                balancedBlockAfterMarker(sessionBody, "fun $method(")
+                    .contains("executePagedOperation"),
+            )
+        }
         assertTrue(
             "NativeUiSession must expose core invalidations from paged mutations.",
             sessionBody.contains("fun subscribeInvalidations(listener: (List<String>) -> Unit)"),
@@ -105,7 +124,7 @@ class NativeUiSessionBoundaryTest {
         assertTrue(
             "Paged operations must publish direct invalidations and then launch background resource effects.",
             sessionBody.contains("val invalidations = outcome.invalidations.distinct()") &&
-                sessionBody.contains("sessionResourceEffectPump?.request()"),
+                sessionBody.contains("sessionResourceEffectPump.request()"),
         )
         assertTrue(
             "NEXRAD queries must publish core's frame-change invalidation.",
@@ -196,11 +215,12 @@ class NativeUiSessionBoundaryTest {
             val body = balancedBlockAfterMarker(sessionSource, marker)
             assertTrue(
                 "$marker must fetch non-NAVKV resources requested by core.",
-                body.contains("fetchSessionResource = fetchResource"),
+                body.contains("sessionResourceIo.withFetcher(fetchResource)"),
             )
             assertTrue(
-                "$marker must ingest fetched resources into the active core session.",
-                body.contains("bridge.ingestResourceInSession(handle, resource.id, bytes)"),
+                "$marker must preserve the session ingester through the shared paging executor.",
+                body.contains("executePagedOperation(") &&
+                    !body.contains("runPagedSessionOperation("),
             )
         }
         assertTrue(
@@ -425,7 +445,7 @@ class NativeUiSessionBoundaryTest {
             "NativeUiSession must run effects on its asynchronous pump and publish their invalidations.",
             nativeSession.contains("bridge.drainSessionResourceEffectsJson(handle)") &&
                 nativeSession.contains("AsyncSessionResourceEffectPump(") &&
-                nativeSession.contains("sessionResourceEffectPump?.request()"),
+                nativeSession.contains("sessionResourceEffectPump.request()"),
         )
         assertFalse(
             "Normal paged operations must never synchronously drain background session effects.",

@@ -4521,6 +4521,7 @@ fn perform_altitude_planner_action_in_session(
                 message: "the current winds-aloft forecast is already installed".to_string(),
             });
         }
+        session.coordinator.altitude_planner_wind_selection = AltitudePlannerWindSelection::Gfs;
         session.coordinator.winds_aloft_acquisition_phase = WindsAloftAcquisitionPhase::Requested;
         return changed_session_update_outcome_for_flight_plan(session);
     }
@@ -22869,12 +22870,36 @@ mod tests {
             action.action_uid.clone().expect("action UID"),
         )
         .expect("request winds download");
+        {
+            let sessions = lock_sessions();
+            assert_eq!(
+                session_ref(&sessions, init.handle)
+                    .expect("session")
+                    .coordinator
+                    .altitude_planner_wind_selection,
+                AltitudePlannerWindSelection::Gfs,
+                "fetching a forecast must also select the forecast model",
+            );
+        }
         assert!(
             live_feed_cache_acquisition_directive_in_session(init.handle)
                 .expect("cache directive")
                 .winds_aloft_download_requested
         );
         let requested = get_session_snapshot(init.handle).expect("requested snapshot");
+        let requested_plan = requested
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("requested active plan");
+        assert!(
+            planner_wind_row(
+                requested_plan,
+                crate::AltitudePlannerForecastRowId::ReadyForecast,
+            )
+            .selected,
+            "the planner UI must show the forecast model selected while its download is pending",
+        );
         assert_eq!(
             requested
                 .data_status_page_state

@@ -22,6 +22,85 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavKvStoreReplacementTest {
+    private val navKvOnlyResourceIo = SessionResourceIo(
+        fetch = { resource -> error("unexpected non-NAVKV fetch for ${resource.id}") },
+        ingest = { resource, _ -> error("unexpected non-NAVKV ingest for ${resource.id}") },
+    )
+
+    @Test
+    fun comparisonCanLoadAdditionalForecastPagesAfterMutationSnapshotAndWhenWarm() {
+        val directory = Files.createTempDirectory("nav-kv-forecast-comparison-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", FakeNavKvBridge().nativeBridge)
+        val fetched = CopyOnWriteArrayList<String>()
+        val resident = mutableSetOf<String>()
+        val resourceIo = SessionResourceIo(
+            fetch = { resource ->
+                assertTrue(resource.source is CoreResourceSource.LiveFeedPackageMember)
+                fetched += resource.id
+                resource.id.encodeToByteArray()
+            },
+            ingest = { resource, bytes ->
+                assertEquals(resource.id, bytes.decodeToString())
+                resident += resource.id
+            },
+        )
+        val selectedAltitudePage = "live_nav_kv/winds-aloft/forecast/page/0128"
+        val otherAltitudePage = "live_nav_kv/winds-aloft/forecast/page/0129"
+        fun request(id: String, state: String) = """{
+            "state":"$state","invalidations":["flight_plan"],"resources":[{
+                "id":"$id","source":{
+                    "kind":"live_feed_package_member","product":"winds-aloft",
+                    "version":"forecast","blob_sha256":"abc123",
+                    "member_path":"page_${id.substringAfterLast('/')}"
+                }
+            }]
+        }"""
+        var mutationCalls = 0
+        var snapshotCalls = 0
+        var comparisonCalls = 0
+
+        try {
+            val mutation = store.runPagedSessionOperation(
+                resourceIo = resourceIo,
+                resumeSnapshot = {
+                    snapshotCalls += 1
+                    assertTrue(selectedAltitudePage in resident)
+                    """{"state":"complete","result":"selected altitude"}"""
+                },
+                operation = {
+                    mutationCalls += 1
+                    request(selectedAltitudePage, "need_snapshot_resources")
+                },
+            )
+            assertTrue(mutation.resumedSnapshot)
+            assertEquals(listOf("flight_plan"), mutation.invalidations)
+            assertEquals(1, mutationCalls)
+            assertEquals(1, snapshotCalls)
+            assertEquals(listOf(selectedAltitudePage), fetched.toList())
+
+            // The comparison samples more altitudes than the mutation's selected-altitude
+            // snapshot. A warm cache must not be required for the follow-up query to work.
+            repeat(2) {
+                val comparison = store.runPagedSessionOperation(resourceIo = resourceIo) {
+                    comparisonCalls += 1
+                    if (otherAltitudePage !in resident) {
+                        request(otherAltitudePage, "need_resources")
+                    } else {
+                        """{"state":"complete","result":"all altitudes"}"""
+                    }
+                }
+                assertEquals("all altitudes", comparison.result.jsonPrimitive.content)
+                assertEquals(listOf(selectedAltitudePage, otherAltitudePage), fetched.toList())
+            }
+            assertEquals(3, comparisonCalls)
+        } finally {
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
+
     @Test
     fun pagedOperationFetchesAFrontierConcurrentlyAndIngestsInRequestOrder() {
         val directory = Files.createTempDirectory("nav-kv-concurrent-frontier-test").toFile()
@@ -39,18 +118,20 @@ class NavKvStoreReplacementTest {
         try {
             val result = caller.submit<PagedSessionOperationResult> {
                 store.runPagedSessionOperation(
-                    fetchSessionResource = { resource ->
-                        val concurrency = active.incrementAndGet()
-                        peak.updateAndGet { previous -> maxOf(previous, concurrency) }
-                        allStarted.countDown()
-                        try {
-                            check(release.await(2, TimeUnit.SECONDS))
-                            resource.id.encodeToByteArray()
-                        } finally {
-                            active.decrementAndGet()
-                        }
-                    },
-                    ingestSessionResource = { resource, _ -> ingested += resource.id },
+                    resourceIo = SessionResourceIo(
+                        fetch = { resource ->
+                            val concurrency = active.incrementAndGet()
+                            peak.updateAndGet { previous -> maxOf(previous, concurrency) }
+                            allStarted.countDown()
+                            try {
+                                check(release.await(2, TimeUnit.SECONDS))
+                                resource.id.encodeToByteArray()
+                            } finally {
+                                active.decrementAndGet()
+                            }
+                        },
+                        ingest = { resource, _ -> ingested += resource.id },
+                    ),
                     operation = {
                         operationCalls += 1
                         if (operationCalls == 1) {
@@ -95,6 +176,10 @@ class NavKvStoreReplacementTest {
 
         try {
             val invalidations = store.pumpSessionResourceEffects(
+                resourceIo = SessionResourceIo(
+                    fetch = { error("provider unavailable") },
+                    ingest = { _, _ -> error("failed fetch must not be ingested") },
+                ),
                 drainSessionResourceEffects = {
                     drains += 1
                     if (drains == 1) {
@@ -103,8 +188,6 @@ class NavKvStoreReplacementTest {
                         "[]"
                     }
                 },
-                fetchSessionResource = { error("provider unavailable") },
-                ingestSessionResource = { _, _ -> error("failed fetch must not be ingested") },
                 reportSessionResourceFailure = { resource, error ->
                     reported = resource.id to error.message.orEmpty()
                 },
@@ -136,7 +219,7 @@ class NavKvStoreReplacementTest {
 
         try {
             val firstOperation = executor.submit<PagedSessionOperationResult> {
-                store.runPagedSessionOperation {
+                store.runPagedSessionOperation(resourceIo = navKvOnlyResourceIo) {
                     firstOperationCalls += 1
                     if (firstOperationCalls == 1) {
                         val outcome = pageResourceRequest()
@@ -151,7 +234,7 @@ class NavKvStoreReplacementTest {
             assertTrue(firstOutcomeComputed.await(2, TimeUnit.SECONDS))
 
             val peerOperation = executor.submit<PagedSessionOperationResult> {
-                store.runPagedSessionOperation {
+                store.runPagedSessionOperation(resourceIo = navKvOnlyResourceIo) {
                     peerOperationCalls += 1
                     if (peerOperationCalls == 1) {
                         pageResourceRequest()
@@ -184,14 +267,14 @@ class NavKvStoreReplacementTest {
 
         try {
             var preloadCalls = 0
-            store.runPagedSessionOperation {
+            store.runPagedSessionOperation(resourceIo = navKvOnlyResourceIo) {
                 preloadCalls += 1
                 if (preloadCalls == 1) pageResourceRequest() else """{"state":"complete","result":null}"""
             }
 
             var stuckCalls = 0
             val error = runCatching {
-                store.runPagedSessionOperation {
+                store.runPagedSessionOperation(resourceIo = navKvOnlyResourceIo) {
                     stuckCalls += 1
                     pageResourceRequest()
                 }
@@ -217,8 +300,10 @@ class NavKvStoreReplacementTest {
 
         try {
             val outcome = store.runPagedSessionOperation(
-                fetchSessionResource = { error("terrain tile is unavailable") },
-                ingestSessionResource = { _, bytes -> ingestedBytes = bytes },
+                resourceIo = SessionResourceIo(
+                    fetch = { error("terrain tile is unavailable") },
+                    ingest = { _, bytes -> ingestedBytes = bytes },
+                ),
                 operation = {
                     operationCalls += 1
                     if (operationCalls == 1) {

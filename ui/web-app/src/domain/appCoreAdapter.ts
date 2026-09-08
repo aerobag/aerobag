@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { UiAirwayRouteDragPhase } from "../generated/sessionPageWire";
 import type {
   AltitudeComparisonPanelUiView,
   AppUiState,
@@ -116,7 +117,7 @@ export type {
   UiSurfaceStatusControlId,
   UiSurfaceStatusState,
 } from "../generated/sessionPageWire";
-import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
+import { latLonToWorld, viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { packageSourceBaseUrl } from "./packageSourceUrl";
 import {
   advanceSharedNavKvStore,
@@ -841,6 +842,9 @@ export interface UiSession {
   previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(input: string): Promise<UiSessionSnapshot>;
   performAirwayPickerAction(actionId: string): Promise<UiSessionSnapshot>;
+  performAirwayRoutingAction(actionId: string): Promise<UiSessionSnapshot>;
+  dragAirwayRoute(editId: string, phase: UiAirwayRouteDragPhase, position: LatLon, snapRadiusNm: number, viaInsertIndex: number, moveViaIndex: number | null): Promise<UiSessionSnapshot>;
+  airwayRoutingViewport(width: number, height: number, rotationDeg: number): Promise<MapViewportState | null>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
   describePlateProcedureLoads(plateId: string): Promise<ProcedureLoadMenu>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
@@ -1704,6 +1708,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       appendFlightPlanEntry: async (input) => {
         return performFlightPlanCommand({ kind: "append_entry", input });
+      },
+      performAirwayRoutingAction: async (actionId) => performFlightPlanCommand({ kind: "perform_airway_routing_action", action_id: actionId }),
+      dragAirwayRoute: async (editId, phase, position, snapRadiusNm, viaInsertIndex, moveViaIndex) => performFlightPlanCommand({
+        kind: "drag_airway_route", edit_id: editId, phase, position, snap_radius_nm: snapRadiusNm,
+        via_insert_index: viaInsertIndex, move_via_index: moveViaIndex,
+      }),
+      airwayRoutingViewport: async (width, height, rotationDeg) => {
+        const frame = await queryFlightPlan<{center: LatLon; zoom: number; rotation_deg: number} | null>({kind: "airway_routing_viewport", width, height, rotation_deg: rotationDeg});
+        if (!frame) return null;
+        const center = latLonToWorld(frame.center.lat, frame.center.lon);
+        return {centerWorldX: center.x, centerWorldY: center.y, zoom: frame.zoom, rotationDeg: frame.rotation_deg};
       },
       performAirwayPickerAction: async (actionId) => {
         return performFlightPlanCommand({ kind: "perform_airway_picker_action", action_id: actionId });

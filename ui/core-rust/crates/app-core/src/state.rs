@@ -24,6 +24,7 @@ pub struct AppState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUiState {
+    pub map_interaction: app_ui_contracts::session::UiMapInteraction,
     pub active_plan: Option<FlightPlanUiState>,
     pub aircraft_plan_view_path: String,
     pub ownship: OwnshipUiState,
@@ -145,6 +146,7 @@ pub(crate) fn project_app_ui_state_from_ui_parts(
     last_content_report: Option<&ContentReport>,
 ) -> AppUiState {
     AppUiState {
+        map_interaction: crate::map_controller::interaction_policy(false),
         active_plan,
         aircraft_plan_view_path: String::new(),
         ownship,

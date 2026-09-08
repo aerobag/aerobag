@@ -9,6 +9,7 @@ mod aircraft_library;
 pub mod aircraft_profiles;
 pub mod airport_info;
 mod airway_picker;
+mod airway_routing;
 pub mod altitude_planner;
 pub mod chart_page;
 pub mod cloud;
@@ -47,6 +48,7 @@ pub mod planning;
 pub mod playback;
 pub mod publication;
 pub mod raster_tiles;
+mod routing_editor;
 mod sequencing;
 pub mod session;
 mod session_projection;
@@ -66,6 +68,7 @@ pub use airport_info::{
     AirportCommunicationUiView, AirportInfoFactSectionUiView, AirportInfoFactUiView,
     AirportInfoUiView, AirportRunwayPatternUiView, AirportRunwayUiView, AirportSolarEventUiView,
 };
+pub use airway_routing::AirwayNavigationMode;
 pub use altitude_planner::{
     format_trajectory_wind, parse_altitude_planner_departure_input, project_altitude_planner_ui,
     AircraftPerformanceProfile, AltitudeComparisonPanelUiView, AltitudeComparisonUiView,
@@ -373,11 +376,12 @@ pub use time_display::{
 };
 pub use ui_geometry::{
     ui_clamp_image_viewport, ui_lat_lon_to_screen, ui_plate_image_point, ui_project_ahead,
-    ui_route_distance_pill_layout, ui_screen_to_world, ui_select_situation_ring,
+    ui_route_distance_pill_layout, ui_route_label_bounds, ui_route_label_indices,
+    ui_route_label_layout, ui_screen_to_world, ui_select_situation_ring,
     ui_spaced_route_chevron_placements, ui_transform_screen_point, ui_world_to_screen,
-    UiGeometryPoint, UiImageViewportGeometry, UiMapViewportGeometry, UiRouteChevronPlacement,
-    UiRouteDistancePillLayout, UiSituationCardinalLabel, UiSituationRingLayout,
-    UiSituationTickMark,
+    UiGeometryPoint, UiImageViewportGeometry, UiLabelRect, UiMapViewportGeometry,
+    UiRouteChevronPlacement, UiRouteDistancePillLayout, UiRouteLabelCandidate, UiRouteLabelLayout,
+    UiSituationCardinalLabel, UiSituationRingLayout, UiSituationTickMark,
 };
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,

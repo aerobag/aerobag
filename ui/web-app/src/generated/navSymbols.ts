@@ -28,8 +28,84 @@ export const mapSelectionSpotPegPath = "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.
 export const mapSelectionSpotDotPath = "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z";
 export const manualSequenceChevronPath = "M -5 -7 L 4 0 L -5 7";
 export const manualSequenceChevronSpacing = 24;
-export type ActionSymbolId = "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
+export type ActionSymbolId = "vor" | "gnss" | "apply_route" | "undo" | "redo" | "activate_next_leg" | "stop_navigation" | "toggle_sequencing_suspension" | "pause_nexrad_animation" | "resume_nexrad_animation" | "restore_direct_to" | "activate_leg" | "direct_to" | "insert_before" | "move_up" | "insert_after" | "move_down" | "remove" | "remove_all_above" | "select_departure" | "add_airway" | "find_route" | "select_arrival" | "select_approach" | "waypoint_info" | "plates" | "show_plate" | "remove_procedure" | "weather" | "insert" | "remove_from_flight_plan" | "csup" | "wx" | "airport_info" | "open_weather_camera";
 export const actionSymbols = {
+  "vor": [
+    {
+      "path": "M -16 0 L -8 -14 L 8 -14 L 16 0 L 8 14 L -8 14 Z",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.7,
+      "line_cap": null,
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M 0 -2.4 C 1.325 -2.4 2.4 -1.325 2.4 0 C 2.4 1.325 1.325 2.4 0 2.4 C -1.325 2.4 -2.4 1.325 -2.4 0 C -2.4 -1.325 -1.325 -2.4 0 -2.4 Z",
+      "paint": "action_glyph",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "gnss": [
+    {
+      "path": "M -20 -9 H -9 V 9 H -20 Z M 9 -9 H 20 V 9 H 9 Z",
+      "paint": "action_panels",
+      "fill": "button_icon_secondary",
+      "stroke": "button_icon",
+      "stroke_width": 1.8,
+      "line_cap": null,
+      "line_join": "round",
+      "transform_degrees": -35
+    },
+    {
+      "path": "M -14.5 -9 V 9 M -20 0 H -9 M 14.5 -9 V 9 M 9 0 H 20 M -9 0 H -5 M 5 0 H 9",
+      "paint": "action_grid",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 1.3,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": -35
+    },
+    {
+      "path": "M -5 -6 H 5 V 6 H -5 Z",
+      "paint": "action_body",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": -35
+    },
+    {
+      "path": "M 0 6 V 12 M -5 12 Q 0 20 5 12",
+      "paint": "action_antenna",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": -35
+    }
+  ],
+  "apply_route": [
+    {
+      "path": "M -14 0 H 14 M 0 -14 V 14",
+      "paint": "action_glyph",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 3.2,
+      "line_cap": "round",
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
   "undo": [
     {
       "path": "M -15.035 -4.472 C -18.058 3.831 -13.776 13.013 -5.472 16.035 C 2.831 19.058 12.013 14.776 15.035 6.472 C 18.058 -1.831 13.776 -11.013 5.472 -14.035 C 3.276 -14.835 0.933 -15.142 -1.395 -14.939 L -3.302 -14.338",
@@ -465,6 +541,28 @@ export const actionSymbols = {
     }
   ],
   "add_airway": [
+    {
+      "path": "M -19 9 L -7 -5 L 6 8 L 19 1",
+      "paint": "action_route",
+      "fill": "none",
+      "stroke": "button_icon",
+      "stroke_width": 2.8,
+      "line_cap": "round",
+      "line_join": "round",
+      "transform_degrees": null
+    },
+    {
+      "path": "M -19 6 C -17.343 6 -16 7.343 -16 9 C -16 10.657 -17.343 12 -19 12 C -20.657 12 -22 10.657 -22 9 C -22 7.343 -20.657 6 -19 6 Z M -7 -8 C -5.343 -8 -4 -6.657 -4 -5 C -4 -3.343 -5.343 -2 -7 -2 C -8.657 -2 -10 -3.343 -10 -5 C -10 -6.657 -8.657 -8 -7 -8 Z M 6 5 C 7.657 5 9 6.343 9 8 C 9 9.657 7.657 11 6 11 C 4.343 11 3 9.657 3 8 C 3 6.343 4.343 5 6 5 Z M 19 -2 C 20.657 -2 22 -0.657 22 1 C 22 2.657 20.657 4 19 4 C 17.343 4 16 2.657 16 1 C 16 -0.657 17.343 -2 19 -2 Z",
+      "paint": "action_nodes",
+      "fill": "button_icon",
+      "stroke": null,
+      "stroke_width": null,
+      "line_cap": null,
+      "line_join": null,
+      "transform_degrees": null
+    }
+  ],
+  "find_route": [
     {
       "path": "M -19 9 L -7 -5 L 6 8 L 19 1",
       "paint": "action_route",

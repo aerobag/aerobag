@@ -60,6 +60,10 @@ pub enum NavKvQuery {
     AirwayBranches {
         airway_name: String,
     },
+    AirwayRoutingManifest,
+    AirwayRoutingChunk {
+        index: u32,
+    },
     AirwaySpatial {
         lat_tile: i32,
         lon_tile: i32,
@@ -144,6 +148,12 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
             procedure_airport_id,
         } => nav_ref_position_key(nav_ref, procedure_airport_id.as_deref()),
         NavKvQuery::NavRefSymbol { nav_ref } => nav_ref_symbol_key(nav_ref),
+        NavKvQuery::AirwayRoutingManifest => {
+            Some(product_contracts::AIRWAY_ROUTING_MANIFEST_KEY.into())
+        }
+        NavKvQuery::AirwayRoutingChunk { index } => {
+            Some(product_contracts::airway_routing_chunk_key(*index))
+        }
         NavKvQuery::AirwayBranches { airway_name } => {
             Some(format!("airway/{}", upper_component(airway_name)))
         }

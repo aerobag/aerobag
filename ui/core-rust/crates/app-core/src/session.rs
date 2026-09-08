@@ -21,6 +21,8 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use crate::airway_routing::AirwayNavigationMode;
+
 pub use crate::settings_controller::{
     DisplayDimTimeout, InactivitySleepTimeout, NexradAcquisitionDirective,
     NexradAcquisitionPreferences, NexradCoverageMode, NexradOfflineProfile, NexradUpdateCadence,
@@ -491,6 +493,7 @@ struct RegisteredFlightPlanRowAction {
 
 #[derive(Clone)]
 enum RegisteredFlightPlanRowActionCommand {
+    OpenRoutingEditor,
     PerformSessionMutation,
     OpenAirwayPicker,
     Effect(crate::FlightPlanRowActionEffect),
@@ -4036,6 +4039,17 @@ pub fn tick_bad_autopilot_in_session(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlightPlanSessionCommand {
+    PerformAirwayRoutingAction {
+        action_id: String,
+    },
+    DragAirwayRoute {
+        edit_id: String,
+        phase: app_ui_contracts::session::UiAirwayRouteDragPhase,
+        position: LatLon,
+        snap_radius_nm: f64,
+        via_insert_index: u32,
+        move_via_index: Option<u32>,
+    },
     PerformAirwayPickerAction {
         action_id: String,
     },
@@ -4077,6 +4091,11 @@ pub enum FlightPlanSessionCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlightPlanSessionQuery {
+    AirwayRoutingViewport {
+        width: f64,
+        height: f64,
+        rotation_deg: f64,
+    },
     ChartPageState,
     AirportInfo {
         airport_id: String,
@@ -4108,6 +4127,42 @@ pub fn perform_flight_plan_command_in_session(
         advance_session_wall_clock(&mut session, now_epoch_ms);
     }
     match command {
+        FlightPlanSessionCommand::PerformAirwayRoutingAction { action_id } => {
+            let slot = session_slot(handle)?;
+            let mut session = slot.lock_running()?;
+            let transition = session.flight_plan.routing_editor().advance(
+                session_nav_kv_store(&session)?,
+                &session_plan(&session)?,
+                &action_id,
+                session.nav_data.epoch(),
+            );
+            apply_routing_editor_transition(&mut session, transition)
+        }
+        FlightPlanSessionCommand::DragAirwayRoute {
+            edit_id,
+            phase,
+            position,
+            snap_radius_nm,
+            via_insert_index,
+            move_via_index,
+        } => {
+            let slot = session_slot(handle)?;
+            let mut session = slot.lock_running()?;
+            let transition = session
+                .flight_plan
+                .routing_editor()
+                .drag(
+                    session.nav_data.epoch(),
+                    &edit_id,
+                    phase,
+                    position,
+                    snap_radius_nm,
+                    via_insert_index,
+                    move_via_index,
+                )
+                .map(crate::routing_editor::Transition::Editor);
+            apply_routing_editor_transition(&mut session, transition)
+        }
         FlightPlanSessionCommand::PerformAirwayPickerAction { action_id } => {
             perform_airway_picker_action_in_session(handle, &action_id)
         }
@@ -4175,6 +4230,23 @@ pub fn query_flight_plan_in_session(
     query: FlightPlanSessionQuery,
 ) -> AppResult<HadOperationOutcome> {
     match query {
+        FlightPlanSessionQuery::AirwayRoutingViewport {
+            width,
+            height,
+            rotation_deg,
+        } => {
+            let slot = session_slot(handle)?;
+            let session = slot.lock_running()?;
+            let viewport = session.flight_plan.routing_editor().viewport(
+                session.nav_data.epoch(),
+                width,
+                height,
+                rotation_deg,
+            );
+            Ok(HadOperationOutcome::complete(
+                serde_json::to_value(viewport).map_err(internal_json_error)?,
+            ))
+        }
         FlightPlanSessionQuery::ChartPageState => chart_page_state_in_session(handle),
         FlightPlanSessionQuery::AirportInfo {
             airport_id,
@@ -4945,6 +5017,39 @@ pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     ))
 }
 
+fn apply_routing_editor_transition(
+    session: &mut UiSession,
+    transition: Result<crate::routing_editor::Transition, HadReadError>,
+) -> AppResult<HadOperationOutcome> {
+    match transition {
+        Ok(crate::routing_editor::Transition::Editor(editor)) => {
+            if let Some(mode) = editor
+                .navigation_mode()
+                .filter(|mode| *mode != session.settings.airway_navigation_mode())
+            {
+                return run_session_model_transaction(session, |session| {
+                    session.settings.set_airway_navigation_mode(mode);
+                    session.flight_plan.set_routing_editor(editor);
+                    session.projection_versions.force_flight_plan_update();
+                    Ok(Vec::new())
+                });
+            }
+            session.flight_plan.set_routing_editor(editor);
+            changed_session_update_outcome_for_flight_plan(session)
+        }
+        Ok(crate::routing_editor::Transition::Apply(plan)) => {
+            commit_session_flight_plan_edit_with_invalidations_outcome(session, plan)
+        }
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
+}
+
 fn open_airway_picker_in_session(
     session: &mut UiSession,
     row_uid: &str,
@@ -5563,6 +5668,31 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
             action.row_uid == row_uid
                 && matches!(
                     action.command,
+                    RegisteredFlightPlanRowActionCommand::OpenRoutingEditor
+                )
+        })
+    {
+        let transition = session
+            .flight_plan
+            .routing_editor()
+            .open(
+                session_nav_kv_store(session)?,
+                &session_plan(session)?,
+                &row_uid,
+                session.nav_data.epoch(),
+                session.settings.airway_navigation_mode(),
+            )
+            .map(crate::routing_editor::Transition::Editor);
+        return apply_routing_editor_transition(session, transition);
+    }
+    if session
+        .runtime
+        .flight_plan_row_actions
+        .get(&action_uid)
+        .is_some_and(|action| {
+            action.row_uid == row_uid
+                && matches!(
+                    action.command,
                     RegisteredFlightPlanRowActionCommand::OpenAirwayPicker
                 )
         })
@@ -5603,6 +5733,7 @@ pub fn flight_plan_row_action_decision_in_session(
         })?;
     let (perform_session_mutation, effect) = match action.command {
         RegisteredFlightPlanRowActionCommand::PerformSessionMutation
+        | RegisteredFlightPlanRowActionCommand::OpenRoutingEditor
         | RegisteredFlightPlanRowActionCommand::OpenAirwayPicker => (true, None),
         RegisteredFlightPlanRowActionCommand::Effect(effect) => (false, Some(effect)),
     };
@@ -12211,6 +12342,7 @@ fn session_projection_dependencies(
         },
         application_shell,
         flight_plan: FlightPlanProjectionDependencies {
+            map_interaction: snapshot.app_ui_state.map_interaction,
             route_revision: session.flight_plan.route_revision(),
             active_plan: snapshot.app_ui_state.active_plan.clone(),
             aircraft_plan_view_path: snapshot.app_ui_state.aircraft_plan_view_path.clone(),
@@ -12334,6 +12466,7 @@ fn assemble_session_update(
         flight_plan: changed_projection_patch(previous.flight_plan, current.flight_plan, || {
             projection_assignments! {
                 ["flight_plan_route_revision"] => snapshot.flight_plan_route_revision,
+                ["app_ui_state", "map_interaction"] => snapshot.app_ui_state.map_interaction,
                 ["app_ui_state", "active_plan"] => snapshot.app_ui_state.active_plan,
                 ["app_ui_state", "aircraft_plan_view_path"] => snapshot.app_ui_state.aircraft_plan_view_path,
             }
@@ -13102,6 +13235,10 @@ fn project_session_app_ui_state(
         }
     }
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
+        active_plan.airway_routing = session
+            .flight_plan
+            .routing_editor()
+            .view_with_symbols(session.nav_data.epoch(), session.nav_data.store())?;
         active_plan.airway_picker = session
             .flight_plan
             .airway_picker()
@@ -13110,6 +13247,13 @@ fn project_session_app_ui_state(
         enrich_altitude_planner_winds_acquisition(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
     }
+    app_ui_state.map_interaction = crate::map_controller::interaction_policy(
+        app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.airway_routing.as_ref())
+            .is_some_and(|editor| editor.map_open),
+    );
     refresh_registered_flight_plan_row_actions(session, app_ui_state.active_plan.as_ref())
         .map_err(|error| HadReadError::Fatal(error.message))?;
     app_ui_state.flight_data_banner = project_flight_data_banner(
@@ -13404,6 +13548,13 @@ fn registered_flight_plan_row_action(
                 row_uid: row.uid.clone(),
                 before: action.id == FlightPlanRowActionId::InsertBefore,
             }
+        }
+        FlightPlanRowActionId::FindRoute => {
+            return Ok(RegisteredFlightPlanRowAction {
+                row_uid: row.uid.clone(),
+                dismiss_tray: false,
+                command: RegisteredFlightPlanRowActionCommand::OpenRoutingEditor,
+            });
         }
         FlightPlanRowActionId::AddAirway => {
             return Ok(RegisteredFlightPlanRowAction {
@@ -15148,6 +15299,7 @@ mod tests {
                 "flight_plan",
                 BTreeSet::from([
                     "app_ui_state/active_plan",
+                    "app_ui_state/map_interaction",
                     "app_ui_state/aircraft_plan_view_path",
                     "flight_plan_route_revision",
                 ]),
@@ -32315,6 +32467,284 @@ mod tests {
         assert_eq!(
             plan.resolved_legs.last().unwrap().to,
             NavRef::Navaid("PSC".into())
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn airway_routing_navigation_preference_persists_and_rolls_back_with_editor_history() {
+        use crate::routing_editor::RoutingEditor;
+        let store = crate::airway_routing::tests::store();
+        let plan = crate::build_flight_plan(FlightPlan {
+            route_components: ["START", "END"]
+                .into_iter()
+                .map(|id| RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix(id.into()),
+                })
+                .collect(),
+            ..FlightPlan::empty()
+        })
+        .unwrap();
+        let mut session = isolated_test_session(Some(store.clone()));
+        session.flight_plan = FlightPlanController::new(plan.clone(), Vec::new()).unwrap();
+        let epoch = session.nav_data.epoch();
+        let row = crate::project_ui_state(&plan).display_rows[0].uid.clone();
+        let draft = RoutingEditor::default()
+            .open(
+                &store,
+                &plan,
+                &row,
+                epoch,
+                session.settings.airway_navigation_mode(),
+            )
+            .unwrap();
+        let vor = draft.view(epoch).unwrap().controls[0]
+            .button
+            .action_id
+            .clone();
+        session.flight_plan.set_routing_editor(draft.clone());
+        let storage = Arc::new(MemorySettingsStorage::default());
+        session.coordinator.persistence_storage = Some(storage.clone());
+        let transition = draft.advance(&store, &plan, &vor, epoch);
+        assert!(matches!(
+            apply_routing_editor_transition(&mut session, transition).unwrap(),
+            HadOperationOutcome::Complete { .. }
+        ));
+        assert_eq!(
+            session.settings.airway_navigation_mode(),
+            AirwayNavigationMode::Vor
+        );
+        let document =
+            decode_session_persistence(&storage.read_settings().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            document.preferences.airway_navigation_mode,
+            AirwayNavigationMode::Vor
+        );
+        let mut restored = isolated_test_session(None);
+        restored.coordinator.persistence_storage = Some(storage.clone());
+        load_session_persistence_from_storage(&mut restored).unwrap();
+        assert_eq!(
+            restored.settings.airway_navigation_mode(),
+            AirwayNavigationMode::Vor
+        );
+
+        let before = session.flight_plan.routing_editor().clone();
+        let revision = session.coordinator.session_revision;
+        let undo = before
+            .view(epoch)
+            .unwrap()
+            .controls
+            .into_iter()
+            .map(|control| control.button)
+            .find(|button| button.label == "Undo")
+            .unwrap()
+            .action_id;
+        session.coordinator.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
+        let transition = before.advance(&store, &plan, &undo, epoch);
+        let error = apply_routing_editor_transition(&mut session, transition).unwrap_err();
+        assert!(error.message.contains("injected settings write failure"));
+        assert_eq!(session.coordinator.session_revision, revision);
+        assert_eq!(session.flight_plan.routing_editor(), &before);
+        assert_eq!(
+            session.settings.airway_navigation_mode(),
+            AirwayNavigationMode::Vor
+        );
+
+        session.coordinator.persistence_storage = Some(storage.clone());
+        let transition = before.advance(&store, &plan, &undo, epoch);
+        apply_routing_editor_transition(&mut session, transition).unwrap();
+        let document =
+            decode_session_persistence(&storage.read_settings().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            document.preferences.airway_navigation_mode,
+            AirwayNavigationMode::Gnss
+        );
+        assert_eq!(
+            session.flight_plan.active_plan().unwrap().route_components,
+            plan.route_components
+        );
+        let legacy: SettingsPreferences = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(legacy.airway_navigation_mode, AirwayNavigationMode::Gnss);
+    }
+
+    #[test]
+    fn airway_routing_session_publishes_drafts_and_commits_only_on_apply() {
+        let store = crate::airway_routing::tests::store();
+        let original = crate::build_flight_plan(FlightPlan {
+            route_components: ["START", "END"]
+                .into_iter()
+                .map(|name| RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix(name.into()),
+                })
+                .collect(),
+            ..FlightPlan::empty()
+        })
+        .unwrap();
+        let init = create_ui_session(original.clone(), &[], None, None).unwrap();
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        let row = &snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .unwrap()
+            .display_rows[0];
+        let action = row
+            .action_matrix
+            .iter()
+            .flatten()
+            .find(|a| a.id == crate::FlightPlanRowActionId::FindRoute)
+            .unwrap();
+        assert!(action.enabled);
+        let decision = flight_plan_row_action_decision_in_session(
+            init.handle,
+            row.uid.clone(),
+            action.uid.clone(),
+        )
+        .unwrap();
+        assert!(decision.perform_session_mutation);
+        assert!(!decision.dismiss_tray);
+        let outcome = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformRowAction {
+                row_uid: row.uid.clone(),
+                action_uid: action.uid.clone(),
+            },
+            1000,
+        )
+        .unwrap();
+        fn editor(outcome: HadOperationOutcome) -> app_ui_contracts::session::UiAirwayRouting {
+            let HadOperationOutcome::Complete {
+                result,
+                invalidations,
+                ..
+            } = outcome
+            else {
+                panic!("complete draft")
+            };
+            assert!(
+                invalidations.is_empty(),
+                "draft does not invalidate the flight plan route"
+            );
+            let update: app_ui_contracts::session::UiSessionUpdate =
+                serde_json::from_value(result).unwrap();
+            let assignment = update
+                .flight_plan
+                .unwrap()
+                .assignments
+                .into_iter()
+                .find(|a| a.path == ["app_ui_state", "active_plan"])
+                .unwrap();
+            serde_json::from_value::<FlightPlanUiState>(assignment.value)
+                .unwrap()
+                .airway_routing
+                .unwrap()
+        }
+        let draft = editor(outcome);
+        assert!(
+            draft.endpoints.is_empty(),
+            "single endpoint bypasses the picker"
+        );
+        assert!(draft.map_open);
+        assert!(draft.route.is_some());
+        let interaction = get_session_snapshot(init.handle)
+            .unwrap()
+            .app_ui_state
+            .map_interaction;
+        assert_eq!(
+            interaction.mode,
+            app_ui_contracts::session::UiMapInteractionMode::FindRoute
+        );
+        assert!(!interaction.inspect && !interaction.hover_weather && interaction.edit_route);
+        assert_eq!(
+            get_session_snapshot(init.handle)
+                .unwrap()
+                .app_state
+                .active_plan
+                .as_ref()
+                .unwrap()
+                .route_components,
+            original.route_components
+        );
+        let next = editor(
+            perform_flight_plan_command_in_session(
+                init.handle,
+                FlightPlanSessionCommand::DragAirwayRoute {
+                    edit_id: draft.edit_id,
+                    phase: app_ui_contracts::session::UiAirwayRouteDragPhase::Commit,
+                    position: crate::airway_routing::position(
+                        &crate::airway_routing::tests::graph().nodes[2],
+                    ),
+                    snap_radius_nm: 1.0,
+                    via_insert_index: 0,
+                    move_via_index: None,
+                },
+                1002,
+            )
+            .unwrap(),
+        );
+        let apply = next
+            .controls
+            .iter()
+            .map(|control| &control.button)
+            .find(|b| b.label == "Apply")
+            .unwrap();
+        assert!(matches!(
+            perform_flight_plan_command_in_session(
+                init.handle,
+                FlightPlanSessionCommand::PerformAirwayRoutingAction {
+                    action_id: apply.action_id.clone()
+                },
+                1003
+            )
+            .unwrap(),
+            HadOperationOutcome::Complete { .. }
+        ));
+        let snapshot = get_session_snapshot(init.handle).unwrap();
+        assert_eq!(
+            snapshot.app_ui_state.map_interaction.mode,
+            app_ui_contracts::session::UiMapInteractionMode::Explore
+        );
+        assert!(
+            snapshot.app_ui_state.map_interaction.inspect
+                && snapshot.app_ui_state.map_interaction.hover_weather
+                && !snapshot.app_ui_state.map_interaction.edit_route
+        );
+        assert!(snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .unwrap()
+            .airway_routing
+            .is_none());
+        assert_eq!(
+            snapshot
+                .app_state
+                .active_plan
+                .as_ref()
+                .unwrap()
+                .airway_segment(1)
+                .unwrap()
+                .name,
+            "V2"
+        );
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformControl {
+                control_id: crate::FlightPlanControlId::Undo,
+            },
+            1004,
+        )
+        .unwrap();
+        assert_eq!(
+            get_session_snapshot(init.handle)
+                .unwrap()
+                .app_state
+                .active_plan
+                .as_ref()
+                .unwrap()
+                .route_components,
+            original.route_components
         );
         destroy_session(init.handle);
     }

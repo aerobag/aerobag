@@ -4,6 +4,12 @@
 
 use crate::{chart_page::PlateGeoref, geometry::LatLon, ownship::SituationRingCandidate};
 
+mod route_labels;
+pub use route_labels::{
+    ui_route_label_bounds, ui_route_label_indices, ui_route_label_layout, UiLabelRect,
+    UiRouteLabelCandidate, UiRouteLabelLayout,
+};
+
 pub const UI_WORLD_SIZE: f64 = 256.0;
 const UI_MAX_MERCATOR_LATITUDE: f64 = 85.051_128_78;
 const EARTH_RADIUS_NM: f64 = 3440.065;
@@ -461,6 +467,75 @@ mod tests {
     #[test]
     fn matches_shared_ui_geometry_vectors() {
         let vectors: Value = serde_json::from_str(CONFORMANCE).expect("geometry conformance JSON");
+        for vector in vectors["route_label_runs"]
+            .as_array()
+            .expect("route label run vectors")
+        {
+            let legs = vector["legs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|leg| UiRouteLabelCandidate {
+                    from: point(&leg["from_point"]),
+                    to: point(&leg["to_point"]),
+                    label: leg["label"].as_str().unwrap(),
+                    important: leg["important"].as_bool().unwrap(),
+                })
+                .collect::<Vec<_>>();
+            let actual =
+                ui_route_label_indices(&legs, number(vector, "width"), number(vector, "height"));
+            let expected = vector["expected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i.as_u64().unwrap() as usize)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{}", vector["name"]);
+        }
+        for vector in vectors["route_labels"]
+            .as_array()
+            .expect("route label vectors")
+        {
+            let rect = |value: &Value| UiLabelRect {
+                left: number(value, "left"),
+                top: number(value, "top"),
+                right: number(value, "right"),
+                bottom: number(value, "bottom"),
+            };
+            let occupied = vector["occupied"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(rect)
+                .collect::<Vec<_>>();
+            let actual = ui_route_label_layout(
+                point(&vector["from_point"]),
+                point(&vector["to_point"]),
+                number(vector, "width"),
+                number(vector, "height"),
+                number(vector, "text_width"),
+                &occupied,
+                vector["important"].as_bool().unwrap(),
+            );
+            let expected = &vector["expected"];
+            if expected.is_null() {
+                assert!(actual.is_none(), "{}: {actual:?}", vector["name"]);
+            } else {
+                let actual = actual.unwrap_or_else(|| panic!("{} omitted", vector["name"]));
+                assert_point(actual.anchor, point(&expected["anchor"]));
+                assert_point(actual.baseline, point(&expected["baseline"]));
+                assert_eq!(
+                    actual.bounds,
+                    rect(&expected["bounds"]),
+                    "{}",
+                    vector["name"]
+                );
+                assert_eq!(
+                    actual.leader,
+                    (!expected["leader"].is_null()).then(|| point(&expected["leader"]))
+                );
+            }
+        }
         let antimeridian = &vectors["map_antimeridian"];
         assert_point(
             ui_world_to_screen(

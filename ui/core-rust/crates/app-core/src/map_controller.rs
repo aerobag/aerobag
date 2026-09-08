@@ -377,3 +377,26 @@ mod tests {
         assert!(!controller.project().rebuilt);
     }
 }
+
+/// Map actions belong to a mode. Both platforms consume this policy instead of
+/// independently deciding which inspection handlers coexist with an editor.
+pub(crate) fn interaction_policy(
+    route_editor_open: bool,
+) -> app_ui_contracts::session::UiMapInteraction {
+    use app_ui_contracts::session::{UiMapInteraction, UiMapInteractionMode};
+    if route_editor_open {
+        UiMapInteraction {
+            mode: UiMapInteractionMode::FindRoute,
+            inspect: false,
+            hover_weather: false,
+            edit_route: true,
+        }
+    } else {
+        UiMapInteraction {
+            mode: UiMapInteractionMode::Explore,
+            inspect: true,
+            hover_weather: true,
+            edit_route: false,
+        }
+    }
+}

@@ -25,6 +25,15 @@ function functionSource(name: string): string {
 }
 
 describe("map interaction boundaries", () => {
+  it("attaches inspection and hover actions to the core map mode", () => {
+    expect(functionSource("handlePointerRelease")).toContain("mapInteraction.inspect &&");
+    const hover = sourceBetween("const handleMetarHoverEnter", "const handleMetarHoverLeave");
+    expect(hover).toContain("!mapInteraction.hover_weather");
+    expect(appSource).toContain("if (!mapInteraction.inspect) setMapSelection(null)");
+    expect(appSource).toContain("if (!mapInteraction.hover_weather) setHoverWeather(null)");
+    expect(functionSource("inspectNavRef")).toContain("if (mapInteraction.inspect) setMapSelection");
+  });
+
   it("routes production map orientation through the planned map-up value", () => {
     expect(appSource).toContain("const plannedMapUpDeg = resolveMapUpDegrees(");
     expect(appSource).toContain("mapUpDeg={plannedMapUpDeg}");

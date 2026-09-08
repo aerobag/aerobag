@@ -35,6 +35,7 @@ pub(crate) struct ApplicationShellProjectionDependencies {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FlightPlanProjectionDependencies {
+    pub map_interaction: app_ui_contracts::session::UiMapInteraction,
     pub route_revision: u64,
     pub active_plan: Option<FlightPlanUiState>,
     pub aircraft_plan_view_path: String,
@@ -248,6 +249,7 @@ mod tests {
             },
             application_shell: application_shell_dependencies(),
             flight_plan: FlightPlanProjectionDependencies {
+                map_interaction: crate::map_controller::interaction_policy(false),
                 route_revision: 0,
                 active_plan: None,
                 aircraft_plan_view_path: String::new(),

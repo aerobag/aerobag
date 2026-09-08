@@ -162,6 +162,18 @@ fn expected_actions(
             (ActivateLeg, !first && !already_active),
             (DirectTo, true),
             (AddAirway, !is_airway(plan, index + 1)),
+            (
+                FindRoute,
+                !crate::flight_plan_has_direct_to_overlay(plan)
+                    && plan
+                        .route_components
+                        .iter()
+                        .skip(index + 1)
+                        .take_while(|component| {
+                            !matches!(component, RouteComponent::Procedure { .. })
+                        })
+                        .any(|component| matches!(component, RouteComponent::Waypoint { .. })),
+            ),
             (WaypointInfo, false),
             (Weather, false),
             (Plates, false),
@@ -619,4 +631,90 @@ fn sequencing_through_airway_junctions_keeps_map_rows_and_remaining_distance_tog
             }
         }
     }
+}
+
+#[test]
+fn airway_route_replacement_preserves_two_intervals_and_occurrence_boundaries() {
+    let base = waypoints(&[
+        fix("PREFIX"),
+        fix("START"),
+        fix("END"),
+        fix("FINAL"),
+        fix("START"),
+    ]);
+    let first = replace_airway_route_span(
+        &base,
+        1,
+        2,
+        vec![
+            airway("V2", &[fix("ENTRY"), fix("JOIN")]),
+            airway("V298", &[fix("JOIN"), fix("EXIT")]),
+        ],
+    )
+    .unwrap();
+    assert_canonical(&first);
+    let end_uid = base.route_component_uids[2].clone();
+    let end = first
+        .route_component_uids
+        .iter()
+        .position(|uid| uid == &end_uid)
+        .unwrap();
+    let second = replace_airway_route_span(
+        &first,
+        end,
+        end + 1,
+        vec![airway("V9", &[fix("END"), fix("FINAL")])],
+    )
+    .unwrap();
+    assert_eq!(
+        &second.route_component_uids[..=end],
+        &first.route_component_uids[..=end]
+    );
+    let reopened = replace_airway_route_span(
+        &second,
+        1,
+        end,
+        vec![airway("V4", &[fix("START"), fix("MID"), fix("END")])],
+    )
+    .unwrap();
+    assert_canonical(&reopened);
+    assert_eq!(
+        &reopened.route_component_uids[..2],
+        &base.route_component_uids[..2]
+    );
+    assert_eq!(
+        &reopened.route_component_uids[3..],
+        &second.route_component_uids[end..]
+    );
+    assert_eq!(
+        reopened.route_component_uids.last(),
+        base.route_component_uids.last(),
+        "repeated START remains its own occurrence"
+    );
+    assert_eq!(reopened.airway_segment(4).unwrap().name, "V9");
+    assert!(
+        replace_airway_route_span(
+            &second,
+            3,
+            end,
+            vec![airway("V4", &[fix("START"), fix("END")])]
+        )
+        .is_err(),
+        "airway group cannot be an interval boundary"
+    );
+}
+
+#[test]
+fn airway_route_replacement_rejects_interior_directs() {
+    let base = waypoints(&[fix("START"), fix("END")]);
+    assert!(replace_airway_route_span(
+        &base,
+        0,
+        1,
+        vec![
+            airway("V2", &[fix("A"), fix("B")]),
+            airway("V4", &[fix("C"), fix("D")])
+        ]
+    )
+    .is_err());
 }

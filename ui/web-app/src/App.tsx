@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { useMapGeometryBinding } from "./MapGeometryLayer";
+import { AirwayRoutingOverlay } from "./AirwayRoutingOverlay";
 import { Fragment, Profiler, createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -2420,6 +2422,7 @@ function OperationalApp() {
     active_nav_db: null,
     next_nav_db_maintenance_epoch_ms: null,
     app_ui_state: {
+      map_interaction: null,
       active_plan: null,
       aircraft_plan_view_path: "",
       ownship: {
@@ -3958,7 +3961,7 @@ function OperationalApp() {
     );
   }
 
-  if (!appReady || !planUiState || !selectedMap || !rasterMapState || !mapViewport) {
+  if (!appReady || !planUiState || !selectedMap || !rasterMapState || !mapViewport || !sessionSnapshot.app_ui_state.map_interaction) {
     return (
       <main className="startupProgressHost" aria-live="polite">
         <span>{startupProgress.detail ?? startupProgress.phase}</span>
@@ -3991,6 +3994,7 @@ function OperationalApp() {
           flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
           page={page}
           debugState={sessionSnapshot.debug_state}
+          mapInteraction={sessionSnapshot.app_ui_state.map_interaction}
           mapLayerState={mapLayerState}
           selectedMap={selectedMap}
           selectedFamily={selectedFamily}
@@ -4133,6 +4137,10 @@ function OperationalApp() {
               await uiSession.performFlightPlanRowAction(rowUid, actionUid),
               "flight_plan_row_action",
             );
+          }}
+          onPerformAirwayRoutingAction={async (actionId) => {
+            if (!uiSession) return;
+            applySessionSnapshot(await uiSession.performAirwayRoutingAction(actionId), "airway_routing_action");
           }}
           onPerformAirwayPickerAction={async (actionId) => {
             if (!uiSession) return;
@@ -4495,6 +4503,7 @@ function MapPage(props: {
   flightPlanRouteRevision: number;
   page: AppPage;
   debugState: UiDebugState;
+  mapInteraction: import("./generated/sessionPageWire").UiMapInteraction;
   mapLayerState: UiMapLayerState;
   selectedMap: RasterMapUiState;
   selectedFamily: RasterMapUiState["family_options"][number] | null;
@@ -4587,6 +4596,7 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapInteraction = props.mapInteraction;
   const mapBearingTransformRef = useRef<HTMLDivElement | null>(null);
   const mapContentTransformRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["family", "layers", "procedureWarning", "status", "ownship"] as const);
@@ -6304,6 +6314,16 @@ function MapPage(props: {
     viewport,
   ]);
 
+  const {binding: mapGeometry, bindContent: bindMapContent} = useMapGeometryBinding(
+    viewport, surfaceSize.width, surfaceSize.height, containerRef, viewportRef, mapUpDegRef, mapContentTransformRef,
+  );
+  useEffect(() => {
+    mapSelectionRequestGenerationRef.current += 1;
+    hoverWeatherRequestSerialRef.current += 1;
+    if (!mapInteraction.inspect) setMapSelection(null);
+    if (!mapInteraction.hover_weather) setHoverWeather(null);
+  }, [mapInteraction.mode]);
+
   const overlayTransform = useMemo(() => {
     if (!mapOverlayFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
@@ -6377,11 +6397,11 @@ function MapPage(props: {
     if (!hoverWeather) {
       return;
     }
-    if (mapSelection || trayGroup.scrimOpen || !mapIsVisible || !mapLayerState.metars.visible) {
+    if (!mapInteraction.hover_weather || mapSelection || trayGroup.scrimOpen || !mapIsVisible || !mapLayerState.metars.visible) {
       hoverWeatherRequestSerialRef.current += 1;
       setHoverWeather(null);
     }
-  }, [hoverWeather, mapIsVisible, mapLayerState.metars.visible, mapSelection, trayGroup.scrimOpen]);
+  }, [hoverWeather, mapInteraction.hover_weather, mapIsVisible, mapLayerState.metars.visible, mapSelection, trayGroup.scrimOpen]);
   useEffect(() => {
     setHoverWeather((current) => {
       if (
@@ -6871,6 +6891,7 @@ function MapPage(props: {
       dragRef.current = null;
     }
     if (
+      mapInteraction.inspect &&
       clickCandidate &&
       clickCandidate.pointerId === event.pointerId &&
       activePointersRef.current.size === 0 &&
@@ -6999,12 +7020,14 @@ function MapPage(props: {
       await recenterOnNavRef(navRef);
       return;
     }
+    const generation = ++mapSelectionRequestGenerationRef.current;
     const inspection = await uiSession.queryMapSelectionForNavRef(
       viewportRef.current,
       surfaceSize.width,
       surfaceSize.height,
       navRef,
     );
+    if (generation !== mapSelectionRequestGenerationRef.current) return;
     const position = inspection.position;
     const centerWorld = latLonToWorld(position.lat, position.lon);
     const nextViewport = {
@@ -7029,7 +7052,7 @@ function MapPage(props: {
       mapUpDegRef.current,
     );
     const selectedItem = mapSelectionItemById(inspection.selection, inspection.selected_item_id ?? null);
-    setMapSelection({
+    if (mapInteraction.inspect) setMapSelection({
       point,
       result: inspection.selection,
       selectedItem,
@@ -7096,6 +7119,7 @@ function MapPage(props: {
 
   const handleMetarHoverEnter = useCallback((event: React.PointerEvent<SVGGElement>, feature: VisibleMetarFeature) => {
     if (
+      !mapInteraction.hover_weather ||
       event.pointerType !== "mouse" ||
       !uiSession ||
       mapSelection ||
@@ -7149,7 +7173,7 @@ function MapPage(props: {
           });
         }
       });
-  }, [mapSelection, surfaceSize.height, surfaceSize.width, trayGroup.scrimOpen, uiSession]);
+  }, [mapInteraction.hover_weather, mapSelection, surfaceSize.height, surfaceSize.width, trayGroup.scrimOpen, uiSession]);
 
   const handleMetarHoverLeave = useCallback((feature: VisibleMetarFeature) => {
     const stationId = normalizedStationId(feature.station_id);
@@ -7456,7 +7480,7 @@ function MapPage(props: {
         <div
           ref={containerRef}
           className="mapSurface chartSurface"
-          data-testid="map-surface"
+          data-testid="map-surface" data-map-mode={mapInteraction.mode}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerRelease}
@@ -7466,6 +7490,16 @@ function MapPage(props: {
           onWheel={handleWheel}
           onDoubleClick={handleDoubleClick}
         >
+        {mapInteraction.edit_route && props.planUiState?.airway_routing?.map_open && uiSession ? (
+          <AirwayRoutingOverlay
+            view={props.planUiState.airway_routing} session={uiSession}
+            geometry={mapGeometry}
+            renderSymbol={(feature) => <VectorPointSymbol feature={feature} showLabel={false} />}
+            renderActionIcon={(symbolId) => { const layers = actionSymbol(symbolId); return layers ? <ActionIcon layers={layers} /> : null; }}
+            onViewport={onViewportChange} onSnapshot={props.onSessionSnapshot}
+            onError={(error) => showDisabledAction(errorMessage(error))}
+          />
+        ) : null}
         <span
           hidden
           data-testid={`parity:viewport:center-x:${viewport.centerWorldX.toFixed(3)}:center-y:${viewport.centerWorldY.toFixed(3)}:zoom:${viewport.zoom.toFixed(3)}:up:${plannedMapUpDeg.toFixed(1)}`}
@@ -7511,7 +7545,7 @@ function MapPage(props: {
           )}
         />
         {trayGroup.scrimOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
-        {mapSelection ? (
+        {mapInteraction.inspect && mapSelection ? (
           <>
             <TrayScrim ariaLabel="Close map selection" onClose={() => setMapSelection(null)} />
             {mapSelection.detailModal?.kind === "weather" ? (
@@ -7567,7 +7601,7 @@ function MapPage(props: {
             )}
           </>
         ) : null}
-        {!mapSelection && hoverWeather ? (
+        {mapInteraction.hover_weather && !mapSelection && hoverWeather ? (
           <WeatherDetailModal
             detail={hoverWeather.detail}
             className="hoverWeatherDetailModal"
@@ -7602,7 +7636,7 @@ function MapPage(props: {
             ["--map-up-deg" as string]: `${plannedMapUpDeg}deg`,
           }}
         >
-        <div ref={mapContentTransformRef} className="mapContentTransform">
+        <div ref={bindMapContent} className="mapContentTransform">
           <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
             <div
               className="rasterTileLayer"
@@ -9468,6 +9502,7 @@ function FlightPlanPage(props: {
   onPerformFlightPlanControl: (controlId: FlightPlanControlId) => void | Promise<void>;
   onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
   onPerformAirwayPickerAction: (actionId: string) => Promise<void>;
+  onPerformAirwayRoutingAction: (actionId: string) => Promise<void>;
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null) => void | Promise<void>;
   onFlightPlanColumnAction: (actionId: string) => Promise<void>;
   onTimeDisplayAction: (actionId: string) => Promise<void>;
@@ -9479,6 +9514,23 @@ function FlightPlanPage(props: {
     detail: AirportInfoUiView | null;
     error: string | null;
   } | null>(null);
+  const airwayRouting = props.planUiState?.airway_routing ?? null;
+  const openedRoutingId = useRef<string | null>(null);
+  const priorRoutingRow = useRef<string | null>(null);
+  useEffect(() => {
+    if (airwayRouting?.map_open && openedRoutingId.current !== airwayRouting.edit_id) {
+      openedRoutingId.current = airwayRouting.edit_id;
+      setSelectedWaypointUid(null);
+      props.onSelectPage("map");
+    } else if (!airwayRouting && priorRoutingRow.current) {
+      setSelectedWaypointUid((current) => current === priorRoutingRow.current ? null : current);
+    }
+    priorRoutingRow.current = airwayRouting?.row_uid ?? null;
+  }, [airwayRouting, props.onSelectPage]);
+  const performAirwayRoutingAction = async (actionId: string) => {
+    try { await props.onPerformAirwayRoutingAction(actionId); }
+    catch (error) { showDisabledAction(errorMessage(error)); }
+  };
   const airwayPicker = props.planUiState?.airway_picker ?? null;
   const priorAirwayPickerRow = useRef<string | null>(null);
   useEffect(() => {
@@ -9493,6 +9545,7 @@ function FlightPlanPage(props: {
     catch (error) { showDisabledAction(errorMessage(error)); }
   };
   const dismissAirwayPicker = () => {
+    if (airwayRouting && !airwayRouting.map_open) void performAirwayRoutingAction(airwayRouting.dismiss_action_id);
     if (airwayPicker) void performAirwayPickerAction(airwayPicker.dismiss_action_id);
   };
   const [procedurePicker, setProcedurePicker] = useState<{
@@ -10028,7 +10081,7 @@ function FlightPlanPage(props: {
 
     setWaypointModalTop(top);
     setWaypointModalMaxHeight(maxHeight);
-  }, [airwayPicker, selectedRow, selectedWaypointAnchor, rowActions.length]);
+  }, [airwayRouting, airwayPicker, selectedRow, selectedWaypointAnchor, rowActions.length]);
 
   useEffect(() => {
     if (!airwayPicker) {
@@ -10589,6 +10642,18 @@ function FlightPlanPage(props: {
                     </button>
                   </>
                 ) : null}
+              </div>
+            ) : airwayRouting && !airwayRouting.map_open ? (
+              <div className="waypointActionTray" data-testid="plan-airway-routing-endpoints">
+                <div className="planGuidanceSummary">{airwayRouting.title}</div>
+                <div className="airwayPickerSections waypointActionTray">
+                  {airwayRouting.endpoints.map((button) => (
+                    <button key={button.action_id} type="button" className="trayButton airwayChoiceButton"
+                      data-testid={button.test_id} disabled={!button.enabled}
+                      onPointerDown={stopPointer} onPointerUp={stopPointer}
+                      onClick={() => void performAirwayRoutingAction(button.action_id)}>{button.label}</button>
+                  ))}
+                </div>
               </div>
             ) : airwayPicker ? (
               <div className="waypointActionTray" data-testid="plan-airway-picker">

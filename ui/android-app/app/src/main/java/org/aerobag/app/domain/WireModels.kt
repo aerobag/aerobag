@@ -26,6 +26,7 @@ import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 data class WireAppUiState(
+    val map_interaction: org.aerobag.app.generated.UiMapInteraction? = null,
     val active_plan: WireFlightPlanUiState? = null,
     val aircraft_plan_view_path: String = "",
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
@@ -1209,6 +1210,7 @@ data class WireNavElementUiView(
 @Serializable
 data class WireFlightPlanUiState(
     val airway_picker: org.aerobag.app.generated.UiAirwayPicker? = null,
+    val airway_routing: org.aerobag.app.generated.UiAirwayRouting? = null,
     val plan_id: String,
     val plan_version: Long,
     val display_rows: List<WireFlightPlanDisplayRowUiView>,

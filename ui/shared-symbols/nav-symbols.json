@@ -1,6 +1,12 @@
 {
   "schema_version": 1,
   "paths": {
+    "action_apply_plus": "M -14 0 H 14 M 0 -14 V 14",
+    "action_vor_hex": "M -16 0 L -8 -14 L 8 -14 L 16 0 L 8 14 L -8 14 Z",
+    "action_satellite_body": "M -5 -6 H 5 V 6 H -5 Z",
+    "action_satellite_panels": "M -20 -9 H -9 V 9 H -20 Z M 9 -9 H 20 V 9 H 9 Z",
+    "action_satellite_grid": "M -14.5 -9 V 9 M -20 0 H -9 M 14.5 -9 V 9 M 9 0 H 20 M -9 0 H -5 M 5 0 H 9",
+    "action_satellite_antenna": "M 0 6 V 12 M -5 12 Q 0 20 5 12",
     "airport_circle_marker": "M 0 -12 C 6.627 -12 12 -6.627 12 0 C 12 6.627 6.627 12 0 12 C -6.627 12 -12 6.627 -12 0 C -12 -6.627 -6.627 -12 0 -12 Z",
     "airport_fuel_marker": "M -4 -17 H 4 V -11.314 A 12 12 0 0 1 11.314 -4 H 17 V 4 H 11.314 A 12 12 0 0 1 4 11.314 V 17 H -4 V 11.314 A 12 12 0 0 1 -11.314 4 H -17 V -4 H -11.314 A 12 12 0 0 1 -4 -11.314 Z",
     "weather_camera_body": "M -11 -7 H -5 L -2 -11 H 4 L 7 -7 H 11 V 8 H -11 Z",
@@ -82,6 +88,19 @@
     "data_status_warning_glyph": "M 0.543 -45 H 0.965 L 49.343 44.457 V 45 H -48.318 L -48.8 44.457 H -49.343 Q -1.387 -43.009 0.543 -45 Z M 0 -33.66 L -40.054 38.787 V 39.812 H 40.597 V 39.269 Q 1.749 -31.971 0 -33.66 Z M 0.543 -20.268 Q 5.188 -20.268 5.188 -16.166 Q 2.051 20.811 0.543 20.811 Q -0.845 20.811 -4.102 -16.709 Q -2.594 -20.268 0.543 -20.268 Z M 0.483 25.275 Q 1.629 25.275 2.714 25.878 Q 3.861 26.481 4.464 27.567 Q 5.127 28.653 5.127 29.92 Q 5.127 31.126 4.524 32.212 Q 3.921 33.298 2.775 33.901 Q 1.629 34.504 0.483 34.504 Q -0.724 34.504 -1.81 33.901 Q -2.895 33.298 -3.559 32.212 Q -4.162 31.126 -4.162 29.92 Q -4.162 28.653 -3.559 27.567 Q -2.895 26.481 -1.81 25.878 Q -0.724 25.275 0.483 25.275 Z"
   },
   "symbols": {
+    "action_vor": [
+      { "path": "action_vor_hex", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 2.7, "line_join": "round" },
+      { "path": "compass_hub", "paint": "action_glyph", "fill": "button_icon" }
+    ],
+    "action_gnss": [
+      { "path": "action_satellite_panels", "paint": "action_panels", "fill": "button_icon_secondary", "stroke": "button_icon", "stroke_width": 1.8, "line_join": "round", "transform_degrees": -35 },
+      { "path": "action_satellite_grid", "paint": "action_grid", "fill": "none", "stroke": "button_icon", "stroke_width": 1.3, "transform_degrees": -35 },
+      { "path": "action_satellite_body", "paint": "action_body", "fill": "button_icon", "transform_degrees": -35 },
+      { "path": "action_satellite_antenna", "paint": "action_antenna", "fill": "none", "stroke": "button_icon", "stroke_width": 2, "line_cap": "round", "transform_degrees": -35 }
+    ],
+    "action_apply_route": [
+      { "path": "action_apply_plus", "paint": "action_glyph", "fill": "none", "stroke": "button_icon", "stroke_width": 3.2, "line_cap": "round" }
+    ],
     "action_activate_leg": [
       { "path": "action_activate_leg_route", "paint": "action_route", "fill": "none", "stroke": "flight_plan_guidance", "stroke_width": 3.2, "line_cap": "round", "line_join": "round" },
       { "path": "action_activate_leg_arrow", "paint": "action_arrow", "fill": "flight_plan_guidance" }
@@ -325,6 +344,9 @@
     ]
   },
   "action_symbols": {
+    "vor": "action_vor",
+    "gnss": "action_gnss",
+    "apply_route": "action_apply_route",
     "undo": "action_undo",
     "redo": "action_redo",
     "activate_next_leg": "action_next",
@@ -343,6 +365,7 @@
     "remove_all_above": "action_remove_all_above",
     "select_departure": "action_select_departure",
     "add_airway": "action_add_airway",
+    "find_route": "action_add_airway",
     "select_arrival": "action_select_arrival",
     "select_approach": "action_select_approach",
     "waypoint_info": "action_waypoint_info",

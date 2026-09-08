@@ -11,7 +11,7 @@ export type {
   WaypointIdentifierSuggestion,
   WaypointSuggestionNavRef,
 } from "../generated/navQueryWire";
-import type { FlightPlanControlUiView, UiAirwayPicker } from "../generated/sessionPageWire";
+import type { FlightPlanControlUiView, UiAirwayPicker, UiAirwayRouting } from "../generated/sessionPageWire";
 export type {
   FlightPlanControlId,
   FlightPlanControlUiView,
@@ -204,6 +204,7 @@ export type NavElementUiView = {
 
 export type FlightPlanUiState = {
   airway_picker: UiAirwayPicker | null;
+  airway_routing: UiAirwayRouting | null;
   plan_id: string;
   plan_version: number;
   data_columns: FlightDataColumn[];
@@ -553,6 +554,7 @@ export type Situation = {
 };
 
 export type AppUiState = {
+  map_interaction: import("../generated/sessionPageWire").UiMapInteraction | null;
   active_plan: FlightPlanUiState | null;
   aircraft_plan_view_path: string;
   ownship: OwnshipUiState;

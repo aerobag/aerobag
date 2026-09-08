@@ -378,6 +378,8 @@ pub struct SettingsPreferences {
     #[serde(default)]
     pub flight_plan_ete_scope: crate::FlightPlanEteScope,
     #[serde(default)]
+    pub airway_navigation_mode: crate::AirwayNavigationMode,
+    #[serde(default)]
     pub accepted_disclaimer_agreement_ids: BTreeSet<String>,
 }
 
@@ -451,6 +453,17 @@ impl SettingsController {
         self.preferences.clone()
     }
 
+    pub fn airway_navigation_mode(&self) -> crate::AirwayNavigationMode {
+        self.preferences.airway_navigation_mode
+    }
+
+    pub fn set_airway_navigation_mode(&mut self, mode: crate::AirwayNavigationMode) {
+        if self.preferences.airway_navigation_mode != mode {
+            self.preferences.airway_navigation_mode = mode;
+            self.note_change(false);
+        }
+    }
+
     pub fn aircraft_editor(&self) -> Option<&crate::aircraft_library::AircraftLibraryEditorModel> {
         self.aircraft_editor.as_ref()
     }
@@ -479,10 +492,7 @@ impl SettingsController {
             || self.preferences.nexrad_acquisition != preferences.nexrad_acquisition
             || self.preferences.accepted_disclaimer_agreement_ids
                 != preferences.accepted_disclaimer_agreement_ids;
-        let flight_data_changed = self.preferences.disabled_flight_data_cell_ids
-            != preferences.disabled_flight_data_cell_ids
-            || self.preferences.flight_plan_ete_scope != preferences.flight_plan_ete_scope;
-        if !static_changed && !flight_data_changed {
+        if self.preferences == preferences {
             return false;
         }
         self.preferences = preferences;

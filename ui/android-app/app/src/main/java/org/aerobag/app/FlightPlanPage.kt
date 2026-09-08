@@ -389,6 +389,22 @@ internal fun FlightPlanPage(
     val keyboardController = LocalSoftwareKeyboardController.current
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
+    val airwayRouting = planUiState?.airwayRouting
+    var openedRoutingId by remember { mutableStateOf<String?>(null) }
+    var priorRoutingRow by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(airwayRouting) {
+        if (airwayRouting?.mapOpen == true && openedRoutingId != airwayRouting.editId) {
+            openedRoutingId = airwayRouting.editId
+            onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
+            onSelectPage(AppPage.Map)
+        } else if (airwayRouting == null && (overlayState as? FlightPlanOverlayState.RowTray)?.rowUid == priorRoutingRow) {
+            onOverlayAction(FlightPlanOverlayAction.DismissRowTray)
+        }
+        priorRoutingRow = airwayRouting?.rowUid
+    }
+    fun performAirwayRoutingAction(actionId: String) {
+        sessionWorkRunner.submitAirwayRoutingAction(actionId, onResult = onApplySessionSnapshot, onError = onSessionCommandFailure)
+    }
     val airwayPicker = planUiState?.airwayPicker
     var priorAirwayPickerRow by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(airwayPicker) {
@@ -404,6 +420,7 @@ internal fun FlightPlanPage(
         )
     }
     fun dismissAirwayPicker() {
+        airwayRouting?.takeUnless { it.mapOpen }?.let { performAirwayRoutingAction(it.dismissActionId) }
         airwayPicker?.let { performAirwayPickerAction(it.dismissActionId) }
     }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
@@ -1206,6 +1223,22 @@ internal fun FlightPlanPage(
                             enabled = true,
                             onSelect = { procedurePicker = picker.copy(selectedProcedureId = null, options = null) },
                         )
+                    }
+                }
+            } else if (airwayRouting != null && !airwayRouting.mapOpen) {
+                MenuPanel(
+                    modifier = Modifier.align(Alignment.TopStart)
+                        .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
+                        .heightIn(max = waypointTrayMaxHeight).zIndex(5f),
+                    width = waypointTrayWidth,
+                ) {
+                    MenuPanelRow(label = airwayRouting.title, active = false, enabled = false, onSelect = {})
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                        items(airwayRouting.endpoints.size) { index ->
+                            val button = airwayRouting.endpoints[index]
+                            MenuPanelRow(label = button.label, active = false, enabled = button.enabled,
+                                testTag = button.testId, onSelect = { performAirwayRoutingAction(button.actionId) })
+                        }
                     }
                 }
             } else if (airwayPicker != null) {

@@ -1,0 +1,13 @@
+/* SPDX-FileCopyrightText: 2026 Aerobag contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later */
+.airwayRoutingOverlay { position: absolute; inset: 0; z-index: 12; pointer-events: none; }
+.airwayRoutingGeometry { position: absolute; inset: 0; overflow: visible; touch-action: none; pointer-events: none; z-index: 12; }
+.airwayRoutingGeometry .routeDragHit { pointer-events: stroke; cursor: grab; }
+.airwayRoutingGeometry .routeDragHit:active { cursor: grabbing; }
+.airwayRoutingGeometry text { font: 600 13px system-ui; fill: #37204e; stroke: white; stroke-width: 4px; paint-order: stroke; text-anchor: middle; }
+.airwayRoutingGeometry text.highest { fill: #941426; font-weight: 800; }
+.airwayRoutingPanel { position: absolute; bottom: calc(var(--thumb) + 2 * var(--thumb-gap)); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); padding: 8px; border-radius: 12px; background: var(--theme-tray-bg, var(--panel)); color: var(--ink); box-shadow: 0 2px 12px #0005; pointer-events: auto; display: flex; flex-direction: column; gap: 6px; }
+.airwayRoutingSummary, .airwayRoutingMessage { font-size: 13px; }
+.airwayRoutingControls { display: flex; gap: 8px; padding: 4px; overflow-x: auto; }
+.airwayRoutingControls .trayButton { flex: 0 0 var(--thumb); }
+.airwayRoutingGeometry .routePin { pointer-events: all; }

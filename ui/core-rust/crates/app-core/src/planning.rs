@@ -33,6 +33,8 @@ pub(crate) fn direct_to_ownship_disabled_reason(
 const WAYPOINT_REMOVE_DISABLED_REASON: &str =
     "This waypoint cannot be removed from the flight plan.";
 const AIRWAY_REMOVE_DISABLED_REASON: &str = "This airway cannot be removed from the flight plan.";
+const FIND_ROUTE_DISABLED_REASON: &str =
+    "Choose an earlier waypoint, or add a waypoint after this one.";
 const PROCEDURE_REMOVE_DISABLED_REASON: &str =
     "This procedure cannot be removed from the flight plan.";
 const REMOVE_ALL_ABOVE_DISABLED_REASON: &str =
@@ -1036,6 +1038,8 @@ pub struct DirectToState {
 pub struct FlightPlanUiState {
     #[serde(default)]
     pub airway_picker: Option<app_ui_contracts::session::UiAirwayPicker>,
+    #[serde(default)]
+    pub airway_routing: Option<app_ui_contracts::session::UiAirwayRouting>,
     pub plan_id: String,
     pub plan_version: u64,
     #[serde(default)]
@@ -1071,6 +1075,7 @@ pub enum FlightPlanRowActionId {
     WaypointInfo,
     Weather,
     AddAirway,
+    FindRoute,
     SelectDeparture,
     SelectArrival,
     SelectApproach,
@@ -2304,6 +2309,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
 
     FlightPlanUiState {
         airway_picker: None,
+        airway_routing: None,
         plan_id: plan.id.clone(),
         plan_version: plan.version,
         display_rows,
@@ -3120,6 +3126,16 @@ fn apply_component_mutation_action_availability(
                 FlightPlanRowActionId::RemoveAllAbove => {
                     Some(validate_remove_all_above_attachments(plan, component_index))
                 }
+                FlightPlanRowActionId::FindRoute => Some(
+                    if crate::routing_editor::eligible_ends(plan, component_index).is_empty() {
+                        Err(AppError {
+                            kind: AppErrorKind::UnsupportedOperation,
+                            message: FIND_ROUTE_DISABLED_REASON.into(),
+                        })
+                    } else {
+                        Ok(())
+                    },
+                ),
                 FlightPlanRowActionId::MoveUp => Some(validate_component_move_attachments(
                     plan,
                     component_index,
@@ -3321,6 +3337,7 @@ fn waypoint_actions_for_row(input: WaypointRowActionsInput<'_>) -> Vec<FlightPla
                 FlightPlanRowActionId::AddAirway,
                 can_add_airway_after && origin_anchor.is_some(),
             ),
+            action(FlightPlanRowActionId::FindRoute, component_index.is_some()),
             procedure_action(
                 FlightPlanRowActionId::SelectDeparture,
                 ProcedureKind::Sid,
@@ -3592,6 +3609,7 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             FlightPlanRowActionId::AddAirway => {
                 "Airway insertion requires a named waypoint with airway connections."
             }
+            FlightPlanRowActionId::FindRoute => FIND_ROUTE_DISABLED_REASON,
             FlightPlanRowActionId::SelectDeparture => {
                 "Departures can be selected at the flight-plan origin only."
             }
@@ -3641,9 +3659,10 @@ fn action_matrix_from_actions(
             FlightPlanRowActionId::Remove,
             FlightPlanRowActionId::RemoveAllAbove,
         ],
+        vec![FlightPlanRowActionId::SelectDeparture],
         vec![
-            FlightPlanRowActionId::SelectDeparture,
             FlightPlanRowActionId::AddAirway,
+            FlightPlanRowActionId::FindRoute,
         ],
         vec![
             FlightPlanRowActionId::SelectArrival,
@@ -3811,6 +3830,7 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
         FlightPlanRowActionId::WaypointInfo => "Airport Info",
         FlightPlanRowActionId::Weather => "WX",
         FlightPlanRowActionId::AddAirway => "Add Airway",
+        FlightPlanRowActionId::FindRoute => "Find Route",
         FlightPlanRowActionId::SelectDeparture => "Select Departure",
         FlightPlanRowActionId::SelectArrival => "Select Arrival",
         FlightPlanRowActionId::SelectApproach => "Select Approach",
@@ -4760,6 +4780,100 @@ pub fn insert_airway_between_waypoints(
         airway,
         airway_legs,
     )
+}
+
+/// Replace one explicitly selected interval while retaining both boundary
+/// occurrences and every component outside it. The caller commits only once.
+pub(crate) fn replace_airway_route_span(
+    plan: &FlightPlan,
+    start: usize,
+    end: usize,
+    segments: Vec<(AirwaySegment, Vec<ResolvedLeg>)>,
+) -> AppResult<FlightPlan> {
+    let mut plan = crate::build_flight_plan(plan.clone())?;
+    let invalid = || AppError {
+        kind: AppErrorKind::UnsupportedOperation,
+        message: "Choose standalone waypoints around a route without procedures.".into(),
+    };
+    if start >= end
+        || end >= plan.route_components.len()
+        || segments.is_empty()
+        || crate::flight_plan_has_direct_to_overlay(&plan)
+        || !matches!(
+            plan.route_components[start],
+            RouteComponent::Waypoint { .. }
+        )
+        || !matches!(plan.route_components[end], RouteComponent::Waypoint { .. })
+        || plan.route_components[start + 1..end]
+            .iter()
+            .any(|component| matches!(component, RouteComponent::Procedure { .. }))
+    {
+        return Err(invalid());
+    }
+    let grouped = grouped_component_legs(&plan);
+    let mut rebuilt = (0..=start)
+        .map(|index| rebuilt_existing_component(&plan, &grouped, index))
+        .collect::<Vec<_>>();
+    let last = segments.len() - 1;
+    for (index, (airway, legs)) in segments.into_iter().enumerate() {
+        let matches_entry = matches!(&rebuilt.last().ok_or_else(invalid)?.component,RouteComponent::Waypoint{waypoint} if waypoint==&airway.entry);
+        if !matches_entry {
+            if index > 0 {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "Airway routing cannot insert an interior direct leg.".into(),
+                });
+            }
+            rebuilt.push(RebuiltRouteComponent {
+                uid: Some(allocate_route_component_uid(
+                    &mut plan.route_component_uid_counter,
+                )),
+                component: RouteComponent::Waypoint {
+                    waypoint: airway.entry.clone(),
+                },
+                preserved_legs: None,
+            });
+        }
+        let entry = FlightPlanWaypointId(
+            rebuilt
+                .last()
+                .and_then(|component| component.uid.clone())
+                .ok_or_else(invalid)?,
+        );
+        let matches_end = index == last
+            && matches!(&plan.route_components[end],RouteComponent::Waypoint{waypoint} if waypoint==&airway.exit);
+        let exit = if matches_end {
+            rebuilt_existing_component(&plan, &grouped, end)
+        } else {
+            RebuiltRouteComponent {
+                uid: Some(allocate_route_component_uid(
+                    &mut plan.route_component_uid_counter,
+                )),
+                component: RouteComponent::Waypoint {
+                    waypoint: airway.exit,
+                },
+                preserved_legs: None,
+            }
+        };
+        rebuilt.push(rebuilt_new_component(
+            RouteComponent::Airway {
+                airway: AirwaySegment {
+                    name: airway.name,
+                    branch_key: airway.branch_key,
+                    entry,
+                    exit: FlightPlanWaypointId(exit.uid.clone().ok_or_else(invalid)?),
+                },
+            },
+            Some(legs),
+        ));
+        rebuilt.push(exit);
+    }
+    let end_already_present = rebuilt.last().and_then(|component| component.uid.as_ref())
+        == plan.route_component_uids.get(end);
+    for index in (end + usize::from(end_already_present))..plan.route_components.len() {
+        rebuilt.push(rebuilt_existing_component(&plan, &grouped, index));
+    }
+    rebuild_plan_from_uid_components(&plan, rebuilt, GuidanceRebuildPolicy::PreserveByRowUid)
 }
 
 pub fn insert_airway_after_waypoint(
@@ -8809,6 +8923,7 @@ mod tests {
             FlightPlanRowActionId::WaypointInfo,
             FlightPlanRowActionId::Weather,
             FlightPlanRowActionId::AddAirway,
+            FlightPlanRowActionId::FindRoute,
             FlightPlanRowActionId::SelectDeparture,
             FlightPlanRowActionId::SelectArrival,
             FlightPlanRowActionId::SelectApproach,
@@ -8865,9 +8980,10 @@ mod tests {
                     FlightPlanRowActionId::Remove,
                     FlightPlanRowActionId::RemoveAllAbove,
                 ],
+                vec![FlightPlanRowActionId::SelectDeparture],
                 vec![
-                    FlightPlanRowActionId::SelectDeparture,
                     FlightPlanRowActionId::AddAirway,
+                    FlightPlanRowActionId::FindRoute
                 ],
                 vec![
                     FlightPlanRowActionId::SelectArrival,

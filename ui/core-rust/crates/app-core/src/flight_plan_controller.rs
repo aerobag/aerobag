@@ -162,6 +162,7 @@ impl Default for FlightPlanNavigationController {
 #[derive(Debug, Clone, PartialEq, Default)]
 struct FlightPlanModel {
     airway_picker: crate::airway_picker::AirwayPickerController,
+    routing_editor: crate::routing_editor::RoutingEditor,
     definition: FlightPlanDefinitionController,
     navigation: FlightPlanNavigationController,
     // Read-only composite cache for planners and projections that consume both domains.
@@ -236,6 +237,12 @@ pub(crate) struct FlightPlanController {
 }
 
 impl FlightPlanController {
+    pub(crate) fn routing_editor(&self) -> &crate::routing_editor::RoutingEditor {
+        &self.model.routing_editor
+    }
+    pub(crate) fn set_routing_editor(&mut self, editor: crate::routing_editor::RoutingEditor) {
+        self.model.routing_editor = editor;
+    }
     pub(crate) fn airway_picker(&self) -> &crate::airway_picker::AirwayPickerController {
         &self.model.airway_picker
     }
@@ -257,6 +264,7 @@ impl FlightPlanController {
         Ok(Self {
             model: FlightPlanModel {
                 airway_picker: Default::default(),
+                routing_editor: Default::default(),
                 definition: FlightPlanDefinitionController::new(definition),
                 navigation: FlightPlanNavigationController {
                     guidance,
@@ -834,6 +842,7 @@ impl FlightPlanController {
         self.model.navigation.guidance = plan.guidance.clone();
         self.model.navigation.guidance_leg_geometry = Arc::new(geometry_map(geometry));
         self.model.airway_picker.close();
+        self.model.routing_editor.close();
         self.model.active_plan = Some(plan);
         Ok(())
     }

@@ -124,6 +124,16 @@ class UiSessionWorkRunner(
         )
     }
 
+    fun submitAirwayRoutingAction(actionId: String, onResult: (UiSessionSnapshot) -> Unit, onError: (Throwable) -> Unit) {
+        submitMutation("performAirwayRoutingAction", { it.performAirwayRoutingAction(actionId) }, onResult, onError)
+    }
+
+    fun submitAirwayRouteDrag(editId: String, phase: org.aerobag.app.generated.UiAirwayRouteDragPhase,
+        position: LatLonPoint, snapRadiusNm: Double, viaInsertIndex: Int, moveViaIndex: Int?,
+        onResult: (UiSessionSnapshot) -> Unit, onError: (Throwable) -> Unit) {
+        submitMutation("dragAirwayRoute", { it.dragAirwayRoute(editId, phase, position, snapRadiusNm, viaInsertIndex, moveViaIndex) }, onResult, onError)
+    }
+
     fun submitAirwayPickerAction(
         actionId: String,
         onResult: (UiSessionSnapshot) -> Unit,

@@ -230,6 +230,87 @@
       ],
       "type": "string"
     },
+    "NavSymbolFeature": {
+      "additionalProperties": false,
+      "properties": {
+        "elevation_msl_ft": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "fuel_available": {
+          "default": false,
+          "type": "boolean"
+        },
+        "has_paved_runway": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "has_water_runway": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "heliport": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "longest_runway_heading_true_deg": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "obstacle_tone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obstacle_variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runway_length_ratio": {
+          "default": 0.0,
+          "format": "double",
+          "type": "number"
+        },
+        "style_class": {
+          "type": "string"
+        },
+        "symbol_kind": {
+          "type": "string"
+        },
+        "towered": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "label",
+        "symbol_kind",
+        "style_class"
+      ],
+      "type": "object"
+    },
     "PlatformCapabilities": {
       "additionalProperties": false,
       "properties": {
@@ -594,6 +675,278 @@
       ],
       "type": "object"
     },
+    "UiAirwayRoute": {
+      "additionalProperties": false,
+      "properties": {
+        "crossings": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayRouteCrossing"
+          },
+          "type": "array"
+        },
+        "junctions": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayRouteJunction"
+          },
+          "type": "array"
+        },
+        "legs": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayRouteLeg"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary",
+        "legs",
+        "junctions",
+        "crossings"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRouteControl": {
+      "additionalProperties": false,
+      "properties": {
+        "button": {
+          "$ref": "#/$defs/UiAirwayPickerButton"
+        },
+        "selected": {
+          "type": "boolean"
+        },
+        "symbol_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "button",
+        "selected",
+        "symbol_id"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRouteCrossing": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "position": {
+          "$ref": "#/$defs/UiAirwayRoutePosition"
+        }
+      },
+      "required": [
+        "label",
+        "position"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRouteDragPhase": {
+      "enum": [
+        "preview",
+        "commit",
+        "cancel"
+      ],
+      "title": "UiAirwayRouteDragPhase",
+      "type": "string"
+    },
+    "UiAirwayRouteJunction": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "node_id": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "$ref": "#/$defs/UiAirwayRoutePosition"
+        },
+        "symbol_feature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NavSymbolFeature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "position"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRouteLeg": {
+      "additionalProperties": false,
+      "properties": {
+        "direct": {
+          "type": "boolean"
+        },
+        "from": {
+          "$ref": "#/$defs/UiAirwayRoutePosition"
+        },
+        "highest_mea": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/UiAirwayRoutePosition"
+        },
+        "via_insert_index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "label",
+        "highest_mea",
+        "direct",
+        "via_insert_index"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRoutePosition": {
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRouteVia": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "position": {
+          "$ref": "#/$defs/UiAirwayRoutePosition"
+        },
+        "remove_action": {
+          "$ref": "#/$defs/UiAirwayPickerButton"
+        }
+      },
+      "required": [
+        "label",
+        "position",
+        "remove_action",
+        "index"
+      ],
+      "type": "object"
+    },
+    "UiAirwayRouting": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayRouteControl"
+          },
+          "type": "array"
+        },
+        "dismiss_action_id": {
+          "type": "string"
+        },
+        "drag_label": {
+          "type": "string"
+        },
+        "drag_target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiAirwayRoutePosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edit_id": {
+          "type": "string"
+        },
+        "endpoints": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayPickerButton"
+          },
+          "type": "array"
+        },
+        "map_open": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "original_path": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayRoutePosition"
+          },
+          "type": "array"
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiAirwayRoute"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "row_uid": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "via_points": {
+          "items": {
+            "$ref": "#/$defs/UiAirwayRouteVia"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "edit_id",
+        "row_uid",
+        "title",
+        "map_open",
+        "message",
+        "endpoints",
+        "controls",
+        "via_points",
+        "dismiss_action_id",
+        "original_path",
+        "drag_label"
+      ],
+      "type": "object"
+    },
     "UiChartPageState": {
       "additionalProperties": false,
       "properties": {
@@ -934,6 +1287,37 @@
       "title": "UiInvalidation",
       "type": "string",
       "x-export-values": true
+    },
+    "UiMapInteraction": {
+      "additionalProperties": false,
+      "properties": {
+        "edit_route": {
+          "type": "boolean"
+        },
+        "hover_weather": {
+          "type": "boolean"
+        },
+        "inspect": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/UiMapInteractionMode"
+        }
+      },
+      "required": [
+        "mode",
+        "inspect",
+        "hover_weather",
+        "edit_route"
+      ],
+      "type": "object"
+    },
+    "UiMapInteractionMode": {
+      "enum": [
+        "explore",
+        "find_route"
+      ],
+      "type": "string"
     },
     "UiMapLayerOption": {
       "additionalProperties": false,
@@ -1448,6 +1832,9 @@
     "airway_picker": {
       "$ref": "#/$defs/UiAirwayPicker"
     },
+    "airway_routing": {
+      "$ref": "#/$defs/UiAirwayRouting"
+    },
     "capabilities": {
       "$ref": "#/$defs/PlatformCapabilities"
     },
@@ -1462,6 +1849,9 @@
     },
     "display_policy": {
       "$ref": "#/$defs/UiDisplayPolicy"
+    },
+    "map_interaction": {
+      "$ref": "#/$defs/UiMapInteraction"
     },
     "map_layers": {
       "$ref": "#/$defs/UiMapLayerState"
@@ -1496,9 +1886,11 @@
   },
   "required": [
     "airway_picker",
+    "airway_routing",
     "navigation",
     "chart",
     "map_layers",
+    "map_interaction",
     "status",
     "surface_status",
     "status_action_decision",
@@ -1514,7 +1906,7 @@
   ],
   "title": "UiSessionPageContracts",
   "type": "object",
-  "x-contract-version": 12,
+  "x-contract-version": 13,
   "x-export-order": [
     "UiInvalidation",
     "UiNavigationPageId",
@@ -1525,6 +1917,15 @@
     "UiAirwayPickerButton",
     "UiAirwayPickerSection",
     "UiAirwayPicker",
+    "UiAirwayRouteDragPhase",
+    "UiAirwayRoutePosition",
+    "UiAirwayRouteLeg",
+    "UiAirwayRouteJunction",
+    "UiAirwayRouteCrossing",
+    "UiAirwayRouteControl",
+    "UiAirwayRouteVia",
+    "UiAirwayRoute",
+    "UiAirwayRouting",
     "FlightDataCellTone",
     "FlightEstimateKind",
     "FlightDataCellAction",
@@ -1549,6 +1950,8 @@
     "UiMapLayerOption",
     "UiMapLayerState",
     "MapLayerId",
+    "UiMapInteractionMode",
+    "UiMapInteraction",
     "DebugFlagId",
     "UiDebugState",
     "UiSettingsSliderStop",

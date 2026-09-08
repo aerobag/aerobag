@@ -211,6 +211,7 @@ data class NavElementUiView(
 
 data class FlightPlanUiState(
     val airwayPicker: org.aerobag.app.generated.UiAirwayPicker? = null,
+    val airwayRouting: org.aerobag.app.generated.UiAirwayRouting? = null,
     val planId: String,
     val planVersion: Long,
     val displayRows: List<FlightPlanDisplayRowUiView>,
@@ -613,6 +614,7 @@ data class ChartPageFixture(
 )
 
 data class AppUiState(
+    val mapInteraction: org.aerobag.app.generated.UiMapInteraction? = null,
     val activePlan: FlightPlanUiState? = null,
     val aircraftPlanViewPath: String = "",
     val ownship: OwnshipUiState = OwnshipUiState(),

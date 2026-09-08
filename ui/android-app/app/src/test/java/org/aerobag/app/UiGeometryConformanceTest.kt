@@ -5,10 +5,12 @@
 package org.aerobag.app
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -34,6 +36,37 @@ class UiGeometryConformanceTest {
                 "ui-geometry-conformance.json",
         ).readText(),
     ).jsonObject
+
+    @Test
+    fun `protected route labels match core conformance vectors`() {
+        vectors.arrayAt("route_label_runs").forEach { element ->
+            val vector = element.jsonObject
+            val legs = vector.arrayAt("legs").map { it.jsonObject.let { leg ->
+                RouteLabelCandidate(leg.objectAt("from_point").offset(),leg.objectAt("to_point").offset(),
+                    leg.stringAt("label"),leg.stringAt("important").toBoolean())
+            } }
+            assertEquals(vector.stringAt("name"),vector.arrayAt("expected").map { it.jsonPrimitive.content.toInt() },
+                routeLabelIndices(legs,vector.floatAt("width"),vector.floatAt("height")))
+        }
+        fun JsonObject.rect() = Rect(floatAt("left"),floatAt("top"),floatAt("right"),floatAt("bottom"))
+        vectors.arrayAt("route_labels").forEach { element ->
+            val vector = element.jsonObject
+            val actual = routeLabelLayout(vector.objectAt("from_point").offset(),vector.objectAt("to_point").offset(),
+                vector.floatAt("width"),vector.floatAt("height"),vector.floatAt("text_width"),
+                vector.arrayAt("occupied").map { it.jsonObject.rect() },vector.stringAt("important").toBoolean())
+            val expected = vector.getValue("expected")
+            if (expected == JsonNull) assertEquals(vector.stringAt("name"),null,actual)
+            else {
+                val value = expected.jsonObject
+                requireNotNull(actual) { vector.stringAt("name") }
+                assertOffset(value.objectAt("anchor"),actual.anchor)
+                assertOffset(value.objectAt("baseline"),actual.baseline)
+                assertEquals(value.objectAt("bounds").rect(),actual.bounds)
+                if (value.getValue("leader") == JsonNull) assertEquals(null,actual.leader)
+                else assertOffset(value.objectAt("leader"),requireNotNull(actual.leader))
+            }
+        }
+    }
 
     @Test
     fun `map geometry matches core conformance vectors`() {

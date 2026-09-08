@@ -10,6 +10,7 @@
 - Use the shared Android indexed-control modifiers for core-driven controls. They own both the Compose test tag and E2E geometry/state registration.
 - Read NAVKV manifests, roots, and pages through the shared directory reader so compression, paths, and errors have one implementation.
 - E2E map journeys must ask the semantic driver for an unobscured point derived from rendered geometry. Do not encode fractional or absolute map tap coordinates in journeys.
+- Bind new geographic overlays to the shared map frame: web `MapGeometryBinding`/`MapGeometryLayer` uses the immediate content transform; Android uses `MapDisplayFrame` from the map display frame. Keep screen controls outside geographic transforms, and use the live frame for pointer conversion. Gate map actions with core’s `map_interaction` policy.
 
 ## When asked to commit and push
 

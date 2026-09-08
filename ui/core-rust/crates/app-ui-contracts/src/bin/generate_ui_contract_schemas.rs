@@ -37,6 +37,7 @@ fn cloud_schema() -> Value {
 
 fn session_schema() -> Value {
     let mut root = schema::<session::UiSessionPageContracts>();
+    add_definition::<session::UiAirwayRouteDragPhase>(&mut root, "UiAirwayRouteDragPhase");
     add_definition::<session::UiInvalidation>(&mut root, "UiInvalidation");
     definition_mut(
         root.as_object_mut()
@@ -179,6 +180,15 @@ fn main() {
                 "UiAirwayPickerButton",
                 "UiAirwayPickerSection",
                 "UiAirwayPicker",
+                "UiAirwayRouteDragPhase",
+                "UiAirwayRoutePosition",
+                "UiAirwayRouteLeg",
+                "UiAirwayRouteJunction",
+                "UiAirwayRouteCrossing",
+                "UiAirwayRouteControl",
+                "UiAirwayRouteVia",
+                "UiAirwayRoute",
+                "UiAirwayRouting",
                 "FlightDataCellTone",
                 "FlightEstimateKind",
                 "FlightDataCellAction",
@@ -203,6 +213,8 @@ fn main() {
                 "UiMapLayerOption",
                 "UiMapLayerState",
                 "MapLayerId",
+                "UiMapInteractionMode",
+                "UiMapInteraction",
                 "DebugFlagId",
                 "UiDebugState",
                 "UiSettingsSliderStop",

@@ -795,6 +795,9 @@ private fun landAppUiState(
     json: Json,
 ): AppUiState = when (path) {
     listOf("app_ui_state") -> json.decodeFromJsonElement<WireAppUiState>(value).toUi()
+    listOf("app_ui_state", "map_interaction") -> previous.copy(
+        mapInteraction = json.decodeFromJsonElement<org.aerobag.app.generated.UiMapInteraction>(value),
+    )
     listOf("app_ui_state", "active_plan") -> previous.copy(
         activePlan = json.decodeFromJsonElement<WireFlightPlanUiState?>(value)?.toUi(),
     )
@@ -1335,6 +1338,37 @@ class NativeUiSession internal constructor(
                 put("load_id", loadId)
             },
         )
+    }
+
+    @RawUiSessionWorkApi
+    fun performAirwayRoutingAction(actionId: String): UiSessionSnapshot =
+        performFlightPlanCommand("performAirwayRoutingAction", buildJsonObject {
+            put("kind", "perform_airway_routing_action")
+            put("action_id", actionId)
+        })
+
+    @RawUiSessionWorkApi
+    fun dragAirwayRoute(editId: String, phase: org.aerobag.app.generated.UiAirwayRouteDragPhase,
+        position: LatLonPoint, snapRadiusNm: Double, viaInsertIndex: Int, moveViaIndex: Int?): UiSessionSnapshot =
+        performFlightPlanCommand("dragAirwayRoute", buildJsonObject {
+            put("kind", "drag_airway_route")
+            put("edit_id", editId)
+            put("phase", json.encodeToJsonElement(phase))
+            put("position", buildJsonObject { put("lat", position.lat); put("lon", position.lon) })
+            put("snap_radius_nm", snapRadiusNm)
+            put("via_insert_index", viaInsertIndex)
+            put("move_via_index", moveViaIndex?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: JsonNull)
+        })
+
+    @RawUiSessionWorkApi
+    fun airwayRoutingViewport(width: Double, height: Double, rotationDeg: Double): MapViewportState? {
+        val result = queryFlightPlan(buildJsonObject {
+            put("kind", "airway_routing_viewport"); put("width", width); put("height", height); put("rotation_deg", rotationDeg)
+        })
+        if (result == JsonNull) return null
+        val frame = json.decodeFromJsonElement<WireMapViewport>(result)
+        val center = latLonToWorld(frame.center.lat, frame.center.lon)
+        return MapViewportState(center.x, center.y, frame.zoom, frame.rotation_deg)
     }
 
     @RawUiSessionWorkApi
@@ -2273,6 +2307,7 @@ private fun OwnshipSourcePowerState.toWire(): WireOwnshipSourcePowerState = when
 }
 
 private fun WireAppUiState.toUi() = AppUiState(
+    mapInteraction = map_interaction,
     activePlan = active_plan?.toUi(),
     aircraftPlanViewPath = aircraft_plan_view_path,
     ownship = ownship.toUi(),
@@ -4078,6 +4113,7 @@ private fun WireRouteSegmentStatus.toUi() = when (this) {
 
 private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
     airwayPicker = airway_picker,
+    airwayRouting = airway_routing,
     planId = plan_id,
     planVersion = plan_version,
     displayRows = display_rows.map { it.toUi() },
@@ -4089,6 +4125,7 @@ private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
 
 private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
     airway_picker = airwayPicker,
+    airway_routing = airwayRouting,
     plan_id = planId,
     plan_version = planVersion,
     display_rows = displayRows.map { it.toWire() },

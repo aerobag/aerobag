@@ -2435,6 +2435,7 @@ fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
     let web_tests = read_repo_file("ui/web-app/src/domain/mapViewport.test.ts");
     let web_situation = read_repo_file("ui/web-app/src/domain/situationGeometry.ts");
     let web_route = read_repo_file("ui/web-app/src/domain/flightPlanRouteRender.ts");
+    let web_labels = read_repo_file("ui/web-app/src/domain/routeLabelLayout.ts");
     let web_pointer_tests =
         read_repo_file("ui/web-app/src/domain/pointerRateGeometryConformance.test.ts");
     let android_map =
@@ -2446,6 +2447,8 @@ fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
     let android_pills = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/RouteDistancePillLayout.kt",
     );
+    let android_labels =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/RouteLabelLayout.kt");
     let android_tests = read_repo_file(
         "ui/android-app/app/src/test/java/org/aerobag/app/UiGeometryConformanceTest.kt",
     );
@@ -2456,7 +2459,12 @@ fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
             && android_tests.contains("ui-geometry-conformance.json"),
         "core, web, and Android geometry must execute the same conformance vectors"
     );
-    for vector in ["situation_overlay", "route_chevrons", "route_distance_pill"] {
+    for vector in [
+        "situation_overlay",
+        "route_chevrons",
+        "route_distance_pill",
+        "route_labels",
+    ] {
         assert!(
             golden.contains(vector),
             "shared geometry golden is missing {vector}"
@@ -2472,10 +2480,12 @@ fn pointer_rate_geometry_mirrors_share_conformance_vectors() {
         ("web map", web_map.as_str()),
         ("web situation", web_situation.as_str()),
         ("web route", web_route.as_str()),
+        ("web labels", web_labels.as_str()),
         ("Android map", android_map.as_str()),
         ("Android situation", android_situation.as_str()),
         ("Android route", android_route.as_str()),
         ("Android distance pill", android_pills.as_str()),
+        ("Android labels", android_labels.as_str()),
     ] {
         assert!(
             source.contains("Pointer-rate mirror of app_core::ui_geometry"),
@@ -2508,5 +2518,57 @@ fn scheduler_viewport_inputs_have_wasm_and_ffi_parity() {
         android.contains("sessionSnapshotRefreshSchedulerViewportGestureActiveChangedJson")
             && android.contains("sessionSnapshotRefreshSchedulerViewportActivityJson"),
         "Android must forward both core scheduler viewport inputs"
+    );
+}
+
+#[test]
+fn route_editor_geometry_and_map_interactions_use_shared_map_owners() {
+    let web = read_repo_file("ui/web-app/src/AirwayRoutingOverlay.tsx");
+    let binding = read_repo_file("ui/web-app/src/MapGeometryLayer.tsx");
+    let app = read_repo_file("ui/web-app/src/App.tsx");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/AirwayRoutingOverlay.kt");
+    let map = read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+    assert!(
+        web.contains("geometry: MapGeometryBinding")
+            && web.contains("<MapGeometryLayer binding={geometry}>")
+    );
+    assert!(
+        !web.contains("worldToScreen(") && !web.contains("screenToWorld("),
+        "editor must not create a competing map frame"
+    );
+    assert!(
+        binding.contains("createPortal(children, binding.host)")
+            && binding.contains("liveViewport.current")
+    );
+    assert!(app.contains("ref={bindMapContent} className=\"mapContentTransform\""));
+    assert!(
+        web.contains("props.renderSymbol(junction.symbol_feature)")
+            && app.contains("renderSymbol={(feature) => <VectorPointSymbol feature={feature}")
+            && android.contains("PlanWaypointSymbol(junction.symbolFeature,"),
+        "route junctions reuse the navigation symbol renderers"
+    );
+    assert!(
+        android.contains("displayFrame: State<MapDisplayFrame>")
+            && android.contains("frame.latLonToScreen(")
+            && android.contains("val pointerFrame = displayFrame.value")
+            && android.contains("pointerFrame.screenToWorld(")
+    );
+    assert!(!android.contains("worldToScreen(") && !android.contains("screenToWorld(frame,"));
+    assert!(
+        web.contains("routeLabelLayout(") && android.contains("routeLabelLayout("),
+        "both route editors must use the shared protected-label placement geometry"
+    );
+    assert!(
+        !web.contains("labelBoxes.some(") && !android.contains("occupied.none {"),
+        "route editors must not bypass protected-label placement with local suppression"
+    );
+    assert!(map.contains("rememberUpdatedState(MapDisplayFrame(displayViewport, surfaceWidthPx, surfaceHeightPx))") && map.contains("AirwayRoutingOverlay(routing, mapGeometryFrame,"));
+    assert!(
+        app.contains("mapInteraction.inspect &&") && app.contains("!mapInteraction.hover_weather")
+    );
+    assert!(
+        map.contains("currentMapInteraction.value?.inspect != true")
+            && map.contains("mapInteraction?.editRoute == true")
     );
 }

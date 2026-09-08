@@ -133,5 +133,477 @@
       "width": 50.0,
       "rotation_degrees": 90.0
     }
-  }
+  },
+  "route_labels": [
+    {
+      "name": "highest moves clear of junction and MCA",
+      "from_point": {
+        "x": 200,
+        "y": 160
+      },
+      "to_point": {
+        "x": 240,
+        "y": 160
+      },
+      "width": 480,
+      "height": 400,
+      "text_width": 80,
+      "occupied": [
+        {
+          "left": 196,
+          "top": 119,
+          "right": 244,
+          "bottom": 143
+        },
+        {
+          "left": 140,
+          "top": 170,
+          "right": 300,
+          "bottom": 194
+        }
+      ],
+      "important": true,
+      "expected": {
+        "anchor": {
+          "x": 220,
+          "y": 160
+        },
+        "baseline": {
+          "x": 220,
+          "y": 86
+        },
+        "bounds": {
+          "left": 176.0,
+          "top": 69,
+          "right": 264.0,
+          "bottom": 93
+        },
+        "leader": {
+          "x": 220,
+          "y": 93
+        }
+      }
+    },
+    {
+      "name": "ordinary label yields to point label",
+      "from_point": {
+        "x": 200,
+        "y": 160
+      },
+      "to_point": {
+        "x": 240,
+        "y": 160
+      },
+      "width": 480,
+      "height": 400,
+      "text_width": 80,
+      "occupied": [
+        {
+          "left": 196,
+          "top": 119,
+          "right": 244,
+          "bottom": 143
+        }
+      ],
+      "important": false,
+      "expected": null
+    },
+    {
+      "name": "clear highest stays by its leg",
+      "from_point": {
+        "x": 200,
+        "y": 160
+      },
+      "to_point": {
+        "x": 240,
+        "y": 160
+      },
+      "width": 480,
+      "height": 400,
+      "text_width": 80,
+      "occupied": [],
+      "important": true,
+      "expected": {
+        "anchor": {
+          "x": 220,
+          "y": 160
+        },
+        "baseline": {
+          "x": 220,
+          "y": 150
+        },
+        "bounds": {
+          "left": 176.0,
+          "top": 133,
+          "right": 264.0,
+          "bottom": 157
+        },
+        "leader": null
+      }
+    },
+    {
+      "name": "visible leg with offscreen midpoint",
+      "from_point": {
+        "x": -600,
+        "y": 160
+      },
+      "to_point": {
+        "x": 200,
+        "y": 160
+      },
+      "width": 480,
+      "height": 400,
+      "text_width": 80,
+      "occupied": [],
+      "important": true,
+      "expected": {
+        "anchor": {
+          "x": 100,
+          "y": 160
+        },
+        "baseline": {
+          "x": 100,
+          "y": 150
+        },
+        "bounds": {
+          "left": 56.0,
+          "top": 133,
+          "right": 144.0,
+          "bottom": 157
+        },
+        "leader": null
+      }
+    },
+    {
+      "name": "ordinary offscreen midpoint is omitted",
+      "from_point": {
+        "x": -600,
+        "y": 160
+      },
+      "to_point": {
+        "x": 200,
+        "y": 160
+      },
+      "width": 480,
+      "height": 400,
+      "text_width": 80,
+      "occupied": [],
+      "important": false,
+      "expected": null
+    },
+    {
+      "name": "edge label stays inside viewport",
+      "from_point": {
+        "x": 2,
+        "y": 2
+      },
+      "to_point": {
+        "x": 10,
+        "y": 10
+      },
+      "width": 320,
+      "height": 240,
+      "text_width": 120,
+      "occupied": [],
+      "important": true,
+      "expected": {
+        "anchor": {
+          "x": 6,
+          "y": 6
+        },
+        "baseline": {
+          "x": 72,
+          "y": 25
+        },
+        "bounds": {
+          "left": 8.0,
+          "top": 8,
+          "right": 136.0,
+          "bottom": 32
+        },
+        "leader": {
+          "x": 8,
+          "y": 8
+        }
+      }
+    },
+    {
+      "name": "fully offscreen leg is omitted",
+      "from_point": {
+        "x": -200,
+        "y": 100
+      },
+      "to_point": {
+        "x": -100,
+        "y": 100
+      },
+      "width": 320,
+      "height": 240,
+      "text_width": 80,
+      "occupied": [],
+      "important": true,
+      "expected": null
+    },
+    {
+      "name": "crowded viewport never drops highest",
+      "from_point": {
+        "x": 140,
+        "y": 120
+      },
+      "to_point": {
+        "x": 180,
+        "y": 120
+      },
+      "width": 320,
+      "height": 240,
+      "text_width": 100,
+      "occupied": [
+        {
+          "left": 0,
+          "top": 0,
+          "right": 320,
+          "bottom": 240
+        }
+      ],
+      "important": true,
+      "expected": {
+        "anchor": {
+          "x": 160,
+          "y": 120
+        },
+        "baseline": {
+          "x": 160,
+          "y": 110
+        },
+        "bounds": {
+          "left": 106.0,
+          "top": 93,
+          "right": 214.0,
+          "bottom": 117
+        },
+        "leader": null
+      }
+    },
+    {
+      "name": "highest avoids editor tray",
+      "from_point": {
+        "x": 220,
+        "y": 340
+      },
+      "to_point": {
+        "x": 260,
+        "y": 340
+      },
+      "width": 480,
+      "height": 400,
+      "text_width": 100,
+      "occupied": [
+        {
+          "left": 100,
+          "top": 300,
+          "right": 380,
+          "bottom": 390
+        }
+      ],
+      "important": true,
+      "expected": {
+        "anchor": {
+          "x": 240,
+          "y": 340
+        },
+        "baseline": {
+          "x": 240,
+          "y": 266
+        },
+        "bounds": {
+          "left": 186.0,
+          "top": 249,
+          "right": 294.0,
+          "bottom": 273
+        },
+        "leader": {
+          "x": 240,
+          "y": 273
+        }
+      }
+    }
+  ],
+  "route_label_runs": [
+    {
+      "name": "separate stretches and airway changes keep callouts",
+      "width": 480,
+      "height": 400,
+      "legs": [
+        {
+          "from_point": {
+            "x": 0,
+            "y": 160
+          },
+          "to_point": {
+            "x": 100,
+            "y": 160
+          },
+          "label": "V4 lower",
+          "important": false
+        },
+        {
+          "from_point": {
+            "x": 100,
+            "y": 160
+          },
+          "to_point": {
+            "x": 120,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": 120,
+            "y": 160
+          },
+          "to_point": {
+            "x": 240,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": 240,
+            "y": 160
+          },
+          "to_point": {
+            "x": 260,
+            "y": 160
+          },
+          "label": "V4 lower",
+          "important": false
+        },
+        {
+          "from_point": {
+            "x": 260,
+            "y": 160
+          },
+          "to_point": {
+            "x": 300,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": 300,
+            "y": 160
+          },
+          "to_point": {
+            "x": 360,
+            "y": 160
+          },
+          "label": "V6 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": -2000,
+            "y": 160
+          },
+          "to_point": {
+            "x": -100,
+            "y": 160
+          },
+          "label": "V6 max",
+          "important": true
+        }
+      ],
+      "expected": [
+        2,
+        4,
+        5,
+        0,
+        3
+      ]
+    },
+    {
+      "name": "offscreen longest member yields to visible member",
+      "width": 320,
+      "height": 240,
+      "legs": [
+        {
+          "from_point": {
+            "x": -300,
+            "y": 160
+          },
+          "to_point": {
+            "x": -20,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": -20,
+            "y": 160
+          },
+          "to_point": {
+            "x": 40,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": 40,
+            "y": 160
+          },
+          "to_point": {
+            "x": 80,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        }
+      ],
+      "expected": [
+        1
+      ]
+    },
+    {
+      "name": "offscreen run is omitted",
+      "width": 320,
+      "height": 240,
+      "legs": [
+        {
+          "from_point": {
+            "x": -300,
+            "y": 160
+          },
+          "to_point": {
+            "x": -200,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        },
+        {
+          "from_point": {
+            "x": -200,
+            "y": 160
+          },
+          "to_point": {
+            "x": -20,
+            "y": 160
+          },
+          "label": "V4 max",
+          "important": true
+        }
+      ],
+      "expected": []
+    }
+  ]
 }

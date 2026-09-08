@@ -384,10 +384,41 @@ function androidSource() {
 }
 
 function webSource() {
+  // Shared DTOs have one owning contract. Kotlin shares a package; TypeScript
+  // needs imports when another contract references those same definitions.
+  const outputs = new Map([
+    [nexradSchemaPath, webOut], [cloudSchemaPath, cloudWebOut],
+    [homePageSchemaPath, homePageWebOut], [navQuerySchemaPath, navQueryWebOut],
+    [sessionPageSchemaPath, sessionPageWebOut], [sessionUpdateSchemaPath, sessionUpdateWebOut],
+    [sessionWorkSchemaPath, sessionWorkWebOut],
+  ]);
+  const owners = new Map();
+  for (const [source, output] of outputs) {
+    const contract = JSON.parse(fs.readFileSync(source, "utf8"));
+    for (const name of contract["x-export-order"] ?? Object.keys(contract.$defs ?? {})) {
+      owners.set(name, output);
+    }
+  }
+  const imports = new Map();
+  function collectImports(value) {
+    if (!value || typeof value !== "object") return;
+    if (value.$ref) {
+      const {name} = resolveRef(value.$ref);
+      if (!exportOrder.includes(name)) {
+        const owner = owners.get(name);
+        if (!owner) throw new Error(`no owning contract exports ${name}`);
+        const module = "./" + path.relative(path.dirname(outputs.get(schemaPath)), owner).replaceAll(path.sep, "/").replace(/\.ts$/, "");
+        if (!imports.has(module)) imports.set(module, new Set());
+        imports.get(module).add(name);
+      }
+    }
+    Object.values(value).forEach(collectImports);
+  }
   const chunks = [];
   for (const name of exportOrder) {
     const entry = defs[name];
     if (!entry) throw new Error(`x-export-order refers to missing schema ${name}`);
+    collectImports(entry);
     if (entry.enum) {
       chunks.push(tsEnumSource(name, entry));
     } else if (entry.oneOf) {
@@ -400,7 +431,9 @@ function webSource() {
   }
   const version = schema["x-contract-version"];
   const versionSource = Number.isInteger(version) ? `export const ${contractVersionName()} = ${version} as const;\n\n` : "";
-  return `${generatedBanner}\n${versionSource}${chunks.join("\n")}${tsSessionUpdateGroupSource()}`;
+  const importSource = [...imports].sort(([a], [b]) => a.localeCompare(b))
+    .map(([module, names]) => `import type { ${[...names].sort().join(", ")} } from ${JSON.stringify(module)};\n`).join("");
+  return `${generatedBanner}\n${importSource ? importSource + "\n" : ""}${versionSource}${chunks.join("\n")}${tsSessionUpdateGroupSource()}`;
 }
 
 function writeOrCheck(filePath, content) {

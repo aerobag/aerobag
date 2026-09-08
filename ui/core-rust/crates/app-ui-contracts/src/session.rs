@@ -626,9 +626,11 @@ pub struct PlatformCapabilities {
 #[serde(deny_unknown_fields)]
 pub struct UiSessionPageContracts {
     pub airway_picker: UiAirwayPicker,
+    pub airway_routing: UiAirwayRouting,
     pub navigation: UiNavigationPageState,
     pub chart: UiChartPageState,
     pub map_layers: UiMapLayerState,
+    pub map_interaction: UiMapInteraction,
     pub status: UiDataStatusState,
     pub surface_status: UiSurfaceStatusState,
     pub status_action_decision: UiStatusActionDecision,
@@ -641,6 +643,101 @@ pub struct UiSessionPageContracts {
     pub nav_db: UiNavDbIdentity,
     pub capabilities: PlatformCapabilities,
     pub settings_action: UiSettingsAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRouting {
+    pub edit_id: String,
+    pub row_uid: String,
+    pub title: String,
+    pub map_open: bool,
+    pub message: String,
+    pub endpoints: Vec<UiAirwayPickerButton>,
+    pub controls: Vec<UiAirwayRouteControl>,
+    pub route: Option<UiAirwayRoute>,
+    pub via_points: Vec<UiAirwayRouteVia>,
+    pub dismiss_action_id: String,
+    pub original_path: Vec<UiAirwayRoutePosition>,
+    pub drag_target: Option<UiAirwayRoutePosition>,
+    pub drag_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRoutePosition {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRouteControl {
+    pub button: UiAirwayPickerButton,
+    pub selected: bool,
+    pub symbol_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiAirwayRouteDragPhase {
+    Preview,
+    Commit,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRoute {
+    pub summary: String,
+    pub legs: Vec<UiAirwayRouteLeg>,
+    pub junctions: Vec<UiAirwayRouteJunction>,
+    pub crossings: Vec<UiAirwayRouteCrossing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRouteCrossing {
+    pub label: String,
+    pub position: UiAirwayRoutePosition,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRouteJunction {
+    pub node_id: u32,
+    pub label: String,
+    pub position: UiAirwayRoutePosition,
+    pub symbol_feature: Option<crate::nav_query::NavSymbolFeature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRouteLeg {
+    pub from: UiAirwayRoutePosition,
+    pub to: UiAirwayRoutePosition,
+    pub label: String,
+    pub highest_mea: bool,
+    pub direct: bool,
+    pub via_insert_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiAirwayRouteVia {
+    pub label: String,
+    pub position: UiAirwayRoutePosition,
+    pub remove_action: UiAirwayPickerButton,
+    pub index: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -775,4 +872,22 @@ impl UiSessionUpdate {
             (UiSessionUpdateGroup::Debug, self.debug.as_ref()),
         ]
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum UiMapInteractionMode {
+    Explore,
+    FindRoute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UiMapInteraction {
+    pub mode: UiMapInteractionMode,
+    pub inspect: bool,
+    pub hover_weather: bool,
+    pub edit_route: bool,
 }

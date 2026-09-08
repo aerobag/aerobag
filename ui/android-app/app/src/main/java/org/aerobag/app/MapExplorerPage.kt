@@ -2054,7 +2054,14 @@ internal fun MapExplorerPage(
     var chartSearchLoading by remember { mutableStateOf(false) }
     var chartSearchError by remember { mutableStateOf<String?>(null) }
     var chartSearchSuggestions by remember { mutableStateOf<List<WaypointIdentifierSuggestion>>(emptyList()) }
+    val mapInteraction = sessionSnapshot.appUiState.mapInteraction
+    val currentMapInteraction = rememberUpdatedState(mapInteraction)
+    var inspectionGeneration by remember { mutableLongStateOf(0L) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
+    LaunchedEffect(mapInteraction?.mode) {
+        inspectionGeneration += 1
+        if (mapInteraction?.inspect != true) mapSelection = null
+    }
     val mapSelectionDistanceItemId = mapSelection?.takeIf { it.detailModal == null }?.selectedItem?.id
     val mapSelectionDistanceTarget = mapSelection?.takeIf { it.detailModal == null }?.selectedItem?.distanceTarget
     LaunchedEffect(uiSession, mapSelectionDistanceItemId, mapSelectionDistanceTarget) {
@@ -2097,6 +2104,7 @@ internal fun MapExplorerPage(
         }
     }
     val chartSearchInspectionGate = remember(uiSession) { ChartSearchInspectionGate() }
+    LaunchedEffect(mapInteraction?.mode) { chartSearchInspectionGate.invalidate() }
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -2175,6 +2183,7 @@ internal fun MapExplorerPage(
     val surfaceHeightPx = surfaceSize.height.toFloat()
     val plannedMapUpDeg = mapOrientationMemory.resolve(mapOrientationMode, ownship.trackDegTrue)
     val displayViewport = currentViewport.copy(rotationDeg = plannedMapUpDeg)
+    val mapGeometryFrame = rememberUpdatedState(MapDisplayFrame(displayViewport, surfaceWidthPx, surfaceHeightPx))
     val planningDiameterPx = hypot(surfaceWidthPx, surfaceHeightPx)
     val planningEnvelope = ScreenPoint(planningDiameterPx, planningDiameterPx)
     val planningSurfaceSize = IntSize(
@@ -2699,7 +2708,7 @@ internal fun MapExplorerPage(
                     surfaceWidthPx,
                     surfaceHeightPx,
                 )
-                mapSelection = MapSelectionUiState(
+                if (currentMapInteraction.value?.inspect == true) mapSelection = MapSelectionUiState(
                     point = point,
                     result = inspection.selection,
                     selectedItem = mapSelectionItemById(inspection.selection, inspection.selectedItemId),
@@ -2950,6 +2959,8 @@ internal fun MapExplorerPage(
         }
     }
     fun requestMapSelection(point: Offset) {
+        if (currentMapInteraction.value?.inspect != true) return
+        val generation = ++inspectionGeneration
         val selectionViewport = viewportState.value.copy(rotationDeg = plannedMapUpDeg)
         val world = screenToWorld(
             selectionViewport,
@@ -2968,6 +2979,7 @@ internal fun MapExplorerPage(
                 fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
             },
             onResult = { result ->
+                if (generation != inspectionGeneration || currentMapInteraction.value?.inspect != true) return@submitMapSelection
                 mapSelection = MapSelectionUiState(
                     point = point,
                     result = result,
@@ -3752,6 +3764,12 @@ internal fun MapExplorerPage(
             )
         }
 
+        planUiState?.airwayRouting?.takeIf { it.mapOpen && mapInteraction?.editRoute == true }?.let { routing ->
+            AirwayRoutingOverlay(routing, mapGeometryFrame, uiSession, sessionWorkRunner,
+                onViewport = { updateViewport(it, MapViewportUpdateSource.UserInput, syncFollow = false) },
+                onSnapshot = actions.onSessionSnapshotChange, onError = actions.onSessionCommandFailure)
+        }
+
         if (menuTrayOpen) {
             Scrim {
                 chartTrayOpen = false
@@ -3761,7 +3779,7 @@ internal fun MapExplorerPage(
             }
         }
 
-        mapSelection?.let { selection ->
+        mapSelection?.takeIf { mapInteraction?.inspect == true }?.let { selection ->
             Popup(
                 onDismissRequest = { mapSelection = null },
                 properties = PopupProperties(focusable = true, clippingEnabled = false),

@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import conformance from "../generated/uiGeometryConformance.json";
+import { routeLabelIndices, routeLabelLayout } from "./routeLabelLayout";
 import {
   layoutFlightPlanRouteDistancePills,
   spacedRouteChevronPlacements,
@@ -22,6 +23,23 @@ function expectPoint(actual: { x: number; y: number }, expected: { x: number; y:
 }
 
 describe("pointer-rate geometry conformance", () => {
+  it.each(conformance.route_label_runs)("route label runs: $name", (vector) => {
+    const legs = vector.legs.map((leg) => ({from:leg.from_point,to:leg.to_point,label:leg.label,important:leg.important}));
+    expect(routeLabelIndices(legs,vector.width,vector.height)).toEqual(vector.expected);
+  });
+  it.each(conformance.route_labels)("route labels: $name", (vector) => {
+    expect(routeLabelLayout(vector.from_point,vector.to_point,vector.width,vector.height,
+      vector.text_width,vector.occupied,vector.important)).toEqual(vector.expected);
+  });
+
+  it("reserves each protected MEA before ordinary labels", () => {
+    const from = {x:200,y:160}, to = {x:240,y:160};
+    const first = routeLabelLayout(from,to,480,400,80,[],true)!;
+    const second = routeLabelLayout(from,to,480,400,80,[first.bounds],true)!;
+    expect(first.bounds.bottom <= second.bounds.top || second.bounds.bottom <= first.bounds.top).toBe(true);
+    expect(second.leader).not.toBeNull();
+    expect(routeLabelLayout(from,to,480,400,80,[first.bounds,second.bounds],false)).toBeNull();
+  });
   it("matches core situation-ring and predictor vectors", () => {
     const vector = conformance.situation_overlay;
     const viewport = {

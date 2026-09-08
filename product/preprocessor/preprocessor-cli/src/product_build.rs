@@ -1167,6 +1167,7 @@ pub use product::build_product;
 mod cycle;
 pub use cycle::build_cycle;
 
+mod airway_routing;
 mod nav_db;
 use nav_db::*;
 pub use nav_db::{audit_procedure_geometry_from_sqlite, ProcedureGeometryAuditFilter};
@@ -4520,6 +4521,9 @@ mod tests {
             )
             .unwrap();
 
+        connection
+            .execute_batch(preprocessor_data::AIRWAY_SEGMENT_METADATA_SCHEMA)
+            .unwrap();
         let pairs = build_nav_kv_airway_pairs(&connection).unwrap();
         let mut expected_colocated_navaids = BTreeMap::new();
         {

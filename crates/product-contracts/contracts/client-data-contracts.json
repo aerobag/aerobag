@@ -9,7 +9,7 @@
     "enr-h": "ENH1",
     "enr-l": "ENL1",
     "geo": "GEO1",
-    "nav-db": "NAV24",
+    "nav-db": "NAV25",
     "sec": "SEC1",
     "shaded-relief": "SHD1",
     "tac": "TAC1",
@@ -24,10 +24,11 @@
     }
   },
   "nav_db": {
-    "contract_id": "NAV24",
+    "contract_id": "NAV25",
     "page_encoding": "xz",
     "required_exact_keys": {
-      "airport/notam-catalog": 1
+      "airport/notam-catalog": 1,
+      "airway/routing/manifest": 1
     }
   }
 }

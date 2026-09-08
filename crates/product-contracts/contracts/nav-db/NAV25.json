@@ -1,0 +1,8 @@
+{
+  "contract_id": "NAV25",
+  "page_encoding": "xz",
+  "required_exact_keys": {
+    "airport/notam-catalog": 1,
+    "airway/routing/manifest": 1
+  }
+}

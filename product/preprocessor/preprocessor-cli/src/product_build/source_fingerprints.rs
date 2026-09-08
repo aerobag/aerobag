@@ -57,6 +57,7 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
     let repo_root = repo_root();
     vec![
         crate_root.join("src/product_build/nav_db.rs"),
+        crate_root.join("src/product_build/airway_routing.rs"),
         workspace_root.join("preprocessor-core/src/lib.rs"),
         workspace_root.join("preprocessor-core/src/runway.rs"),
         workspace_root.join("preprocessor-procedure-geometry/src/lib.rs"),
@@ -68,6 +69,7 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
         repo_root.join("crates/had-key/src/lib.rs"),
         repo_root.join("crates/had-nav-kv/src/lib.rs"),
         repo_root.join("crates/product-contracts/src/lib.rs"),
+        repo_root.join("crates/product-contracts/src/airway_routing.rs"),
     ]
 }
 

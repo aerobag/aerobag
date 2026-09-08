@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 mod aerobag_cloud;
 mod aircraft;
+mod airway_routing;
 mod atmosphere;
 mod live_feed_policy;
 pub mod live_feeds;
@@ -16,6 +17,7 @@ pub mod versioned_json;
 
 pub use aerobag_cloud::*;
 pub use aircraft::*;
+pub use airway_routing::*;
 pub use atmosphere::*;
 pub use live_feed_policy::*;
 
@@ -422,7 +424,7 @@ fn canonical_procedure_component(value: &str, label: &str) -> Result<String, Str
     Ok(value)
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV24";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV25";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";
@@ -474,10 +476,16 @@ pub fn nav_db_contract_descriptor() -> NavDbContractDescriptor {
     NavDbContractDescriptor {
         contract_id: NAV_DB_CONTRACT_ID.to_string(),
         page_encoding: "xz".to_string(),
-        required_exact_keys: BTreeMap::from([(
-            NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
-            NotamAirportCatalog::SCHEMA_VERSION,
-        )]),
+        required_exact_keys: BTreeMap::from([
+            (
+                NOTAM_AIRPORT_CATALOG_NAV_DB_KEY.to_string(),
+                NotamAirportCatalog::SCHEMA_VERSION,
+            ),
+            (
+                AIRWAY_ROUTING_MANIFEST_KEY.to_string(),
+                AIRWAY_ROUTING_SCHEMA_VERSION,
+            ),
+        ]),
     }
 }
 
@@ -623,8 +631,8 @@ mod tests {
     #[test]
     fn nav_db_contract_descriptor_matches_immutable_revision() {
         let expected: NavDbContractDescriptor =
-            serde_json::from_str(include_str!("../contracts/nav-db/NAV24.json"))
-                .expect("decode NAV24 contract descriptor");
+            serde_json::from_str(include_str!("../contracts/nav-db/NAV25.json"))
+                .expect("decode NAV25 contract descriptor");
         assert_eq!(nav_db_contract_descriptor(), expected);
     }
 

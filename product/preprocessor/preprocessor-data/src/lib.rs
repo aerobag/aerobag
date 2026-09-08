@@ -264,8 +264,10 @@ CREATE TABLE cifp_sid_star_app(record_type Text,customer_area_code Text,section_
         "CREATE TABLE airways_branch(name Text, branch_key Text, sequence_number Integer, sequence_token Text, point_name Text, Latitude float, Longitude float);
 CREATE INDEX idx_airways_branch_name_branch_sequence ON airways_branch(name, branch_key, sequence_number);
 CREATE INDEX idx_airways_branch_lat_lon ON airways_branch(Latitude, Longitude);";
-    conn.execute_batch(&format!("{base}\n{airway_schema}\n"))
-        .context("failed to create data schema")?;
+    conn.execute_batch(&format!(
+        "{base}\n{airway_schema}\n{AIRWAY_SEGMENT_METADATA_SCHEMA}"
+    ))
+    .context("failed to create data schema")?;
     Ok(())
 }
 
@@ -850,8 +852,53 @@ fn insert_airways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> 
     let text = read_text_lossy(&path)?;
     let mut branch_stmt =
         conn.prepare("INSERT INTO airways_branch VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
+    let mut segment_stmt = conn.prepare(
+        "INSERT INTO airway_segment_metadata VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
+    )?;
     let mut count = 0;
     for raw in text.lines() {
+        if raw.starts_with("AWY1") {
+            let sequence_token = trim(field(raw, 9, 6));
+            let altitude = |offset| -> anyhow::Result<Option<u32>> {
+                let value = trim(field(raw, offset, 5));
+                if value.is_empty() {
+                    return Ok(None);
+                }
+                let altitude = value.parse::<u32>().with_context(|| {
+                    format!(
+                        "invalid airway altitude {value:?} at column {} in {}",
+                        offset + 1,
+                        &raw[..15.min(raw.len())]
+                    )
+                })?;
+                Ok((altitude > 0).then_some(altitude))
+            };
+            segment_stmt.execute(params![
+                trim(field(raw, 4, 5)),
+                airway_branch_key(sequence_token),
+                airway_sequence_number(sequence_token),
+                altitude(74)?,
+                trim(field(raw, 79, 6)),
+                altitude(85)?,
+                trim(field(raw, 90, 6)),
+                altitude(217)?,
+                trim(field(raw, 222, 6)),
+                altitude(228)?,
+                trim(field(raw, 233, 6)),
+                altitude(96)?,
+                altitude(110)?,
+                trim(field(raw, 115, 7)),
+                altitude(122)?,
+                trim(field(raw, 127, 7)),
+                trim(field(raw, 239, 40)),
+                serde_json::to_string(&serde_json::json!({
+                    "discontinued": trim(field(raw, 106, 1)) == "X",
+                    "mea_gap": trim(field(raw, 307, 1)),
+                    "signal_gap": trim(field(raw, 134, 1)) == "Y"
+                }))?
+            ])?;
+            continue;
+        }
         if !raw.starts_with("AWY2") {
             continue;
         }
@@ -885,6 +932,17 @@ fn airway_branch_key(sequence_token: &str) -> String {
         .map(|ch| ch.to_string())
         .unwrap_or_default()
 }
+
+/// AWY1 source metadata retains each segment's sequence and both directions.
+pub const AIRWAY_SEGMENT_METADATA_SCHEMA: &str = "CREATE TABLE airway_segment_metadata(
+    name TEXT NOT NULL, branch_key TEXT NOT NULL, sequence_number INTEGER NOT NULL,
+    mea_ft INTEGER, mea_direction TEXT NOT NULL, opposite_mea_ft INTEGER, opposite_mea_direction TEXT NOT NULL,
+    gnss_mea_ft INTEGER, gnss_direction TEXT NOT NULL, opposite_gnss_mea_ft INTEGER, opposite_gnss_direction TEXT NOT NULL,
+    maximum_altitude_ft INTEGER, crossing_altitude_ft INTEGER, crossing_direction TEXT NOT NULL,
+    opposite_crossing_altitude_ft INTEGER, opposite_crossing_direction TEXT NOT NULL,
+    crossing_point TEXT NOT NULL, flags_json TEXT NOT NULL,
+    PRIMARY KEY(name, branch_key, sequence_number)
+);";
 
 fn airway_sequence_number(sequence_token: &str) -> i32 {
     trim(sequence_token)
@@ -2783,6 +2841,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn airway_segment_metadata_preserves_altitudes_directions_and_gap_flags() {
+        let dir = tempdir().unwrap();
+        let mut line = vec![b' '; 315];
+        for (offset, value) in [
+            (0, "AWY1V2"),
+            (10, "00010"),
+            (74, "09000"),
+            (79, "E BND"),
+            (85, "11000"),
+            (90, "W BND"),
+            (96, "18000"),
+            (106, "X"),
+            (110, "12000"),
+            (115, "E BND"),
+            (134, "Y"),
+            (217, "08000"),
+            (222, "E BND"),
+            (228, "10000"),
+            (233, "W BND"),
+            (239, "BEEZR"),
+            (307, "U"),
+        ] {
+            line[offset..offset + value.len()].copy_from_slice(value.as_bytes());
+        }
+        fs::write(dir.path().join("AWY.txt"), line).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        setup_schema(&conn).unwrap();
+        insert_airways(&conn, dir.path()).unwrap();
+        let row = conn.query_row(
+            "SELECT mea_ft, opposite_mea_ft, gnss_mea_ft, opposite_gnss_mea_ft, crossing_altitude_ft, crossing_point, flags_json FROM airway_segment_metadata WHERE name='V2' AND sequence_number=10",
+            [], |row| Ok((row.get::<_,u32>(0)?,row.get::<_,u32>(1)?,row.get::<_,u32>(2)?,row.get::<_,u32>(3)?,row.get::<_,u32>(4)?,row.get::<_,String>(5)?,row.get::<_,String>(6)?))
+        ).unwrap();
+        assert_eq!(
+            (row.0, row.1, row.2, row.3, row.4),
+            (9000, 11000, 8000, 10000, 12000)
+        );
+        assert_eq!(row.5, "BEEZR");
+        let flags: serde_json::Value = serde_json::from_str(&row.6).unwrap();
+        assert_eq!(
+            flags,
+            serde_json::json!({"discontinued":true,"mea_gap":"U","signal_gap":true})
+        );
     }
 
     #[test]

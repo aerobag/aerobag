@@ -6124,6 +6124,7 @@ pub(super) fn build_nav_kv_airway_pairs(
         colocated_navaid_violations.join("\n")
     );
 
+    let routing_pairs = super::airway_routing::build_routing_pairs(connection, &branch_points)?;
     let mut branches_by_airway = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for ((name, branch_key), points) in branch_points {
         branches_by_airway
@@ -6137,6 +6138,7 @@ pub(super) fn build_nav_kv_airway_pairs(
     }
 
     let mut pairs = Vec::new();
+    pairs.extend(routing_pairs);
     for (airway_name, branches) in branches_by_airway {
         pairs.push(json_pair(
             format!("airway/{}", had_upper_key_component(&airway_name)),

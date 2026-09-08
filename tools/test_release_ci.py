@@ -120,7 +120,7 @@ class ReleaseCiTests(unittest.TestCase):
         self.assertEqual(runs, [])
         refresh.assert_called_once()
 
-    def test_candidate_requires_full_repeated_journey_run_for_exact_commit(self) -> None:
+    def test_candidate_requires_full_journey_run_for_exact_commit(self) -> None:
         candidate = run(workflow="e2e-ci.yml", branch="candidate-main", run_id=7)
         candidate["display_title"] = f"Candidate qualification {COMMIT}"
         status = release_ci.evaluate_candidate_qualification(
@@ -131,6 +131,21 @@ class ReleaseCiTests(unittest.TestCase):
 
         self.assertTrue(status.passed)
         self.assertEqual(status.release_journeys.run_id, 7)
+
+    def test_stability_runs_do_not_replace_candidate_or_release_qualification(self) -> None:
+        stability = run(workflow="e2e-ci.yml", branch=TAG)
+        stability["display_title"] = f"Journey stability {COMMIT} (5 repetitions)"
+        checks = {
+            "commit": COMMIT,
+            "ci_runs": [run(workflow="ci.yml", branch="main")],
+            "e2e_runs": [stability],
+        }
+        for status in (
+            release_ci.evaluate_candidate_qualification(**checks),
+            release_ci.evaluate_release_qualification(tag=TAG, **checks),
+        ):
+            self.assertFalse(status.passed)
+            self.assertEqual(status.release_journeys.state, "missing")
 
     def test_ordinary_main_e2e_cannot_substitute_for_candidate_run(self) -> None:
         ordinary = run(workflow="e2e-ci.yml", branch="main")

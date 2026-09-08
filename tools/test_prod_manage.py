@@ -136,7 +136,7 @@ class GithubAuthenticationTests(unittest.TestCase):
     def test_existing_token_avoids_helper_reexec(self) -> None:
         self.assertIsNone(
             prod_manage.github_authentication_command(
-                self.args(prequalify=True),
+                self.args(qualification_status=True),
                 environ={"GITHUB_TOKEN": "installation-token"},
             )
         )
@@ -149,17 +149,25 @@ class GithubAuthenticationTests(unittest.TestCase):
             with mock.patch.object(
                 sys,
                 "argv",
-                ["prod_manage.py", "--prequalify"],
+                ["prod_manage.py", "--qualification-status"],
             ):
                 command = prod_manage.github_authentication_command(
-                    self.args(prequalify=True),
+                    self.args(qualification_status=True),
                     environ={"AEROBAG_GITHUB_TOKEN_HELPER": str(helper)},
                 )
 
         self.assertEqual(command[0], str(helper))
         self.assertEqual(command[1], sys.executable)
         self.assertEqual(command[2], str(Path(prod_manage.__file__).resolve()))
-        self.assertEqual(command[3:], ["--prequalify"])
+        self.assertEqual(command[3:], ["--qualification-status"])
+
+    def test_local_prequalification_needs_no_github_credentials(self) -> None:
+        self.assertIsNone(
+            prod_manage.github_authentication_command(
+                self.args(prequalify=True),
+                environ={"AEROBAG_GITHUB_TOKEN_HELPER": "/missing/with-token"},
+            )
+        )
 
     def test_qualification_fails_closed_without_token_or_helper(self) -> None:
         with self.assertRaisesRegex(
@@ -598,54 +606,49 @@ class StageOrderingTests(unittest.TestCase):
         git.assert_called_once_with("status", "--porcelain")
         load_config.assert_not_called()
 
-    def test_prequalification_pushes_candidate_only_and_waits_for_new_green_run(self) -> None:
+    def test_prequalification_is_local_only_and_caches_fast_checks_first(self) -> None:
         git_calls: list[tuple[tuple[str, ...], bool]] = []
 
         def fake_git(*args: str, capture: bool = True) -> str:
             git_calls.append((args, capture))
             return self.clean_git(*args, capture=capture)
 
-        def qualification(state: str, run_id: int | None) -> object:
-            ordinary = prod_manage.release_ci.WorkflowQualification(
-                "ordinary CI", "passed", "passed", run_id=1
-            )
-            journeys = prod_manage.release_ci.WorkflowQualification(
-                "candidate journeys", state, state, run_id=run_id
-            )
-            return prod_manage.release_ci.ReleaseQualification(
-                "candidate-main", "a" * 40, ordinary, journeys
-            )
-
         with (
             mock.patch.object(prod_manage, "git", side_effect=fake_git),
             mock.patch.object(prod_manage, "run_stage_preflight") as preflight,
-            mock.patch.object(
-                prod_manage.deployment,
-                "load_config",
-                return_value={"github_repository": "owner/project"},
-            ),
-            mock.patch.object(
-                prod_manage,
-                "candidate_qualification",
-                side_effect=[
-                    qualification("failed", 10),
-                    qualification("pending", 11),
-                    qualification("passed", 11),
-                ],
-            ),
-            mock.patch.object(prod_manage.time, "monotonic", side_effect=[0, 1, 2]),
-            mock.patch.object(prod_manage.time, "sleep"),
-            mock.patch.object(prod_manage, "print_candidate_qualification"),
-            mock.patch.object(prod_manage, "print_success"),
+            mock.patch.object(prod_manage.deployment, "load_config") as load_config,
+            mock.patch.object(prod_manage, "candidate_qualification") as hosted,
+            mock.patch.object(prod_manage, "reconcile") as reconcile,
+            redirect_stdout(io.StringIO()) as output,
         ):
-            self.assertEqual(prod_manage.prequalify(prod_manage.DEFAULT_CONFIG), 0)
+            self.assertEqual(prod_manage.prequalify(), 0)
 
-        pushes = [args for args, capture in git_calls if args[0] == "push" and not capture]
-        self.assertEqual(len(pushes), 2)
-        preflight.assert_called_once_with(full=True)
-        self.assertEqual(pushes[0], ("push", "git@github.com:owner/project.git", "main"))
-        self.assertEqual(pushes[1][:2], ("push", "git@github.com:owner/project.git"))
-        self.assertRegex(pushes[1][2], r"^HEAD:refs/tags/candidate-\d{8}T\d{6}Z-a{8}$")
+        mutations = [args for args, _ in git_calls if args[0] in {"push", "commit", "tag", "add"}]
+        self.assertEqual(mutations, [])
+        self.assertEqual(preflight.call_args_list, [mock.call(full=False), mock.call(full=True)])
+        load_config.assert_not_called()
+        hosted.assert_not_called()
+        reconcile.assert_not_called()
+        self.assertIn("one complete pass", output.getvalue())
+        self.assertIn("release tag still requires hosted qualification", output.getvalue())
+
+    def test_prequalification_stops_on_failure_without_hosted_fallback(self) -> None:
+        for results in (
+            [prod_manage.ManagementError("fast failed")],
+            [None, prod_manage.ManagementError("journey failed")],
+        ):
+            with (
+                self.subTest(failure=str(results[-1])),
+                mock.patch.object(prod_manage, "git", side_effect=self.clean_git),
+                mock.patch.object(prod_manage, "run_stage_preflight", side_effect=results) as preflight,
+                mock.patch.object(prod_manage, "candidate_qualification") as hosted,
+                mock.patch.object(prod_manage, "print_success") as success,
+                self.assertRaises(prod_manage.ManagementError),
+            ):
+                prod_manage.prequalify()
+            self.assertEqual(preflight.call_count, len(results))
+            hosted.assert_not_called()
+            success.assert_not_called()
 
     def test_github_git_url_is_derived_from_the_api_repository(self) -> None:
         self.assertEqual(

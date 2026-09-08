@@ -214,7 +214,7 @@ The test-artifact lock uses a public HTTPS URL for reads. Write access for
 publishing fixtures is a separate credential concern and must not be required
 by CI test jobs.
 
-## Release Stability Gate
+## Release qualification and stability testing
 
 ### Fast iteration without weakening qualification
 
@@ -270,20 +270,65 @@ still exercise the same storage. Permissions are scoped to that context.
 
 ### Complete workload
 
-`tools/prod_manage.py --prequalify` first runs the complete workload locally.
+The normal low-latency release path is `tools/prod_manage.py --stage`: run the
+cheap emulator-free ordinary-CI preflight, then start deployment and hosted
+exact-release qualification concurrently. Do not insert a full local pass or a
+hosted candidate round trip by default. Promotion still requires deployed
+staging checks, ordinary CI, and the full exact-tag journey run to pass.
+
+`tools/prod_manage.py --prequalify` optionally runs the complete workload locally.
 Ordinary CI lanes, three web priority lanes, four fresh Android shard lanes
 (each spanning all priorities), and the native journeys run with the same
 boundaries as the hosted matrix. The local qualifier isolates GUI-heavy phases
 to avoid contention between emulators and browsers on this one host.
-The local run builds one immutable app bundle, uses pinned fixtures, and requires
-five successful repetitions per release journey.
+The local run builds one immutable app bundle, uses pinned fixtures, and runs
+each release journey **once**, without trimming priorities or native checks.
+It stops locally, without GitHub API credentials, a candidate-tag push, or a
+hosted wait. It requires clean synchronized `main`; receipts are exact-commit,
+not transferable to a different revision. The command runs fast preflight first
+so those checks are cached for both the full run and a later `--stage` of the
+same commit, even if a journey fails. A cached receipt is not a fresh test run.
 
-After that succeeds, the command pushes synchronized `main` under a
-`candidate-*` tag. The hosted run repeats the complete registry. This full
-prequalification is optional. `--stage` always runs the much smaller
-emulator-free ordinary-CI preflight before it creates release intent or a tag,
-then may proceed directly to the release-tag qualification round trip. The final
-release tag still runs one complete exact-tag qualification.
+#### Stability testing is not a release gate
+
+Use `tools/ci/local_candidate_qualification.py --repetitions 5` for an explicit
+full local stability check, or the focused diagnostic command above when
+investigating one journey. Full stability receipts live separately under
+`.git/aerobag-local-qualification/stability/`; they neither overwrite nor stand
+in for the normal single-pass receipt. `--check --repetitions N` checks evidence
+for that exact count. Every requested repetition must pass; this does not add
+retry-to-green behavior.
+
+Hosted manual runs can select `release_candidate=true` for all priorities and
+`repetitions=5` (or another offered count) for repetition testing. Counts above
+one use the `Journey stability` run title and cannot satisfy candidate or release
+qualification. Normal release tags and optional `candidate-*` tags default to
+one pass. `prod_manage.py --candidate-status` remains a read-only view of legacy
+or manually requested hosted candidate runs, not local prequalification status.
+
+#### Latency and local parallelism
+
+September 8 measurements on the 20-core, 96-GiB dev host: fast preflight took
+2m22s; the five-pass local workload took another 44m29s; its five-pass hosted
+candidate took 58m04s. The subsequent
+[one-pass hosted release](https://github.com/aerobag/aerobag/actions/runs/34264045527/attempts/1)
+took 22m47s (excluding the later manual rerun of a failed browser startup).
+Per-journey Android medians were about 2.4 times slower hosted, not
+five times, and GitHub runs more lanes concurrently.
+
+A one-pass local workload including fast checks is **estimated**, not yet
+benchmarked end to end, at about 18 minutes with warm inputs/caches. With no
+failures, adding it serially to a ~23-minute hosted run increases latency; use
+it selectively, not as the normal release path. The measured staging deployment
+itself took ~24 minutes and overlapped the hosted checks.
+
+Ordinary CI already runs multiple lanes in parallel. Android defaults to two
+concurrent emulators, each with fresh shard state. An explicit
+`--android-workers 4` could theoretically save roughly three minutes on one
+complete pass, but this is not a contention-tested result. No utilization trace
+was retained for the earlier run, so spare hardware capacity is not proof that
+more GUI concurrency is safe. Keep browser phases isolated from emulators;
+benchmark a worker change before making it the default.
 
 An Android baseline job prepares a commit-scoped app-data archive once. Each
 Android matrix job clean-installs the immutable apps into a fresh AVD, then

@@ -2254,6 +2254,16 @@ test("web layer toggles expose the same selected state they paint", () => {
   );
 });
 
+test("routine hosted qualification runs once and labels explicit stability runs separately", () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/e2e-ci.yml", import.meta.url), "utf8",
+  );
+  assert.match(workflow, /AEROBAG_RELEASE_JOURNEY_REPETITIONS: \$\{\{ inputs\.repetitions \|\| '1' \}\}/);
+  assert.match(workflow, /run-name:.*inputs\.repetitions != '1'.*Journey stability.*Candidate qualification.*Release qualification/);
+  assert.match(workflow, /options: \["1", "3", "5", "10"\]/);
+  assert.match(workflow, /push\).*REF_TYPE.*tag.*\["p0","p1","p2"\]/);
+});
+
 test("release journey stability runs require every repetition to pass", () => {
   const temp = mkdtempSync(join(tmpdir(), "aerobag-release-suite-repetitions-"));
   try {

@@ -88,11 +88,18 @@ come from one real available publication.
   CI for the integrated revision, not only an individual feature's local tests.
   Recommend resolving known failures before spending another staging build;
   report failed, pending, or unrun checks distinctly.
-- Recommend `tools/prod_manage.py --prequalify` when the operator wants full
-  pre-staging assurance. It requires clean, synchronized `main`, runs ordinary
-  CI and repeated release journeys locally, then pushes a `candidate-*` tag and
-  waits for hosted qualification. It does not deploy to production. This is an
-  expensive, explicit release operation, not a cheap commit-and-push check.
+- Prefer `tools/prod_manage.py --stage` directly for routine releases: fast local
+  checks, then deployment and one complete hosted exact-tag qualification in
+  parallel. Do not add a full local or hosted candidate run by default.
+- `tools/prod_manage.py --prequalify` is optional deeper local assurance. It
+  requires clean, synchronized `main`, runs ordinary CI and every release journey
+  once, and stops locally: no GitHub candidate push, hosted wait, or deployment.
+  Its fast-check receipt is reused by a later `--stage` of that exact commit.
+  This remains an explicit release operation, not a cheap commit-and-push check.
+- Repeated flake/stability testing is separate from release qualification. Use
+  an explicit `tools/ci/local_candidate_qualification.py --repetitions N` or
+  hosted manual repetition input; never silently add repetitions to a release.
+  Stability receipts/runs do not substitute for routine qualification.
 - Run `tools/ci/fast_release_preflight.py` for the complete emulator-free
   ordinary-CI preflight on a clean integrated commit. `--stage` now runs it
   automatically before creating release intent or a tag. This is broader than

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 name: End-to-end CI
-run-name: ${{ (inputs.release_candidate || startsWith(github.ref_name, 'candidate-')) && format('Candidate qualification {0}', github.sha) || (github.ref_type == 'tag' && format('Release qualification {0}', github.ref_name) || format('E2E {0}', github.ref_name)) }}
+run-name: ${{ (inputs.repetitions && inputs.repetitions != '1') && format('Journey stability {0} ({1} repetitions)', github.sha, inputs.repetitions) || ((inputs.release_candidate || startsWith(github.ref_name, 'candidate-')) && format('Candidate qualification {0}', github.sha) || (github.ref_type == 'tag' && format('Release qualification {0}', github.ref_name) || format('E2E {0}', github.ref_name))) }}
 
 on:
   push:
@@ -16,11 +16,11 @@ on:
   workflow_dispatch:
     inputs:
       release_candidate:
-        description: Run full candidate qualification before staging
+        description: Include all priorities (optional hosted candidate or stability run)
         type: boolean
         default: false
       repetitions:
-        description: Required successful repetitions of every release journey
+        description: Passes per release journey (greater than 1 is a separate stability run)
         type: choice
         options: ["1", "3", "5", "10"]
         default: "1"
@@ -37,7 +37,8 @@ concurrency:
 env:
   RUST_TOOLCHAIN: 1.94.1
   RUSTUP_TOOLCHAIN: 1.94.1
-  AEROBAG_RELEASE_JOURNEY_REPETITIONS: ${{ inputs.repetitions || (startsWith(github.ref_name, 'candidate-') && '5') || '1' }}
+  # Repetition testing is explicit, never an extra gate on the release path.
+  AEROBAG_RELEASE_JOURNEY_REPETITIONS: ${{ inputs.repetitions || '1' }}
 
 jobs:
   build-release-apps:
@@ -669,7 +670,7 @@ jobs:
           retention-days: 14
 
   qualification-result:
-    name: ${{ startsWith(github.ref_name, 'candidate-') && 'Candidate qualification' || (github.ref_type == 'tag' && 'Release qualification' || 'E2E aggregate') }}
+    name: ${{ (inputs.repetitions && inputs.repetitions != '1') && 'Journey stability' || (startsWith(github.ref_name, 'candidate-') && 'Candidate qualification' || (github.ref_type == 'tag' && 'Release qualification' || 'E2E aggregate')) }}
     if: ${{ always() }}
     needs:
       - build-release-apps

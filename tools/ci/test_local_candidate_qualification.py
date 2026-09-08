@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import json
+import io
 import socket
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -23,6 +25,101 @@ import diagnose_release_journey as diagnostic  # noqa: E402
 
 
 class LocalCandidateQualificationTests(unittest.TestCase):
+    def test_default_is_one_complete_pass_with_two_emulators(self) -> None:
+        with mock.patch.object(sys, "argv", ["local_candidate_qualification.py"]):
+            args = qualification.parse_args()
+        self.assertEqual(args.repetitions, 1)
+        self.assertEqual(args.android_workers, 2)
+        self.assertEqual(qualification.PRIORITIES, ("p0", "p1", "p2"))
+        self.assertEqual(qualification.ANDROID_SHARDS, 4)
+
+    def test_repetition_and_worker_overrides_remain_explicit(self) -> None:
+        with mock.patch.object(sys, "argv", [
+            "local_candidate_qualification.py", "--repetitions", "5", "--android-workers", "4",
+        ]):
+            args = qualification.parse_args()
+        self.assertEqual(args.repetitions, 5)
+        self.assertEqual(args.android_workers, 4)
+
+    def test_single_pass_runs_every_lane_and_preserves_isolated_gui_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ordinary = qualification.Lane("ci-example", ("true",))
+            cached = qualification.LaneResult("ci-example", 0, 1, root / "ci.log")
+            batches = []
+
+            def record_lanes(lanes, logs, workers):
+                lanes = list(lanes)
+                batches.append((lanes, workers))
+                return [qualification.LaneResult(lane.name, 0, 1, logs / lane.name) for lane in lanes]
+
+            with (
+                mock.patch.object(sys, "argv", ["local_candidate_qualification.py"]),
+                mock.patch.object(qualification, "assert_clean_commit", return_value="a" * 40),
+                mock.patch.object(qualification, "valid_receipt", return_value=None),
+                mock.patch.object(qualification, "receipt_path", return_value=root / "receipt.json"),
+                mock.patch.object(qualification, "require_qualification_capacity"),
+                mock.patch.object(qualification, "create_run_root", return_value=root),
+                mock.patch.object(qualification, "prepare_gradle_caches"),
+                mock.patch.object(qualification, "prepare_environment"),
+                mock.patch.object(qualification, "ordinary_lanes", return_value=[ordinary]),
+                mock.patch.object(qualification, "sequential_ci_lanes", return_value=[]),
+                mock.patch.object(qualification, "preflight_results", return_value=[cached]),
+                mock.patch.object(qualification, "git", return_value=""),
+                mock.patch.object(qualification, "prepare_inputs", return_value=(root, root / "fixture.json", root / "apps")),
+                mock.patch.object(qualification, "available_loopback_ports", return_value=(21000, 21001, 21002, 21003, 21004)),
+                mock.patch.object(qualification, "run_lanes", side_effect=record_lanes),
+                mock.patch.object(qualification, "write_receipt") as receipt,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(qualification.main(), 0)
+
+            self.assertEqual([workers for _, workers in batches], [1, 1, 1, 1, 1, 2, 2])
+            self.assertEqual([lane.name for lanes, _ in batches for lane in lanes], [
+                "e2e-web-p0", "e2e-web-p1", "e2e-web-p2",
+                "e2e-web-nav-db-rollover", "e2e-android-baseline",
+                "e2e-android-s0", "e2e-android-s1", "e2e-android-s2", "e2e-android-s3",
+                *[f"e2e-{name}" for name in qualification.NATIVE_TESTS],
+                "e2e-android-chrome-live-feed",
+            ])
+            for lanes, _ in batches:
+                for lane in lanes:
+                    if "AEROBAG_RELEASE_JOURNEY_REPETITIONS" in lane.env:
+                        self.assertEqual(lane.env["AEROBAG_RELEASE_JOURNEY_REPETITIONS"], "1")
+            self.assertEqual(receipt.call_args.args[-1], 1)
+            self.assertEqual(receipt.call_args.args[-2][0], cached)
+
+    def test_stability_evidence_is_separate_from_routine_prequalification(self) -> None:
+        commit = "a" * 40
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(qualification, "git", return_value=temp_dir),
+            mock.patch.object(qualification, "workflow_identity", return_value={}),
+        ):
+            root = Path(temp_dir)
+            apps = root / "apps"
+            apps.mkdir()
+            (apps / "build-manifest.json").write_text("{}", encoding="utf-8")
+            stability = qualification.write_receipt(commit, "start", root, apps, [], 5)
+            self.assertEqual(stability.parent.name, "stability")
+            self.assertIsNone(qualification.valid_receipt(commit))
+            self.assertIsNotNone(qualification.valid_receipt(commit, repetitions=5))
+            self.assertIsNone(qualification.valid_receipt(commit, repetitions=3))
+
+            routine = qualification.write_receipt(commit, "start", root, apps, [], 1)
+            original = routine.read_bytes()
+            self.assertNotEqual(stability, routine)
+            self.assertIsNotNone(qualification.valid_receipt(commit))
+            qualification.write_receipt(commit, "later", root, apps, [], 5)
+            self.assertEqual(routine.read_bytes(), original)
+            with (
+                mock.patch.object(sys, "argv", ["local_candidate_qualification.py", "--check"]),
+                mock.patch.object(qualification, "assert_clean_commit", return_value=commit),
+                mock.patch.object(qualification, "prepare_inputs") as build,
+            ):
+                self.assertEqual(qualification.main(), 0)
+            build.assert_not_called()
+
     def test_new_attempt_preserves_previous_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
             qualification.tempfile, "gettempdir", return_value=temp_dir,
@@ -381,7 +478,7 @@ class LocalCandidateQualificationTests(unittest.TestCase):
         self.assertIn("tools/ci/local_candidate_qualification.py", identity)
         self.assertTrue(all(len(value) == 64 for value in identity.values()))
 
-    def test_receipt_with_too_few_repetitions_cannot_authorize_staging(self) -> None:
+    def test_receipt_requires_exact_commit_workflow_and_requested_pass_count(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temp_dir,
             mock.patch.object(
@@ -391,18 +488,21 @@ class LocalCandidateQualificationTests(unittest.TestCase):
             ) as receipt_path,
             mock.patch.object(qualification, "workflow_identity", return_value={}),
         ):
-            receipt_path.return_value.write_text(
-                json.dumps(
-                    {
-                        "commit": "a" * 40,
-                        "status": "passed",
-                        "repetitions": qualification.DEFAULT_REPETITIONS - 1,
-                        "workflow_identity": {},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            self.assertIsNone(qualification.valid_receipt("a" * 40))
+            valid = {
+                "commit": "a" * 40,
+                "status": "passed",
+                "repetitions": 1,
+                "workflow_identity": {},
+            }
+            for change in (
+                {"repetitions": 0}, {"repetitions": 5}, {"repetitions": True},
+                {"repetitions": "1"}, {"repetitions": 1.0},
+                {"commit": "b" * 40}, {"status": "failed"},
+                {"workflow_identity": {"changed": "workflow"}},
+            ):
+                with self.subTest(change=change):
+                    receipt_path.return_value.write_text(json.dumps(valid | change), encoding="utf-8")
+                    self.assertIsNone(qualification.valid_receipt("a" * 40))
 
 
 if __name__ == "__main__":

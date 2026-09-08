@@ -29,7 +29,7 @@ from typing import Iterable
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPETITIONS = 5
+DEFAULT_REPETITIONS = 1
 ANDROID_SHARDS = 4
 DEFAULT_ANDROID_WORKERS = 2
 MINIMUM_FREE_BYTES = 14 * 1024 * 1024 * 1024
@@ -79,17 +79,20 @@ class LaneResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the exact release-candidate workload before pushing it to GitHub."
+        description="Run the complete local prequalification workload once; optionally repeat for stability testing."
     )
-    parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
+    parser.add_argument(
+        "--repetitions", type=int, default=DEFAULT_REPETITIONS,
+        help="passes per release journey (default: 1); larger counts are separate stability runs",
+    )
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument(
         "--android-workers",
         type=int,
         default=DEFAULT_ANDROID_WORKERS,
         help=(
-            "number of Android emulators sharing this host; one models each GitHub matrix "
-            "runner, while larger values are an optional host-contention stress mode"
+            "concurrent Android emulators (default: 2); each shard keeps its own fresh AVD. "
+            "Higher values need a host-contention benchmark, not just spare RAM"
         ),
     )
     parser.add_argument("--check", action="store_true", help="only verify the receipt for HEAD")
@@ -110,11 +113,14 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def receipt_path(commit: str) -> Path:
+def receipt_path(commit: str, *, repetitions: int = DEFAULT_REPETITIONS) -> Path:
     git_dir = Path(git("rev-parse", "--git-common-dir"))
     if not git_dir.is_absolute():
         git_dir = ROOT / git_dir
-    return git_dir.resolve() / "aerobag-local-qualification" / f"{commit}.json"
+    directory = git_dir.resolve() / "aerobag-local-qualification"
+    if repetitions != DEFAULT_REPETITIONS:
+        return directory / "stability" / f"{commit}-{repetitions}.json"
+    return directory / f"{commit}.json"
 
 
 def workflow_identity() -> dict[str, str]:
@@ -127,8 +133,10 @@ def workflow_identity() -> dict[str, str]:
     return {str(path.relative_to(ROOT)): sha256(path) for path in paths}
 
 
-def valid_receipt(commit: str) -> dict[str, object] | None:
-    path = receipt_path(commit)
+def valid_receipt(
+    commit: str, *, repetitions: int = DEFAULT_REPETITIONS,
+) -> dict[str, object] | None:
+    path = receipt_path(commit, repetitions=repetitions)
     if not path.is_file():
         return None
     try:
@@ -139,8 +147,8 @@ def valid_receipt(commit: str) -> dict[str, object] | None:
         return None
     if receipt.get("workflow_identity") != workflow_identity():
         return None
-    repetitions = receipt.get("repetitions")
-    if not isinstance(repetitions, int) or repetitions < DEFAULT_REPETITIONS:
+    recorded_repetitions = receipt.get("repetitions")
+    if type(recorded_repetitions) is not int or recorded_repetitions != repetitions:
         return None
     return receipt
 
@@ -960,7 +968,7 @@ def write_receipt(
             for result in sorted(results, key=lambda result: result.name)
         ],
     }
-    path = receipt_path(commit)
+    path = receipt_path(commit, repetitions=repetitions)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1001,20 +1009,26 @@ def main() -> int:
     if args.android_workers < 1:
         raise QualificationError("--android-workers must be positive")
     commit = assert_clean_commit()
-    receipt = valid_receipt(commit)
+    label = (
+        "Local prequalification"
+        if args.repetitions == DEFAULT_REPETITIONS
+        else f"Local stability check ({args.repetitions} repetitions)"
+    )
+    receipt = valid_receipt(commit, repetitions=args.repetitions)
+    path = receipt_path(commit, repetitions=args.repetitions)
     if args.check:
         if receipt is None:
-            raise QualificationError(f"no valid local qualification receipt for {commit}")
-        print(f"Local candidate qualification passed: {receipt_path(commit)}")
+            raise QualificationError(f"no valid receipt for {label.lower()} at {commit}")
+        print(f"{label} passed: {path}")
         return 0
-    if receipt is not None and receipt.get("repetitions") == args.repetitions:
-        print(f"Local candidate qualification already passed: {receipt_path(commit)}")
+    if receipt is not None:
+        print(f"{label} already passed: {path}")
         return 0
 
     started_at = datetime.now(timezone.utc).isoformat()
     require_qualification_capacity(Path(tempfile.gettempdir()))
     run_root = create_run_root("aerobag-local-candidate", commit)
-    print(f"Qualification run directory: {run_root}", flush=True)
+    print(f"{label} run directory: {run_root}", flush=True)
     logs = run_root / "logs"
     results: list[LaneResult] = []
 
@@ -1078,7 +1092,7 @@ def main() -> int:
     results.extend(run_lanes(native, logs, min(android_workers, len(native))))
 
     path = write_receipt(commit, started_at, run_root, apps, results, args.repetitions)
-    print(f"Local candidate qualification passed: {path}")
+    print(f"{label} passed: {path}")
     return 0
 
 

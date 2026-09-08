@@ -64,8 +64,6 @@ operator interface creates the required tag and desired-state commits, shows
 the exact commands and a colored config diff, and asks before changing anything:
 
 ```bash
-tools/prod_manage.py --prequalify
-tools/prod_manage.py --candidate-status
 tools/prod_manage.py --stage
 tools/prod_manage.py --qualification-status
 tools/prod_manage.py --promote
@@ -73,20 +71,26 @@ tools/prod_manage.py --promote --force
 tools/prod_manage.py --reconcile
 ```
 
-`--prequalify` is an optional full early gate before staging. It first runs the complete
-ordinary-CI and release-journey workload locally against one immutable app
-bundle and pinned fixture. Independent Rust, web, and Android lanes run in
-parallel; twelve fresh Android priority/shard lanes mirror GitHub's matrix and
-use a configurable pool of local emulator workers. Each lane prepares its own
-job-local app-data baseline before its assigned journeys. Every P0, P1, and P2 web and
-Android journey must pass five times. The resulting receipt is bound to the
-exact commit and workflow definitions.
+For routine releases, start with `--stage`. A full local or hosted candidate
+run is not a prerequisite.
 
-Only after that local proof passes does `--prequalify` push synchronized `main`
-and a disposable `candidate-*` tag to GitHub. GitHub repeats the full workload
-without changing release intent or contacting production. Failures are not
-retried into a green result. `--candidate-status` reports the ordinary-CI and
-candidate-journey results for the current commit.
+`--prequalify` is optional deeper local assurance before staging. It runs the
+complete ordinary-CI and release-journey workload **once** against one immutable
+app bundle and pinned fixture. All P0, P1, and P2 web and Android journeys remain
+covered. Four fresh Android shards use a configurable pool of local emulator
+workers and restore one run-scoped app-data baseline. Browser and emulator
+phases are isolated to avoid host contention. Receipts bind the exact commit
+and workflow definitions; fast-check results are cached for a later `--stage`
+of the same commit. This command does not push to GitHub, wait for hosted CI,
+require a GitHub API token, or contact production.
+
+Repetition testing is separate: explicitly run
+`tools/ci/local_candidate_qualification.py --repetitions 5`, or request a hosted
+manual stability run. Stability evidence cannot substitute for ordinary
+qualification, and failures are not retried into green. See
+[hosted CI](testing/hosted-ci.md#stability-testing-is-not-a-release-gate).
+`--candidate-status` still reports legacy/manually requested hosted candidate
+results; it does not report local receipts.
 
 `--stage` automatically runs a cached, commit-bound, emulator-free preflight before
 creating release intent or a tag. The preflight runs the ordinary unit, static,
@@ -102,8 +106,8 @@ the candidate builds, starts a separate live-feed daemon, and is qualified at
 `https://aerobag.org/staging/`. If the current commit is already the assigned
 staging release, the command exits and directs the operator to `--reconcile`.
 
-Staging qualification remains a second, exact-release defense after the
-pre-staging candidate gate. It has two independent parts. The production reconciler
+Staging qualification has two independent parts, running in parallel after
+the release push. The production reconciler
 checks the bytes and routes actually exposed under `/staging/`. A release-tag
 run of `.github/workflows/e2e-ci.yml` builds immutable web and Android clients
 for that exact tag and runs every P0, P1, and P2 journey. The ordinary `CI`

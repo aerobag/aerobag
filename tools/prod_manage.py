@@ -68,8 +68,14 @@ def parse_args() -> argparse.Namespace:
         description="Change or reconcile Aerobag's checked-in production release intent."
     )
     operation = parser.add_mutually_exclusive_group(required=True)
-    operation.add_argument("--prequalify", action="store_true")
-    operation.add_argument("--candidate-status", action="store_true")
+    operation.add_argument(
+        "--prequalify", action="store_true",
+        help="optionally run every check once locally; no GitHub push or deployment",
+    )
+    operation.add_argument(
+        "--candidate-status", action="store_true",
+        help="inspect a legacy or manually requested hosted candidate run",
+    )
     operation.add_argument("--stage", action="store_true")
     operation.add_argument("--promote", action="store_true")
     operation.add_argument("--reconcile", action="store_true")
@@ -90,7 +96,6 @@ def operation_requires_github_authentication(args: argparse.Namespace) -> bool:
         any(
             getattr(args, name, False)
             for name in (
-                "prequalify",
                 "candidate_status",
                 "qualification_status",
             )
@@ -722,7 +727,7 @@ def github_git_url(config: dict[str, Any]) -> str:
 
 
 def run_stage_preflight(*, full: bool = False) -> None:
-    mode = "full exact-commit workload" if full else "fast emulator-free checks"
+    mode = "full exact-commit workload (one pass)" if full else "fast emulator-free checks"
     print(f"Running local release preflight: {mode}")
     command = [
         sys.executable,
@@ -761,7 +766,8 @@ def assert_candidate_is_qualified(config: dict[str, Any], commit: str) -> None:
     if not qualification.passed:
         raise ManagementError(
             f"commit {commit} has not passed candidate qualification; "
-            f"{qualification.failure_summary()}. Run tools/prod_manage.py --prequalify"
+            f"{qualification.failure_summary()}. Inspect --candidate-status; "
+            "local --prequalify does not request hosted candidate qualification"
         )
 
 
@@ -776,63 +782,20 @@ def candidate_status(config_path: Path) -> int:
     return 0 if qualification.passed else 1
 
 
-def prequalify(config_path: Path) -> int:
+def prequalify() -> int:
     assert_clean_checkout("prequalify")
     git("fetch", "origin", capture=False)
     assert_main_not_behind(require_synchronized=True)
+    # Keep the cheap receipt independently reusable by both the full local run
+    # and a later --stage of this exact commit, even if a journey fails.
+    run_stage_preflight(full=False)
     run_stage_preflight(full=True)
-    commit = git("rev-parse", "HEAD")
-    config = deployment.load_config(config_path)
-    existing = candidate_qualification(config, commit)
-    if existing.passed:
-        print_candidate_qualification(existing)
-        print_success("Candidate qualification already passed")
-        return 0
-
-    github_url = github_git_url(config)
-    candidate_tag = (
-        "candidate-"
-        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
-        + commit[:8]
+    print_success("Local prequalification passed (one complete pass)")
+    print(
+        "No GitHub candidate run or deployment was requested. Use --stage when ready; "
+        "the release tag still requires hosted qualification."
     )
-    print(f"Pushing {commit} to GitHub for five full journey repetitions")
-    git("push", github_url, "main", capture=False)
-    git("push", github_url, f"HEAD:refs/tags/{candidate_tag}", capture=False)
-
-    previous_run_id = existing.release_journeys.run_id
-    deadline = time.monotonic() + 2 * 60 * 60
-    last_report = None
-    while time.monotonic() < deadline:
-        qualification = candidate_qualification(config, commit)
-        candidate = qualification.release_journeys
-        current_report = (
-            qualification.ordinary_ci.state,
-            qualification.ordinary_ci.detail,
-            candidate.state,
-            candidate.detail,
-            candidate.run_id,
-        )
-        if current_report != last_report:
-            print_candidate_qualification(qualification)
-            last_report = current_report
-        if candidate.run_id is not None and candidate.run_id != previous_run_id:
-            if candidate.state == "failed":
-                raise ManagementError(
-                    f"candidate journey qualification failed: {candidate.url or candidate.detail}"
-                )
-            if candidate.state == "passed":
-                if not qualification.ordinary_ci.passed:
-                    raise ManagementError(
-                        "candidate journeys passed, but ordinary CI did not: "
-                        + qualification.ordinary_ci.detail
-                    )
-                print_success("Candidate qualification passed; this commit may be staged")
-                return 0
-        time.sleep(15)
-    raise ManagementError(
-        "candidate qualification did not complete within two hours; "
-        "use --candidate-status to inspect it"
-    )
+    return 0
 
 
 def staging_failure_message(config: dict[str, Any], tag: str) -> str:
@@ -1089,7 +1052,7 @@ def main() -> int:
                 )
                 os.execv(authentication_command[0], authentication_command)
             if getattr(args, "prequalify", False):
-                result = prequalify(DEFAULT_CONFIG)
+                result = prequalify()
             elif getattr(args, "candidate_status", False):
                 result = candidate_status(DEFAULT_CONFIG)
             elif args.stage:

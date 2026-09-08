@@ -74,7 +74,7 @@ import {
   webWorkspaceDirectory,
 } from "./journey-structure-audit.mjs";
 import { rewriteRequestOrigin } from "./cloud-journey-peer.mjs";
-import { CdpClient, CdpPage } from "../../ui/web-app/scripts/chrome-cdp.mjs";
+import { CdpClient, CdpPage, CdpProtocolError } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import {
   androidSemanticTextTargetIsReady,
   androidSemanticReadinessStateMatches,
@@ -180,6 +180,19 @@ test("release journey registry owns every assertion exactly once", () => {
   assert.ok(index.assertion_owners.size > 100);
 });
 
+test("web journey failures retain worker network evidence without sensitive capture", () => {
+  const runner = readFileSync(new URL("./run-release-journey.mjs", import.meta.url), "utf8");
+  const chrome = readFileSync(new URL("../../ui/web-app/scripts/chrome-cdp.mjs", import.meta.url), "utf8");
+  assert.match(runner, /join\(artifactDir, "chrome-netlog.json"\)/);
+  assert.match(runner, /launchChrome\(\{[^}]*netLogPath/);
+  assert.match(runner, /net_log: netLogPath/);
+  assert.match(runner, /if \(passed && !explicitNetLog\) await rm\(netLogPath/);
+  assert.ok(runner.indexOf("await stopProcess(chrome?.process)") < runner.indexOf("await rm(netLogPath"),
+    "flush Chrome's netlog before retaining failure evidence or cleaning successful runs");
+  assert.match(chrome, /--net-log-capture-mode=Default/);
+  assert.doesNotMatch(chrome, /--net-log-capture-mode=IncludeSensitive/);
+});
+
 test("Android fixture clock setup observes the device clock before returning", async () => {
   const targetEpochMs = 1_787_905_620_000;
   const commands = [];
@@ -234,6 +247,56 @@ test("CDP transport rejects late work without writing after pipe shutdown", asyn
   await assert.rejects(client.send("Runtime.enable"), /request Runtime\.enable rejected/);
   pipeRead.write(`${JSON.stringify({ method: "Runtime.event" })}\0`);
   assert.equal(pipeWrite.writableEnded, true);
+});
+
+test("CDP protocol failures retain method, code, and detail for narrow classification", async () => {
+  const pipeWrite = new PassThrough();
+  const client = new CdpClient({ pipeWrite, pipeRead: new PassThrough() });
+  pipeWrite.resume();
+  await client.open();
+  const pending = client.send("Runtime.evaluate", { expression: "document.title" });
+  const error = { code: -32000, message: "Inspected target navigated or closed" };
+  client.handleMessage(JSON.stringify({ id: 1, error }));
+  await assert.rejects(pending, (caught) => caught instanceof CdpProtocolError &&
+    caught.method === "Runtime.evaluate" && caught.code === error.code && caught.detail === error.message);
+  client.close();
+});
+
+test("DOM observations tolerate navigation overlap without replaying activation", async () => {
+  const error = new CdpProtocolError("Runtime.evaluate", {
+    code: -32000, message: "Inspected target navigated or closed",
+  });
+  let calls = 0;
+  const transport = new WebSemanticTransport({
+    evaluate: async () => {
+      if (++calls === 1) throw error;
+      return { test_id: "page-about" };
+    },
+  }, { url: "http://fixture.test/" });
+  const result = await observeUntil("About arrived", () => transport.readElement("#about"));
+  assert.equal(result.value.test_id, "page-about");
+  assert.equal(calls, 2);
+
+  calls = 0;
+  await assert.rejects(transport.click("#about"), (caught) => caught === error);
+  assert.equal(calls, 1, "activation is never retried or marked transient");
+});
+
+test("DOM observation classification never hides application or disconnected-browser failures", async () => {
+  for (const error of [
+    new Error("Inspected target navigated or closed"),
+    new Error("Failed to fetch"),
+    new Error("CDP connection closed"),
+    new CdpProtocolError("Runtime.evaluate", { code: -32000, message: "Target crashed" }),
+  ]) {
+    let calls = 0;
+    const transport = new WebSemanticTransport({
+      evaluate: async () => { calls += 1; throw error; },
+    }, { url: "http://fixture.test/" });
+    await assert.rejects(observeUntil("About arrived", () => transport.readElement("#about")),
+      (caught) => caught.cause === error);
+    assert.equal(calls, 1);
+  }
 });
 
 test("web release journeys observe workers without attaching a debugger during startup", () => {

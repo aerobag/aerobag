@@ -18,9 +18,99 @@ CI_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(CI_DIR))
 
 import local_candidate_qualification as qualification  # noqa: E402
+import fast_release_preflight as preflight  # noqa: E402
+import diagnose_release_journey as diagnostic  # noqa: E402
 
 
 class LocalCandidateQualificationTests(unittest.TestCase):
+    def test_new_attempt_preserves_previous_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            qualification.tempfile, "gettempdir", return_value=temp_dir,
+        ):
+            first = qualification.create_run_root("candidate", "a" * 40)
+            (first / "failure.log").write_text("original failure", encoding="utf-8")
+            second = qualification.create_run_root("candidate", "a" * 40)
+            self.assertNotEqual(first, second)
+            self.assertEqual((first / "failure.log").read_text(), "original failure")
+            self.assertTrue(second.is_dir())
+
+    def test_host_lane_lock_rejects_overlap_and_releases_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            qualification.tempfile, "gettempdir", return_value=temp_dir,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "intentional"):
+                with qualification.qualification_lock():
+                    with self.assertRaisesRegex(qualification.QualificationError, "owns the host lanes"):
+                        with qualification.qualification_lock():
+                            self.fail("overlapping run acquired the host")
+                    raise RuntimeError("intentional")
+            with qualification.qualification_lock():
+                pass
+
+    def test_full_qualification_reuses_only_complete_exact_preflight_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            receipt = root / "receipt.json"
+            names = (
+                "ci-actionlint", "ci-reuse", "ci-rust-format", "ci-rust-shared",
+                "ci-rust-core", "ci-rust-services", "ci-rust-preprocessor",
+                "ci-python", "ci-web", "ci-android-jvm",
+            )
+            lanes = []
+            for name in names:
+                log = root / f"{name}.log"
+                log.write_text("passed", encoding="utf-8")
+                lanes.append({"name": name, "duration_seconds": 1, "log": str(log)})
+            document = {"schema_version": 1, "commit": "a" * 40, "status": "passed", "lanes": lanes}
+            with mock.patch.object(preflight, "receipt_path", return_value=receipt):
+                receipt.write_text(json.dumps(document), encoding="utf-8")
+                results = qualification.preflight_results("a" * 40, set(names))
+                self.assertEqual(len(results), len(names))
+                self.assertTrue(all(result.passed for result in results))
+                self.assertIsNone(qualification.preflight_results("b" * 40, set(names)))
+                self.assertIsNone(qualification.preflight_results("a" * 40, {*names, "ci-new-lane"}))
+                for changes in ({"status": "failed"}, {"lanes": lanes[:-1]}, {"lanes": lanes[:-1] + [lanes[0]]}):
+                    receipt.write_text(json.dumps({**document, **changes}), encoding="utf-8")
+                    self.assertIsNone(qualification.preflight_results("a" * 40, set(names)))
+                receipt.write_text(json.dumps(document), encoding="utf-8")
+                Path(lanes[0]["log"]).unlink()
+                self.assertIsNone(qualification.preflight_results("a" * 40, set(names)))
+
+    def test_focused_diagnostics_reuse_retained_inputs_and_cannot_write_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            qualification, "git", return_value="12345678",
+        ):
+            root = Path(temp_dir)
+            source = root / "previous run"
+            output = root / "diagnostic-unique"
+            (source / "release-journey-materialized").mkdir(parents=True)
+            (source / "release-journey-materialized/fixture.json").write_text("{}")
+            (source / "release-ui-target/web/workspace/node_modules").mkdir(parents=True)
+            (source / "android-release-journey-baseline.tar").touch()
+            for platform in ("web", "android"):
+                lane = diagnostic.diagnostic_lane(
+                    source, output, "shared.inspector-details", platform, 20, "p1", platform == "web",
+                )
+                self.assertIn(f"{platform}-test shared.inspector-details", lane.command[4])
+                self.assertNotIn("-suite", lane.command[4])
+                self.assertEqual(lane.env["AEROBAG_RELEASE_JOURNEY_REPETITIONS"], "20")
+                self.assertEqual(lane.env["AEROBAG_WEB_WORKSPACE_DIR"], str(source / "release-ui-target/web/workspace"))
+                self.assertIn("fixture-stop", lane.command[4])
+                self.assert_shell_is_valid(lane.command)
+            (source / "android-release-journey-baseline.tar").unlink()
+            with self.assertRaisesRegex(qualification.QualificationError, "baseline is missing"):
+                diagnostic.diagnostic_lane(source, output, "shared.inspector-details", "android", 1, "p1", False)
+        self.assertNotIn("write_receipt", Path(diagnostic.__file__).read_text())
+
+    def test_diagnostic_validates_journey_before_starting_devices(self) -> None:
+        with mock.patch.object(diagnostic.subprocess, "check_output", return_value='{"priority":"p1"}') as query:
+            self.assertEqual(diagnostic.journey_metadata("shared.inspector-details", "android")["priority"], "p1")
+        self.assertEqual(query.call_args.args[0][-2:], ["shared.inspector-details", "android"])
+        self.assertEqual(query.call_args.kwargs["timeout"], 15)
+        with mock.patch.object(diagnostic.subprocess, "check_output", side_effect=subprocess.CalledProcessError(2, "node")):
+            with self.assertRaises(qualification.QualificationError):
+                diagnostic.journey_metadata("not-a-journey", "web")
+
     def assert_shell_is_valid(self, command: tuple[str, ...]) -> None:
         self.assertEqual(command[:4], ("bash", "-euo", "pipefail", "-c"))
         subprocess.run(

@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { writeFile } from "node:fs/promises";
+import { CdpProtocolError } from "../../ui/web-app/scripts/chrome-cdp.mjs";
 import { clampDragEndpoint } from "./gesture-geometry.mjs";
-import { E2E_TIMING, observeUntil } from "./transition-contract.mjs";
+import { E2E_TIMING, observeUntil, TransientObservationError } from "./transition-contract.mjs";
 
 function expressionArgument(value) {
   return JSON.stringify(value);
@@ -93,12 +94,27 @@ export class WebSemanticTransport {
     return this.page.hasCanceledStartupModuleRequest?.(this.origin) === true;
   }
 
+  async evaluateObservation(expression) {
+    try {
+      return await this.page.evaluate(expression);
+    } catch (error) {
+      // A read can overlap a real document navigation. Let its existing bounded
+      // observation wait sample the new document; never replay an action or
+      // classify application exceptions / lost CDP connections as transient.
+      if (error instanceof CdpProtocolError && error.method === "Runtime.evaluate" &&
+          error.code === -32000 && error.detail === "Inspected target navigated or closed") {
+        throw new TransientObservationError("DOM observation overlapped navigation", error);
+      }
+      throw error;
+    }
+  }
+
   async exists(selector) {
-    return this.page.evaluate(`Boolean(document.querySelector(${expressionArgument(selector)}))`);
+    return this.evaluateObservation(`Boolean(document.querySelector(${expressionArgument(selector)}))`);
   }
 
   async visible(selector) {
-    return this.page.evaluate(`(() => {
+    return this.evaluateObservation(`(() => {
       return [...document.querySelectorAll(${expressionArgument(selector)})]
         .some((element) => ${RENDERED_ELEMENT_PREDICATE}(element));
     })()`);
@@ -437,7 +453,7 @@ export class WebSemanticTransport {
   }
 
   async readElement(selector) {
-    return this.page.evaluate(`(() => {
+    return this.evaluateObservation(`(() => {
       const element = [...document.querySelectorAll(${expressionArgument(selector)})]
         .find((candidate) => ${RENDERED_ELEMENT_PREDICATE}(candidate));
       if (!(element instanceof Element)) return null;
@@ -481,13 +497,13 @@ export class WebSemanticTransport {
 
   async collectTestIds(prefix) {
     if (prefix === "parity:raster-recovery:") {
-      return this.page.evaluate(`(() => {
+      return this.evaluateObservation(`(() => {
         const recovery = window.__aerobagE2e?.raster?.()?.recovery_count ?? 0;
         return [{ id: \`parity:raster-recovery:count:\${recovery}\`, text: "", enabled: true, pressed: null }];
       })()`);
     }
     if (prefix === "parity:raster-state:") {
-      return this.page.evaluate(`(() => {
+      return this.evaluateObservation(`(() => {
         const layer = document.querySelector(".rasterTileLayer");
         const images = [...document.querySelectorAll(".rasterTileLayer .mapTileImage")];
         const planned = layer?.childElementCount ?? 0;
@@ -509,7 +525,7 @@ export class WebSemanticTransport {
       "plan-procedure-transition-",
       "plan-insert-suggestion-",
     ].some((controlPrefix) => prefix.startsWith(controlPrefix));
-    return this.page.evaluate(`(() => [...document.querySelectorAll("[data-testid]")]
+    return this.evaluateObservation(`(() => [...document.querySelectorAll("[data-testid]")]
       .filter((element) => element.dataset.testid.startsWith(${expressionArgument(prefix)}))
       .filter((element) => {
         if (!${visibleControlsOnly}) return true;

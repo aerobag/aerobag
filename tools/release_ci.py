@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,22 +27,30 @@ class ReleaseCiError(RuntimeError):
 
 
 def _github_json_via_token_helper(url: str, helper: str) -> Any:
+    # The helper exports a fresh token to its child. curl does not consume
+    # GITHUB_TOKEN, so the old refresh request silently became anonymous.
+    # Build the header inside that child, never in argv or diagnostic output.
+    request_code = (
+        "import os, sys, urllib.request; "
+        "request = urllib.request.Request(sys.argv[1], headers={"
+        "'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'], "
+        "'Accept': 'application/vnd.github+json', "
+        "'X-GitHub-Api-Version': '2022-11-28', "
+        "'User-Agent': 'aerobag-release-manager'}); "
+        "response = urllib.request.urlopen(request, timeout=20); "
+        "sys.stdout.buffer.write(response.read())"
+    )
     command = [
         helper,
-        "curl",
-        "--fail",
-        "--silent",
-        "--show-error",
-        "-H",
-        "Accept: application/vnd.github+json",
-        "-H",
-        "X-GitHub-Api-Version: 2022-11-28",
+        sys.executable,
+        "-c",
+        request_code,
         url,
     ]
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=45)
         return json.loads(result.stdout)
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         raise ReleaseCiError(f"failed to refresh GitHub API credentials: {error}") from error
 
 

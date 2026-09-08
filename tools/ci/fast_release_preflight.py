@@ -88,10 +88,8 @@ def main() -> int:
         )
 
     started_at = datetime.now(timezone.utc).isoformat()
-    run_root = Path(tempfile.gettempdir()) / f"aerobag-fast-preflight-{commit[:12]}"
-    if run_root.exists():
-        shutil.rmtree(run_root)
-    run_root.mkdir(parents=True)
+    run_root = qualification.create_run_root("aerobag-fast-preflight", commit)
+    print(f"Preflight run directory: {run_root}", flush=True)
     logs = run_root / "logs"
     results: list[qualification.LaneResult] = []
 

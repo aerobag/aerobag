@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -151,6 +153,53 @@ def assert_clean_commit() -> str:
     if branch != "main":
         raise QualificationError(f"local candidate qualification requires main, not {branch}")
     return commit
+
+
+def create_run_root(prefix: str, commit: str) -> Path:
+    """Keep earlier failures and their immutable inputs available for diagnosis."""
+    base = Path(tempfile.gettempdir()) / f"{prefix}-{commit[:12]}"
+    try:
+        base.mkdir()
+        return base
+    except FileExistsError:
+        return Path(tempfile.mkdtemp(prefix=f"{base.name}-", dir=base.parent))
+
+
+@contextmanager
+def qualification_lock():
+    # The local emulator and fixture lanes use fixed service ports across checkouts.
+    path = Path(tempfile.gettempdir()) / f"aerobag-qualification-{os.getuid()}.lock"
+    with path.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise QualificationError(
+                "another local qualification or journey diagnostic owns the host lanes"
+            ) from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def preflight_results(commit: str, expected: set[str]) -> list[LaneResult] | None:
+    # Import lazily: the fast preflight shares the ordinary lane definitions here.
+    import fast_release_preflight as preflight
+
+    if not preflight.valid_receipt(commit):
+        return None
+    try:
+        receipt = json.loads(preflight.receipt_path(commit).read_text(encoding="utf-8"))
+        lanes = receipt["lanes"]
+        if len(lanes) != len(expected) or {lane["name"] for lane in lanes} != expected:
+            return None
+        results = [
+            LaneResult(lane["name"], 0, float(lane["duration_seconds"]), Path(lane["log"]))
+            for lane in lanes
+        ]
+        return results if all(result.log_path.is_file() for result in results) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def require_qualification_capacity(path: Path) -> None:
@@ -583,6 +632,8 @@ def web_lane(
     fixture: Path,
     apps: Path,
     repetitions: int,
+    *,
+    journey: str | None = None,
 ) -> Lane:
     index = PRIORITIES.index(priority)
     package_port = 21_000 + index
@@ -610,7 +661,9 @@ def web_lane(
         f"e2e-web-{priority}",
         bash(
             "status=0; (tools/e2e/release_journey_lab.sh fixture-start-web fresh"
-            f" && tools/e2e/release_journey_lab.sh web-suite {priority}) || status=$?;"
+            " && tools/e2e/release_journey_lab.sh "
+            + (f"web-test {shlex.quote(journey)}" if journey else f"web-suite {priority}")
+            + ") || status=$?;"
             " tools/e2e/release_journey_lab.sh fixture-stop || true;"
             " tools/e2e/release_journey_lab.sh cloud-stop || true; exit \"$status\""
         ),
@@ -625,6 +678,8 @@ def android_shard_lane(
     fixture: Path,
     apps: Path,
     repetitions: int,
+    *,
+    journey: str | None = None,
 ) -> Lane:
     package_port = 21_200 + shard
     cloud_port = 21_300 + shard
@@ -669,14 +724,15 @@ def android_shard_lane(
         "AEROBAG_ANDROID_BASELINE_ARCHIVE": str(baseline_archive),
     }
     suite = (
-        "tools/e2e/release_journey_lab.sh android-suite-shard "
-        f"all {shard} {ANDROID_SHARDS}"
+        "tools/e2e/release_journey_lab.sh "
+        + (f"android-test {shlex.quote(journey)}" if journey
+           else f"android-suite-shard all {shard} {ANDROID_SHARDS}")
     )
     setup = (
         "tools/e2e/release_journey_lab.sh fixture-start-web empty"
         " && tools/e2e/release_journey_lab.sh android-boot-install"
-        f" {apps / 'aerobag-release-e2e.apk'}"
-        f" {apps / 'aerobag-e2e-driver.apk'}"
+        f" {shlex.quote(str(apps / 'aerobag-release-e2e.apk'))}"
+        f" {shlex.quote(str(apps / 'aerobag-e2e-driver.apk'))}"
         f" && {suite}"
     )
     cleanup = (
@@ -959,21 +1015,26 @@ def main() -> int:
         return 0
 
     started_at = datetime.now(timezone.utc).isoformat()
-    run_root = Path(tempfile.gettempdir()) / f"aerobag-local-candidate-{commit[:12]}"
-    if run_root.exists():
-        shutil.rmtree(run_root)
     require_qualification_capacity(Path(tempfile.gettempdir()))
-    run_root.mkdir(parents=True)
+    run_root = create_run_root("aerobag-local-candidate", commit)
+    print(f"Qualification run directory: {run_root}", flush=True)
     logs = run_root / "logs"
     results: list[LaneResult] = []
 
     prepare_gradle_caches(run_root)
     prepare_environment()
 
-    print("Running ordinary CI lanes in parallel", flush=True)
-    results.extend(run_lanes(ordinary_lanes(run_root), logs, min(args.jobs, 7)))
-    for lane in sequential_ci_lanes(run_root):
-        results.extend(run_lanes([lane], logs, 1))
+    parallel_ci = ordinary_lanes(run_root)
+    sequential_ci = sequential_ci_lanes(run_root)
+    cached_ci = preflight_results(commit, {lane.name for lane in parallel_ci + sequential_ci})
+    if cached_ci is not None:
+        print("Reusing all ordinary-CI lanes from the exact-commit fast preflight", flush=True)
+        results.extend(cached_ci)
+    else:
+        print("Running ordinary CI lanes in parallel", flush=True)
+        results.extend(run_lanes(parallel_ci, logs, min(args.jobs, 7)))
+        for lane in sequential_ci:
+            results.extend(run_lanes([lane], logs, 1))
 
     if git("status", "--porcelain"):
         raise QualificationError("CI generated tracked source changes")
@@ -1026,7 +1087,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        with qualification_lock():
+            raise SystemExit(main())
     except (QualificationError, subprocess.CalledProcessError) as error:
         print(f"local candidate qualification: {error}", file=sys.stderr)
         raise SystemExit(2)

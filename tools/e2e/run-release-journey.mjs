@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -98,14 +98,19 @@ const implementation = releaseJourneyImplementation(args.journey);
 if (!implementation) throw new Error(`${args.journey} has no implemented release journey`);
 const fixture = loadReleaseJourneyFixture(args.fixture);
 const artifactDir = args.artifactDir || join(process.cwd(), "test-results", args.journey, args.platform);
+await mkdir(artifactDir, { recursive: true });
+const explicitNetLog = process.env.AEROBAG_CHROME_NET_LOG;
+const netLogPath = explicitNetLog?.replace("{repeat}", process.env.AEROBAG_E2E_REPEAT_INDEX ?? "1")
+  || join(artifactDir, "chrome-netlog.json");
 const userDataDir = await mkdtemp(join(tmpdir(), "aerobag-release-journey-"));
+let passed = false;
 let chrome;
 let browser;
 let transport;
 let page;
 
 try {
-  chrome = await launchChrome({ userDataDir, width: args.width, height: args.height });
+  chrome = await launchChrome({ userDataDir, width: args.width, height: args.height, netLogPath });
   browser = await connectToBrowser(chrome.endpoint);
   const createConfiguredPage = async () => {
     const configuredPage = await browser.createPage();
@@ -158,6 +163,7 @@ try {
     throw new Error(`browser exceptions observed: ${JSON.stringify(page.diagnostics.slice(-10))}`);
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  passed = true;
 } catch (error) {
   if (error?.journeyResult) {
     const snapshot = await transport?.snapshot().catch((snapshotError) => ({ error: snapshotError.message }));
@@ -167,6 +173,8 @@ try {
     if (snapshot && "test_ids" in snapshot) delete snapshot.test_ids;
     error.journeyResult.diagnostics.browser = {
       page: snapshot,
+      net_log: netLogPath,
+      chrome_stderr: chrome?.getStderr?.() ?? "",
       // Preserve the initiating failure as well as teardown cancellations.
       events: page?.diagnostics.slice(-200) ?? [],
       worker_errors: await page?.evaluate(
@@ -180,5 +188,8 @@ try {
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);
+  // Network evidence includes worker fetches without attaching a debugger to
+  // the worker. Retain failures; successful qualification runs need no netlogs.
+  if (passed && !explicitNetLog) await rm(netLogPath, { force: true });
   await rm(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

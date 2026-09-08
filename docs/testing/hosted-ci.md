@@ -199,10 +199,49 @@ by CI test jobs.
 
 ## Release Stability Gate
 
+### Fast iteration without weakening qualification
+
+Run `tools/ci/fast_release_preflight.py` on the integrated clean commit first.
+Full local qualification reuses its complete, exact-commit ordinary-CI evidence
+when the receipt and lane logs are available. It still runs every required
+journey repetition and never carries journey passes across commits or retries.
+
+Each attempt retains its own run directory, printed at startup. A new attempt
+does not delete the previous failure, app bundle, fixture, or logs. Local full
+qualification and focused diagnostics take a host-wide lock because their
+emulator/fixture lanes use fixed ports. An overlapping invocation fails promptly.
+
+For a failing journey, reuse the retained inputs through the diagnostic command:
+
+```sh
+python3 tools/ci/diagnose_release_journey.py \
+  --from-run /tmp/aerobag-local-candidate-COMMIT \
+  --platform android --journey shared.inspector-details --repetitions 20
+python3 tools/ci/diagnose_release_journey.py \
+  --from-run /tmp/aerobag-local-candidate-COMMIT \
+  --platform web --journey shared.about-and-saved-state --repetitions 20 --net-log
+```
+
+This checks the bundle and fixture inputs, runs the existing lane setup and
+cleanup, and records app/harness revision provenance in `diagnostic.json`.
+The app is the **retained build**, not an automatic rebuild of the current tree.
+Use it for harness iteration; rebuild the app after application changes.
+Diagnostic results never create qualification receipts. A diagnostic pass after
+a failure is not permission to retry the candidate into green.
+
+Web journeys automatically retain `chrome-netlog.json` alongside failure
+artifacts, including worker fetch evidence without attaching a worker debugger.
+Default capture excludes sensitive payloads. Successful runs discard this log;
+`--net-log` retains it during focused investigations. Use that evidence to
+distinguish transport failures from application failures before changing waits.
+
+### Complete workload
+
 `tools/prod_manage.py --prequalify` first runs the complete workload locally.
-Ordinary CI lanes, three web priority lanes, twelve fresh Android
-priority/shard lanes, and the native journeys are parallelized where they do
-not share generated source.
+Ordinary CI lanes, three web priority lanes, four fresh Android shard lanes
+(each spanning all priorities), and the native journeys run with the same
+boundaries as the hosted matrix. The local qualifier isolates GUI-heavy phases
+to avoid contention between emulators and browsers on this one host.
 The local run builds one immutable app bundle, uses pinned fixtures, and requires
 five successful repetitions per release journey.
 
@@ -213,15 +252,16 @@ emulator-free ordinary-CI preflight before it creates release intent or a tag,
 then may proceed directly to the release-tag qualification round trip. The final
 release tag still runs one complete exact-tag qualification.
 
-Within each Android matrix job, clean installation and package sync happen
-once. A job-local app-data archive then restores identical prepared state after
-`pm clear` before every journey and repetition. Archives are not shared between
-jobs or persisted in repository artifacts. Unlike a VM snapshot, this does not
-restore stale GPU surfaces, clocks, sockets, or running app work.
+An Android baseline job prepares a commit-scoped app-data archive once. Each
+Android matrix job clean-installs the immutable apps into a fresh AVD, then
+restores that archive after `pm clear` before every journey and repetition.
+The archive is shared only within that qualification run, not stored in the
+fixture repository. Unlike a VM snapshot, this does not restore stale GPU
+surfaces, clocks, sockets, or running app work.
 
-The local qualifier mirrors the hosted matrix boundary: each priority/shard
-pair gets a fresh AVD, installation, package sync, and job-local baseline.
-Reusing one emulator across priorities is forbidden because GitHub does not do
+The local qualifier mirrors the hosted matrix boundary: each shard gets a
+fresh AVD and installation, and restores the run's prepared baseline. Reusing
+one emulator across different shards is forbidden because GitHub does not do
 so; it can hide startup contamination or invent order-dependent failures that
 the hosted jobs cannot reproduce.
 

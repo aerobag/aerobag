@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import os
+import io
+import subprocess
 import sys
 import unittest
 import urllib.error
@@ -46,6 +48,42 @@ def run(
 
 
 class ReleaseCiTests(unittest.TestCase):
+    def test_refresh_child_authenticates_with_its_new_token_not_parent_token(self) -> None:
+        url = "https://api.github.test/workflows/runs"
+        response = mock.Mock(read=lambda: b'{"workflow_runs": []}')
+        captured = io.BytesIO()
+
+        def run_child(command, **options):
+            self.assertEqual(command[0], "/credentials/with-token")
+            self.assertEqual(command[1:3], [sys.executable, "-c"])
+            self.assertEqual(command[-1], url)
+            self.assertEqual(options["timeout"], 45)
+            self.assertNotIn("expired-token", " ".join(command))
+            with (
+                mock.patch.dict(os.environ, {"GITHUB_TOKEN": "fresh-token"}),
+                mock.patch.object(sys, "argv", ["-c", url]),
+                mock.patch.object(sys, "stdout", mock.Mock(buffer=captured)),
+                mock.patch.object(release_ci.urllib.request, "urlopen", return_value=response) as opened,
+            ):
+                exec(command[3], {})
+            request = opened.call_args.args[0]
+            self.assertEqual(request.get_header("Authorization"), "Bearer fresh-token")
+            self.assertEqual(opened.call_args.kwargs["timeout"], 20)
+            return subprocess.CompletedProcess(command, 0, stdout=captured.getvalue().decode())
+
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_TOKEN": "expired-token"}),
+            mock.patch.object(release_ci.subprocess, "run", side_effect=run_child),
+        ):
+            self.assertEqual(release_ci._github_json_via_token_helper(url, "/credentials/with-token"), {"workflow_runs": []})
+
+    def test_refresh_helper_timeout_is_bounded_and_reported(self) -> None:
+        with mock.patch.object(
+            release_ci.subprocess, "run", side_effect=subprocess.TimeoutExpired("helper", 45),
+        ):
+            with self.assertRaisesRegex(release_ci.ReleaseCiError, "failed to refresh"):
+                release_ci._github_json_via_token_helper("https://api.github.test/runs", "/credentials/with-token")
+
     def test_expired_installation_token_is_refreshed_through_helper(self) -> None:
         def expired(_request: object, timeout: int) -> object:
             self.assertEqual(timeout, 20)

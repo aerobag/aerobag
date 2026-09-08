@@ -7,6 +7,16 @@ import { requireWebDependency } from "./web-workspace-require.mjs";
 
 const WebSocket = requireWebDependency("ws");
 
+export class CdpProtocolError extends Error {
+  constructor(method, error) {
+    super(`${method}: ${JSON.stringify(error)}`);
+    this.name = "CdpProtocolError";
+    this.method = method;
+    this.code = error.code;
+    this.detail = error.message;
+  }
+}
+
 export function launchChrome({
   chromeBin = process.env.CHROME_BIN ?? "google-chrome-stable",
   userDataDir,
@@ -30,7 +40,7 @@ export function launchChrome({
       ? ["--remote-debugging-pipe"]
       : ["--remote-debugging-port=0"];
     const netLogArgs = netLogPath
-      ? [`--log-net-log=${netLogPath}`, "--net-log-capture-mode=IncludeSensitive"]
+      ? [`--log-net-log=${netLogPath}`, "--net-log-capture-mode=Default"]
       : [];
     const headlessArgs = headless ? ["--headless=new"] : [];
     const child = spawn(chromeBin, [
@@ -174,6 +184,11 @@ export class CdpPage {
   }
 
   installDiagnosticListeners(sessionId, target) {
+    this.client.onEvent(sessionId, "Log.entryAdded", (params) => {
+      if (["error", "warning"].includes(params.entry?.level)) {
+        this.diagnostics.push({ method: "Log.entryAdded", target, entry: params.entry });
+      }
+    });
     this.client.onEvent(sessionId, "Runtime.exceptionThrown", (params) => {
       this.diagnostics.push({
         method: "Runtime.exceptionThrown",
@@ -408,7 +423,7 @@ export class CdpClient {
         this.pending.delete(id);
         reject(new Error(`CDP request timed out: ${method}`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timeout });
+      this.pending.set(id, { resolve, reject, timeout, method });
       const encoded = JSON.stringify(message);
       try {
         if (this.pipeWrite) {
@@ -466,7 +481,7 @@ export class CdpClient {
       this.pending.delete(message.id);
       clearTimeout(pending.timeout);
       if (message.error) {
-        pending.reject(new Error(JSON.stringify(message.error)));
+        pending.reject(new CdpProtocolError(pending.method, message.error));
       } else {
         pending.resolve(message.result ?? {});
       }

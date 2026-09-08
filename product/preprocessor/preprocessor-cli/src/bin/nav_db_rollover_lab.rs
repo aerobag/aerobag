@@ -1,8 +1,6 @@
 use anyhow::{bail, Context};
 use chrono::{DateTime, Duration, Utc};
-use preprocessor_core::nav_kv::{
-    build_nav_kv_sorted, NavKvLookup, NavKvPair, NavKvRoot, NavKvStore,
-};
+use nav_db_fixture::{Generation, REJECTED_NAV_KEY};
 use product_contracts::publication::{
     bundle::v2::{BundleManifest, BundlePackageArtifact, SCHEMA_VERSION as BUNDLE_SCHEMA_VERSION},
     current::v1::{
@@ -15,13 +13,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env, fs,
-    fs::File,
-    io::{Read, Write},
     path::{Path, PathBuf},
 };
-use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
-
-const REJECTED_NAV_KEY: &str = "navref/position/navaid/SEA";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scenario {
@@ -31,7 +24,6 @@ enum Scenario {
 
 #[derive(Debug)]
 struct Args {
-    fixture_root: PathBuf,
     output_root: PathBuf,
     transition: Transition,
     scenario: Scenario,
@@ -58,7 +50,6 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn parse_args() -> anyhow::Result<Args> {
-    let mut fixture_root = None;
     let mut output_root = None;
     let mut transition_at = None;
     let mut transition_delay = None;
@@ -69,7 +60,6 @@ fn parse_args() -> anyhow::Result<Args> {
             .next()
             .with_context(|| format!("missing value after {arg}"))?;
         match arg.as_str() {
-            "--fixture-root" => fixture_root = Some(PathBuf::from(value)),
             "--output-root" => output_root = Some(PathBuf::from(value)),
             "--transition-at" => {
                 transition_at = Some(
@@ -108,7 +98,6 @@ fn parse_args() -> anyhow::Result<Args> {
         }
     };
     Ok(Args {
-        fixture_root: fixture_root.context("missing --fixture-root")?,
         output_root: output_root.context("missing --output-root")?,
         transition,
         scenario: scenario.context("missing --scenario")?,
@@ -125,44 +114,15 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
     fs::create_dir_all(&packaged_root)?;
     fs::create_dir_all(&unpacked_root)?;
 
-    let fixture: Value = read_json(&args.fixture_root.join("fixture.json"))?;
-    let cycles = fixture["cycles"]
-        .as_array()
-        .context("fixture.json cycles must be an array")?;
-    if cycles.len() != 2 {
-        bail!(
-            "NAVDB rollover fixture must contain exactly two ordered cycles; found {}",
-            cycles.len()
-        );
-    }
-    let initial_cycle = &cycles[0];
-    let candidate_cycle = &cycles[1];
-    let initial_cycle_id = required_str(initial_cycle, "cycle")?;
-    let candidate_cycle_id = required_str(candidate_cycle, "cycle")?;
-    let nav_db_contract = required_str(initial_cycle, "contract_id")?;
-    let candidate_contract = required_str(candidate_cycle, "contract_id")?;
-    if candidate_contract != nav_db_contract {
-        bail!(
-            "NAVDB rollover fixture contracts differ: cycle {initial_cycle_id} is \
-             {nav_db_contract}, cycle {candidate_cycle_id} is {candidate_contract}"
-        );
-    }
-    if nav_db_contract != product_contracts::NAV_DB_CONTRACT_ID {
-        bail!(
-            "NAVDB rollover fixture provides {nav_db_contract}; client requires {}",
-            product_contracts::NAV_DB_CONTRACT_ID
-        );
-    }
-    verify_fixture_artifact(&args.fixture_root, initial_cycle, "bundle")?;
-    verify_fixture_artifact(&args.fixture_root, initial_cycle, "nav_db")?;
-    verify_fixture_artifact(&args.fixture_root, candidate_cycle, "bundle")?;
-    verify_fixture_artifact(&args.fixture_root, candidate_cycle, "nav_db")?;
-
-    let materialized_initial = materialize_cycle(args, initial_cycle, false, &unpacked_root)?;
+    let nav_db_contract = product_contracts::NAV_DB_CONTRACT_ID;
+    let materialized_initial = materialize_cycle(args, Generation::Initial, &unpacked_root)?;
     let materialized_candidate = materialize_cycle(
         args,
-        candidate_cycle,
-        args.scenario == Scenario::Reject,
+        if args.scenario == Scenario::Reject {
+            Generation::Rejected
+        } else {
+            Generation::Candidate
+        },
         &unpacked_root,
     )?;
 
@@ -212,6 +172,8 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
             "initial": prepared_initial.summary,
             "candidate": prepared_candidate.summary,
             "removed_nav_key": (args.scenario == Scenario::Reject).then_some(REJECTED_NAV_KEY),
+            "source_sha256": hex_sha256(nav_db_fixture::SOURCE.as_bytes()),
+            "changed_airport": {"airport_id": "KRNT", "initial_name": nav_db_fixture::INITIAL_AIRPORT_NAME, "candidate_name": nav_db_fixture::CANDIDATE_AIRPORT_NAME},
         }),
     )?;
     println!("{}", args.output_root.display());
@@ -232,70 +194,47 @@ struct MaterializedCycle {
 
 fn materialize_cycle(
     args: &Args,
-    fixture_cycle: &Value,
-    remove_required_nav_key: bool,
+    generation: Generation,
     unpacked_root: &Path,
 ) -> anyhow::Result<MaterializedCycle> {
-    let cycle = required_str(fixture_cycle, "cycle")?;
-    let source_bundle = fixture_artifact_path(&args.fixture_root, fixture_cycle, "bundle")?;
-    let source_nav_db = fixture_artifact_path(&args.fixture_root, fixture_cycle, "nav_db")?;
-    let source_bundle_json = read_json(&source_bundle)?;
-    let source_package = source_bundle_json["packages"]
-        .as_array()
-        .context("source bundle packages must be an array")?
-        .iter()
-        .find(|package| package["family_id"].as_str() == Some("nav-db"))
-        .with_context(|| format!("source cycle {cycle} has no nav-db package"))?;
-    let mut package = source_package.clone();
-
-    let source_filename = required_str(source_package, "filename")?;
-    let filename = if remove_required_nav_key {
-        format!(
-            "{}_missing_sea.zip",
-            source_filename
-                .strip_suffix(".zip")
-                .unwrap_or(source_filename)
-        )
-    } else {
-        source_filename.to_string()
-    };
-    let package_id = if remove_required_nav_key {
-        format!("{}_MISSING_SEA", required_str(source_package, "id")?)
-    } else {
-        required_str(source_package, "id")?.to_string()
-    };
-    package["id"] = json!(package_id);
-    package["filename"] = json!(filename);
-    package["relative_path"] = json!(filename);
-    let package_dir_name = filename
-        .strip_suffix(".zip")
-        .context("generated nav-db filename must end in .zip")?;
-    let package_dir = unpacked_root.join(package_dir_name);
-    if remove_required_nav_key {
-        rebuild_without_key(&source_nav_db, &package_dir, REJECTED_NAV_KEY)?;
-    } else {
-        extract_nav_db_package(&source_nav_db, &package_dir)?;
+    let built = nav_db_fixture::build(generation).map_err(anyhow::Error::msg)?;
+    let zip_bytes = nav_kv_package::write_stored_xz_package_bytes_with_encoder(
+        &built.manifest,
+        &built.root,
+        &built.pages,
+        |page| {
+            preprocessor_core::xz_compress_bytes_with_system_xz(page)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
+    let checksum = hex_sha256(&zip_bytes);
+    let package_id = generation.package_id();
+    let filename = format!("{package_id}_{checksum}.zip");
+    let package_dir = unpacked_root.join(filename.strip_suffix(".zip").expect("zip suffix"));
+    fs::create_dir(&package_dir)?;
+    fs::write(package_dir.join("manifest.json"), &built.manifest)?;
+    fs::write(package_dir.join("root"), &built.root)?;
+    for (index, page) in built.pages.iter().enumerate() {
+        fs::write(
+            package_dir.join(format!("page_{index:04}")),
+            preprocessor_core::xz_compress_bytes_with_system_xz(page)?,
+        )?;
     }
-    let packaged_path = args.output_root.join("packaged").join(&filename);
-    if remove_required_nav_key {
-        write_nav_db_package(&package_dir, &packaged_path)?;
-    } else {
-        fs::copy(&source_nav_db, &packaged_path).with_context(|| {
-            format!(
-                "copy fixture package {} to {}",
-                source_nav_db.display(),
-                packaged_path.display()
-            )
-        })?;
-    }
-    let packaged_bytes = fs::read(&packaged_path)
-        .with_context(|| format!("read generated package {}", packaged_path.display()))?;
-    package["checksum_sha256"] = json!(hex_sha256(&packaged_bytes));
-    package["size_bytes"] = json!(packaged_bytes.len());
-
+    fs::write(
+        args.output_root.join("packaged").join(&filename),
+        &zip_bytes,
+    )?;
     Ok(MaterializedCycle {
-        cycle: cycle.to_string(),
-        package,
+        cycle: generation.cycle().to_string(),
+        package: json!({
+            "id": package_id, "family_id": "nav-db",
+            "contract_id": product_contracts::NAV_DB_CONTRACT_ID,
+            "filename": filename, "relative_path": filename,
+            "cycle": generation.cycle(), "cycle_version": "01",
+            "checksum_sha256": checksum, "size_bytes": zip_bytes.len(),
+            "effective_date": null, "expiration_date": null,
+        }),
         package_id,
         filename,
     })
@@ -358,152 +297,10 @@ fn prepare_cycle(
     })
 }
 
-fn write_nav_db_package(source_dir: &Path, output_path: &Path) -> anyhow::Result<()> {
-    let mut entries = fs::read_dir(source_dir)?
-        .map(|entry| entry.map(|value| value.path()))
-        .collect::<Result<Vec<_>, _>>()?;
-    entries.retain(|path| path.is_file());
-    entries.sort();
-
-    let file = File::create(output_path)
-        .with_context(|| format!("create generated package {}", output_path.display()))?;
-    let mut archive = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for path in entries {
-        let name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .context("generated nav-db member name is not UTF-8")?;
-        archive.start_file(name, options)?;
-        let mut input = File::open(&path)?;
-        std::io::copy(&mut input, &mut archive)?;
-    }
-    archive.finish()?;
-    Ok(())
-}
-
-fn extract_nav_db_package(source_zip: &Path, output_dir: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(output_dir)?;
-    let file = File::open(source_zip)
-        .with_context(|| format!("open source nav-db {}", source_zip.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("read source nav-db {}", source_zip.display()))?;
-    for index in 0..archive.len() {
-        let mut member = archive.by_index(index)?;
-        let name = member.name().to_string();
-        if name != "manifest.json" && name != "root" && !name.starts_with("page_") {
-            continue;
-        }
-        if name.contains('/') || name.contains('\\') {
-            bail!("unexpected nested nav-db member {name}");
-        }
-        let mut bytes = Vec::new();
-        member.read_to_end(&mut bytes)?;
-        fs::write(output_dir.join(name), bytes)?;
-    }
-    Ok(())
-}
-
-fn rebuild_without_key(
-    source_zip: &Path,
-    output_dir: &Path,
-    removed_key: &str,
-) -> anyhow::Result<()> {
-    let source_bytes =
-        fs::read(source_zip).with_context(|| format!("read {}", source_zip.display()))?;
-    let package = nav_kv_package::read_package_bytes("nav-db rollover fixture", &source_bytes)
-        .map_err(anyhow::Error::msg)?;
-    let root = NavKvRoot::parse(&package.root).map_err(anyhow::Error::msg)?;
-    let page_size = root.page_size();
-    let expected_key_count = root.len();
-    let mut store = NavKvStore::new(root);
-    for (index, page) in package.pages.into_iter().enumerate() {
-        store.insert_page(u32::try_from(index)?, page);
-    }
-    let keys = store.keys_with_prefix("");
-    if keys.len() != expected_key_count {
-        bail!(
-            "full nav-db scan returned {} of {expected_key_count} keys",
-            keys.len()
-        );
-    }
-    let mut removed = false;
-    let mut pairs = Vec::with_capacity(keys.len().saturating_sub(1));
-    for key in keys {
-        let value = match store.get_bytes(&key).map_err(anyhow::Error::msg)? {
-            NavKvLookup::Hit(value) => value,
-            NavKvLookup::MissingKey => bail!("key disappeared during full nav-db scan: {key}"),
-            NavKvLookup::MissingPages(pages) => {
-                bail!("full nav-db scan unexpectedly needs pages {pages:?} for {key}")
-            }
-        };
-        if key == removed_key {
-            removed = true;
-        } else {
-            pairs.push(NavKvPair { key, value });
-        }
-    }
-    if !removed {
-        bail!("fixture nav-db does not contain required rejection key {removed_key}");
-    }
-    let rebuilt = build_nav_kv_sorted(pairs, page_size).map_err(anyhow::Error::msg)?;
-    fs::create_dir_all(output_dir)?;
-    fs::write(output_dir.join("root"), &rebuilt.root_bytes)?;
-    for (index, page) in rebuilt.pages.iter().enumerate() {
-        fs::write(output_dir.join(format!("page_{index:04}")), page)?;
-    }
-    let mut manifest: Value = serde_json::from_slice(&package.manifest)?;
-    manifest["logical_bytes_len"] = json!(rebuilt.logical_bytes_len);
-    manifest["page_count"] = json!(rebuilt.pages.len());
-    manifest["page_size"] = json!(rebuilt.page_size);
-    manifest["value_bytes_len"] = json!(rebuilt.value_bytes_len);
-    write_json(&output_dir.join("manifest.json"), &manifest)?;
-    Ok(())
-}
-
-fn verify_fixture_artifact(
-    fixture_root: &Path,
-    cycle: &Value,
-    artifact_name: &str,
-) -> anyhow::Result<()> {
-    let path = fixture_artifact_path(fixture_root, cycle, artifact_name)?;
-    let expected = required_str(&cycle[artifact_name], "sha256")?;
-    let actual = hex_sha256(&fs::read(&path)?);
-    if actual != expected {
-        bail!(
-            "fixture checksum mismatch for {}: expected {expected}, got {actual}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn fixture_artifact_path(
-    fixture_root: &Path,
-    cycle: &Value,
-    artifact_name: &str,
-) -> anyhow::Result<PathBuf> {
-    let filename = required_str(&cycle[artifact_name], "filename")?;
-    let relative = filename.strip_prefix("source/").unwrap_or(filename);
-    Ok(fixture_root.join("source").join(relative))
-}
-
-fn required_str<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
-    value[field]
-        .as_str()
-        .with_context(|| format!("missing string field {field}"))
-}
-
-fn read_json(path: &Path) -> anyhow::Result<Value> {
-    serde_json::from_slice(&fs::read(path).with_context(|| format!("read {}", path.display()))?)
-        .with_context(|| format!("parse {}", path.display()))
-}
-
 fn write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
-    let mut file = File::create(path).with_context(|| format!("create {}", path.display()))?;
-    file.write_all(&bytes)?;
+    fs::write(path, &bytes).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -518,6 +315,75 @@ fn rfc3339(value: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_scenarios_work_across_calendar_rollovers_without_changing_navdb_bytes() {
+        for scenario in [Scenario::Success, Scenario::Reject] {
+            let mut first_package_names = None;
+            for date in [
+                "2026-10-29T09:01:00Z",
+                "2036-02-29T09:01:00Z",
+                "2099-12-31T09:01:00Z",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let output_root = temp.path().join("publication");
+                let transition = DateTime::parse_from_rfc3339(date)
+                    .unwrap()
+                    .with_timezone(&Utc);
+                generate_lab_publication(&Args {
+                    output_root: output_root.clone(),
+                    transition: Transition::At(transition),
+                    scenario,
+                })
+                .unwrap();
+                let current: Vec<CurrentArtifactsManifest> = serde_json::from_slice(
+                    &fs::read(output_root.join("current_artifacts.json")).unwrap(),
+                )
+                .unwrap();
+                let bundles = &current[0].bundles;
+                assert_eq!(bundles.len(), 2);
+                assert_eq!(bundles[0].cycle, nav_db_fixture::INITIAL_CYCLE);
+                assert_eq!(bundles[1].cycle, nav_db_fixture::CANDIDATE_CYCLE);
+                assert_eq!(
+                    bundles[0].start_valid,
+                    rfc3339(transition - Duration::days(28))
+                );
+                assert_eq!(bundles[0].end_valid, rfc3339(transition));
+                assert_eq!(bundles[1].start_valid, rfc3339(transition));
+                assert_eq!(
+                    bundles[1].end_valid,
+                    rfc3339(transition + Duration::days(28))
+                );
+                let mut package_names = Vec::new();
+                for entry in bundles {
+                    let bytes =
+                        fs::read(output_root.join("packaged").join(&entry.filename)).unwrap();
+                    assert_eq!(entry.checksum_sha256, hex_sha256(&bytes));
+                    let bundle: BundleManifest = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(bundle.packages.len(), 1);
+                    let package = &bundle.packages[0];
+                    assert_eq!(package.contract_id, product_contracts::NAV_DB_CONTRACT_ID);
+                    assert_eq!(
+                        package.effective_date.as_deref(),
+                        Some(entry.start_valid.as_str())
+                    );
+                    assert_eq!(
+                        package.expiration_date.as_deref(),
+                        Some(entry.end_valid.as_str())
+                    );
+                    let zip =
+                        fs::read(output_root.join("packaged").join(&package.filename)).unwrap();
+                    assert_eq!(package.checksum_sha256, hex_sha256(&zip));
+                    package_names.push(package.filename.clone());
+                }
+                if let Some(first) = &first_package_names {
+                    assert_eq!(first, &package_names, "calendar changed encoded payloads");
+                } else {
+                    first_package_names = Some(package_names);
+                }
+            }
+        }
+    }
 
     #[test]
     fn generated_bundle_uses_the_canonical_versioned_contract() {

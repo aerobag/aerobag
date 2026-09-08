@@ -1,0 +1,15 @@
+[package]
+name = "nav-db-fixture"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+had-key = { path = "../had-key" }
+had-nav-kv = { path = "../had-nav-kv" }
+nav-kv-package = { path = "../nav-kv-package" }
+product-contracts = { path = "../product-contracts" }
+procedure-geometry-types = { path = "../procedure-geometry-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

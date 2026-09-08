@@ -1452,6 +1452,19 @@ test("NAVDB rollover journey follows the deterministic journey structure", () =>
   assert.deepEqual(violations, []);
 });
 
+test("NAVDB rollover uses repository source and checks observable database contents", () => {
+  const source = readFileSync(
+    new URL("../../ui/web-app/scripts/nav-db-rollover-e2e.mjs", import.meta.url), "utf8",
+  );
+  assert.doesNotMatch(source, /fixtureRoot|materializeFixture|fetch_test_artifacts|--fixture-root/);
+  assert.match(source, /fixture_source: "crates\/nav-db-fixture\/source\.json"/);
+  assert.match(source, /"--locked"/);
+  assert.match(source, /await assertAirportName\(page, lab\.changed_airport\.initial_name\)/);
+  assert.match(source, /await assertAirportName\(page, scenario === "success"[\s\S]*?lab\.changed_airport\.candidate_name[\s\S]*?lab\.changed_airport\.initial_name/);
+  assert.match(source, /async function assertAirportName[\s\S]*?airportInfoName/);
+  assert.match(source, /assertions\.database_contents_verified = true/);
+});
+
 test("every qualification journey entrypoint passes the structural audit", () => {
   const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
   assert.deepEqual(auditQualificationJourneys(repoRoot), []);

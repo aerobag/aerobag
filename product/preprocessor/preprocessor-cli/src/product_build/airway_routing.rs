@@ -28,7 +28,8 @@ impl DirectionalAltitude {
     }
 
     fn for_segment(&self, from: &AirwayRoutingNode, to: &AirwayRoutingNode) -> Option<u32> {
-        if !self.opposite_direction.is_empty()
+        if self.opposite.is_some()
+            && !self.opposite_direction.is_empty()
             && direction_matches(&self.opposite_direction, from, to)
         {
             return self.opposite;
@@ -227,6 +228,34 @@ pub(super) fn build_routing_pairs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routing_mea_keeps_primary_when_opposite_is_a_blank_bnd_placeholder() {
+        let from = AirwayRoutingNode {
+            id: 0,
+            nav_ref: AirwayRoutingReference::Fix("A".into()),
+            lat: 47.0,
+            lon: -122.0,
+            edges: Vec::new(),
+        };
+        let to = AirwayRoutingNode {
+            id: 1,
+            nav_ref: AirwayRoutingReference::Fix("B".into()),
+            lat: 47.0,
+            lon: -121.0,
+            edges: Vec::new(),
+        };
+        // AWY1 commonly publishes "05800             BND ": the opposite
+        // direction field is populated even though its altitude is empty.
+        let altitude = DirectionalAltitude {
+            primary: Some(5800),
+            primary_direction: String::new(),
+            opposite: None,
+            opposite_direction: "BND".into(),
+        };
+        assert_eq!(altitude.for_segment(&from, &to), Some(5800));
+        assert_eq!(altitude.for_segment(&to, &from), Some(5800));
+    }
 
     #[test]
     fn routing_graph_preserves_directional_altitudes_and_excludes_gaps() {

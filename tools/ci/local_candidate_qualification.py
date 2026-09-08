@@ -557,7 +557,6 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
         "--fixture", "release-journey-publication",
         "--fixture", "android-smoke-publication",
         "--fixture", "android-rotation-live-feed",
-        "--fixture", "nav-db-advance",
         "--destination", str(fixtures),
     ]
     repository_cache = test_artifacts_repository_cache()
@@ -570,7 +569,6 @@ def prepare_inputs(run_root: Path) -> tuple[Path, Path, Path]:
     )
     for fixture_name in (
         "android-smoke-publication",
-        "nav-db-advance",
         "release-journey-publication",
     ):
         subprocess.run(
@@ -903,7 +901,6 @@ def auxiliary_lanes(run_root: Path, fixtures: Path) -> list[Lane]:
                 "--run-id", "local-candidate",
             ),
             env={
-                "AEROBAG_TEST_ARTIFACTS_ROOT": str(fixtures),
                 "AEROBAG_UI_TARGET_ROOT": str(nav_target),
             },
             timeout_seconds=3_600,

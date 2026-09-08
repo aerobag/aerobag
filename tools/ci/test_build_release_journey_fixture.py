@@ -37,6 +37,12 @@ class ReleaseJourneyFixtureTest(unittest.TestCase):
         self.assertTrue(fixture.tile_is_in_window(f"tiles/0/11/{x}/{y}.webp"))
         self.assertFalse(fixture.tile_is_in_window(f"tiles/0/11/{x + 100}/{y}.webp"))
 
+    def test_rollover_capability_uses_the_local_generator_not_an_archive(self) -> None:
+        self.assertEqual(
+            {"generator": "nav_db_rollover_lab"},
+            fixture.fixture_capabilities(1_788_000_000_000)["second_publication"],
+        )
+
     def test_tile_window_includes_contextual_tac_inset_location(self) -> None:
         x, y = fixture.slippy_tms_tile(33.9425, -118.4081, 11)
         self.assertTrue(fixture.tile_is_in_window(f"tiles/0/11/{x}/{y}.webp"))

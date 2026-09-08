@@ -67,32 +67,41 @@ leaves a required workflow pending when path filters skip it.
 
 A narrowly scoped fixture job must select its exact test or test family.
 `--run-ignored ignored-only` is not sufficient: it selects every ignored test
-that survives the other filters. One NAVDB job accidentally selected 27
-unrelated ignored tests until it added:
+that survives the other filters. For example, the METAR fixture job adds:
 
 ```sh
--E 'test(/real_nav_db_2608_to_2609_advance_preserves_rich_session$/)'
+-E 'test(/generic_metar_delta_fixture_reconstructs_three_hour_capture$/)'
 ```
 
 When a fixture's structure changes, update its contract version and the lock
 manifest. Do not weaken the consumer with field-level fallbacks.
 
-When the production NAVDB contract changes, regenerate both compact NAVDB
-fixtures from one publication and publish them together:
+NAVDB rollover no longer fetches two historical FAA cycles. The permanent
+[logical source](../../crates/nav-db-fixture/README.md) lives in this repo and
+generates initial, changed, and rejected NAVDBs through the production encoder.
+Its Rust regression is an ordinary, non-ignored test in application-core CI;
+there is no duplicate fixture job. Shared-crate CI tests the generator and
+preprocessor CI tests its publication windows. The web lab uses the same generator. No FAA
+calendar turnover or external fixture-repository publication is involved.
+
+When the production NAVDB contract changes, review/migrate that source descriptor
+and records. Regenerate the independent smoke and release-journey fixtures from
+one available publication, and publish those together:
 
 ```sh
 python3 tools/ci/build_e2e_package_fixture.py \
   --source-publication /path/to/published \
   --output /path/to/test-artifacts/e2e/android-smoke-publication \
-  --cycle 2608
-python3 tools/ci/build_nav_db_advance_fixture.py \
+  --cycle <available-cycle>
+python3 tools/ci/build_release_journey_fixture.py \
   --source-publication /path/to/published \
-  --output /path/to/test-artifacts/nav-db/advance-2608-to-2609 \
-  --cycle 2608 --cycle 2609
+  --output /path/to/test-artifacts/e2e/release-journey-publication \
+  --primary-cycle <available-cycle> --had-query /path/to/had_query \
+  --live-feed-source /path/to/pinned/live-feeds/fresh
 python3 tools/ci/verify_fixture_contracts.py \
   --fixture-root /path/to/test-artifacts \
   --fixture android-smoke-publication \
-  --fixture nav-db-advance
+  --fixture release-journey-publication
 ```
 
 Commit and push the artifact repository first, then update its commit in

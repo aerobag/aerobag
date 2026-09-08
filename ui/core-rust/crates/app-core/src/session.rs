@@ -14732,7 +14732,6 @@ mod tests {
         REQUIRED_NAV_DB_CONTRACT_ID,
     };
     use chrono::SecondsFormat;
-    use std::io::Read;
 
     // Page delivery broadcasts by store ID, so unrelated test databases need distinct identities.
     static NEXT_TEST_NAV_KV_STORE_ID: AtomicU32 = AtomicU32::new(1_000_000);
@@ -19126,107 +19125,35 @@ mod tests {
         assert_eq!(session.flight_plan.active_plan(), Some(&plan));
     }
 
-    fn load_nav_db_fixture_zip(path: &std::path::Path) -> NavKvStore {
-        let file = std::fs::File::open(path)
-            .unwrap_or_else(|error| panic!("open NAVDB fixture {}: {error}", path.display()));
-        let mut archive = zip::ZipArchive::new(file)
-            .unwrap_or_else(|error| panic!("decode NAVDB fixture {}: {error}", path.display()));
-        let mut root_bytes = Vec::new();
-        archive
-            .by_name("root")
-            .expect("NAVDB root member")
-            .read_to_end(&mut root_bytes)
-            .expect("read NAVDB root");
-        let mut store = NavKvStore::new(NavKvRoot::parse(&root_bytes).expect("parse NAVDB root"));
-        for index in 0..archive.len() {
-            let mut member = archive.by_index(index).expect("NAVDB member");
-            let name = member.name().to_string();
-            let Some(page_index) = name
-                .strip_prefix("page_")
-                .and_then(|value| value.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            let mut bytes = Vec::new();
-            member.read_to_end(&mut bytes).expect("read NAVDB page");
-            let resource_id = format!("nav_kv/page/{page_index:04}");
-            let decoded = crate::decode_nav_db_page_resource_bytes(&resource_id, &bytes)
-                .expect("decode NAVDB page");
-            store.insert_page(page_index, decoded.into_owned());
+    fn generated_rollover_store(generation: nav_db_fixture::Generation) -> NavKvStore {
+        let package = nav_db_fixture::build(generation).expect("build logical NAVDB fixture");
+        let mut store = NavKvStore::new(NavKvRoot::parse(&package.root).expect("generated root"));
+        for (index, page) in package.pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
         }
         store
     }
 
-    fn nav_db_advance_fixture_root() -> std::path::PathBuf {
-        std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
-            .map(std::path::PathBuf::from)
-            .expect("set AEROBAG_TEST_ARTIFACTS_ROOT to run external fixture tests")
-    }
-
-    fn nav_db_advance_fixture_artifact(
-        root: &std::path::Path,
-        cycle: &str,
-    ) -> (std::path::PathBuf, String) {
-        let fixture_path = root.join("nav-db/advance-2608-to-2609/fixture.json");
-        let fixture: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&fixture_path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display())),
-        )
-        .unwrap_or_else(|error| panic!("decode {}: {error}", fixture_path.display()));
-        let cycle_record = fixture["cycles"]
-            .as_array()
-            .expect("fixture cycle list")
-            .iter()
-            .find(|record| record["cycle"].as_str() == Some(cycle))
-            .unwrap_or_else(|| panic!("fixture has no cycle {cycle}"));
-        assert_eq!(
-            cycle_record["contract_id"].as_str(),
-            Some(REQUIRED_NAV_DB_CONTRACT_ID),
-            "fixture cycle {cycle} contract must exactly match the client"
-        );
-        let relative_path = cycle_record["nav_db"]["filename"]
-            .as_str()
-            .expect("fixture NAVDB filename");
-        let nav_path = root.join("nav-db/advance-2608-to-2609").join(relative_path);
-        let bundle_relative_path = cycle_record["bundle"]["filename"]
-            .as_str()
-            .expect("fixture bundle filename");
-        let bundle_path = root
-            .join("nav-db/advance-2608-to-2609")
-            .join(bundle_relative_path);
-        let bundle: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&bundle_path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", bundle_path.display())),
-        )
-        .unwrap_or_else(|error| panic!("decode {}: {error}", bundle_path.display()));
-        let nav_package = bundle["packages"]
-            .as_array()
-            .expect("bundle package list")
-            .iter()
-            .find(|package| package["family_id"].as_str() == Some("nav-db"))
-            .expect("bundle NAVDB package");
-        assert_eq!(
-            nav_package["contract_id"].as_str(),
-            Some(REQUIRED_NAV_DB_CONTRACT_ID),
-            "fixture bundle cycle {cycle} contract must exactly match the client"
-        );
-        let package_id = nav_package["id"]
-            .as_str()
-            .expect("fixture NAVDB package ID")
-            .to_string();
-        (nav_path, package_id)
-    }
-
     #[test]
-    #[ignore = "requires the external NAVDB transition fixture"]
-    fn real_nav_db_2608_to_2609_advance_preserves_rich_session() {
-        let root = nav_db_advance_fixture_root();
-        let (old_path, old_package_id) = nav_db_advance_fixture_artifact(&root, "2608");
-        let (next_path, next_package_id) = nav_db_advance_fixture_artifact(&root, "2609");
-        assert!(old_path.is_file(), "missing {}", old_path.display());
-        assert!(next_path.is_file(), "missing {}", next_path.display());
-        let old_store = load_nav_db_fixture_zip(&old_path);
-        let next_store = load_nav_db_fixture_zip(&next_path);
+    fn generated_nav_db_advance_preserves_rich_session() {
+        use nav_db_fixture::{
+            Generation, CANDIDATE_AIRPORT_NAME, CHANGED_NAV_KEY, INITIAL_AIRPORT_NAME,
+        };
+        let old_package_id = Generation::Initial.package_id();
+        let next_package_id = Generation::Candidate.package_id();
+        let old_store = generated_rollover_store(Generation::Initial);
+        let next_store = generated_rollover_store(Generation::Candidate);
+        let airport_name = |store: &NavKvStore| {
+            let NavKvLookup::Hit(bytes) = store.get_bytes(CHANGED_NAV_KEY).unwrap() else {
+                panic!("missing fixture airport info");
+            };
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(airport_name(&old_store), INITIAL_AIRPORT_NAME);
+        assert_eq!(airport_name(&next_store), CANDIDATE_AIRPORT_NAME);
         let base_plan = FlightPlan {
             id: "nav-db-advance-rich-plan".to_string(),
             name: "KRNT SEA KPAE VOR-A ECEPO".to_string(),
@@ -19264,7 +19191,7 @@ mod tests {
             Some("ECEPO"),
             2,
         )
-        .expect("materialize 2608 procedure");
+        .expect("materialize initial procedure");
         let mutation = crate::insert_procedure_materialized(&base_plan, 1, 2, materialized)
             .expect("insert KPAE VOR-A ECEPO");
         let plan = crate::activate_leg(&mutation, 5).expect("activate procedure hold inbound leg");
@@ -19277,7 +19204,7 @@ mod tests {
             .get_bytes(&airport_key)
             .expect("read KPAE plate folder")
         else {
-            panic!("KPAE plate folder missing from 2608 fixture");
+            panic!("KPAE plate folder missing from logical fixture");
         };
         let airport: crate::chart_page::PlateAirportRecord =
             serde_json::from_slice(&airport_bytes).expect("decode KPAE plate folder");
@@ -19293,12 +19220,8 @@ mod tests {
         let init = create_ui_session(plan, &[], Some("KPAE"), Some(&selected_chart_id))
             .expect("create rich session");
         let mut old_open = nav_db_open_result_for_test(&old_package_id, None);
-        old_open.selected_filename = old_path
-            .file_name()
-            .expect("2608 filename")
-            .to_string_lossy()
-            .to_string();
-        old_open.selected_cycle = Some("2608".to_string());
+        old_open.selected_filename = format!("{old_package_id}.zip");
+        old_open.selected_cycle = Some(nav_db_fixture::INITIAL_CYCLE.to_string());
         old_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
         attach_nav_kv_store_to_session_with_open_result(
             init.handle,
@@ -19306,21 +19229,17 @@ mod tests {
             &old_store,
             Some(&old_open),
         )
-        .expect("attach 2608 NAVDB");
-        super::load_raster_map_catalog_in_session(init.handle).expect("load 2608 catalog");
+        .expect("attach initial NAVDB");
+        super::load_raster_map_catalog_in_session(init.handle).expect("load initial catalog");
         let catalog_before = get_session_snapshot(init.handle)
-            .expect("snapshot after loading 2608 catalog")
+            .expect("snapshot after loading initial catalog")
             .raster_map
-            .expect("2608 raster map");
-        sync_guidance_geometry_in_session(init.handle).expect("build 2607 guidance");
+            .expect("initial raster map");
+        sync_guidance_geometry_in_session(init.handle).expect("build initial guidance");
 
         let mut next_open = nav_db_open_result_for_test(&next_package_id, None);
-        next_open.selected_filename = next_path
-            .file_name()
-            .expect("2609 filename")
-            .to_string_lossy()
-            .to_string();
-        next_open.selected_cycle = Some("2609".to_string());
+        next_open.selected_filename = format!("{next_package_id}.zip");
+        next_open.selected_cycle = Some(nav_db_fixture::CANDIDATE_CYCLE.to_string());
         next_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
         let result = nav_db_advance_result(
             init.handle,
@@ -19331,7 +19250,7 @@ mod tests {
                 &next_open,
                 vec![next_package_id],
             )
-            .expect("advance rich session to 2609"),
+            .expect("advance rich session to candidate"),
         );
 
         assert_eq!(result.disposition, NavDbAdvanceDisposition::Adopted);
@@ -19345,15 +19264,19 @@ mod tests {
             Some(catalog_before.selected_family_id.as_str())
         );
         let slot = session_slot(init.handle).expect("session slot");
-        let session = slot.lock_running().expect("committed 2609 session");
+        let session = slot.lock_running().expect("committed candidate session");
         assert_eq!(session.flight_plan.active_plan(), Some(&expected_plan));
         assert_eq!(session.nav_data.store_id(), Some(2609));
+        assert_eq!(
+            airport_name(session.nav_data.store().expect("adopted store")),
+            CANDIDATE_AIRPORT_NAME
+        );
         assert!(!session.flight_plan.guidance_leg_geometry().is_empty());
         let route = crate::had_ops::project_flight_plan_route(
             session.nav_data.store().expect("committed NAVDB"),
             session.flight_plan.active_plan().expect("active plan"),
         )
-        .expect("project committed 2609 route");
+        .expect("project committed candidate route");
         assert!(route
             .iter()
             .any(|segment| matches!(segment.geometry, crate::GuidanceRouteGeometry::Arc { .. })));

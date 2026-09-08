@@ -37,3 +37,4 @@ rusqlite.workspace = true
 
 [dev-dependencies]
 app-fixtures = { path = "../app-fixtures" }
+nav-db-fixture = { path = "../../../../crates/nav-db-fixture" }

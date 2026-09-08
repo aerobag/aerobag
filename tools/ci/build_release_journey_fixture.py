@@ -445,7 +445,7 @@ def fixture_capabilities(reference_epoch_ms: int) -> dict[str, Any]:
             "other": {"airport_id": "KSEA", "label_contains": "AIRPORT DIAGRAM"},
         },
         "replay_trace": "replay/track-gap.json",
-        "second_publication": {"fixture": "nav-db-advance"},
+        "second_publication": {"generator": "nav_db_rollover_lab"},
         "live_feeds": {
             "empty": "live-feeds/empty",
             "fresh": "live-feeds/fresh",
@@ -779,7 +779,7 @@ def build_fixture(
             "source_current_artifacts_sha256": sha256(current_path),
             "publications": [primary],
             "live_feed_publications": live_feeds,
-            "dependencies": ["nav-db-advance"],
+            "dependencies": [],
             "capabilities": fixture_capabilities(live_feed_reference_epoch_ms(live_feed_source)),
         })
         temporary.rename(output_root)

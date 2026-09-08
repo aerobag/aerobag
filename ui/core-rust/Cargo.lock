@@ -46,6 +46,7 @@ dependencies = [
  "had-nav-kv",
  "hkdf",
  "image",
+ "nav-db-fixture",
  "nav-kv-package",
  "notam-state",
  "postcard",
@@ -792,6 +793,20 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "nav-db-fixture"
+version = "0.1.0"
+dependencies = [
+ "had-key",
+ "had-nav-kv",
+ "nav-kv-package",
+ "procedure-geometry-types",
+ "product-contracts",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

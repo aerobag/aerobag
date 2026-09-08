@@ -1,0 +1,3761 @@
+{
+  "nav_db_contract": {
+    "contract_id": "NAV25",
+    "page_encoding": "xz",
+    "required_exact_keys": {
+      "airport/notam-catalog": 1,
+      "airway/routing/manifest": 1
+    }
+  },
+  "provenance": {
+    "capture_scope": "KRNT SEA KPAE, KPAE VOR-A and its shared geometry, local magnetic variation, two NW chart catalogs; no imagery",
+    "source_package_manifest": {
+      "contract_id": "NAV25",
+      "encoding": "had-nav-kv-v4",
+      "logical_bytes_len": 241172480,
+      "page_count": 3680,
+      "page_path_template": "page_{page:04}",
+      "page_size": 65536,
+      "product_id": "nav-db",
+      "root": "root",
+      "schema_version": 1,
+      "value_bytes_len": 37536763
+    },
+    "source_package_sha256": "041747adabf2cca50fd3f0187d1bc81c7af89802e1adf46c9f9a42e444bbf635"
+  },
+  "records": {
+    "aircraft/definition/01365bb33c878798e937786ceb10df9e8b845ea0a4b51f961c5ccd1cf800fe5e": {
+      "default_profile_id": "economy-65",
+      "label": "CESSNA 177RG CARDINAL RG (1975)",
+      "lineage_id": "cessna-177rg-1975",
+      "manufacturer": "Cessna",
+      "model": "177RG",
+      "plan_view_path": "M 1.573 -22.349 C 1.573 -22.349 3.31 -22.21 3.943 -21.973 C 5.332 -17.577 5.448 -11.954 5.562 -5.118 L 48.512 -5.237 C 49.231 -5.247 49.519 -4.652 49.925 -1.564 L 50 5.904 L 5.296 10.223 C 4.463 18.824 2.839 27.44 1.411 36.052 L 15.842 36.167 C 16.084 36.168 16.477 36.432 16.476 36.723 L 16.451 44.418 L 0.432 44.409 L 0.395 47.843 C 0.401 48.071 0.238 48.229 -0.01 48.25 C -0.258 48.227 -0.42 48.069 -0.412 47.841 L -0.432 44.407 L -16.451 44.335 L -16.437 36.639 C -16.437 36.348 -16.042 36.087 -15.8 36.087 L -1.37 36.045 C -2.753 27.426 -4.334 18.802 -5.123 10.197 L -49.805 5.651 L -49.692 -1.816 C -49.27 -4.903 -48.979 -5.496 -48.26 -5.483 L -5.312 -5.146 C -5.163 -11.981 -5.018 -17.604 -3.607 -21.992 C -2.972 -22.226 -1.235 -22.356 -1.235 -22.356 C -1.141 -24.822 -0.526 -25.27 0.18 -26.492 C 0.791 -25.3 1.492 -24.815 1.573 -22.349 Z",
+      "profiles": [
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 82.6,
+                "fuel_flow_gph": 15.5,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 925.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 80.8,
+                "fuel_flow_gph": 15.5,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 685.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 79.1,
+                "fuel_flow_gph": 11.5,
+                "pressure_altitude_ft": 10000.0,
+                "vertical_speed_fpm": 440.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 77.3,
+                "fuel_flow_gph": 8.5,
+                "pressure_altitude_ft": 15000.0,
+                "vertical_speed_fpm": 200.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 10.3,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 144.3
+              },
+              {
+                "fuel_flow_gph": 10.8,
+                "pressure_altitude_ft": 2500.0,
+                "true_airspeed_kt": 146.0
+              },
+              {
+                "fuel_flow_gph": 11.3,
+                "pressure_altitude_ft": 5000.0,
+                "true_airspeed_kt": 147.7
+              },
+              {
+                "fuel_flow_gph": 10.6,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 146.9
+              },
+              {
+                "fuel_flow_gph": 9.5,
+                "pressure_altitude_ft": 10000.0,
+                "true_airspeed_kt": 143.4
+              },
+              {
+                "fuel_flow_gph": 8.6,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 140.8
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 5.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "fast-cruise",
+          "label": "FAST CRUISE",
+          "reference_weight_lb": 2800.0,
+          "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-4, extended-range-mixture cruise at 2,800 lb; fastest tabulated setting at each altitude, with sea-level values linearly extrapolated from 2,500/5,000 ft. Climb from Figure 6-3 at 2,800 lb; fuel-flow schedule derived from cumulative climb fuel after removing the 1.5 gal start/taxi/takeoff allowance. Descent is a rough planning assumption: cruise TAS + 5 KT and 500 FPM."
+        },
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 82.6,
+                "fuel_flow_gph": 15.5,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 925.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 80.8,
+                "fuel_flow_gph": 15.5,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 685.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 79.1,
+                "fuel_flow_gph": 11.5,
+                "pressure_altitude_ft": 10000.0,
+                "vertical_speed_fpm": 440.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 77.3,
+                "fuel_flow_gph": 8.5,
+                "pressure_altitude_ft": 15000.0,
+                "vertical_speed_fpm": 200.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 9.8,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 134.8
+              },
+              {
+                "fuel_flow_gph": 9.6,
+                "pressure_altitude_ft": 2500.0,
+                "true_airspeed_kt": 135.6
+              },
+              {
+                "fuel_flow_gph": 9.4,
+                "pressure_altitude_ft": 5000.0,
+                "true_airspeed_kt": 136.4
+              },
+              {
+                "fuel_flow_gph": 9.2,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 139.0
+              },
+              {
+                "fuel_flow_gph": 9.5,
+                "pressure_altitude_ft": 10000.0,
+                "true_airspeed_kt": 143.4
+              },
+              {
+                "fuel_flow_gph": 8.6,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 140.8
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 5.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "economy-65",
+          "label": "65% ECONOMY",
+          "reference_weight_lb": 2800.0,
+          "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-4, extended-range-mixture cruise at 2,800 lb; setting closest to 65% BHP at each altitude (maximum tabulated power where 65% is unavailable), with sea-level values linearly extrapolated from 2,500/5,000 ft. Climb from Figure 6-3 at 2,800 lb; fuel-flow schedule derived from cumulative climb fuel after removing the 1.5 gal start/taxi/takeoff allowance. Descent is a rough planning assumption: cruise TAS + 5 KT and 500 FPM."
+        },
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 82.6,
+                "fuel_flow_gph": 15.5,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 925.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 80.8,
+                "fuel_flow_gph": 15.5,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 685.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 79.1,
+                "fuel_flow_gph": 11.5,
+                "pressure_altitude_ft": 10000.0,
+                "vertical_speed_fpm": 440.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 77.3,
+                "fuel_flow_gph": 8.5,
+                "pressure_altitude_ft": 15000.0,
+                "vertical_speed_fpm": 200.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 7.7,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 119.1
+              },
+              {
+                "fuel_flow_gph": 7.9,
+                "pressure_altitude_ft": 2500.0,
+                "true_airspeed_kt": 123.4
+              },
+              {
+                "fuel_flow_gph": 8.1,
+                "pressure_altitude_ft": 5000.0,
+                "true_airspeed_kt": 127.7
+              },
+              {
+                "fuel_flow_gph": 8.0,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 129.5
+              },
+              {
+                "fuel_flow_gph": 8.0,
+                "pressure_altitude_ft": 10000.0,
+                "true_airspeed_kt": 133.0
+              },
+              {
+                "fuel_flow_gph": 8.1,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 136.4
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 5.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "long-range-55",
+          "label": "55% LONG RANGE",
+          "reference_weight_lb": 2800.0,
+          "source": "1975 Cessna Cardinal RG Owner's Manual, Figure 6-4, extended-range-mixture cruise at 2,800 lb; setting closest to 55% BHP at each altitude, with sea-level values linearly extrapolated from 2,500/5,000 ft. Climb from Figure 6-3 at 2,800 lb; fuel-flow schedule derived from cumulative climb fuel after removing the 1.5 gal start/taxi/takeoff allowance. Descent is a rough planning assumption: cruise TAS + 5 KT and 500 FPM."
+        }
+      ],
+      "schema_version": 2,
+      "supersedes": [
+        "77575faf251d6b70aaa1179084d84155d5fa5c5b8407997f49e469ad828b9927"
+      ]
+    },
+    "aircraft/definition/3cc83b14b0c6b748ef52865ec54819c27cc4dbe437d3ab9653ab5ab982918633": {
+      "default_profile_id": "normal-5000",
+      "label": "PIPISTREL SINUS",
+      "lineage_id": "pipistrel-sinus-rotax-912-ul-80",
+      "manufacturer": "Pipistrel",
+      "model": "Sinus",
+      "plan_view_path": "M -1.218 -11.43 C -2.693 -11.369 -4.289 -11.355 -5.405 -11.154 C -5.499 -11.03 -5.49 -10.921 -5.213 -10.853 L -1.433 -10.904 C -1.888 -9.629 -2.307 -8.394 -2.709 -7.148 L -3.575 -2.209 L -25.695 -2.186 C -25.695 -2.186 -39.236 -1.042 -39.932 -0.888 C -40.628 -0.735 -45.215 0.829 -45.959 1.258 C -46.703 1.687 -49.55 3.717 -49.77 4.099 C -49.991 4.481 -49.992 4.968 -49.992 4.968 C -50 5.187 -49.878 5.156 -49.773 5.158 C -49.626 4.981 -46.699 4.174 -46.206 4.106 C -45.713 4.039 -25.568 4.4 -25.568 4.4 L -3.42 4.379 C -3.42 4.379 -1.945 9.253 -1.299 12.288 C -0.653 15.322 -0.837 23.102 -0.837 23.102 L -9.795 24.968 L -9.776 26.221 L -1.066 27.34 L -0.153 26.179 L -0.001 27.65 L 0.152 26.179 L 1.065 27.34 L 9.775 26.221 L 9.794 24.968 L 0.836 23.102 C 0.836 23.102 0.652 15.322 1.298 12.288 C 1.944 9.253 3.419 4.379 3.419 4.379 L 25.567 4.4 C 25.567 4.4 45.712 4.039 46.205 4.106 C 46.698 4.174 49.625 4.981 49.772 5.158 C 49.877 5.156 49.999 5.187 49.991 4.968 C 49.991 4.968 49.99 4.481 49.769 4.099 C 49.549 3.717 46.702 1.687 45.958 1.258 C 45.214 0.829 40.627 -0.735 39.931 -0.888 C 39.235 -1.042 25.694 -2.186 25.694 -2.186 L 3.574 -2.209 L 2.707 -7.148 C 2.306 -8.394 1.887 -9.629 1.432 -10.904 L 5.212 -10.853 C 5.489 -10.921 5.497 -11.03 5.404 -11.154 C 4.288 -11.355 2.692 -11.369 1.217 -11.43 C 1.217 -11.43 0.711 -13.15 -0.001 -13.812 C -0.712 -13.15 -1.218 -11.43 -1.218 -11.43 Z",
+      "profiles": [
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 860.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 1600.0,
+                "vertical_speed_fpm": 796.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 3300.0,
+                "vertical_speed_fpm": 749.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 717.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": 245.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 110.0
+              },
+              {
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 110.0
+              },
+              {
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 110.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": -500.0
+              },
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": -500.0
+              }
+            ]
+          },
+          "id": "fast-5500",
+          "label": "FAST 5500 RPM",
+          "reference_weight_lb": 1320.0,
+          "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), long-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent."
+        },
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 860.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 1600.0,
+                "vertical_speed_fpm": 796.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 3300.0,
+                "vertical_speed_fpm": 749.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 717.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": 245.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 3.2,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 100.0
+              },
+              {
+                "fuel_flow_gph": 3.2,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 100.0
+              },
+              {
+                "fuel_flow_gph": 3.2,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 100.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": -500.0
+              },
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": -500.0
+              }
+            ]
+          },
+          "id": "normal-5000",
+          "label": "NORMAL 5000 RPM",
+          "reference_weight_lb": 1320.0,
+          "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), long-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent."
+        },
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 860.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 1600.0,
+                "vertical_speed_fpm": 796.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 3300.0,
+                "vertical_speed_fpm": 749.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 717.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": 245.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 2.9,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 96.0
+              },
+              {
+                "fuel_flow_gph": 2.9,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 96.0
+              },
+              {
+                "fuel_flow_gph": 2.9,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 96.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": -500.0
+              },
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": -500.0
+              }
+            ]
+          },
+          "id": "economy-4800",
+          "label": "ECONOMY 4800 RPM",
+          "reference_weight_lb": 1320.0,
+          "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), long-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent."
+        }
+      ],
+      "schema_version": 2
+    },
+    "aircraft/definition/d3bb0ffe0b906f2adc10f0e1aecb97ac449f65a8b081f0502cd547a25cc9fc9b": {
+      "default_profile_id": "normal-cruise",
+      "label": "CESSNA 172 (GENERIC)",
+      "lineage_id": "cessna-172-generic",
+      "manufacturer": "Cessna",
+      "model": "172",
+      "plan_view_path": "M -1.144 -19.883 C -3.7 -19.858 -6.281 -19.87 -8.708 -19.657 C -8.76 -19.657 -8.759 -19.469 -8.683 -19.45 L -1.375 -19.042 L -1.439 -18.812 L -2.973 -18.575 C -2.973 -18.575 -3.794 -18.313 -4.006 -17.785 C -4.266 -16.708 -5.045 -10.777 -5.038 -4.932 L -23.461 -4.886 C -23.461 -4.886 -47.632 -3.767 -48.819 -3.525 C -49.266 -3.316 -49.747 -2.48 -49.835 -1.777 C -50 -0.767 -49.791 6.391 -49.791 6.391 L -23.853 9.706 L -4.69 9.752 L -1.653 35.127 L -15.191 37.808 C -15.396 37.859 -15.639 38.331 -15.62 38.596 L -15.698 44.145 C -15.683 44.372 -15.357 44.602 -15.062 44.669 L -2.229 46.571 L -0.791 42.848 L -0.576 41.788 L -0.374 43.386 L -0.339 50.145 C -0.329 50.446 -0.224 50.633 -0.07 50.644 C 0.084 50.633 0.188 50.445 0.198 50.144 L 0.217 43.385 L 0.416 41.787 L 0.633 42.847 L 2.079 46.566 L 14.909 44.636 C 15.203 44.568 15.528 44.337 15.544 44.11 L 15.453 38.562 C 15.471 38.296 15.227 37.825 15.022 37.774 L 1.478 35.123 L 4.458 9.742 L 23.621 9.653 L 49.551 6.28 C 49.551 6.28 49.745 -0.878 49.578 -1.889 C 49.487 -2.591 49.004 -3.426 48.557 -3.634 C 47.369 -3.873 23.196 -4.939 23.196 -4.939 L 4.773 -4.943 C 4.767 -10.788 3.975 -16.717 3.712 -17.794 C 3.499 -18.321 2.678 -18.581 2.678 -18.581 L 1.144 -18.815 L 1.079 -19.045 L 8.386 -19.469 C 8.461 -19.489 8.462 -19.676 8.41 -19.676 C 5.983 -19.884 3.402 -19.866 0.846 -19.885 C 0.626 -20.639 0.099 -22.086 -0.152 -22.296 C -0.402 -22.086 -0.926 -20.637 -1.144 -19.883 Z",
+      "profiles": [
+        {
+          "climb": {
+            "fuel_flow_gph": 12.0,
+            "ias_kt": 75.0,
+            "model": "constant_ias_rate",
+            "vertical_speed_fpm": 500.0
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 9.0,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 112.0
+              },
+              {
+                "fuel_flow_gph": 9.0,
+                "pressure_altitude_ft": 6000.0,
+                "true_airspeed_kt": 116.0
+              },
+              {
+                "fuel_flow_gph": 9.0,
+                "pressure_altitude_ft": 12000.0,
+                "true_airspeed_kt": 118.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 5.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "normal-cruise",
+          "label": "NORMAL CRUISE",
+          "reference_weight_lb": 2300.0,
+          "source": "Aerobag generic planning assumptions; not an aircraft-specific POH model"
+        }
+      ],
+      "schema_version": 2,
+      "supersedes": [
+        "c562da5b150443962bc74ff304d519c2e286210e0dd4167626948b17e4572a5d"
+      ]
+    },
+    "aircraft/definition/d845f0ff06dfb5fe0796cccec03a27632e92d9474baf536177a28058f6ce4b89": {
+      "default_profile_id": "normal-5000",
+      "label": "PIPISTREL VIRUS",
+      "lineage_id": "pipistrel-virus-rotax-912-ul-80",
+      "manufacturer": "Pipistrel",
+      "model": "Virus",
+      "plan_view_path": "M -0.18 30.58 L -1.245 31.935 L -11.414 30.629 L -11.437 29.167 L -0.977 26.988 C -0.977 26.988 -0.763 17.905 -1.517 14.362 C -2.271 10.819 -3.993 5.129 -3.993 5.129 L -29.852 5.153 C -29.852 5.153 -47.87 5.241 -48.445 5.32 C -48.925 5.529 -49.604 6.658 -49.604 6.658 C -49.978 4.442 -50 2.291 -49.584 0.225 C -49.392 -0.578 -47.435 -0.843 -46.622 -1.021 C -45.809 -1.2 -30 -2.536 -30 -2.536 L -4.174 -2.563 L -3.163 -8.33 C -2.694 -9.785 -2.205 -11.226 -1.674 -12.715 L -6.087 -12.656 C -6.411 -12.735 -6.42 -12.862 -6.311 -13.006 C -5.008 -13.241 -3.145 -13.257 -1.423 -13.329 C -1.423 -13.329 -0.832 -15.337 -0.001 -16.11 C 0.83 -15.337 1.42 -13.329 1.42 -13.329 C 3.142 -13.257 5.006 -13.241 6.309 -13.006 C 6.418 -12.862 6.408 -12.735 6.085 -12.656 L 1.671 -12.715 C 2.203 -11.226 2.691 -9.785 3.16 -8.33 L 4.172 -2.563 L 29.997 -2.536 C 29.997 -2.536 45.807 -1.2 46.62 -1.021 C 47.432 -0.843 49.389 -0.578 49.581 0.225 C 49.998 2.291 49.976 4.442 49.601 6.658 C 49.601 6.658 48.923 5.529 48.443 5.32 C 47.867 5.241 29.85 5.153 29.85 5.153 L 3.991 5.129 C 3.991 5.129 2.269 10.819 1.515 14.362 C 0.761 17.905 0.975 26.988 0.975 26.988 L 11.434 29.167 L 11.412 30.629 L 1.243 31.935 L 0.177 30.58 L -0.001 32.297 Z",
+      "profiles": [
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 860.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 1600.0,
+                "vertical_speed_fpm": 796.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 3300.0,
+                "vertical_speed_fpm": 749.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 717.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": 245.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 116.0
+              },
+              {
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 116.0
+              },
+              {
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 116.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": -500.0
+              },
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": -500.0
+              }
+            ]
+          },
+          "id": "fast-5500",
+          "label": "FAST 5500 RPM",
+          "reference_weight_lb": 1320.0,
+          "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), short-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent."
+        },
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 860.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 1600.0,
+                "vertical_speed_fpm": 796.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 3300.0,
+                "vertical_speed_fpm": 749.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 717.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": 245.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 3.2,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 105.0
+              },
+              {
+                "fuel_flow_gph": 3.2,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 105.0
+              },
+              {
+                "fuel_flow_gph": 3.2,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 105.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": -500.0
+              },
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": -500.0
+              }
+            ]
+          },
+          "id": "normal-5000",
+          "label": "NORMAL 5000 RPM",
+          "reference_weight_lb": 1320.0,
+          "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), short-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent."
+        },
+        {
+          "climb": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": 860.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 1600.0,
+                "vertical_speed_fpm": 796.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 3300.0,
+                "vertical_speed_fpm": 749.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 5000.0,
+                "vertical_speed_fpm": 717.0
+              },
+              {
+                "airspeed_basis": "indicated",
+                "airspeed_kt": 70.0,
+                "fuel_flow_gph": 4.1,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": 245.0
+              }
+            ]
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 2.9,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 101.0
+              },
+              {
+                "fuel_flow_gph": 2.9,
+                "pressure_altitude_ft": 7500.0,
+                "true_airspeed_kt": 101.0
+              },
+              {
+                "fuel_flow_gph": 2.9,
+                "pressure_altitude_ft": 12500.0,
+                "true_airspeed_kt": 101.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 0.0,
+                "vertical_speed_fpm": -500.0
+              },
+              {
+                "airspeed_basis": "true",
+                "airspeed_kt": 105.0,
+                "fuel_flow_gph": 2.0,
+                "pressure_altitude_ft": 12500.0,
+                "vertical_speed_fpm": -500.0
+              }
+            ]
+          },
+          "id": "economy-4800",
+          "label": "ECONOMY 4800 RPM",
+          "reference_weight_lb": 1320.0,
+          "source": "Pipistrel Sinus MAX 600 LSA Aircraft Operating Instructions and Training Supplement, Revision 1 (18 May 2016), short-tip 7,500-foot cruise and climb data at 1,320 lb. Aerobag planning estimates hold the published 7,500-foot cruise TAS and fuel flow constant from sea level through 12,500 feet, extrapolate the published climb-rate schedule from 5,000 feet toward zero at the published 16,400-foot absolute ceiling, and use 105 KTAS, 2.0 GPH, and 500 FPM for powered descent."
+        }
+      ],
+      "schema_version": 2
+    },
+    "aircraft/definition/db54bc3b2868c171a1a26d97b433dc2946c4de7e46cbd2e4cdfce5cd712676b0": {
+      "default_profile_id": "economy-65",
+      "label": "PA46-310P MALIBU",
+      "lineage_id": "piper-pa46-310p-tsio-520-be",
+      "manufacturer": "Piper",
+      "model": "PA-46-310P",
+      "plan_view_path": "M -0.835 -24.854 L -1.395 -22.923 L -4.31 -22.024 L -5.968 -8.751 L -5.772 -4.087 L -49.733 -2.593 L -50 0.193 L -49.717 4.454 L -5.759 8.365 L -5.614 14.289 L -5.335 18.056 L -2.09 33.111 L -17.427 35.64 L -17.206 39.913 L -0.16 41.194 L 0 43.985 L 0.16 41.194 L 17.206 39.913 L 17.427 35.64 L 2.09 33.111 L 5.335 18.056 L 5.614 14.289 L 5.759 8.365 L 49.717 4.454 L 50 0.193 L 49.733 -2.593 L 5.772 -4.087 L 5.968 -8.751 L 4.31 -22.024 L 1.395 -22.923 L 0.835 -24.854 L 0 -26.159 Z",
+      "profiles": [
+        {
+          "climb": {
+            "fuel_flow_gph": 36.0,
+            "ias_kt": 130.0,
+            "model": "constant_ias_rate",
+            "vertical_speed_fpm": 1100.0
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 16.0,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 161.0
+              },
+              {
+                "fuel_flow_gph": 16.0,
+                "pressure_altitude_ft": 6000.0,
+                "true_airspeed_kt": 175.0
+              },
+              {
+                "fuel_flow_gph": 16.0,
+                "pressure_altitude_ft": 12000.0,
+                "true_airspeed_kt": 188.0
+              },
+              {
+                "fuel_flow_gph": 16.0,
+                "pressure_altitude_ft": 18000.0,
+                "true_airspeed_kt": 201.0
+              },
+              {
+                "fuel_flow_gph": 16.0,
+                "pressure_altitude_ft": 24000.0,
+                "true_airspeed_kt": 213.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 8.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "high-speed-75",
+          "label": "75% HIGH SPEED",
+          "reference_weight_lb": 3740.0,
+          "source": "N9124Y Power Settings v3; PA46-310P POH power table and digitized cruise-speed chart; rough climb assumption: 130 KIAS, 36 GPH, 1100 FPM; rough descent assumption: selected cruise TAS + 8 KT, selected cruise GPH, 500 FPM"
+        },
+        {
+          "climb": {
+            "fuel_flow_gph": 36.0,
+            "ias_kt": 130.0,
+            "model": "constant_ias_rate",
+            "vertical_speed_fpm": 1100.0
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 14.0,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 148.0
+              },
+              {
+                "fuel_flow_gph": 14.0,
+                "pressure_altitude_ft": 6000.0,
+                "true_airspeed_kt": 162.0
+              },
+              {
+                "fuel_flow_gph": 14.0,
+                "pressure_altitude_ft": 12000.0,
+                "true_airspeed_kt": 177.0
+              },
+              {
+                "fuel_flow_gph": 14.0,
+                "pressure_altitude_ft": 18000.0,
+                "true_airspeed_kt": 190.0
+              },
+              {
+                "fuel_flow_gph": 14.0,
+                "pressure_altitude_ft": 24000.0,
+                "true_airspeed_kt": 202.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 8.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "economy-65",
+          "label": "65% ECONOMY",
+          "reference_weight_lb": 3740.0,
+          "source": "N9124Y Power Settings v3; PA46-310P POH power table and digitized cruise-speed chart; rough climb assumption: 130 KIAS, 36 GPH, 1100 FPM; rough descent assumption: selected cruise TAS + 8 KT, selected cruise GPH, 500 FPM"
+        },
+        {
+          "climb": {
+            "fuel_flow_gph": 36.0,
+            "ias_kt": 130.0,
+            "model": "constant_ias_rate",
+            "vertical_speed_fpm": 1100.0
+          },
+          "cruise": {
+            "model": "pressure_altitude_table",
+            "points": [
+              {
+                "fuel_flow_gph": 12.0,
+                "pressure_altitude_ft": 0.0,
+                "true_airspeed_kt": 134.0
+              },
+              {
+                "fuel_flow_gph": 12.0,
+                "pressure_altitude_ft": 6000.0,
+                "true_airspeed_kt": 149.0
+              },
+              {
+                "fuel_flow_gph": 12.0,
+                "pressure_altitude_ft": 12000.0,
+                "true_airspeed_kt": 164.0
+              },
+              {
+                "fuel_flow_gph": 12.0,
+                "pressure_altitude_ft": 18000.0,
+                "true_airspeed_kt": 179.0
+              },
+              {
+                "fuel_flow_gph": 12.0,
+                "pressure_altitude_ft": 24000.0,
+                "true_airspeed_kt": 193.0
+              }
+            ]
+          },
+          "descent": {
+            "model": "cruise_offset",
+            "tas_offset_kt": 8.0,
+            "vertical_speed_fpm": -500.0
+          },
+          "id": "long-range-55",
+          "label": "55% LONG RANGE",
+          "reference_weight_lb": 3740.0,
+          "source": "N9124Y Power Settings v3; PA46-310P POH power table and digitized cruise-speed chart; rough climb assumption: 130 KIAS, 36 GPH, 1100 FPM; rough descent assumption: selected cruise TAS + 8 KT, selected cruise GPH, 500 FPM"
+        }
+      ],
+      "schema_version": 2,
+      "supersedes": [
+        "ae3c6196f6788db55b4cd633fe233767d34ba3bc75fc5109587da957d065d1b3"
+      ]
+    },
+    "airport/info/KPAE": {
+      "airport_id": "KPAE",
+      "communications": [
+        {
+          "frequency": "128.65",
+          "label": "ATIS"
+        },
+        {
+          "frequency": "120.2 / 132.95 / 256.7",
+          "label": "Tower"
+        },
+        {
+          "frequency": "121.8 / 339.8",
+          "label": "Ground"
+        },
+        {
+          "frequency": "122.95",
+          "label": "Unicom"
+        },
+        {
+          "frequency": "132.95",
+          "label": "CTAF"
+        },
+        {
+          "frequency": "127.175",
+          "label": "Clearance"
+        },
+        {
+          "frequency": "128.5 / 306.9",
+          "label": "Approach/Departure"
+        }
+      ],
+      "contacts": [
+        {
+          "label": "ATIS",
+          "phone": "425-355-9797"
+        },
+        {
+          "label": "ASOS",
+          "phone": "425-355-6192"
+        }
+      ],
+      "elevation_msl_ft": 606.9,
+      "latitude": 47.90505527777778,
+      "location_label": "Everett, WA",
+      "longitude": -122.2813513888889,
+      "name": "SEATTLE PAINE FLD INTL",
+      "runways": [
+        {
+          "end_a": {
+            "heading_true_deg": 179.0,
+            "ident": "16R",
+            "latitude": 47.915827638888885,
+            "longitude": -122.28572863888888,
+            "right_pattern": true
+          },
+          "end_b": {
+            "heading_true_deg": 359.0,
+            "ident": "34L",
+            "latitude": 47.89664002777778,
+            "longitude": -122.28530252777776,
+            "right_pattern": false
+          },
+          "length_ft": 7000.0,
+          "surface": "ASPH-CONC-G",
+          "width_ft": 150.0
+        },
+        {
+          "end_a": {
+            "heading_true_deg": 180.0,
+            "ident": "16L",
+            "latitude": 47.90642472222222,
+            "longitude": -122.27169266666668,
+            "right_pattern": false
+          },
+          "end_b": {
+            "heading_true_deg": 360.0,
+            "ident": "34R",
+            "latitude": 47.89819161111111,
+            "longitude": -122.27160130555556,
+            "right_pattern": true
+          },
+          "length_ft": 3004.0,
+          "surface": "ASPH-G",
+          "width_ft": 75.0
+        }
+      ],
+      "schema_version": 1,
+      "time_zone": "America/Los_Angeles",
+      "traffic_pattern_altitude_msl_ft": null
+    },
+    "airport/info/KRNT": {
+      "airport_id": "KRNT",
+      "communications": [
+        {
+          "frequency": "126.95",
+          "label": "ATIS"
+        },
+        {
+          "frequency": "124.7 / 256.9",
+          "label": "Tower"
+        },
+        {
+          "frequency": "121.6 / 256.9",
+          "label": "Ground"
+        },
+        {
+          "frequency": "122.95",
+          "label": "Unicom"
+        },
+        {
+          "frequency": "124.7",
+          "label": "CTAF"
+        },
+        {
+          "frequency": "119.2 / 123.9 / 125.9 / 306.9 / 338.2",
+          "label": "Approach"
+        },
+        {
+          "frequency": "119.2 / 120.1 / 289.0 / 301.0 / 120.4 / 340.0 / 125.9 / 125.0 / 290.0 / 315.0 / 126.5 / 126.0 / 128.5 / 302.0 / 316.0 / 269.125 / 284.7 / 290.9 / 306.9 / 377.15",
+          "label": "Approach/Departure"
+        },
+        {
+          "frequency": "126.95",
+          "label": "ASOS"
+        }
+      ],
+      "contacts": [
+        {
+          "label": "ASOS",
+          "phone": "425-255-6080"
+        }
+      ],
+      "elevation_msl_ft": 32.0,
+      "latitude": 47.49313888888889,
+      "location_label": "Renton, WA",
+      "longitude": -122.21575,
+      "name": "RENTON MUNI",
+      "runways": [
+        {
+          "end_a": {
+            "heading_true_deg": 174.0,
+            "ident": "16",
+            "latitude": 47.50047422222222,
+            "longitude": -122.21685294444444,
+            "right_pattern": false
+          },
+          "end_b": {
+            "heading_true_deg": 354.0,
+            "ident": "34",
+            "latitude": 47.48579525,
+            "longitude": -122.21463127777778,
+            "right_pattern": true
+          },
+          "length_ft": 5382.0,
+          "surface": "ASPH-CONC-G",
+          "width_ft": 200.0
+        }
+      ],
+      "schema_version": 1,
+      "time_zone": "America/Los_Angeles",
+      "traffic_pattern_altitude_msl_ft": 1250.0
+    },
+    "airport/notam-catalog": {
+      "airport_ids": [
+        "KRNT",
+        "KPAE"
+      ],
+      "schema_version": 1
+    },
+    "airway/routing/manifest": {
+      "chunk_count": 0,
+      "edge_count": 0,
+      "node_count": 0,
+      "schema_version": 1
+    },
+    "chart/catalog": [
+      {
+        "id": "sec:nw",
+        "label": "Northwest Sectional",
+        "map_view": {
+          "chart_family": "sec",
+          "chart_index": 0,
+          "chart_name": "Northwest Sectional",
+          "detail": {
+            "levels": [
+              {
+                "boxes": [
+                  {
+                    "x_max": 438,
+                    "x_min": 312,
+                    "y_tms_max": 1344,
+                    "y_tms_min": 1272
+                  }
+                ],
+                "zoom": 11
+              }
+            ],
+            "package_name": "NW_SEC_DETAIL_SEC1_2609",
+            "tile_path_template": "0/{z}/{x}/{y}.webp",
+            "tile_url_root": "tiles"
+          },
+          "initial_viewport": {
+            "lat": 44.7155137,
+            "lon": -113.90625,
+            "zoom": 8.0
+          },
+          "levels": [
+            {
+              "boxes": [
+                {
+                  "x_max": 54,
+                  "x_min": 39,
+                  "y_tms_max": 168,
+                  "y_tms_min": 159
+                }
+              ],
+              "zoom": 8
+            },
+            {
+              "boxes": [
+                {
+                  "x_max": 109,
+                  "x_min": 78,
+                  "y_tms_max": 336,
+                  "y_tms_min": 318
+                }
+              ],
+              "zoom": 9
+            },
+            {
+              "boxes": [
+                {
+                  "x_max": 219,
+                  "x_min": 156,
+                  "y_tms_max": 672,
+                  "y_tms_min": 636
+                }
+              ],
+              "zoom": 10
+            }
+          ],
+          "max_zoom": 14.0,
+          "min_zoom": 5.2,
+          "package_name": "NW_SEC_SEC1_2609",
+          "storage_kind": "sectional_package",
+          "tile_path_template": "0/{z}/{x}/{y}.webp",
+          "tile_root": "tiles",
+          "tile_size": 512,
+          "tile_url_root": "tiles",
+          "wide_angle": {
+            "levels": [
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 0,
+                    "y_tms_min": 0
+                  }
+                ],
+                "zoom": 0
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 0,
+                    "y_tms_min": 0
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 0,
+                    "y_tms_max": 1,
+                    "y_tms_min": 1
+                  }
+                ],
+                "zoom": 1
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 1,
+                    "y_tms_min": 1
+                  },
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 3,
+                    "y_tms_min": 3
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 0,
+                    "y_tms_max": 2,
+                    "y_tms_min": 2
+                  },
+                  {
+                    "x_max": 3,
+                    "x_min": 3,
+                    "y_tms_max": 2,
+                    "y_tms_min": 2
+                  }
+                ],
+                "zoom": 2
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 3,
+                    "y_tms_min": 3
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 0,
+                    "y_tms_max": 6,
+                    "y_tms_min": 6
+                  },
+                  {
+                    "x_max": 2,
+                    "x_min": 0,
+                    "y_tms_max": 5,
+                    "y_tms_min": 4
+                  },
+                  {
+                    "x_max": 7,
+                    "x_min": 7,
+                    "y_tms_max": 5,
+                    "y_tms_min": 4
+                  }
+                ],
+                "zoom": 3
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 7,
+                    "y_tms_min": 7
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 0,
+                    "y_tms_max": 8,
+                    "y_tms_min": 8
+                  },
+                  {
+                    "x_max": 2,
+                    "x_min": 0,
+                    "y_tms_max": 12,
+                    "y_tms_min": 11
+                  },
+                  {
+                    "x_max": 5,
+                    "x_min": 0,
+                    "y_tms_max": 10,
+                    "y_tms_min": 9
+                  },
+                  {
+                    "x_max": 5,
+                    "x_min": 4,
+                    "y_tms_max": 8,
+                    "y_tms_min": 8
+                  },
+                  {
+                    "x_max": 14,
+                    "x_min": 14,
+                    "y_tms_max": 8,
+                    "y_tms_min": 8
+                  },
+                  {
+                    "x_max": 15,
+                    "x_min": 15,
+                    "y_tms_max": 10,
+                    "y_tms_min": 10
+                  }
+                ],
+                "zoom": 4
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 14,
+                    "y_tms_min": 14
+                  },
+                  {
+                    "x_max": 3,
+                    "x_min": 0,
+                    "y_tms_max": 25,
+                    "y_tms_min": 25
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 0,
+                    "y_tms_max": 24,
+                    "y_tms_min": 22
+                  },
+                  {
+                    "x_max": 7,
+                    "x_min": 0,
+                    "y_tms_max": 21,
+                    "y_tms_min": 21
+                  },
+                  {
+                    "x_max": 2,
+                    "x_min": 1,
+                    "y_tms_max": 18,
+                    "y_tms_min": 17
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 4,
+                    "y_tms_max": 19,
+                    "y_tms_min": 19
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 4,
+                    "y_tms_max": 20,
+                    "y_tms_min": 20
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 5,
+                    "y_tms_max": 18,
+                    "y_tms_min": 18
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 8,
+                    "y_tms_max": 17,
+                    "y_tms_min": 17
+                  },
+                  {
+                    "x_max": 28,
+                    "x_min": 28,
+                    "y_tms_max": 17,
+                    "y_tms_min": 17
+                  },
+                  {
+                    "x_max": 31,
+                    "x_min": 31,
+                    "y_tms_max": 21,
+                    "y_tms_min": 21
+                  }
+                ],
+                "zoom": 5
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 2,
+                    "x_min": 0,
+                    "y_tms_max": 42,
+                    "y_tms_min": 42
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 0,
+                    "y_tms_max": 43,
+                    "y_tms_min": 43
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 1,
+                    "y_tms_max": 29,
+                    "y_tms_min": 29
+                  },
+                  {
+                    "x_max": 7,
+                    "x_min": 1,
+                    "y_tms_max": 50,
+                    "y_tms_min": 49
+                  },
+                  {
+                    "x_max": 8,
+                    "x_min": 1,
+                    "y_tms_max": 48,
+                    "y_tms_min": 45
+                  },
+                  {
+                    "x_max": 5,
+                    "x_min": 2,
+                    "y_tms_max": 44,
+                    "y_tms_min": 44
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 3,
+                    "y_tms_max": 36,
+                    "y_tms_min": 35
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 7,
+                    "y_tms_max": 44,
+                    "y_tms_min": 43
+                  },
+                  {
+                    "x_max": 15,
+                    "x_min": 7,
+                    "y_tms_max": 42,
+                    "y_tms_min": 42
+                  },
+                  {
+                    "x_max": 18,
+                    "x_min": 9,
+                    "y_tms_max": 38,
+                    "y_tms_min": 38
+                  },
+                  {
+                    "x_max": 19,
+                    "x_min": 9,
+                    "y_tms_max": 39,
+                    "y_tms_min": 39
+                  },
+                  {
+                    "x_max": 21,
+                    "x_min": 9,
+                    "y_tms_max": 41,
+                    "y_tms_min": 40
+                  },
+                  {
+                    "x_max": 19,
+                    "x_min": 11,
+                    "y_tms_max": 37,
+                    "y_tms_min": 37
+                  },
+                  {
+                    "x_max": 14,
+                    "x_min": 13,
+                    "y_tms_max": 36,
+                    "y_tms_min": 36
+                  },
+                  {
+                    "x_max": 21,
+                    "x_min": 16,
+                    "y_tms_max": 36,
+                    "y_tms_min": 34
+                  },
+                  {
+                    "x_max": 57,
+                    "x_min": 57,
+                    "y_tms_max": 34,
+                    "y_tms_min": 34
+                  },
+                  {
+                    "x_max": 63,
+                    "x_min": 62,
+                    "y_tms_max": 43,
+                    "y_tms_min": 42
+                  }
+                ],
+                "zoom": 6
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 5,
+                    "x_min": 0,
+                    "y_tms_max": 85,
+                    "y_tms_min": 85
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 0,
+                    "y_tms_max": 86,
+                    "y_tms_min": 86
+                  },
+                  {
+                    "x_max": 3,
+                    "x_min": 2,
+                    "y_tms_max": 59,
+                    "y_tms_min": 58
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 2,
+                    "y_tms_max": 87,
+                    "y_tms_min": 87
+                  },
+                  {
+                    "x_max": 14,
+                    "x_min": 2,
+                    "y_tms_max": 92,
+                    "y_tms_min": 92
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 2,
+                    "y_tms_max": 91,
+                    "y_tms_min": 90
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 2,
+                    "y_tms_max": 93,
+                    "y_tms_min": 93
+                  },
+                  {
+                    "x_max": 14,
+                    "x_min": 3,
+                    "y_tms_max": 101,
+                    "y_tms_min": 98
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 3,
+                    "y_tms_max": 97,
+                    "y_tms_min": 94
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 5,
+                    "y_tms_max": 88,
+                    "y_tms_min": 88
+                  },
+                  {
+                    "x_max": 8,
+                    "x_min": 6,
+                    "y_tms_max": 72,
+                    "y_tms_min": 72
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 6,
+                    "y_tms_max": 71,
+                    "y_tms_min": 71
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 6,
+                    "y_tms_max": 89,
+                    "y_tms_min": 89
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 8,
+                    "y_tms_max": 70,
+                    "y_tms_min": 70
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 14,
+                    "y_tms_max": 86,
+                    "y_tms_min": 86
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 14,
+                    "y_tms_max": 89,
+                    "y_tms_min": 89
+                  },
+                  {
+                    "x_max": 18,
+                    "x_min": 14,
+                    "y_tms_max": 88,
+                    "y_tms_min": 87
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 15,
+                    "y_tms_max": 85,
+                    "y_tms_min": 85
+                  },
+                  {
+                    "x_max": 31,
+                    "x_min": 19,
+                    "y_tms_max": 84,
+                    "y_tms_min": 84
+                  },
+                  {
+                    "x_max": 37,
+                    "x_min": 19,
+                    "y_tms_max": 77,
+                    "y_tms_min": 77
+                  },
+                  {
+                    "x_max": 38,
+                    "x_min": 19,
+                    "y_tms_max": 78,
+                    "y_tms_min": 78
+                  },
+                  {
+                    "x_max": 39,
+                    "x_min": 19,
+                    "y_tms_max": 80,
+                    "y_tms_min": 79
+                  },
+                  {
+                    "x_max": 42,
+                    "x_min": 19,
+                    "y_tms_max": 83,
+                    "y_tms_min": 81
+                  },
+                  {
+                    "x_max": 37,
+                    "x_min": 20,
+                    "y_tms_max": 76,
+                    "y_tms_min": 76
+                  },
+                  {
+                    "x_max": 35,
+                    "x_min": 22,
+                    "y_tms_max": 75,
+                    "y_tms_min": 75
+                  },
+                  {
+                    "x_max": 38,
+                    "x_min": 25,
+                    "y_tms_max": 74,
+                    "y_tms_min": 74
+                  },
+                  {
+                    "x_max": 29,
+                    "x_min": 27,
+                    "y_tms_max": 73,
+                    "y_tms_min": 72
+                  },
+                  {
+                    "x_max": 38,
+                    "x_min": 33,
+                    "y_tms_max": 73,
+                    "y_tms_min": 73
+                  },
+                  {
+                    "x_max": 42,
+                    "x_min": 33,
+                    "y_tms_max": 72,
+                    "y_tms_min": 69
+                  },
+                  {
+                    "x_max": 115,
+                    "x_min": 114,
+                    "y_tms_max": 69,
+                    "y_tms_min": 68
+                  },
+                  {
+                    "x_max": 127,
+                    "x_min": 124,
+                    "y_tms_max": 86,
+                    "y_tms_min": 85
+                  }
+                ],
+                "zoom": 7
+              }
+            ],
+            "max_zoom": 7,
+            "package_name": "WIDE_SEC_SEC1_2609",
+            "region_id": "wide",
+            "tile_path_template": "0/{z}/{x}/{y}.webp",
+            "tile_url_root": "tiles"
+          }
+        },
+        "reference_assets": [
+          {
+            "id": "chart-reference:sec:legend:seattle-sec",
+            "kind": "legend",
+            "source_coverage": {
+              "lat_max": 49.02833847672476,
+              "lat_min": 44.4996007883691,
+              "lon_max": -116.6416911634198,
+              "lon_min": -125.001788079597
+            }
+          }
+        ],
+        "region_id": "nw"
+      },
+      {
+        "id": "tac:nw",
+        "label": "Northwest TAC",
+        "map_view": {
+          "chart_family": "tac",
+          "chart_index": 1,
+          "chart_name": "Northwest TAC",
+          "detail": {
+            "levels": [
+              {
+                "boxes": [
+                  {
+                    "x_max": 659,
+                    "x_min": 646,
+                    "y_tms_max": 2639,
+                    "y_tms_min": 2625
+                  },
+                  {
+                    "x_max": 665,
+                    "x_min": 646,
+                    "y_tms_max": 2673,
+                    "y_tms_min": 2651
+                  },
+                  {
+                    "x_max": 784,
+                    "x_min": 763,
+                    "y_tms_max": 2566,
+                    "y_tms_min": 2547
+                  },
+                  {
+                    "x_max": 867,
+                    "x_min": 846,
+                    "y_tms_max": 2553,
+                    "y_tms_min": 2545
+                  }
+                ],
+                "zoom": 12
+              }
+            ],
+            "package_name": "NW_TAC_DETAIL_TAC1_2609",
+            "tile_path_template": "1/{z}/{x}/{y}.webp",
+            "tile_url_root": "tiles"
+          },
+          "initial_viewport": {
+            "lat": 44.1506812,
+            "lon": -113.4667969,
+            "zoom": 9.0
+          },
+          "levels": [
+            {
+              "boxes": [
+                {
+                  "x_max": 41,
+                  "x_min": 40,
+                  "y_tms_max": 167,
+                  "y_tms_min": 164
+                },
+                {
+                  "x_max": 49,
+                  "x_min": 47,
+                  "y_tms_max": 160,
+                  "y_tms_min": 159
+                },
+                {
+                  "x_max": 54,
+                  "x_min": 52,
+                  "y_tms_max": 159,
+                  "y_tms_min": 159
+                }
+              ],
+              "zoom": 8
+            },
+            {
+              "boxes": [
+                {
+                  "x_max": 82,
+                  "x_min": 80,
+                  "y_tms_max": 329,
+                  "y_tms_min": 328
+                },
+                {
+                  "x_max": 83,
+                  "x_min": 80,
+                  "y_tms_max": 334,
+                  "y_tms_min": 331
+                },
+                {
+                  "x_max": 98,
+                  "x_min": 95,
+                  "y_tms_max": 320,
+                  "y_tms_min": 318
+                },
+                {
+                  "x_max": 108,
+                  "x_min": 105,
+                  "y_tms_max": 319,
+                  "y_tms_min": 318
+                }
+              ],
+              "zoom": 9
+            },
+            {
+              "boxes": [
+                {
+                  "x_max": 164,
+                  "x_min": 161,
+                  "y_tms_max": 659,
+                  "y_tms_min": 656
+                },
+                {
+                  "x_max": 166,
+                  "x_min": 161,
+                  "y_tms_max": 668,
+                  "y_tms_min": 662
+                },
+                {
+                  "x_max": 196,
+                  "x_min": 190,
+                  "y_tms_max": 641,
+                  "y_tms_min": 636
+                },
+                {
+                  "x_max": 216,
+                  "x_min": 211,
+                  "y_tms_max": 638,
+                  "y_tms_min": 636
+                }
+              ],
+              "zoom": 10
+            },
+            {
+              "boxes": [
+                {
+                  "x_max": 329,
+                  "x_min": 323,
+                  "y_tms_max": 1319,
+                  "y_tms_min": 1312
+                },
+                {
+                  "x_max": 332,
+                  "x_min": 323,
+                  "y_tms_max": 1336,
+                  "y_tms_min": 1325
+                },
+                {
+                  "x_max": 392,
+                  "x_min": 381,
+                  "y_tms_max": 1283,
+                  "y_tms_min": 1273
+                },
+                {
+                  "x_max": 433,
+                  "x_min": 423,
+                  "y_tms_max": 1276,
+                  "y_tms_min": 1272
+                }
+              ],
+              "zoom": 11
+            }
+          ],
+          "max_zoom": 14.0,
+          "min_zoom": 5.2,
+          "package_name": "NW_TAC_TAC1_2609",
+          "storage_kind": "sectional_package",
+          "tile_path_template": "1/{z}/{x}/{y}.webp",
+          "tile_root": "tiles",
+          "tile_size": 512,
+          "tile_url_root": "tiles",
+          "wide_angle": {
+            "levels": [
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 0,
+                    "y_tms_min": 0
+                  }
+                ],
+                "zoom": 0
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 1,
+                    "y_tms_min": 1
+                  }
+                ],
+                "zoom": 1
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 1,
+                    "x_min": 0,
+                    "y_tms_max": 2,
+                    "y_tms_min": 2
+                  }
+                ],
+                "zoom": 2
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 2,
+                    "x_min": 0,
+                    "y_tms_max": 5,
+                    "y_tms_min": 4
+                  }
+                ],
+                "zoom": 3
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 10,
+                    "y_tms_min": 10
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 0,
+                    "y_tms_max": 8,
+                    "y_tms_min": 8
+                  },
+                  {
+                    "x_max": 2,
+                    "x_min": 0,
+                    "y_tms_max": 11,
+                    "y_tms_min": 11
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 2,
+                    "y_tms_max": 10,
+                    "y_tms_min": 9
+                  },
+                  {
+                    "x_max": 5,
+                    "x_min": 4,
+                    "y_tms_max": 8,
+                    "y_tms_min": 8
+                  }
+                ],
+                "zoom": 4
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 0,
+                    "x_min": 0,
+                    "y_tms_max": 23,
+                    "y_tms_min": 22
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 1,
+                    "y_tms_max": 21,
+                    "y_tms_min": 21
+                  },
+                  {
+                    "x_max": 2,
+                    "x_min": 1,
+                    "y_tms_max": 17,
+                    "y_tms_min": 17
+                  },
+                  {
+                    "x_max": 3,
+                    "x_min": 2,
+                    "y_tms_max": 23,
+                    "y_tms_min": 23
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 2,
+                    "y_tms_max": 22,
+                    "y_tms_min": 22
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 4,
+                    "y_tms_max": 21,
+                    "y_tms_min": 21
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 5,
+                    "y_tms_max": 20,
+                    "y_tms_min": 19
+                  },
+                  {
+                    "x_max": 8,
+                    "x_min": 7,
+                    "y_tms_max": 18,
+                    "y_tms_min": 18
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 9,
+                    "y_tms_max": 17,
+                    "y_tms_min": 17
+                  }
+                ],
+                "zoom": 5
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 1,
+                    "x_min": 1,
+                    "y_tms_max": 44,
+                    "y_tms_min": 44
+                  },
+                  {
+                    "x_max": 1,
+                    "x_min": 1,
+                    "y_tms_max": 47,
+                    "y_tms_min": 46
+                  },
+                  {
+                    "x_max": 2,
+                    "x_min": 2,
+                    "y_tms_max": 43,
+                    "y_tms_min": 43
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 3,
+                    "y_tms_max": 35,
+                    "y_tms_min": 35
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 4,
+                    "y_tms_max": 44,
+                    "y_tms_min": 44
+                  },
+                  {
+                    "x_max": 6,
+                    "x_min": 5,
+                    "y_tms_max": 47,
+                    "y_tms_min": 46
+                  },
+                  {
+                    "x_max": 7,
+                    "x_min": 5,
+                    "y_tms_max": 45,
+                    "y_tms_min": 45
+                  },
+                  {
+                    "x_max": 8,
+                    "x_min": 8,
+                    "y_tms_max": 44,
+                    "y_tms_min": 43
+                  },
+                  {
+                    "x_max": 10,
+                    "x_min": 10,
+                    "y_tms_max": 41,
+                    "y_tms_min": 41
+                  },
+                  {
+                    "x_max": 12,
+                    "x_min": 10,
+                    "y_tms_max": 38,
+                    "y_tms_min": 38
+                  },
+                  {
+                    "x_max": 19,
+                    "x_min": 10,
+                    "y_tms_max": 39,
+                    "y_tms_min": 39
+                  },
+                  {
+                    "x_max": 12,
+                    "x_min": 11,
+                    "y_tms_max": 40,
+                    "y_tms_min": 40
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 14,
+                    "y_tms_max": 38,
+                    "y_tms_min": 37
+                  },
+                  {
+                    "x_max": 15,
+                    "x_min": 15,
+                    "y_tms_max": 41,
+                    "y_tms_min": 41
+                  },
+                  {
+                    "x_max": 19,
+                    "x_min": 15,
+                    "y_tms_max": 40,
+                    "y_tms_min": 40
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 17,
+                    "y_tms_max": 36,
+                    "y_tms_min": 36
+                  },
+                  {
+                    "x_max": 20,
+                    "x_min": 19,
+                    "y_tms_max": 35,
+                    "y_tms_min": 35
+                  }
+                ],
+                "zoom": 6
+              },
+              {
+                "boxes": [
+                  {
+                    "x_max": 3,
+                    "x_min": 2,
+                    "y_tms_max": 95,
+                    "y_tms_min": 93
+                  },
+                  {
+                    "x_max": 3,
+                    "x_min": 3,
+                    "y_tms_max": 89,
+                    "y_tms_min": 88
+                  },
+                  {
+                    "x_max": 4,
+                    "x_min": 4,
+                    "y_tms_max": 87,
+                    "y_tms_min": 86
+                  },
+                  {
+                    "x_max": 8,
+                    "x_min": 7,
+                    "y_tms_max": 71,
+                    "y_tms_min": 71
+                  },
+                  {
+                    "x_max": 9,
+                    "x_min": 9,
+                    "y_tms_max": 89,
+                    "y_tms_min": 89
+                  },
+                  {
+                    "x_max": 11,
+                    "x_min": 10,
+                    "y_tms_max": 92,
+                    "y_tms_min": 91
+                  },
+                  {
+                    "x_max": 12,
+                    "x_min": 10,
+                    "y_tms_max": 94,
+                    "y_tms_min": 93
+                  },
+                  {
+                    "x_max": 14,
+                    "x_min": 13,
+                    "y_tms_max": 91,
+                    "y_tms_min": 90
+                  },
+                  {
+                    "x_max": 16,
+                    "x_min": 16,
+                    "y_tms_max": 89,
+                    "y_tms_min": 89
+                  },
+                  {
+                    "x_max": 17,
+                    "x_min": 17,
+                    "y_tms_max": 87,
+                    "y_tms_min": 87
+                  },
+                  {
+                    "x_max": 20,
+                    "x_min": 20,
+                    "y_tms_max": 78,
+                    "y_tms_min": 78
+                  },
+                  {
+                    "x_max": 20,
+                    "x_min": 20,
+                    "y_tms_max": 83,
+                    "y_tms_min": 82
+                  },
+                  {
+                    "x_max": 24,
+                    "x_min": 21,
+                    "y_tms_max": 77,
+                    "y_tms_min": 76
+                  },
+                  {
+                    "x_max": 24,
+                    "x_min": 22,
+                    "y_tms_max": 78,
+                    "y_tms_min": 78
+                  },
+                  {
+                    "x_max": 24,
+                    "x_min": 23,
+                    "y_tms_max": 80,
+                    "y_tms_min": 79
+                  },
+                  {
+                    "x_max": 27,
+                    "x_min": 26,
+                    "y_tms_max": 79,
+                    "y_tms_min": 78
+                  },
+                  {
+                    "x_max": 29,
+                    "x_min": 29,
+                    "y_tms_max": 76,
+                    "y_tms_min": 76
+                  },
+                  {
+                    "x_max": 30,
+                    "x_min": 29,
+                    "y_tms_max": 74,
+                    "y_tms_min": 74
+                  },
+                  {
+                    "x_max": 32,
+                    "x_min": 29,
+                    "y_tms_max": 75,
+                    "y_tms_min": 75
+                  },
+                  {
+                    "x_max": 34,
+                    "x_min": 29,
+                    "y_tms_max": 78,
+                    "y_tms_min": 78
+                  },
+                  {
+                    "x_max": 38,
+                    "x_min": 29,
+                    "y_tms_max": 79,
+                    "y_tms_min": 79
+                  },
+                  {
+                    "x_max": 31,
+                    "x_min": 30,
+                    "y_tms_max": 82,
+                    "y_tms_min": 82
+                  },
+                  {
+                    "x_max": 32,
+                    "x_min": 30,
+                    "y_tms_max": 81,
+                    "y_tms_min": 81
+                  },
+                  {
+                    "x_max": 35,
+                    "x_min": 31,
+                    "y_tms_max": 77,
+                    "y_tms_min": 77
+                  },
+                  {
+                    "x_max": 35,
+                    "x_min": 32,
+                    "y_tms_max": 80,
+                    "y_tms_min": 80
+                  },
+                  {
+                    "x_max": 34,
+                    "x_min": 33,
+                    "y_tms_max": 76,
+                    "y_tms_min": 76
+                  },
+                  {
+                    "x_max": 35,
+                    "x_min": 34,
+                    "y_tms_max": 75,
+                    "y_tms_min": 74
+                  },
+                  {
+                    "x_max": 35,
+                    "x_min": 35,
+                    "y_tms_max": 73,
+                    "y_tms_min": 73
+                  },
+                  {
+                    "x_max": 37,
+                    "x_min": 36,
+                    "y_tms_max": 78,
+                    "y_tms_min": 78
+                  },
+                  {
+                    "x_max": 39,
+                    "x_min": 37,
+                    "y_tms_max": 80,
+                    "y_tms_min": 80
+                  },
+                  {
+                    "x_max": 41,
+                    "x_min": 39,
+                    "y_tms_max": 70,
+                    "y_tms_min": 70
+                  }
+                ],
+                "zoom": 7
+              }
+            ],
+            "max_zoom": 7,
+            "package_name": "WIDE_TAC_TAC1_2609",
+            "region_id": "wide",
+            "tile_path_template": "1/{z}/{x}/{y}.webp",
+            "tile_url_root": "tiles"
+          }
+        },
+        "reference_assets": [
+          {
+            "id": "chart-reference:tac:inset:anchorage-graphic",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 61.666897301674545,
+              "lat_min": 60.551264599956845,
+              "lon_max": -148.2992821814315,
+              "lon_min": -151.8536553367681
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:grand-canyon-general-aviation",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 36.64441069588635,
+              "lat_min": 35.611513455332584,
+              "lon_max": -111.3007142595928,
+              "lon_min": -114.12752790062548
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:las-vegas-tac",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 36.73385366176625,
+              "lat_min": 35.69581490218262,
+              "lon_max": -113.8635752945167,
+              "lon_min": -115.62093624164125
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:los-angeles-tac",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 34.51718994504042,
+              "lat_min": 33.410008758416076,
+              "lon_max": -116.79161763299368,
+              "lon_min": -119.15125189731008
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:miami-tac",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 26.764044068722857,
+              "lat_min": 25.115191489537523,
+              "lon_max": -79.32025097686413,
+              "lon_min": -81.18246637284888
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:new-york-tac-vfr-planning-charts",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 41.30305834091351,
+              "lat_min": 40.21270484234634,
+              "lon_max": -72.64107699682985,
+              "lon_min": -74.90364047106652
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:phoenix-tac",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 34.08468195064505,
+              "lat_min": 32.78260626143365,
+              "lon_max": -111.16765154263844,
+              "lon_min": -112.87024836889064
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:puerto-rico-vi-tac",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 18.786271926622092,
+              "lat_min": 17.63735866341952,
+              "lon_max": -64.23830402114362,
+              "lon_min": -67.51555514060341
+            }
+          },
+          {
+            "id": "chart-reference:tac:inset:san-diego-tac",
+            "kind": "inset",
+            "source_coverage": {
+              "lat_max": 33.6113514944792,
+              "lat_min": 32.49980816501997,
+              "lon_max": -116.28741880161289,
+              "lon_min": -117.98098144403016
+            }
+          },
+          {
+            "id": "chart-reference:tac:legend:seattle-tac",
+            "kind": "legend",
+            "source_coverage": {
+              "lat_max": 48.06234703601951,
+              "lat_min": 46.74962471921064,
+              "lon_max": -121.5289247327688,
+              "lon_min": -123.19797881181417
+            }
+          }
+        ],
+        "region_id": "nw"
+      }
+    ],
+    "magvar/45/-120": 13.9,
+    "magvar/45/-121": 14.1,
+    "magvar/45/-122": 14.3,
+    "magvar/45/-123": 14.4,
+    "magvar/45/-124": 14.6,
+    "magvar/45/-125": 14.7,
+    "magvar/46/-120": 14.1,
+    "magvar/46/-121": 14.3,
+    "magvar/46/-122": 14.5,
+    "magvar/46/-123": 14.6,
+    "magvar/46/-124": 14.8,
+    "magvar/46/-125": 14.9,
+    "magvar/47/-120": 14.3,
+    "magvar/47/-121": 14.5,
+    "magvar/47/-122": 14.7,
+    "magvar/47/-123": 14.9,
+    "magvar/47/-124": 15.0,
+    "magvar/47/-125": 15.1,
+    "magvar/48/-120": 14.5,
+    "magvar/48/-121": 14.7,
+    "magvar/48/-122": 14.9,
+    "magvar/48/-123": 15.1,
+    "magvar/48/-124": 15.2,
+    "magvar/48/-125": 15.4,
+    "magvar/49/-120": 14.7,
+    "magvar/49/-121": 14.9,
+    "magvar/49/-122": 15.1,
+    "magvar/49/-123": 15.3,
+    "magvar/49/-124": 15.5,
+    "magvar/49/-125": 15.6,
+    "magvar/50/-120": 14.9,
+    "magvar/50/-121": 15.2,
+    "magvar/50/-122": 15.3,
+    "magvar/50/-123": 15.5,
+    "magvar/50/-124": 15.7,
+    "magvar/50/-125": 15.8,
+    "magvar/source": {
+      "citation": "NOAA NCEI Geomagnetic Modeling Team; British Geological Survey. 2024: World Magnetic Model 2025. NOAA National Centers for Environmental Information. https://doi.org/10.25921/aqfd-sd83.",
+      "coefficient_release_date": "11/13/2024",
+      "computed_decimal_year": 2026.6712328767123,
+      "grid": {
+        "altitude_km": 0.0,
+        "altitude_reference": "WGS84 ellipsoid",
+        "latitude_max_exclusive": 90,
+        "latitude_min": -90,
+        "longitude_max_exclusive": 180,
+        "longitude_min": -180,
+        "step_degrees": 1,
+        "value_units": "degrees east"
+      },
+      "model": "WMM-2025",
+      "model_effective_date": "2025-01-01",
+      "model_epoch": 2025.0,
+      "source": "NOAA/NCEI World Magnetic Model",
+      "source_fetched_at_utc": "2026-05-16T22:00:05Z",
+      "source_url": "https://www.ncei.noaa.gov/sites/default/files/2024-12/WMM2025COF.zip",
+      "source_zip_sha256": "2e76569370d081f2cd7919490218bd094ca9afde347b198eff5621e0af460d03",
+      "valid_decimal_year_end": 2030.0,
+      "valid_decimal_year_start": 2025.0
+    },
+    "navref/position/airport/KPAE": {
+      "lat": 47.9050553,
+      "lon": -122.2813514
+    },
+    "navref/position/airport/KRNT": {
+      "lat": 47.4931389,
+      "lon": -122.21575
+    },
+    "navref/position/arinc-navaid/D//K1/PAE": {
+      "lat": 47.9198333,
+      "lon": -122.2778028
+    },
+    "navref/position/arinc-navaid/D//K1/SEA": {
+      "lat": 47.4353722,
+      "lon": -122.3096167
+    },
+    "navref/position/fix/CEVLI": {
+      "lat": 48.014225,
+      "lon": -122.1044278
+    },
+    "navref/position/fix/ECEPO": {
+      "lat": 47.8833639,
+      "lon": -122.4940667
+    },
+    "navref/position/fix/NICIT": {
+      "lat": 48.0302917,
+      "lon": -122.4287611
+    },
+    "navref/position/fix/XUKRE": {
+      "lat": 47.9210611,
+      "lon": -122.2778
+    },
+    "navref/position/fix/YAVUR": {
+      "lat": 48.0697389,
+      "lon": -122.2778
+    },
+    "navref/position/fix/ZELIG": {
+      "lat": 47.9698028,
+      "lon": -122.2778
+    },
+    "navref/position/navaid/PAE": {
+      "lat": 47.9198333,
+      "lon": -122.2778017
+    },
+    "navref/position/navaid/SEA": {
+      "lat": 47.4353731,
+      "lon": -122.3096161
+    },
+    "navref/position/runway/KPAE/RW16L": {
+      "lat": 47.9064247,
+      "lon": -122.2716927
+    },
+    "navref/position/runway/KPAE/RW16R": {
+      "lat": 47.9158276,
+      "lon": -122.2857286
+    },
+    "navref/position/runway/KPAE/RW34L": {
+      "lat": 47.89664,
+      "lon": -122.2853025
+    },
+    "navref/position/runway/KPAE/RW34R": {
+      "lat": 47.8981916,
+      "lon": -122.2716013
+    },
+    "navref/position/runway/KRNT/RW16": {
+      "lat": 47.5004742,
+      "lon": -122.2168529
+    },
+    "navref/position/runway/KRNT/RW34": {
+      "lat": 47.4857953,
+      "lon": -122.2146313
+    },
+    "navref/position/terminal-navaid/KPAE/P/I/K1/IPAE": {
+      "lat": 47.8927861,
+      "lon": -122.2852167
+    },
+    "navref/symbol/airport/KPAE": {
+      "fuel_available": true,
+      "has_paved_runway": true,
+      "has_water_runway": false,
+      "heliport": false,
+      "kind": "airport",
+      "label": "KPAE",
+      "longest_runway_heading_true_deg": 179.0,
+      "runway_length_ratio": 1.0,
+      "style_class": "airport",
+      "symbol_kind": "airport",
+      "towered": true
+    },
+    "navref/symbol/airport/KRNT": {
+      "fuel_available": true,
+      "has_paved_runway": true,
+      "has_water_runway": false,
+      "heliport": false,
+      "kind": "airport",
+      "label": "KRNT",
+      "longest_runway_heading_true_deg": 174.0,
+      "runway_length_ratio": 1.0,
+      "style_class": "airport",
+      "symbol_kind": "airport",
+      "towered": true
+    },
+    "navref/symbol/fix/ECEPO": {
+      "kind": "yrep-pt",
+      "label": "ECEPO",
+      "style_class": "fix",
+      "symbol_kind": "fix"
+    },
+    "navref/symbol/navaid/PAE": {
+      "kind": "vor/dme",
+      "label": "PAE 110.60",
+      "style_class": "nav",
+      "symbol_kind": "nav"
+    },
+    "navref/symbol/navaid/SEA": {
+      "kind": "vortac",
+      "label": "SEA 116.80",
+      "style_class": "nav",
+      "symbol_kind": "nav"
+    },
+    "package/by-id/NW_CSUP_CSUP1_2609": {
+      "checksum_sha256": "b21eae9ac447de896fe6b19e13cfe6f8b5820d2dd3586ab55b00ef73d1bbd2d3",
+      "contract_id": "CSUP1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "csup",
+      "id": "NW_CSUP_CSUP1_2609",
+      "metadata": {
+        "contract_id": "CSUP1"
+      },
+      "region_id": "nw",
+      "relative_path": "csup_nw_CSUP1_2609_01_b21eae9ac447de896fe6b19e13cfe6f8b5820d2dd3586ab55b00ef73d1bbd2d3.zip",
+      "size_bytes": 64179286
+    },
+    "package/by-id/NW_SEC_DETAIL_SEC1_2609": {
+      "checksum_sha256": "1d6fb0a13ee81656f5c2fe9be905292a150b773d193d04e13ac6d5ebcf95630b",
+      "contract_id": "SEC1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "sec",
+      "id": "NW_SEC_DETAIL_SEC1_2609",
+      "metadata": {
+        "chart_collections": [
+          {
+            "chart_index": 0,
+            "family_id": "sec"
+          }
+        ],
+        "chart_package_tier": "detail",
+        "contract_id": "SEC1",
+        "max_source_zoom": 11,
+        "min_source_zoom": 11,
+        "tile_count": 9271,
+        "wide_angle": false,
+        "wide_angle_max_zoom": 7,
+        "wide_angle_region_id": "wide"
+      },
+      "region_id": "nw",
+      "relative_path": "sec_nw_detail_SEC1_2609_01_1d6fb0a13ee81656f5c2fe9be905292a150b773d193d04e13ac6d5ebcf95630b.zip",
+      "size_bytes": 135507668
+    },
+    "package/by-id/NW_SEC_SEC1_2609": {
+      "checksum_sha256": "558dcc378c2a5e6958318753503d2beedd2d03c0d0191977a429515f1e074178",
+      "contract_id": "SEC1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "sec",
+      "id": "NW_SEC_SEC1_2609",
+      "metadata": {
+        "chart_collections": [
+          {
+            "chart_index": 0,
+            "family_id": "sec"
+          }
+        ],
+        "chart_package_tier": "regional",
+        "contract_id": "SEC1",
+        "max_source_zoom": 10,
+        "min_source_zoom": 8,
+        "tile_count": 3136,
+        "wide_angle": false,
+        "wide_angle_max_zoom": 7,
+        "wide_angle_region_id": "wide"
+      },
+      "region_id": "nw",
+      "relative_path": "sec_nw_SEC1_2609_01_558dcc378c2a5e6958318753503d2beedd2d03c0d0191977a429515f1e074178.zip",
+      "size_bytes": 115025010
+    },
+    "package/by-id/NW_TAC_DETAIL_TAC1_2609": {
+      "checksum_sha256": "693ae92502d57a0899d0924f76859a3b356cf5863efd83be8c35f434a33469ad",
+      "contract_id": "TAC1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "tac",
+      "id": "NW_TAC_DETAIL_TAC1_2609",
+      "metadata": {
+        "chart_collections": [
+          {
+            "chart_index": 1,
+            "family_id": "tac"
+          },
+          {
+            "chart_index": 2,
+            "family_id": "flyway"
+          }
+        ],
+        "chart_package_tier": "detail",
+        "contract_id": "TAC1",
+        "max_source_zoom": 12,
+        "min_source_zoom": 12,
+        "tile_count": 2406,
+        "wide_angle": false,
+        "wide_angle_max_zoom": 7,
+        "wide_angle_region_id": "wide"
+      },
+      "region_id": "nw",
+      "relative_path": "tac_nw_detail_TAC1_2609_01_693ae92502d57a0899d0924f76859a3b356cf5863efd83be8c35f434a33469ad.zip",
+      "size_bytes": 21484681
+    },
+    "package/by-id/NW_TAC_TAC1_2609": {
+      "checksum_sha256": "60203cc41ea73d007b674a76648da1937fbda3a874d2528182baba333012f194",
+      "contract_id": "TAC1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "tac",
+      "id": "NW_TAC_TAC1_2609",
+      "metadata": {
+        "chart_collections": [
+          {
+            "chart_index": 1,
+            "family_id": "tac"
+          },
+          {
+            "chart_index": 2,
+            "family_id": "flyway"
+          }
+        ],
+        "chart_package_tier": "regional",
+        "contract_id": "TAC1",
+        "max_source_zoom": 11,
+        "min_source_zoom": 8,
+        "tile_count": 1000,
+        "wide_angle": false,
+        "wide_angle_max_zoom": 7,
+        "wide_angle_region_id": "wide"
+      },
+      "region_id": "nw",
+      "relative_path": "tac_nw_TAC1_2609_01_60203cc41ea73d007b674a76648da1937fbda3a874d2528182baba333012f194.zip",
+      "size_bytes": 21704772
+    },
+    "package/by-id/NW_TPP_TPP1_2609": {
+      "checksum_sha256": "3ce14c5e5d0e3c3633874b0e695988c8bbf8646cbd94865e9929faaaa4fa539b",
+      "contract_id": "TPP1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-01",
+      "family_id": "tpp",
+      "id": "NW_TPP_TPP1_2609",
+      "metadata": {
+        "contract_id": "TPP1"
+      },
+      "region_id": "nw",
+      "relative_path": "tpp_nw_TPP1_2609_01_3ce14c5e5d0e3c3633874b0e695988c8bbf8646cbd94865e9929faaaa4fa539b.zip",
+      "size_bytes": 178404875
+    },
+    "package/by-id/WIDE_SEC_SEC1_2609": {
+      "checksum_sha256": "297dacf8d4d3a7733a1ba034779cdd9c1d231454daed9ac6d8b9f2a60c3317d8",
+      "contract_id": "SEC1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "sec",
+      "id": "WIDE_SEC_SEC1_2609",
+      "metadata": {
+        "chart_collections": [
+          {
+            "chart_index": 0,
+            "family_id": "sec"
+          }
+        ],
+        "chart_package_tier": "wide",
+        "contract_id": "SEC1",
+        "max_source_zoom": 7,
+        "tile_count": 774,
+        "wide_angle": true,
+        "wide_angle_max_zoom": 7,
+        "wide_angle_region_id": "wide"
+      },
+      "region_id": "wide",
+      "relative_path": "sec_wide_SEC1_2609_01_297dacf8d4d3a7733a1ba034779cdd9c1d231454daed9ac6d8b9f2a60c3317d8.zip",
+      "size_bytes": 42541226
+    },
+    "package/by-id/WIDE_TAC_TAC1_2609": {
+      "checksum_sha256": "6764da7d0e2d32c64239ff1556256d87a9883902678a418f9134008cd65e6b1f",
+      "contract_id": "TAC1",
+      "cycle": "2609",
+      "cycle_version": "01",
+      "effective_date": "2026-09-03",
+      "expiration_date": "2026-10-29",
+      "family_id": "tac",
+      "id": "WIDE_TAC_TAC1_2609",
+      "metadata": {
+        "chart_collections": [
+          {
+            "chart_index": 1,
+            "family_id": "tac"
+          },
+          {
+            "chart_index": 2,
+            "family_id": "flyway"
+          }
+        ],
+        "chart_package_tier": "wide",
+        "contract_id": "TAC1",
+        "max_source_zoom": 7,
+        "tile_count": 306,
+        "wide_angle": true,
+        "wide_angle_max_zoom": 7,
+        "wide_angle_region_id": "wide"
+      },
+      "region_id": "wide",
+      "relative_path": "tac_wide_TAC1_2609_01_6764da7d0e2d32c64239ff1556256d87a9883902678a418f9134008cd65e6b1f.zip",
+      "size_bytes": 8947268
+    },
+    "plate/airport/KPAE": {
+      "airport_type": "AIRPORT",
+      "chart_ids": [
+        "plate:KPAE:IAP-WA-VOR-A.png"
+      ],
+      "charted_procedures": [],
+      "id": "KPAE",
+      "label": "SEATTLE PAINE FLD INTL",
+      "package_ids": [
+        "NW_CSUP_CSUP1_2609",
+        "NW_TPP_TPP1_2609"
+      ]
+    },
+    "plate/by-id/plate%3AKPAE%3AIAP-WA-VOR-A.png": {
+      "airport_id": "KPAE",
+      "asset_path": "plates/PAE/IAP-WA-VOR-A.png",
+      "collection_id": "airport:KPAE",
+      "folder_category": "approach",
+      "georef": {
+        "kind": "plate_transform_v1",
+        "pixels_per_latitude": -1313.4472399659928,
+        "pixels_per_longitude": 880.0869489295407,
+        "top_left_lat": 48.398380555555555,
+        "top_left_lon": -122.73851111111112
+      },
+      "id": "plate:KPAE:IAP-WA-VOR-A.png",
+      "kind": "plate",
+      "label": "VOR-A",
+      "package_id": "NW_TPP_TPP1_2609",
+      "procedure_rendezvous_keys": [
+        {
+          "airport_id": "KPAE",
+          "identity": {
+            "cifp_id": "VOR-A"
+          },
+          "kind": "approach"
+        }
+      ],
+      "thumbnail_path": "thumbnails/plates/PAE/IAP-WA-VOR-A.png"
+    },
+    "plate/cifp/KPAE/VOR-A": [
+      {
+        "airport_id": "KPAE",
+        "cifp_id": "VOR-A",
+        "is_primary": 1,
+        "match_kind": "unique",
+        "package_id": "NW_TPP_TPP1_2609",
+        "plate_id": "plate:KPAE:IAP-WA-VOR-A.png",
+        "plate_label": "VOR-A",
+        "priority": 0,
+        "procedure_kind": "approach",
+        "procedure_rendezvous_keys": [
+          {
+            "airport_id": "KPAE",
+            "identity": {
+              "cifp_id": "VOR-A"
+            },
+            "kind": "approach"
+          }
+        ],
+        "public": 1
+      }
+    ],
+    "plate/procedure-candidates/plate%3AKPAE%3AIAP-WA-VOR-A.png": [
+      {
+        "airport_id": "KPAE",
+        "cifp_id": "VOR-A",
+        "is_primary": 1,
+        "match_kind": "unique",
+        "package_id": "NW_TPP_TPP1_2609",
+        "plate_id": "plate:KPAE:IAP-WA-VOR-A.png",
+        "plate_label": "VOR-A",
+        "priority": 0,
+        "procedure_kind": "approach",
+        "procedure_rendezvous_keys": [
+          {
+            "airport_id": "KPAE",
+            "identity": {
+              "cifp_id": "VOR-A"
+            },
+            "kind": "approach"
+          }
+        ],
+        "public": 1
+      }
+    ],
+    "plate/procedure-rendezvous/by-key/APPROACH/KPAE/CIFP/VOR-A": [
+      {
+        "airport_id": "KPAE",
+        "cifp_id": "VOR-A",
+        "is_primary": 1,
+        "match_kind": "unique",
+        "package_id": "NW_TPP_TPP1_2609",
+        "plate_id": "plate:KPAE:IAP-WA-VOR-A.png",
+        "plate_label": "VOR-A",
+        "priority": 0,
+        "procedure_kind": "approach",
+        "procedure_rendezvous_keys": [
+          {
+            "airport_id": "KPAE",
+            "identity": {
+              "cifp_id": "VOR-A"
+            },
+            "kind": "approach"
+          }
+        ],
+        "public": 1
+      }
+    ],
+    "plate/procedure-rendezvous/by-plate/plate%3AKPAE%3AIAP-WA-VOR-A.png": [
+      {
+        "airport_id": "KPAE",
+        "identity": {
+          "cifp_id": "VOR-A"
+        },
+        "kind": "approach"
+      }
+    ],
+    "procedure/geometry-segment/6E949ADD3CE7877ADCF22683F851FE4763E7B1D807A0326909395D62950F2517": {
+      "leg_bundles": [
+        {
+          "from": {
+            "kind": "fix",
+            "value": "YAVUR"
+          },
+          "path": {
+            "effective_terminal_course_deg": 180.0,
+            "elements": [
+              {
+                "segment": {
+                  "end": {
+                    "lat": 47.9698028,
+                    "lon": -122.2778
+                  },
+                  "start": {
+                    "lat": 48.0697389,
+                    "lon": -122.2778
+                  }
+                }
+              }
+            ]
+          },
+          "path_termination": "course_to_fix",
+          "role": "common",
+          "to": {
+            "kind": "fix",
+            "value": "ZELIG"
+          }
+        },
+        {
+          "from": {
+            "kind": "fix",
+            "value": "ZELIG"
+          },
+          "path": {
+            "effective_terminal_course_deg": 180.0,
+            "elements": [
+              {
+                "segment": {
+                  "end": {
+                    "lat": 47.9210611,
+                    "lon": -122.2778
+                  },
+                  "start": {
+                    "lat": 47.9698028,
+                    "lon": -122.2778
+                  }
+                }
+              }
+            ]
+          },
+          "path_termination": "course_to_fix",
+          "role": "common",
+          "to": {
+            "kind": "fix",
+            "value": "XUKRE"
+          }
+        },
+        {
+          "discontinuity_after": "hold",
+          "from": {
+            "kind": "fix",
+            "value": "XUKRE"
+          },
+          "path": {
+            "effective_terminal_course_deg": 252.02380227056304,
+            "elements": [
+              {
+                "segment": {
+                  "end": {
+                    "lat": 47.9010611,
+                    "lon": -122.2778
+                  },
+                  "start": {
+                    "lat": 47.9210611,
+                    "lon": -122.2778
+                  }
+                }
+              },
+              {
+                "arc": {
+                  "center": {
+                    "lat": 47.9010611,
+                    "lon": -122.2896699
+                  },
+                  "clockwise": true,
+                  "end": {
+                    "lat": 47.8931469,
+                    "lon": -122.2909107
+                  },
+                  "radius_nm": 0.477464829275686,
+                  "start": {
+                    "lat": 47.9010611,
+                    "lon": -122.2778
+                  },
+                  "sweep_degrees": 96.0
+                }
+              },
+              {
+                "segment": {
+                  "end": {
+                    "lat": 47.8833639,
+                    "lon": -122.4940667
+                  },
+                  "start": {
+                    "lat": 47.8931469,
+                    "lon": -122.2909107
+                  }
+                }
+              },
+              {
+                "arc": {
+                  "center": {
+                    "lat": 47.8934549,
+                    "lon": -122.4989557
+                  },
+                  "clockwise": true,
+                  "end": {
+                    "lat": 47.9035459,
+                    "lon": -122.5038457
+                  },
+                  "radius_nm": 0.6366197723675813,
+                  "start": {
+                    "lat": 47.8833639,
+                    "lon": -122.4940667
+                  },
+                  "sweep_degrees": 180.0
+                }
+              },
+              {
+                "segment": {
+                  "end": {
+                    "lat": 47.9138465,
+                    "lon": -122.4565563
+                  },
+                  "start": {
+                    "lat": 47.9035459,
+                    "lon": -122.5038457
+                  }
+                }
+              },
+              {
+                "arc": {
+                  "center": {
+                    "lat": 47.9037555,
+                    "lon": -122.4516644
+                  },
+                  "clockwise": true,
+                  "end": {
+                    "lat": 47.8936645,
+                    "lon": -122.4467735
+                  },
+                  "radius_nm": 0.6366197723675813,
+                  "start": {
+                    "lat": 47.9138465,
+                    "lon": -122.4565563
+                  },
+                  "sweep_degrees": 180.0
+                }
+              },
+              {
+                "segment": {
+                  "end": {
+                    "lat": 47.8833639,
+                    "lon": -122.4940667
+                  },
+                  "start": {
+                    "lat": 47.8936645,
+                    "lon": -122.4467735
+                  }
+                }
+              }
+            ]
+          },
+          "path_termination": "heading_to_manual",
+          "role": "common",
+          "sequencing_after": "suspend",
+          "to": {
+            "kind": "fix",
+            "value": "ECEPO"
+          }
+        }
+      ]
+    },
+    "procedure/geometry/KPAE/APPROACH/VOR-A/_/ECEPO": {
+      "components": [
+        {
+          "kind": "leg_bundles",
+          "leg_bundles": [
+            {
+              "from": {
+                "kind": "fix",
+                "value": "ECEPO"
+              },
+              "path": {
+                "effective_terminal_course_deg": 90.00071513229992,
+                "elements": [
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 47.9198333,
+                        "lon": -122.2778028
+                      },
+                      "clockwise": true,
+                      "end": {
+                        "lat": 48.0697389,
+                        "lon": -122.2778
+                      },
+                      "radius_nm": 8.97006037038706,
+                      "start": {
+                        "lat": 47.8833639,
+                        "lon": -122.4940667
+                      },
+                      "sweep_degrees": 104.03971435368092
+                    }
+                  }
+                ]
+              },
+              "path_termination": {
+                "other": "AF"
+              },
+              "role": "enroute_transition",
+              "to": {
+                "kind": "fix",
+                "value": "YAVUR"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "segment_ref",
+          "segment_ref": "6e949add3ce7877adcf22683f851fe4763e7b1d807a0326909395d62950f2517"
+        }
+      ],
+      "terminal_discontinuity": "hold"
+    },
+    "procedure/geometry/KPAE/APPROACH/VOR-A/_/NICIT": {
+      "components": [
+        {
+          "kind": "leg_bundles",
+          "leg_bundles": [
+            {
+              "from": {
+                "kind": "fix",
+                "value": "NICIT"
+              },
+              "path": {
+                "effective_terminal_course_deg": 90.00071513229992,
+                "elements": [
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 47.9198333,
+                        "lon": -122.2778028
+                      },
+                      "clockwise": true,
+                      "end": {
+                        "lat": 48.0697389,
+                        "lon": -122.2778
+                      },
+                      "radius_nm": 8.982805219271173,
+                      "start": {
+                        "lat": 48.0302917,
+                        "lon": -122.4287611
+                      },
+                      "sweep_degrees": 42.4004126315491
+                    }
+                  }
+                ]
+              },
+              "path_termination": {
+                "other": "AF"
+              },
+              "role": "enroute_transition",
+              "to": {
+                "kind": "fix",
+                "value": "YAVUR"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "segment_ref",
+          "segment_ref": "6e949add3ce7877adcf22683f851fe4763e7b1d807a0326909395d62950f2517"
+        }
+      ],
+      "terminal_discontinuity": "hold"
+    },
+    "procedure/geometry/KPAE/APPROACH/VOR-A/_/PAE1": {
+      "components": [
+        {
+          "kind": "leg_bundles",
+          "leg_bundles": [
+            {
+              "from": {
+                "kind": "arinc_navaid",
+                "value": {
+                  "icao_code": "K1",
+                  "identifier": "PAE",
+                  "section_code": "D",
+                  "subsection_code": ""
+                }
+              },
+              "path": {
+                "effective_terminal_course_deg": 50.82010257326255,
+                "elements": [
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 48.014225,
+                        "lon": -122.1044278
+                      },
+                      "start": {
+                        "lat": 47.9198333,
+                        "lon": -122.2778028
+                      }
+                    }
+                  }
+                ]
+              },
+              "path_termination": "track_to_fix",
+              "role": "enroute_transition",
+              "to": {
+                "kind": "fix",
+                "value": "CEVLI"
+              }
+            },
+            {
+              "from": {
+                "kind": "fix",
+                "value": "CEVLI"
+              },
+              "path": {
+                "effective_terminal_course_deg": 270.0007151322999,
+                "elements": [
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 47.9198333,
+                        "lon": -122.2778028
+                      },
+                      "clockwise": false,
+                      "end": {
+                        "lat": 48.0697389,
+                        "lon": -122.2778
+                      },
+                      "radius_nm": 8.977058196482044,
+                      "start": {
+                        "lat": 48.014225,
+                        "lon": -122.1044278
+                      },
+                      "sweep_degrees": 50.81938744096264
+                    }
+                  }
+                ]
+              },
+              "path_termination": {
+                "other": "AF"
+              },
+              "role": "enroute_transition",
+              "to": {
+                "kind": "fix",
+                "value": "YAVUR"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "segment_ref",
+          "segment_ref": "6e949add3ce7877adcf22683f851fe4763e7b1d807a0326909395d62950f2517"
+        }
+      ],
+      "terminal_discontinuity": "hold"
+    },
+    "procedure/geometry/KPAE/APPROACH/VOR-A/_/PAE2": {
+      "components": [
+        {
+          "kind": "leg_bundles",
+          "leg_bundles": [
+            {
+              "from": {
+                "kind": "arinc_navaid",
+                "value": {
+                  "icao_code": "K1",
+                  "identifier": "PAE",
+                  "section_code": "D",
+                  "subsection_code": ""
+                }
+              },
+              "path": {
+                "effective_terminal_course_deg": 0.0021495160032147208,
+                "elements": [
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.9698028,
+                        "lon": -122.2778
+                      },
+                      "start": {
+                        "lat": 47.9198333,
+                        "lon": -122.2778028
+                      }
+                    }
+                  }
+                ]
+              },
+              "path_termination": "track_to_fix",
+              "role": "enroute_transition",
+              "to": {
+                "kind": "fix",
+                "value": "ZELIG"
+              }
+            },
+            {
+              "from": {
+                "kind": "fix",
+                "value": "ZELIG"
+              },
+              "path": {
+                "effective_terminal_course_deg": 180.0178764561349,
+                "elements": [
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 48.0198028,
+                        "lon": -122.2778
+                      },
+                      "start": {
+                        "lat": 47.9698028,
+                        "lon": -122.2778
+                      }
+                    }
+                  },
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 48.0551581,
+                        "lon": -122.330658
+                      },
+                      "start": {
+                        "lat": 48.0198028,
+                        "lon": -122.2778
+                      }
+                    }
+                  },
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 48.0607851,
+                        "lon": -122.3222396
+                      },
+                      "clockwise": true,
+                      "end": {
+                        "lat": 48.0664121,
+                        "lon": -122.3138203
+                      },
+                      "radius_nm": 0.477464829275686,
+                      "start": {
+                        "lat": 48.0551581,
+                        "lon": -122.330658
+                      },
+                      "sweep_degrees": 180.0
+                    }
+                  },
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 48.0423183,
+                        "lon": -122.2777662
+                      },
+                      "start": {
+                        "lat": 48.0664121,
+                        "lon": -122.3138203
+                      }
+                    }
+                  },
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.9698028,
+                        "lon": -122.2778
+                      },
+                      "start": {
+                        "lat": 48.0423183,
+                        "lon": -122.2777662
+                      }
+                    }
+                  }
+                ]
+              },
+              "path_termination": {
+                "other": "PI"
+              },
+              "role": "enroute_transition",
+              "to": {
+                "kind": "fix",
+                "value": "ZELIG"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "leg_bundles",
+          "leg_bundles": [
+            {
+              "from": {
+                "kind": "fix",
+                "value": "ZELIG"
+              },
+              "path": {
+                "elements": [
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.9210611,
+                        "lon": -122.2778
+                      },
+                      "start": {
+                        "lat": 47.9698028,
+                        "lon": -122.2778
+                      }
+                    }
+                  }
+                ]
+              },
+              "path_termination": "course_to_fix",
+              "role": "common",
+              "to": {
+                "kind": "fix",
+                "value": "XUKRE"
+              }
+            },
+            {
+              "discontinuity_after": "hold",
+              "from": {
+                "kind": "fix",
+                "value": "XUKRE"
+              },
+              "path": {
+                "effective_terminal_course_deg": 252.02380227056304,
+                "elements": [
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.9010611,
+                        "lon": -122.2778
+                      },
+                      "start": {
+                        "lat": 47.9210611,
+                        "lon": -122.2778
+                      }
+                    }
+                  },
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 47.9010611,
+                        "lon": -122.2896699
+                      },
+                      "clockwise": true,
+                      "end": {
+                        "lat": 47.8931469,
+                        "lon": -122.2909107
+                      },
+                      "radius_nm": 0.477464829275686,
+                      "start": {
+                        "lat": 47.9010611,
+                        "lon": -122.2778
+                      },
+                      "sweep_degrees": 96.0
+                    }
+                  },
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.8833639,
+                        "lon": -122.4940667
+                      },
+                      "start": {
+                        "lat": 47.8931469,
+                        "lon": -122.2909107
+                      }
+                    }
+                  },
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 47.8934549,
+                        "lon": -122.4989557
+                      },
+                      "clockwise": true,
+                      "end": {
+                        "lat": 47.9035459,
+                        "lon": -122.5038457
+                      },
+                      "radius_nm": 0.6366197723675813,
+                      "start": {
+                        "lat": 47.8833639,
+                        "lon": -122.4940667
+                      },
+                      "sweep_degrees": 180.0
+                    }
+                  },
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.9138465,
+                        "lon": -122.4565563
+                      },
+                      "start": {
+                        "lat": 47.9035459,
+                        "lon": -122.5038457
+                      }
+                    }
+                  },
+                  {
+                    "arc": {
+                      "center": {
+                        "lat": 47.9037555,
+                        "lon": -122.4516644
+                      },
+                      "clockwise": true,
+                      "end": {
+                        "lat": 47.8936645,
+                        "lon": -122.4467735
+                      },
+                      "radius_nm": 0.6366197723675813,
+                      "start": {
+                        "lat": 47.9138465,
+                        "lon": -122.4565563
+                      },
+                      "sweep_degrees": 180.0
+                    }
+                  },
+                  {
+                    "segment": {
+                      "end": {
+                        "lat": 47.8833639,
+                        "lon": -122.4940667
+                      },
+                      "start": {
+                        "lat": 47.8936645,
+                        "lon": -122.4467735
+                      }
+                    }
+                  }
+                ]
+              },
+              "path_termination": "heading_to_manual",
+              "role": "common",
+              "sequencing_after": "suspend",
+              "to": {
+                "kind": "fix",
+                "value": "ECEPO"
+              }
+            }
+          ]
+        }
+      ],
+      "terminal_discontinuity": "hold"
+    },
+    "vector/manifest": {
+      "airspace": {
+        "label_tile_max_zoom": 12,
+        "label_tile_min_zoom": 0,
+        "path_compression_tolerance_degrees": 0.00005,
+        "path_encoding": "start_line_arc_segments",
+        "path_max_deviation_ft": 50.0,
+        "reference_tile_max_zoom": 12,
+        "reference_tile_min_zoom": 0
+      },
+      "point_layers": {
+        "airport": {
+          "available_zooms": [
+            9
+          ]
+        },
+        "fix": {
+          "available_zooms": [
+            9
+          ]
+        },
+        "nav": {
+          "available_zooms": [
+            9
+          ]
+        }
+      },
+      "schema_version": 1,
+      "stats": {
+        "airspace_feature_count": 2701,
+        "total_points": 58947
+      },
+      "version_label": "data_2609"
+    },
+    "waypoint/identifier/ECEPO": {
+      "Fix": "ECEPO"
+    },
+    "waypoint/identifier/KPAE": {
+      "Airport": "KPAE"
+    },
+    "waypoint/identifier/KRNT": {
+      "Airport": "KRNT"
+    },
+    "waypoint/identifier/PAE": {
+      "Navaid": "PAE"
+    },
+    "waypoint/identifier/SEA": {
+      "Navaid": "SEA"
+    },
+    "waypoint/search-prefix/KPA": [
+      {
+        "display_name": "SEATTLE PAINE FLD INTL\nEVERETT, WA",
+        "identifier": "KPAE",
+        "kind": "airport",
+        "lat": 47.9050553,
+        "lon": -122.2813514,
+        "match_kind": "identifier",
+        "matched_term": "KPAE"
+      }
+    ],
+    "waypoint/search-prefix/KRN": [
+      {
+        "display_name": "RENTON MUNI\nRENTON, WA",
+        "identifier": "KRNT",
+        "kind": "airport",
+        "lat": 47.4931389,
+        "lon": -122.21575,
+        "match_kind": "identifier",
+        "matched_term": "KRNT"
+      }
+    ]
+  },
+  "schema_version": 1
+}

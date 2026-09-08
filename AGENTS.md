@@ -75,6 +75,12 @@ requiring NAV25 while the lock still supplies NAV24 is immediately CI-broken,
 even when that feature's Rust tests pass. Never relabel old fixture bytes to
 make the metadata check pass.
 
+NAVDB rollover is different: its permanent logical input lives in
+`crates/nav-db-fixture/source.json` and generates both scenarios locally. Migrate
+those logical records and their descriptor when the contract changes; never
+restore a dependency on two historical FAA cycles. Smoke/release fixtures still
+come from one real available publication.
+
 ## Before staging a release
 
 - The command is `tools/prod_manage.py --stage`, not `--staging`. Check ordinary

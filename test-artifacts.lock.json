@@ -36,23 +36,6 @@
         "*.zip"
       ]
     },
-    "nav-db-advance": {
-      "path": "nav-db/advance-2608-to-2609",
-      "contract_version": 1,
-      "manifest": {
-        "path": "fixture.json",
-        "version_field": "schema_version"
-      },
-      "client_contracts": {
-        "publication": {
-          "current_manifest_schema": 1,
-          "bundle_manifest_schema": 2
-        },
-        "package_contracts": {
-          "nav-db": "NAV24"
-        }
-      }
-    },
     "nexrad-source-grid": {
       "path": "nexrad/source-grid-three-hour",
       "contract_version": 1,

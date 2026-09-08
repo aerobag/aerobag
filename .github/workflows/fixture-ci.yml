@@ -25,65 +25,6 @@ env:
   NEXTEST_VERSION: 0.9.140
 
 jobs:
-  nav-db:
-    name: NAVDB fixture tests
-    runs-on: ubuntu-latest
-    env:
-      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
-      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nav-db
-    steps:
-      - uses: actions/checkout@v5
-      - name: Fetch and verify NAVDB fixture
-        run: |
-          python3 tools/ci/fetch_test_artifacts.py \
-            --fixture nav-db-advance \
-            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_fixture_contracts.py \
-            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
-            --fixture nav-db-advance
-      - name: Install Rust toolchain
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
-        with:
-          tool: nextest@${{ env.NEXTEST_VERSION }}
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .ci/cargo-target/fixture-nav-db
-          key: fixture-nav-db-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'test-artifacts.lock.json') }}
-      - name: Run NAVDB fixture tests
-        id: tests
-        continue-on-error: true
-        working-directory: ui/core-rust
-        run: >-
-          cargo nextest run
-          --profile ci
-          --locked
-          --package app-core
-          --run-ignored ignored-only
-          -E 'test(/real_nav_db_2608_to_2609_advance_preserves_rich_session$/)'
-      - name: Report individual tests
-        if: ${{ always() }}
-        run: >-
-          python3 tools/ci/junit_summary.py
-          --title "NAVDB fixture tests"
-          "ui/core-rust/target/nextest/ci/junit.xml"
-      - name: Upload test results
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: nav-db-fixture-test-results
-          path: ui/core-rust/target/nextest/ci/junit.xml
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Enforce test results
-        if: ${{ steps.tests.outcome == 'failure' }}
-        run: exit 1
-
   metar:
     name: METAR fixture tests
     runs-on: ubuntu-latest

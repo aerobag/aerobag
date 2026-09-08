@@ -630,18 +630,9 @@ jobs:
     name: web.nav-db-rollover
     runs-on: ubuntu-latest
     env:
-      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
     steps:
       - uses: actions/checkout@v5
-      - name: Fetch and verify NAVDB transition fixture
-        run: |
-          python3 tools/ci/fetch_test_artifacts.py \
-            --fixture nav-db-advance \
-            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-          python3 tools/ci/verify_fixture_contracts.py \
-            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
-            --fixture nav-db-advance
       - uses: actions/setup-node@v4
         with:
           node-version: 20

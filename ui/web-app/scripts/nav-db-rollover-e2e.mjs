@@ -30,7 +30,6 @@ const artifactRoot = path.resolve(
 );
 const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aerobag-nav-db-rollover-work-"));
 const publicationRoot = path.join(workRoot, "publication");
-const fixtureRoot = materializeFixture(path.join(workRoot, "fixtures"));
 const viteLogPath = path.join(artifactRoot, "vite.log");
 const baseUrl = `http://127.0.0.1:${port}/`;
 
@@ -51,7 +50,7 @@ async function main() {
     const summary = {
       run_id: runId,
       generated_at_utc: new Date().toISOString(),
-      fixture_root: fixtureRoot,
+      fixture_source: "crates/nav-db-fixture/source.json",
       transition_delay_seconds: transitionDelaySeconds,
       results,
     };
@@ -67,6 +66,7 @@ async function runScenario(scenario) {
   const frameRoot = path.join(scenarioRoot, "frames");
   fs.mkdirSync(frameRoot, { recursive: true });
   const lab = JSON.parse(fs.readFileSync(path.join(publicationRoot, "lab.json"), "utf8"));
+  writeJson(path.join(scenarioRoot, "lab.json"), lab);
   const initialCycle = lab.initial?.cycle;
   const candidateCycle = lab.candidate?.cycle;
   assert(typeof initialCycle === "string", "generated lab has no initial cycle");
@@ -168,6 +168,7 @@ async function runScenario(scenario) {
     );
     assertRichPlan(before);
     const planFingerprint = stablePlanFingerprint(before);
+    await assertAirportName(page, lab.changed_airport.initial_name);
 
     await installStatusOverlay(page, scenario, transitionEpochMs);
     await capturePng(page, path.join(scenarioRoot, "before.png"));
@@ -194,6 +195,8 @@ async function runScenario(scenario) {
       timeoutMs: E2E_TIMING.bulkOperationMs,
       intervalMs: E2E_TIMING.resourcePollIntervalMs,
     })).value;
+    await assertAirportName(page, scenario === "success"
+      ? lab.changed_airport.candidate_name : lab.changed_airport.initial_name);
     const warningUi = scenario === "reject"
       ? await revealRejectedWarning(page)
       : null;
@@ -213,6 +216,7 @@ async function runScenario(scenario) {
       initialCycle,
       candidateCycle,
     );
+    assertions.database_contents_verified = true;
     writeJson(path.join(scenarioRoot, "assertions.json"), {
       scenario,
       transition_at: new Date(transitionEpochMs).toISOString(),
@@ -302,6 +306,20 @@ async function buildRichFlightPlan(page) {
     E2E_TIMING.localReadyMs,
     "KPAE VOR-A ECEPO insertion",
   );
+}
+
+// Read the same airport before/after adoption through the normal UI. A new
+// package ID alone must not pass while old-generation records remain cached.
+async function assertAirportName(page, expectedName) {
+  await clickButtonByTextOnce(page, '.pageLayer.isActive [data-testid^="plan-row-"]', "KRNT");
+  await clickOnce(page, '.pageLayer.isActive [data-testid="plan-row-action-waypoint_info"]');
+  await observePage(`airport info contains ${expectedName}`, () => page.evalValue(
+    `document.querySelector('[data-testid="airport-info-modal:KRNT"] .airportInfoName')?.textContent === ${JSON.stringify(expectedName)}`,
+  ), E2E_TIMING.localReadyMs);
+  await clickOnce(page, '[aria-label="Close airport info"]');
+  await observePage("airport info dismissed", () => page.evalValue(
+    `!document.querySelector('[data-testid="airport-info-modal:KRNT"]')`,
+  ), E2E_TIMING.localReadyMs);
 }
 
 function assertScenario(
@@ -547,6 +565,7 @@ function generatePublication(scenario, transitionEpochMs) {
     "cargo",
     [
       "run",
+      "--locked",
       "--quiet",
       "--manifest-path",
       path.join(repoRoot, "product/preprocessor/Cargo.toml"),
@@ -555,8 +574,6 @@ function generatePublication(scenario, transitionEpochMs) {
       "--bin",
       "nav_db_rollover_lab",
       "--",
-      "--fixture-root",
-      fixtureRoot,
       "--output-root",
       publicationRoot,
       ...timingArgs,
@@ -565,46 +582,6 @@ function generatePublication(scenario, transitionEpochMs) {
     ],
     { cwd: repoRoot },
   );
-}
-
-function materializeFixture(destinationRoot) {
-  const fixtureLock = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "test-artifacts.lock.json"), "utf8"),
-  );
-  const configuredPath = fixtureLock.fixtures?.["nav-db-advance"]?.path;
-  assert(typeof configuredPath === "string", "fixture lock has no nav-db-advance path");
-  const relative = path.normalize(configuredPath);
-  const configured = process.env.AEROBAG_TEST_ARTIFACTS_ROOT;
-  const candidates = [
-    configured ? path.join(configured, relative) : null,
-    path.resolve(repoRoot, "../aerobag-test-artifacts", relative),
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, "fixture.json"))) {
-      return candidate;
-    }
-  }
-
-  const bareCandidates = [
-    process.env.AEROBAG_TEST_ARTIFACTS_GIT,
-    "/root/aerobag-test-artifacts.git",
-    path.resolve(repoRoot, "../aerobag-test-artifacts.git"),
-  ].filter(Boolean);
-  const bare = bareCandidates.find((candidate) => fs.existsSync(candidate));
-  if (!bare) {
-    throw new Error(
-      "NAVDB rollover fixtures are unavailable; set AEROBAG_TEST_ARTIFACTS_ROOT or AEROBAG_TEST_ARTIFACTS_GIT",
-    );
-  }
-  fs.mkdirSync(destinationRoot, { recursive: true });
-  const archive = path.join(destinationRoot, "fixture.tar");
-  runChecked(
-    "git",
-    [`--git-dir=${bare}`, "archive", "--format=tar", `--output=${archive}`, "HEAD", relative],
-    { cwd: repoRoot },
-  );
-  runChecked("tar", ["-xf", archive, "-C", destinationRoot], { cwd: repoRoot });
-  return path.join(destinationRoot, relative);
 }
 
 function launchVite() {

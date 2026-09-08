@@ -13,6 +13,7 @@ crossbeam-channel.workspace = true
 had-key = { path = "../../../crates/had-key" }
 libc = "0.2"
 nav-kv-package = { path = "../../../crates/nav-kv-package" }
+nav-db-fixture = { path = "../../../crates/nav-db-fixture" }
 preprocessor-charts = { path = "../preprocessor-charts" }
 preprocessor-csup = { path = "../preprocessor-csup" }
 preprocessor-data = { path = "../preprocessor-data" }

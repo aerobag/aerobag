@@ -113,7 +113,6 @@ python3 -m pytest \
   tools/test_admin_index.py \
   tools/test_chart_cutline_editor.py \
   tools/ci/test_build_e2e_package_fixture.py \
-  tools/ci/test_build_nav_db_advance_fixture.py \
   tools/ci/test_fetch_test_artifacts.py \
   tools/ci/test_junit_summary.py \
   tools/ci/test_verify_fixture_contracts.py \
@@ -122,15 +121,15 @@ python3 -m pytest \
   product/preprocessor/scripts/test_watch_build_log.py
 ```
 
-Fetch and run one pinned fixture lane locally with:
+Run the calendar-independent NAVDB rollover regression locally with:
 
 ```sh
-python3 tools/ci/fetch_test_artifacts.py \
-  --fixture nav-db-advance \
-  --destination /tmp/aerobag-test-artifacts
-
 (cd ui/core-rust && \
-  AEROBAG_TEST_ARTIFACTS_ROOT=/tmp/aerobag-test-artifacts \
+  AEROBAG_ARTIFACT_READ_PATH="$(mktemp -d)" \
   cargo nextest run --profile ci --locked --package app-core \
-    --run-ignored ignored-only)
+    -E 'test(/generated_nav_db_advance_preserves_rich_session$/)')
 ```
+
+Its permanent source and generated A/B scenarios are documented in
+[`crates/nav-db-fixture`](../crates/nav-db-fixture/README.md). No historical FAA
+publication or external fixture checkout is needed.

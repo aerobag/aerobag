@@ -256,31 +256,19 @@ projects a snapshot, and commits only on success, is the architectural model.
 
 ## Test Artifacts
 
-The immutable production artifacts are captured in the test-artifacts commit
-pinned by `test-artifacts.lock.json`. Their NAVDB contract must match the
-client's single supported contract. The regression opens those exact ZIP bytes
-through the production NAVKV reader and pages them to completion; it does not
-depend on a publication server or wall clock.
+The permanent logical source lives in `crates/nav-db-fixture/source.json`, with
+the captured publication's checksum and contract descriptor. The shared
+production encoder builds fresh roots/pages for synthetic generations 9901
+and 9902; the browser lab wraps them in real Stored-ZIP/XZ packages. The valid
+candidate changes an airport-info record, and the rejected candidate also
+omits a required route reference. Ancillary package dates are cleared, and
+the publication's NAVDB windows use the lab's controlled transition instant.
 
-```text
-nav-db/advance-2608-to-2609/
-  README.md
-  fixture.json
-  source/current_artifacts.json
-  source/packaged/bundle_cycle_2608_01_....json
-  source/packaged/bundle_cycle_2609_01_....json
-  source/packaged/nav_db_<contract>_2608_01_....zip
-  source/packaged/nav_db_<contract>_2609_01_....zip
-```
-
-`fixture.json` records the exact source publication identity, filenames,
-hashes, byte sizes, cycles, and contracts. The real-artifact regression
-qualifies both NAVDBs through production HAD APIs and verifies:
-
-- a rich route and approach procedure present in both cycles
-- stable airports, navaids, fixes, airways, charts, and airport-document
-  records used by the positive E2E scenario
-- expected package hashes and NAVDB contract IDs
+This replaces the former pair of full historical FAA NAVDBs. Calendar turnover
+does not change the source or require archived producer inputs. Contract
+changes require an explicit logical-record migration; the generator fails
+closed on mismatches. Independent smoke/release fixtures still test a real
+publication and need only one currently available cycle.
 
 The qualified scenario is `KRNT SEA KPAE` with `KPAE VOR-A ECEPO`; it exercises
 ordinary waypoints, procedure geometry, an arc, a hold, active guidance, a
@@ -288,16 +276,18 @@ selected plate, and raster-family preservation.
 
 ## Regression Coverage
 
-`real_nav_db_2608_to_2609_advance_preserves_rich_session` drives the production
-session transaction and real paged NAVKV artifacts. Set
-`AEROBAG_TEST_ARTIFACTS_ROOT` (or `AEROBAG_TEST_ARTIFACTS`) when the sibling
-fixture repository is not discoverable automatically.
+`generated_nav_db_advance_preserves_rich_session` drives the production
+session transaction and freshly encoded paged NAVKV artifacts. The permanent
+logical source and controlled generations live in `crates/nav-db-fixture`.
+No external fixture checkout or historical FAA cycle pair is needed.
 
-The test constructs the rich plan on 2608, selects its VOR-A plate, activates
+The test constructs the rich plan on the initial generation, selects its VOR-A plate, activates
 the procedure hold, loads the raster catalog and guidance, then advances the
-same live session to 2609. It asserts exact flight-plan/guidance preservation,
+same live session to the candidate. It asserts exact flight-plan/guidance preservation,
 fresh procedure arc geometry, active route projection, selected-family
-preservation, candidate identity, and a single epoch increment.
+preservation, candidate identity, a single epoch increment, and an observable
+airport-info change from the adopted database. The browser checks that change
+through the normal airport-info UI, and retention of the old value on rejection.
 
 Focused Rust tests cover atomic commit, side-effect-free page faults, rejection
 of a missing required `NavRef`, old-artifact pinning, warning/reload semantics,
@@ -324,7 +314,7 @@ raster, route, and terrain results from landing after a commit.
    non-hushable reload warning and core-owned action described above.
 6. Synthetic tests cover commit, paging atomicity, missing required plan data,
    rejection/lease behavior, and concurrent old-generation reads during
-   candidate I/O. The production-byte test covers the rich 2608-to-2609 case.
+   candidate I/O. The generated-source test covers the rich session case.
 7. Core emits a NAVDB maintenance deadline. Android attempts an installed
    candidate at cycle turnover, and Web periodically refreshes publication
    metadata before running the same candidate transaction.
@@ -334,8 +324,8 @@ raster, route, and terrain results from landing after a commit.
 - Core owns candidate selection, validation, adoption, warning policy, and
   package leases.
 - Platforms contain no NAVDB-specific swap policy.
-- A rich active session advances from the real 2608 fixture to the real 2609
-  fixture without losing or mixing state.
+- A rich active session advances between freshly encoded fixtures without
+  losing or mixing state, and visibly consumes the candidate's changed data.
 - An incompatible live session rejects the candidate without changing visible
   or navigational state.
 - Web and Android consume the same epoch/invalidation contract.

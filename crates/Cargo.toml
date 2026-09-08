@@ -8,6 +8,7 @@ members = [
     "had-key",
     "had-nav-kv",
     "nav-kv-package",
+    "nav-db-fixture",
     "notam-state",
     "procedure-geometry-types",
     "product-contracts",

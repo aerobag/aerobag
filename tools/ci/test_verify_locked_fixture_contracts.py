@@ -21,6 +21,7 @@ class VerifyLockedFixtureContractsTest(unittest.TestCase):
         root = Path(self.temporary.name)
         self.inventory_path = root / "inventory.json"
         self.lock_path = root / "lock.json"
+        self.source_path = root / "source.json"
         self.contracts = {
             "publication": {
                 "current_manifest_schema": 1,
@@ -48,6 +49,11 @@ class VerifyLockedFixtureContractsTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_lock()
+        self.source_path.write_text(json.dumps({
+            "schema_version": 1,
+            "nav_db_contract": json.loads(self.inventory_path.read_text())["nav_db"],
+            "records": {"airport/notam-catalog": {"schema_version": 1}},
+        }))
 
     def write_lock(self, nav_contract: str = "NAV24") -> None:
         contracts = json.loads(json.dumps(self.contracts))
@@ -76,7 +82,7 @@ class VerifyLockedFixtureContractsTest(unittest.TestCase):
         self.assertEqual(
             3,
             verify_locked_fixture_contracts.verify(
-                self.inventory_path, self.lock_path
+                self.inventory_path, self.lock_path, self.source_path
             ),
         )
 
@@ -85,8 +91,22 @@ class VerifyLockedFixtureContractsTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "client requires NAV24"):
             verify_locked_fixture_contracts.verify(
-                self.inventory_path, self.lock_path
+                self.inventory_path, self.lock_path, self.source_path
             )
+
+    def test_rejects_obsolete_logical_source_without_fetching(self) -> None:
+        source = json.loads(self.source_path.read_text())
+        source["nav_db_contract"]["contract_id"] = "NAV23"
+        self.source_path.write_text(json.dumps(source))
+        with self.assertRaisesRegex(ValueError, "explicit contract migration"):
+            verify_locked_fixture_contracts.verify(self.inventory_path, self.lock_path, self.source_path)
+
+    def test_rejects_missing_required_logical_record(self) -> None:
+        source = json.loads(self.source_path.read_text())
+        source["records"] = {}
+        self.source_path.write_text(json.dumps(source))
+        with self.assertRaisesRegex(ValueError, "airport/notam-catalog"):
+            verify_locked_fixture_contracts.verify(self.inventory_path, self.lock_path, self.source_path)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@ Hosted Chrome failure evidence:
 - [x] Pin the testing browser for local/hosted reproduction; keep upgrades
   explicit. Assess replacing browser lifecycle/transport with a maintained
   library through a small comparison, not a rewrite of shared journey semantics.
-- [ ] Fix demonstrated defects and verify in the environment that failed.
+- [x] Fix demonstrated defects and verify in the environment that failed.
   A non-reproduction is not a root-cause explanation. Record unresolved evidence.
 
 If a narrowly classified pre-application startup restart is necessary, it must
@@ -168,6 +168,13 @@ production state, weaken assertions, or erase failure artifacts.
   `shared.cloud-crossfill` (11.7s). These use retained app `ee35e0cb`, not a rebuilt
   current application and not qualification receipts. Final hosted boundary
   validation is recorded below when available.
+- 2026-09-08: Final committed-boundary verification at `c60a0b87`:
+  [hosted run 34275418161](https://github.com/aerobag/aerobag/actions/runs/34275418161)
+  passed 400/400 pinned Chrome starts (pipe and websocket on four fresh runners),
+  with first starts 0.29–0.62 seconds. Both real-browser lifecycle tests passed
+  on each runner, including delayed-worker isolation and failed-peer cleanup.
+  Full local qualification was deliberately not run; no release was staged or
+  promoted. Ordinary CI's separate coverage failure remains visible.
 
 ## Ownership and causal-completion audit
 
